@@ -268,7 +268,9 @@
   "chat": {
     "clearSearch": "Clear search",
     "emptyTagline": "Select a chat to start your conversation",
-    "emptyFooter": "Your messages are protected end-to-end in transit. SOMS cannot read them.",
+    "emptyP2PHint": "Say hello to start your conversation",
+    "emptyGroupHint": "No messages yet — send the first one",
+    "emptyBlockedHint": "Unblock to start your conversation",
     "searchPlaceholder": "Search by chat name",
     "all": "All",
     "loading": "Loading…",

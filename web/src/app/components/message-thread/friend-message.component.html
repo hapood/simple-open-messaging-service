@@ -86,6 +86,27 @@
           </div>
         </div>
       }
+      @if (!initialLoading() && threadEmpty()) {
+        <!-- Empty-thread hero placeholder (WhatsApp/Discord style): a sibling overlay of .msg-content, identical
+             in placement to the .cb-skeleton above, so it NEVER enters the kernel's measured-height model
+             (totalH()/prefix-sum stays exact). Shown only once init has settled with zero mounted items — a
+             fresh friendship / new group / cleared history — and removed the instant the first message
+             (including an optimistic send) mounts. No CTA: the composer below is the affordance. -->
+        <div class="msg-empty-overlay">
+          <app-empty-state
+            [title]="emptyTitle()"
+            [subtitle]="emptyHintKey() | transloco">
+            <span class="msg-empty-avatar">
+              <app-user-avatar
+                [type]="emptyAvatarType()"
+                [name]="emptyTitle()"
+                [identityId]="emptyAvatarIdentityId()"
+                [src]="emptyAvatarSrc()">
+              </app-user-avatar>
+            </span>
+          </app-empty-state>
+        </div>
+      }
     </div>
 
     <!-- The floating date pill always tracks the topmost visible message. Search now lives inside the

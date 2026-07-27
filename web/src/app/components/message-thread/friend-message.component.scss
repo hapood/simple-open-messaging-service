@@ -134,3 +134,36 @@ app-chat-input {
 // Initial-load shimmer skeleton: now in the shared global partial _cb-skeleton.scss (imported via
 // styles.scss), identical for production and the playground. .msg-viewport is the positioning context
 // (position:relative above); the component's skeletonVisible signal delay-gates the reveal.
+
+// Empty-thread hero placeholder (shown when init has settled with zero mounted items). Mirrors the .cb-skeleton
+// overlay: an absolute sibling of .msg-content inside .msg-viewport, so it stays OUT of the kernel's measured
+// height model entirely (totalH()/prefix-sum is unaffected). <app-empty-state> fills the overlay (:host
+// height:100%) and centers its column; the wallpaper shows through the transparent viewport. pointer-events:none
+// — the card holds no interactive element (the composer is the affordance), so the surface stays non-modal.
+.msg-empty-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  // Gentle reveal so the card doesn't pop in once loading clears. Opacity-only (exempt from the integer-px
+  // height rule; the overlay is outside the kernel's measured model regardless). Honors reduced-motion.
+  animation: msg-empty-fade 180ms ease-out;
+}
+
+@keyframes msg-empty-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-empty-overlay { animation: none; }
+}
+
+// Hero avatar — a sized wrapper around <app-user-avatar> (its :host fills 100% of this box), the same pattern
+// as the thread-list's .thread-avatar. Integer 64px keeps the rendered box whole; larger than the list's 54px
+// for empty-state prominence (Material recommends prominent imagery in an empty state).
+.msg-empty-avatar {
+  display: block;
+  width: 64px;
+  height: 64px;
+}

@@ -35,15 +35,6 @@
 
 SOMS federation lets two independently deployed SOMS instances exchange messages across their users — **like email, but for chat.** This document is the single reference for anyone who wants to **integrate with** a SOMS node (Part I) or **deploy** one (Part II).
 
-### Honest naming (do not mislabel)
-
-SOMS federation is **transport-encrypted**, not end-to-end encrypted.
-
-- ✅ Say: "transport-encrypted federation", "TLS in transit", "server-to-server encrypted channel".
-- ❌ Do **not** say: "end-to-end encrypted", "encrypted chat", "private messaging", "E2EE".
-
-**Why the distinction matters:** TLS protects the wire (client↔server, server↔server). It does **not** protect messages from the server operators. When Alice `alice@soms.io` messages Bob `bob@other.com`, **both `soms.io` and `other.com` see the plaintext.** Any server admin, any database compromise, any legal compulsion on either server exposes the content. This is the email / Mastodon / Slack model — a legitimate, widely-used model — but it is not the security property users associate with "encrypted chat" (Signal/WhatsApp). The protocol leaves room for a future E2EE layer on the message-pull response, but v0.1 ships **TLS only**. Never advertise v0.1 as E2EE.
-
 ### The trust model in one sentence
 
 **You trust your own server's administrator, and your peers' server administrators. That is the entire trust boundary.** Everything in this protocol follows from that.
@@ -69,7 +60,6 @@ A **lightweight, JSON-based, IM-native federation protocol.** ActivityPub-inspir
 ### Non-goals (v0.1)
 
 - **Not** conforming to Matrix / XMPP / ActivityPub. Bridges are separate adapter services.
-- **Not** end-to-end encryption across federation. `content` is reserved opaque for a future E2EE effort.
 - **Not** open federation. Peers must be explicitly trusted, **and** users must be friends before any communication.
 - **Not** global ordering, DAG-based state resolution, or strong consistency.
 - **Not** remote edit/delete of delivered messages. The origin's authority ends at delivery — once a peer
@@ -87,7 +77,7 @@ A **lightweight, JSON-based, IM-native federation protocol.** ActivityPub-inspir
 | **Tinode** | Reference, not adopted | Mission was "deliver XMPP's federated-IM vision"; federation never shipped. |
 | **Custom (this spec)** | Selected | Thin layer over SOMS's already-email-shaped architecture. |
 
-The complexity that sank Matrix (global consistency / DAG) and the complexity Moxie cited when Signal abandoned federation (E2EE across independent operators) are **both out of scope here.** That is what keeps this protocol lightweight.
+The complexity that sank Matrix (global consistency / DAG) is **out of scope here.** That is what keeps this protocol lightweight.
 
 ---
 
@@ -213,10 +203,8 @@ inline (no nested fetch); `friend-approve` is the bare base (pure state confirma
 > **No `message` payload type.** Step 2 cross-server messages do **not** travel as a POSTed payload — they
 > travel in the response of a signed `GET /api/v1/s2s/messages` (active pull), gated by friendship +
 > `originSeq` idempotency (`docs/roadmap/federation-step2-design.md`). The earlier "durable message envelope"
-> design (`type: message`, `durability`, `origin_seq`, `thread`, `prev`, `client_message_id`, opaque
-> `content`) was the rejected push alternative. There is no `type` / `durability` field on the wire, and
-> `content` is not a payload slot — a future E2EE layer, if ever added, would live on the pull-response
-> message shape, not on these friend-op bodies.
+> design (`type: message`, `durability`, `origin_seq`, `thread`, `prev`, `client_message_id`) was the
+> rejected push alternative. There is no `type` / `durability` field on the wire.
 
 ### 4.1 Friend-op endpoints
 
@@ -642,7 +630,6 @@ via signed `Range`/206 GET `/get_file` + receiver CAS localization (Step 2 — s
 
 ### Deferred (explicit non-goals for v0.1)
 
-- **E2EE** — `content` reserved; crypto is a separate effort.
 - **Presence / typing** — ephemeral, v0.2 (lossy, carry no `id`, never retried).
 - **Read receipts across federation** — `receipt` type reserved; logic v0.2.
 - **Message media federation** — ✅ **Built in Step 2**: album/file/video images in chat federate via signed `Range`/206 GET `/get_file`, and the receiver localizes each asset through the same CAS pipeline as a local upload (`federation.service.ts` `fetchMediaChunks` / `saveCasFromStream`; avatars in §10.1 are the separate inline-base64 path). The per-node **quota** system bounds that traffic — **BUILT** (daily message/image/file count limits + size caps, admin-adjustable, applied to local + peers) — see `docs/roadmap/federation-quotas.md`; it is live for text `messages`, image/large-file local uploads, and inbound S2S `requests`.

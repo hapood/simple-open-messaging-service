@@ -5,6 +5,11 @@ import { ConversationListService, ConversationLoadStatus } from '../../services/
 import { UserService } from '../../services/user.service'
 import { ConversationItem, displayThreadName } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import {
+  conversationAvatarType,
+  conversationAvatarIdentityId,
+  conversationAvatarSrc,
+} from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
@@ -130,16 +135,18 @@ export class ThreadListComponent implements OnInit {
     return formatListTime(ms, this.transloco)
   }
 
+  // Conversation→avatar derivation lives in the shared conversation-avatar util (single source of truth,
+  // shared with the empty-thread hero). These delegate to it so the logic is not duplicated across surfaces.
   avatarType(t: ConversationItem): UserAvatarType {
-    return t.type === 'P2P' ? UserAvatarType.OTHER : UserAvatarType.GROUP
+    return conversationAvatarType(t)
   }
 
   avatarIdentityId(t: ConversationItem): number {
-    return t.type === 'P2P' ? t.peerUser.id : t.group.id
+    return conversationAvatarIdentityId(t)
   }
 
   avatarSrc(t: ConversationItem): string | null | undefined {
-    return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar
+    return conversationAvatarSrc(t)
   }
 
   federatedDomain(t: ConversationItem): string | undefined {

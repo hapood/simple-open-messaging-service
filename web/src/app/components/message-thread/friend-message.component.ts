@@ -42,6 +42,13 @@ import {
   type MediaStatus,
 } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
+import { EmptyStateComponent } from '../empty-state/empty-state.component';
+import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import {
+  conversationAvatarType,
+  conversationAvatarIdentityId,
+  conversationAvatarSrc,
+} from '../user-avatar/conversation-avatar.util';
 import {
   ChatInputComponent,
   type ChatSendIntent,
@@ -57,7 +64,7 @@ import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
-import type { ConversationItem, StandardResponse } from '../../services/model';
+import { displayThreadName, type ConversationItem, type StandardResponse } from '../../services/model';
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -86,6 +93,8 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
     ChatInputComponent,
     KbdOffsetDirective,
     StickyDateOverlayComponent,
+    EmptyStateComponent,
+    UserAvatarComponent,
     TranslocoModule,
   ],
   templateUrl: './friend-message.component.html',
@@ -142,6 +151,13 @@ export class MessageThreadComponent implements OnDestroy {
    *  the flash an always-on skeleton causes, which is the dated IM pattern in a local-first / fast-network
    *  world. Bound in the template; cleared the moment the first batch lands. */
   readonly skeletonVisible = signal(false);
+
+  /** True when the kernel's mounted window is empty — the thread is open but has no messages (a fresh P2P
+   *  friendship, a newly-created group, or after clear-history). Maintained from onScroll's `mounted` count:
+   *  the kernel's emit() fires on init's empty branch, on every mount, and on optimistic/incoming inserts, so
+   *  the hero card reacts the instant the first message — including an optimistic send — mounts. Reset to false
+   *  in teardown; the template additionally gates on !initialLoading() so the card never flashes mid-load. */
+  readonly threadEmpty = signal(false);
   /** Reveal the skeleton only after this delay (ms) — the "don't flash on fast loads" gate. */
   private static readonly SKELETON_DELAY = 300;
   private skeletonTimer?: ReturnType<typeof setTimeout>;
@@ -155,6 +171,33 @@ export class MessageThreadComponent implements OnDestroy {
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
+
+  /** Hero-card content for the empty-thread placeholder. P2P shows the peer; GROUP shows the group. The name
+   *  reuses displayThreadName (alias-aware) and the avatar reuses the same IDB-backed identity the conversation
+   *  list uses, so an alias / cached avatar renders identically here and in the list. */
+  readonly emptyTitle = computed(() => {
+    const t = this.userMsgTrd();
+    return t ? displayThreadName(t) : '';
+  });
+  readonly emptyIsGroup = computed(() => this.userMsgTrd()?.type === 'GROUP');
+  readonly emptyAvatarType = computed<UserAvatarType>(() => {
+    const t = this.userMsgTrd();
+    return t ? conversationAvatarType(t) : UserAvatarType.OTHER;
+  });
+  readonly emptyAvatarIdentityId = computed<number | undefined>(() => {
+    const t = this.userMsgTrd();
+    return t ? conversationAvatarIdentityId(t) : undefined;
+  });
+  readonly emptyAvatarSrc = computed<string | null | undefined>(() => {
+    const t = this.userMsgTrd();
+    return t ? conversationAvatarSrc(t) : undefined;
+  });
+  /** Hint copy varies by state: a blocked peer can't be messaged until unblocked, so the "say hello" line is
+   *  swapped for an unblock prompt; otherwise it is per thread type. Returns a transloco key. */
+  readonly emptyHintKey = computed(() => {
+    if (this.blockedPeer()) return 'chat.emptyBlockedHint';
+    return this.emptyIsGroup() ? 'chat.emptyGroupHint' : 'chat.emptyP2PHint';
+  });
 
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
@@ -289,6 +332,7 @@ export class MessageThreadComponent implements OnDestroy {
     }
     this.sweepPendingFiles();
     this.atBottom.set(info.atBottom);
+    this.threadEmpty.set(info.mounted === 0);
     this.updateStickyDate();
     this.probe.schedule(this.threadId() ?? 0);
   }
@@ -850,6 +894,7 @@ export class MessageThreadComponent implements OnDestroy {
   private teardown(): void {
     clearTimeout(this.skeletonTimer);
     this.probe.destroy();
+    this.threadEmpty.set(false);
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;

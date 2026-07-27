@@ -268,7 +268,9 @@
   "chat": {
     "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
-    "emptyFooter": "你的消息在传输中受端到端加密保护，SOMS 无法读取。",
+    "emptyP2PHint": "打个招呼，开始你们的对话",
+    "emptyGroupHint": "还没有消息，发送第一条吧",
+    "emptyBlockedHint": "取消拉黑后即可开始对话",
     "searchPlaceholder": "搜索聊天名称",
     "all": "全部",
     "loading": "加载中…",

@@ -15,14 +15,6 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
       <div class="empty-main">
         <app-brand-logo [size]="72" [tagline]="'chat.emptyTagline' | transloco" />
       </div>
-      <div class="empty-foot">
-        <svg class="lock" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="11" width="18" height="11" rx="2" />
-          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-        </svg>
-        <span>{{ 'chat.emptyFooter' | transloco }}</span>
-      </div>
     </div>
   `,
   styles: [`
@@ -37,16 +29,6 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
       background: var(--app-surface);
     }
     .empty-main { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
-    .empty-foot {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      color: var(--app-text-faint);
-      font-size: 12px;
-      text-align: center;
-    }
   `],
 })
 export class ChatEmptyComponent {}
