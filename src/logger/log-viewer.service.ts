@@ -1,7 +1,6 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
-import { BusinessCode } from '../common/business-code.js';
 import { optionalIntEnv } from '../common/env.js';
 import { LogStreamStore, atOrAbove, type LogRecord } from './log-stream-store.js';
 import { listLogFiles } from './log-rotator.js';
@@ -68,9 +67,9 @@ export class LogViewerService implements OnModuleDestroy {
    * an admin-only, on-demand endpoint, never a hot path.
    */
   async history(dto: AdminLogHistoryDto): Promise<{
-    code: number;
-    message: string;
-    data: { list: LogRecord[]; total: number; truncated: boolean };
+    list: LogRecord[];
+    total: number;
+    truncated: boolean;
   }> {
     const skip = dto.skip ?? 0;
     const take = Math.min(dto.take ?? 50, 200);
@@ -106,13 +105,9 @@ export class LogViewerService implements OnModuleDestroy {
     }
 
     return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: {
-        list: matches.slice(skip, skip + take),
-        total: matches.length,
-        truncated,
-      },
+      list: matches.slice(skip, skip + take),
+      total: matches.length,
+      truncated,
     };
   }
 

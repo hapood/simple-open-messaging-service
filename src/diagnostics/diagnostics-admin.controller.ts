@@ -19,8 +19,6 @@ import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
 import { Roles } from '../admin/admin-roles.decorator.js';
 import { Audit } from '../admin/audit.decorator.js';
 import { AdminRole } from '../prisma/generated/client.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { AdminListDiagnosticsDto } from './diagnostics.dto.js';
 import { DiagnosticsService } from './diagnostics.service.js';
 import { DiagnosticsGcService } from './diagnostics-gc.service.js';
@@ -31,6 +29,9 @@ import { DiagnosticsGcService } from './diagnostics-gc.service.js';
  * VIEWER); the GC mutation requires ADMIN+ and is audited. Mirrors AdminController + the
  * MediaAssetGcController shape. Declared in AdminModule's controllers array (which imports
  * DiagnosticsModule for the services) — the same pattern every other admin controller uses.
+ *
+ * Handlers return raw data (download is @Raw — binary stream); the global SerializeInterceptor wraps the
+ * ApiResult envelope.
  */
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -46,12 +47,8 @@ export class AdminDiagnosticsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/diagnostics')
   @ApiOperation({ summary: 'List diagnostic reports (with reporter identity)' })
-  async list(@Body() dto: AdminListDiagnosticsDto): Promise<ApiResult> {
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: await this.diagnostics.list(dto),
-    };
+  async list(@Body() dto: AdminListDiagnosticsDto) {
+    return this.diagnostics.list(dto);
   }
 
   @Raw()
@@ -73,18 +70,14 @@ export class AdminDiagnosticsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/diagnostics/gc')
   @ApiOperation({ summary: 'Garbage-collect expired/orphaned diagnostic bundles' })
-  async triggerGc(): Promise<ApiResult> {
+  async triggerGc() {
     const expired = await this.gc.gcExpiredReports();
     const orphan = await this.gc.gcOrphanedBundles();
     const flagged = await this.gc.reconcileDiagnostics();
     return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: {
-        ...expired,
-        orphanFiles: orphan.files,
-        flaggedMissing: flagged.flagged,
-      },
+      ...expired,
+      orphanFiles: orphan.files,
+      flaggedMissing: flagged.flagged,
     };
   }
 
@@ -93,11 +86,7 @@ export class AdminDiagnosticsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/diagnostics/:id/delete')
   @ApiOperation({ summary: 'Soft-delete one diagnostic report (+ unlink its bundle if unreferenced)' })
-  async delete(@Param('id') id: string): Promise<ApiResult> {
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: await this.gc.deleteReport(Number(id)),
-    };
+  async delete(@Param('id') id: string) {
+    return this.gc.deleteReport(Number(id));
   }
 }
