@@ -15,10 +15,9 @@ import { ThreadParticipantService } from '../thread-participant/thread-participa
 import { SseService } from '../gateway/sse.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { QuotaService } from '../quota/quota.service.js';
-import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { GroupRole } from '../prisma/generated/client.js';
 import {
   SendFriendInviteDto,
   InviteIdDto,
@@ -52,16 +51,15 @@ export class InviteController {
   @HttpCode(HttpStatus.OK)
   @Post('invite/friend')
   @ApiOperation({ summary: 'Send a friend invite (federated targets delivered via S2S automatically)' })
-  async sendFriendInvite(
-    @Request() req: FastifyRequest,
-    @Body() dto: SendFriendInviteDto,
-  ): Promise<ApiResult> {
+  async sendFriendInvite(@Request() req: FastifyRequest, @Body() dto: SendFriendInviteDto) {
     const me = req.user.userId;
     if (me === dto.toUserId) {
-      return { code: BusinessCode.FRIEND_SELF, message: 'can not invite yourself' };
+      throw new BusinessException(BusinessCode.FRIEND_SELF, 'can not invite yourself');
     }
     const target = await this.userService.findUniqueUser({ id: dto.toUserId });
     if (!target) {
+      // Pre-built error envelope (kept as a return — NOT thrown — so the messageKey survives; the global
+      // filter does not render messageKey on a thrown exception, and this error carries one for i18n).
       return {
         code: BusinessCode.NOT_FOUND,
         message: 'user does not exist',
@@ -69,28 +67,25 @@ export class InviteController {
       };
     }
     if (target.isGroup) {
-      return {
-        code: BusinessCode.FRIEND_INVALID_TARGET,
-        message: 'cannot add a group as a friend',
-      };
+      throw new BusinessException(BusinessCode.FRIEND_INVALID_TARGET, 'cannot add a group as a friend');
     }
     if (await this.participantService.areFriends(me, target.id)) {
-      return {
-        code: BusinessCode.OK,
+      return envelope(undefined, {
         message: 'you are already friends',
         messageKey: 'friend.msg.alreadyFriends',
-      };
+      });
     }
 
     // Daily quota (local aggregate): a friend request consumes one 'requests' unit (anti-spam). Ticked
     // AFTER validation so a request to a non-existent / already-friend target never burns the budget.
     const q = await this.quota.tryTickLocal('requests');
     if (q.exceeded) {
-      return {
-        code: BusinessCode.QUOTA_EXCEEDED,
-        message: `daily friend-request quota reached (${q.limit}); resets in ${q.retryAfter}s`,
-        data: { category: 'requests', limit: q.limit, retryAfter: q.retryAfter },
-      };
+      throw new BusinessException(
+        BusinessCode.QUOTA_EXCEEDED,
+        `daily friend-request quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+        HttpStatus.OK,
+        { category: 'requests', limit: q.limit, retryAfter: q.retryAfter },
+      );
     }
 
     // Mutual auto-accept is LOCAL-only (a federated target needs an S2S round-trip on accept).
@@ -106,12 +101,10 @@ export class InviteController {
       // THREAD_REVISION_UPDATED delta (recordThreadAdd fires for both users in createFriendInvite);
       // no NOTIFY — the former FRIEND_APPROVED push is dropped (the delta subsumes it, aligning local
       // with the federated path which already dropped it).
-      return {
-        code: BusinessCode.OK,
+      return envelope({ threadId: res.threadId } as { threadId: number | undefined }, {
         message: 'you are now friends',
         messageKey: 'friend.msg.nowFriends',
-        data: { threadId: res.threadId },
-      };
+      });
     }
 
     // created | already-pending → deliver to the target.
@@ -126,10 +119,10 @@ export class InviteController {
           note: dto.note ?? '',
         });
       } catch (e) {
-        return {
-          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-          message: `could not reach ${target.domain}: ${(e as Error).message}`,
-        };
+        throw new BusinessException(
+          BusinessCode.FEDERATION_DELIVERY_FAILED,
+          `could not reach ${target.domain}: ${(e as Error).message}`,
+        );
       }
     } else {
       // Local target → live NOTIFY (the notification popup + fromUserId/inviteId) AND the friendReqRev
@@ -149,31 +142,19 @@ export class InviteController {
         this.sseService.onFriendReqRevUpdated(target.id, s),
       );
     }
-    return {
-      code: BusinessCode.OK,
+    return envelope({ inviteId: res.inviteId }, {
       message: 'friend request sent',
       messageKey: 'friend.msg.sent',
-      data: { inviteId: res.inviteId },
-    };
+    });
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/accept')
   @ApiOperation({ summary: 'Accept an invite by id (friend → P2P thread; group → join as MEMBER)' })
-  async acceptInvite(
-    @Request() req: FastifyRequest,
-    @Body() dto: InviteIdDto,
-  ): Promise<ApiResult> {
-    let res;
-    try {
-      res = await this.inviteService.acceptInvite(dto.inviteId, req.user.userId);
-    } catch (e) {
-      if (e instanceof BusinessException) {
-        return { code: e.bizCode, message: e.message };
-      }
-      throw e;
-    }
+  async acceptInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto) {
+    // acceptInvite throws BusinessException (INVITE_EXPIRED / NOT_FOUND / …) → the global filter renders it.
+    const res = await this.inviteService.acceptInvite(dto.inviteId, req.user.userId);
 
     if (res.kind === 'FRIEND') {
       const fromUser = await this.userService.findUniqueUser({ id: res.fromUserId });
@@ -189,10 +170,10 @@ export class InviteController {
             by: { account: fromUser.account, domain: fromUser.domain },
           });
         } catch (e) {
-          return {
-            code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-            message: `could not reach ${fromUser.domain}: ${(e as Error).message}`,
-          };
+          throw new BusinessException(
+            BusinessCode.FEDERATION_DELIVERY_FAILED,
+            `could not reach ${fromUser.domain}: ${(e as Error).message}`,
+          );
         }
       }
       // Local inviter: recordThreadAdd fired for both users in acceptInvite's tx → both sides get
@@ -200,11 +181,7 @@ export class InviteController {
       // subsumes it, aligning local with the federated path which already dropped it). No FRIEND_REQ_REV
       // push either — friendReqRev is creation-based (MAX createdAt), so accept/decline don't advance it
       // (the badge arms only on a NEW request); it refreshes on the next HELLO regardless.
-      return {
-        code: BusinessCode.OK,
-        message: 'friend request approved',
-        data: { threadId: res.threadId },
-      };
+      return { threadId: res.threadId };
     }
 
     // GROUP → fan out GROUP_ROSTER_UPDATED (signal-only) to the active local roster (incl. the new
@@ -228,43 +205,33 @@ export class InviteController {
           group: fed,
         });
       } catch (e) {
-        return {
-          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-          message: `could not reach ${origin}: ${(e as Error).message}`,
-        };
+        throw new BusinessException(
+          BusinessCode.FEDERATION_DELIVERY_FAILED,
+          `could not reach ${origin}: ${(e as Error).message}`,
+        );
       }
     }
-    return { code: BusinessCode.OK, message: 'joined', data: { threadId: res.threadId } };
+    return { threadId: res.threadId };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/reject')
   @ApiOperation({ summary: 'Reject an incoming invite' })
-  async rejectInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<ApiResult> {
-    try {
-      await this.inviteService.rejectInvite(dto.inviteId, req.user.userId);
-    } catch (e) {
-      if (e instanceof BusinessException) return { code: e.bizCode, message: e.message };
-      throw e;
-    }
+  async rejectInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<void> {
+    // rejectInvite throws BusinessException → the global filter renders it.
+    await this.inviteService.rejectInvite(dto.inviteId, req.user.userId);
     // No FRIEND_REQ_REV push — friendReqRev is creation-based (MAX createdAt), so rejecting an incoming
     // invite doesn't advance it (the badge arms only on a NEW request).
-    return { code: BusinessCode.OK, message: 'invite rejected' };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/revoke')
   @ApiOperation({ summary: 'Revoke my own outgoing invite' })
-  async revokeInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<ApiResult> {
-    try {
-      await this.inviteService.revokeInvite(dto.inviteId, req.user.userId);
-    } catch (e) {
-      if (e instanceof BusinessException) return { code: e.bizCode, message: e.message };
-      throw e;
-    }
-    return { code: BusinessCode.OK, message: 'invite revoked' };
+  async revokeInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<void> {
+    // revokeInvite throws BusinessException → the global filter renders it.
+    await this.inviteService.revokeInvite(dto.inviteId, req.user.userId);
   }
 
   @ApiBearerAuth()
@@ -272,7 +239,7 @@ export class InviteController {
   @Post('invite/incoming')
   @ApiOperation({ summary: 'List incoming pending friend invites (last 7 days, ≤200, friends filtered out)' })
   @ApiResultResponse(InviteDto, true)
-  async listIncoming(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async listIncoming(@Request() req: FastifyRequest) {
     const me = req.user.userId;
     const [rows, friendIds] = await Promise.all([
       this.inviteService.listIncoming(me),
@@ -280,8 +247,7 @@ export class InviteController {
     ]);
     const friends = new Set(friendIds);
     // Hide invites from users who are already friends (stale / re-armed edge cases).
-    const data = rows.filter((r) => !friends.has(r.fromUserId));
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return rows.filter((r) => !friends.has(r.fromUserId));
   }
 
   @ApiBearerAuth()
@@ -289,15 +255,14 @@ export class InviteController {
   @Post('invite/outgoing')
   @ApiOperation({ summary: 'List my outgoing pending friend invites (last 7 days, ≤200, friends filtered out)' })
   @ApiResultResponse(InviteDto, true)
-  async listOutgoing(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async listOutgoing(@Request() req: FastifyRequest) {
     const me = req.user.userId;
     const [rows, friendIds] = await Promise.all([
       this.inviteService.listOutgoing(me),
       this.participantService.getActiveP2PPeerUserIds(me),
     ]);
     const friends = new Set(friendIds);
-    const data = rows.filter((r) => !friends.has(r.toUserId));
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return rows.filter((r) => !friends.has(r.toUserId));
   }
 
   @ApiBearerAuth()
@@ -305,25 +270,19 @@ export class InviteController {
   @Post('invite/detail')
   @ApiOperation({ summary: 'Live invite state for the group-invite dialog (validity / already-joined)' })
   @ApiResultResponse(InviteDetailDto)
-  async getInviteDetail(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<ApiResult> {
-    try {
-      const data = await this.inviteService.getInviteDetail(dto.inviteId, req.user.userId);
-      return { code: BusinessCode.OK, message: 'successful', data };
-    } catch (e) {
-      if (e instanceof BusinessException) return { code: e.bizCode, message: e.message };
-      throw e;
-    }
+  async getInviteDetail(@Request() req: FastifyRequest, @Body() dto: InviteIdDto) {
+    // getInviteDetail throws BusinessException → the global filter renders it.
+    return this.inviteService.getInviteDetail(dto.inviteId, req.user.userId);
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/mark-read')
   @ApiOperation({ summary: 'Clear the friend-request unread badge' })
-  async markRead(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async markRead(@Request() req: FastifyRequest): Promise<void> {
     // Advance the server-side read cursor friendReqAckRev → the current friendReqRev (MAX updatedAt),
     // then push the new state so the badge clears on ALL of the user's devices (multi-device consistent).
     const state = await this.inviteService.markRead(req.user.userId);
     this.sseService.onFriendReqRevUpdated(req.user.userId, state);
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 }

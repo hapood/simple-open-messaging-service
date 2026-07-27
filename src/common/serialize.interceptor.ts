@@ -82,7 +82,7 @@ function envelopeFor(data: unknown): unknown {
     const carrier = data as ApiEnvelope;
     return {
       code: BusinessCode.OK,
-      message: 'successful',
+      message: carrier.message ?? 'successful',
       data: carrier.data,
       messageKey: carrier.messageKey,
       hasMore: carrier.hasMore,

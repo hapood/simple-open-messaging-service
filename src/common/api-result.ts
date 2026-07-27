@@ -94,14 +94,16 @@ export const API_ENVELOPE = Symbol('apiEnvelope');
 export interface ApiEnvelope<T = unknown> {
   readonly [API_ENVELOPE]: true;
   data: T;
+  message?: string;
   messageKey?: string;
   hasMore?: boolean;
 }
 
-/** Wrap `data` for the interceptor, attaching optional envelope-level `messageKey` / `hasMore`. */
+/** Wrap `data` for the interceptor, attaching optional envelope-level `message` / `messageKey` / `hasMore`
+ *  (the few success outcomes that carry a custom status string or i18n key beyond `data`). */
 export function envelope<T>(
   data: T,
-  opts?: { messageKey?: string; hasMore?: boolean },
+  opts?: { message?: string; messageKey?: string; hasMore?: boolean },
 ): ApiEnvelope<T> {
   return { [API_ENVELOPE]: true, data, ...opts };
 }
