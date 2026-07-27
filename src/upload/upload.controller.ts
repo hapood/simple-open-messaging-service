@@ -85,10 +85,14 @@ export class UploadController {
     const { url, size } = await this.withStageFailure(req, () =>
       this.uploadService.save(img.mimetype, img.buffer),
     );
-    // Promote a staged IMAGE send if this upload carries a client-message-id (the message content is
-    // {url,w,h}; the staged meta for an image is empty — w/h come from consumeImage above).
+    // Promote a staged IMAGE send if this upload carries a client-message-id. The promote payload is the
+    // full server-authored content {url,w,h,size} — `size` (the real buffer length from saveCas) MUST be
+    // carried here so the persisted Message.content carries it; parseImageContent reads it back to render
+    // the meta bar (omit it and every reloaded/echoed image shows "unknown size"). Mirrors FILE/VIDEO/
+    // AUDIO, which all pass the complete server-generated payload. The staged meta for an image is empty
+    // — w/h come from consumeImage above.
     await this.withStageFailure(req, () =>
-      this.maybePromote(req, { url, w: img.w, h: img.h }),
+      this.maybePromote(req, { url, w: img.w, h: img.h, size }),
     );
     return { url, w: img.w, h: img.h, size };
   }

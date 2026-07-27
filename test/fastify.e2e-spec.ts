@@ -4,6 +4,7 @@ import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
@@ -180,6 +181,45 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .replace(/\.png$/, '');
     const asset = await prisma.mediaAsset.findUnique({ where: { digest } });
     expect(asset?.refs).toBeGreaterThanOrEqual(2);
+  });
+
+  it('promotes a staged IMAGE send on upload and persists size in Message.content', async () => {
+    // The staged-send → upload → promote flow: POST /send-media records the intent, then POST /upload
+    // carrying the same x-client-message-id promotes it to a real Message whose content is the server-
+    // authored {url,w,h,size}. `size` (the real buffer length from saveCas) MUST land in the persisted
+    // content — parseImageContent reads it back to render the meta bar; drop it and every reloaded /
+    // SSE-echoed / received image renders "unknown size".
+    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+    await prisma.threadParticipant.create({
+      data: { userId: userAId, threadId: thread.id },
+    });
+    const cid = randomUUID();
+
+    const stage = await request(app.getHttpServer())
+      .post('/api/v1/send-media')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ threadId: thread.id, contentType: 'IMAGE', clientMessageId: cid });
+    expect(stage.body.code).toBe(0);
+
+    const up = await request(app.getHttpServer())
+      .post('/api/v1/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-client-message-id', cid)
+      .attach('file', PNG_1X1, 'promote.png')
+      .field('w', '2')
+      .field('h', '2');
+    expect(up.status).toBe(200);
+    expect(up.body.code).toBe(0);
+    expect(up.body.data.size).toBe(PNG_1X1.length);
+
+    const msg = await prisma.message.findUnique({ where: { clientMessageId: cid } });
+    expect(msg).not.toBeNull();
+    const content = JSON.parse(msg!.content);
+    expect(content.url).toBe(up.body.data.url);
+    expect(content.w).toBe(2);
+    expect(content.h).toBe(2);
+    // The regression: size was omitted from the promote payload, so the persisted content lacked it.
+    expect(content.size).toBe(PNG_1X1.length);
   });
 
   it('accepts a video upload (magic-byte container check) and serves it inline', async () => {
