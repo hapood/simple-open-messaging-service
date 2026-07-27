@@ -13,7 +13,6 @@ import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminRole } from '../prisma/generated/client.js';
-import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SettingsService } from '../settings/settings.service.js';
@@ -33,6 +32,9 @@ import { SaveVapidDto, GenerateVapidDto, OtpTtlDto } from './admin-settings.dto.
  *
  * Security: the VAPID private key is WRITE-ONLY from this surface — only publicKey + subject are ever
  * returned. Generate creates the pair server-side so the private key never transits the browser at all.
+ *
+ * Handlers return raw data (or void for acks); the global SerializeInterceptor wraps the ApiResult
+ * envelope. Failures throw BusinessException (the global AllExceptionsFilter renders the body).
  */
 @ApiTags('admin')
 @Public()
@@ -43,30 +45,24 @@ export class AdminSettingsController {
     private readonly pushService: PushService,
   ) {}
 
-  private ok(data?: unknown): ApiResult {
-    return data === undefined
-      ? { code: BusinessCode.OK, message: 'success' }
-      : { code: BusinessCode.OK, message: 'success', data };
-  }
-
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/notifications')
   @ApiOperation({
     summary: 'Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain',
   })
-  async getNotifications(): Promise<ApiResult> {
+  async getNotifications() {
     const [vapid, otpTtlMinutes] = await Promise.all([
       this.settings.getVapidDescriptor(),
       this.settings.getOtpTtlMinutes(),
     ]);
-    return this.ok({
+    return {
       vapid,
       firebase: this.settings.getFirebaseDescriptor(),
       fcmConfigured: this.pushService.fcmConfigured,
       somsDomain: this.settings.somsDomain,
       otpTtlMinutes,
-    });
+    };
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -77,12 +73,12 @@ export class AdminSettingsController {
   @ApiOperation({
     summary: 'Generate a fresh VAPID keypair server-side and persist it (privateKey never returned)',
   })
-  async generateVapid(@Body() dto: GenerateVapidDto): Promise<ApiResult> {
+  async generateVapid(@Body() dto: GenerateVapidDto) {
     // WARNING surfaced by the UI: generating/rotating the keypair breaks existing Web Push subscriptions
     // — browsers bound the subscription to the old VAPID publicKey and must re-subscribe.
     const cfg = this.settings.generateVapid(dto.subject);
     await this.settings.setVapid(cfg);
-    return this.ok({ configured: true, subject: cfg.subject, publicKey: cfg.publicKey });
+    return { configured: true, subject: cfg.subject, publicKey: cfg.publicKey };
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -93,7 +89,7 @@ export class AdminSettingsController {
   @ApiOperation({
     summary: 'Save (paste) a VAPID keypair — validates first, rejects malformed / mismatched pairs',
   })
-  async saveVapid(@Body() dto: SaveVapidDto): Promise<ApiResult> {
+  async saveVapid(@Body() dto: SaveVapidDto) {
     const cfg: VapidConfig = {
       subject: dto.subject,
       publicKey: dto.publicKey,
@@ -107,7 +103,7 @@ export class AdminSettingsController {
       );
     }
     await this.settings.setVapid(cfg);
-    return this.ok({ configured: true, subject: cfg.subject, publicKey: cfg.publicKey });
+    return { configured: true, subject: cfg.subject, publicKey: cfg.publicKey };
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -116,9 +112,8 @@ export class AdminSettingsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/vapid/clear')
   @ApiOperation({ summary: 'Remove the VAPID keypair — disables Web Push' })
-  async clearVapid(): Promise<ApiResult> {
+  async clearVapid(): Promise<void> {
     await this.settings.clearVapid();
-    return this.ok();
   }
 
   // Firebase client config is file-based (google-services.json at FIREBASE_CLIENT_CONFIG), not DB-backed,
@@ -131,9 +126,9 @@ export class AdminSettingsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/otp-ttl')
   @ApiOperation({ summary: 'Set the one-time-code validity window (minutes, clamped 1-1440)' })
-  async setOtpTtl(@Body() dto: OtpTtlDto): Promise<ApiResult> {
+  async setOtpTtl(@Body() dto: OtpTtlDto) {
     await this.settings.setOtpTtlMinutes(dto.ttlMinutes);
-    return this.ok({ otpTtlMinutes: await this.settings.getOtpTtlMinutes() });
+    return { otpTtlMinutes: await this.settings.getOtpTtlMinutes() };
   }
 
   @UseGuards(AdminAuthGuard)
@@ -142,11 +137,10 @@ export class AdminSettingsController {
   @ApiOperation({
     summary: 'Validate the configured VAPID keypair + transport status (deterministic, no network)',
   })
-  async healthCheck(): Promise<ApiResult> {
-    const report = this.settings.validateVapid(
+  async healthCheck() {
+    return this.settings.validateVapid(
       this.settings.getVapid(),
       this.pushService.fcmConfigured,
     );
-    return this.ok(report);
   }
 }
