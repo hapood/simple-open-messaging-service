@@ -15,6 +15,7 @@
   // the header). Falls back to 56px if the token is absent (e.g. header used elsewhere).
   height: var(--msg-header-h, 56px);
   width: 100%;
+  position: relative;
   background: var(--app-surface);
   box-sizing: border-box;
   border-bottom: 1px solid var(--app-border);
@@ -28,37 +29,63 @@
   padding: var(--soms-safe-top, 0px) 8px 0;
 }
 
-.msg-identity {
+.back-btn {
   @include styless-button;
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 48px;
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 6px;
-  border-radius: var(--app-radius-sm, 8px);
-  text-align: left;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 8px;
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
   cursor: pointer;
-  &:hover { background: var(--app-hover); }
+  &:hover {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 1px;
+  }
 }
 
-.msg-avatar {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
+.back-unread {
+  min-width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-brand);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .msg-title {
-  flex: 1 1 0;
-  min-width: 0;
+  position: absolute;
+  left: 50%;
+  top: calc(var(--soms-safe-top, 0px) + 28px);
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: calc(100% - 196px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
+  pointer-events: none;
 }
 
 .msg-title-line {
+  max-width: 100%;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -90,6 +117,7 @@
 // Subtitle: the peer's bio (P2P) or the group description (GROUP). Rendered only when non-empty
 // (template @if), so an empty bio/description collapses the header to a single centered line.
 .msg-subtitle {
+  max-width: 100%;
   font-size: 12px;
   line-height: 16px;
   // --app-text-faint (one tier below --app-text-muted) keeps the descriptor clearly secondary to the
@@ -100,6 +128,12 @@
   text-overflow: ellipsis;
   display: block;
   margin-top: 2px;
+}
+
+@media (min-width: 600px) {
+  .msg-title {
+    max-width: calc(100% - 208px);
+  }
 }
 
 .icon-btn {

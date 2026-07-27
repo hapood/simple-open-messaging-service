@@ -310,6 +310,7 @@
     "sendFile": "File",
     "sendAria": "Send",
     "callAria": "Start voice call",
+    "backUnreadAria": "Back to chats, {{count}} unread messages elsewhere",
     "emojiAria": "Emoji",
     "attachAria": "Attach",
     "recordVoiceAria": "Record voice message",

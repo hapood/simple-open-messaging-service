@@ -16,7 +16,6 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { uuid } from '../../lib/uuid';
-import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -41,14 +40,12 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
     TranslocoModule,
     FederatedBadgeComponent,
     MessageSearchComponent,
-    UserAvatarComponent,
   ],
   templateUrl: './message-header.component.html',
   styleUrl: './message-header.component.scss',
 })
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType;
-  readonly UserAvatarType = UserAvatarType;
   readonly userMsgTrd = input<ConversationItem>();
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
@@ -85,20 +82,19 @@ export class MessageHeaderComponent {
     this.callAdapter.initiate(peer.id, uuid(), 'AUDIO', peer.name ?? '', peer.avatar ?? '', avatarDataUrl);
   }
 
-  readonly avatarType = computed(() =>
-    this.userMsgTrd()?.type === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER,
-  );
-
-  readonly avatarIdentity = computed(() => {
-    const trd = this.userMsgTrd();
-    if (!trd) return undefined;
-    return trd.type === 'P2P' ? trd.peerUser.id : trd.group.id;
+  /** Unread messages in every conversation except the one currently open. Compact chat headers surface
+   *  this beside Back so leaving the thread has useful context, matching the common mobile messenger pattern. */
+  readonly otherUnreadCount = computed(() => {
+    const currentId = this.userMsgTrd()?.threadId;
+    return this.convList.items().reduce(
+      (sum, item) => sum + (item.threadId === currentId ? 0 : Math.max(0, item.unreadCount ?? 0)),
+      0,
+    );
   });
 
-  readonly avatarSrc = computed(() => {
-    const trd = this.userMsgTrd();
-    if (!trd) return '';
-    return trd.type === 'P2P' ? trd.peerUser.avatar : trd.group.avatar;
+  readonly otherUnreadLabel = computed(() => {
+    const count = this.otherUnreadCount();
+    return count > 99 ? '99+' : String(count);
   });
 
   /** In-chat search visibility is a layer of the app's virtual nav stack (see NavStateMachineService):

@@ -1,7 +1,15 @@
 <div class="msg-header">
   @if (mode() === 'compact') {
-    <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
+    <button
+      class="back-btn"
+      type="button"
+      (click)="goBack()"
+      [attr.aria-label]="'chat.backUnreadAria' | transloco: { count: otherUnreadCount() }"
+    >
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '24px', height: '24px' }"></app-icon>
+      @if (otherUnreadCount() > 0) {
+        <span class="back-unread" aria-hidden="true">{{ otherUnreadLabel() }}</span>
+      }
     </button>
   }
   @if (searchOpen()) {
@@ -14,27 +22,17 @@
       (close)="closeSearch()"
     />
   } @else {
-    <button class="msg-identity" type="button" (click)="showThreadInfo()" [attr.aria-label]="title()">
-      <span class="msg-avatar" aria-hidden="true">
-        <app-user-avatar
-          [type]="avatarType()"
-          [name]="title()"
-          [identityId]="avatarIdentity()"
-          [src]="avatarSrc()"
-        />
-      </span>
-      <span class="msg-title">
-        <span class="msg-title-line">
-          <span class="msg-title-text" [title]="title()">{{ title() }}</span>
-          @if (federatedDomain(); as dom) {
-            <app-federated-badge [domain]="dom" [compact]="true"></app-federated-badge>
-          }
-        </span>
-        @if (subtitle()) {
-          <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>
+    <div class="msg-title">
+      <span class="msg-title-line">
+        <span class="msg-title-text" [title]="title()">{{ title() }}</span>
+        @if (federatedDomain(); as dom) {
+          <app-federated-badge [domain]="dom" [compact]="true"></app-federated-badge>
         }
       </span>
-    </button>
+      @if (subtitle()) {
+        <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>
+      }
+    </div>
     @if (canCall()) {
       <button class="icon-btn" type="button" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
         <app-icon [type]="AppIconType.PHONE" [style]="{ width: '22px', height: '22px' }"></app-icon>
