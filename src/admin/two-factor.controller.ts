@@ -19,7 +19,6 @@ import {
   TwoFactorDisableDto,
   TwoFactorRegenerateDto,
 } from './admin.dto.js';
-import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
@@ -31,8 +30,9 @@ import { BusinessException } from '../common/business.exception.js';
  * handlers carry @Audit so enrollment / disable / regeneration land in AdminActionLog.
  *
  * All domain logic lives in AdminAuthService (which delegates the TOTP/crypto/backup-code storage to
- * TwoFactorService); this controller only parses input, extracts the adminId principal, and wraps the
- * {code,message,data} envelope.
+ * TwoFactorService); this controller only parses input, extracts the adminId principal, and returns raw
+ * data (the global SerializeInterceptor wraps the {code,message,data} envelope; failures throw
+ * BusinessException).
  */
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -43,24 +43,18 @@ import { BusinessException } from '../common/business.exception.js';
 export class TwoFactorController {
   constructor(private readonly adminAuth: AdminAuthService) {}
 
-  private ok(data?: unknown): ApiResult {
-    return data === undefined
-      ? { code: BusinessCode.OK, message: 'success' }
-      : { code: BusinessCode.OK, message: 'success', data };
-  }
-
   @HttpCode(HttpStatus.OK)
   @Post('admin/2fa/status')
   @ApiOperation({ summary: "Current admin's 2FA status (enabled + remaining backup codes)" })
-  async status(@Req() req: FastifyRequest): Promise<ApiResult> {
-    return this.ok(await this.adminAuth.twoFactorStatus(this.adminId(req)));
+  async status(@Req() req: FastifyRequest) {
+    return this.adminAuth.twoFactorStatus(this.adminId(req));
   }
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/2fa/setup')
   @ApiOperation({ summary: 'Begin 2FA enrollment (otpauth URI + secret + pending token)' })
-  async setup(@Req() req: FastifyRequest): Promise<ApiResult> {
-    return this.ok(await this.adminAuth.beginTwoFactorSetup(this.adminId(req)));
+  async setup(@Req() req: FastifyRequest) {
+    return this.adminAuth.beginTwoFactorSetup(this.adminId(req));
   }
 
   @Audit('admin.2fa_enable', { targetType: 'admin' })
@@ -70,10 +64,8 @@ export class TwoFactorController {
   async setupVerify(
     @Req() req: FastifyRequest,
     @Body() dto: TwoFactorSetupVerifyDto,
-  ): Promise<ApiResult> {
-    return this.ok(
-      await this.adminAuth.completeTwoFactorSetup(this.adminId(req), dto.pendingToken, dto.code),
-    );
+  ) {
+    return this.adminAuth.completeTwoFactorSetup(this.adminId(req), dto.pendingToken, dto.code);
   }
 
   @Audit('admin.2fa_disable', { targetType: 'admin' })
@@ -83,10 +75,9 @@ export class TwoFactorController {
   async disable(
     @Req() req: FastifyRequest,
     @Body() dto: TwoFactorDisableDto,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     this.ensureFactorPresent(dto.code, dto.backupCode);
     await this.adminAuth.disableTwoFactor(this.adminId(req), dto.password, dto.code, dto.backupCode);
-    return this.ok();
   }
 
   @Audit('admin.2fa_regenerate_backup', { targetType: 'admin' })
@@ -96,11 +87,9 @@ export class TwoFactorController {
   async regenerate(
     @Req() req: FastifyRequest,
     @Body() dto: TwoFactorRegenerateDto,
-  ): Promise<ApiResult> {
+  ) {
     this.ensureFactorPresent(dto.code, dto.backupCode);
-    return this.ok(
-      await this.adminAuth.regenerateBackupCodes(this.adminId(req), dto.code, dto.backupCode),
-    );
+    return this.adminAuth.regenerateBackupCodes(this.adminId(req), dto.code, dto.backupCode);
   }
 
   private adminId(req: FastifyRequest): number {

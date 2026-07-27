@@ -16,7 +16,6 @@ import { Audit } from './audit.decorator.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { WebAuthnRegBeginDto, WebAuthnRegFinishDto, WebAuthnRenameDto } from './admin.dto.js';
-import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
@@ -29,7 +28,8 @@ import { BusinessException } from '../common/business.exception.js';
  * The LOGIN endpoints (pre-session) live in AdminController, not here — same split as TOTP. All domain
  * logic lives in AdminAuthService (which delegates the crypto + credential storage to WebAuthnService);
  * this controller parses input, extracts the adminId principal, derives the browser origin from the
- * request header, and wraps the {code,message,data} envelope.
+ * request header, and returns raw data (the global SerializeInterceptor wraps the {code,message,data}
+ * envelope; failures throw BusinessException).
  */
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -40,17 +40,11 @@ import { BusinessException } from '../common/business.exception.js';
 export class WebAuthnController {
   constructor(private readonly adminAuth: AdminAuthService) {}
 
-  private ok(data?: unknown): ApiResult {
-    return data === undefined
-      ? { code: BusinessCode.OK, message: 'success' }
-      : { code: BusinessCode.OK, message: 'success', data };
-  }
-
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/status')
   @ApiOperation({ summary: "Current admin's passkey status (availability + enabled + credential count)" })
-  async status(@Req() req: FastifyRequest): Promise<ApiResult> {
-    return this.ok(await this.adminAuth.webAuthnStatus(this.adminId(req)));
+  async status(@Req() req: FastifyRequest) {
+    return this.adminAuth.webAuthnStatus(this.adminId(req));
   }
 
   @Audit('admin.webauthn_register_begin', { targetType: 'admin' })
@@ -60,10 +54,8 @@ export class WebAuthnController {
   async registrationBegin(
     @Req() req: FastifyRequest,
     @Body() dto: WebAuthnRegBeginDto,
-  ): Promise<ApiResult> {
-    return this.ok(
-      await this.adminAuth.beginWebAuthnRegistration(this.adminId(req), dto.password, dto.nickname),
-    );
+  ) {
+    return this.adminAuth.beginWebAuthnRegistration(this.adminId(req), dto.password, dto.nickname);
   }
 
   @Audit('admin.webauthn_register_finish', { targetType: 'webauthn_credential' })
@@ -73,21 +65,19 @@ export class WebAuthnController {
   async registrationFinish(
     @Req() req: FastifyRequest,
     @Body() dto: WebAuthnRegFinishDto,
-  ): Promise<ApiResult> {
-    return this.ok(
-      await this.adminAuth.completeWebAuthnRegistration(
-        this.adminId(req),
-        dto.pendingToken,
-        dto.registrationResponse,
-      ),
+  ) {
+    return this.adminAuth.completeWebAuthnRegistration(
+      this.adminId(req),
+      dto.pendingToken,
+      dto.registrationResponse,
     );
   }
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/credentials')
   @ApiOperation({ summary: "List the current admin's saved passkeys" })
-  async list(@Req() req: FastifyRequest): Promise<ApiResult> {
-    return this.ok(await this.adminAuth.listWebAuthnCredentials(this.adminId(req)));
+  async list(@Req() req: FastifyRequest) {
+    return this.adminAuth.listWebAuthnCredentials(this.adminId(req));
   }
 
   @Audit('admin.webauthn_rename', { targetType: 'webauthn_credential', targetParam: 'id' })
@@ -98,17 +88,16 @@ export class WebAuthnController {
     @Req() req: FastifyRequest,
     @Param('id') id: string,
     @Body() dto: WebAuthnRenameDto,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     await this.adminAuth.renameWebAuthnCredential(this.adminId(req), this.parseRowId(id), dto.nickname);
-    return this.ok();
   }
 
   @Audit('admin.webauthn_delete', { targetType: 'webauthn_credential', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/credentials/:id/delete')
   @ApiOperation({ summary: 'Delete a saved passkey' })
-  async delete(@Req() req: FastifyRequest, @Param('id') id: string): Promise<ApiResult> {
-    return this.ok(await this.adminAuth.removeWebAuthnCredential(this.adminId(req), this.parseRowId(id)));
+  async delete(@Req() req: FastifyRequest, @Param('id') id: string) {
+    return this.adminAuth.removeWebAuthnCredential(this.adminId(req), this.parseRowId(id));
   }
 
   private adminId(req: FastifyRequest): number {
