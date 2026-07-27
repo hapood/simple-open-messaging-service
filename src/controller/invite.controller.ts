@@ -58,13 +58,9 @@ export class InviteController {
     }
     const target = await this.userService.findUniqueUser({ id: dto.toUserId });
     if (!target) {
-      // Pre-built error envelope (kept as a return — NOT thrown — so the messageKey survives; the global
-      // filter does not render messageKey on a thrown exception, and this error carries one for i18n).
-      return {
-        code: BusinessCode.NOT_FOUND,
-        message: 'user does not exist',
-        messageKey: 'friend.msg.friendNotFound',
-      };
+      // Errors are localized client-side by their numeric code (see ApiResult.messageKey) — they carry no
+      // messageKey — so this throws and flows through the global AllExceptionsFilter like every other error.
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'user does not exist');
     }
     if (target.isGroup) {
       throw new BusinessException(BusinessCode.FRIEND_INVALID_TARGET, 'cannot add a group as a friend');
