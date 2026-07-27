@@ -1,12 +1,16 @@
 import { Component, input, output, signal, type WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
+import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
 import { By } from '@angular/platform-browser';
 import { ChatPaneComponent } from './chat-pane.component';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { ChatEmptyComponent } from '../../chat-empty/chat-empty.component';
 import { ConversationListService } from '../../../services/conversation-list.service';
 import { NavStateMachineService } from '../../../services/nav-state.service';
+import { LayoutService } from '../../../services/layout.service';
+import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
+import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import type { ConversationItem } from '../../../services/model';
 
 /**
@@ -50,6 +54,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
   let openThreadId: WritableSignal<number | undefined>;
   let items: WritableSignal<ConversationItem[]>;
   let status: WritableSignal<string>;
+  let mode: WritableSignal<'compact' | 'medium' | 'expanded'>;
   let loadSpy: jasmine.Spy;
   let closeChatSpy: jasmine.Spy;
 
@@ -57,6 +62,9 @@ describe('ChatPaneComponent A/B coordinator', () => {
     openThreadId = signal<number | undefined>(undefined);
     items = signal<ConversationItem[]>([item(1, 'alice'), item(2, 'bob'), item(3, 'carol')]);
     status = signal('READY');
+    // Default to expanded (the cross-fade path): existing coordinator assertions are layout-agnostic, and the
+    // loading-gate regression below opts into compact explicitly.
+    mode = signal<'compact' | 'medium' | 'expanded'>('expanded');
     loadSpy = jasmine.createSpy('load');
     closeChatSpy = jasmine.createSpy('closeChat');
 
@@ -64,9 +72,21 @@ describe('ChatPaneComponent A/B coordinator', () => {
       imports: [ChatPaneComponent],
       providers: [
         provideZonelessChangeDetection(),
+        // The pane-loading overlay renders `{{ 'chat.loading' | transloco }}` as its accessible name, so the
+        // template needs the inline loader when the spinner branch is exercised by the gate tests below.
+        provideTransloco({
+          config: {
+            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: 'Simplified Chinese' }],
+            defaultLang: 'en',
+            reRenderOnLangChange: true,
+          },
+          loader: InlineTranslocoLoader,
+        }),
+        provideTranslocoTranspiler(CspSafeIcuTranspiler),
         // Minimal mock ConvList: real signals the coordinator reads, spy for the actions it takes.
         { provide: ConversationListService, useValue: { openThreadId, items, status, load: loadSpy } },
         { provide: NavStateMachineService, useValue: { closeChat: closeChatSpy } },
+        { provide: LayoutService, useValue: { mode } },
       ],
     });
     // Swap the heavy real panes for stubs so the coordinator's routing can be asserted in isolation.
@@ -120,6 +140,66 @@ describe('ChatPaneComponent A/B coordinator', () => {
 
     expect(pane1.teardownKernel).toHaveBeenCalledTimes(1);
     expect(pane(1)).toBe(pane1); // SAME instance — not destroyed / recreated
+  });
+
+  // ----------------------------- compact loading gate (the mobile regression) -----------------------------
+
+  it('compact close→open: shows the spinner while the new pane initializes, then hides it on promote', async () => {
+    mode.set('compact');
+    await open(1);
+    // The `.compact` class drives the CSS that snaps the outgoing pane away (spinner↔chatpane, no
+    // chatpane↔chatpane cross-fade) — lock the binding so the demote can't silently regress to a dissolve.
+    expect(fixture.debugElement.query(By.css('.chat-pane'))!.nativeElement.classList.contains('compact'))
+      .toBe(true);
+    await ready(1); // promote → fg B (slot B = 1)
+    expect(comp.fgSlot()).toBe('B');
+    expect(comp.showLoading()).toBe(false);
+
+    await open(undefined); // close: teardownKernel fg, but slot B KEEPS thread 1
+    expect(comp.showLoading()).toBe(false); // !active → pane-empty, not the spinner
+
+    await open(2); // re-open a different thread: fresh bind to slot A (hidden), fg stays B (still bound to 1)
+    expect(comp.fgSlot()).toBe('B');
+    // The foreground still holds the OUTGOING thread 1 while thread 2 initializes in the background — the
+    // spinner must cover it so the mobile slide-in never reveals stale content.
+    expect(comp.showLoading()).toBe(true);
+
+    await ready(2); // promote → fg A (slot A = 2)
+    expect(comp.fgSlot()).toBe('A');
+    expect(comp.showLoading()).toBe(false); // foreground now matches the open thread
+  });
+
+  it('expanded close→open: NO spinner mid-switch — the outgoing pane cross-fades (desktop stays as-is)', async () => {
+    mode.set('expanded');
+    await open(1);
+    await ready(1); // fg B (slot B = 1)
+    await open(undefined);
+    await open(2); // fg still B (slot B = 1, stale); thread 2 initializes in background slot A
+    expect(comp.showLoading()).toBe(false); // cross-fade path: fgItem() is the stale thread 1 → truthy
+    await ready(2);
+    expect(comp.showLoading()).toBe(false);
+  });
+
+  it('compact direct switch (no close) also gates the spinner until promote', async () => {
+    mode.set('compact');
+    await open(1);
+    await ready(1); // fg B (slot B = 1)
+    await open(2); // direct switch 1→2 (e.g. a notification jump): fresh bind to slot A, fg stays B (stale 1)
+    expect(comp.showLoading()).toBe(true); // stale fg 1 ≠ open thread 2
+    await ready(2); // promote → fg A
+    expect(comp.showLoading()).toBe(false);
+  });
+
+  it('compact re-open the SAME thread: NO spinner — the stale foreground IS the right thread', async () => {
+    mode.set('compact');
+    await open(1);
+    await ready(1); // fg B (slot B = 1)
+    await open(undefined); // close: teardownKernel fg → cold; slot B keeps 1
+    pane(1)!.isWarm.and.returnValue(false); // mirror the real cold pane so the fg-resident branch re-inits
+    await open(1); // re-open same → fg-resident: reset() fg (slot B already = 1)
+    expect(comp.showLoading()).toBe(false); // fg slot 1 === open thread 1 → no spinner, no wrong-chat reveal
+    await ready(1);
+    expect(comp.showLoading()).toBe(false);
   });
 
   // ----------------------------- fresh bind -----------------------------
