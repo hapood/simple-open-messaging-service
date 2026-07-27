@@ -479,9 +479,9 @@ enum AdminRole {
 
 /// Admin profile, LINKED to a User (single account namespace — no user/admin name collision possible).
 /// Identity (account name + password) lives on the linked User; this row holds only admin-specific state
-/// (role, enabled flag, tokenVersion for global session revocation, last login, admin refresh-tokens).
-/// Admin login authenticates the linked User's password, then issues an admin session. Admin auth stays
-/// physically isolated from user auth (separate AdminRefreshToken + adminSecret + scope:'admin').
+/// (role, enabled flag, last login, TOTP + WebAuthn second-factor state). Admin login authenticates the
+/// linked User's password, then issues an opaque admin session (AdminSession) delivered via the httpOnly
+/// admin_session cookie — physically isolated from user auth (a separate session surface).
 model Admin {
   id                       Int                   @id @default(autoincrement())
   userId                   Int                   @unique
@@ -494,8 +494,8 @@ model Admin {
   //    The secret is AES-256-GCM encrypted at rest (twoFactorSecretCipher = iv(12) ‖ tag(16) ‖ ciphertext,
   //    base64) under a key derived from SOMS_2FA_KEY — never plaintext. twoFactorLastUsedCounter is the
   //    highest TOTP step (⌊t/30s⌋) already accepted at login, guarding against same-window code replay
-  //    (RFC 6238 §5.2). Enabling 2FA bumps tokenVersion so every outstanding session must re-login through
-  //    the new challenge.
+  //    (RFC 6238 §5.2). Enabling 2FA revokes every outstanding admin session (revokeSessionsByAdmin) so
+  //    the admin re-logs in through the new challenge — no pre-enrollment session can bypass the factor.
   twoFactorEnabled         Boolean               @default(false)
   twoFactorSecretCipher    String?               @db.VarChar(255)
   twoFactorEnabledAt       DateTime?
@@ -503,8 +503,9 @@ model Admin {
   // ── WebAuthn (passkey) second factor. Opt-in per admin; multiple credentials per admin (phone +
   //    YubiKey, etc.). webauthnEnabled is a denormalized hint (= "≥1 credential exists") for the login
   //    branch + status card; the credential ROWS are the source of truth (beginAssertion re-counts to
-  //    guard against a stale-true flag). Enrolling/removing a passkey does NOT bump tokenVersion
-  //    (additive optional factor — does not invalidate existing sessions, unlike TOTP-enable).
+  //    guard against a stale-true flag). Enrolling/removing a passkey is an additive optional factor and
+  //    does NOT invalidate existing sessions (unlike TOTP-enable, which revokes them) — a passkey is never
+  //    the sole factor, and enrollment already required password re-auth.
   webauthnEnabled          Boolean               @default(false)
   createdAt                DateTime              @default(now())
   updatedAt                DateTime              @updatedAt

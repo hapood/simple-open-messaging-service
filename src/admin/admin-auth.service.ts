@@ -228,9 +228,9 @@ export class AdminAuthService {
       throw new BusinessException(BusinessCode.TWO_FACTOR_INVALID, 'invalid verification code', HttpStatus.OK);
     }
     const { backupCodes } = await this.twoFactor.enableWithBackupCodes(adminId, pending.secret);
-    // enableWithBackupCodes already bumped tokenVersion atomically (so no 2FA-bypassing session can exist);
-    // revoke the refresh families best-effort so the re-login is immediate rather than waiting for the
-    // access TTL. The admin just proved enrollment, so the forced re-login is expected.
+    // Revoking outstanding sessions forces an immediate re-login through the new 2FA challenge (rather
+    // than waiting for session expiry) — no pre-enrollment session can bypass the new factor. The admin
+    // just proved enrollment, so the forced re-login is expected.
     await this.revokeSessionsByAdmin(adminId, '2fa_enabled');
     return { backupCodes };
   }
@@ -314,8 +314,9 @@ export class AdminAuthService {
   }
 
   /** SUPER_ADMIN lockout-recovery: clear another admin's 2FA outright (no code required — gated by the
-   *  SUPER_ADMIN role at the controller, and audited). Idempotent. Does not touch sessions (a locked-out
-   *  admin has no live session anyway). */
+   *  SUPER_ADMIN role at the controller, and audited). Idempotent. Revokes the target's outstanding
+   *  sessions so they re-login after the reset (a locked-out admin may still hold sessions from before
+   *  the lockout). */
   async resetTwoFactorBySuper(targetAdminId: number): Promise<void> {
     const admin = await this.prisma.admin.findUnique({
       where: { id: targetAdminId },
@@ -426,8 +427,8 @@ export class AdminAuthService {
   // ── WebAuthn enrollment + management (self-service; caller is the authenticated admin) ──────────
 
   /** Begin passkey enrollment. Requires the CURRENT password (re-auth) so a hijacked-but-still-valid
-   *  access token cannot enroll an attacker-controlled passkey — the Google/GitHub pattern. Does NOT bump
-   *  tokenVersion (passkeys are an additive optional factor; existing sessions stay valid). */
+   *  access token cannot enroll an attacker-controlled passkey — the Google/GitHub pattern. Passkeys are
+   *  an additive optional factor, so enroll/remove do NOT revoke existing sessions (unlike TOTP-enable). */
   async beginWebAuthnRegistration(
     adminId: number,
     password: string,
@@ -444,15 +445,15 @@ export class AdminAuthService {
     return this.webAuthn.beginRegistration(adminId, admin.user.account, admin.user.name, nickname);
   }
 
-  /** Confirm enrollment: verify the registration response + persist the credential. */
+  /** Confirm enrollment: verify the registration response + persist the credential. A passkey is an
+   *  additive optional factor, so this does NOT revoke existing sessions — enrollment already required
+   *  password re-auth at the begin step, so a session-hijacker cannot enroll their own passkey. */
   async completeWebAuthnRegistration(
     adminId: number,
     pendingToken: string,
     registration: RegistrationResponseJSON,
   ): Promise<{ id: string; nickname: string | null; deviceType: string | null; backed: boolean }> {
-    const result = await this.webAuthn.completeRegistration(adminId, pendingToken, registration);
-    await this.revokeSessionsByAdmin(adminId, 'webauthn_enabled');
-    return result;
+    return this.webAuthn.completeRegistration(adminId, pendingToken, registration);
   }
 
   async listWebAuthnCredentials(adminId: number): Promise<WebAuthnCredentialView[]> {
@@ -463,10 +464,10 @@ export class AdminAuthService {
     await this.webAuthn.renameCredential(adminId, rowId, nickname);
   }
 
+  /** Remove a passkey credential. Additive factor — does NOT revoke existing sessions (mirrors
+   *  enrollment; see completeWebAuthnRegistration). */
   async removeWebAuthnCredential(adminId: number, rowId: bigint): Promise<{ remaining: number }> {
-    const result = await this.webAuthn.removeCredential(adminId, rowId);
-    await this.revokeSessionsByAdmin(adminId, 'webauthn_removed');
-    return result;
+    return this.webAuthn.removeCredential(adminId, rowId);
   }
 
   /** Passkey status for the security card. */
