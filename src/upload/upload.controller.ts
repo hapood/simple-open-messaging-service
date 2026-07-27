@@ -13,8 +13,8 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
@@ -32,6 +32,10 @@ import { QuotaService } from '../quota/quota.service.js';
  * asset's digest and promotes it to a real Message (allocating seq, creating the MediaMessage authz
  * row, deleting the PendingMedia), then runs the unified fan-out. Without the header the route behaves
  * exactly as before (a plain upload). /upload/avatar never carries the header → never promotes.
+ *
+ * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope. Validation /
+ * quota failures throw BusinessException (after persisting a staged failure, via failUpload); the global
+ * AllExceptionsFilter renders the error body.
  */
 @ApiTags('upload')
 @Controller()
@@ -43,19 +47,19 @@ export class UploadController {
     private readonly quota: QuotaService,
   ) {}
 
-  /** Tick the local aggregate daily quota for a media upload; returns an error ApiResult when the budget
-   *  is exhausted (the caller returns it as HTTP 200 + QUOTA_EXCEEDED), else null (proceed). Local uploads
-   *  already enforce per-item size via the /upload pipeline, so this is the COUNT cap only (no byte 413). */
-  private async tickLocal(
-    category: 'images' | 'largeFiles',
-  ): Promise<ApiResult | null> {
+  /** Tick the local aggregate daily quota for a media upload; throws BusinessException(QUOTA_EXCEEDED)
+   *  (after persisting a staged failure) when the budget is exhausted, else returns. Local uploads already
+   *  enforce per-item size via the /upload pipeline, so this is the COUNT cap only (no byte 413). */
+  private async tickLocal(req: FastifyRequest, category: 'images' | 'largeFiles'): Promise<void> {
     const q = await this.quota.tryTickLocal(category);
-    if (!q.exceeded) return null;
-    return {
-      code: BusinessCode.QUOTA_EXCEEDED,
-      message: `daily ${category} quota reached (${q.limit}); resets in ${q.retryAfter}s`,
-      data: { category, limit: q.limit, retryAfter: q.retryAfter },
-    };
+    if (q.exceeded) {
+      await this.failUpload(
+        req,
+        BusinessCode.QUOTA_EXCEEDED,
+        `daily ${category} quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+        { category, limit: q.limit, retryAfter: q.retryAfter },
+      );
+    }
   }
 
   @ApiBearerAuth()
@@ -66,30 +70,18 @@ export class UploadController {
       'Upload an image (returns url + width/height provided by the client)',
   })
   @ApiConsumes('multipart/form-data')
-  async upload(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async upload(@Request() req: FastifyRequest) {
     const img = await this.withStageFailure(req, () =>
       this.uploadService.consumeImage(req),
     );
     if (img.kind === 'rejected') {
-      return this.failUpload(req, {
-        code: BusinessCode.VALIDATION_FAILED,
-        message:
-          img.reason === 'no-file'
-            ? 'no file'
-            : img.reason === 'too-large'
-              ? 'file too large'
-              : 'invalid image',
-      });
+      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.imageRejectMessage(img.reason));
     }
     // Magic-number second check: reject non-genuine images (defends against forged-mimetype malicious uploads).
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      return this.failUpload(req, {
-        code: BusinessCode.VALIDATION_FAILED,
-        message: 'invalid image',
-      });
+      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, 'invalid image');
     }
-    const blocked = await this.tickLocal('images');
-    if (blocked) return this.failUpload(req, blocked);
+    await this.tickLocal(req, 'images');
     const { url, size } = await this.withStageFailure(req, () =>
       this.uploadService.save(img.mimetype, img.buffer),
     );
@@ -98,11 +90,7 @@ export class UploadController {
     await this.withStageFailure(req, () =>
       this.maybePromote(req, { url, w: img.w, h: img.h }),
     );
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { url, w: img.w, h: img.h, size },
-    };
+    return { url, w: img.w, h: img.h, size };
   }
 
   /**
@@ -112,7 +100,8 @@ export class UploadController {
    * as Group.avatar (create/update). User avatars still go through /user/update-avatar (which calls
    * saveAvatars directly); this endpoint is the canonical upload for GROUP avatars so they land in
    * uploads/avatars/ (outside the per-object authz gate's shards/ scope) instead of generic /upload
-   * (which writes to shards/ and would 401 under thread-membership authz).
+   * (which writes to shards/ and would 401 under thread-membership authz). Never carries a client-
+   * message-id → never promotes → validation failures throw directly (no staged-failure persistence).
    */
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -122,30 +111,21 @@ export class UploadController {
       'Upload avatar image (multi-size webp, returns representative url)',
   })
   @ApiConsumes('multipart/form-data')
-  async uploadAvatar(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async uploadAvatar(@Request() req: FastifyRequest) {
     const img = await this.uploadService.consumeImage(req);
     if (img.kind === 'rejected') {
-      return {
-        code: BusinessCode.VALIDATION_FAILED,
-        message:
-          img.reason === 'no-file'
-            ? 'no file'
-            : img.reason === 'too-large'
-              ? 'file too large'
-              : 'invalid image',
-      };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, this.imageRejectMessage(img.reason));
     }
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
     }
-    let avatar: string;
     try {
-      avatar = await this.uploadService.saveAvatars(img.buffer);
+      const avatar = await this.uploadService.saveAvatars(img.buffer);
+      return { avatar };
     } catch {
       // sharp decode failure (corrupt / pixel-bomb / non-image past the magic-byte check) → invalid.
-      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
     }
-    return { code: BusinessCode.OK, message: 'successful', data: { avatar } };
   }
 
   /**
@@ -161,32 +141,21 @@ export class UploadController {
     summary: 'Upload a generic file (returns url/name/size/mimeType)',
   })
   @ApiConsumes('multipart/form-data')
-  async uploadFile(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async uploadFile(@Request() req: FastifyRequest) {
     const f = await this.withStageFailure(req, () =>
       this.uploadService.consumeFile(req),
     );
     if (f.kind === 'rejected') {
-      return this.failUpload(req, {
-        code: BusinessCode.VALIDATION_FAILED,
-        message:
-          f.reason === 'no-file'
-            ? 'no file'
-            : f.reason === 'too-large'
-              ? 'file too large'
-              : f.reason === 'bad-name'
-                ? 'invalid filename'
-                : 'invalid file type',
-      });
+      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.fileRejectMessage(f.reason));
     }
-    const blocked = await this.tickLocal('largeFiles');
-    if (blocked) return this.failUpload(req, blocked);
+    await this.tickLocal(req, 'largeFiles');
     const data = await this.withStageFailure(req, () =>
       this.uploadService.saveFile(f.mimetype, f.filename, f.buffer),
     );
     // Promote a staged FILE send if a client-message-id is present (data is already the {url,name,size,
     // mimeType} FILE content shape; staged meta for a file is empty).
     await this.withStageFailure(req, () => this.maybePromote(req, data));
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return data;
   }
 
   /**
@@ -203,25 +172,21 @@ export class UploadController {
       'Upload a video (magic-byte validated; width/height/duration probed client-side)',
   })
   @ApiConsumes('multipart/form-data')
-  async uploadVideo(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async uploadVideo(@Request() req: FastifyRequest) {
     const v = await this.withStageFailure(req, () =>
       this.uploadService.consumeVideo(req),
     );
     if (v.kind === 'rejected') {
-      return this.failUpload(req, {
-        code: BusinessCode.VALIDATION_FAILED,
-        message: this.mediaRejectMessage(v.reason, 'video'),
-      });
+      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.mediaRejectMessage(v.reason, 'video'));
     }
-    const blocked = await this.tickLocal('largeFiles');
-    if (blocked) return this.failUpload(req, blocked);
+    await this.tickLocal(req, 'largeFiles');
     const data = await this.withStageFailure(req, () =>
       this.uploadService.saveMedia(v.ext, v.mime, v.filename, v.buffer),
     );
     // Promote a staged VIDEO send if a client-message-id is present. data is {url,name,size,mimeType};
     // the staged meta {w,h,duration} is merged in at promote → the full VIDEO content shape.
     await this.withStageFailure(req, () => this.maybePromote(req, data));
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return data;
   }
 
   /** Audio upload: same contract as video with the audio family + cap. */
@@ -232,28 +197,43 @@ export class UploadController {
     summary: 'Upload audio (magic-byte validated; duration probed client-side)',
   })
   @ApiConsumes('multipart/form-data')
-  async uploadAudio(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async uploadAudio(@Request() req: FastifyRequest) {
     const a = await this.withStageFailure(req, () =>
       this.uploadService.consumeAudio(req),
     );
     if (a.kind === 'rejected') {
-      return this.failUpload(req, {
-        code: BusinessCode.VALIDATION_FAILED,
-        message: this.mediaRejectMessage(a.reason, 'audio'),
-      });
+      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.mediaRejectMessage(a.reason, 'audio'));
     }
-    const blocked = await this.tickLocal('largeFiles');
-    if (blocked) return this.failUpload(req, blocked);
+    await this.tickLocal(req, 'largeFiles');
     const data = await this.withStageFailure(req, () =>
       this.uploadService.saveMedia(a.ext, a.mime, a.filename, a.buffer),
     );
     // Promote a staged AUDIO send if a client-message-id is present. data is {url,name,size,mimeType};
     // the staged meta {duration} is merged in at promote → the full AUDIO content shape.
     await this.withStageFailure(req, () => this.maybePromote(req, data));
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return data;
   }
 
-  /** Map a ConsumedMedia rejection reason to a user-facing message. Shared by video + audio. */
+  /** Map a ConsumedMedia image rejection reason to a user-facing message. */
+  private imageRejectMessage(
+    reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
+  ): string {
+    if (reason === 'no-file') return 'no file';
+    if (reason === 'too-large') return 'file too large';
+    return 'invalid image';
+  }
+
+  /** Map a ConsumedMedia file rejection reason to a user-facing message. */
+  private fileRejectMessage(
+    reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
+  ): string {
+    if (reason === 'no-file') return 'no file';
+    if (reason === 'too-large') return 'file too large';
+    if (reason === 'bad-name') return 'invalid filename';
+    return 'invalid file type';
+  }
+
+  /** Map a ConsumedMedia media (video/audio) rejection reason to a user-facing message. */
   private mediaRejectMessage(
     reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
     kind: 'video' | 'audio',
@@ -264,20 +244,19 @@ export class UploadController {
     return `invalid ${kind}`;
   }
 
-  /** Persist a handled upload rejection before returning its normal business-error envelope. */
+  /** Persist a handled upload rejection as a staged failure, then throw it as a BusinessException
+   *  (the global filter renders the error body). Never returns. */
   private async failUpload(
     req: FastifyRequest,
-    result: ApiResult,
-  ): Promise<ApiResult> {
+    code: number,
+    message: string,
+    data?: unknown,
+  ): Promise<never> {
     const clientMessageId = this.clientMessageId(req);
     if (clientMessageId) {
-      await this.messageService.failStaged(
-        req.user.userId,
-        clientMessageId,
-        result.message,
-      );
+      await this.messageService.failStaged(req.user.userId, clientMessageId, message);
     }
-    return result;
+    throw new BusinessException(code, message, HttpStatus.OK, data);
   }
 
   /** Unexpected parser/storage/promote errors still become durable failures, then retain their
