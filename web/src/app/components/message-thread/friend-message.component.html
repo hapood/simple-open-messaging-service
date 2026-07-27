@@ -114,6 +114,27 @@
          search — preserving date context while jumping between matches. -->
     <app-sticky-date-overlay [label]="stickyDate()" />
 
+    <div class="msg-latest-layer">
+      @if (!atBottom()) {
+        <button
+          type="button"
+          class="msg-latest"
+          (click)="scrollToLatest()"
+          [attr.aria-label]="newMessageCount() > 0
+            ? ('chat.newMessagesAria' | transloco: { count: newMessageCount() })
+            : ('chat.scrollToLatestAria' | transloco)"
+        >
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">
+            <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          @if (newMessageCount() > 0) {
+            <span class="msg-latest-count" aria-hidden="true">{{ newMessageLabel() }}</span>
+          }
+        </button>
+      }
+    </div>
+
     @if (blockedPeer()) {
       <div class="msg-blocked-banner" (click)="unblockPeer()">
         {{ 'chat.blockedBanner' | transloco }}

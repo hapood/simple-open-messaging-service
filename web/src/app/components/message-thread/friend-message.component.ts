@@ -65,6 +65,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import { displayThreadName, type ConversationItem, type StandardResponse } from '../../services/model';
+import { isMessageViewportAtBottom } from './message-scroll-state';
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -142,6 +143,13 @@ export class MessageThreadComponent implements OnDestroy {
   private kernelReady = false;
 
   readonly atBottom = signal(true);
+  /** Incoming message signals received while the user is reading history. Cleared only after the viewport
+   *  reaches the visible newest zone, not merely the kernel's much wider newer-prefetch threshold. */
+  readonly newMessageCount = signal(0);
+  readonly newMessageLabel = computed(() => {
+    const count = this.newMessageCount();
+    return count > 99 ? '99+' : String(count);
+  });
   readonly stickyDate = signal<string | null>(null);
   /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Internal load
    *  flag — NOT bound in the template; it arms/cancels the skeleton-reveal timer below. */
@@ -248,6 +256,7 @@ export class MessageThreadComponent implements OnDestroy {
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
       {
         onSignal: (seq: number) => {
+          if (!this.atBottom()) this.newMessageCount.update((count) => count + 1);
           // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
           // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
           // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
@@ -331,7 +340,9 @@ export class MessageThreadComponent implements OnDestroy {
       for (const item of queue) this.insertMsg(this.tailAnchorId(), item);
     }
     this.sweepPendingFiles();
-    this.atBottom.set(info.atBottom);
+    const atVisibleBottom = isMessageViewportAtBottom(info);
+    this.atBottom.set(atVisibleBottom);
+    if (atVisibleBottom) this.newMessageCount.set(0);
     this.threadEmpty.set(info.mounted === 0);
     this.updateStickyDate();
     this.probe.schedule(this.threadId() ?? 0);
@@ -370,6 +381,10 @@ export class MessageThreadComponent implements OnDestroy {
     if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement))
       return;
     this.updateStickyDate();
+  }
+
+  scrollToLatest(): void {
+    this.scroller?.scrollToBottom();
   }
 
   // ---------- ChatInputComponent intent → optimistic dispatch ----------
@@ -895,6 +910,8 @@ export class MessageThreadComponent implements OnDestroy {
     clearTimeout(this.skeletonTimer);
     this.probe.destroy();
     this.threadEmpty.set(false);
+    this.atBottom.set(true);
+    this.newMessageCount.set(0);
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;

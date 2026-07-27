@@ -100,6 +100,71 @@ app-chat-input {
   flex: 0 0 auto;
 }
 
+.msg-latest-layer {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 0;
+  height: 0;
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transition: transform 60ms linear;
+}
+
+.msg-latest {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  min-width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 11px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-surface-elevated);
+  color: var(--app-text-muted);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+  animation: msg-latest-enter 160ms ease-out;
+  &:hover {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+  &:active { transform: scale(0.96); }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 2px;
+  }
+}
+
+.msg-latest-count {
+  min-width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-brand);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes msg-latest-enter {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-latest { animation: none; }
+}
+
 // Top sentinel: retained for kernel-A routing / playground reuse. This component
 // does not pass onLoadMore, so the sentinel is a harmless placeholder.
 .msg-sentinel {

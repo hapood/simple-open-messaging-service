@@ -313,6 +313,8 @@
     "sendAria": "发送",
     "callAria": "发起语音通话",
     "backUnreadAria": "返回会话列表，其他会话有 {{count}} 条未读消息",
+    "scrollToLatestAria": "回到最新消息",
+    "newMessagesAria": "回到 {{count}} 条新消息",
     "emojiAria": "表情",
     "attachAria": "附件",
     "recordVoiceAria": "录制语音消息",
