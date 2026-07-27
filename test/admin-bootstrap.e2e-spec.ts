@@ -10,6 +10,7 @@ import { PrismaClient } from '../src/prisma/generated/client.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { AdminRole } from '../src/prisma/generated/client.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
+import { BusinessCode } from '../src/common/business-code';
 
 /**
  * AdminBootstrapService e2e — boots the REAL AppModule against a real Postgres and asserts the
@@ -74,7 +75,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
         .post('/api/v1/admin/login')
         .send({ account: 'admin', password: BOOT_PWD });
       expect(login.status).toBe(200);
-      expect(login.body.code).toBe(0);
+      expect(login.body.code).toBe(BusinessCode.OK);
       // The session is delivered via the httpOnly admin_session cookie, not a response-body token.
       expect(login.body.data?.authenticated).toBe(true);
       expect(String(login.headers['set-cookie'])).toContain(ADMIN_SESSION_COOKIE);
@@ -95,7 +96,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       const login = await request(app.getHttpServer())
         .post('/api/v1/admin/login')
         .send({ account: 'admin', password: 'anything' });
-      expect(login.body.code).not.toBe(0); // INVALID_CREDENTIALS — no admin row to verify against
+      expect(login.body.code).not.toBe(BusinessCode.OK); // INVALID_CREDENTIALS — no admin row to verify against
     } finally {
       await app.close();
     }
