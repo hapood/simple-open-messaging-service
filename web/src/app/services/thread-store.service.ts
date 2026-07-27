@@ -800,10 +800,17 @@ export class ThreadRepository {
       if (res.code === 0) {
         // One hydrated response — ADD entries carry the item inline, DELETE entries carry the threadId only.
         // The server planned (last-op-wins) + hydrated; the client just applies (no second round-trip).
+        // A cold-start full replay (cursor === 0 — the only path that pulls `(0, rev]`) is bulk HYDRATION, not a
+        // per-thread highlight: the revision is just the watermark here, and force-topping each ADD would jam the
+        // last one to index 0 + arm a FLIP storm on every reload. markTopOnNextUpdate (→ force-top + FLIP) runs
+        // only on an incremental ADD (cursor > 0), where the ADD genuinely means a new conversation entered the
+        // list. (If threadRevCursor is ever persisted across boots, move this gate to an explicit boot flag —
+        // reload would then carry cursor > 0 too.)
+        const bulkHydrate = cursor === 0;
         for (const op of res.data ?? []) {
           if (op.direction === 'DELETE') this.removeThread(op.threadId);
           else {
-            this.markTopOnNextUpdate(op.threadId); // precise FLIP per delta ADD
+            if (!bulkHydrate) this.markTopOnNextUpdate(op.threadId); // FLIP only on an incremental ADD
             this.upsertThread(op.item);
           }
         }

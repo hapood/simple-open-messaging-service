@@ -43,9 +43,10 @@ export type ConversationItem = Omit<
   group: S['GroupResponseDto']
   // Latest-message preview state — sourced from the missed-summary pull (the snapshot carries unread +
   // lastMessageAt only; the body/preview is pulled). Populated by ThreadRepository.pullMissed (on boot +
-  // reconnect); a live identity-only NEW_MESSAGE bumps unread + reorders but does NOT refresh the preview
-  // (the body isn't in the signal) — it catches up on the next pull. lastMessageSenderId drives the
-  // "You:" prefix for the sender's own messages; the bare preview otherwise.
+  // reconnect); a live identity-only NEW_MESSAGE reorders (advances lastMessageAt) but does NOT bump unread
+  // nor refresh the preview (unreadCount is server-authoritative + the body isn't in the signal) — both catch
+  // up on the next missed-summary pull. lastMessageSenderId drives the "You:" prefix for the sender's own
+  // messages; the bare preview otherwise.
   lastMessagePreview?: string | null
   lastMessageSenderId?: number | null
   // The newest message's per-thread seq (the denormalized thread.lastMessageSeq). Carried so opening a

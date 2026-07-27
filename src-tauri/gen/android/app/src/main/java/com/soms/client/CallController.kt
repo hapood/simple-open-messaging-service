@@ -868,7 +868,15 @@ object CallController {
         video.tearDown()
         connection?.dispose()
         appContext?.stopService(Intent(appContext, CallService::class.java))
-        if (phase != "ended") phase = "idle"
+        // Unconditionally return to idle: teardown is the "no live call remains" transition, so the singleton
+        // must be coherent for the next snapshotJson() read AND the busy-line guard in seedIncoming
+        // (phase != "idle"). Every end path sets phase = "ended" then pushSnapshot() BEFORE calling teardown,
+        // so the earlier `if (phase != "ended")` guard was structurally dead — and leaving phase at "ended"
+        // leaked two ways: (1) a WebView reload seeds callState from snapshotJson → a stale "ended" re-opened
+        // the call overlay with no terminal event ever to close it (stuck on the call screen); (2) the next
+        // incoming FCM push hit seedIncoming's `phase != "idle"` and was wrongly rejected as busy. The user
+        // still sees the "ended" transition via the pre-teardown push; this reset only flips the FSM field.
+        phase = "idle"
         callSid = null
         threadId = 0
         peerUserId = 0

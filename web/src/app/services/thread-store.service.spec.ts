@@ -241,6 +241,49 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(advanceCursorSpy).toHaveBeenCalledWith(5);
   });
 
+  // ── FLIP gate: bulk hydration (cursor 0) vs incremental ADD (cursor > 0) ──────────────────────
+  // A cold-start full replay (cursor === 0) is bulk HYDRATION, not a per-thread highlight — markTopOnNextUpdate
+  // must NOT fire, so no FLIP is armed + the order follows byPinRank (the last ADD is not force-topped to 0).
+
+  // Regression guard for the reload FLIP-storm: the IDB cache already holds the threads (paint-from-cache ran
+  // pre-HELLO), then HELLO replays the SAME threads (cursor undefined → seed 0 → full (0,rev]). Every ADD is
+  // an existing thread → no force-top, no FLIP; the last ADD (a rank-LOSER here) must NOT be jammed to index 0.
+  it('cold-start bulk replay (cursor 0) arms NO FLIP — topInserted stays null, order stays byPinRank', async () => {
+    sessionUserId.set(1); // activate the session first so HELLO's establishSession is a no-op (no list reset)
+    await populate([p2p(1, 11, { lastMessageAt: 100 }), p2p(2, 22, { lastMessageAt: 200 })]);
+    expect(repo.topInserted()).toBeNull(); // cache-paint never arms a FLIP
+
+    // The delta's LAST ADD is the rank-loser (lastMessageAt 100) — a force-top bug would jam it to index 0.
+    queryThreadDeltaSpy.and.returnValue(of({
+      code: 0,
+      data: [addOp(p2p(2, 22, { lastMessageAt: 200 })), addOp(p2p(1, 11, { lastMessageAt: 100 }))],
+    }));
+    emitHello({ userId: 1, threadRevision: 5 });
+    await flush(20);
+
+    expect(repo.topInserted()).toBeNull(); // ← the gate: bulk replay arms no FLIP
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]); // byPinRank (200 > 100), not last-ADD-jammed
+    expect(cursorSignal()).toBe(5);
+  });
+
+  // The positive counterpart: an incremental ADD (cursor > 0) genuinely means a new conversation entered the
+  // list → markTopOnNextUpdate DOES fire → the thread is force-topped + flagged for FLIP, even when its
+  // lastMessageAt is older than an existing thread's.
+  it('an incremental ADD (cursor > 0) arms a FLIP — topInserted is the added thread, force-topped', async () => {
+    await populateViaDelta([p2p(1, 11, { lastMessageAt: 100 })], 5); // cursor → 5 (bulk, no FLIP)
+    expect(repo.topInserted()).toBeNull();
+
+    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [addOp(p2p(2, 22, { lastMessageAt: 50 }))] }));
+    eventSubject.next({ event: 'THREAD_REVISION_UPDATED', data: { threadRevision: 6 } });
+    await flush(20);
+
+    expect(repo.topInserted()).toBe(2); // ← the added thread is flagged for FLIP
+    // Force-topped to index 0 even though its lastMessageAt (50) < thread 1's (100).
+    expect(repo.items().map((t) => t.threadId)).toEqual([2, 1]);
+    repo.clearTopInserted();
+    expect(repo.topInserted()).toBeNull(); // the component clears the pulse after animating
+  });
+
   it('HELLO without a latestMessage does not trigger a missed-summary walk', async () => {
     const missed = TestBed.inject(MissedSyncService) as unknown as { fetchMissedSummary: jasmine.Spy };
     queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
