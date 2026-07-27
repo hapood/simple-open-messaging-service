@@ -338,3 +338,11 @@ Documentation lives under `docs/` in three buckets.
 - [backend-review-followups.md](docs/roadmap/backend-review-followups.md) — Backend review P1–P3 follow-ups
 
 > `docs/requests.http` is a VS Code REST Client scratch script for the business-code regression.
+
+## License
+
+This project is released under the [MIT License](LICENSE).
+
+Copyright (c) 2026 [hapood](https://github.com/hapood).
+Third-party software and asset notices are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

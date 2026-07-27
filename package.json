@@ -5,7 +5,7 @@
   "author": "",
   "private": true,
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "build": "nest build",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
