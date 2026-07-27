@@ -29,7 +29,7 @@ import { SseService } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { planThreadDelta } from '../thread-revision/thread-delta.js';
 import { Public } from '../common/public.decorator.js';
-import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
@@ -85,11 +85,10 @@ export class UserController {
   @Post('user/my-profile')
   @ApiOperation({ summary: 'Get the current user profile' })
   @ApiResultResponse(UserResponseDto)
-  async getMyProfile(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async getMyProfile(@Request() req: FastifyRequest) {
     // findSelfProfile omits hashPwd. The friend-request badge is no longer a self-profile field — it is
     // derived client-side from the HELLO/push-carried `friendReqRev` vs friendReqAckRev (server-state).
-    const data = await this.userService.findSelfProfile(req.user.userId);
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return this.userService.findSelfProfile(req.user.userId);
   }
 
   @ApiBearerAuth()
@@ -100,22 +99,21 @@ export class UserController {
       'Update the current user avatar (multipart file; sharp rewrites to 32/64/128/256/512 multi-size webp)',
   })
   @ApiConsumes('multipart/form-data')
-  async updateAvatar(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async updateAvatar(@Request() req: FastifyRequest) {
     const img = await this.uploadService.consumeImage(req);
     if (img.kind === 'rejected') {
-      return {
-        code: BusinessCode.VALIDATION_FAILED,
-        message:
-          img.reason === 'no-file'
-            ? 'no file'
-            : img.reason === 'too-large'
-              ? 'file too large'
-              : 'invalid image',
-      };
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        img.reason === 'no-file'
+          ? 'no file'
+          : img.reason === 'too-large'
+            ? 'file too large'
+            : 'invalid image',
+      );
     }
     // Magic-number check first: quickly reject non-images with a forged mimetype (sharp re-validates in saveAvatars).
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
     }
     // Write new multi-size avatar → update DB. The previous avatar files are intentionally LEFT on
     // disk: gcOrphanedAvatars reaps them once they are no longer any User/Group's current avatar, so
@@ -125,7 +123,7 @@ export class UserController {
       url = await this.uploadService.saveAvatars(img.buffer);
     } catch {
       // sharp decode failure (corrupt / pixel-bomb / non-image) → always rejected as invalid image; nothing written to disk or DB.
-      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
     }
     const updated = await this.userService.updateAvatar(req.user.userId, url);
     // Fan the fresh avatar to every P2P friend so their conversation list (and open chat header)
@@ -134,11 +132,7 @@ export class UserController {
     // Self-profile-rev push so the editor's OTHER tabs/devices learn their own profile changed and re-
     // fetch (multi-device self refresh); the native HELLO cache also merges it for a fresh webview replay.
     void this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: updated.profileRev });
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { avatar: url },
-    };
+    return { avatar: url };
   }
 
   @ApiBearerAuth()
@@ -146,17 +140,14 @@ export class UserController {
   @Post('user/update-profile')
   @ApiOperation({ summary: 'Update the current user display name / bio (account is immutable)' })
   @ApiResultResponse(UserResponseDto)
-  async updateProfile(
-    @Request() req: FastifyRequest,
-    @Body() dto: UpdateProfileDto,
-  ): Promise<ApiResult> {
+  async updateProfile(@Request() req: FastifyRequest, @Body() dto: UpdateProfileDto) {
     const data = await this.userService.updateProfile(req.user.userId, dto);
     // Fan the fresh profile to every P2P friend so their conversation list (and open chat header)
     // refreshes in real time. Fire-and-forget — never blocks the edit response.
     void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     // Self-profile-rev push (multi-device self refresh + native HELLO-cache merge). See updateAvatar.
     void this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: data.profileRev });
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return data;
   }
 
   /**
@@ -287,7 +278,7 @@ export class UserController {
     summary:
       'Fetch the thread-list delta (from excl, to incl): ADD ops returned hydrated (peer/group/unread), DELETE ops id-only',
   })
-  async queryThreadDelta(@Request() req: FastifyRequest, @Body() dto: ThreadDeltaDto): Promise<ApiResult> {
+  async queryThreadDelta(@Request() req: FastifyRequest, @Body() dto: ThreadDeltaDto) {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
@@ -306,25 +297,20 @@ export class UserController {
       // /user/thread-info; its inferred return carries `unknown` peer/group, so assert the contract here.
       adds = (await this.hydrateConversationItems(me, rows)) as ConversationItemDto[];
     }
-    const data: HydratedThreadDeltaOp[] = [
+    return [
       ...adds.map((item) => ({ threadId: item.threadId, direction: 'ADD' as const, item })),
       ...removeIds.map((threadId) => ({ threadId, direction: 'DELETE' as const })),
-    ];
-    // The global SerializeInterceptor converts Date→ms + BigInt→string; no explicit serializeBody needed.
-    return { code: BusinessCode.OK, message: 'successful', data };
+    ] satisfies HydratedThreadDeltaOp[];
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/delete-friend')
   @ApiOperation({ summary: 'Unfriend — end a P2P conversation (mutual)' })
-  async deleteFriend(
-    @Request() req: FastifyRequest,
-    @Body() dto: UserIdDto,
-  ): Promise<ApiResult> {
+  async deleteFriend(@Request() req: FastifyRequest, @Body() dto: UserIdDto) {
     const me = req.user.userId;
     if (me === dto.userId) {
-      return { code: BusinessCode.FRIEND_SELF, message: 'can not unfriend self' };
+      throw new BusinessException(BusinessCode.FRIEND_SELF, 'can not unfriend self');
     }
     const peer = await this.userService.findUniqueUser({ id: dto.userId });
     // A friend relationship == an active P2P thread shared by both. No thread → nothing to end
@@ -332,7 +318,7 @@ export class UserController {
     // generic THREAD_NOT_FOUND the read paths use for a missing conversation).
     const threadId = await this.participantService.findP2PThreadBetween(me, dto.userId);
     if (threadId === null) {
-      return { code: BusinessCode.FRIEND_NOT_FOUND, message: `not friends with [${dto.userId}]` };
+      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, `not friends with [${dto.userId}]`);
     }
     // Soft-leave BOTH participants in one shot. The thread row + participants stay (history), but the
     // edge is severed (findP2PThreadBetween now returns null); re-friending later mints a fresh thread.
@@ -345,7 +331,7 @@ export class UserController {
     if (!peer?.isForeigner) {
       await this.threadRevisionService.recordThreadDelete(dto.userId, threadId);
     }
-    return { code: BusinessCode.OK, message: 'friend removed' };
+    return envelope(undefined, { message: 'friend removed' });
   }
 
   @ApiBearerAuth()
@@ -355,9 +341,9 @@ export class UserController {
     summary:
       'Block / unblock a user (P2P). Independent of friendship; the message path drops delivery + hides their messages.',
   })
-  async setBlock(@Request() req: FastifyRequest, @Body() dto: BlockDto): Promise<ApiResult> {
+  async setBlock(@Request() req: FastifyRequest, @Body() dto: BlockDto) {
     if (req.user.userId === dto.userId) {
-      return { code: BusinessCode.FRIEND_SELF, message: 'can not block self' };
+      throw new BusinessException(BusinessCode.FRIEND_SELF, 'can not block self');
     }
     if (dto.block) {
       await this.userBlockService.block(req.user.userId, dto.userId);
@@ -366,10 +352,9 @@ export class UserController {
     }
     // No peer SSE: a block never reveals itself to the blocked user. The blocker's own other devices
     // will refetch the thread view to show the blocked banner; no live frame is needed for correctness.
-    return {
-      code: BusinessCode.OK,
+    return envelope(undefined, {
       message: dto.block ? 'user blocked' : 'user unblocked',
-    };
+    });
   }
 
   @ApiBearerAuth()
@@ -377,11 +362,10 @@ export class UserController {
   @Post('user/query')
   @ApiOperation({ summary: 'Look up users by userId in batch (≤100)' })
   @ApiResultResponse(UserResponseDto, true)
-  async queryUserBase(@Body() dto: QueryUsersDto): Promise<ApiResult> {
-    const list = await this.userService.queryUsers({
+  async queryUserBase(@Body() dto: QueryUsersDto) {
+    return this.userService.queryUsers({
       where: { id: { in: dto.userIds }, isDeleted: false },
     });
-    return { code: BusinessCode.OK, message: 'successful', data: list };
   }
 
   @ApiBearerAuth()
@@ -391,14 +375,14 @@ export class UserController {
     summary:
       'Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated address search.',
   })
-  async peerTrustStatus(@Body() dto: PeerTrustStatusDto): Promise<ApiResult> {
+  async peerTrustStatus(@Body() dto: PeerTrustStatusDto) {
     // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
     // resolve will run the init handshake (untrusted → first contact → banner) or resolve fast
     // (trusted → no banner). A known server-side fact, not a latency guess: the rare
     // already-trusted-but-failing case (peer reset / broken key → re-handshake) surfaces as an error
     // from the resolve itself, not here.
     const trusted = await this.federationService.isPeerTrusted(dto.domain);
-    return { code: BusinessCode.OK, message: 'successful', data: { trusted } };
+    return { trusted };
   }
 
   @ApiBearerAuth()
@@ -406,7 +390,7 @@ export class UserController {
   @Post('user/resolve')
   @ApiOperation({ summary: 'Resolve a user by {account, domain} (local lookup, or federated via S2S)' })
   @ApiResultResponse(UserResponseDto)
-  async resolveUser(@Body() dto: UserResolveDto): Promise<ApiResult> {
+  async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
     const { domain } = dto;
     // Federated (account + a peer domain != ours) → establish mutual trust (init handshake, if not
@@ -422,27 +406,29 @@ export class UserController {
       } catch (e) {
         if (e instanceof BusinessException && e.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED) {
           // Admin intent — distinct from an unreachable peer so the client can show "blocked by admin".
-          return { code: BusinessCode.FEDERATION_PEER_BLOCKED, message: `${domain} is blocked by an admin` };
+          throw new BusinessException(
+            BusinessCode.FEDERATION_PEER_BLOCKED,
+            `${domain} is blocked by an admin`,
+          );
         }
-        return {
-          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-          message: `could not establish trust with ${domain}: ${(e as Error).message}`,
-        };
+        throw new BusinessException(
+          BusinessCode.FEDERATION_DELIVERY_FAILED,
+          `could not establish trust with ${domain}: ${(e as Error).message}`,
+        );
       }
       let profile: S2SProfile;
       try {
         profile = await this.federationService.fetchRemoteUser({ account, domain });
       } catch (e) {
-        return {
-          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-          message: `could not reach ${domain}: ${(e as Error).message}`,
-        };
+        throw new BusinessException(
+          BusinessCode.FEDERATION_DELIVERY_FAILED,
+          `could not reach ${domain}: ${(e as Error).message}`,
+        );
       }
       const foreignId = await this.federationService.ensureForeignUser(account, domain);
       await this.federationService.localizeForeignProfile(foreignId, profile);
       // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
-      const data = await this.userService.findUniqueUser({ id: foreignId });
-      return { code: BusinessCode.OK, message: 'successful', data };
+      return this.userService.findUniqueUser({ id: foreignId });
     }
     // Local: no domain, or a domain equal to ours → look up by account.
     const user = await this.userService.findUniqueUser({
@@ -451,14 +437,11 @@ export class UserController {
     });
     if (user !== null) {
       if (user.isGroup) {
-        return { code: BusinessCode.FRIEND_INVALID_TARGET, message: 'cannot add a group as a friend' };
+        throw new BusinessException(BusinessCode.FRIEND_INVALID_TARGET, 'cannot add a group as a friend');
       }
-      return { code: BusinessCode.OK, message: 'successful', data: user };
+      return user;
     }
-    return {
-      code: BusinessCode.NOT_FOUND,
-      message: `can not find user [${account}]`,
-    };
+    throw new BusinessException(BusinessCode.NOT_FOUND, `can not find user [${account}]`);
   }
 
   @ApiBearerAuth()
@@ -467,17 +450,13 @@ export class UserController {
   @ApiOperation({
     summary: 'Fuzzy local user discovery by account OR display name (local users only)',
   })
-  async searchUsers(@Body() dto: UserSearchDto): Promise<ApiResult> {
+  async searchUsers(@Body() dto: UserSearchDto) {
     // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
     // take cap here (a client must never page through the whole user table). Federated users are not
     // discoverable: resolve those by exact account + domain via /user/resolve. Only local,
     // non-deleted accounts are returned.
     const take = Math.min(dto.take ?? 20, 20);
-    const data = await this.userService.searchUsers(dto.q.trim(), {
-      skip: dto.skip ?? 0,
-      take,
-    });
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return this.userService.searchUsers(dto.q.trim(), { skip: dto.skip ?? 0, take });
   }
 
   @ApiBearerAuth()
@@ -488,7 +467,7 @@ export class UserController {
       'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. ACK-only — returns no payload; pass sinceProfileRev so a stale local peer is pushed a PEER_PROFILE_UPDATED signal to pull.',
   })
   @ApiResultResponse(UserResponseDto)
-  async syncPeerProfile(@Request() req: FastifyRequest, @Body() dto: SyncPeerProfileDto): Promise<ApiResult> {
+  async syncPeerProfile(@Request() req: FastifyRequest, @Body() dto: SyncPeerProfileDto): Promise<void> {
     // Chat-open / profile-panel-open staleness hook. Federated: probe the peer's /revision; if newer than
     // the stub's remoteProfileRev, re-pull + re-localize avatar/name/bio (no-op for local users). Runs
     // ASYNC — the response returns immediately; a re-localized stub fans a PEER_PROFILE_UPDATED signal on
@@ -504,7 +483,6 @@ export class UserController {
       this.sseService.onPeerProfileUpdated(req.user.userId, { userId: dto.userId });
     }
     // ACK-only — no profile payload. The client pulls on receipt of the signal.
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @ApiBearerAuth()
@@ -512,10 +490,7 @@ export class UserController {
   @Post('/user/thread-info')
   @ApiOperation({ summary: 'Get conversation details (includes peer user/group)' })
   @ApiResultResponse(ConversationItemDto)
-  async queryUserThreadInfo(
-    @Request() req: FastifyRequest,
-    @Body() dto: ThreadIdDto,
-  ): Promise<ApiResult> {
+  async queryUserThreadInfo(@Request() req: FastifyRequest, @Body() dto: ThreadIdDto) {
     const me = req.user.userId;
     const [p] = await this.participantService.queryParticipants({
       where: { userId: me, threadId: dto.threadId, leftAt: null },
@@ -526,13 +501,10 @@ export class UserController {
       // Non-membership / no-such-thread collapse to THREAD_NOT_FOUND — the same code the message
       // routes return via ThreadAccessGuard, so a client gets one consistent "no conversation"
       // signal across thread-info / send / query / mark-read.
-      return {
-        code: BusinessCode.THREAD_NOT_FOUND,
-        message: `no thread [${dto.threadId}]`,
-      };
+      throw new BusinessException(BusinessCode.THREAD_NOT_FOUND, `no thread [${dto.threadId}]`);
     }
     const [data] = await this.hydrateConversationItems(me, [p]);
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return data;
   }
 
   @Public()
@@ -540,7 +512,7 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/register')
   @ApiOperation({ summary: 'Register a new user' })
-  async registerLocal(@Body() dto: RegisterDto): Promise<ApiResult> {
+  async registerLocal(@Body() dto: RegisterDto) {
     // Self-registration gate: when the site is in admin-provisioned mode (registrationOpen=false) the
     // register endpoint refuses up front — accounts come from POST admin/users/create instead. The
     // registration logic below is untouched; only this switch is added.
@@ -556,16 +528,8 @@ export class UserController {
       hashPwd: await this.authService.hashPassword(dto.password),
     });
     if (res.status === 2) {
-      return {
-        code: BusinessCode.ALREADY_EXISTS,
-        message: `User ${dto.account} already exists`,
-      };
-    } else {
-      return {
-        code: BusinessCode.OK,
-        message: 'successfuly registered',
-        data: res.data,
-      };
+      throw new BusinessException(BusinessCode.ALREADY_EXISTS, `User ${dto.account} already exists`);
     }
+    return envelope(res.data, { message: 'successfuly registered' });
   }
 }
