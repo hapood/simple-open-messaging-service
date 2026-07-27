@@ -111,7 +111,10 @@ app-chat-input {
 
 .msg-latest {
   position: absolute;
-  right: 16px;
+  // Track the composer's centered 800px content rail on wide panes; collapse to the normal
+  // 16px edge inset when the pane is narrower. This keeps the floating action visually tied
+  // to the input instead of drifting to the far edge of a desktop chat pane.
+  right: max(16px, calc((100% - 800px) / 2 + 16px));
   bottom: 14px;
   min-width: 44px;
   height: 44px;
