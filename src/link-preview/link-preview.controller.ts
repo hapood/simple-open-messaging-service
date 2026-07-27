@@ -14,8 +14,7 @@ import {
 } from '@nestjs/swagger';
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { ApiResult, ApiResultResponse } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
+import { ApiResultResponse } from '../common/api-result.js';
 import type { LinkContent } from '../upload/file-content.js';
 import { LinkPreviewService } from './link-preview.service.js';
 
@@ -63,13 +62,12 @@ export class LinkPreviewController {
   @ApiResultResponse(LinkCardDto)
   async preview(
     @Body() dto: LinkPreviewDto,
-  ): Promise<ApiResult<LinkContent>> {
+  ): Promise<LinkContent> {
     const card = await this.linkPreview.buildCardContent(dto.url);
     // buildCardContent stores the image as a digest (DB form); the composer renders from THIS response,
     // so inline it as base64 (the wire form) — the same enrichment the query/serve paths apply.
-    const wire = JSON.parse(
+    return JSON.parse(
       await this.linkPreview.enrichForWire('LINK', JSON.stringify(card)),
     ) as LinkContent;
-    return { code: BusinessCode.OK, message: 'successful', data: wire };
   }
 }

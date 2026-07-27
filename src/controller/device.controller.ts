@@ -12,8 +12,6 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
 import { PushService } from '../push/push.service.js';
 
@@ -41,16 +39,14 @@ export class DeviceController {
   async register(
     @Request() req: FastifyRequest,
     @Body() dto: RegisterDeviceDto,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     await this.pushService.registerToken(req.user.userId, dto);
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @HttpCode(HttpStatus.OK)
   @Delete('devices/register/:token')
   @ApiOperation({ summary: 'Unregister an FCM push token (called on logout)' })
-  async unregister(@Request() req: FastifyRequest, @Param('token') token: string): Promise<ApiResult> {
+  async unregister(@Request() req: FastifyRequest, @Param('token') token: string): Promise<void> {
     await this.pushService.unregisterToken(req.user.userId, token);
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 }

@@ -15,8 +15,6 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { OtpLoginService } from '../auth/otp-login.service.js';
 import { setSessionCookies } from '../auth/media-token.js';
 import { Public } from '../common/public.decorator.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { OtpLoginDto } from '../dto/auth.dto.js';
 
 /**
@@ -43,7 +41,7 @@ export class AuthOtpController {
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<ApiResult> {
+  ) {
     // verifyAndLogin throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on failure → the
     // global filter renders it as HTTP 200 + business code (consistent with the rest of the auth surface).
     const { token, mustChangePassword } = await this.otpLoginService.verifyAndLogin(dto.account, dto.code, {
@@ -53,10 +51,6 @@ export class AuthOtpController {
       client: dto.client,
     });
     setSessionCookies(reply, token, true);
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { session_token: token, ...(mustChangePassword ? { mustChangePassword: true } : {}) },
-    };
+    return { session_token: token, ...(mustChangePassword ? { mustChangePassword: true } : {}) };
   }
 }
