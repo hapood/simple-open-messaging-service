@@ -27,8 +27,8 @@ import {
   type SessionClient,
 } from '../auth/session-token.service.js';
 import { LoginAuthInfo } from '../auth/local.strategy.js';
-import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { Public, MustChangePasswordEscapeHatch } from '../common/public.decorator.js';
 import {
   LoginDto,
@@ -68,7 +68,7 @@ export class AuthController {
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<ApiResult> {
+  ) {
     const authInfo = req.user;
     if (authInfo.status === 0) {
       // status 0 (success) implies userId is set — see LocalStrategy.validate. Issue the single
@@ -85,31 +85,31 @@ export class AuthController {
         { device: body.device, userAgent, ip, persistent, trusted },
       );
       setSessionCookies(reply, session_token, persistent);
+      // mustChangePassword flags an admin-generated INITIAL password the user must change before the
+      // app is usable — the client forces the set-password screen.
       return {
-        code: BusinessCode.OK,
-        message: 'successful',
-        data: {
-          session_token,
-          // mustChangePassword flags an admin-generated INITIAL password the user must change before the
-          // app is usable — the client forces the set-password screen.
-          ...(authInfo.mustChangePassword ? { mustChangePassword: true } : {}),
-        },
+        session_token,
+        ...(authInfo.mustChangePassword ? { mustChangePassword: true } : {}),
       };
-    } else if (authInfo.status === 2) {
-      // PASSWORD_NOT_SET: the account has no password (OTP/QR-only). The client shows "contact the
-      // administrator to set the initial password".
-      return { code: BusinessCode.PASSWORD_NOT_SET, message: 'password not set' };
-    } else {
-      if (authInfo.bannedUntil !== undefined) {
-        return {
-          code: BusinessCode.RATE_LIMITED,
-          message: 'too many bad attempts',
-          data: { bannedUntil: authInfo.bannedUntil },
-        };
-      } else {
-        return { code: BusinessCode.INVALID_CREDENTIALS, message: 'invalid credentials' };
-      }
     }
+    if (authInfo.status === 2) {
+      // PASSWORD_NOT_SET: the account has no password (OTP/QR-only). The client shows "contact the
+      // administrator to set the initial password". Thrown → AllExceptionsFilter renders HTTP 200 + code.
+      throw new BusinessException(BusinessCode.PASSWORD_NOT_SET, 'password not set');
+    }
+    // status 1: invalid credentials, or banned mid-window. Both are HTTP 200 + business code (the client
+    // branches on `code` in its success callback); the global AllExceptionsFilter renders the body.
+    if (authInfo.bannedUntil !== undefined) {
+      // bannedUntil is a ms-timestamp number (BruteForceService), so throwing it serializes identically to
+      // the prior returned envelope — no Date→ISO shift (the filter bypasses serializeBody).
+      throw new BusinessException(
+        BusinessCode.RATE_LIMITED,
+        'too many bad attempts',
+        HttpStatus.OK,
+        { bannedUntil: authInfo.bannedUntil },
+      );
+    }
+    throw new BusinessException(BusinessCode.INVALID_CREDENTIALS, 'invalid credentials');
   }
 
   @Public()
@@ -121,7 +121,7 @@ export class AuthController {
     @Request() req: FastifyRequest,
     @Body() dto: LogoutDto,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     // @Public (callable even with a dead/expired credential, so logout always clears the cookie).
     // Identify the session from the body, the cookie, OR the Bearer header — in priority order. The Bearer
     // path is what native clients (the Tauri shell's `api_request` IPC injects it from its held token) now
@@ -136,7 +136,6 @@ export class AuthController {
       await this.sessionTokens.revoke(token);
     }
     clearSessionCookies(reply);
-    return { code: BusinessCode.OK, message: 'success' };
   }
 
   @ApiBearerAuth()
@@ -147,10 +146,9 @@ export class AuthController {
   async logoutAll(
     @Request() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     await this.authService.invalidateAllSessions(req.user.userId, 'all_devices');
     clearSessionCookies(reply);
-    return { code: BusinessCode.OK, message: 'success' };
   }
 
   @ApiBearerAuth()
@@ -162,19 +160,19 @@ export class AuthController {
     @Request() req: FastifyRequest,
     @Body() dto: ChangePasswordDto,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     const r = await this.authService.changePassword(
       req.user.userId,
       dto.oldPassword,
       dto.newPassword,
     );
-    if (r.ok) {
-      // Every session (including this device's) is revoked → the media cookie is dead; clear it. The
-      // client re-logs in for a fresh session token.
-      clearSessionCookies(reply);
-      return { code: BusinessCode.OK, message: 'success' };
+    if (!r.ok) {
+      // Old-password mismatch → HTTP 200 + VALIDATION_FAILED (the global AllExceptionsFilter renders it).
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'old password wrong');
     }
-    return { code: BusinessCode.VALIDATION_FAILED, message: 'old password wrong' };
+    // Every session (including this device's) is revoked → the media cookie is dead; clear it. The
+    // client re-logs in for a fresh session token.
+    clearSessionCookies(reply);
   }
 
   @ApiBearerAuth()
@@ -183,28 +181,23 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/set-password')
   @ApiOperation({ summary: "Set the user's own password (forced first-time set after an initial password; clears mustChangePassword)" })
-  async setPassword(@Request() req: FastifyRequest, @Body() dto: SetPasswordDto): Promise<ApiResult> {
+  async setPassword(@Request() req: FastifyRequest, @Body() dto: SetPasswordDto): Promise<void> {
     // No old password: the caller is already session-authenticated. Establishes the user's own password and
     // clears the mustChangePassword flag so the app unlocks. Sessions are kept (unlike change-password).
     // sessionId is threaded so setPassword can bust this token's validate cache (the cleared flag must be
     // seen immediately, not after the 60s cache TTL).
     await this.authService.setPassword(req.user.userId, dto.newPassword, req.user.sessionId ?? undefined);
-    return { code: BusinessCode.OK, message: 'success' };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/sessions')
   @ApiOperation({ summary: "List the current user's active sessions" })
-  async sessions(@Request() req: FastifyRequest): Promise<ApiResult> {
-    return {
-      code: BusinessCode.OK,
-      message: 'success',
-      data: await this.authService.listActiveSessions(
-        req.user.userId,
-        req.user.sessionId ?? null,
-      ),
-    };
+  async sessions(@Request() req: FastifyRequest) {
+    return this.authService.listActiveSessions(
+      req.user.userId,
+      req.user.sessionId ?? null,
+    );
   }
 
   @ApiBearerAuth()
@@ -216,8 +209,7 @@ export class AuthController {
   async revokeSession(
     @Request() req: FastifyRequest,
     @Body() dto: RevokeSessionDto,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     await this.authService.revokeSession(req.user.userId, dto.id);
-    return { code: BusinessCode.OK, message: 'success' };
   }
 }

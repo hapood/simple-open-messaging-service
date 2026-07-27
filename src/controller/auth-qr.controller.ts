@@ -16,8 +16,6 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { QrLoginService } from '../auth/qr-login.service.js';
 import { setSessionCookies } from '../auth/media-token.js';
 import { Public } from '../common/public.decorator.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
 
 /**
@@ -31,6 +29,9 @@ import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
  * is trusted when its keyring is available (permanent) else a 14-day sliding session; `web` is always a
  * 14-day sliding session. So a trusted native client (Android/desktop) gets a permanent session via QR just
  * as it would via OTP.
+ *
+ * Handlers return raw data (create/poll) or nothing (scan/confirm acks); the global SerializeInterceptor
+ * wraps the ApiResult envelope.
  */
 @ApiTags('auth')
 @Controller()
@@ -43,12 +44,8 @@ export class AuthQrController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/create')
   @ApiOperation({ summary: 'Begin QR sign-in: mint a token (the client renders it as a QR)' })
-  async create(@Body() dto: QrCreateDto): Promise<ApiResult> {
-    return {
-      code: BusinessCode.OK,
-      message: 'success',
-      data: await this.qrLogin.create(dto.client ?? 'web', dto.trusted === true),
-    };
+  async create(@Body() dto: QrCreateDto) {
+    return this.qrLogin.create(dto.client ?? 'web', dto.trusted === true);
   }
 
   @Public()
@@ -61,31 +58,27 @@ export class AuthQrController {
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<ApiResult> {
+  ) {
     const r = await this.qrLogin.poll(dto.qrToken, { device: dto.device, userAgent, ip });
     if (r.sessionToken) setSessionCookies(reply, r.sessionToken, true);
-    return {
-      code: BusinessCode.OK,
-      message: 'success',
-      data: r.sessionToken ? { status: r.status, session_token: r.sessionToken } : { status: r.status },
-    };
+    return r.sessionToken
+      ? { status: r.status, session_token: r.sessionToken }
+      : { status: r.status };
   }
 
   @Throttle(20, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/scan')
   @ApiOperation({ summary: 'Phone scans a QR token (→ desktop shows "confirm on phone")' })
-  async scan(@Req() req: FastifyRequest, @Body() dto: QrTokenDto): Promise<ApiResult> {
+  async scan(@Req() req: FastifyRequest, @Body() dto: QrTokenDto): Promise<void> {
     await this.qrLogin.scan(dto.qrToken, (req.user as { userId: number }).userId);
-    return { code: BusinessCode.OK, message: 'success' };
   }
 
   @Throttle(20, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/confirm')
   @ApiOperation({ summary: 'Phone confirms a scanned QR token (desktop receives a 2-week session)' })
-  async confirm(@Req() req: FastifyRequest, @Body() dto: QrTokenDto): Promise<ApiResult> {
+  async confirm(@Req() req: FastifyRequest, @Body() dto: QrTokenDto): Promise<void> {
     await this.qrLogin.confirm(dto.qrToken, (req.user as { userId: number }).userId);
-    return { code: BusinessCode.OK, message: 'success' };
   }
 }
