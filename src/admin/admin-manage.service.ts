@@ -108,8 +108,10 @@ export class AdminManageService {
   async enable(adminId: number): Promise<Result> {
     const admin = await this.prisma.admin.findUnique({ where: { id: adminId }, select: { id: true } });
     if (!admin) return { code: BusinessCode.NOT_FOUND, message: 'admin not found' };
+    // No session revocation: a disabled admin's sessions were already revoked at disable time and none
+    // can be created while disabled (login checks enabled), so there is nothing to revoke here. Revoking
+    // would only log out an already-enabled admin on a redundant enable call (a no-op must not kick).
     await this.prisma.admin.update({ where: { id: adminId }, data: { enabled: true } });
-    await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_enabled');
     return { code: BusinessCode.OK, message: 'success' };
   }
 
