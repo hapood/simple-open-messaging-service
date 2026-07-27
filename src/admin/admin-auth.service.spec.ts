@@ -41,14 +41,7 @@ type Overrides = {
 };
 
 /** Build an AdminAuthService wired to real TwoFactor + real BruteForce + a Prisma fake. */
-async function setup(o: Overrides = {}): Promise<{
-  svc: AdminAuthService;
-  prisma: Record<string, unknown>;
-  twoFactor: TwoFactorService;
-  bruteForce: BruteForceService;
-  secret: string;
-  challengeToken: () => Promise<string>;
-}> {
+async function setup(o: Overrides = {}) {
   const jwt = new JwtService({ secret: jwtConstants.adminSecret });
   const passwordHasher = new PasswordHasher();
   const twoFactor = new TwoFactorService({} as never, jwt);
@@ -85,10 +78,10 @@ async function setup(o: Overrides = {}): Promise<{
     user: { findUnique: vi.fn(async () => user) },
     admin: {
       findUnique: vi.fn(async () => (o.adminPresent === false ? null : admin)),
-      update: vi.fn(async () => ({})),
+      update: vi.fn(async (_args: { data: Record<string, unknown> }) => ({})),
     },
     adminSession: {
-      create: vi.fn(async (args: { data: unknown }) => ({ ...args.data, id: 1 })),
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => ({ ...args.data, id: 1 })),
       updateMany: vi.fn(async () => ({ count: 0 })), // revokeSessionsByAdmin routes here
     },
     twoFactorBackupCode: {
@@ -154,6 +147,8 @@ describe('AdminAuthService two-factor orchestration', () => {
     const { svc } = await setup({ twoFactorEnabled: false });
     const r = await svc.login('admin', PASSWORD);
     expect('twoFactorRequired' in r).toBe(false);
+    // Narrow the union so sessionToken is reachable (expect().toBe() does not narrow).
+    if ('twoFactorRequired' in r) throw new Error('expected a session, not a 2FA challenge');
     expect(typeof r.sessionToken).toBe('string');
     expect(r.sessionToken.length).toBeGreaterThan(32);
   });
@@ -198,10 +193,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     const r = await svc.verifyLogin(token, codeFor(secret), undefined);
     expect(typeof r.sessionToken).toBe('string');
     // The accepted step counter was written back as the replay guard.
-    const update = (prisma.admin.update as ReturnType<typeof vi.fn>).mock.calls[0][0].data as Record<
-      string,
-      unknown
-    >;
+    const update = prisma.admin.update.mock.calls[0][0].data;
     expect(update.twoFactorLastUsedCounter).toBe(Math.floor(FIXED_NOW / 30_000));
   });
 
@@ -300,9 +292,8 @@ describe('AdminAuthService two-factor orchestration', () => {
     const { svc, prisma } = await setup({ webauthnEnabled: true });
     // revokeSessionsByAdmin routes through adminSession.updateMany — pin that neither enroll nor remove
     // touches it (a passkey is an additive optional factor; enroll already required password re-auth).
-    const revoke = (prisma.adminSession as { updateMany: ReturnType<typeof vi.fn> }).updateMany;
     await svc.completeWebAuthnRegistration(7, 'pending-token', {} as never);
     await svc.removeWebAuthnCredential(7, 1n);
-    expect(revoke).not.toHaveBeenCalled();
+    expect(prisma.adminSession.updateMany).not.toHaveBeenCalled();
   });
 });
