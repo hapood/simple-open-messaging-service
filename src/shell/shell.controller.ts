@@ -3,8 +3,6 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { Throttle, ThrottleGuard } from '../auth/throttle.guard.js';
 import { ShellService } from './shell.service.js';
 import { ShellCompatDto, ShellWebManifestDto } from './shell.dto.js';
@@ -40,8 +38,8 @@ export class ShellController {
     summary:
       'Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config).',
   })
-  compat(): ApiResult<ShellCompatDto> {
-    return { code: BusinessCode.OK, message: 'successful', data: this.shell.compat() };
+  compat(): ShellCompatDto {
+    return this.shell.compat();
   }
 
   @Get('web-manifest')
@@ -50,8 +48,8 @@ export class ShellController {
     summary:
       'The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch.',
   })
-  manifest(): ApiResult<ShellWebManifestDto> {
-    return { code: BusinessCode.OK, message: 'successful', data: this.shell.manifest() };
+  manifest(): ShellWebManifestDto {
+    return this.shell.manifest();
   }
 
   @Raw()

@@ -1,8 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/public.decorator.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { PUBLIC_CONFIG, PublicConfigDto } from '../config/public-config.js';
 
 /**
@@ -21,7 +19,7 @@ export class ConfigController {
   @ApiOperation({
     summary: 'Public site configuration (registration flag + enabled login methods).',
   })
-  config(): ApiResult<PublicConfigDto> {
-    return { code: BusinessCode.OK, message: 'successful', data: { ...PUBLIC_CONFIG } };
+  config(): PublicConfigDto {
+    return { ...PUBLIC_CONFIG };
   }
 }

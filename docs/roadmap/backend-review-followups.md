@@ -63,8 +63,14 @@ registered in `src/bootstrap.ts`) only does BigInt/Date serialization; it does n
 handler that forgets `code`/`message` produces a malformed body, and success vs error shapes are built in
 two different places (handlers vs `AllExceptionsFilter`).
 
-**Approach — planned; execute AFTER the auth/threadlist WIP lands.** This refactor touches ~40 handlers and
-overlaps that rewrite heavily, so doing it on the current dirty tree causes merge pain and rework.
+**Approach — phased.** **Phase A landed** (`d744aeb`): `SerializeInterceptor` now wraps the envelope
+(Reflector dep; compat-passthrough pre-built envelopes + unwrap an `envelope()` carrier + wrap raw data,
+then `serializeBody`); `@Raw()` opts out the 19 non-envelope handlers (SSE/S2S/.well-known/binary streams);
+`envelope(data,{messageKey,hasMore})` carrier added. Wire-identical (every current handler returns an
+envelope → passthrough, or is `@Raw`). **Phase B** (migrate handlers to return raw `data` + `throw
+BusinessException` for failures, per-module, each wire-preserving) in progress — start with green-e2e
+modules; **admin deferred** until its `tokenVersion` e2e is fixed by the admin-auth WIP. **Phase C**: drop
+the compat shim once all migrated.
 
 1. **Fold envelope-wrapping into `SerializeInterceptor`** (it already runs on every response). Pipeline
    order: escape-hatch check → carrier unwrap → wrap raw data → existing `serializeBody` (BigInt/Date).

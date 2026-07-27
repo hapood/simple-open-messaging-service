@@ -1,8 +1,6 @@
 import { Public } from '../common/public.decorator.js';
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { SERVER_VERSION } from '../common/version.js';
 import { PrismaService } from '../prisma.service.js';
 
@@ -75,16 +73,12 @@ export class HealthController {
   @ApiOperation({
     summary: 'Public liveness probe (unauthenticated): status, DB reachability, version, server time.',
   })
-  async health(): Promise<ApiResult<HealthResponseDto>> {
+  async health(): Promise<HealthResponseDto> {
     return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: {
-        status: 'ok',
-        database: await this.probeDatabase(),
-        version: SERVER_VERSION,
-        time: Date.now(),
-      },
+      status: 'ok',
+      database: await this.probeDatabase(),
+      version: SERVER_VERSION,
+      time: Date.now(),
     };
   }
 
