@@ -5,6 +5,7 @@ import { PrismaModule } from '../src/prisma.module.js';
 import { QuotaModule } from '../src/quota/quota.module.js';
 import { QuotaService } from '../src/quota/quota.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
+import { BusinessException } from '../src/common/business.exception.js';
 import { ContentType } from '../src/prisma/generated/client.js';
 import { MessageController } from '../src/controller/message.controller.js';
 
@@ -134,12 +135,16 @@ describe('QuotaService (DB-backed)', () => {
     );
     const req = { user: { userId: 1 } } as unknown as Parameters<InstanceType<typeof MessageController>['sendMessage']>[0];
     const dto = { threadId: 1, content: 'hi', contentType: ContentType.PURE_TEXT };
-    // 1st send: under the limit → proceeds (code OK).
+    // 1st send: under the limit → proceeds (returns the written message; no throw).
     const r1 = await ctrl.sendMessage(req, dto as never);
-    expect(r1.code).toBe(BusinessCode.OK);
-    // 2nd send: over the limit → 200 + QUOTA_EXCEEDED, carrying the category + retryAfter.
-    const r2 = await ctrl.sendMessage(req, { ...dto, content: 'hi2' } as never);
-    expect(r2.code).toBe(BusinessCode.QUOTA_EXCEEDED);
-    expect((r2.data as { category: string }).category).toBe('messages');
+    expect(r1).toBeDefined();
+    // 2nd send: over the limit → throws BusinessException(QUOTA_EXCEEDED, ..., {category, limit, retryAfter});
+    // the global AllExceptionsFilter renders that as HTTP 200 + the same {code, message, data} body.
+    const r2 = await ctrl.sendMessage(req, { ...dto, content: 'hi2' } as never).catch(
+      (e) => e as BusinessException,
+    );
+    expect(r2).toBeInstanceOf(BusinessException);
+    expect(r2.bizCode).toBe(BusinessCode.QUOTA_EXCEEDED);
+    expect(((r2.getResponse() as { data: { category: string } }).data).category).toBe('messages');
   });
 });
