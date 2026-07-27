@@ -44,4 +44,5 @@ export class TextRowComponent {
   /** Emitted (with the numeric msgId) when the user clicks the failed retry glyph; the parent re-sends by
    *  clientMessageId (the emitted value is a click signal — createMsgCbElement maps it to item.clientMessageId). */
   readonly retry = output<number>();
+  readonly cancel = output<number>();
 }

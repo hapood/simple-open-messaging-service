@@ -135,6 +135,79 @@
       }
     </div>
 
+    @if (sendingTransfers().length || failedTransfers().length) {
+      <div class="msg-transfer-stack" aria-live="polite">
+        @if (sendingTransfers().length) {
+          <div class="msg-transfer-line">
+            <div class="msg-transfer-actions">
+              <button type="button" class="msg-transfer-btn msg-transfer-btn--cancel"
+                (click)="cancelUploadingTransfers()"
+                [attr.aria-label]="'transfer.cancel' | transloco">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
+            <div class="msg-transfer-card">
+              <div class="msg-transfer-head">
+                <span>{{ 'transfer.sendingCount' | transloco: { count: sendingTransfers().length } }}</span>
+                <span class="msg-transfer-count">{{ uploadCountLabel() }}</span>
+              </div>
+              <div class="msg-transfer-thumbs">
+                @for (task of sendingTransfers().slice(0, 4); track task.clientMessageId) {
+                  <span class="msg-transfer-thumb">
+                    @if (task.previewUrl) { <img [src]="task.previewUrl" alt="" /> }
+                    @else { <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span> }
+                  </span>
+                }
+                @if (sendingTransfers().length > 4) {
+                  <span class="msg-transfer-thumb msg-transfer-more">+{{ sendingTransfers().length - 4 }}</span>
+                }
+              </div>
+              <div class="msg-transfer-bytes">{{ uploadBytesLabel() }}</div>
+              <div class="msg-transfer-progress" aria-hidden="true">
+                <span [style.width.%]="uploadProgress() ?? 0"></span>
+              </div>
+            </div>
+          </div>
+        }
+        @if (failedTransfers().length) {
+          <div class="msg-transfer-line">
+            <div class="msg-transfer-actions">
+              <button type="button" class="msg-transfer-btn" (click)="retryFailedTransfers()"
+                [attr.aria-label]="'transfer.retry' | transloco">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7"/>
+                </svg>
+              </button>
+              <button type="button" class="msg-transfer-btn msg-transfer-btn--cancel"
+                (click)="cancelFailedTransfers()"
+                [attr.aria-label]="'transfer.cancel' | transloco">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
+            <div class="msg-transfer-card msg-transfer-card--failed">
+              <div class="msg-transfer-head">
+                <span>{{ 'transfer.failedCount' | transloco: { count: failedTransfers().length } }}</span>
+                <span aria-hidden="true">!</span>
+              </div>
+              <div class="msg-transfer-thumbs">
+                @for (task of failedTransfers().slice(0, 4); track task.clientMessageId) {
+                  <span class="msg-transfer-thumb">
+                    @if (task.previewUrl) { <img [src]="task.previewUrl" alt="" /> }
+                    @else { <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span> }
+                  </span>
+                }
+                @if (failedTransfers().length > 4) {
+                  <span class="msg-transfer-thumb msg-transfer-more">+{{ failedTransfers().length - 4 }}</span>
+                }
+              </div>
+              <div class="msg-transfer-bytes">&nbsp;</div>
+              <div class="msg-transfer-progress" aria-hidden="true"><span></span></div>
+            </div>
+          </div>
+        }
+      </div>
+    }
+
     @if (blockedPeer()) {
       <div class="msg-blocked-banner" (click)="unblockPeer()">
         {{ 'chat.blockedBanner' | transloco }}

@@ -66,6 +66,50 @@
   }
 }
 
+.msg-failed-actions {
+  flex: 0 0 40px;
+  align-self: center;
+  margin-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  button {
+    width: 36px;
+    height: 36px;
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-pill);
+    background: var(--app-surface-elevated);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    &:first-child {
+      border-color: color-mix(in srgb, var(--app-danger) 42%, var(--app-border));
+      color: var(--app-danger);
+    }
+    &:hover { background: var(--app-hover); }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: 1px;
+    }
+  }
+}
+
 // Enter/exit animations are owned by the kernel host classes (.cb-enter / .cb-leave in lib/chat-box/_cb.scss),
 // added to the host after .cb-pending is dropped. .cb-pending uses visibility:hidden to hold layout for one frame while
 // the real offsetHeight is measured, then is removed instantly (no fade) so scroll-mounted rows never flash.

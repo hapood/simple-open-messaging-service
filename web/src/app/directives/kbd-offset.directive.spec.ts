@@ -16,12 +16,14 @@ class HostComp {}
 describe('KbdOffsetDirective', () => {
   // Writable backing signals for the mocked services — each test drives these directly.
   let inset: ReturnType<typeof signal<number>>;
+  let layoutOverride: ReturnType<typeof signal<number | null>>;
   let reflowFrozen: ReturnType<typeof signal<boolean>>;
   let hasPhysicalKeyboard: ReturnType<typeof signal<boolean>>;
 
   beforeEach(() => {
     TestBed.resetTestingModule();
     inset = signal(0);
+    layoutOverride = signal<number | null>(null);
     reflowFrozen = signal(false);
     hasPhysicalKeyboard = signal(false);
     TestBed.configureTestingModule({
@@ -31,6 +33,7 @@ describe('KbdOffsetDirective', () => {
           provide: KeyboardInsetService,
           useValue: {
             inset: inset.asReadonly(),
+            layoutOverride: layoutOverride.asReadonly(),
             open: computed(() => inset() > 0),
             available: false,
           } as unknown as KeyboardInsetService,
@@ -88,6 +91,22 @@ describe('KbdOffsetDirective', () => {
     hasPhysicalKeyboard.set(false);
     detect();
     expect(directive.offset()).toBe(300); // back to mirroring the (still-300) inset
+  });
+
+  it('uses the composer layout override instead of transient native IME frames', () => {
+    const { directive, detect } = setup();
+    inset.set(300);
+    detect();
+    expect(directive.offset()).toBe(300);
+
+    layoutOverride.set(0);
+    inset.set(180);
+    detect();
+    expect(directive.offset()).toBe(0);
+
+    layoutOverride.set(null);
+    detect();
+    expect(directive.offset()).toBe(180);
   });
 
   it('immunity frame: holds the offset while frozen, recomputes on thaw', () => {

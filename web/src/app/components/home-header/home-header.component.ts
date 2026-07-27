@@ -7,6 +7,13 @@ import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { ThemeService } from '../../services/theme.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { ConversationListService } from '../../services/conversation-list.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
+import {
+  MediaTransferService,
+  type ThreadTransferSummary,
+} from '../../services/media-transfer.service';
+import { displayThreadName } from '../../services/model';
 
 /**
  * Compact/medium chat-list top bar: profile avatar on the left; friend requests and overflow actions
@@ -27,10 +34,35 @@ export class HomeHeaderComponent {
   private readonly routeService = inject(RouteService)
   private readonly userService = inject(UserService)
   private readonly themeService = inject(ThemeService)
+  private readonly convList = inject(ConversationListService)
+  private readonly nav = inject(NavStateMachineService)
+  private readonly transfers = inject(MediaTransferService)
 
   readonly friendReqBadge = this.userService.friendReqBadge
   readonly sessionProfile = this.userService.sessionProfile
   readonly moreMenuOpen = signal(false)
+  readonly transferMenuOpen = signal(false)
+  readonly transferSummaries = this.transfers.summaries
+  readonly transferTasks = this.transfers.tasks
+  readonly transferCount = computed(() =>
+    this.transferSummaries().reduce((sum, item) => sum + item.uploading, 0),
+  )
+  readonly transferTotal = computed(() =>
+    this.transferSummaries().reduce((sum, item) => sum + item.total, 0),
+  )
+  readonly transferCompleted = computed(() =>
+    this.transferSummaries().reduce((sum, item) => sum + item.completed, 0),
+  )
+  readonly transferProgress = computed<number | null>(() => {
+    const summaries = this.transferSummaries()
+    const total = summaries.reduce((sum, item) => sum + item.bytes, 0)
+    if (total <= 0) return null
+    const loaded = summaries.reduce((sum, item) => sum + item.loadedBytes, 0)
+    return Math.round((loaded / total) * 100)
+  })
+  readonly transferFailedCount = computed(() =>
+    this.transferSummaries().reduce((sum, item) => sum + item.failed, 0),
+  )
 
   /** Icon reflecting the current theme mode (system/light/dark). */
   readonly themeIcon = computed<AppIconType>(() => {
@@ -49,6 +81,46 @@ export class HomeHeaderComponent {
   openFriendRequests() { this.routeService.popupDlg(PopupType.FRIEND_REQUESTS) }
   toggleMoreMenu() { this.moreMenuOpen.update((open) => !open) }
   closeMoreMenu() { this.moreMenuOpen.set(false) }
+
+  toggleTransferMenu() {
+    const summaries = this.transferSummaries()
+    if (summaries.length === 1) {
+      this.openTransferThread(summaries[0])
+      return
+    }
+    this.transferMenuOpen.update((open) => !open)
+  }
+
+  closeTransferMenu() { this.transferMenuOpen.set(false) }
+
+  transferThreadName(summary: ThreadTransferSummary): string {
+    const item = this.convList.items().find((thread) => thread.threadId === summary.threadId)
+    return item ? displayThreadName(item) : `#${summary.threadId}`
+  }
+
+  openTransferThread(summary: ThreadTransferSummary) {
+    this.closeTransferMenu()
+    this.transfers.requestLatest(summary.threadId)
+    this.nav.openChat(summary.threadId)
+  }
+
+  tasksForThread(threadId: number) {
+    return this.transferTasks().filter((task) => task.threadId === threadId)
+  }
+
+  cancelThread(threadId: number, event: Event) {
+    event.stopPropagation()
+    for (const task of this.tasksForThread(threadId)) {
+      if (task.status === 'uploading') this.transfers.cancel(task.clientMessageId)
+    }
+  }
+
+  retryThread(threadId: number, event: Event) {
+    event.stopPropagation()
+    for (const task of this.tasksForThread(threadId)) {
+      if (task.status === 'failed') this.transfers.retry(task.clientMessageId)
+    }
+  }
 
   onSelect(key: string) {
     switch (key) {

@@ -27,6 +27,34 @@ export function getVirtualKeyboard(): VirtualKeyboardLike | null {
   return (navigator as unknown as { virtualKeyboard: VirtualKeyboardLike }).virtualKeyboard;
 }
 
+/** Show the system IME while preserving the focused editor. Android Tauri uses the native bridge because
+ * WebView VirtualKeyboard API behavior varies by provider/OEM; Chromium browser/PWA uses the web API. */
+export function showIme(): boolean {
+  const nativeShow = typeof window !== 'undefined' ? window.SomsShell?.showIme : undefined;
+  if (nativeShow) {
+    nativeShow();
+    return true;
+  }
+  const keyboard = getVirtualKeyboard();
+  if (!keyboard) return false;
+  keyboard.show();
+  return true;
+}
+
+/** Hide the system IME without blurring the editor. Returns false only when neither native nor web control
+ * is available, allowing callers to choose an explicit legacy fallback. */
+export function hideIme(): boolean {
+  const nativeHide = typeof window !== 'undefined' ? window.SomsShell?.hideIme : undefined;
+  if (nativeHide) {
+    nativeHide();
+    return true;
+  }
+  const keyboard = getVirtualKeyboard();
+  if (!keyboard) return false;
+  keyboard.hide();
+  return true;
+}
+
 /**
  * Whether the emoji-keyboard swap is available: a touch (soft-keyboard) device AND the VirtualKeyboard API
  * present. Pure (reads only its arg + navigator) so it is trivially unit-testable without a component harness.

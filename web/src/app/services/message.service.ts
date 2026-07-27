@@ -1,14 +1,27 @@
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { defer, type Observable } from 'rxjs';
+import {
+  HttpClient,
+  HttpEventType,
+  HttpHeaders,
+  HttpResponse,
+} from '@angular/common/http';
+import { defer, filter, map, tap, type Observable } from 'rxjs';
 import { Message, QueryMessageLogParams, StandardResponse } from './model';
 import { apiPrefix } from './constants';
-import { isTauri, tauriInvoke } from './runtime';
+import { isTauri, listenEvent, tauriInvoke } from './runtime';
+
+export type UploadProgressHandler = (loaded: number, total: number) => void;
 
 @Injectable({
   providedIn: 'root',
 })
 export class MsgService {
+  private readonly streamProgressHandlers = new Map<
+    string,
+    UploadProgressHandler
+  >();
+  private streamProgressListener?: Promise<void>;
+
   constructor(private http: HttpClient) {}
 
   addUser(params: { account: string; password: string }) {
@@ -76,6 +89,7 @@ export class MsgService {
     w: number,
     h: number,
     clientMessageId?: string,
+    onProgress?: UploadProgressHandler,
   ): Observable<StandardResponse<{ url: string; w: number; h: number }>> {
     if (this.canStream(file)) {
       return defer(() =>
@@ -84,6 +98,7 @@ export class MsgService {
           '/upload',
           { w: String(w), h: String(h) },
           clientMessageId,
+          onProgress,
         ),
       );
     }
@@ -91,26 +106,26 @@ export class MsgService {
     fd.append('file', file);
     fd.append('w', String(w));
     fd.append('h', String(h));
-    return this.http.post<
+    return this.httpUpload<
       StandardResponse<{ url: string; w: number; h: number }>
     >(
       `${apiPrefix()}/upload`,
       fd,
-      clientMessageId
-        ? { headers: this.cmidHeader(clientMessageId) }
-        : undefined,
+      clientMessageId,
+      onProgress,
     );
   }
 
   /**
    * Upload a generic file (multipart: file), returns the server-generated {url,name,size,mimeType}, used verbatim
    * as the FILE message content. The mimetype allowlist and size cap for POST /upload/file are enforced by
-   * the backend. (Progress events were previously surfaced via reportProgress/observe:events but never
-   * consumed — dropped; the streamed Tauri path has no equivalent and the HttpClient path no longer emits.)
+   * the backend. `onProgress` receives byte progress from Angular upload events in browser/Android and
+   * from the Rust ReaderStream event bridge on Tauri desktop.
    */
   uploadFile(
     file: File,
     clientMessageId?: string,
+    onProgress?: UploadProgressHandler,
   ): Observable<
     StandardResponse<{
       url: string;
@@ -126,12 +141,12 @@ export class MsgService {
           name: string;
           size: number;
           mimeType: string;
-        }>(file, '/upload/file', {}, clientMessageId),
+        }>(file, '/upload/file', {}, clientMessageId, onProgress),
       );
     }
     const fd = new FormData();
     fd.append('file', file);
-    return this.http.post<
+    return this.httpUpload<
       StandardResponse<{
         url: string;
         name: string;
@@ -141,9 +156,8 @@ export class MsgService {
     >(
       `${apiPrefix()}/upload/file`,
       fd,
-      clientMessageId
-        ? { headers: this.cmidHeader(clientMessageId) }
-        : undefined,
+      clientMessageId,
+      onProgress,
     );
   }
 
@@ -154,6 +168,7 @@ export class MsgService {
   uploadVideo(
     file: File,
     clientMessageId?: string,
+    onProgress?: UploadProgressHandler,
   ): Observable<
     StandardResponse<{
       url: string;
@@ -169,12 +184,12 @@ export class MsgService {
           name: string;
           size: number;
           mimeType: string;
-        }>(file, '/upload/video', {}, clientMessageId),
+        }>(file, '/upload/video', {}, clientMessageId, onProgress),
       );
     }
     const fd = new FormData();
     fd.append('file', file);
-    return this.http.post<
+    return this.httpUpload<
       StandardResponse<{
         url: string;
         name: string;
@@ -184,9 +199,8 @@ export class MsgService {
     >(
       `${apiPrefix()}/upload/video`,
       fd,
-      clientMessageId
-        ? { headers: this.cmidHeader(clientMessageId) }
-        : undefined,
+      clientMessageId,
+      onProgress,
     );
   }
 
@@ -196,6 +210,7 @@ export class MsgService {
   uploadAudio(
     file: File,
     clientMessageId?: string,
+    onProgress?: UploadProgressHandler,
   ): Observable<
     StandardResponse<{
       url: string;
@@ -211,12 +226,12 @@ export class MsgService {
           name: string;
           size: number;
           mimeType: string;
-        }>(file, '/upload/audio', {}, clientMessageId),
+        }>(file, '/upload/audio', {}, clientMessageId, onProgress),
       );
     }
     const fd = new FormData();
     fd.append('file', file);
-    return this.http.post<
+    return this.httpUpload<
       StandardResponse<{
         url: string;
         name: string;
@@ -226,9 +241,8 @@ export class MsgService {
     >(
       `${apiPrefix()}/upload/audio`,
       fd,
-      clientMessageId
-        ? { headers: this.cmidHeader(clientMessageId) }
-        : undefined,
+      clientMessageId,
+      onProgress,
     );
   }
 
@@ -245,21 +259,80 @@ export class MsgService {
    *  do this: Tauri hands it a fully-buffered `Request<Vec<u8>>` at the IPC boundary). `endpoint` is the
    *  path SUFFIX after /api/v1 (e.g. '/upload/video'); `fields` are extra form fields (w/h). Returns the
    *  raw {code,message,data} envelope so callers read it exactly like the HttpClient response. */
-  private streamUpload<T>(
+  private async streamUpload<T>(
     file: File,
     endpoint: string,
     fields: Record<string, string>,
     clientMessageId?: string,
+    onProgress?: UploadProgressHandler,
   ): Promise<StandardResponse<T>> {
-    return tauriInvoke<StandardResponse<T>>('upload_stream_file', {
-      path: (file as { path?: string }).path,
-      endpoint,
-      filename: file.name,
-      mime: file.type || 'application/octet-stream',
-      size: file.size,
-      fields,
-      clientMessageId: clientMessageId ?? null,
-    });
+    if (clientMessageId && onProgress) {
+      await this.ensureStreamProgressListener();
+      this.streamProgressHandlers.set(clientMessageId, onProgress);
+    }
+    try {
+      return await tauriInvoke<StandardResponse<T>>('upload_stream_file', {
+        path: (file as { path?: string }).path,
+        endpoint,
+        filename: file.name,
+        mime: file.type || 'application/octet-stream',
+        size: file.size,
+        fields,
+        clientMessageId: clientMessageId ?? null,
+      });
+    } finally {
+      if (clientMessageId) this.streamProgressHandlers.delete(clientMessageId);
+    }
+  }
+
+  private ensureStreamProgressListener(): Promise<void> {
+    if (this.streamProgressListener) return this.streamProgressListener;
+    this.streamProgressListener = listenEvent<{
+      clientMessageId: string;
+      loaded: number;
+      total: number;
+    }>('upload-progress', ({ payload }) => {
+      this.streamProgressHandlers
+        .get(payload.clientMessageId)
+        ?.(
+          Math.max(0, payload.loaded),
+          Math.max(0, payload.total),
+        );
+    }).then(() => undefined);
+    return this.streamProgressListener;
+  }
+
+  private httpUpload<T>(
+    url: string,
+    body: FormData,
+    clientMessageId?: string,
+    onProgress?: UploadProgressHandler,
+  ): Observable<T> {
+    if (!onProgress) {
+      return this.http.post<T>(
+        url,
+        body,
+        clientMessageId
+          ? { headers: this.cmidHeader(clientMessageId) }
+          : undefined,
+      );
+    }
+    return this.http
+      .post<T>(url, body, {
+        headers: clientMessageId
+          ? this.cmidHeader(clientMessageId)
+          : undefined,
+        observe: 'events',
+        reportProgress: true,
+      })
+      .pipe(
+        tap((event) => {
+          if (event.type !== HttpEventType.UploadProgress) return;
+          onProgress(event.loaded, event.total ?? bodyFileSize(body));
+        }),
+        filter((event): event is HttpResponse<T> => event instanceof HttpResponse),
+        map((event) => event.body as T),
+      );
   }
 
   /** The header that tells an upload route to promote a staged send after writing the file. */
@@ -369,4 +442,9 @@ export class MsgService {
       }>
     >(`${apiPrefix()}/link-preview`, { url });
   }
+}
+
+function bodyFileSize(body: FormData): number {
+  const value = body.get('file');
+  return value instanceof Blob ? value.size : 0;
 }

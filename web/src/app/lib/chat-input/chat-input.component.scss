@@ -115,6 +115,14 @@ app-chat-input {
   transition: opacity 0.12s, background 0.12s;
   &--active { opacity: 1; background: var(--app-hover); }
 }
+.ci-emoji-tab--abc {
+  flex-basis: 48px;
+  width: 48px;
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 1;
+  color: var(--app-text);
+}
 // All category grids stack absolutely inside this relative anchor. It is the flex child that fills the panel
 // column below the tabs; each grid is position:absolute inset:0 filling it, so they overlap and only the active
 // one is shown — but every grid stays laid out + painted (its glyphs pre-rasterized). Each grid also keeps its
@@ -124,14 +132,30 @@ app-chat-input {
   flex: 1 1 auto;
   min-height: 0; // permit the inner grid to scroll instead of growing the panel
 }
+.ci-emoji-backspace {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 3;
+  width: 48px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-bg-muted);
+  color: var(--app-text);
+}
 .ci-emoji-grid {
   position: absolute;
   inset: 0;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
+  align-content: start;
   gap: 2px;
-  padding: 8px;
+  padding: 8px 8px 56px;
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
   // Inactive ⇒ transparent but still painted (opacity, not display/visibility, so glyphs stay rasterized). The
@@ -290,6 +314,46 @@ app-chat-input {
 
 // Attachment popover trigger — active while the menu is open (mirrors the hover affordance).
 .ci-input-ico.active { background: var(--app-hover); color: var(--app-text); }
+
+// Touch: the emoji board becomes an in-flow virtual keyboard. Growing <app-chat-input> shrinks the flex
+// message viewport above it, so the board can never be hidden below the screen. The editor is blurred while
+// this surface is open; emoji insertion preserves the last selection without re-opening the system IME.
+.ci-input-bar--emoji-keyboard {
+  display: flex;
+  flex-direction: column;
+}
+.ci-input-bar--emoji-keyboard .ci-controls { order: 1; }
+.ci-emoji-panel.ci-emoji-panel--keyboard {
+  order: 2;
+  position: relative;
+  left: auto;
+  bottom: auto;
+  width: min(100%, 800px);
+  height: 0;
+  margin: 0 auto;
+  border-width: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  transition: height 160ms ease, margin-top 160ms ease, border-width 0s 160ms;
+}
+.ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--open {
+  height: var(--emoji-kbd-height, 300px);
+  margin-top: 8px;
+  border-top-width: 1px;
+  opacity: 1;
+  transition: height 160ms ease, margin-top 160ms ease;
+}
+.ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--handoff {
+  transition: none;
+}
+.ci-emoji-panel--system-handoff .ci-emoji-tabs,
+.ci-emoji-panel--system-handoff .ci-emoji-grids,
+.ci-emoji-panel--system-handoff .ci-emoji-backspace {
+  opacity: 0;
+  pointer-events: none;
+}
+.ci-backdrop--keyboard { display: none; }
 
 // ── Recording indicator (floats above the bar) ────────────────────────────────────────────────
 // position:absolute bottom:100% off the form (the positioned/transformed containing block) — same anchor

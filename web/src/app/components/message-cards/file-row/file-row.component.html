@@ -9,6 +9,18 @@
     <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
   }
 
+  @if (isFailed() || isSending()) {
+    <div class="msg-failed-actions">
+      @if (isFailed()) {
+        <button type="button" (click)="retry.emit(data().msgId)" [attr.aria-label]="'transfer.retry' | transloco">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7"/></svg>
+        </button>
+      }
+      <button type="button" (click)="cancel.emit(data().msgId)" [attr.aria-label]="'transfer.cancel' | transloco">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  }
   <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
       <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
@@ -55,13 +67,7 @@
       </div>
 
       @if (statusTick()) {
-        @if (isFailed()) {
-          <span class="msg-status msg-status--failed" role="button" tabindex="0"
-                [attr.aria-label]="'chat.retrySendAria' | transloco"
-                (click)="retry.emit(data().msgId)"
-                (keydown.enter)="retry.emit(data().msgId)"
-                (keydown.space)="$event.preventDefault(); retry.emit(data().msgId)"></span>
-        } @else {
+        @if (!isFailed()) {
           <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }
       }

@@ -53,7 +53,7 @@ type SlotKey = 'A' | 'B';
   selector: 'app-chat-pane',
   imports: [MessageThreadComponent, ChatEmptyComponent, TranslocoPipe],
   template: `
-    <div class="chat-pane" [class.compact]="layout.mode() === 'compact'">
+    <div class="chat-pane" [class.compact]="isCompact()">
       <div class="pane-layer" [class.pane-fg]="fgSlot() === 'A'" #layerA>
         @if (itemA(); as trd) {
           <app-message-thread #threadA [threadId]="trd.threadId" [userMsgTrd]="trd"
@@ -161,6 +161,11 @@ export class ChatPaneComponent implements OnDestroy {
   readonly openThreadId = this.convList.openThreadId;
   readonly active = computed(() => this.openThreadId() !== undefined);
 
+  /** Compact layout flag — drives the `.compact` host class and the compact branch of {@link showLoading}.
+   *  Template-facing alias of the (private) LayoutService so the template never reaches past the component
+   *  boundary — mirrors the `convList`→`openThreadId` alias pattern below. */
+  readonly isCompact = computed(() => this.layout.mode() === 'compact');
+
   /** Each slot holds the threadId its pane is bound to (undefined → empty, no kernel). The LIVE
    *  ConversationItem is DERIVED from the conv list by that id, so per-user state (mute/pin/block/clear)
    *  updated via applyThreadMeta flows into the bound MessageThreadComponent without a re-switch — the
@@ -191,7 +196,7 @@ export class ChatPaneComponent implements OnDestroy {
    *  warm switch. */
   readonly showLoading = computed(() => {
     if (!this.active()) return false;
-    if (this.layout.mode() === 'compact') {
+    if (this.isCompact()) {
       const fgId = this.fgSlot() === 'A' ? this.slotA() : this.slotB();
       return fgId !== this.openThreadId();
     }

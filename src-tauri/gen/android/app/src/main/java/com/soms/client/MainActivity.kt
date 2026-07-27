@@ -3,6 +3,7 @@ package com.soms.client
 import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -23,6 +24,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -234,6 +236,35 @@ class MainActivity : TauriActivity() {
     private fun pushImeHeight() {
         val v = SomsBridge.webView ?: return
         v.evaluateJavascript("window.__SOMS_IME_HEIGHT__&&window.__SOMS_IME_HEIGHT__($imeHeightCss);", null)
+    }
+
+    /** Show the system IME for the already-focused contenteditable inside the WebView. The web composer owns
+     *  focus/selection; this method controls only IME visibility, so switching back from the custom emoji
+     *  keyboard does not require a blur/refocus cycle that would lose the caret. */
+    private fun showIme() {
+        val v = SomsBridge.webView ?: return
+        runOnUiThread {
+            v.requestFocus()
+            // Post after requestFocus so WebView has an active InputConnection when the controller asks for IME.
+            v.post {
+                WindowInsetsControllerCompat(window, v).show(WindowInsetsCompat.Type.ime())
+                // OEM/WebView fallback (notably older EMUI): repeat through InputMethodManager after the
+                // InputConnection has been created. Calling both is idempotent.
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    /** Hide the system IME without clearing WebView/editor focus. Keeping the InputConnection and DOM
+     *  selection alive is what lets the custom emoji keyboard retain a real caret. */
+    private fun hideIme() {
+        val v = SomsBridge.webView ?: return
+        runOnUiThread {
+            WindowInsetsControllerCompat(window, v).hide(WindowInsetsCompat.Type.ime())
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            imm.hideSoftInputFromWindow(v.windowToken, 0)
+        }
     }
 
     /** Pin the WebView renderer at the highest app-requestable priority (IMPORTANT) and keep it there even
@@ -964,6 +995,17 @@ class MainActivity : TauriActivity() {
          *  live source is the window.__SOMS_IME_HEIGHT__ push. */
         @JavascriptInterface
         fun getImeHeight(): Int = activityRef.get()?.imeHeightCss ?: 0
+
+        /** Explicit IME controls used by the web keyboard handoff state machine. Both preserve DOM focus. */
+        @JavascriptInterface
+        fun showIme() {
+            activityRef.get()?.showIme()
+        }
+
+        @JavascriptInterface
+        fun hideIme() {
+            activityRef.get()?.hideIme()
+        }
     }
 
     /** JS-callable surface exposed as window.SomsSecureStore — the WebView-independent persistence the

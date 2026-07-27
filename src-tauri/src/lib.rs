@@ -168,6 +168,11 @@ struct ProxyState {
     /// `OtaAssets` resolver — `init_download_web` swaps it, boot `setup()` seeds it, and the NEXT asset
     /// request serves from the new dir. None → the embedded baseline (`frontendDist`) is served.
     ota_active: Arc<Mutex<Option<PathBuf>>>,
+    /// Desktop streaming uploads keyed by clientMessageId. A frontend cancel action resolves the token,
+    /// which drops the in-flight reqwest future and closes the request body stream.
+    #[cfg(desktop)]
+    upload_cancels:
+        Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
 }
 
 impl ProxyState {
@@ -415,6 +420,8 @@ pub fn run() {
         // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
         api_http: Arc::new(Mutex::new((initial_origin.clone(), http_client_for(&initial_origin)))),
         ota_active: ota_active.clone(),
+        #[cfg(desktop)]
+        upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
     let proxy_for_media = proxy_state.clone();
 
@@ -527,6 +534,7 @@ pub fn run() {
                     sse_net,
                     sse_replay_hello,
                     upload_stream_file,
+                    cancel_upload,
                     report_diagnostics,
                     log_js,
                     read_native_log,
@@ -1082,6 +1090,7 @@ async fn media_request(
 #[cfg(desktop)]
 #[tauri::command]
 async fn upload_stream_file(
+    app: tauri::AppHandle,
     proxy: tauri::State<'_, ProxyState>,
     path: String,
     endpoint: String,
@@ -1097,7 +1106,34 @@ async fn upload_stream_file(
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| format!("open file: {e}"))?;
-    let stream = tokio_util::io::ReaderStream::new(file);
+    let progress_id = client_message_id.clone();
+    let mut loaded = 0_u64;
+    let mut last_reported = 0_u64;
+    let mut last_report_at = Instant::now();
+    // Report at most roughly every 256 KiB / 100 ms. ReaderStream may yield very small chunks; emitting
+    // every chunk would flood the WebView IPC on a fast multi-GB upload.
+    let stream = tokio_util::io::ReaderStream::new(file).map(move |result| {
+        if let Ok(bytes) = &result {
+            loaded = loaded.saturating_add(bytes.len() as u64);
+            let due_bytes = loaded.saturating_sub(last_reported) >= 256 * 1024;
+            let due_time = last_report_at.elapsed() >= Duration::from_millis(100);
+            if due_bytes || due_time || loaded >= size {
+                if let Some(cid) = progress_id.as_ref() {
+                    let _ = app.emit(
+                        "upload-progress",
+                        serde_json::json!({
+                            "clientMessageId": cid,
+                            "loaded": loaded,
+                            "total": size,
+                        }),
+                    );
+                }
+                last_reported = loaded;
+                last_report_at = Instant::now();
+            }
+        }
+        result
+    });
     let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
         .file_name(filename)
         .mime_str(&mime)
@@ -1108,7 +1144,7 @@ async fn upload_stream_file(
     }
     form = form.part("file", part);
     let mut req = client.post(&url).multipart(form);
-    if let Some(cid) = client_message_id {
+    if let Some(cid) = client_message_id.as_ref() {
         req = req.header("x-client-message-id", cid);
     }
     if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
@@ -1117,9 +1153,29 @@ async fn upload_stream_file(
     // No send timeout: a large upload legitimately takes minutes, and a total-duration timeout would
     // wrongly abort it. `BACKEND_CONNECT_TIMEOUT` (on the cached client) already catches an unreachable
     // backend; a mid-upload stall is an accepted rare failure (the user can retry).
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
+    let upload_cancel = CancellationToken::new();
+    if let Some(cid) = client_message_id.as_ref() {
+        proxy
+            .upload_cancels
+            .lock()
+            .expect("upload_cancels lock")
+            .insert(cid.clone(), upload_cancel.clone());
+    }
+    let send_result = tokio::select! {
+        result = req.send() => Some(result),
+        _ = upload_cancel.cancelled() => None,
+    };
+    if let Some(cid) = client_message_id.as_ref() {
+        proxy
+            .upload_cancels
+            .lock()
+            .expect("upload_cancels lock")
+            .remove(cid);
+    }
+    let resp = match send_result {
+        None => return Err("upload cancelled".to_string()),
+        Some(Ok(r)) => r,
+        Some(Err(e)) => {
             // Unreachable backend mid-upload: re-race select_origin so the user's RETRY hits the new active
             // origin. We do NOT re-issue the streaming upload here (re-opening the file + re-streaming is
             // the caller's job); non-network errors don't switch.
@@ -1136,6 +1192,24 @@ async fn upload_stream_file(
     }
     // Return the raw envelope ({code,message,data}); the frontend reads it as StandardResponse<T>.
     serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
+}
+
+/// Cancel one desktop streaming upload. Idempotent: a task that already completed or has not reached the
+/// streaming phase simply has no token. Browser/Android cancellation is owned by HttpClient unsubscribe.
+#[cfg(desktop)]
+#[tauri::command]
+fn cancel_upload(
+    proxy: tauri::State<'_, ProxyState>,
+    client_message_id: String,
+) {
+    if let Some(token) = proxy
+        .upload_cancels
+        .lock()
+        .expect("upload_cancels lock")
+        .remove(&client_message_id)
+    {
+        token.cancel();
+    }
 }
 
 // --- diagnostics reporting (field-support log bundle upload) ------------------------------

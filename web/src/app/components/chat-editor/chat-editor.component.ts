@@ -17,6 +17,8 @@ import { StarterKit } from '@tiptap/starter-kit';
 import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
+import { baseKeymap } from '@tiptap/pm/commands';
+import { isAndroidNative } from '../../services/runtime';
 
 /** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
  *  so the production port swaps in GroupService.getMembers() unchanged. */
@@ -69,6 +71,10 @@ export class ChatEditorComponent {
   readonly html = output<string>();
   /** Fires on Enter (desktop, non-empty) — the parent sends the last html it received, then clear()s. */
   readonly send = output<void>();
+  /** Fires only when a paste contains real clipboard files. Returning true from ProseMirror's paste
+   *  handler keeps those files/HTML out of the text editor; the host opens the dedicated paste panel. */
+  readonly attachmentPaste = output<ClipboardEvent>();
+  readonly focusChange = output<boolean>();
 
   private readonly editorEl = viewChild<ElementRef<HTMLDivElement>>('editor');
   private editor?: Editor;
@@ -117,10 +123,20 @@ export class ChatEditorComponent {
         }),
       ],
       editorProps: {
+        handlePaste: (_view, event) => {
+          if (!event.clipboardData || event.clipboardData.files.length === 0) return false;
+          this.attachmentPaste.emit(event);
+          return true;
+        },
         attributes: {
           class: 'cb-editor-prose',
           role: 'textbox',
           'aria-multiline': 'true',
+          // Chromium: keep the caret/selection focused while the app swaps the native IME for its emoji
+          // keyboard. Physical-keyboard devices retain normal automatic behavior.
+          // Only the Android shell can reliably control IME visibility while retaining focus. Browser/PWA
+          // composers keep the standard auto policy and use the floating emoji popup.
+          virtualkeyboardpolicy: isAndroidNative() ? 'manual' : 'auto',
         },
       },
     });
@@ -128,6 +144,8 @@ export class ChatEditorComponent {
       this.isEmpty.set(editor.isEmpty);
       this.html.emit(this.toInlineHtml(editor.getHTML()));
     });
+    editor.on('focus', () => this.focusChange.emit(true));
+    editor.on('blur', () => this.focusChange.emit(false));
     this.editor = editor;
     onCleanup(() => {
       editor.destroy();
@@ -162,6 +180,12 @@ export class ChatEditorComponent {
     this.editor?.commands.focus();
   }
 
+  /** Remove DOM focus without losing the ProseMirror selection. Used when the touch emoji/attachment
+   *  surface replaces the system keyboard. */
+  blur(): void {
+    this.editor?.commands.blur();
+  }
+
   /** Clear the editor (called by the parent after a successful send). */
   clear(): void {
     this.editor?.commands.clearContent(true);
@@ -173,9 +197,26 @@ export class ChatEditorComponent {
     return this.editor?.getText() ?? '';
   }
 
-  /** Insert text (or any inline content) at the caret — used by the emoji board. */
-  insertText(content: string): void {
-    this.editor?.chain().focus().insertContent(content).run();
+  /** Insert text (or any inline content) at the last selection. Touch emoji keyboards deliberately keep
+   *  the editor blurred so inserting a glyph does not summon the system IME again. */
+  insertText(content: string, focus = true): void {
+    const chain = this.editor?.chain();
+    if (!chain) return;
+    if (focus) chain.focus();
+    chain.insertContent(content).run();
+  }
+
+  /** Run ProseMirror's real Backspace command so selections, mentions and Unicode text are deleted with
+   *  the same semantics as the native keyboard. */
+  deleteBackward(): void {
+    const editor = this.editor;
+    if (!editor) return;
+    editor.commands.focus();
+    baseKeymap['Backspace']?.(
+      editor.state,
+      (transaction) => editor.view.dispatch(transaction),
+      editor.view,
+    );
   }
 }
 

@@ -48,6 +48,7 @@ export class MediaRowComponent {
   readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
   readonly isFailed = computed(() => this.data().isSelf && this.data().status === 'failed');
   readonly retry = output<number>();
+  readonly cancel = output<number>();
   readonly openImage = output<{ images: AlbumImage[]; index: number }>();
 
   constructor(private readonly thresholdSvc: MediaSizeThresholdService) {}

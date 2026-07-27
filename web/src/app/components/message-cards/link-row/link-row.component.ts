@@ -61,6 +61,7 @@ export class LinkRowComponent {
     () => this.data().isSelf && this.data().status === 'failed',
   );
   readonly retry = output<number>();
+  readonly cancel = output<number>();
 
   /** The parsed card payload, derived from `data().text` so an in-place update re-parses automatically:
    *  the optimistic bare `{ url }` card is swapped for the server-built rich card (title/image/...) via

@@ -81,6 +81,7 @@ export function createMsgCbElement(
   onRetry?: (clientMessageId: string) => void,
   onOpenImage?: (images: AlbumImage[], index: number) => void,
   onOpenFile?: (data: ChatMsgData) => void,
+  onCancel?: (clientMessageId: string) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -132,6 +133,12 @@ export function createMsgCbElement(
     const inst = ref.instance as { retry?: { subscribe: (fn: (id: number) => void) => { unsubscribe(): void } } };
     const cid = item.clientMessageId;
     const sub = inst.retry?.subscribe(() => { if (cid !== undefined) onRetry(cid); });
+    if (sub) wrapDestroy(() => sub.unsubscribe());
+  }
+  if (onCancel) {
+    const inst = ref.instance as { cancel?: { subscribe: (fn: (id: number) => void) => { unsubscribe(): void } } };
+    const cid = item.clientMessageId;
+    const sub = inst.cancel?.subscribe(() => { if (cid !== undefined) onCancel(cid); });
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   if (onOpenImage) {

@@ -268,6 +268,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return retrying;
   }
 
+  /** Permanently discard a failed optimistic send after explicit user confirmation/action. */
+  discardPending(clientMessageId: string): boolean {
+    const index = this.pending.findIndex(
+      (item) => item.clientMessageId === clientMessageId,
+    );
+    if (index < 0) return false;
+    this.pending.splice(index, 1);
+    return true;
+  }
+
   /**
    * Mark an in-flight optimistic send SENT (the HTTP-200 / upload-success milestone) — flips the pending entry's
    * status 'sending'→'sent' IN PLACE at its CURRENT tail position (unlike failPending, which sinks a failed send to

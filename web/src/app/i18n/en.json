@@ -1,4 +1,13 @@
 {
+  "transfer": {
+    "sendingCount": "Sending {{count}}",
+    "sendingOf": "Sending {{completed}}/{{total}}",
+    "sendingProgress": "Sending {{completed}}/{{total}} · {{progress}}%",
+    "failedCount": "{{count}} failed",
+    "completed": "Sent",
+    "cancel": "Cancel sending",
+    "retry": "Retry sending"
+  },
   "call": {
     "incoming": "Incoming call",
     "calling": "Calling…",
@@ -322,6 +331,14 @@
     },
     "sendPhoto": "Photo",
     "sendFile": "File",
+    "paste": {
+      "title": "Review pasted items",
+      "summary": "{{count}} attachment(s)",
+      "textLabel": "Pasted text",
+      "textPlaceholder": "Add or edit the text to send",
+      "removeItem": "Remove {{name}}",
+      "send": "Send {{count}} item(s)"
+    },
     "sendAria": "Send",
     "callAria": "Start voice call",
     "backUnreadAria": "Back to chats, {{count}} unread messages elsewhere",

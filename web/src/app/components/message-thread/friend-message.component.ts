@@ -11,7 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, takeUntil } from 'rxjs';
 import { TranslocoModule } from '@jsverse/transloco';
 import {
   ChatBoxScroller,
@@ -66,6 +66,10 @@ import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import { displayThreadName, type ConversationItem, type StandardResponse } from '../../services/model';
 import { isMessageViewportAtBottom } from './message-scroll-state';
+import {
+  MediaTransferService,
+  type MediaTransferKind,
+} from '../../services/media-transfer.service';
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -131,6 +135,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly galleryViewer = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
   private readonly convList = inject(ConversationListService);
+  private readonly transfers = inject(MediaTransferService);
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -179,6 +184,47 @@ export class MessageThreadComponent implements OnDestroy {
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
+  readonly uploadingTransfers = computed(() => {
+    const threadId = this.threadId();
+    return this.transfers.tasks().filter(
+      (task) => task.threadId === threadId && task.status === 'uploading',
+    );
+  });
+  /** Uploading plus the service's short-lived completed tail. Keeping completed tasks in the same
+   * aggregate card bridges sequential uploads: completing file N can never make the card empty for a
+   * frame before file N+1 starts. The service removes the completed tail once the whole batch is quiet. */
+  readonly sendingTransfers = computed(() => {
+    const threadId = this.threadId();
+    return this.transfers.tasks().filter(
+      (task) => task.threadId === threadId && task.status !== 'failed',
+    );
+  });
+  readonly failedTransfers = computed(() => {
+    const threadId = this.threadId();
+    return this.transfers.tasks().filter(
+      (task) => task.threadId === threadId && task.status === 'failed',
+    );
+  });
+  readonly uploadProgress = computed(() => {
+    const tasks = this.sendingTransfers();
+    if (tasks.length === 0) return null;
+    const completed = tasks.filter((task) => task.status === 'completed').length;
+    return Math.round((completed / tasks.length) * 100);
+  });
+  readonly uploadCountLabel = computed(() => {
+    const tasks = this.sendingTransfers();
+    const completed = tasks.filter((task) => task.status === 'completed').length;
+    return `${completed}/${tasks.length}`;
+  });
+  readonly uploadBytesLabel = computed(() => {
+    const tasks = this.sendingTransfers();
+    const loaded = tasks.reduce(
+      (sum, task) => sum + Math.min(Math.max(0, task.loaded), task.size),
+      0,
+    );
+    const total = tasks.reduce((sum, task) => sum + Math.max(0, task.size), 0);
+    return `${formatTransferBytes(loaded)} / ${formatTransferBytes(total)}`;
+  });
 
   /** Hero-card content for the empty-thread placeholder. P2P shows the peer; GROUP shows the group. The name
    *  reuses displayThreadName (alias-aware) and the avatar reuses the same IDB-backed identity the conversation
@@ -220,6 +266,14 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly blobUrls = new Set<string>();
 
   constructor() {
+    effect(() => {
+      const request = this.transfers.latestRequest();
+      if (!request || request.threadId !== this.threadId()) return;
+      // Reading the nonce makes repeated clicks for the same thread distinct. The kernel may still be
+      // initializing after navigation; init's normal bottom positioning handles that cold case.
+      request.nonce;
+      queueMicrotask(() => this.scroller?.scrollToBottom());
+    });
     effect(() => {
       const vp = this.viewportRef();
       const ct = this.contentRef();
@@ -328,6 +382,7 @@ export class MessageThreadComponent implements OnDestroy {
       (images, index) =>
         this.galleryViewer.open(images, index, this.threadId() ?? 0),
       (data) => this.fileDetail.open(data, this.threadId() ?? 0),
+      (clientMessageId) => void this.cancelPending(clientMessageId),
     );
   }
 
@@ -387,6 +442,24 @@ export class MessageThreadComponent implements OnDestroy {
     this.scroller?.scrollToBottom();
   }
 
+  cancelUploadingTransfers(): void {
+    for (const task of this.uploadingTransfers()) {
+      this.transfers.discard(task.clientMessageId);
+    }
+  }
+
+  retryFailedTransfers(): void {
+    for (const task of this.failedTransfers()) {
+      this.transfers.retry(task.clientMessageId);
+    }
+  }
+
+  cancelFailedTransfers(): void {
+    for (const task of this.failedTransfers()) {
+      this.transfers.discard(task.clientMessageId);
+    }
+  }
+
   // ---------- ChatInputComponent intent → optimistic dispatch ----------
 
   /** The composer emits one structured intent; route it to the matching optimistic-send path. */
@@ -396,13 +469,18 @@ export class MessageThreadComponent implements OnDestroy {
         this.sendText(intent.text);
         return;
       case 'image':
-        void this.sendImages(intent.files);
+        void this.sendAttachments(
+          Array.from(intent.files).filter((file) => file.type.startsWith('image/')),
+        );
         return;
       case 'file':
-        void this.sendFiles(intent.files);
+        void this.sendAttachments(intent.files);
         return;
       case 'link':
         this.sendLink(intent.url);
+        return;
+      case 'paste':
+        void this.sendPaste(intent.files, intent.text);
         return;
       case 'audio':
         this.sendVoice(intent.blob, intent.duration, intent.mimeType);
@@ -437,78 +515,76 @@ export class MessageThreadComponent implements OnDestroy {
     this.dispatchHttpSendLink(item, url);
   }
 
-  private async sendImages(files: FileList): Promise<void> {
+  /** Prepare the complete user selection first, then register every transfer synchronously. Consequently
+   * the aggregate card's file count and total bytes are fixed on its first rendered frame — image/video
+   * metadata probing can no longer make later tasks join an already-visible batch. */
+  private async sendAttachments(
+    files: ArrayLike<File>,
+    waitForUploads = false,
+  ): Promise<void> {
     if (!this.threadId()) return;
-    for (const f of Array.from(files).filter((f) =>
-      f.type.startsWith('image/'),
-    )) {
-      const cid = this.newClientMessageId();
-      const dims = await readImageDims(f);
-      const dataURL = await readFileAsDataURL(f);
-      const images: AlbumImage[] = [
-        { kind: 'image', src: dataURL, w: dims.w, h: dims.h, size: f.size },
-      ];
-      const item = this.makeOptimisticItem(cid, '', 'IMAGE', images, null);
-      this.pendingFiles.set(cid, { file: f, kind: 'image' });
-      this.dispatchPending(item);
-      void this.uploadAndSendImage(cid, f, item, dims);
-    }
-  }
-
-  private async sendFiles(files: FileList): Promise<void> {
-    if (!this.threadId()) return;
-    for (const f of Array.from(files)) {
-      // Route by MIME: video → a VIDEO card. Picked audio FILES (wav/mp3/…) are sent as ordinary FILE
-      // attachments for now; in-app recorded voice clips do NOT enter here — they arrive as a dedicated
-      // 'audio' intent and go through sendVoice. Everything else is a FILE message.
-      if (f.type.startsWith('video/')) {
-        void this.sendVideo(f);
+    const prepared = await Promise.all(
+      Array.from(files)
+        .map(async (file) => {
+          const cid = this.newClientMessageId();
+          if (file.type.startsWith('image/')) {
+            return {
+              file,
+              cid,
+              kind: 'image' as const,
+              meta: await readImageDims(file),
+            };
+          }
+          if (file.type.startsWith('video/')) {
+            return {
+              file,
+              cid,
+              kind: 'video' as const,
+              meta: await readVideoMeta(file),
+            };
+          }
+          return { file, cid, kind: 'file' as const, meta: null };
+        }),
+    );
+    const uploads: Promise<void>[] = [];
+    for (const entry of prepared) {
+      const contentType =
+        entry.kind === 'image'
+          ? 'IMAGE'
+          : entry.kind === 'video'
+            ? 'VIDEO'
+            : 'FILE';
+      const item = this.makeOptimisticItem(
+        entry.cid,
+        '',
+        contentType,
+        null,
+        null,
+      );
+      this.pendingFiles.set(entry.cid, {
+        file: entry.file,
+        kind: entry.kind,
+      });
+      if (entry.kind === 'image') {
+        uploads.push(
+          this.uploadAndSendImage(entry.cid, entry.file, item, entry.meta),
+        );
+      } else if (entry.kind === 'video') {
+        uploads.push(
+          this.uploadAndSendVideo(entry.cid, entry.file, item, entry.meta),
+        );
       } else {
-        void this.sendFile(f);
+        uploads.push(this.uploadAndSendFile(entry.cid, entry.file, item));
       }
     }
+    if (waitForUploads) await Promise.all(uploads);
   }
 
-  /** Send a generic (non-video/audio) file as a FILE message. */
-  private async sendFile(f: File): Promise<void> {
-    const cid = this.newClientMessageId();
-    const url = URL.createObjectURL(f);
-    this.blobUrls.add(url);
-    const file: FileInfo = {
-      url,
-      name: f.name,
-      size: f.size,
-      mimeType: f.type || 'application/octet-stream',
-    };
-    const item = this.makeOptimisticItem(cid, '', 'FILE', null, file);
-    this.pendingFiles.set(cid, { file: f, kind: 'file' });
-    this.dispatchPending(item);
-    void this.uploadAndSendFile(cid, f, item);
-  }
-
-  /** Send a video as a VIDEO message: probe w/h/duration client-side (<video> loadedmetadata), render
-   *  an optimistic media cell (blob url + first frame), then upload + send. The server validates only
-   *  the container family; w/h/duration ride in the content JSON (server-untrusted). */
-  private async sendVideo(f: File): Promise<void> {
-    const cid = this.newClientMessageId();
-    const meta = await readVideoMeta(f);
-    const url = URL.createObjectURL(f);
-    this.blobUrls.add(url);
-    const images: AlbumImage[] = [
-      {
-        kind: 'video',
-        src: url,
-        w: meta.w,
-        h: meta.h,
-        size: f.size,
-        duration: meta.duration,
-        name: f.name,
-      },
-    ];
-    const item = this.makeOptimisticItem(cid, '', 'VIDEO', images, null);
-    this.pendingFiles.set(cid, { file: f, kind: 'video' });
-    this.dispatchPending(item);
-    void this.uploadAndSendVideo(cid, f, item, meta);
+  /** Confirmed paste-panel contents are still ordinary independent messages. Send attachments in panel
+   *  order, then the optional text message; no batch identifier or compound-message protocol is involved. */
+  private async sendPaste(files: readonly File[], text: string): Promise<void> {
+    await this.sendAttachments(files, true);
+    if (text) this.sendText(text);
   }
 
   /** Send an in-app recorded voice clip as an AUDIO message. The MediaRecorder Blob is wrapped in a File and
@@ -521,22 +597,8 @@ export class MessageThreadComponent implements OnDestroy {
     const f = new File([blob], `voice.${mimeTypeToExt(mimeType)}`, {
       type: mimeType || 'audio/webm',
     });
-    const url = URL.createObjectURL(f);
-    this.blobUrls.add(url);
-    const images: AlbumImage[] = [
-      {
-        kind: 'audio',
-        src: url,
-        w: VOICE_BAR_W,
-        h: VOICE_BAR_H,
-        size: f.size,
-        duration,
-        name: f.name,
-      },
-    ];
-    const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
+    const item = this.makeOptimisticItem(cid, '', 'AUDIO', null, null);
     this.pendingFiles.set(cid, { file: f, kind: 'audio' });
-    this.dispatchPending(item);
     void this.uploadAndSendAudio(cid, f, item, { duration });
   }
 
@@ -593,6 +655,9 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
+    this.trackTransfer(cid, tid, 'image', f, () =>
+      this.uploadAndSendImage(cid, f, item, dims, true),
+    );
     try {
       const staged = await firstValueFrom(
         this.msgService.sendMedia({
@@ -600,18 +665,31 @@ export class MessageThreadComponent implements OnDestroy {
           contentType: 'IMAGE',
           clientMessageId: cid,
           retry,
-        }),
+        }).pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
+        this.transfers.fail(cid);
         await this.failPending(item);
         return;
       }
       const up = await firstValueFrom(
-        this.msgService.uploadMedia(f, dims.w, dims.h, cid),
+        this.msgService.uploadMedia(
+          f,
+          dims.w,
+          dims.h,
+          cid,
+          (loaded, total) => this.transfers.progress(cid, loaded, total),
+        ).pipe(takeUntil(this.transfers.cancelled(cid))),
       );
-      if (up.code !== 0) await this.failPending(item);
-      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      if (up.code !== 0) {
+        this.transfers.fail(cid);
+        await this.failPending(item);
+      } else {
+        this.transfers.complete(cid);
+        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      }
     } catch {
+      this.transfers.fail(cid);
       await this.failPending(item);
     }
   }
@@ -624,6 +702,9 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
+    this.trackTransfer(cid, tid, 'file', f, () =>
+      this.uploadAndSendFile(cid, f, item, true),
+    );
     try {
       const staged = await firstValueFrom(
         this.msgService.sendMedia({
@@ -631,16 +712,23 @@ export class MessageThreadComponent implements OnDestroy {
           contentType: 'FILE',
           clientMessageId: cid,
           retry,
-        }),
+        }).pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
+        this.transfers.fail(cid);
         await this.failPending(item);
         return;
       }
       const ok = await this.uploadFileResult(f, cid);
-      if (!ok) await this.failPending(item);
-      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      if (!ok) {
+        this.transfers.fail(cid);
+        await this.failPending(item);
+      } else {
+        this.transfers.complete(cid);
+        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      }
     } catch {
+      this.transfers.fail(cid);
       await this.failPending(item);
     }
   }
@@ -654,6 +742,9 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
+    this.trackTransfer(cid, tid, 'video', f, () =>
+      this.uploadAndSendVideo(cid, f, item, meta, true),
+    );
     try {
       const staged = await firstValueFrom(
         this.msgService.sendMedia({
@@ -662,16 +753,29 @@ export class MessageThreadComponent implements OnDestroy {
           clientMessageId: cid,
           meta: { w: meta.w, h: meta.h, duration: meta.duration },
           retry,
-        }),
+        }).pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
+        this.transfers.fail(cid);
         await this.failPending(item);
         return;
       }
-      const up = await firstValueFrom(this.msgService.uploadVideo(f, cid));
-      if (up.code !== 0) await this.failPending(item);
-      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      const up = await firstValueFrom(
+        this.msgService.uploadVideo(
+          f,
+          cid,
+          (loaded, total) => this.transfers.progress(cid, loaded, total),
+        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+      );
+      if (up.code !== 0) {
+        this.transfers.fail(cid);
+        await this.failPending(item);
+      } else {
+        this.transfers.complete(cid);
+        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      }
     } catch {
+      this.transfers.fail(cid);
       await this.failPending(item);
     }
   }
@@ -685,6 +789,9 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
+    this.trackTransfer(cid, tid, 'audio', f, () =>
+      this.uploadAndSendAudio(cid, f, item, meta, true),
+    );
     try {
       const staged = await firstValueFrom(
         this.msgService.sendMedia({
@@ -693,18 +800,44 @@ export class MessageThreadComponent implements OnDestroy {
           clientMessageId: cid,
           meta: { duration: meta.duration },
           retry,
-        }),
+        }).pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
+        this.transfers.fail(cid);
         await this.failPending(item);
         return;
       }
-      const up = await firstValueFrom(this.msgService.uploadAudio(f, cid));
-      if (up.code !== 0) await this.failPending(item);
-      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      const up = await firstValueFrom(
+        this.msgService.uploadAudio(
+          f,
+          cid,
+          (loaded, total) => this.transfers.progress(cid, loaded, total),
+        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+      );
+      if (up.code !== 0) {
+        this.transfers.fail(cid);
+        await this.failPending(item);
+      } else {
+        this.transfers.complete(cid);
+        await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
+      }
     } catch {
+      this.transfers.fail(cid);
       await this.failPending(item);
     }
+  }
+
+  private trackTransfer(
+    clientMessageId: string,
+    threadId: number,
+    kind: MediaTransferKind,
+    file: File,
+    retry: () => Promise<void>,
+  ): void {
+    this.transfers.start({ clientMessageId, threadId, kind, file });
+    this.transfers.registerRetry(clientMessageId, () => {
+      void retry();
+    });
   }
 
   /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on
@@ -712,7 +845,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  Message and the SSE echo reconciles the bubble. */
   private async uploadFileResult(
     f: File,
-    cid?: string,
+    cid: string,
   ): Promise<{
     url: string;
     name: string;
@@ -720,9 +853,15 @@ export class MessageThreadComponent implements OnDestroy {
     mimeType: string;
   } | null> {
     try {
-      // uploadFile returns the {code,message,data} envelope directly (progress events were dropped —
-      // they were never consumed). Stream path (Tauri desktop) or HttpClient path, same shape.
-      const up = await firstValueFrom(this.msgService.uploadFile(f, cid));
+      // Both upload paths report bytes through the callback but still reduce to the same final
+      // {code,message,data} envelope here.
+      const up = await firstValueFrom(
+        this.msgService.uploadFile(
+          f,
+          cid,
+          (loaded, total) => this.transfers.progress(cid, loaded, total),
+        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+      );
       return up.data ?? null;
     } catch {
       return null;
@@ -785,6 +924,15 @@ export class MessageThreadComponent implements OnDestroy {
     } else {
       this.dispatchHttpSendText(item);
     }
+  }
+
+  private async cancelPending(clientMessageId: string): Promise<void> {
+    const source = this.source;
+    const scroller = this.scroller;
+    if (!source || !scroller || !source.discardPending(clientMessageId)) return;
+    this.pendingFiles.delete(clientMessageId);
+    this.transfers.discard(clientMessageId);
+    await scroller.reconcilePending();
   }
 
   /** Mark an optimistic send FAILED: the source flips its pending entry to status:'failed' (stable identity);
@@ -1083,4 +1231,10 @@ function readAudioMeta(f: File): Promise<{ duration: number }> {
     };
     a.src = url;
   });
+}
+
+function formatTransferBytes(bytes: number): string {
+  const value = Math.max(0, bytes);
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }

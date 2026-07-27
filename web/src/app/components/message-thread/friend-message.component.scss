@@ -100,6 +100,177 @@ app-chat-input {
   flex: 0 0 auto;
 }
 
+// One stable transport row per state. It lives in normal flow directly above the composer, so it reads as
+// the newest outgoing message without entering the virtual scroller's height model. The card and its
+// thumbnail rail have fixed dimensions: individual completions only change paint, never surrounding layout.
+.msg-transfer-stack {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  padding: 6px max(16px, calc((100% - 800px) / 2 + 16px)) 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transition: transform 60ms linear;
+  pointer-events: none;
+}
+
+.msg-transfer-line {
+  width: min(100%, 430px);
+  height: 130px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.msg-transfer-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+}
+
+.msg-transfer-btn {
+  @include styless-button;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--app-brand) 38%, var(--app-border));
+  border-radius: var(--app-radius-pill);
+  background: var(--app-surface-elevated);
+  color: var(--app-brand);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  svg {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  &:hover { background: var(--app-hover); }
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 1px;
+  }
+  &--cancel {
+    border-color: var(--app-border);
+    color: var(--app-text-muted);
+  }
+}
+
+.msg-transfer-card {
+  height: 130px;
+  min-width: 0;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: 22px 54px 16px 4px;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 16px 6px 16px 16px;
+  background: var(--im-bubble-self);
+  color: var(--im-bubble-text);
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  overflow: hidden;
+  &--failed {
+    outline: 1px solid color-mix(in srgb, var(--app-danger) 55%, transparent);
+    .msg-transfer-progress span { width: 100%; background: var(--app-danger); }
+  }
+}
+
+.msg-transfer-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.msg-transfer-count {
+  width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-transfer-thumbs {
+  height: 54px;
+  display: grid;
+  grid-template-columns: repeat(5, 50px);
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.msg-transfer-thumb {
+  width: 50px;
+  height: 50px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  img { width: 100%; height: 100%; object-fit: cover; }
+}
+
+.msg-transfer-bytes {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-transfer-more {
+  color: var(--app-text-muted);
+}
+
+.msg-transfer-progress {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  span {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--app-brand);
+    transition: width 120ms linear;
+  }
+}
+
+@media (max-width: 420px) {
+  .msg-transfer-stack { padding-inline: 10px; }
+  .msg-transfer-line {
+    width: 100%;
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 6px;
+  }
+  .msg-transfer-thumbs { grid-template-columns: repeat(5, 44px); }
+  .msg-transfer-thumb { width: 44px; height: 50px; }
+}
+
 .msg-latest-layer {
   position: relative;
   z-index: 3;

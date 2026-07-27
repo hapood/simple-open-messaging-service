@@ -48,6 +48,7 @@ export class KbdOffsetDirective {
     // otherwise re-run the effect and lift mid-transition). Returning here keeps the effect subscribed to
     // `reflowFrozen()`, so it re-runs on thaw.
     if (frozen) return;
-    this.offset.set(this.kbd.inset()); // read only when not frozen → tracked → re-runs on every push
+    const override = this.kbd.layoutOverride();
+    this.offset.set(override ?? this.kbd.inset());
   });
 }

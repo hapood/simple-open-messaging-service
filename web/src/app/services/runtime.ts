@@ -181,7 +181,13 @@ declare global {
      *  main.ts before bootstrap for a FOUC-free first paint. Absent in browser/desktop. `getImeHeight()`
      *  (the current soft-keyboard height in CSS px, 0 when closed) lets the web seed the value at boot; the
      *  live source is {@link __SOMS_IME_HEIGHT__}. */
-    SomsShell?: { getSafeInsets: () => string; getImeHeight?: () => number };
+    SomsShell?: {
+      getSafeInsets: () => string;
+      getImeHeight?: () => number;
+      /** Android native IME visibility controls. They preserve the focused contenteditable and caret. */
+      showIme?: () => void;
+      hideIme?: () => void;
+    };
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
      *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
      *  (CallController); the Angular layer is the call "chrome" and drives it through these. The EVENT

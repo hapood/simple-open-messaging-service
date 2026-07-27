@@ -4,8 +4,12 @@
      `transform: translateY(-K)`, and a transformed ancestor becomes the containing block for this
      `position: fixed` mask — breaking its full-screen `inset: 0`. Keeping the backdrop outside the form
      leaves it anchored to the real viewport. -->
-<div class="ci-backdrop" appPreventFocusSteal [hidden]="!emojiOpen()" (click)="closeEmoji()"></div>
-<form class="ci-input-bar" #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
+<div class="ci-backdrop" appPreventFocusSteal
+     [class.ci-backdrop--keyboard]="emojiKeyboard()"
+     [hidden]="!emojiOpen()" (click)="closeEmoji()"></div>
+<form class="ci-input-bar" [class.ci-input-bar--emoji-keyboard]="emojiKeyboard()"
+      [style.--emoji-kbd-height.px]="emojiKeyboardHeight()"
+      #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
   <!-- Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid. Floats above the bar; the
        native keyboard stays up on mobile (no VirtualKeyboard swap — hide() is broken on Chrome Android,
        crbug.com/40912131). Backdrop / Esc closes. The Recents tab is first when non-empty. -->
@@ -17,9 +21,16 @@
        mousedown bubbling (one directive, not ~440). -->
   <div class="ci-emoji-panel" appPreventFocusSteal
        [class.ci-emoji-panel--open]="emojiOpen()"
+       [class.ci-emoji-panel--keyboard]="emojiKeyboard()"
+       [class.ci-emoji-panel--handoff]="keyboardHandoff()"
+       [class.ci-emoji-panel--system-handoff]="switchingToSystem()"
        [attr.aria-hidden]="!emojiOpen()"
        (click)="$event.stopPropagation()" role="dialog" [attr.aria-label]="'chat.emojiAria' | transloco">
     <div class="ci-emoji-tabs" role="tablist">
+      @if (emojiKeyboard()) {
+        <button type="button" class="ci-emoji-tab ci-emoji-tab--abc"
+                (click)="showSystemKeyboard()" aria-label="ABC">ABC</button>
+      }
       @for (cat of emojiTabs(); track cat.id) {
         <button type="button" class="ci-emoji-tab"
                 [class.ci-emoji-tab--active]="activeCategory() === cat.id"
@@ -39,6 +50,16 @@
         </div>
       }
     </div>
+    @if (emojiKeyboard()) {
+      <button type="button" class="ci-emoji-backspace" appPreventFocusSteal
+              (click)="deleteEmojiInput()" aria-label="Backspace">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 4H8l-6 8 6 8h13a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1Z" />
+          <path d="m10 9 6 6m0-6-6 6" />
+        </svg>
+      </button>
+    }
   </div>
   <!-- Recording indicator — floats above the bar while the mic is held. position:absolute bottom:100% (like
        the emoji panel; the form is the positioned/transformed containing block). A sibling of the capsule, so
@@ -80,6 +101,9 @@
         </svg>
       </button>
       <app-chat-editor class="ci-input" [members]="members()" [placeholder]="placeholder()"
+                       (pointerdown)="onEditorPointerDown($event)"
+                       (focusChange)="onEditorFocusChange($event)"
+                       (attachmentPaste)="onAttachmentPaste($event)"
                        (html)="onHtml($event)" (send)="onEditorSend()"></app-chat-editor>
       <button type="button" class="ci-input-ico" appPreventFocusSteal (click)="toggleEmoji()" [attr.aria-label]="'chat.emojiAria' | transloco">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -123,9 +147,21 @@
     [entries]="attachEntries"
     [origin]="plusTrigger"
     [open]="attachOpen()"
+    [positions]="attachPositions"
     (select)="onAttachSelect($event)"
     (closed)="closeAttach()"
   />
   <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
   <input #fileInput type="file" hidden (change)="onFileChange($event)" />
 </form>
+@if (pasteOpen()) {
+  <app-paste-panel
+    [items]="pasteItems()"
+    [text]="pasteText()"
+    (textChange)="pasteText.set($event)"
+    (remove)="removePasteItem($event)"
+    (morePaste)="appendPanelPaste($event)"
+    (cancel)="cancelPaste()"
+    (confirm)="confirmPaste()"
+  />
+}

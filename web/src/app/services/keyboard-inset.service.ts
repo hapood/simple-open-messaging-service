@@ -26,6 +26,8 @@ import { isAndroid, isTauri } from './runtime';
  *  listener (browser). Module-scoped so the eager bridge function — which runs before DI exists — and
  *  the service share one signal. */
 const inset = signal(0);
+const layoutOverride = signal<number | null>(null);
+let layoutOverrideOwner: object | null = null;
 
 /** Clamp + integerize a raw keyboard height (defensive: the native push or `visualViewport` may report
  *  fractional / negative values under edge cases). */
@@ -62,9 +64,23 @@ export class KeyboardInsetService {
   readonly inset = inset.asReadonly();
   /** Keyboard-open event: true while a soft keyboard occludes the viewport. */
   readonly open = computed(() => inset() > 0);
+  /** Composer-owned layout override. During an explicit native↔custom keyboard handoff the custom panel
+   *  already occupies the keyboard slot, so layout must temporarily ignore native IME animation frames. */
+  readonly layoutOverride = layoutOverride.asReadonly();
   /** True only inside the Android Tauri shell, where the native-injected inset is authoritative
    *  (`visualViewport` is blind to the IME there). */
   readonly available = isTauri() && isAndroid();
+
+  setLayoutOverride(owner: object, value: number | null): void {
+    if (value === null) {
+      if (layoutOverrideOwner !== owner) return;
+      layoutOverrideOwner = null;
+      layoutOverride.set(null);
+      return;
+    }
+    layoutOverrideOwner = owner;
+    layoutOverride.set(clampPx(value));
+  }
 
   constructor() {
     // Android: the eager native bridge (main.ts) feeds `inset`; `visualViewport` is blind, so skip its

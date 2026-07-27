@@ -1,4 +1,13 @@
 {
+  "transfer": {
+    "sendingCount": "正在发送 {{count}} 项",
+    "sendingOf": "正在发送 {{completed}}/{{total}}",
+    "sendingProgress": "正在发送 {{completed}}/{{total}} · {{progress}}%",
+    "failedCount": "{{count}} 项发送失败",
+    "completed": "发送完成",
+    "cancel": "取消发送",
+    "retry": "重试发送"
+  },
   "call": {
     "incoming": "来电",
     "calling": "正在呼叫…",
@@ -322,6 +331,14 @@
     },
     "sendPhoto": "照片",
     "sendFile": "文件",
+    "paste": {
+      "title": "确认粘贴内容",
+      "summary": "{{count}} 个附件",
+      "textLabel": "粘贴的文字",
+      "textPlaceholder": "添加或编辑要发送的文字",
+      "removeItem": "移除 {{name}}",
+      "send": "发送 {{count}} 项"
+    },
     "sendAria": "发送",
     "callAria": "发起语音通话",
     "backUnreadAria": "返回会话列表，其他会话有 {{count}} 条未读消息",

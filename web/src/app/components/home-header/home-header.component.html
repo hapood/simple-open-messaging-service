@@ -10,6 +10,106 @@
         [src]="sessionProfile()?.avatar" />
     </span>
   </button>
+  @if (transferSummaries().length > 0) {
+    <div class="transfer-anchor">
+      <button
+        type="button"
+        class="transfer-status"
+        [class.failed]="transferFailedCount() > 0"
+        [style.--transfer-progress]="(transferProgress() ?? 0) + '%'"
+        (click)="toggleTransferMenu()"
+        [attr.aria-expanded]="transferMenuOpen()"
+        aria-haspopup="menu"
+      >
+        <span class="transfer-thumbs" aria-hidden="true">
+          @for (task of transferTasks().slice(0, 3); track task.clientMessageId) {
+            <span class="transfer-thumb" [class.failed]="task.status === 'failed'">
+              @if (task.previewUrl) {
+                <img [src]="task.previewUrl" alt="" />
+              } @else {
+                <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span>
+              }
+            </span>
+          }
+          @if (transferTasks().length > 3) {
+            <span class="transfer-more">+{{ transferTasks().length - 3 }}</span>
+          }
+        </span>
+        @if (transferFailedCount() > 0) {
+          <span class="transfer-mark" aria-hidden="true">!</span>
+          <span>{{ 'transfer.failedCount' | transloco: { count: transferFailedCount() } }}</span>
+        } @else {
+          @if (transferCount() === 0) {
+            <span class="transfer-mark transfer-mark--done" aria-hidden="true">✓</span>
+            <span>{{ 'transfer.completed' | transloco }}</span>
+          } @else {
+            <span class="transfer-spinner" aria-hidden="true"></span>
+          }
+          @if (transferCount() > 0 && transferProgress() !== null) {
+            <span>{{ 'transfer.sendingProgress' | transloco: {
+              completed: transferCompleted(),
+              total: transferTotal(),
+              progress: transferProgress()
+            } }}</span>
+          } @else if (transferCount() > 0) {
+            <span>{{ 'transfer.sendingOf' | transloco: {
+              completed: transferCompleted(),
+              total: transferTotal()
+            } }}</span>
+          }
+        }
+      </button>
+      @if (transferMenuOpen()) {
+        <div class="transfer-menu" role="menu">
+          @for (summary of transferSummaries(); track summary.threadId) {
+            <div class="transfer-menu-row" role="none">
+              <button type="button" class="transfer-menu-main" role="menuitem" (click)="openTransferThread(summary)">
+                <span class="transfer-thread-thumbs" aria-hidden="true">
+                  @for (task of tasksForThread(summary.threadId).slice(0, 2); track task.clientMessageId) {
+                    <span class="transfer-thumb" [class.failed]="task.status === 'failed'">
+                      @if (task.previewUrl) { <img [src]="task.previewUrl" alt="" /> }
+                      @else { <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span> }
+                    </span>
+                  }
+                </span>
+                <span class="transfer-thread-copy">
+                  <span class="transfer-thread-name">{{ transferThreadName(summary) }}</span>
+                  <span class="transfer-thread-state" [class.failed]="summary.failed > 0">
+                    @if (summary.failed > 0) {
+                      {{ 'transfer.failedCount' | transloco: { count: summary.failed } }}
+                    } @else if (summary.uploading === 0) {
+                      {{ 'transfer.completed' | transloco }}
+                    } @else if (summary.progress !== null) {
+                      {{ 'transfer.sendingProgress' | transloco: {
+                        completed: summary.completed,
+                        total: summary.total,
+                        progress: summary.progress
+                      } }}
+                    } @else {
+                      {{ 'transfer.sendingOf' | transloco: {
+                        completed: summary.completed,
+                        total: summary.total
+                      } }}
+                    }
+                  </span>
+                </span>
+              </button>
+              @if (summary.uploading > 0) {
+                <button type="button" class="transfer-row-action"
+                  (click)="cancelThread(summary.threadId, $event)"
+                  [attr.aria-label]="'transfer.cancel' | transloco">×</button>
+              }
+              @if (summary.failed > 0) {
+                <button type="button" class="transfer-row-action"
+                  (click)="retryThread(summary.threadId, $event)"
+                  [attr.aria-label]="'transfer.retry' | transloco">↻</button>
+              }
+            </div>
+          }
+        </div>
+      }
+    </div>
+  }
   <div class="header-actions">
     <button class="icon-btn friend-btn" (click)="openFriendRequests()"
       [attr.aria-label]="'nav.friendRequests' | transloco">

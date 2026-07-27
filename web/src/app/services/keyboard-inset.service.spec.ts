@@ -63,6 +63,21 @@ describe('KeyboardInsetService', () => {
     expect(TestBed.inject(KeyboardInsetService).available).toBe(false);
   });
 
+  it('layout override is owner-scoped and clearable only by its owner', () => {
+    const svc = TestBed.inject(KeyboardInsetService);
+    const owner = {};
+    const stranger = {};
+
+    svc.setLayoutOverride(owner, 12.9);
+    expect(svc.layoutOverride()).toBe(12);
+
+    svc.setLayoutOverride(stranger, null);
+    expect(svc.layoutOverride()).toBe(12);
+
+    svc.setLayoutOverride(owner, null);
+    expect(svc.layoutOverride()).toBeNull();
+  });
+
   it('the native bridge (Android push) feeds inset, clamped + integerized, and drives open', () => {
     installKeyboardInsetBridge();
     // Injecting the service on the browser path also installs the (real) visualViewport source, which

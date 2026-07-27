@@ -132,8 +132,8 @@ export class ChatActionMenuComponent {
     if (event.key === 'Escape') this.closed.emit();
   }
 
-  /** Anchored below the origin's right edge (left of the button, dropping down), with flip fallbacks. */
-  readonly positions: ConnectedPosition[] = [
+  /** Anchored below the origin's right edge by default. A bottom composer can supply an above-first list. */
+  @Input() positions: ConnectedPosition[] = [
     { originX: 'end', originY: 'bottom', overlayX: 'end', overlayY: 'top' },
     { originX: 'start', originY: 'bottom', overlayX: 'start', overlayY: 'top' },
     { originX: 'end', originY: 'top', overlayX: 'end', overlayY: 'bottom' },

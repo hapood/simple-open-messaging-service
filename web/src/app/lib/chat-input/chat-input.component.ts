@@ -4,6 +4,7 @@ import {
   ViewEncapsulation,
   ElementRef,
   computed,
+  effect,
   inject,
   input,
   OnDestroy,
@@ -11,7 +12,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { OverlayModule } from '@angular/cdk/overlay';
+import { ConnectedPosition, OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { ChatEditorComponent, type ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { ChatActionMenuComponent, type ChatMenuEntry } from '../../components/chat-action-menu/chat-action-menu.component';
@@ -20,6 +21,15 @@ import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal
 import { EMOJI_CATEGORIES } from './emoji-data';
 import { firstValueFrom } from 'rxjs';
 import { MsgService } from '../../services/message.service';
+import { InputDeviceService } from '../../services/input-device.service';
+import { KeyboardInsetService } from '../../services/keyboard-inset.service';
+import { hideIme, showIme } from './vkb-support';
+import { isAndroidNative } from '../../services/runtime';
+import { uuid } from '../uuid';
+import {
+  PastePanelComponent,
+  type PastePanelItem,
+} from './paste-panel.component';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -32,6 +42,7 @@ export type ChatSendIntent =
   | { kind: 'image'; files: FileList }
   | { kind: 'file'; files: FileList }
   | { kind: 'link'; url: string }
+  | { kind: 'paste'; text: string; files: readonly File[] }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
 
 /** A category/tab shown in the emoji panel (Recents is a synthetic tab when non-empty). The accessible
@@ -138,7 +149,14 @@ function saveRecents(list: string[]): void {
  */
 @Component({
   selector: 'app-chat-input',
-  imports: [ChatEditorComponent, PreventFocusStealDirective, ChatActionMenuComponent, OverlayModule, TranslocoModule],
+  imports: [
+    ChatEditorComponent,
+    PreventFocusStealDirective,
+    ChatActionMenuComponent,
+    PastePanelComponent,
+    OverlayModule,
+    TranslocoModule,
+  ],
   templateUrl: './chat-input.component.html',
   styleUrl: './chat-input.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -162,16 +180,52 @@ export class ChatInputComponent implements OnDestroy {
   private readonly attachInput = viewChild<ElementRef<HTMLInputElement>>('attachInput');
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgService = inject(MsgService);
+  private readonly inputDevice = inject(InputDeviceService);
+  private readonly keyboardInset = inject(KeyboardInsetService);
 
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
   readonly draftHtml = signal('');
   /** Emoji panel open flag. */
   readonly emojiOpen = signal(false);
+  /** Only the Android native shell has the reliable focus-preserving IME bridge required for a keyboard
+   *  replacement. Desktop and mobile browsers both use the floating popup. */
+  readonly emojiKeyboard = signal(isAndroidNative());
+  /** Stable keyboard slot height. During a native↔emoji handoff the native inset and custom panel divide
+   *  this height between them, keeping the composer at one constant Y position. */
+  readonly emojiKeyboardHeight = signal(300);
+  readonly keyboardHandoff = signal(false);
+  private readonly keyboardLayoutOwner = {};
+  readonly switchingToSystem = signal(false);
+  private keyboardHandoffTimer?: ReturnType<typeof setTimeout>;
+  private readonly trackKeyboardGeometry = effect(() => {
+    const inset = this.keyboardInset.inset();
+    if (inset > 0 && !this.emojiOpen()) this.emojiKeyboardHeight.set(inset);
+    if (this.keyboardHandoff() && !this.switchingToSystem() && inset === 0) {
+      requestAnimationFrame(() => this.keyboardHandoff.set(false));
+    }
+    if (this.switchingToSystem() && inset > 0) {
+      // Do not unmount at the first animation frame (often 1–10px): the residual emoji height is what
+      // keeps the slot full while the IME grows. Close only after geometry has settled briefly.
+      clearTimeout(this.keyboardHandoffTimer);
+      this.keyboardHandoffTimer = setTimeout(() => {
+        this.switchingToSystem.set(false);
+        this.emojiOpen.set(false);
+        this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
+        this.measureBar();
+        requestAnimationFrame(() => this.keyboardHandoff.set(false));
+      }, 80);
+    }
+  });
   /** Live link-card preview when the draft is a single bare URL (WeChat/WhatsApp-style; built
    *  server-side). Null when the draft isn't a bare URL or the fetch hasn't landed yet. The send path
    *  reuses the server's cache so the sent card builds instantly. */
   readonly previewCard = signal<LinkCardPreview | null>(null);
+  /** Ephemeral paste review state. This relationship is deliberately UI-only: confirmed entries become
+   *  ordinary independent messages and no batch identifier reaches the API. */
+  readonly pasteItems = signal<PastePanelItem[]>([]);
+  readonly pasteText = signal('');
+  readonly pasteOpen = signal(false);
   /** Monotonic token: a slow earlier URL's response must not overwrite a newer edit's preview. */
   private previewSeq = 0;
   private previewTimer?: ReturnType<typeof setTimeout>;
@@ -211,6 +265,80 @@ export class ChatInputComponent implements OnDestroy {
     this.scheduleLinkPreview();
   }
 
+  /** A clipboard payload containing files belongs in the roomy review panel, not in the compact editor.
+   *  The editor has already prevented its default insertion before calling this method. */
+  onAttachmentPaste(event: ClipboardEvent): void {
+    const data = event.clipboardData;
+    if (!data) return;
+    this.appendPaste(Array.from(data.files), data.getData('text/plain'));
+  }
+
+  appendPanelPaste(event: ClipboardEvent): void {
+    const data = event.clipboardData;
+    if (!data) return;
+    this.appendPaste(Array.from(data.files), data.getData('text/plain'));
+  }
+
+  private appendPaste(files: readonly File[], text: string): void {
+    if (files.length === 0) return;
+    const existing = new Set(
+      this.pasteItems().map(({ file }) => this.fileFingerprint(file)),
+    );
+    const additions: PastePanelItem[] = [];
+    for (const file of files) {
+      const fingerprint = this.fileFingerprint(file);
+      if (existing.has(fingerprint)) continue;
+      existing.add(fingerprint);
+      additions.push({
+        id: `${fingerprint}:${uuid()}`,
+        file,
+        previewUrl: file.type.startsWith('image/')
+          ? URL.createObjectURL(file)
+          : undefined,
+      });
+    }
+    this.pasteItems.update((items) => [...items, ...additions]);
+    if (text) {
+      this.pasteText.update((current) =>
+        current ? `${current}\n${text}` : text,
+      );
+    }
+    this.closeEmoji();
+    this.closeAttach();
+    this.pasteOpen.set(true);
+  }
+
+  removePasteItem(id: string): void {
+    const item = this.pasteItems().find((candidate) => candidate.id === id);
+    if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    this.pasteItems.update((items) => items.filter((candidate) => candidate.id !== id));
+  }
+
+  cancelPaste(): void {
+    this.clearPasteState();
+  }
+
+  confirmPaste(): void {
+    const files = this.pasteItems().map(({ file }) => file);
+    const text = this.pasteText().trim();
+    if (files.length === 0 && !text) return;
+    this.clearPasteState();
+    this.send.emit({ kind: 'paste', text, files });
+  }
+
+  private clearPasteState(): void {
+    for (const item of this.pasteItems()) {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    }
+    this.pasteItems.set([]);
+    this.pasteText.set('');
+    this.pasteOpen.set(false);
+  }
+
+  private fileFingerprint(file: File): string {
+    return `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+  }
+
   /** Debounce: 400ms after the draft stops changing, if it is a single bare URL, ask the server to
    *  build the card and show it above the bar; any non-URL draft clears the preview. The user sees the
    *  card BEFORE they send (WeChat/WhatsApp flow). */
@@ -241,19 +369,63 @@ export class ChatInputComponent implements OnDestroy {
 
   /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
   toggleEmoji(): void {
-    if (this.emojiOpen()) { this.emojiOpen.set(false); return; }
+    if (this.emojiOpen()) { this.closeEmoji(); return; }
+    this.closeAttach();
     if (this.recents().length) this.activeCategory.set('recent');
     this.emojiOpen.set(true);
+    this.editor()?.focus();
+    if (this.emojiKeyboard()) {
+      this.keyboardHandoff.set(this.keyboardInset.inset() > 0);
+      // The in-flow emoji panel now owns the entire slot. Atomically stop applying native inset to the
+      // viewport/input bar; subsequent IME close frames are intentionally ignored by layout.
+      this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
+      hideIme();
+    }
+    this.measureBar();
   }
   closeEmoji(): void {
+    clearTimeout(this.keyboardHandoffTimer);
+    this.switchingToSystem.set(false);
     this.emojiOpen.set(false);
+    this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
+    this.keyboardHandoff.set(false);
+    this.measureBar();
   }
-  /** Insert the emoji at the editor caret, record it to Recents (move-to-front, dedup, capped), then refocus
-   *  so typing continues. The editor manages caret restoration. */
+  /** Switch from the custom emoji keyboard back to normal typing. This explicit action is the only path
+   *  that focuses the editor while the touch emoji surface is open. */
+  showSystemKeyboard(): void {
+    this.editor()?.focus();
+    if (!showIme()) {
+      this.closeEmoji();
+      return;
+    }
+    // Keep the emoji surface mounted while the native IME animates in. Its CSS height subtracts the live
+    // native inset, so one replaces the other frame-for-frame; the geometry effect closes it at first inset.
+    this.switchingToSystem.set(true);
+    this.keyboardHandoff.set(true);
+  }
+  /** Tapping the draft while the emoji keyboard owns the input surface must not focus contenteditable and
+   *  stack the system IME on top. The ABC key is the intentional switch back to normal typing. */
+  onEditorPointerDown(_event: PointerEvent): void {
+    if (!this.emojiKeyboard()) return;
+    if (this.emojiOpen()) return; // manual VK policy keeps selection positioning without summoning the IME
+    this.editor()?.focus();
+    showIme();
+  }
+  onEditorFocusChange(focused: boolean): void {
+    if (!focused) {
+      this.switchingToSystem.set(false);
+      this.closeEmoji();
+    }
+  }
+  /** Insert at the last editor selection and record it to Recents. Desktop refocuses the editor; the touch
+   *  keyboard keeps it blurred so the native IME remains hidden. */
   insertEmoji(e: string): void {
     this.editor()?.insertText(e);
     this.pushRecent(e);
-    this.editor()?.focus();
+  }
+  deleteEmojiInput(): void {
+    this.editor()?.deleteBackward();
   }
 
   /** Send key: draft present → send text. Empty → the mic (press-hold record) owns the empty state, so a
@@ -278,6 +450,8 @@ export class ChatInputComponent implements OnDestroy {
     this.draftHtml.set('');
     this.previewCard.set(null);
     clearTimeout(this.previewTimer);
+    this.closeEmoji();
+    this.closeAttach();
     this.measureBar();
     this.send.emit(isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text });
   }
@@ -310,9 +484,19 @@ export class ChatInputComponent implements OnDestroy {
     { kind: 'action', key: 'photo', labelKey: 'chat.sendPhoto', icon: AppIconType.IMAGE },
     { kind: 'action', key: 'file', labelKey: 'chat.sendFile', icon: AppIconType.FILE },
   ];
+  /** The composer sits at the viewport bottom, so prefer opening upward. This also keeps the file/photo
+   *  choices visible after the touch keyboard is dismissed. */
+  readonly attachPositions: ConnectedPosition[] = [
+    { originX: 'start', originY: 'top', overlayX: 'start', overlayY: 'bottom', offsetY: -4 },
+    { originX: 'end', originY: 'top', overlayX: 'end', overlayY: 'bottom', offsetY: -4 },
+    { originX: 'start', originY: 'bottom', overlayX: 'start', overlayY: 'top', offsetY: 4 },
+  ];
 
   toggleAttach(): void {
-    this.attachOpen.set(!this.attachOpen());
+    const opening = !this.attachOpen();
+    this.closeEmoji();
+    if (opening && !this.inputDevice.hasPhysicalKeyboard()) this.editor()?.blur();
+    this.attachOpen.set(opening);
   }
   closeAttach(): void {
     this.attachOpen.set(false);
@@ -485,6 +669,7 @@ export class ChatInputComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     this.destroyed = true;
+    this.clearPasteState();
     this.recordSession++; // invalidate any in-flight beginRecording (permission prompt resolved post-teardown)
     // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
     if (this.recorder) this.stopRecording(true);
@@ -492,6 +677,8 @@ export class ChatInputComponent implements OnDestroy {
     clearInterval(this.tickTimer);
     clearTimeout(this.errorTimer);
     clearTimeout(this.previewTimer);
+    clearTimeout(this.keyboardHandoffTimer);
+    this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */
