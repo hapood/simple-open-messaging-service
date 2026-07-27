@@ -383,6 +383,7 @@
     "emptyTitle": "No chats yet",
     "emptySub": "Add a friend to start your first conversation.",
     "addFriend": "Add friend",
+    "blocked": "Blocked",
     "muted": "Muted",
     "pinned": "Pinned",
     "unreadCount": "{{count}} unread"

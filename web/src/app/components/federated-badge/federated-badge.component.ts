@@ -13,9 +13,11 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
   imports: [IconComponent],
   template: `
     @if (domain()) {
-      <span class="fed-badge" [attr.title]="'federated: ' + domain()">
+      <span class="fed-badge" [class.compact]="compact()" [attr.title]="domain()">
         <app-icon [type]="AppIconType.GLOBE" [style]="{ width: '12px', height: '12px' }"></app-icon>
-        <span class="fed-domain">{{ domain() }}</span>
+        @if (!compact()) {
+          <span class="fed-domain">{{ domain() }}</span>
+        }
       </span>
     }
   `,
@@ -34,11 +36,17 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
         border-radius: var(--app-radius-pill);
         white-space: nowrap;
       }
+      .fed-badge.compact {
+        padding: 2px;
+        background: transparent;
+      }
     `,
   ],
 })
 export class FederatedBadgeComponent {
   /** The peer's domain. Empty/null → the badge self-hides (local user). */
   readonly domain = input<string | null | undefined>(undefined);
+  /** Icon-only treatment for dense surfaces; the full domain remains available as a tooltip. */
+  readonly compact = input(false);
   readonly AppIconType = AppIconType;
 }

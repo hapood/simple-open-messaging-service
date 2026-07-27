@@ -151,7 +151,8 @@ export class ThreadListComponent implements OnInit {
   accessibleLabel(t: ConversationItem): string {
     const parts = [
       this.displayName(t),
-      this.previewText(t),
+      this.federatedDomain(t),
+      t.blocked ? this.transloco.translate('threadList.blocked') : this.previewText(t),
       this.fmtTime(t.lastMessageAt),
     ]
     if (t.unreadCount > 0) {

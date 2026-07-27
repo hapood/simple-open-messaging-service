@@ -1,6 +1,6 @@
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
-import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import { provideTransloco, provideTranslocoTranspiler, TranslocoService } from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../i18n/csp-safe-icu.transpiler';
 import { ThreadListComponent } from './thread-list.component';
 import { UserService } from '../../services/user.service';
@@ -141,7 +141,14 @@ describe('ThreadListComponent', () => {
       unreadCount: 120,
       muted: true,
       pinned: true,
+      blocked: true,
       lastMessagePreview: 'Latest message',
+      peerUser: {
+        ...p2p(1, 11).peerUser,
+        name: 'A very long conversation name',
+        isForeigner: true,
+        domain: 'remote.example',
+      },
     };
     items.set([thread]);
     status.set(ConversationLoadStatus.READY);
@@ -149,12 +156,19 @@ describe('ThreadListComponent', () => {
     await fixture.whenStable();
 
     const row = fixture.nativeElement.querySelector('.thread-item') as HTMLButtonElement;
+    const blockedLabel = TestBed.inject(TranslocoService).translate('threadList.blocked');
     expect(row.tagName).toBe('BUTTON');
     expect(row.type).toBe('button');
     expect(row.getAttribute('aria-label')).toContain('A very long conversation name');
+    expect(row.getAttribute('aria-label')).toContain('remote.example');
+    expect(row.getAttribute('aria-label')).toContain(blockedLabel);
     expect(row.getAttribute('aria-label')).toContain('120');
-    expect(row.getAttribute('aria-label')?.split(', ')).toHaveSize(5);
     expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('99+');
+    expect(row.querySelector('.thread-blocked')?.textContent?.trim()).toContain(blockedLabel);
+    expect(row.querySelector('.thread-msg')).toBeNull();
+    const rows = row.querySelectorAll('.thread-row');
+    expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveSize(1);
+    expect(rows[1].querySelectorAll('.thread-status-icon')).toHaveSize(1);
   });
 
   it('native row activation emits the selected conversation', async () => {

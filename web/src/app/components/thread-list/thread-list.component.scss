@@ -92,9 +92,7 @@
     }
 
     app-federated-badge {
-      flex: 0 1 auto;
-      min-width: 0;
-      max-width: 40%;
+      flex: 0 0 auto;
     }
 
     .thread-time {
@@ -124,6 +122,17 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .thread-blocked {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--app-text-muted);
+      font-size: 14px;
+      line-height: 16px;
     }
 
     .unread-badge {

@@ -38,22 +38,29 @@
               <span class="thread-row">
                 <span class="thread-name">{{ displayName(thread) }}</span>
                 @if (federatedDomain(thread); as domain) {
-                  <app-federated-badge [domain]="domain"></app-federated-badge>
+                  <app-federated-badge [domain]="domain" [compact]="true"></app-federated-badge>
                 }
                 @if (thread.pinned) {
                   <span class="thread-status-icon" [title]="'threadList.pinned' | transloco" aria-hidden="true">
                     <app-icon [type]="AppIconType.PIN" [style]="{ width: '14px', height: '14px' }"></app-icon>
                   </span>
                 }
+                <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
+              </span>
+              <span class="thread-row">
+                @if (thread.blocked) {
+                  <span class="thread-blocked">
+                    <app-icon [type]="AppIconType.BLOCK" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                    <span>{{ 'threadList.blocked' | transloco }}</span>
+                  </span>
+                } @else {
+                  <span class="thread-msg">{{ previewText(thread) }}</span>
+                }
                 @if (thread.muted) {
                   <span class="thread-status-icon" [title]="'threadList.muted' | transloco" aria-hidden="true">
                     <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
                   </span>
                 }
-                <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
-              </span>
-              <span class="thread-row">
-                <span class="thread-msg">{{ previewText(thread) }}</span>
                 @if (thread.unreadCount > 0) {
                   <span class="unread-badge" aria-hidden="true">
                     {{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}
