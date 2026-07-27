@@ -14,7 +14,7 @@ import {
   stageCasAsset,
   uploadAvatar,
   registerAndLogin,
-  getAdminToken,
+  getAdminCookie,
   openSse,
   waitForSseEvent,
 } from './federation-test-helpers.js';
@@ -43,7 +43,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let aliceStubIdOnB: number; // appB's stub of alice (foreign)
   let aliceLocalIdA: number;
   let carolLocalIdA: number;
-  let adminTokenA: string; // super-admin on appA — the real path for the block test + admin reads
+  let adminCookieA: string; // super-admin on appA — admin_session cookie pair for the block test + admin reads
   let png2: Buffer; // second avatar (distinct color) for the re-pull test
   let firstGroupThreadA: number; // the first federated group's ORIGIN thread on appA (reused by later group tests)
   let firstMirrorBId: number; // that group's MIRROR thread on appB
@@ -93,7 +93,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // A super-admin on appA — the trust-lifecycle tests block a peer + read the event timeline via the
     // REAL admin routes (which call markBlocked/peerEvents), not prisma shortcuts.
-    adminTokenA = await getAdminToken(appA);
+    adminCookieA = await getAdminCookie(appA);
   }, 120_000);
 
   afterAll(async () => {
@@ -1235,7 +1235,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // after a re-handshake that must be `trusted` (trust re-established), the timeline still has the demote.
     const eventsRes = await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_B}/events`)
-      .set('Authorization', `Bearer ${adminTokenA}`)
+      .set('Cookie', adminCookieA)
       .send({ take: 50 });
     const types = (eventsRes.body.data as { type: string }[]).map((e) => e.type);
     expect(types[0]).toBe('trusted');
@@ -1247,7 +1247,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // handshake — it surfaces FEDERATION_PEER_BLOCKED (distinct from an unreachable peer).
     await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_B}/block`)
-      .set('Authorization', `Bearer ${adminTokenA}`)
+      .set('Cookie', adminCookieA)
       .send({ note: 'abuse' });
     const blocked = await appA.prisma.federatedPeer.findUnique({
       where: { domain: DOM_B },
@@ -1265,7 +1265,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // timeline (newest-first) carries the full discovered → trusted → demoted → trusted → blocked process.
     const listRes = await request(appA.baseUrl)
       .post('/api/v1/admin/federation/peers')
-      .set('Authorization', `Bearer ${adminTokenA}`)
+      .set('Cookie', adminCookieA)
       .send({ skip: 0, take: 10, status: 'blocked' });
     expect(
       (listRes.body.data.list as { domain: string }[]).some((p) => p.domain === DOM_B),
@@ -1273,7 +1273,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const tlRes = await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_B}/events`)
-      .set('Authorization', `Bearer ${adminTokenA}`)
+      .set('Cookie', adminCookieA)
       .send({ take: 50 });
     const types = (tlRes.body.data as { type: string }[]).map((e) => e.type);
     expect(types).toContain('discovered');

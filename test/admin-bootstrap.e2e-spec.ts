@@ -9,6 +9,7 @@ import { PrismaService } from '../src/prisma.service';
 import { PrismaClient } from '../src/prisma/generated/client.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { AdminRole } from '../src/prisma/generated/client.js';
+import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 
 /**
  * AdminBootstrapService e2e — boots the REAL AppModule against a real Postgres and asserts the
@@ -74,7 +75,9 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
         .send({ account: 'admin', password: BOOT_PWD });
       expect(login.status).toBe(200);
       expect(login.body.code).toBe(0);
-      expect(login.body.data?.access_token).toBeTruthy();
+      // The session is delivered via the httpOnly admin_session cookie, not a response-body token.
+      expect(login.body.data?.authenticated).toBe(true);
+      expect(String(login.headers['set-cookie'])).toContain(ADMIN_SESSION_COOKIE);
     } finally {
       await app.close();
     }

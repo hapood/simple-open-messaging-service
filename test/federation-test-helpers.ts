@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import request from 'supertest';
 import type { PrismaClient } from '../src/prisma/generated/client.js';
 import { PasswordHasher } from '../src/auth/password-hasher.service.js';
+import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 
 /** mimetype → CAS file extension (mirrors UploadService.IMG_EXT for the asset types the tests stage). */
 const IMG_EXT: Record<string, string> = {
@@ -111,13 +112,14 @@ export async function registerAndLogin(
   return { id: u.id, token };
 }
 
-/** Create a SUPER_ADMIN identity + log in via the admin route, returning the admin access token. The
- *  identity user is seeded directly with a peppered password (registration is closed — hashed via the
+/** Create a SUPER_ADMIN identity + log in via the admin route, returning the admin_session cookie pair.
+ *  The identity user is seeded directly with a peppered password (registration is closed — hashed via the
  *  app's PasswordHasher, the exact path /admin/login verifies against), the Admin row is attached, then
- *  /admin/login verifies the password over HTTP. The admin JWT system is independent of loginMode /
- *  registrationOpen, so the admin login itself is unaffected (this is the real way the federation
+ *  /admin/login verifies the password over HTTP. Admin auth is an opaque session delivered via the
+ *  httpOnly admin_session cookie (set by the controller, never the response body), so the caller attaches
+ *  the returned pair with .set('Cookie', …) on admin routes (this is the real way the federation
  *  peer-block tests block a domain — through markBlocked via the admin route, not a prisma shortcut). */
-export async function getAdminToken(app: AppLike, account = 'admin'): Promise<string> {
+export async function getAdminCookie(app: AppLike, account = 'admin'): Promise<string> {
   const u = await app.prisma.user.create({
     data: {
       account,
@@ -135,9 +137,18 @@ export async function getAdminToken(app: AppLike, account = 'admin'): Promise<st
   const res = await request(app.baseUrl)
     .post('/api/v1/admin/login')
     .send({ account, password: 'Pass1234' });
-  // Admin login returns the ADMIN access_token (JWT) — the admin system stays JWT; only user auth moved
-  // to the session token. Do NOT read session_token here.
-  return res.body.data.access_token as string;
+  return extractAdminCookie(res);
+}
+
+/** Pull the `admin_session=<token>` pair out of a login response's Set-Cookie header. supertest exposes
+ *  set-cookie as a string (single cookie) or string[] (several); join then regex so the parse is
+ *  shape-agnostic. login sets exactly one cookie (admin_session), so there is no comma-in-expires hazard. */
+function extractAdminCookie(res: request.Response): string {
+  const raw = res.headers['set-cookie'];
+  const text = Array.isArray(raw) ? raw.join('; ') : String(raw ?? '');
+  const m = new RegExp(`${ADMIN_SESSION_COOKIE}=([^;]+)`).exec(text);
+  if (!m) throw new Error('admin/login did not set an admin_session cookie');
+  return `${ADMIN_SESSION_COOKIE}=${m[1]}`;
 }
 
 // ─── real SSE client (replaces the in-process SseService.on* spies) ────────────────────────────

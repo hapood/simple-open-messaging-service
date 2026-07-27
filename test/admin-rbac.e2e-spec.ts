@@ -7,29 +7,31 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
 import { AdminAuthService } from '../src/admin/admin-auth.service';
+import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { AdminRole } from '../src/prisma/generated/client.js';
 
 /**
- * Admin security invariants e2e — the regression anchor for the Phase 1 RBAC + tokenVersion
- * revocation + audit foundations. These three invariants shipped without test coverage; this file
- * pins them so a future refactor (someone trimming AdminJwtStrategy's tver check, or dropping the
- * last-super guard) fails loudly instead of silently.
+ * Admin security invariants e2e — the regression anchor for the RBAC + opaque-session revocation +
+ * audit foundations. These invariants are pinned so a future refactor (someone weakening the
+ * AdminRolesGuard tiers, or dropping the last-super guard, or revoking sessions on a no-op setRole)
+ * fails loudly instead of silently.
  *
  *   1. RBAC tiers — reads open to VIEWER; routine mutations need ADMIN+; high-impact needs SUPER_ADMIN.
  *      Authorization failures surface as HTTP 200 + code 10004 (FORBIDDEN): the {code,message,data}
  *      envelope renders business errors at HTTP 200 by convention (business.exception.ts). Only a true
- *      auth failure — a revoked/disabled token making AdminJwtStrategy return null — is HTTP 401.
+ *      auth failure — a revoked/disabled admin_session cookie making AdminAuthGuard throw — is HTTP 401.
  *      So RBAC assertions key on body.code (== 10004), NOT on HTTP status.
- *   2. Revocation is immediate — disabling/demoting an admin invalidates their outstanding access
- *      token on its very next request (tokenVersion bump) and revokes their refresh family.
+ *   2. Revocation is immediate — disabling/demoting an admin invalidates their outstanding
+ *      admin_session cookie on its very next request (revokeSessionsByAdmin marks their AdminSession
+ *      rows revoked, so validateAdminSession returns null). A no-op same-role setRole revokes nothing.
  *   3. Audit — every executed @Audit mutation writes an AdminActionLog row.
  *
  * Authz failures that a Guard rejects are NOT auditable here, and that is correct by construction:
- * NestJS runs Guards before Interceptors, so a 403 from AdminRolesGuard short-circuits before the
+ * NestJS runs Guards before Interceptors, so a 10004 from AdminRolesGuard short-circuits before the
  * AdminAuditInterceptor.intercept() is ever called. Successful mutations (and controller-thrown
  * business errors) are what the audit trail captures.
  */
-describe('Admin RBAC + revocation + audit (Phase 1)', () => {
+describe('Admin RBAC + revocation + audit', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let adminAuth: AdminAuthService;
@@ -47,7 +49,7 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
   });
 
   beforeEach(async () => {
-    // CASCADE clears Admin, AdminRefreshToken, AdminActionLog (all FK-reachable from User), so each
+    // CASCADE clears Admin, AdminSession, AdminActionLog (all FK-reachable from User), so each
     // case starts from an empty admin set.
     await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
   });
@@ -56,21 +58,23 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     await app.close();
   });
 
-  /** Seed a User + linked Admin of `role` (tokenVersion=0); return an access token minted for it.
-   *  Bypasses argon2 login entirely (we sign the token directly) so the test stays fast. */
+  /** Seed a User + linked Admin of `role`, then mint an opaque admin_session directly (bypassing
+   *  argon2 login) so the test stays fast. Returns the `admin_session=<token>` cookie pair to attach
+   *  to admin-route requests — admin auth is cookie-carried, never a Bearer body token. */
   async function seedAdmin(
     account: string,
     role: AdminRole,
-  ): Promise<{ adminId: number; userId: number; token: string }> {
+  ): Promise<{ adminId: number; userId: number; cookie: string }> {
     const user = await prisma.user.create({
       data: { account, domain: 'local', hashPwd: 'x', name: account, isForeigner: false },
       select: { id: true },
     });
     const admin = await prisma.admin.create({
-      data: { userId: user.id, role, enabled: true, tokenVersion: 0 },
+      data: { userId: user.id, role, enabled: true },
       select: { id: true },
     });
-    return { adminId: admin.id, userId: user.id, token: await adminAuth.getAdminAccessToken(admin.id) };
+    const token = await adminAuth.createAdminSession(admin.id, {});
+    return { adminId: admin.id, userId: user.id, cookie: `${ADMIN_SESSION_COOKIE}=${token}` };
   }
 
   const seedUser = (account: string) =>
@@ -79,10 +83,10 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
       select: { id: true },
     });
 
-  const post = (token: string, path: string, body?: object) =>
+  const post = (cookie: string, path: string, body?: object) =>
     request(app.getHttpServer())
       .post('/api/v1/' + path)
-      .set('Authorization', `Bearer ${token}`)
+      .set('Cookie', cookie)
       .send(body ?? {});
 
   // ── 1. RBAC tiers ─────────────────────────────────────────────────────────────
@@ -90,16 +94,16 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     const viewer = await seedAdmin('viewer', AdminRole.VIEWER);
     const target = await seedUser('tgt');
 
-    const read = await post(viewer.token, 'admin/users', { take: 5 });
+    const read = await post(viewer.cookie, 'admin/users', { take: 5 });
     expect(read.status).toBe(200);
     expect(read.body.code).toBe(0);
 
     // routine mutation (disable user — ADMIN+) → FORBIDDEN (HTTP 200 + code 10004 by envelope)
-    const routine = await post(viewer.token, `admin/users/${target.id}/disable`);
+    const routine = await post(viewer.cookie, `admin/users/${target.id}/disable`);
     expect(routine.body.code).toBe(10004);
 
     // high-impact (purge all sessions — SUPER_ADMIN-only) → FORBIDDEN
-    const hi = await post(viewer.token, 'admin/sessions/purge');
+    const hi = await post(viewer.cookie, 'admin/sessions/purge');
     expect(hi.body.code).toBe(10004);
   });
 
@@ -107,55 +111,42 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     const admin = await seedAdmin('admin', AdminRole.ADMIN);
     const target = await seedUser('tgt2');
 
-    const routine = await post(admin.token, `admin/users/${target.id}/disable`);
+    const routine = await post(admin.cookie, `admin/users/${target.id}/disable`);
     expect(routine.status).toBe(200);
     expect(routine.body.code).toBe(0);
 
     // SUPER_ADMIN-only op (purge all sessions) → ADMIN is forbidden
-    const hi = await post(admin.token, 'admin/sessions/purge');
+    const hi = await post(admin.cookie, 'admin/sessions/purge');
     expect(hi.body.code).toBe(10004);
   });
 
   // ── 2. Revocation is immediate ────────────────────────────────────────────────
-  it('disabling an admin invalidates their outstanding access token on the next request', async () => {
+  it('disabling an admin invalidates their outstanding session on the next request', async () => {
     const superA = await seedAdmin('super-a', AdminRole.SUPER_ADMIN);
     const superB = await seedAdmin('super-b', AdminRole.SUPER_ADMIN);
 
-    // B's token is valid before the disable.
-    const before = await post(superB.token, 'admin/admins', { take: 5 });
+    // B's session cookie is valid before the disable.
+    const before = await post(superB.cookie, 'admin/admins', { take: 5 });
     expect(before.status).toBe(200);
 
-    // A disables B → tokenVersion bumped inside the guarded transaction.
-    const disable = await post(superA.token, `admin/admins/${superB.adminId}/disable`);
+    // A disables B → revokeSessionsByAdmin('admin_disabled') marks B's AdminSession rows revoked
+    // (and B.enabled flips false) inside the last-super-guarded transaction.
+    const disable = await post(superA.cookie, `admin/admins/${superB.adminId}/disable`);
     expect(disable.body.code).toBe(0);
 
-    // B's SAME previously-issued token now fails the tver check → 401 / UNAUTHENTICATED.
-    const after = await post(superB.token, 'admin/admins', { take: 5 });
+    // B's SAME previously-issued cookie now fails validation (revoked + disabled) → 401 / UNAUTHENTICATED.
+    const after = await post(superB.cookie, 'admin/admins', { take: 5 });
     expect(after.status).toBe(401);
     expect(after.body.code).toBe(10003);
-  });
-
-  it('a disabled admin refresh token is rejected on rotation (family revoked)', async () => {
-    const superA = await seedAdmin('super-a2', AdminRole.SUPER_ADMIN);
-    const superB = await seedAdmin('super-b2', AdminRole.SUPER_ADMIN);
-    const refresh = await adminAuth.getAdminRefreshToken(superB.adminId, {});
-
-    await post(superA.token, `admin/admins/${superB.adminId}/disable`);
-
-    const rot = await request(app.getHttpServer())
-      .post('/api/v1/admin/renew-access')
-      .send({ refreshToken: refresh });
-    // The family was revoked → rotation must NOT succeed.
-    expect(rot.body.code).not.toBe(0);
   });
 
   it('the last enabled super admin cannot be disabled or demoted', async () => {
     const only = await seedAdmin('only-super', AdminRole.SUPER_ADMIN);
 
-    const disable = await post(only.token, `admin/admins/${only.adminId}/disable`);
+    const disable = await post(only.cookie, `admin/admins/${only.adminId}/disable`);
     expect(disable.body.code).toBe(10004); // last-super guard refused (HTTP 200 + code by envelope)
 
-    const demote = await post(only.token, `admin/admins/${only.adminId}/role`, {
+    const demote = await post(only.cookie, `admin/admins/${only.adminId}/role`, {
       role: AdminRole.ADMIN,
     });
     expect(demote.body.code).toBe(10004);
@@ -169,23 +160,19 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     expect(row?.role).toBe(AdminRole.SUPER_ADMIN);
   });
 
-  it('a same-role setRole is a no-op (no session kick, no tokenVersion bump)', async () => {
+  it('a same-role setRole is a no-op (no session revocation)', async () => {
     const a = await seedAdmin('keep-super-a', AdminRole.SUPER_ADMIN);
     const b = await seedAdmin('keep-super-b', AdminRole.SUPER_ADMIN);
-    const beforeTver = await prisma.admin.findUnique({
-      where: { id: b.adminId },
-      select: { tokenVersion: true },
-    });
 
-    const r = await post(a.token, `admin/admins/${b.adminId}/role`, { role: AdminRole.SUPER_ADMIN });
+    // Re-affirming B's existing role writes the same value — guardedStateChange reports changed:false,
+    // so setRole must NOT call revokeSessionsByAdmin.
+    const r = await post(a.cookie, `admin/admins/${b.adminId}/role`, { role: AdminRole.SUPER_ADMIN });
     expect(r.body.code).toBe(0);
 
-    const afterTver = await prisma.admin.findUnique({
-      where: { id: b.adminId },
-      select: { tokenVersion: true },
-    });
-    // Re-affirming the same role must not invalidate the admin's sessions.
-    expect(afterTver?.tokenVersion).toBe(beforeTver?.tokenVersion);
+    // B's previously-issued cookie still validates → no kick.
+    const stillValid = await post(b.cookie, 'admin/admins', { take: 5 });
+    expect(stillValid.status).toBe(200);
+    expect(stillValid.body.code).toBe(0);
   });
 
   // ── 3. Audit ──────────────────────────────────────────────────────────────────
@@ -193,7 +180,7 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     const actor = await seedAdmin('auditor', AdminRole.SUPER_ADMIN);
     const target = await seedAdmin('audited', AdminRole.SUPER_ADMIN);
 
-    const r = await post(actor.token, `admin/admins/${target.adminId}/disable`);
+    const r = await post(actor.cookie, `admin/admins/${target.adminId}/disable`);
     expect(r.body.code).toBe(0);
 
     const log = await prisma.adminActionLog.findFirst({
