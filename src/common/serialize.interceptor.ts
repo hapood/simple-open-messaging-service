@@ -78,9 +78,6 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
  * endpoints whose data alone does not carry `messageKey` / `hasMore`.
  */
 function envelopeFor(data: unknown): unknown {
-  // A void/null return (e.g. a handler that sent via @Res or has no payload) is passed through unwrapped —
-  // wrapping it would change the wire body for those routes, which Phase A forbids (wire-identical).
-  if (data === undefined || data === null) return data;
   if (isApiEnvelope(data)) {
     const carrier = data as ApiEnvelope;
     return {
@@ -92,6 +89,9 @@ function envelopeFor(data: unknown): unknown {
     };
   }
   if (isPreBuiltEnvelope(data)) return data;
+  // Raw payload → wrap. A void return (undefined) wraps to { code, message } — JSON omits the undefined
+  // `data`, yielding the success-ack shape — so a no-data handler can simply return nothing. @Raw handlers
+  // bypass this entirely (serializeBody on their raw return).
   return { code: BusinessCode.OK, message: 'successful', data };
 }
 

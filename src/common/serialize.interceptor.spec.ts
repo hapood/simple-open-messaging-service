@@ -162,7 +162,10 @@ describe('SerializeInterceptor — envelope wrapping', () => {
     expect((out.data as Record<string, unknown>).at).toBe(0);
   });
 
-  it('returns undefined unchanged (e.g. a void 204 handler)', () => {
-    expect(run(makeInterceptor(false), undefined)).toBeUndefined();
+  it('wraps a void return as a success ack (no data field — a no-data handler returns nothing)', () => {
+    const out = run(makeInterceptor(false), undefined) as ApiResult;
+    expect(out.code).toBe(BusinessCode.OK);
+    expect(out.message).toBe('successful');
+    expect(out.data).toBeUndefined();
   });
 });
