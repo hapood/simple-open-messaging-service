@@ -87,7 +87,10 @@ async function setup(o: Overrides = {}): Promise<{
       findUnique: vi.fn(async () => (o.adminPresent === false ? null : admin)),
       update: vi.fn(async () => ({})),
     },
-    adminSession: { create: vi.fn(async (args: { data: unknown }) => ({ ...args.data, id: 1 })) },
+    adminSession: {
+      create: vi.fn(async (args: { data: unknown }) => ({ ...args.data, id: 1 })),
+      updateMany: vi.fn(async () => ({ count: 0 })), // revokeSessionsByAdmin routes here
+    },
     twoFactorBackupCode: {
       // consume is now an indexed findFirst by codeHash; return the seeded row iff the HMAC matches.
       findFirst: vi.fn(
@@ -112,6 +115,8 @@ async function setup(o: Overrides = {}): Promise<{
   const webAuthn = {
     beginAssertion: vi.fn(async () => ({ options: { challenge: 'c' }, pendingToken: 'pt' })),
     verifyAssertion: vi.fn(async () => ({ ok: o.webauthnVerifyOk ?? true })),
+    completeRegistration: vi.fn(async () => ({ id: 'cred-1', nickname: 'phone', deviceType: 'platform', backed: true })),
+    removeCredential: vi.fn(async () => ({ remaining: 0 })),
   } as unknown as WebAuthnService;
   const svc = new AdminAuthService(prisma as never, jwt, bruteForce, twoFactorBound, passwordHasher, webAuthn);
 
@@ -287,5 +292,17 @@ describe('AdminAuthService two-factor orchestration', () => {
       svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180'),
       BusinessCode.RATE_LIMITED,
     );
+  });
+
+  // ── passkey lifecycle: additive factor, sessions stay valid ───────────────────
+
+  it('passkey enroll/remove does NOT revoke existing sessions (additive factor)', async () => {
+    const { svc, prisma } = await setup({ webauthnEnabled: true });
+    // revokeSessionsByAdmin routes through adminSession.updateMany — pin that neither enroll nor remove
+    // touches it (a passkey is an additive optional factor; enroll already required password re-auth).
+    const revoke = (prisma.adminSession as { updateMany: ReturnType<typeof vi.fn> }).updateMany;
+    await svc.completeWebAuthnRegistration(7, 'pending-token', {} as never);
+    await svc.removeWebAuthnCredential(7, 1n);
+    expect(revoke).not.toHaveBeenCalled();
   });
 });
