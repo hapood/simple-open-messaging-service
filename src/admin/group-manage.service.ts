@@ -1,7 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import { BusinessCode } from '../common/business-code.js';
-import type { ApiResult } from '../common/api-result.js';
 import type { AdminGroupsListDto } from './admin.dto.js';
 
 /**
@@ -10,12 +8,14 @@ import type { AdminGroupsListDto } from './admin.dto.js';
  * now that Step 3 lands cross-server groups. Extracted from the controller so the controller is a
  * pure HTTP adapter and the query is unit-testable (mirrors DashboardService). Destructive group ops
  * (dissolve/transfer) are a follow-up.
+ *
+ * Returns the raw { list, total } payload; the global SerializeInterceptor wraps the ApiResult envelope.
  */
 @Injectable()
 export class GroupManageService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(dto: AdminGroupsListDto): Promise<ApiResult> {
+  async list(dto: AdminGroupsListDto) {
     const where = {
       type: 'GROUP' as const,
       ...(dto.search
@@ -46,6 +46,6 @@ export class GroupManageService {
       }),
       this.prisma.messageThread.count({ where }),
     ]);
-    return { code: BusinessCode.OK, message: 'success', data: { list, total } };
+    return { list, total };
   }
 }
