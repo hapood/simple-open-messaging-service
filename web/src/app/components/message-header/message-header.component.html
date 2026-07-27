@@ -1,7 +1,7 @@
 <div class="msg-header">
   @if (mode() === 'compact') {
-    <button class="icon-btn" (click)="goBack()" aria-label="Back">
-      <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+    <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
+      <app-icon [type]="AppIconType.BACK" [style]="{ width: '24px', height: '24px' }"></app-icon>
     </button>
   }
   @if (searchOpen()) {
@@ -14,21 +14,30 @@
       (close)="closeSearch()"
     />
   } @else {
-    <div class="msg-title">
-      <span class="msg-title-text" (click)="showThreadInfo()" [title]="title()">{{ title() }}</span>
-      @if (federatedDomain(); as dom) {
-        <app-federated-badge [domain]="dom"></app-federated-badge>
-      }
-      @if (subtitle()) {
-        <span class="msg-subtitle" (click)="showThreadInfo()" [title]="subtitle()">{{ subtitle() }}</span>
-      }
-    </div>
+    <button class="msg-identity" type="button" (click)="showThreadInfo()" [attr.aria-label]="title()">
+      <span class="msg-avatar" aria-hidden="true">
+        <app-user-avatar
+          [type]="avatarType()"
+          [name]="title()"
+          [identityId]="avatarIdentity()"
+          [src]="avatarSrc()"
+        />
+      </span>
+      <span class="msg-title">
+        <span class="msg-title-line">
+          <span class="msg-title-text" [title]="title()">{{ title() }}</span>
+          @if (federatedDomain(); as dom) {
+            <app-federated-badge [domain]="dom" [compact]="true"></app-federated-badge>
+          }
+        </span>
+        @if (subtitle()) {
+          <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>
+        }
+      </span>
+    </button>
     @if (canCall()) {
-      <button class="icon-btn" type="button" (click)="placeCall('AUDIO')" aria-label="Call">
-        <span style="font-size: 20px; line-height: 32px">📞</span>
-      </button>
-      <button class="icon-btn" type="button" (click)="placeCall('VIDEO')" aria-label="Video call">
-        <span style="font-size: 20px; line-height: 32px">📹</span>
+      <button class="icon-btn" type="button" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
+        <app-icon [type]="AppIconType.PHONE" [style]="{ width: '22px', height: '22px' }"></app-icon>
       </button>
     }
     <button
@@ -37,9 +46,9 @@
       #moreTrigger="cdkOverlayOrigin"
       (click)="toggleMenu()"
       [class.active]="menuOpen()"
-      aria-label="More options"
+      [attr.aria-label]="'nav.moreAria' | transloco"
     >
-      <app-icon [type]="AppIconType.MORE" [style]="{ width: '32px', height: '32px' }"></app-icon>
+      <app-icon [type]="AppIconType.MORE" [style]="{ width: '24px', height: '24px' }"></app-icon>
     </button>
     <app-chat-action-menu
       [entries]="entries()"

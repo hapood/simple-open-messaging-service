@@ -20,27 +20,53 @@
   border-bottom: 1px solid var(--app-border);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   // Top padding = the status-bar safe-area inset, so the bar's --app-surface background extends seamlessly
   // under the status bar (edge-to-edge, no tonal strip) and the content row sits below it. --msg-header-h
   // (on .msg-container) already includes the inset; with border-box the content row stays exactly 56px and
   // align-items:center centers within it. 0 on desktop/browser (no native injection).
-  padding: var(--soms-safe-top, 0px) 10px 0;
+  padding: var(--soms-safe-top, 0px) 8px 0;
 }
 
-// Title takes the middle space and truncates so a long peer/group name never pushes the MORE
-// button off-screen. min-width:0 is the flexbox truncation enabler.
-// Title column: the name (always) + an optional subtitle line (peer bio / group description). The
-// outer .msg-title owns flex:1 + vertical centering; each line truncates independently so a long name
-// or bio never pushes the MORE button off-screen, and a missing subtitle collapses to a single line.
-.msg-title {
+.msg-identity {
+  @include styless-button;
   flex: 1 1 auto;
+  min-width: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: var(--app-radius-sm, 8px);
+  text-align: left;
+  cursor: pointer;
+  &:hover { background: var(--app-hover); }
+}
+
+.msg-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+}
+
+.msg-title {
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 0 4px;
+}
+
+.msg-title-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.msg-title-line app-federated-badge {
+  flex: 0 0 auto;
 }
 
 // align-self:flex-start defeats the column's default align-items:stretch — otherwise a short name
@@ -48,7 +74,7 @@
 // middle one phantom hover-dim + click target. max-width:100% then caps a long name at the column
 // edge so text-overflow:ellipsis still fires (the cap is what makes offsetWidth < scrollWidth).
 .msg-title-text {
-  cursor: pointer;
+  min-width: 0;
   color: var(--app-text);
   // Bold primary name + faint subtitle (see .msg-subtitle) establishes the header's name/desc hierarchy —
   // mirrors the playground header's treatment (bold name on top, weaker descriptor beneath).
@@ -58,15 +84,12 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  align-self: flex-start;
-  max-width: 100%;
-  &:hover { opacity: 0.8; }
+  flex: 0 1 auto;
 }
 
 // Subtitle: the peer's bio (P2P) or the group description (GROUP). Rendered only when non-empty
 // (template @if), so an empty bio/description collapses the header to a single centered line.
 .msg-subtitle {
-  cursor: pointer;
   font-size: 12px;
   line-height: 16px;
   // --app-text-faint (one tier below --app-text-muted) keeps the descriptor clearly secondary to the
@@ -75,18 +98,27 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  align-self: flex-start; // same stretch-defeat + cap as .msg-title-text (see above)
-  max-width: 100%;
+  display: block;
   margin-top: 2px;
-  &:hover { opacity: 0.8; }
 }
 
 .icon-btn {
   @include styless-button;
-  flex: 0 0 auto;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--app-radius-sm, 8px);
-  &:hover, &.active { background: var(--app-hover); }
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+  &:hover, &.active {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 1px;
+  }
 }

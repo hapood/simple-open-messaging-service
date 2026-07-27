@@ -16,6 +16,7 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { uuid } from '../../lib/uuid';
+import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -33,12 +34,21 @@ import { uuid } from '../../lib/uuid';
  */
 @Component({
   selector: 'app-message-header',
-  imports: [IconComponent, ChatActionMenuComponent, OverlayModule, TranslocoModule, FederatedBadgeComponent, MessageSearchComponent],
+  imports: [
+    IconComponent,
+    ChatActionMenuComponent,
+    OverlayModule,
+    TranslocoModule,
+    FederatedBadgeComponent,
+    MessageSearchComponent,
+    UserAvatarComponent,
+  ],
   templateUrl: './message-header.component.html',
   styleUrl: './message-header.component.scss',
 })
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType;
+  readonly UserAvatarType = UserAvatarType;
   readonly userMsgTrd = input<ConversationItem>();
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
@@ -62,17 +72,34 @@ export class MessageHeaderComponent {
    *  deferred) AND this is a P2P thread (groups can't be called 1:1). */
   readonly canCall = computed(() => this.callAdapter.supported && this.userMsgTrd()?.type === 'P2P');
 
-  /** Place an outgoing AUDIO/VIDEO call to the P2P peer. Mints a client-side callSid (the call's idempotency
+  /** Place an outgoing audio-first call to the P2P peer. Video is enabled from the shared in-call UI instead
+   *  of being a second chat-header entry point. Mints a client-side callSid (the call's idempotency
    *  key + signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which
    *  POSTs /calls/initiate + creates the offer. The peer's avatar is read from the IDB cache + passed as a
    *  base64 data URL so the native call notification (CallStyle Person) decodes it directly — NO /uploads
    *  fetch (the bytes are already on-device; the caller is in the peer's thread, so the avatar is cached). */
-  async placeCall(callType: 'AUDIO' | 'VIDEO'): Promise<void> {
+  async placeCall(): Promise<void> {
     const peer = this.userMsgTrd()?.peerUser;
     if (peer?.id === undefined) return;
     const avatarDataUrl = await this.avatarRepo.getCachedDataUrl(`u${peer.id}`);
-    this.callAdapter.initiate(peer.id, uuid(), callType, peer.name ?? '', peer.avatar ?? '', avatarDataUrl);
+    this.callAdapter.initiate(peer.id, uuid(), 'AUDIO', peer.name ?? '', peer.avatar ?? '', avatarDataUrl);
   }
+
+  readonly avatarType = computed(() =>
+    this.userMsgTrd()?.type === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER,
+  );
+
+  readonly avatarIdentity = computed(() => {
+    const trd = this.userMsgTrd();
+    if (!trd) return undefined;
+    return trd.type === 'P2P' ? trd.peerUser.id : trd.group.id;
+  });
+
+  readonly avatarSrc = computed(() => {
+    const trd = this.userMsgTrd();
+    if (!trd) return '';
+    return trd.type === 'P2P' ? trd.peerUser.avatar : trd.group.avatar;
+  });
 
   /** In-chat search visibility is a layer of the app's virtual nav stack (see NavStateMachineService):
    *  `back` peels it before the chat, so hardware-back exits search before leaving the thread — the same

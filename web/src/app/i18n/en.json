@@ -309,6 +309,7 @@
     "sendPhoto": "Photo",
     "sendFile": "File",
     "sendAria": "Send",
+    "callAria": "Start voice call",
     "emojiAria": "Emoji",
     "attachAria": "Attach",
     "recordVoiceAria": "Record voice message",
