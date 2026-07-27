@@ -15,8 +15,8 @@ import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminRole, Prisma } from '../prisma/generated/client.js';
 import { AdminSetQuotaDto } from './admin.dto.js';
-import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { QuotaService } from '../quota/quota.service.js';
 
 /**
@@ -26,8 +26,11 @@ import { QuotaService } from '../quota/quota.service.js';
  * per-category overrides (null = use the global default). Reads are any admin; writes are SUPER_ADMIN
  * only — mirroring AdminFederationController's block/unblock gate.
  *
+ * Handlers return raw data (or void for acks); the global SerializeInterceptor wraps the ApiResult
+ * envelope. Failures throw BusinessException (the global AllExceptionsFilter renders the body).
+ *
  * @Public() opts out of the global SessionAuthGuard so this controller's own route-scoped AdminAuthGuard
- * (the admin JWT) runs instead — the same opt-out the other admin controllers use.
+ * runs instead — the same opt-out the other admin controllers use.
  */
 @ApiTags('admin')
 @Public()
@@ -39,9 +42,8 @@ export class AdminQuotaController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/quota/nodes')
   @ApiOperation({ summary: 'List all quota nodes (local + each federated peer) with today usage + limits' })
-  async listNodes(): Promise<ApiResult> {
-    const data = await this.quota.listNodes();
-    return { code: BusinessCode.OK, message: 'success', data };
+  async listNodes() {
+    return this.quota.listNodes();
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -53,21 +55,20 @@ export class AdminQuotaController {
   async setLimits(
     @Param('domain') domain: string,
     @Body() dto: AdminSetQuotaDto,
-  ): Promise<ApiResult> {
+  ): Promise<void> {
     try {
       await this.quota.setLimits(domain, dto);
     } catch (e) {
       // setLimits on an unknown peer (not in FederatedPeer) throws Prisma P2025. The admin page only
-      // lists existing peers, so this is a race (peer removed between list + set); surface 200 + NOT_FOUND
-      // to stay consistent with the admin envelope (the local node is always settable — it never 404s).
+      // lists existing peers, so this is a race (peer removed between list + set); throw NOT_FOUND → the
+      // global AllExceptionsFilter renders HTTP 200 + code (the local node is always settable — never 404s).
       if (
         e instanceof Prisma.PrismaClientKnownRequestError &&
         e.code === 'P2025'
       ) {
-        return { code: BusinessCode.NOT_FOUND, message: 'quota node not found' };
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'quota node not found');
       }
       throw e;
     }
-    return { code: BusinessCode.OK, message: 'success' };
   }
 }
