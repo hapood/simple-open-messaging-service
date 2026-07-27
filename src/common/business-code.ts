@@ -93,11 +93,11 @@ export enum BusinessCode {
   FEDERATION_MALFORMED = 50007, // malformed Signature-Input / friend-op payload (401, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
   FEDERATION_PEER_BLOCKED = 50009, // an admin blocked this peer domain — federation refused (403, no retry)
-  FEDERATION_GROUP_AUTHOR_LEFT = 50010, // per-author group pull: author no longer an active member → returned at
-                                        // HTTP 200 on /s2s/messages?fromAccount=... so the origin dissolves its roster
-                                        // entry (softLeaveMember + bump group meta) WITHOUT demoting the peer —
-                                        // a business outcome, not a protocol failure (the 200 already ran
-                                        // markContactSuccess in getSigned)
+  FEDERATION_GROUP_AUTHOR_LEFT = 50010, // per-author group pull: the author is no longer an active member → thrown
+                                        // as HTTP 410 GONE on /s2s/messages?fromAccount=... so the origin dissolves its
+                                        // roster entry (softLeaveMember + bump group meta). The pulling side detects it
+                                        // via S2sResponseError.status === 410 (NOT by the body code); 410 is a resource-
+                                        // state signal, not a peer failure, so getSigned does NOT demote.
   FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 429 (transient; the
                                      // body carries {category, limit, retryAfter = seconds to 00:00 UTC}). Returned on
                                      // the synchronous POST /s2s/invite leg; the pull-based messages/media legs refuse

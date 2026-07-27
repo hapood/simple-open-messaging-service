@@ -38,9 +38,16 @@ import { BusinessCode } from '../common/business-code.js';
  *
  * NOTE: there is no unfriend/member-delete endpoint — those are LOCAL-ONLY. A severed edge / left member
  * is discovered lazily via rejection-on-send in Step 2.
+ *
+ * Response shape: success bodies are enveloped by the global SerializeInterceptor as
+ * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
+ * outcomes (a lookup target that doesn't exist) are HTTP 200 + code NOT_FOUND — same envelope, non-zero
+ * code — NOT an HTTP 404; only the protocol/security layer keeps its HTTP status (401 binding mismatch,
+ * 410 group-author-left, 400 malformed params, 5xx). getFile is the one exception: it is @Raw (binary
+ * octet-stream via reply.hijack) and its errors keep their HTTP status because its client classifies by
+ * status. RFC 9421 request-signing covers the REQUEST (which is unchanged); response bodies are not signed.
  */
 @Public()
-@Raw()
 @Controller('s2s')
 @UseGuards(S2sSignatureGuard)
 export class S2sController {
@@ -77,11 +84,9 @@ export class S2sController {
     const address: S2SAddress = { account, domain: this.federation.ourDomain };
     const profile = await this.federation.getLocalUserProfile(address);
     if (!profile) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `user ${account} not found`,
-        HttpStatus.NOT_FOUND,
-      );
+      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
+      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
+      throw new BusinessException(BusinessCode.NOT_FOUND, `user ${account} not found`);
     }
     return profile;
   }
@@ -91,11 +96,9 @@ export class S2sController {
     const address: S2SAddress = { account, domain: this.federation.ourDomain };
     const rev = await this.federation.getLocalUserRevision(address);
     if (!rev) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `user ${account} not found`,
-        HttpStatus.NOT_FOUND,
-      );
+      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
+      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
+      throw new BusinessException(BusinessCode.NOT_FOUND, `user ${account} not found`);
     }
     return rev;
   }
@@ -107,11 +110,9 @@ export class S2sController {
   async getGroupRosterRevision(@Param('account') account: string) {
     const rev = await this.federation.getLocalGroupRosterRevision(account);
     if (!rev) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `group ${account} not found`,
-        HttpStatus.NOT_FOUND,
-      );
+      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
+      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
+      throw new BusinessException(BusinessCode.NOT_FOUND, `group ${account} not found`);
     }
     return rev;
   }
@@ -124,11 +125,9 @@ export class S2sController {
   async getGroupRoster(@Param('account') account: string) {
     const roster = await this.federation.serveGroupRoster(account);
     if (roster === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `group ${account} not found`,
-        HttpStatus.NOT_FOUND,
-      );
+      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
+      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
+      throw new BusinessException(BusinessCode.NOT_FOUND, `group ${account} not found`);
     }
     return roster;
   }
@@ -361,6 +360,7 @@ export class S2sController {
    *  octet-stream (incidental). The 206 path uses `reply.hijack()` to bypass @fastify/compress (which
    *  would re-encode the body and break byte-exactness) + interceptors — same pattern as the SSE
    *  hijack in events.controller.ts. Authz (resolveMediaFile) runs before any bytes go out. */
+  @Raw() // binary octet-stream via reply.hijack — stays outside the ApiResult envelope; its errors keep HTTP status (the client classifies by status).
   @Get('get_file')
   async getFile(
     @Req() req: FastifyRequest,

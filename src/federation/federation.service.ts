@@ -646,7 +646,22 @@ export class FederationService implements OnModuleDestroy {
       );
     }
     await this.markContactSuccess(peerDomain);
-    return (await res.json()) as T;
+    const body = await res.json();
+    // Success bodies are ApiResult envelopes { code, message, data }. A non-zero code is a business
+    // outcome delivered at HTTP 200 (a lookup target that doesn't exist → NOT_FOUND); the peer is healthy
+    // and answered (markContactSuccess above already advanced liveness), so surface it as a typed
+    // S2sResponseError WITHOUT demoting — callers' catch logic keeps working. Unwrapping `data` here means
+    // every getSigned caller still receives the typed payload (res.messages / res.profileRev / …), not the
+    // envelope — no call site changes. The !res.ok branch above still carries 400/401/410/5xx (notably the
+    // 410 group-author-left leave signal, which the consumer detects via S2sResponseError.status).
+    if (typeof body?.code === 'number' && body.code !== BusinessCode.OK) {
+      throw new S2sResponseError(
+        `S2S GET ${path} from ${peerDomain} business error: code ${body.code}`,
+        res.status,
+        body.code,
+      );
+    }
+    return (body?.data ?? body) as T;
   }
 
   // ─── trust establishment (init handshake) ────────────────────────────────────

@@ -309,30 +309,36 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       ) as {
         status: number;
         body: {
-          messages: { originSeq: number }[];
-          latestSeq: number;
-          hasMore: boolean;
+          code: number;
+          message: string;
+          data: {
+            messages: { originSeq: number }[];
+            latestSeq: number;
+            hasMore: boolean;
+          };
         };
       };
 
     // (1) beforeSeq < 0 → no upper bound: every message, OLDEST-FIRST (the desc→reverse output — a
     //     missing reverse would surface as descending), hasMore false, latestSeq = alice's MAX originSeq.
+    //     The s2s success body is an ApiResult envelope { code, message, data } (since S2sController
+    //     dropped @Raw); the test probe relays it verbatim, so the payload is under body.data.
     const pageAll = await before(-1, 50);
     expect(pageAll.status).toBe(200);
-    expect(pageAll.body.messages.map((m) => m.originSeq)).toEqual(allSeqs);
-    expect(pageAll.body.hasMore).toBe(false);
-    expect(pageAll.body.latestSeq).toBe(maxSeq);
+    expect(pageAll.body.data.messages.map((m) => m.originSeq)).toEqual(allSeqs);
+    expect(pageAll.body.data.hasMore).toBe(false);
+    expect(pageAll.body.data.latestSeq).toBe(maxSeq);
 
     // (2) beforeSeq = maxSeq + 1, take 2 → the 2 highest ([secondMax, max], oldest-first), hasMore true
     //     (≥3 messages sit below maxSeq+1). Confirms the strict `<` filter + subset paging + hasMore.
     const pageTwo = await before(maxSeq + 1, 2);
     expect(pageTwo.status).toBe(200);
-    expect(pageTwo.body.messages.map((m) => m.originSeq)).toEqual([
+    expect(pageTwo.body.data.messages.map((m) => m.originSeq)).toEqual([
       allSeqs[allSeqs.length - 2],
       maxSeq,
     ]);
-    expect(pageTwo.body.hasMore).toBe(true);
-    expect(pageTwo.body.latestSeq).toBe(maxSeq);
+    expect(pageTwo.body.data.hasMore).toBe(true);
+    expect(pageTwo.body.data.latestSeq).toBe(maxSeq);
   }, 30_000);
 
   it('Step 2: pull-on-open recovers a message missing on the peer (resilience backstop)', async () => {
