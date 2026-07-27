@@ -1183,7 +1183,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `local user ${to.account} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const inviteId = await this.invite.receiveInboundFriendInvite({
@@ -1228,7 +1227,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `local user ${to.account} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     // The inviter's stub must already exist (a passing friend gate ⇒ they're already friends ⇒ the stub
@@ -1237,12 +1235,12 @@ export class FederationService implements OnModuleDestroy {
       where: { account_domain: { account: normalizeAccount(by.account), domain: by.domain } },
     });
     if (byStub === null) {
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends', HttpStatus.FORBIDDEN);
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
     }
     const byStubId = byStub.id;
     const p2pThreadId = await this.participantService.findP2PThreadBetween(byStubId, localId);
     if (p2pThreadId === null) {
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends', HttpStatus.FORBIDDEN);
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
     }
     const ownerStubId =
       owner.account === by.account && owner.domain === by.domain
@@ -1337,7 +1335,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `local user ${to.account} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const threadId = await this.participantService.findP2PThreadBetween(localUserId, peerStubId);
@@ -1345,7 +1342,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.CALL_NOT_ALLOWED,
         'no relationship with caller',
-        HttpStatus.NOT_FOUND,
       );
     }
     await this.eventEmitter.emitAsync('call.frame.inbound', {
@@ -1367,7 +1363,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `local requester not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const { threadId, created } = await this.invite.applyInboundFriendApprove(localId, foreignId);
@@ -1391,7 +1386,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `group ${body.group} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const accepterStubId = await this.ensureForeignUser(accepter.account, accepter.domain);
@@ -1873,7 +1867,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `group ${groupAccount} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const participants = await this.prisma.threadParticipant.findMany({
@@ -1884,7 +1877,7 @@ export class FederationService implements OnModuleDestroy {
       (p) => this.effectiveDomain(p.user) === signerDomain,
     );
     if (!signerIsMember) {
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not a member', HttpStatus.FORBIDDEN);
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'not a member');
     }
     let authorId: number | undefined;
     if (fromAccount && fromDomain) {
@@ -1894,7 +1887,7 @@ export class FederationService implements OnModuleDestroy {
           this.effectiveDomain(p.user) === fromDomain,
       );
       if (!author) {
-        throw new BusinessException(BusinessCode.FORBIDDEN, 'author not a member', HttpStatus.FORBIDDEN);
+        throw new BusinessException(BusinessCode.FORBIDDEN, 'author not a member');
       }
       authorId = author.userId;
     }
@@ -2164,7 +2157,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'digest not in thread',
-        HttpStatus.NOT_FOUND,
       );
     }
     // Resolve data/uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
@@ -2183,7 +2175,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'file unavailable',
-        HttpStatus.NOT_FOUND,
       );
     }
     const name = names.find((f) => f.startsWith(`${digest}.`));
@@ -2191,7 +2182,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'file unavailable',
-        HttpStatus.NOT_FOUND,
       );
     }
     const absPath = join(shardDir, name);
@@ -2215,7 +2205,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `sender ${fromAccount} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     // `toAccount` is the requester's user → on OUR side it's a foreign stub on the signer's domain.
@@ -2229,7 +2218,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `recipient ${toAccount} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const threadId = await this.participantService.findP2PThreadBetween(fromId, toStub.id);
@@ -2239,7 +2227,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.FORBIDDEN,
         'not friends',
-        HttpStatus.FORBIDDEN,
       );
     }
     return { fromId, threadId };
@@ -2834,7 +2821,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `no such message in thread [${threadId}]`,
-        HttpStatus.NOT_FOUND,
       );
     }
     if (!this.isMediaContentType(msg.contentType)) return 'ready';
@@ -2846,7 +2832,6 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `media message ${threadId}/${seq} creator ${msg.creator} not found`,
-        HttpStatus.NOT_FOUND,
       );
     }
     const { toAccount, peerDomain } = await this.resolveMediaContext(
