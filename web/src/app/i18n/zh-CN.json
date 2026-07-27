@@ -281,6 +281,8 @@
     "retrySendAria": "重试发送",
     "mediaDownloading": "下载中…",
     "mediaFailed": "下载失败",
+    "tapToLoad": "点击加载",
+    "unknownSize": "大小未知",
     "retryDownload": "重试下载",
     "fileFallback": "文件",
     "invitedBy": "{{name}} 邀请你",

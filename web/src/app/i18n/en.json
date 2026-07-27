@@ -281,6 +281,8 @@
     "retrySendAria": "Retry send",
     "mediaDownloading": "Downloading…",
     "mediaFailed": "Download failed",
+    "tapToLoad": "Tap to load",
+    "unknownSize": "Unknown size",
     "retryDownload": "Retry download",
     "fileFallback": "File",
     "invitedBy": "Invited by {{name}}",

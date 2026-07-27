@@ -44,7 +44,7 @@
               </div>
             }
             @if (c.placeholder) {
-              <span class="msg-media-tap">Tap to load</span>
+              <span class="msg-media-tap">{{ 'chat.tapToLoad' | transloco }}</span>
             }
             @if (c.kind === 'video' && !c.unplayable) {
               <video
@@ -66,7 +66,7 @@
               <app-audio-player [src]="c.src" [duration]="c.duration ?? 0" [status]="c.status" />
             }
             @if (c.kind !== 'audio') {
-              <span class="msg-media-size">{{ c.sizeText || 'unknown size' }}</span>
+              <span class="msg-media-size">{{ c.sizeText || ('chat.unknownSize' | transloco) }}</span>
             }
             @if (c.isMore) {
               <span class="msg-media-more">+{{ moreCount() }}</span>
@@ -100,7 +100,7 @@
                 [attr.aria-label]="'chat.retrySendAria' | transloco"
                 (click)="retry.emit(data().msgId)"
                 (keydown.enter)="retry.emit(data().msgId)"
-                (keydown.space)="retry.emit(data().msgId)"></span>
+                (keydown.space)="$event.preventDefault(); retry.emit(data().msgId)"></span>
         } @else {
           <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }

@@ -60,7 +60,7 @@
                 [attr.aria-label]="'chat.retrySendAria' | transloco"
                 (click)="retry.emit(data().msgId)"
                 (keydown.enter)="retry.emit(data().msgId)"
-                (keydown.space)="retry.emit(data().msgId)"></span>
+                (keydown.space)="$event.preventDefault(); retry.emit(data().msgId)"></span>
         } @else {
           <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }
