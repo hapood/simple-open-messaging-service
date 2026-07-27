@@ -7,7 +7,7 @@ import { AvatarRepository } from '../../services/avatar-cache.service'
  * Initial-letter avatar (industry best-practice palette).
  *
  * The placeholder SVG has been removed — instead the first character of the name is centered, with a background color:
- *  · SELF: fixed brand green (echoes the self bubble, instantly recognizable as "you").
+ *  · SELF: fixed brand blue (the logo / --app-brand color, instantly recognizable as "you").
  *  · OTHER / GROUP: a name-hashed deterministic palette (stable color per object, easy to distinguish across
  *    objects, on par with Telegram / Google Messages / Slack). The palette uses Material dark shades, reaching
  *    WCAG AA contrast against white text.
@@ -22,7 +22,7 @@ import { AvatarRepository } from '../../services/avatar-cache.service'
  * hit the bytes come straight from IDB. A local preview (`blob:`/`data:`/absolute `src`) passes through
  * unchanged (new-group / edit-profile in-progress uploads).
  */
-const SELF_COLOR = '#25d366';
+const SELF_COLOR = '#2196f3'; // brand blue — the logo / --app-brand background color
 const PALETTE = [
   '#E53935', '#D81B60', '#8E24AA', '#5E35B1',
   '#3949AB', '#1E88E5', '#039BE5', '#00ACC1',
@@ -130,7 +130,7 @@ export class UserAvatarComponent {
     return Math.abs(h)
   }
 
-  /** Background fill: SELF = brand green; everyone else = a name-hashed palette slot (deterministic,
+  /** Background fill: SELF = brand blue; everyone else = a name-hashed palette slot (deterministic,
    *  stable per name). */
   readonly bg = computed(() => {
     if (this.type() === UserAvatarType.SELF) return SELF_COLOR

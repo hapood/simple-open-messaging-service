@@ -192,7 +192,7 @@ $app-gray-900: #111827;
   --invite-bg:         color-mix(in srgb, var(--im-bubble-other) 85%, var(--app-brand) 15%);
   --im-meta-bg:        #ececf1;   // media meta bar fill (independent of bubble color — neutral grey chip)
   --im-time:           #667781;   // in-bubble timestamp (gray-green shared by green/white bubbles)
-  --im-avatar-self:    #25d366;   // self avatar fill (WhatsApp brand green)
+  --im-avatar-self:    #2196f3;   // self avatar fill (brand blue — the logo color; matches SELF_COLOR in user-avatar.component)
   --im-avatar-other:   #c7c7cc;   // other avatar fill (placeholder gray)
   --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // date-separator pill fill (inline timeline rows)
   --im-date-pill-text: var(--app-text-faint);  // date-separator text
@@ -285,7 +285,7 @@ $app-gray-900: #111827;
   --im-bubble-text:    #e9edef;
   --im-meta-bg:        #111b21;   // media meta bar fill (deeper than the bubble so it reads as a chip)
   --im-time:           rgba(233, 237, 239, 0.5);
-  --im-avatar-self:    #25d366;
+  --im-avatar-self:    #2196f3;   // brand blue — the SELF avatar stays the logo color in both themes
   --im-avatar-other:   #37424a;
   --im-date-pill-bg:   #182229;
   --im-date-pill-text: #8696a0;
