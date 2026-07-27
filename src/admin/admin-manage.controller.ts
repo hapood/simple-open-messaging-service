@@ -24,8 +24,9 @@ import {
 /**
  * Admin self-management (SUPER_ADMIN only — the whole controller is gated). HTTP adapter over
  * AdminManageService: list/promote/disable + assign roles. Disabling or demoting an admin revokes
- * their sessions immediately (tokenVersion bump inside the last-super-guarded transaction +
- * refresh-family revocation). The last enabled SUPER_ADMIN can never be disabled or demoted.
+ * their outstanding admin_session cookies (revokeSessionsByAdmin) so the next request fails
+ * validation; a no-op same-role setRole revokes nothing. The last enabled SUPER_ADMIN can never be
+ * disabled or demoted.
  */
 @ApiTags('admin')
 @ApiBearerAuth()

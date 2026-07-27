@@ -11,16 +11,21 @@ type StateChange = { kind: 'disable' } | { kind: 'role'; role: AdminRole };
 /** Uniform result shape so the controller is a pure HTTP adapter (no domain branching). */
 type Result = { code: BusinessCode; message: string; data?: unknown };
 
+/** guardedStateChange's internal result: the controller-facing Result plus a `changed` flag, so callers
+ *  revoke sessions only on a real transition (a disable of an enabled admin, or an actual role change). */
+type GuardedResult = Result & { changed: boolean };
+
 /**
  * Admin self-management domain logic: list, promote, disable/enable, role change.
  *
  * The last-super guard is RACE-FREE. disable / demote of an enabled SUPER_ADMIN runs inside a
  * $transaction that SELECT ... FOR UPDATE-locks every enabled super row before counting, so two
  * super-admins disabling each other concurrently cannot drive the enabled-super count to 0: the
- * second transaction blocks on the row lock, then re-reads the post-commit count and refuses. The
- * tokenVersion bump is folded into the SAME guarded UPDATE, so a disabled/demoted admin's access
- * token dies the instant the transaction commits — refresh-token revocation (revokeRefreshByAdmin)
- * runs afterwards, best-effort.
+ * second transaction blocks on the row lock, then re-reads the post-commit count and refuses. A
+ * real state change (an actual disable, or a role transition) is followed by revokeSessionsByAdmin
+ * so the affected admin's outstanding admin_session cookies fail validation on their next request;
+ * a no-op same-role setRole (or disabling an already-disabled admin) changes nothing and revokes
+ * nothing, so it never kicks the admin.
  */
 @Injectable()
 export class AdminManageService {
@@ -93,10 +98,11 @@ export class AdminManageService {
 
   async disable(adminId: number): Promise<Result> {
     const outcome = await this.guardedStateChange(adminId, { kind: 'disable' });
-    if (outcome.code !== BusinessCode.OK) return outcome;
-    // The access token is already dead via the in-tx tokenVersion bump; refresh revocation is best-effort.
-    await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_disabled');
-    return outcome;
+    if (outcome.code !== BusinessCode.OK) return { code: outcome.code, message: outcome.message };
+    // Revoke outstanding sessions only on a real disable (the admin was enabled) — deleting the linked
+    // AdminSession rows is what invalidates their admin_session cookie on the next request.
+    if (outcome.changed) await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_disabled');
+    return { code: BusinessCode.OK, message: 'success' };
   }
 
   async enable(adminId: number): Promise<Result> {
@@ -109,9 +115,11 @@ export class AdminManageService {
 
   async setRole(adminId: number, dto: AdminSetRoleDto): Promise<Result> {
     const outcome = await this.guardedStateChange(adminId, { kind: 'role', role: dto.role });
-    if (outcome.code !== BusinessCode.OK) return outcome;
-    await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_role_change');
-    return outcome;
+    if (outcome.code !== BusinessCode.OK) return { code: outcome.code, message: outcome.message };
+    // A real role transition demotes/promotes the admin — revoke so they re-login at the new privilege
+    // level. A same-role reaffirmation is a no-op (changed:false) and must NOT kick the admin.
+    if (outcome.changed) await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_role_change');
+    return { code: BusinessCode.OK, message: 'success' };
   }
 
   /** SUPER_ADMIN lockout recovery: clear another admin's 2FA outright (no code — the role gate is the
@@ -133,17 +141,19 @@ export class AdminManageService {
    *   1. load the target's current (role, enabled);
    *   2. if the change would remove an enabled SUPER_ADMIN from the enabled-super set, FOR UPDATE-lock
    *      the enabled super rows and refuse when only one remains;
-   *   3. apply the state change + tokenVersion bump in one UPDATE (atomic).
-   * Re-enable, promote-to-super, non-super disable, and same-role setRole skip the lock (no last-super
-   * risk); a no-op same-role setRole also skips the tokenVersion bump so it doesn't kick the admin.
+   *   3. apply the state change in one UPDATE (atomic).
+   * Reports `changed` so callers revoke sessions only for a real transition. Re-enable, promote-to-super,
+   * non-super disable, and same-role setRole skip the lock (no last-super risk); a no-op same-role
+   * setRole (or disabling an already-disabled admin) reports changed:false so it neither revokes
+   * sessions nor kicks the admin.
    */
-  private async guardedStateChange(adminId: number, change: StateChange): Promise<Result> {
+  private async guardedStateChange(adminId: number, change: StateChange): Promise<GuardedResult> {
     return this.prisma.$transaction(async (tx) => {
       const admin = await tx.admin.findUnique({
         where: { id: adminId },
         select: { role: true, enabled: true },
       });
-      if (!admin) return { code: BusinessCode.NOT_FOUND, message: 'admin not found' };
+      if (!admin) return { code: BusinessCode.NOT_FOUND, message: 'admin not found', changed: false };
 
       const demotesSuper =
         admin.enabled &&
@@ -157,19 +167,23 @@ export class AdminManageService {
           SELECT id FROM "Admin" WHERE role = 'SUPER_ADMIN' AND enabled = true FOR UPDATE
         `;
         if (locked.length <= 1) {
-          return { code: BusinessCode.FORBIDDEN, message: 'cannot remove the last super admin' };
+          return {
+            code: BusinessCode.FORBIDDEN,
+            message: 'cannot remove the last super admin',
+            changed: false,
+          };
         }
       }
 
-      const data =
-        change.kind === 'disable'
-          ? { enabled: false }
-          : change.role === admin.role
-            ? { role: change.role } // no-op role reaffirmation: no tver bump, no session kick
-            : { role: change.role };
+      // changed drives the caller's post-commit session revocation. A disable is a real change only when
+      // the admin was enabled; a role change is real only when the role actually differs (a same-role
+      // reaffirmation writes the same value and must not revoke anything).
+      const changed =
+        change.kind === 'disable' ? admin.enabled : change.role !== admin.role;
+      const data = change.kind === 'disable' ? { enabled: false } : { role: change.role };
 
       await tx.admin.update({ where: { id: adminId }, data });
-      return { code: BusinessCode.OK, message: 'success' };
+      return { code: BusinessCode.OK, message: 'success', changed };
     });
   }
 }
