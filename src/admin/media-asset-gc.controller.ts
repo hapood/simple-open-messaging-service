@@ -13,8 +13,6 @@ import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminRole } from '../prisma/generated/client.js';
 import { MediaAssetGcService } from './media-asset-gc.service.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 
 /**
  * Admin-only media garbage-collection endpoints. Not exposed to regular users. The primary trigger
@@ -23,6 +21,7 @@ import { BusinessCode } from '../common/business-code.js';
  * O(files) — run sparingly. A daily @Cron can be wired later; for now these are manual triggers.
  *
  * All three are SUPER_ADMIN-only (reclaiming/deleting on-disk content is high-impact) and audited.
+ * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope.
  */
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -37,9 +36,8 @@ export class MediaAssetGcController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/gc')
   @ApiOperation({ summary: 'Reclaim orphaned media (MediaAsset refs<=0) + sweep stale tmp' })
-  async triggerGc(): Promise<ApiResult> {
-    const data = await this.gc.gcOrphanedAssets();
-    return { code: BusinessCode.OK, message: 'successful', data };
+  async triggerGc() {
+    return this.gc.gcOrphanedAssets();
   }
 
   @Audit('media.reconcile')
@@ -48,9 +46,8 @@ export class MediaAssetGcController {
   @ApiOperation({
     summary: 'Scan-driven reconcile of shards vs MediaAsset (O(files); run sparingly)',
   })
-  async reconcile(): Promise<ApiResult> {
-    const reapedFiles = await this.gc.reconcileShards();
-    return { code: BusinessCode.OK, message: 'successful', data: { reapedFiles } };
+  async reconcile() {
+    return { reapedFiles: await this.gc.reconcileShards() };
   }
 
   @Audit('media.gc_avatars')
@@ -59,8 +56,7 @@ export class MediaAssetGcController {
   @ApiOperation({
     summary: 'Reap orphaned avatars (no longer any User current avatar) from uploads/avatars',
   })
-  async gcAvatars(): Promise<ApiResult> {
-    const data = await this.gc.gcOrphanedAvatars();
-    return { code: BusinessCode.OK, message: 'successful', data };
+  async gcAvatars() {
+    return this.gc.gcOrphanedAvatars();
   }
 }

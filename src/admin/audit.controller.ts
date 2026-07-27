@@ -10,8 +10,6 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminAuditQueryDto } from './admin.dto.js';
-import { ApiResult } from '../common/api-result.js';
-import { BusinessCode } from '../common/business-code.js';
 import { PrismaService } from '../prisma.service.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
 
@@ -37,7 +35,7 @@ export class AuditController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/audit')
   @ApiOperation({ summary: 'Admin action audit log (paginated + filter by action/adminId/success)' })
-  async list(@Body() dto: AdminAuditQueryDto): Promise<ApiResult> {
+  async list(@Body() dto: AdminAuditQueryDto) {
     const where = {
       ...(dto.action ? { action: { contains: dto.action } } : {}),
       ...(dto.adminId ? { adminId: dto.adminId } : {}),
@@ -74,6 +72,6 @@ export class AuditController {
       targetLabel:
         r.targetType && r.targetId ? (labelByKey.get(`${r.targetType}:${r.targetId}`) ?? null) : null,
     }));
-    return { code: BusinessCode.OK, message: 'success', data: { list, total } };
+    return { list, total };
   }
 }
