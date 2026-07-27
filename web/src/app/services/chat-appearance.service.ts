@@ -8,7 +8,9 @@ const SHOW_SELF_AVATAR_KEY = 'soms.chat.showSelfAvatar';
  */
 @Injectable({ providedIn: 'root' })
 export class ChatAppearanceService {
-  private readonly _showSelfAvatar = signal(this.readBoolean(SHOW_SELF_AVATAR_KEY, false));
+  // Default ON: most users expect to see their own avatar alongside their messages. Only a stored preference
+  // (a user who explicitly turned it off) overrides this — new users and cleared-storage starts show self avatars.
+  private readonly _showSelfAvatar = signal(this.readBoolean(SHOW_SELF_AVATAR_KEY, true));
 
   readonly showSelfAvatar = this._showSelfAvatar.asReadonly();
 

@@ -11,17 +11,17 @@ describe('ChatAppearanceService', () => {
     });
   });
 
-  it('defaults off, persists changes, and exposes them to mounted message rows', () => {
+  it('defaults on, persists changes, and exposes them to mounted message rows', () => {
     const service = TestBed.inject(ChatAppearanceService);
 
-    expect(service.showSelfAvatar()).toBeFalse();
-    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('false');
+    expect(service.showSelfAvatar()).toBeTrue();
+    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('true');
 
-    service.setShowSelfAvatar(true);
+    service.setShowSelfAvatar(false);
     TestBed.flushEffects();
 
-    expect(service.showSelfAvatar()).toBeTrue();
-    expect(localStorage.getItem('soms.chat.showSelfAvatar')).toBe('true');
-    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('true');
+    expect(service.showSelfAvatar()).toBeFalse();
+    expect(localStorage.getItem('soms.chat.showSelfAvatar')).toBe('false');
+    expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('false');
   });
 });
