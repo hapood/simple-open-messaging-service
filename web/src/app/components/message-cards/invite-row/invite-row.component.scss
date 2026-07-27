@@ -8,7 +8,8 @@
 // One opaque brand-tinted fill for both sides (overrides the green/white side bg from row-base). Brand-tinted
 // so it reads as an invite; fully opaque (the chat wallpaper never shows through); identical for self and other.
 // See the --invite-bg token in _tokens.scss.
-.msg-bubble.invite {
+.msg-bubble.invite.msg-self,
+.msg-bubble.invite.msg-other {
   // The invite is a solid brand-tinted card riding the normal chat-bubble shape. The brand watermark +
   // title carry the invite identity; the bottom meta bar carries the valid/expired status + time.
   padding: 0;
@@ -17,9 +18,9 @@
   overflow: hidden;          // clip the watermark that bleeds past the edges
   background: var(--invite-bg) !important;
   box-shadow: none;        // flat card — drop the bubble elevation shadow (from _row-base .msg-bubble) so no dark seam lands on the flush meta bar
-  // Square the bottom corners so the flush meta bar below (square top — see .invite-meta) meets the card with
-  // no gap and no grey "ears" poking past the card's rounded bottom. Overrides the pos()-derived bottom radius
-  // (msg-head / msg-body = 3px) from _row-base.scss — same specificity (0,2,0), this rule comes later → wins.
+  // Square the bottom corners so the flush meta bar below meets the card without a seam. Include the side
+  // class to outrank row-base's grouped `.msg-bubble.msg-{side}.msg-body` selector: a consecutive second
+  // invite is `msg-body`, and otherwise its sender-side 6px bottom corner survives into the meta bar.
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }

@@ -31,6 +31,12 @@
   text-align: left; // reset UA button center-align so every line is left-aligned
   border-radius: inherit;
   outline: none;
+}
+
+// Match row-base's side+body specificity so a consecutive second link cannot retain the grouped 6px
+// bottom corner and expose a seam above its flush meta bar.
+.msg-bubble.link-tappable.msg-self,
+.msg-bubble.link-tappable.msg-other {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
