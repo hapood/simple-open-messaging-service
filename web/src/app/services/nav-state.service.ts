@@ -1,4 +1,5 @@
 import { computed, effect, inject, Injectable, signal, type Type } from '@angular/core';
+import { UserService } from './user.service';
 
 /** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. Single-depth
  *  (no drill-in here); the Settings sub-page has its own {@link NavStateMachineService.settingsCategoryStack}
@@ -65,6 +66,11 @@ let nextAsideId = 0;
  */
 @Injectable({ providedIn: 'root' })
 export class NavStateMachineService {
+  private readonly userService = inject(UserService);
+  /** Last-seen {@link UserService.sessionUserId} for the session-end effect — gates the reset to fire only
+   *  on a real session → no-session edge (id → null), not on every signal read nor at boot (starts null). */
+  private prevSessionId: number | null = null;
+
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
   /** The aside overlay stack (peer-profile / group-info). Single-depth — 0 or 1 entry. */
@@ -112,6 +118,18 @@ export class NavStateMachineService {
       const tid = this.chatThreadId();
       const url = tid === undefined ? '/' : `/chat/${tid}`;
       history.replaceState(history.state, '', url);
+    });
+
+    // Session-end reset: when the session ends (sessionUserId → null — clearSession on logout / 401-bounce /
+    // account switch), drop ALL nav layers so the next account logging into the same live SPA cannot inherit
+    // this user's open chat, dialogs, aside, or mobile section. Mirrors the session-end effects in the
+    // data-layer services (thread-store / folder / message-repository) that key off the same signal — this
+    // service owns the in-memory VIEW state and resets it the same way they reset their caches.
+    effect(() => {
+      const id = this.userService.sessionUserId();
+      if (id === this.prevSessionId) return;
+      this.prevSessionId = id;
+      if (id === null) this.resetForSessionEnd();
     });
   }
 
@@ -200,6 +218,21 @@ export class NavStateMachineService {
    *  in the new layout is dropped, while the open chat — the user's anchor context — survives. */
   resetTransientExceptChat(): void {
     this.closeAllPanes();
+    this.aside.set([]);
+    this.searchOpen.set(false);
+    this.settingsCategoryStack.set([]);
+    this.topSection.set('chats');
+  }
+
+  /** Drop ALL nav layers — including the open chat. Called on session end (logout / 401-bounce / account
+   *  switch), where the previous user's chat thread, open dialogs, aside, and mobile section must not
+   *  survive into the next account's session. Unlike {@link resetTransientExceptChat} (which keeps the chat
+   *  as the user's anchor across a layout breakpoint), this clears the chat too — a session boundary is a
+   *  hard reset, and a stale `chatThreadId` would otherwise make the URL-mirror effect above rewrite the
+   *  fresh-login `/` back to the previous user's `/chat/N`. */
+  private resetForSessionEnd(): void {
+    this.closeAllPanes();
+    this.chatThreadId.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
     this.settingsCategoryStack.set([]);

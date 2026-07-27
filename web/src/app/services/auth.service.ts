@@ -219,6 +219,11 @@ export class AuthService {
    *  multiple trusted devices became allowed); the login page itself signals the session ended. */
   redoLoginAuth(_reason?: string) {
     void this.clearToken()
+    // Drop the in-memory session (sessionProfile / sessionUserId / per-user DB) on the same terms as logout
+    // — a 401 / FORCE_LOGOUT means this session is over, so the next account must not inherit its view state
+    // (open chat, mobile section, dialogs) nor its cached data. The NavStateMachineService session-end effect
+    // keys off sessionUserId → null here, same as on an explicit logout.
+    this.userService.clearSession()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 

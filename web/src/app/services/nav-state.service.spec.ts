@@ -1,15 +1,26 @@
+import { ApplicationRef, provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideZonelessChangeDetection } from '@angular/core';
 import { NavStateMachineService } from './nav-state.service';
+import { UserService } from './user.service';
 
 /** The nav state machine is the trickiest, most regression-prone logic in the shell — its `back()` layering
  *  and the section/reset methods have no compile-time guard, so these tests lock the invariants in. */
 describe('NavStateMachineService', () => {
   let svc: NavStateMachineService;
+  // The session-end effect watches UserService.sessionUserId; stubbed to a controllable signal so the
+  // session-end reset tests can drive the id → null edge without instantiating the real UserService (and its
+  // WebdbService / ProfileRepository dependency chain). Starts null — the boot state — so existing tests
+  // (which never end a session) are unaffected by the effect.
+  let sessionUserId: ReturnType<typeof signal<number | null>>;
 
   beforeEach(() => {
+    sessionUserId = signal<number | null>(null);
     TestBed.configureTestingModule({
-      providers: [provideZonelessChangeDetection(), NavStateMachineService],
+      providers: [
+        provideZonelessChangeDetection(),
+        NavStateMachineService,
+        { provide: UserService, useValue: { sessionUserId } },
+      ],
     });
     svc = TestBed.inject(NavStateMachineService);
   });
@@ -120,5 +131,46 @@ describe('NavStateMachineService', () => {
     expect(svc.paneStack().length).toBe(0);
     expect(svc.aside().length).toBe(0);
     expect(svc.searchOpen()).toBe(false);
+  });
+
+  // ── session-end reset (logout / 401-bounce / account switch: sessionUserId → null) ──
+
+  it('drops every nav layer when the session ends (sessionUserId → null)', () => {
+    const tick = () => TestBed.inject(ApplicationRef).tick();
+    // A logged-in user navigated somewhere before logging out: opened a chat, a chat-scoped aside, in-chat
+    // search, drilled into Settings, opened a dialog, switched to the Profile mobile section.
+    sessionUserId.set(5);
+    tick();
+    svc.openChat(123);
+    svc.openAside('profile');
+    svc.openSearch();
+    svc.openSettingsCategory('devices');
+    svc.pushPane({ kind: 'dialog' });
+    svc.setTopSection('profile');
+
+    // Logout → UserService.clearSession sets sessionUserId back to null → the effect fires the hard reset.
+    sessionUserId.set(null);
+    tick();
+
+    expect(svc.topSection()).toBe('chats');
+    expect(svc.chatThreadId()).toBeUndefined();
+    expect(svc.aside()).toEqual([]);
+    expect(svc.searchOpen()).toBe(false);
+    expect(svc.settingsCategoryStack()).toEqual([]);
+    expect(svc.paneStack()).toEqual([]);
+  });
+
+  it('does not reset on login or when the same id is re-emitted (reconnect HELLO)', () => {
+    const tick = () => TestBed.inject(ApplicationRef).tick();
+    sessionUserId.set(7);
+    tick();
+    svc.openChat(999);
+    svc.setTopSection('settings');
+
+    sessionUserId.set(7); // reconnect re-emits the same userId — must NOT tear down the open chat
+    tick();
+
+    expect(svc.chatThreadId()).toBe(999);
+    expect(svc.topSection()).toBe('settings');
   });
 });
