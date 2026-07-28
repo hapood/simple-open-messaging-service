@@ -122,6 +122,11 @@ export abstract class CallAdapter {
   /** Report the remote + self video "hole" rects (JSON `{x,y,w,h}` CSS px) so native positions its surface
    *  overlays; nulls hide the surfaces. */
   abstract setVideoRect(remote: string | null, self: string | null): void;
+  /** Browser media elements for renderer-owned video. Native adapters ignore these and use surface rects. */
+  abstract setVideoElements(
+    remote: HTMLVideoElement | null,
+    self: HTMLVideoElement | null,
+  ): void;
   /** High-frequency self-view drag position in absolute CSS px; native applies translation only. */
   abstract setSelfVideoPosition(x: number, y: number): void;
   /** Swap which video is full-bleed vs PiP (tap the self PiP) — the local camera ↔ the peer's swap renderers
@@ -182,6 +187,7 @@ class AndroidCallAdapter extends CallAdapter {
   setVideoRect(remote: string | null, self: string | null): void {
     window.SomsCall!.setVideoRect(remote, self);
   }
+  setVideoElements(): void {}
   setSelfVideoPosition(x: number, y: number): void {
     window.SomsCall!.setSelfVideoPosition(x, y);
   }
@@ -223,6 +229,7 @@ class UnsupportedCallAdapter extends CallAdapter {
   switchCamera(): void {}
   setCameraEnabled(): void {}
   setVideoRect(): void {}
+  setVideoElements(): void {}
   setSelfVideoPosition(): void {}
   swapVideo(): void {}
   snapshot(): CallSnapshot {
@@ -248,7 +255,7 @@ export class CallAdapterService {
   /** WebRTC is native-owned on Android and renderer-owned in capable browser/desktop builds. */
   readonly supported: boolean;
   /** Video media is still native-only; Web audio ships as an independently testable first phase. */
-  readonly videoSupported = isAndroidNative();
+  readonly videoSupported: boolean;
 
   constructor(http: HttpClient) {
     const webRtcSupported =
@@ -261,6 +268,7 @@ export class CallAdapterService {
         ? new WebCallAdapter(http, IDLE_CALL)
         : new UnsupportedCallAdapter();
     this.supported = isAndroidNative() || webRtcSupported;
+    this.videoSupported = this.supported;
   }
 
   setSnapshotListener(listener?: CallSnapshotListener): void {
@@ -310,6 +318,12 @@ export class CallAdapterService {
   }
   setVideoRect(remote: string | null, self: string | null): void {
     this.adapter.setVideoRect(remote, self);
+  }
+  setVideoElements(
+    remote: HTMLVideoElement | null,
+    self: HTMLVideoElement | null,
+  ): void {
+    this.adapter.setVideoElements(remote, self);
   }
   setSelfVideoPosition(x: number, y: number): void {
     this.adapter.setSelfVideoPosition(x, y);

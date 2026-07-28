@@ -38,6 +38,11 @@ object CallFsm {
     fun shouldRestartOnReconnect(isCaller: Boolean, iceRestartTried: Boolean, hasPc: Boolean): Boolean =
         isCaller && !iceRestartTried && hasPc
 
+    /** `accepted` is broadcast to every device signed into the callee account. A callee device that did
+     *  not originate the local Accept gesture is a sibling observer and must dismiss its ring. */
+    fun acceptedOnSiblingDevice(isCaller: Boolean, acceptingLocally: Boolean): Boolean =
+        !isCaller && !acceptingLocally
+
     // ── phase-transition table ───────────────────────────────────────────────────
     /** The next phase for a CALL_EVENT lifecycle type, or null if the event does not transition THIS side
      *  (a stale frame, or an event that belongs to the other side). Covers the symmetric lifecycle events;

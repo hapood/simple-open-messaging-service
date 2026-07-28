@@ -21,22 +21,17 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
- * active (CallEventService.callState.phase !== 'idle'). It is the Angular "chrome" over the NATIVE call:
- * it reads the merged call state signal + drives the native CallController via CallAdapterService. The media
- * leg (RTCPeerConnection, audio/video) lives entirely in native Kotlin (CallController) — this component
- * never touches WebRTC.
+ * active (CallEventService.callState.phase !== 'idle'). It reads the merged call state signal and drives the
+ * selected media owner through CallAdapterService: native Kotlin on Android, WebRTC in the renderer on
+ * browser/desktop. The component itself remains presentation-only.
  *
  * AUDIO layout: centered avatar/name + status + Mute + End.
- * VIDEO layout (callType === 'VIDEO'): the `.call-screen` is full-bleed + transparent (the native sibling
- * SurfaceViewRenderer renders the REMOTE video BEHIND it — the barcode-scanner overlay technique); a
- * draggable-position `.self-view` hole is where native renders the LOCAL camera; the controls gain a
- * camera-switch (front↔back) + camera on/off button. The peer name + status float at the top. This matches
- * the mainstream-app layout (WhatsApp/FaceTime/WeChat).
+ * VIDEO layout (callType === 'VIDEO'): the `.call-screen` is full-bleed; browser/desktop render into its
+ * `<video>` elements, while Android positions native SurfaceViewRenderers over the same remote/self geometry.
+ * The controls gain camera-switch + camera on/off actions.
  *
- * The video surfaces are positioned natively via `adapter.setVideoRect(remoteRect, selfRect)` — reported by
- * this component (ResizeObserver on the holes). That rect reporting + the native VideoCapturer/renderers
- * land with the Phase 4 native half; until then the video holes are transparent placeholders + the camera
- * buttons call the adapter (functional once native implements switchCamera/setCameraEnabled).
+ * Native video surfaces are positioned via `adapter.setVideoRect`; renderer media binds through
+ * `adapter.setVideoElements`. Both use the same visual slots, so the UI remains platform-neutral.
  *
  * Terminal phases are folded to 'idle' by CallEventService, so the overlay dismisses on hang-up / decline /
  * peer-end; the terminal CALL bubble in the thread is the user-visible record.
@@ -58,6 +53,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         (pointerdown)="onScreenTap()"
       >
         @if (isVideo()) {
+          <video class="remote-video" autoplay playsinline #remoteVideo></video>
           @if (!snap().remoteCameraEnabled) {
             <div class="remote-camera-off">
               <div class="remote-avatar">
@@ -86,6 +82,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
             (pointercancel)="onSelfPointerUp($event)"
             #selfHole
           >
+            <video autoplay muted playsinline #selfVideo></video>
             @if (!snap().cameraEnabled) {
               <app-icon
                 class="self-off-icon"
@@ -391,6 +388,23 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         font-size: 14px;
         line-height: 20px;
       }
+
+      .remote-video,
+      .self-view video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .remote-video {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+      }
+
+      .self-view video {
+        display: block;
+      }
       .remote-avatar {
         width: 112px;
         height: 112px;
@@ -639,6 +653,10 @@ export class CallScreenComponent implements OnDestroy {
   /** The self-view hole element — measured to report its rect to native so the local-camera surface is
    *  positioned over it. Null on AUDIO calls (no self-view rendered). */
   private readonly selfHole = viewChild<ElementRef<HTMLElement>>('selfHole');
+  private readonly remoteVideo =
+    viewChild<ElementRef<HTMLVideoElement>>('remoteVideo');
+  private readonly selfVideo =
+    viewChild<ElementRef<HTMLVideoElement>>('selfVideo');
 
   constructor() {
     // Report the video-hole rects to native once mounted + on viewport change, so the SurfaceViewRenderer
@@ -759,9 +777,14 @@ export class CallScreenComponent implements OnDestroy {
    *  screen), the self-view sits over its hole. Passes nulls on AUDIO / unmount so native detaches. */
   private reportVideoRects(): void {
     if (!this.isVideo() || this.snap().phase === 'idle') {
+      this.adapter.setVideoElements(null, null);
       this.adapter.setVideoRect(null, null);
       return;
     }
+    this.adapter.setVideoElements(
+      this.remoteVideo()?.nativeElement ?? null,
+      this.selfVideo()?.nativeElement ?? null,
+    );
     const remote = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
     // In PiP only the remote video shows (the self PiP is hidden) → pass self=null so native detaches it.
     if (this.inPip()) {

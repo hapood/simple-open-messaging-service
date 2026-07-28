@@ -23,6 +23,7 @@ describe('CallScreenComponent', () => {
     switchCamera: jasmine.createSpy('switchCamera'),
     setCameraEnabled: jasmine.createSpy('setCameraEnabled'),
     setVideoRect: jasmine.createSpy('setVideoRect'),
+    setVideoElements: jasmine.createSpy('setVideoElements'),
     setSelfVideoPosition: jasmine.createSpy('setSelfVideoPosition'),
     swapVideo: jasmine.createSpy('swapVideo'),
   };
@@ -99,6 +100,7 @@ describe('CallScreenComponent', () => {
     );
     expect(root.querySelectorAll('.call-action').length).toBe(4);
     expect(root.querySelector('.upgrade')).toBeNull();
+    expect(root.querySelectorAll('video').length).toBe(2);
     expect(root.querySelectorAll('.call-action app-icon svg').length).toBe(4);
     expect(root.querySelector('mat-icon')).toBeNull();
 

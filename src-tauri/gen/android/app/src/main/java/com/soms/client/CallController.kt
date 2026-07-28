@@ -78,6 +78,9 @@ object CallController {
     /** true = this side placed the call (caller); false = this side was rung (callee). */
     @Volatile var isCaller: Boolean = false
         private set
+    /** Account-wide CALL_EVENT frames reach every signed-in device. Only the Android instance whose user
+     *  tapped Accept may transition the callee into connecting; sibling devices dismiss on `accepted`. */
+    @Volatile private var acceptingLocally: Boolean = false
     /** The peer's display name. Set by [seedIncoming] from the CALL_INCOMING FCM push — a cold-started callee
      *  has no live SSE, so the web UI can't get the name from CALL_EVENT{incoming}; this carries it inline.
      *  Empty for the foreground path (the SSE incoming frame owns the name there). Surfaced via [snapshotJson]. */
@@ -565,6 +568,14 @@ object CallController {
                 if (np != null) { phase = np; step = ""; pushSnapshot() }
             }
             "accepted" -> {
+                if (CallFsm.acceptedOnSiblingDevice(isCaller, acceptingLocally)) {
+                    // Another device on this account answered. This instance owns no PeerConnection/media
+                    // leg, so dismiss its incoming UI/notification instead of entering a phantom call.
+                    phase = "ended"
+                    pushSnapshot()
+                    teardown()
+                    return
+                }
                 val np = CallFsm.nextPhase(phase, isCaller, "accepted")
                 if (np != null) {
                     phase = np
@@ -804,6 +815,7 @@ object CallController {
     fun accept(sid: String) {
         // Stop the incoming ring immediately on the user's tap (before the network round-trip — UX). Comms
         // audio is acquired AFTER the server confirms this device is the answering one (below).
+        acceptingLocally = true
         ringer.stopRing()
         callExecutor.execute {
             try {
@@ -816,6 +828,7 @@ object CallController {
                 val accepted = post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid)).ok
                 if (!accepted) {
                     SomsLog.i(TAG) { "accept rejected by server (answered/ended on another device) -> dismiss" }
+                    acceptingLocally = false
                     phase = "ended"; pushSnapshot(); teardown(); return@execute
                 }
                 CallService.instance?.onAccepted() // confirmed the answering device — switch to comms audio
@@ -831,6 +844,7 @@ object CallController {
                 pushSnapshot()
             } catch (e: Exception) {
                 SomsLog.w(TAG) { "accept failed: ${e.message}" }
+                acceptingLocally = false
             }
         }
     }
@@ -1137,6 +1151,7 @@ object CallController {
         videoRenegotiationInFlight = false
         iceRestartTried = false
         answerApplied = false
+        acceptingLocally = false
         peerName = ""
         peerAvatar = ""
         ringer.stopRing()

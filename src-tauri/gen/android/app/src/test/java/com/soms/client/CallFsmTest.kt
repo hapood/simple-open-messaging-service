@@ -12,6 +12,13 @@ import org.junit.Test
  * timing + the phase-transition table (the callee-racing-the-caller bug once lived in exactly this logic).
  */
 class CallFsmTest {
+    @Test
+    fun `accepted dismisses only a callee sibling device`() {
+        assertTrue(CallFsm.acceptedOnSiblingDevice(isCaller = false, acceptingLocally = false))
+        assertFalse(CallFsm.acceptedOnSiblingDevice(isCaller = false, acceptingLocally = true))
+        assertFalse(CallFsm.acceptedOnSiblingDevice(isCaller = true, acceptingLocally = false))
+    }
+
 
     // ── reconnect backstop ──────────────────────────────────────────────────────
 

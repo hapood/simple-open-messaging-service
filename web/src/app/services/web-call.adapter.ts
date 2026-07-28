@@ -42,12 +42,16 @@ export class WebCallAdapter implements CallAdapter {
   private listener?: CallSnapshotListener;
   private pc?: RTCPeerConnection;
   private localStream?: MediaStream;
+  private remoteStream?: MediaStream;
   private remoteAudio?: HTMLAudioElement;
+  private remoteVideo?: HTMLVideoElement;
+  private selfVideo?: HTMLVideoElement;
   private pendingOffer?: string;
   private readonly pendingIce: string[] = [];
   private connectedReported = false;
   private answerBackstop?: ReturnType<typeof setTimeout>;
   private acceptingLocally = false;
+  private facingMode: 'user' | 'environment' = 'user';
 
   constructor(
     private readonly http: HttpClient,
@@ -87,7 +91,7 @@ export class WebCallAdapter implements CallAdapter {
     try {
       // Request the mic directly from the click chain. Waiting for the HTTP round-trip first loses browser
       // user activation, which makes Tauri WebView/browser permission prompts reject getUserMedia.
-      await this.acquireLocalAudio();
+      await this.acquireLocalMedia(callType === 'VIDEO');
       const response = await this.post<{ threadId: number }>('calls/initiate', {
         callSid,
         calleeUserId,
@@ -132,7 +136,7 @@ export class WebCallAdapter implements CallAdapter {
     this.acceptingLocally = true;
     let acceptedOnServer = false;
     try {
-      await this.acquireLocalAudio();
+      await this.acquireLocalMedia(this.state.callType === 'VIDEO');
       await this.post('calls/accept', { callSid });
       acceptedOnServer = true;
       this.update({ phase: 'connecting' });
@@ -189,10 +193,41 @@ export class WebCallAdapter implements CallAdapter {
     this.update({ muted });
   }
 
-  upgradeToVideo(): void {}
-  switchCamera(): void {}
-  setCameraEnabled(): void {}
+  upgradeToVideo(): void {
+    void this.enableVideo();
+  }
+
+  switchCamera(): void {
+    void this.replaceCamera();
+  }
+
+  setCameraEnabled(enabled: boolean): void {
+    const track = this.localStream?.getVideoTracks()[0];
+    if (!track && enabled) {
+      void this.enableVideo();
+      return;
+    }
+    if (!track) return;
+    track.enabled = enabled;
+    this.update({ cameraEnabled: enabled });
+    void this.signal('video-state', JSON.stringify({ enabled }));
+  }
   setVideoRect(): void {}
+  setVideoElements(
+    remote: HTMLVideoElement | null,
+    self: HTMLVideoElement | null,
+  ): void {
+    this.remoteVideo = remote ?? undefined;
+    this.selfVideo = self ?? undefined;
+    if (this.remoteVideo) {
+      this.remoteVideo.srcObject = this.remoteStream ?? null;
+      void this.remoteVideo.play().catch(() => undefined);
+    }
+    if (this.selfVideo) {
+      this.selfVideo.srcObject = this.localStream ?? null;
+      void this.selfVideo.play().catch(() => undefined);
+    }
+  }
   setSelfVideoPosition(): void {}
   swapVideo(): void {}
 
@@ -218,9 +253,20 @@ export class WebCallAdapter implements CallAdapter {
         sdp: signal.payload,
       });
       this.update({ phase: 'connecting', step: 'answer-received' });
+      if (this.state.videoUpgradeState === 'upgrading')
+        await this.completeVideoUpgrade();
     } else if (signal.kind === 'ice') {
       if (!this.pc?.remoteDescription) this.pendingIce.push(signal.payload);
       else await this.applyIce(signal.payload);
+    } else if (signal.kind === 'video-state') {
+      const enabled = this.readVideoEnabled(signal.payload);
+      this.update({
+        remoteCameraEnabled: enabled,
+        ...(enabled && this.state.callType === 'AUDIO'
+          ? { videoUpgradeState: 'upgrading' as const }
+          : {}),
+      });
+      if (enabled && this.state.isCaller) await this.createVideoOffer();
     }
   }
 
@@ -278,7 +324,7 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private async createPeerConnection(): Promise<void> {
-    await this.acquireLocalAudio();
+    await this.acquireLocalMedia(this.state.callType === 'VIDEO');
     const iceServers = iceServersFromResponse(
       await this.get<IceConfigurationResponse>('calls/ice-servers'),
     );
@@ -290,21 +336,27 @@ export class WebCallAdapter implements CallAdapter {
       if (!candidate) return;
       void this.signal('ice', JSON.stringify(candidate.toJSON()));
     };
-    pc.ontrack = ({ streams }) => this.playRemote(streams[0]);
+    pc.ontrack = (event) => this.attachRemoteTrack(event);
     pc.onconnectionstatechange = () =>
       this.onConnectionState(pc.connectionState);
   }
 
-  private async acquireLocalAudio(): Promise<void> {
-    if (this.localStream?.active) return;
+  private async acquireLocalMedia(withVideo: boolean): Promise<void> {
+    if (
+      this.localStream?.active &&
+      (!withVideo || this.localStream.getVideoTracks().length > 0)
+    )
+      return;
     this.localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         autoGainControl: true,
         noiseSuppression: true,
       },
-      video: false,
+      video: withVideo ? { facingMode: this.facingMode } : false,
     });
+    this.update({ cameraEnabled: withVideo });
+    if (this.selfVideo) this.selfVideo.srcObject = this.localStream;
   }
 
   private async applyOffer(sdp: string): Promise<void> {
@@ -319,6 +371,8 @@ export class WebCallAdapter implements CallAdapter {
     await pc.setLocalDescription(answer);
     await this.signal('answer', answer.sdp ?? '');
     this.update({ step: 'answer-sent' });
+    if (this.state.videoUpgradeState === 'upgrading')
+      await this.completeVideoUpgrade();
   }
 
   private async applyIce(payload: string): Promise<void> {
@@ -365,6 +419,103 @@ export class WebCallAdapter implements CallAdapter {
     });
   }
 
+  private attachRemoteTrack(event: RTCTrackEvent): void {
+    const stream = event.streams[0] ?? this.remoteStream ?? new MediaStream();
+    if (!event.streams[0] && !stream.getTracks().includes(event.track))
+      stream.addTrack(event.track);
+    this.remoteStream = stream;
+    if (event.track.kind === 'video')
+      this.update({ remoteCameraEnabled: event.track.enabled });
+    if (this.remoteVideo) {
+      this.remoteVideo.srcObject = stream;
+      void this.remoteVideo.play().catch(() => undefined);
+    }
+    this.playRemote(stream);
+  }
+
+  private async enableVideo(): Promise<void> {
+    if (
+      !this.pc ||
+      (this.state.phase !== 'connected' && this.state.phase !== 'reconnecting')
+    )
+      return;
+    if (this.localStream?.getVideoTracks().length) {
+      this.setCameraEnabled(true);
+      return;
+    }
+    this.update({ videoUpgradeState: 'upgrading' });
+    try {
+      const camera = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: this.facingMode },
+        audio: false,
+      });
+      const track = camera.getVideoTracks()[0];
+      if (!track) throw new Error('camera returned no video track');
+      this.localStream ??= new MediaStream();
+      this.localStream.addTrack(track);
+      this.pc.addTrack(track, this.localStream);
+      if (this.selfVideo) this.selfVideo.srcObject = this.localStream;
+      this.update({ cameraEnabled: true });
+      await this.signal('video-state', JSON.stringify({ enabled: true }));
+      if (this.state.isCaller) await this.createVideoOffer();
+    } catch (error) {
+      console.error('[call:web] video upgrade failed', error);
+      this.update({ videoUpgradeState: 'failed', cameraEnabled: false });
+    }
+  }
+
+  private async createVideoOffer(): Promise<void> {
+    if (!this.pc || this.pc.signalingState !== 'stable') return;
+    const offer = await this.pc.createOffer();
+    await this.pc.setLocalDescription(offer);
+    await this.signal('offer', offer.sdp ?? '');
+    this.update({ step: 'offer-sent', videoUpgradeState: 'upgrading' });
+  }
+
+  private async completeVideoUpgrade(): Promise<void> {
+    const callSid = this.state.callSid;
+    if (!callSid) return;
+    try {
+      await this.post('calls/upgrade-video', { callSid });
+      this.update({ callType: 'VIDEO', videoUpgradeState: 'idle' });
+    } catch (error) {
+      console.error('[call:web] video upgrade persistence failed', error);
+      this.update({ videoUpgradeState: 'failed' });
+    }
+  }
+
+  private async replaceCamera(): Promise<void> {
+    const oldTrack = this.localStream?.getVideoTracks()[0];
+    if (!oldTrack || !this.pc) return;
+    const nextFacing = this.facingMode === 'user' ? 'environment' : 'user';
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: nextFacing } },
+        audio: false,
+      });
+      const nextTrack = stream.getVideoTracks()[0];
+      const sender = this.pc
+        .getSenders()
+        .find((item) => item.track?.kind === 'video');
+      await sender?.replaceTrack(nextTrack);
+      this.localStream!.removeTrack(oldTrack);
+      oldTrack.stop();
+      this.localStream!.addTrack(nextTrack);
+      this.facingMode = nextFacing;
+      if (this.selfVideo) this.selfVideo.srcObject = this.localStream!;
+    } catch (error) {
+      console.warn('[call:web] switch camera failed', error);
+    }
+  }
+
+  private readVideoEnabled(payload: string): boolean {
+    try {
+      return !!(JSON.parse(payload) as { enabled?: boolean }).enabled;
+    } catch {
+      return false;
+    }
+  }
+
   private async signal(kind: string, payload: string): Promise<void> {
     const { callSid, peerUserId } = this.state;
     if (!callSid || !peerUserId) return;
@@ -392,8 +543,14 @@ export class WebCallAdapter implements CallAdapter {
     this.pc = undefined;
     for (const track of this.localStream?.getTracks() ?? []) track.stop();
     this.localStream = undefined;
+    for (const track of this.remoteStream?.getTracks() ?? []) track.stop();
+    this.remoteStream = undefined;
     if (this.remoteAudio) this.remoteAudio.srcObject = null;
     this.remoteAudio = undefined;
+    if (this.remoteVideo) this.remoteVideo.srcObject = null;
+    if (this.selfVideo) this.selfVideo.srcObject = null;
+    this.remoteVideo = undefined;
+    this.selfVideo = undefined;
     this.pendingOffer = undefined;
     this.pendingIce.length = 0;
     this.connectedReported = false;
