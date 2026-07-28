@@ -97,20 +97,9 @@
 .cfg-field {
   width: 100%;
 
-  // Reserve the subscript slot for a single line so toggling between empty / validation-error /
-  // insecure-warning never changes the field's height — the Connect button stays put (no reflow).
-  // Both subscript messages are kept to one short line, so one line of reservation is enough.
+  // Reserve the validation-error slot so showing an error does not move the controls below it.
   ::ng-deep .mat-mdc-form-field-subscript-wrapper {
     min-height: 24px;
-  }
-  // The insecure warning is this field's only hint → tint it as a warning. Color an element the
-  // component owns (the span inside <mat-hint>) rather than Material's internal hint class, which was
-  // renamed in Material 20 (there is no .mat-mdc-form-field-hint-text anymore) — so this stays robust
-  // and needs no ::ng-deep.
-  .cfg-insecure {
-    color: var(--app-warning);
-    font-size: 12px;
-    line-height: 16px;
   }
 }
 
@@ -281,13 +270,33 @@
     text-align: left;
   }
 
-  &__address {
-    display: block;
-    padding: 12px;
+  &__addresses {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+  }
+
+  &__address-row {
+    padding: 10px 12px;
     border-radius: var(--app-radius-sm, 8px);
     background: color-mix(in srgb, var(--app-text) 6%, transparent);
-    color: var(--app-text);
-    overflow-wrap: anywhere;
+
+    dt {
+      margin-bottom: 3px;
+      color: var(--app-text-secondary);
+      font-size: 12px;
+      line-height: 16px;
+    }
+
+    dd {
+      margin: 0;
+    }
+
+    code {
+      color: var(--app-text);
+      overflow-wrap: anywhere;
+    }
   }
 
   &__actions {

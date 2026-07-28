@@ -393,6 +393,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     const items = repo.items();
     expect(items[0].threadId).toBe(1); // moved to the head of the unpinned tier (lastMessageAt 300)
+    expect(repo.latestSeq(1)).toBe(100);
     // unreadCount is NOT bumped — it is server-authoritative, applied by the missed-summary pull.
     expect(items[0].unreadCount).toBe(0);
     const rec = await (await webdb.db()).get('threads', 1);

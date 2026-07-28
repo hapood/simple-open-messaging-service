@@ -5,7 +5,7 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { WebsocketService, ConnectionState } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
-import { apiOrigin, getOriginMode } from '../../services/runtime';
+import { apiOrigin, getActiveApiOrigin, getOriginMode } from '../../services/runtime';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom, timeout, TimeoutError } from 'rxjs';
 
@@ -119,6 +119,7 @@ export class SettingsConnectionComponent {
   /** Which origin is ACTIVE — 'primary' (normal) or 'secondary' (the LAN fallback). Loaded from Rust's
    *  get_origin_mode on init + after each health probe; stays 'primary' in the browser build. */
   readonly originMode = signal<'primary' | 'secondary'>('primary');
+  readonly activeOrigin = signal(apiOrigin());
   /** Probe deadline (ms). Bounds the `checking` lifecycle so a hung connection (host reachable but
    *  never responding) can't wedge the button forever — complements the re-entrancy guard. Tuned as a
    *  liveness budget (see `check()`), NOT against the server's request-handling window. */
@@ -180,20 +181,21 @@ export class SettingsConnectionComponent {
     );
   });
 
-  /** Detail line: the second-server fallback notice when on secondary, else the configured primary origin. */
+  /** Detail line: the actual active address, not merely the stable configured primary. */
   readonly activeOriginHint = computed(() => {
-    void this.language.lang();
-    if (this.originMode() === 'secondary') {
-      return this.transloco.translate('settings.usingLanHint');
-    }
-    return apiOrigin();
+    return this.activeOrigin();
   });
 
   /** Read the active mode from Rust (get_origin_mode). Re-called after each health probe (a probe may
    *  trigger a switch). Stays 'primary' in the browser build (no fallback) or if the IPC is unavailable. */
   private async loadOriginMode(): Promise<void> {
     try {
-      this.originMode.set(await getOriginMode());
+      const [mode, active] = await Promise.all([
+        getOriginMode(),
+        getActiveApiOrigin(),
+      ]);
+      this.originMode.set(mode);
+      this.activeOrigin.set(active);
     } catch {
       // not under Tauri — 'primary' default
     }

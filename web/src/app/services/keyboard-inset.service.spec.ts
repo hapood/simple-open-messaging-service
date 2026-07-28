@@ -4,6 +4,7 @@ import {
   KeyboardInsetService,
   browserKbdInset,
   installKeyboardInsetBridge,
+  uncompensatedKbdInset,
 } from './keyboard-inset.service';
 
 // Zoneless: no fakeAsync/tick. Signal-driven updates are flushed via TestBed/ApplicationRef tick.
@@ -34,6 +35,17 @@ describe('browserKbdInset (pure)', () => {
 
   it('truncates fractional values to integer px', () => {
     expect(browserKbdInset(vv(700.7), 1000)).toBe(299); // 1000 − 700.7 − 0 = 299.3 → 299
+  });
+});
+
+describe('uncompensatedKbdInset', () => {
+  it('keeps only the IME pixels not already handled by a viewport resize', () => {
+    expect(uncompensatedKbdInset(320, 280)).toBe(40);
+  });
+
+  it('clamps a fully compensated inset to zero', () => {
+    expect(uncompensatedKbdInset(320, 320)).toBe(0);
+    expect(uncompensatedKbdInset(320, 400)).toBe(0);
   });
 });
 
@@ -84,18 +96,26 @@ describe('KeyboardInsetService', () => {
     // seeds `inset` at ~0 in a headless browser — the bridge call below then overwrites it.
     const svc = TestBed.inject(KeyboardInsetService);
 
-    window.__SOMS_IME_HEIGHT__!(300);
+    window.__SOMS_IME_EVENT__!({
+      phase: 'change', currentPx: 300, targetPx: null, durationMs: 0, animationId: 0, visible: true,
+    });
     expect(svc.inset()).toBe(300);
     expect(svc.open()).toBe(true);
 
-    window.__SOMS_IME_HEIGHT__!(0);
+    window.__SOMS_IME_EVENT__!({
+      phase: 'change', currentPx: 0, targetPx: null, durationMs: 0, animationId: 0, visible: false,
+    });
     expect(svc.inset()).toBe(0);
     expect(svc.open()).toBe(false);
 
-    window.__SOMS_IME_HEIGHT__!(-50); // negative → clamped to 0
+    window.__SOMS_IME_EVENT__!({
+      phase: 'change', currentPx: -50, targetPx: null, durationMs: 0, animationId: 0, visible: false,
+    }); // negative → clamped to 0
     expect(svc.inset()).toBe(0);
 
-    window.__SOMS_IME_HEIGHT__!(123.9); // fractional → truncated
+    window.__SOMS_IME_EVENT__!({
+      phase: 'change', currentPx: 123.9, targetPx: null, durationMs: 0, animationId: 0, visible: true,
+    }); // fractional → truncated
     expect(svc.inset()).toBe(123);
   });
 
@@ -103,10 +123,24 @@ describe('KeyboardInsetService', () => {
     installKeyboardInsetBridge();
     const svc = TestBed.inject(KeyboardInsetService);
 
-    window.__SOMS_IME_ANIMATION__!(321.9, 249.8, true);
+    window.__SOMS_IME_EVENT__!({
+      phase: 'start',
+      currentPx: 0,
+      targetPx: 321.9,
+      durationMs: 249.8,
+      animationId: 1,
+      visible: false,
+    });
     expect(svc.animation()).toEqual({ target: 321, durationMs: 249 });
 
-    window.__SOMS_IME_ANIMATION__!(321, 0, false);
+    window.__SOMS_IME_EVENT__!({
+      phase: 'end',
+      currentPx: 321,
+      targetPx: null,
+      durationMs: 0,
+      animationId: 1,
+      visible: true,
+    });
     expect(svc.animation()).toBeNull();
   });
 

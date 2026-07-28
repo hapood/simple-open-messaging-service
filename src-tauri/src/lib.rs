@@ -553,6 +553,7 @@ pub fn run() {
             {
                 tauri::generate_handler![
                     get_api_origin,
+                    get_active_api_origin,
                     is_origin_configured,
                     set_api_origin,
                     get_api_origin_secondary,
@@ -589,6 +590,7 @@ pub fn run() {
             {
                 tauri::generate_handler![
                     get_api_origin,
+                    get_active_api_origin,
                     is_origin_configured,
                     set_api_origin,
                     get_api_origin_secondary,
@@ -679,10 +681,9 @@ pub fn run() {
                 retry_pending_diagnostics(retry_app, retry_state).await;
             });
 
-            // NOTE: the init origin race does NOT run at boot — it runs at LOGIN (the shell calls
-            // `init_pick_origin` before the auth request, via runtime.pickLoginOrigin). Pre-login there's no
-            // origin-dependent traffic (server-config passes the entered origin explicitly; the auth guard
-            // reads the configured primary), so leaving the active = persisted primary until login is safe.
+            // The web APP_INITIALIZER invokes `init_pick_origin` before routing begins. That timing matters:
+            // the logged-out login page immediately loads public `/config`, so the active origin must be
+            // selected even when no session token exists and before the user submits the login form.
             Ok(())
         })
         .run({
@@ -848,43 +849,85 @@ fn activate_origin(state: &ProxyState, origin: &str, mode: OriginMode) {
     }
 }
 
-/// The CONCURRENT race: probe BOTH origins, adopt the reachable one (prefer the primary on a tie; current
-/// wins if it's healthy). Used for login init + full-disconnect reconnect — NOT for runtime single-failure
-/// (that's `maybe_switch`). No-op when no secondary is configured (dev / no SOMS_LAN_DOMAIN). Single-flight
-/// (one race at a time). Never adopts a dead origin: if both fail, the active is left as-is.
-async fn pick_origin_race(state: &ProxyState) {
-    let Some(secondary) = state.api_origin_secondary.lock().expect("secondary lock").clone() else {
-        return; // no fallback configured → no-op
+/// The CONCURRENT race: probe BOTH origins and immediately adopt the first healthy one. Used for login
+/// init + full-disconnect reconnect — NOT for runtime single-failure (that's `maybe_switch`). No-op when
+/// no secondary is configured (dev / no SOMS_LAN_DOMAIN). Single-flight (one race at a time). Never adopts
+/// a dead origin: if both fail, the active is left as-is.
+async fn pick_origin_race(state: &ProxyState) -> Option<String> {
+    let Some(secondary) = state
+        .api_origin_secondary
+        .lock()
+        .expect("secondary lock")
+        .clone()
+    else {
+        #[cfg(debug_assertions)]
+        log::info!("origin race: no secondary configured; keeping primary");
+        return None; // no fallback configured → no-op
     };
     let active = state.api_origin.lock().expect("origin lock").clone();
-    // Cheap-check the current active first (UNLOCKED): healthy → nothing to do ("current wins").
-    if probe_health(&active).await {
-        return;
-    }
-    // Single-flight the race: one at a time. A late acquirer re-checks the active (the first may have fixed
-    // it while it waited for the lock) and skips.
+    let primary = state
+        .api_origin_primary
+        .lock()
+        .expect("primary lock")
+        .clone();
+    #[cfg(debug_assertions)]
+    log::info!("origin race: start active={active} primary={primary} secondary={secondary}");
+
+    // Single-flight the race. Do not serially "cheap-check" the current address first: when it is down,
+    // every such check burns a full timeout before the reachable fallback is even considered.
     let _guard = state.select_lock.lock().await;
-    let active = state.api_origin.lock().expect("origin lock").clone();
-    if probe_health(&active).await {
-        return;
-    }
-    // Active is down → race both concurrently, prefer the primary (federation-canonical).
-    let primary = state.api_origin_primary.lock().expect("primary lock").clone();
-    let (primary_ok, secondary_ok) = tokio::join!(probe_health(&primary), probe_health(&secondary));
-    let chosen = if primary_ok {
-        Some((primary, OriginMode::Primary))
-    } else if secondary_ok {
-        Some((secondary, OriginMode::Secondary))
-    } else {
-        None
+    let chosen = {
+        let primary_probe = probe_health(&primary);
+        let secondary_probe = probe_health(&secondary);
+        tokio::pin!(primary_probe, secondary_probe);
+
+        // Resolve as soon as one endpoint is healthy. Leaving this scope immediately drops the losing
+        // reqwest future, cancelling its in-flight request and releasing its connection resources.
+        // If the first completed probe failed, wait only for the other already-running probe.
+        // `biased` preserves primary preference when both are ready together.
+        tokio::select! {
+            biased;
+            primary_ok = &mut primary_probe => {
+                #[cfg(debug_assertions)]
+                log::info!("origin race: primary={primary} healthy={primary_ok}");
+                if primary_ok {
+                    Some((primary.clone(), OriginMode::Primary))
+                } else {
+                    let secondary_ok = secondary_probe.await;
+                    #[cfg(debug_assertions)]
+                    log::info!("origin race: secondary={secondary} healthy={secondary_ok}");
+                    secondary_ok.then(|| (secondary.clone(), OriginMode::Secondary))
+                }
+            }
+            secondary_ok = &mut secondary_probe => {
+                #[cfg(debug_assertions)]
+                log::info!("origin race: secondary={secondary} healthy={secondary_ok}");
+                if secondary_ok {
+                    Some((secondary.clone(), OriginMode::Secondary))
+                } else {
+                    let primary_ok = primary_probe.await;
+                    #[cfg(debug_assertions)]
+                    log::info!("origin race: primary={primary} healthy={primary_ok}");
+                    primary_ok.then(|| (primary.clone(), OriginMode::Primary))
+                }
+            }
+        }
     };
     let Some((origin, mode)) = chosen else {
         warn!("pick_origin_race: both origins unreachable; staying on {active}");
-        return;
+        return None;
     };
     if origin != active {
         activate_origin(state, &origin, mode);
+    } else {
+        *state.origin_mode.lock().expect("mode lock") = mode;
+        // A transport failure triggered this race. Even when the winning URL did not change, reset SSE:
+        // its socket may be stale while the health endpoint has already recovered.
+        state.origin_notify.notify_one();
+        #[cfg(debug_assertions)]
+        log::info!("origin race: selected={origin} mode={mode:?}");
     }
+    Some(origin)
 }
 
 /// The outcome of a runtime `maybe_switch` — drives the caller's next step (the SSE supervisor: reopen vs
@@ -934,12 +977,9 @@ async fn maybe_switch(state: &ProxyState) -> SwitchOutcome {
 /// Desktop-only runtime switch (the transports + diagnostics call this on a network failure). On Android
 /// Rust is PASSIVE — Kotlin owns the decision and signals via `set_active_origin` — so this is a no-op
 /// there, avoiding a second, divergent decision-maker.
-#[cfg(desktop)]
 async fn runtime_switch(state: &ProxyState) {
-    let _ = maybe_switch(state).await;
+    let _ = pick_origin_race(state).await;
 }
-#[cfg(not(desktop))]
-async fn runtime_switch(_state: &ProxyState) {}
 
 /// The webview→backend HTTP transport under the Tauri shell. The frontend `TauriHttpBackend`
 /// (web/.../tauri-http.backend.ts) invokes this instead of `fetch()`: Android's Chromium WebView rejects
@@ -960,75 +1000,81 @@ struct ApiRequestResult {
 
 #[tauri::command]
 async fn api_request(
+    app: tauri::AppHandle,
     proxy: tauri::State<'_, ProxyState>,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
     body: Option<Vec<u8>>,
+    replay_safe: bool,
 ) -> Result<ApiRequestResult, String> {
-    let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
-    let target = format!("{}{}", api_origin, path);
     let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
-    let client = proxy.api_client(&api_origin);
-    let mut req = client.request(method, &target);
-    // Inject the Bearer from Rust's held token ONLY. JS does not pass `authorization` (the token never
-    // reaches JS); when no token is set (pre-login / public path) the request goes out unauthenticated
-    // and the backend's @Public() gate decides. This — not forwarding a JS header — is what keeps the
-    // token out of JS; the login flow awaits `set_session_token` so the token is set before the first
-    // authenticated request (closing the race the old proxy_api papered over by forwarding JS's header).
-    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
-        req = req.header("authorization", format!("Bearer {}", t));
-    }
-    // Forward only a whitelist of JS-supplied headers; `authorization` is intentionally NOT in the list.
-    // `x-request-id` is the correlation id the JS `correlationIdInterceptor` stamps — forward it so the
-    // backend honors it as request.id (→ pino req.id + the echoed response header), making a webview
-    // `[http] … req=<id>` failure greppable in the server logs for the same request.
-    for name in [
-        "content-type",
-        "accept",
-        "accept-language",
-        "range",
-        "x-request-id",
-        // Upload endpoints need this opaque client UUID to promote the staged media intent. Omitting it
-        // uploads the bytes but strands PendingMedia in `pending`, so every Android/Tauri upload appears
-        // to fail even though the asset reached the server.
-        "x-client-message-id",
-    ] {
-        if let Some(v) = headers.get(name) {
-            req = req.header(name, v);
+    let mut attempt = 0u8;
+    let upstream = loop {
+        let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
+        let target = format!("{}{}", api_origin, path);
+        let client = proxy.api_client(&api_origin);
+        let mut req = client.request(method.clone(), &target);
+        if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+            req = req.header("authorization", format!("Bearer {}", t));
         }
-    }
-    if let Some(b) = body {
-        req = req.body(b);
-    }
-    // Bound the HEADERS phase (connect + send + server processing). The body READ below is unbounded — a
-    // slow/large download is legitimate and must not be killed. Connect-only failures (`SendFailed`) are
-    // already caught by `BACKEND_CONNECT_TIMEOUT` on the cached client and surface as an `Err` → JS
-    // status 0 → "network". A HUNG upstream (`Timeout`: connected but no headers) surfaces as a real
-    // HTTP 504 so the client can distinguish "server accepted then went silent" from "couldn't connect".
-    let upstream = match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
-        Ok(r) => r,
-        Err(HeadersError::SendFailed(e)) => {
-            // Network-level failure (connect/DNS/TLS/timeout): the origin may be unreachable. Re-race
-            // select_origin so subsequent requests + SSE move to the LAN origin if the primary is down —
-            // but do NOT re-issue THIS request (the caller reconciles: reads are idempotent, writes dedup
-            // by clientMessageId; the SSE HELLO/reconcile restores state). A non-network send error (rare)
-            // does not trigger a switch. 401/HTTP-status never reach here (those are Ok(Response)).
-            if is_network_failure(&e) {
-                runtime_switch(&proxy).await;
+        for name in [
+            "content-type",
+            "accept",
+            "accept-language",
+            "range",
+            "x-request-id",
+            "x-client-message-id",
+        ] {
+            if let Some(v) = headers.get(name) {
+                req = req.header(name, v);
             }
-            warn!("api_request {target} upstream send failed: {e}");
-            return Err(format!("api_request send: {e}"));
         }
-        Err(HeadersError::Timeout) => {
-            // Hung upstream (connected, no headers) → re-race too, then surface a real 504.
-            runtime_switch(&proxy).await;
-            warn!("api_request {target} upstream headers timed out → 504");
-            return Ok(ApiRequestResult {
-                status: 504,
-                headers: std::collections::HashMap::new(),
-                body: "Gateway Timeout".to_string(),
-            });
+        if let Some(b) = body.clone() {
+            req = req.body(b);
+        }
+
+        match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
+            Ok(r) => break r,
+            Err(failure) => {
+                let is_reachability_failure = match &failure {
+                    HeadersError::SendFailed(e) => is_network_failure(e),
+                    HeadersError::Timeout => true,
+                };
+                if !is_reachability_failure {
+                    let HeadersError::SendFailed(e) = failure else { unreachable!() };
+                    return Err(format!("api_request send: {e}"));
+                }
+
+                // Every reachability failure immediately races the configured addresses. A winner becomes
+                // the single active origin for subsequent HTTP and SSE. Only explicitly replay-safe
+                // requests are issued again; unsafe writes still benefit from the switch but surface their
+                // original ambiguous failure to the caller.
+                let selected = pick_origin_race(&proxy).await;
+                if let Some(origin) = selected.as_ref() {
+                    let _ = app.emit("active-origin-changed", origin);
+                }
+                if replay_safe && attempt == 0 && selected.is_some() {
+                    attempt = 1;
+                    warn!("api_request {target} failed; replaying on active origin");
+                    continue;
+                }
+
+                return match failure {
+                    HeadersError::SendFailed(e) => {
+                        warn!("api_request {target} upstream send failed: {e}");
+                        Err(format!("api_request send: {e}"))
+                    }
+                    HeadersError::Timeout => {
+                        warn!("api_request {target} upstream headers timed out → 504");
+                        Ok(ApiRequestResult {
+                            status: 504,
+                            headers: std::collections::HashMap::new(),
+                            body: "Gateway Timeout".to_string(),
+                        })
+                    }
+                };
+            }
         }
     };
     let status = upstream.status().as_u16();
@@ -1077,6 +1123,7 @@ struct MediaRequestResult {
 
 #[tauri::command]
 async fn media_request(
+    app: tauri::AppHandle,
     proxy: tauri::State<'_, ProxyState>,
     path: String,
 ) -> Result<MediaRequestResult, String> {
@@ -1085,30 +1132,42 @@ async fn media_request(
     if !path.starts_with("/uploads/") {
         return Err(format!("media_request: only /uploads/* allowed (got {path})"));
     }
-    let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
-    let target = format!("{}{}", api_origin, path);
-    let mut req = proxy.api_client(&api_origin).get(&target);
-    // Inject the Bearer from Rust's held token ONLY (same rule as `api_request` — JS never passes the token).
-    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
-        req = req.header("authorization", format!("Bearer {}", t));
-    }
-    // Bound the HEADERS phase; the body READ (a large image) is unbounded — a slow download is legitimate.
-    // Same headers-deadline contract as `api_request`: SendFailed → Err (JS "network"), a hung upstream
-    // → 504 (distinct from a connect failure). Empty body — the JS avatar cache treats non-2xx as a
-    // graceful miss.
-    let upstream = match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
-        Ok(r) => r,
-        Err(HeadersError::SendFailed(e)) => {
-            if is_network_failure(&e) {
-                runtime_switch(&proxy).await;
-            }
-            warn!("media_request {target} send failed: {e}");
-            return Err(format!("media_request send: {e}"));
+    let mut attempt = 0u8;
+    let upstream = loop {
+        let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
+        let target = format!("{}{}", api_origin, path);
+        let mut req = proxy.api_client(&api_origin).get(&target);
+        if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+            req = req.header("authorization", format!("Bearer {}", t));
         }
-        Err(HeadersError::Timeout) => {
-            runtime_switch(&proxy).await;
-            warn!("media_request {target} headers timed out → 504");
-            return Ok(MediaRequestResult { status: 504, content_type: None, body: vec![] });
+        match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
+            Ok(r) => break r,
+            Err(failure) => {
+                let switchable = match &failure {
+                    HeadersError::SendFailed(e) => is_network_failure(e),
+                    HeadersError::Timeout => true,
+                };
+                let selected = if switchable {
+                    pick_origin_race(&proxy).await
+                } else {
+                    None
+                };
+                if let Some(origin) = selected.as_ref() {
+                    let _ = app.emit("active-origin-changed", origin);
+                }
+                if attempt == 0 && selected.is_some() {
+                    attempt = 1;
+                    continue;
+                }
+                return match failure {
+                    HeadersError::SendFailed(e) => Err(format!("media_request send: {e}")),
+                    HeadersError::Timeout => Ok(MediaRequestResult {
+                        status: 504,
+                        content_type: None,
+                        body: vec![],
+                    }),
+                };
+            }
         }
     };
     let status = upstream.status().as_u16();
@@ -1803,6 +1862,14 @@ fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
     state.api_origin_primary.lock().expect("primary lock").clone()
 }
 
+/// The exact endpoint every Rust-owned HTTP transport uses right now. Unlike `get_api_origin` this is
+/// runtime state: `init_pick_origin`, desktop failover, or Android's `set_active_origin` may change it
+/// without changing either configured address.
+#[tauri::command]
+fn get_active_api_origin(state: tauri::State<'_, ProxyState>) -> String {
+    state.api_origin.lock().expect("origin lock").clone()
+}
+
 /// Whether a real backend origin has been configured — the authoritative "has a SOMS backend been
 /// configured" check the SPA's configGuard uses, independent of the frontend's secureStore-seeded signal
 /// (which can drift). The ProxyState default is a non-routable placeholder (`DEFAULT_API_ORIGIN`), so a
@@ -2149,13 +2216,10 @@ async fn sse_supervisor_loop(
                 // reconnecting backoff — whose retry races both (pick_origin_race below). StreamClosed /
                 // Stale may be server-side (not network); they skip the smooth switch → straight to backoff.
                 if matches!(outcome, StreamOutcome::Err) {
-                    match maybe_switch(&proxy).await {
-                        SwitchOutcome::Flipped | SwitchOutcome::Stayed => {
-                            warn!("sse: smooth switch after Err → reopen at once (no backoff)");
-                            attempt = 0;
-                            continue;
-                        }
-                        SwitchOutcome::BothDown | SwitchOutcome::NoFallback => {} // → backoff + race
+                    if pick_origin_race(&proxy).await.is_some() {
+                        warn!("sse: origin race after Err succeeded → reopen at once (no backoff)");
+                        attempt = 0;
+                        continue;
                     }
                 }
                 emit_state(&app, &state, ConnectionState::Reconnecting);
@@ -3084,8 +3148,19 @@ async fn init_download_web(
     // extract wrote to disk but the webview kept serving the embedded baseline, so an OTA never took effect.
     *state.ota_active.lock().expect("ota_active lock") = Some(final_dir.clone());
 
-    // 3g. persist origin (media proxy Arc + api_origin file)
-    persist_origin(&state, &origin)?;
+    // 3g. A post-login update may be downloaded through the active LAN fallback. That address must not
+    // replace the configured public primary. First-run/reconfigure still persists its reachable address;
+    // the page writes the canonical primary immediately afterwards.
+    let updating_through_secondary = state
+        .api_origin_secondary
+        .lock()
+        .expect("secondary lock")
+        .as_deref()
+        == Some(origin.as_str())
+        && *state.origin_mode.lock().expect("mode lock") == OriginMode::Secondary;
+    if !updating_through_secondary {
+        persist_origin(&state, &origin)?;
+    }
 
     Ok(serde_json::json!({ "webVersion": manifest.web_version }))
 }

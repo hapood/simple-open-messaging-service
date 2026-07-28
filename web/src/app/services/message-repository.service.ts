@@ -142,25 +142,29 @@ export class MessageRepository {
    * like the backend. Errors degrade to `{ data: [], hasMore: false }` (the source treats an empty page as
    * a boundary) — the cache survives a transient outage.
    *
-   * - `skip: 0` (init): backend-probe + write-through (freshness; SSE does not replay offline messages).
+   * - latest `skip: 0` (init): always return after the local IDB read, including a valid empty result;
+   *   backend revalidation is background-only and wakes the mounted kernel when it discovers data.
    * - `skip: 1` (getOlder/getNewer): cache-first when the held range is contiguous + the far boundary is
    *   known (floor = seq 0 present; ceiling = maxSeenSeq); gap-fill from the API otherwise.
    */
-  async queryMessages(threadId: number, q: MessageQuery, clearedAfter?: number | null): Promise<{ data: Message[]; hasMore: boolean }> {
+  async queryMessages(
+    threadId: number,
+    q: MessageQuery,
+    clearedAfter?: number | null,
+    localOnly = false,
+  ): Promise<{ data: Message[]; hasMore: boolean }> {
     if (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined) {
-      const cached = await this.latestContiguous(threadId, q.take, clearedAfter);
+      const cached = await this.latestPage(threadId, q.take, clearedAfter);
       if (cached.length > 0) {
-        const cachedNewestSeq = cached[0].seq;
-        // Stale-while-revalidate: do not put network RTT on the thread-switch critical path. The scroller
-        // already preserves a live signal received during init and replays it after priming, so even a very
-        // fast refresh cannot race the cached mount and lose newly discovered rows.
-        void this.revalidateLatest(threadId, q, cachedNewestSeq);
+        if (!localOnly)
+          void this.refreshLatest(threadId, q, cached[0]?.seq);
         const oldestSeq = cached[cached.length - 1].seq;
         return {
           data: cached,
           hasMore: oldestSeq > 0,
         };
       }
+      if (localOnly) return { data: [], hasMore: false };
     }
     if (q.skip === 0) return this.backend(threadId, q);
     // skip === 1 → getOlder (desc, below lastSeq) / getNewer (asc, above lastSeq): cache-first.
@@ -169,6 +173,7 @@ export class MessageRepository {
     const cached = q.orderBy === 'desc' ? await this.rangeDesc(threadId, anchor, q.take, clearedAfter) : await this.rangeAsc(threadId, anchor, q.take, clearedAfter);
     const verdict = this.cacheVerdict(cached, anchor, q.take, q.orderBy, threadId);
     if (verdict.hit) return { data: cached, hasMore: verdict.hasMore };
+    if (localOnly) return { data: [], hasMore: false };
     return this.backend(threadId, q); // gap-fill: the cache lacks a contiguous held range here
   }
 
@@ -218,11 +223,19 @@ export class MessageRepository {
     }
   }
 
-  /** Refresh a cache-served latest page and wake the open kernel only when the server advanced its tail. */
-  private async revalidateLatest(threadId: number, q: MessageQuery, cachedNewestSeq: number): Promise<void> {
+  /** Refresh a locally completed latest page and wake the open kernel when the server has any data beyond
+   *  the local tail. `cachedNewestSeq === undefined` is the valid empty-cache case. */
+  async refreshLatest(
+    threadId: number,
+    q: MessageQuery,
+    cachedNewestSeq: number | undefined,
+  ): Promise<void> {
     const fresh = await this.backend(threadId, q);
     const freshNewestSeq = fresh.data[0]?.seq;
-    if (freshNewestSeq !== undefined && freshNewestSeq > cachedNewestSeq) {
+    if (
+      freshNewestSeq !== undefined &&
+      (cachedNewestSeq === undefined || freshNewestSeq > cachedNewestSeq)
+    ) {
       this.signal$.next({ threadId, seq: freshNewestSeq });
     }
   }
@@ -320,16 +333,15 @@ export class MessageRepository {
 
   // ── IDB range helpers (best-effort; IDB unavailable → empty → gap-fill) ─────────────────────
 
-  /** Latest cached page, newest-first. Reject a fragmented page so init never renders across a cache gap. */
-  private async latestContiguous(threadId: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
+  /** Latest cached page, newest-first. Message seq is monotonic but not required to be contiguous, so gaps
+   *  are valid and must never be interpreted as cache corruption. */
+  private async latestPage(threadId: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
     try {
       const db = await this.webdb.db();
       const range = IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]);
-      const cached = (await this.collect(db, range, 'prev', take)).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
-      for (let i = 1; i < cached.length; i++) {
-        if (cached[i].seq !== cached[i - 1].seq - 1) return [];
-      }
-      return cached;
+      return (await this.collect(db, range, 'prev', take)).filter(
+        (m) => clearedAfter == null || m.createdAt > clearedAfter,
+      );
     } catch {
       return [];
     }

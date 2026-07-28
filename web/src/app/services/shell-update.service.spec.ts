@@ -1,15 +1,15 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { ShellUpdateService, ShellUpdateStatus } from './shell-update.service';
-import { apiOrigin } from './runtime';
+import { apiOrigin, apiOriginSecondary } from './runtime';
 
 /**
  * ShellUpdateService unit tests — the launch probe + user-initiated download contract.
  *
  * isTauri() / tauriInvoke read `window.__TAURI__` + `window.__TAURI_INTERNALS__` at CALL time, so (like
  * auth.service.native.spec) we install those globals and route invoke to a spy. Locked down here:
- *  - `check()` writes the `init_update_status` result into `updateStatus`, with the origin it reads from
- *    the live `apiOrigin` signal;
+ *  - `check()` writes the `init_update_status` result into `updateStatus`, using Rust's authoritative
+ *    active origin (which may be the LAN fallback);
  *  - `check()` is a no-op outside the Tauri shell (no invoke) and when no origin is configured;
  *  - `check()` swallows a rejected probe (offline/server down) — it never throws, `updateStatus` is left
  *    as-is (the cached bundle keeps the app usable);
@@ -37,6 +37,7 @@ describe('ShellUpdateService', () => {
     invokeSpy = jasmine.createSpy('invoke');
     w.__TAURI__ = { core: { invoke: invokeSpy } };
     apiOrigin.set(ORIGIN); // apiOriginIsEmpty() → false
+    apiOriginSecondary.set(null);
     svc = TestBed.inject(ShellUpdateService);
     svc.updateStatus.set(null);
   });
@@ -46,6 +47,7 @@ describe('ShellUpdateService', () => {
     delete w.__TAURI__;
     delete w.__TAURI_INTERNALS__;
     apiOrigin.set('');
+    apiOriginSecondary.set(null);
   });
 
   const aStatus = (over: Partial<ShellUpdateStatus> = {}): ShellUpdateStatus => ({
@@ -58,14 +60,30 @@ describe('ShellUpdateService', () => {
     ...over,
   });
 
-  it('check() writes the init_update_status result into updateStatus (origin from the live signal)', async () => {
+  it('check() probes the active Rust origin and exposes it with the update status', async () => {
     const status = aStatus({ serverWebVersion: '0.2.1', webUpdateAvailable: true });
+    invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(ORIGIN);
     invokeSpy.withArgs('init_update_status', { origin: ORIGIN }).and.resolveTo(status);
 
     await svc.check();
 
-    expect(invokeSpy).toHaveBeenCalledOnceWith('init_update_status', { origin: ORIGIN });
+    expect(invokeSpy).toHaveBeenCalledWith('get_active_api_origin', undefined);
+    expect(invokeSpy).toHaveBeenCalledWith('init_update_status', { origin: ORIGIN });
     expect(svc.updateStatus()).toEqual(status);
+    expect(svc.probedOrigin()).toBe(ORIGIN);
+  });
+
+  it('check() uses the configured LAN origin while Rust reports secondary mode', async () => {
+    const lan = 'http://192.168.88.208:3000';
+    const status = aStatus();
+    apiOriginSecondary.set(lan);
+    invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(lan);
+    invokeSpy.withArgs('init_update_status', { origin: lan }).and.resolveTo(status);
+
+    await svc.check();
+
+    expect(invokeSpy).toHaveBeenCalledWith('init_update_status', { origin: lan });
+    expect(svc.probedOrigin()).toBe(lan);
   });
 
   it('check() is a no-op outside the Tauri shell (no invoke, updateStatus untouched)', async () => {
@@ -96,6 +114,7 @@ describe('ShellUpdateService', () => {
 
   it('downloadUpdate() invokes init_download_web, then re-probes so About flips to "up to date"', async () => {
     const fresh = aStatus({ serverWebVersion: '0.2.0', webUpdateAvailable: false });
+    invokeSpy.withArgs('get_active_api_origin', undefined).and.resolveTo(ORIGIN);
     invokeSpy.withArgs('init_download_web', { origin: ORIGIN }).and.resolveTo(undefined);
     invokeSpy.withArgs('init_update_status', { origin: ORIGIN }).and.resolveTo(fresh);
 

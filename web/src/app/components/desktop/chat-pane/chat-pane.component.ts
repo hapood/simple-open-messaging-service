@@ -1,4 +1,15 @@
-import { Component, computed, effect, inject, ElementRef, isDevMode, OnDestroy, signal, untracked, viewChild } from '@angular/core';
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  ElementRef,
+  isDevMode,
+  OnDestroy,
+  signal,
+  untracked,
+  viewChild,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { ChatEmptyComponent } from '../../chat-empty/chat-empty.component';
@@ -16,9 +27,6 @@ const ENTER_MS = 150;
 /** Easing + start radius for the circular clip-path reveal reserved for a successful group join. */
 const EASING = [0.32, 0.72, 0, 1];
 const START_RADIUS = 40;
-/** Force-promote fallback if a background init stalls (hung fetch). */
-const PROMOTE_TIMEOUT_MS = 3000;
-
 type SlotKey = 'A' | 'B';
 
 /**
@@ -57,122 +65,180 @@ type SlotKey = 'A' | 'B';
     <div class="chat-pane" [class.compact]="isCompact()">
       <div class="pane-layer" [class.pane-fg]="fgSlot() === 'A'" #layerA>
         @if (itemA(); as trd) {
-          <app-message-thread #threadA [threadId]="trd.threadId" [userMsgTrd]="trd"
-            (ready)="onReady('A', $event)" />
+          <app-message-thread
+            #threadA
+            [threadId]="trd.threadId"
+            [userMsgTrd]="trd"
+            (ready)="onReady('A', $event)"
+          />
         }
       </div>
       <div class="pane-layer" [class.pane-fg]="fgSlot() === 'B'" #layerB>
         @if (itemB(); as trd) {
-          <app-message-thread #threadB [threadId]="trd.threadId" [userMsgTrd]="trd"
-            (ready)="onReady('B', $event)" />
+          <app-message-thread
+            #threadB
+            [threadId]="trd.threadId"
+            [userMsgTrd]="trd"
+            (ready)="onReady('B', $event)"
+          />
         }
       </div>
       @if (!active()) {
         <div class="pane-empty"><app-chat-empty /></div>
       } @else if (showLoading()) {
-        <div class="pane-loading" role="status" aria-live="polite" [attr.aria-label]="'chat.loading' | transloco">
+        <div
+          class="pane-loading"
+          role="status"
+          aria-live="polite"
+          [attr.aria-label]="'chat.loading' | transloco"
+        >
           <svg class="spinner" viewBox="0 0 80 80" aria-hidden="true">
-            <circle class="spin-track" cx="40" cy="40" r="34" pathLength="100" />
+            <circle
+              class="spin-track"
+              cx="40"
+              cy="40"
+              r="34"
+              pathLength="100"
+            />
             <circle class="spin-arc" cx="40" cy="40" r="34" pathLength="100" />
           </svg>
         </div>
       }
     </div>
   `,
-  styles: [`
-    :host { display: block; height: 100%; }
-    .chat-pane {
-      --pane-fade-ms: 150ms;
-      /* Demote (fg→bg) duration. Equals the fade on desktop/tablet (a graceful dissolve is part of the
+  styles: [
+    `
+      :host {
+        display: block;
+        height: 100%;
+      }
+      .chat-pane {
+        --pane-fade-ms: 150ms;
+        /* Demote (fg→bg) duration. Equals the fade on desktop/tablet (a graceful dissolve is part of the
          chatpane<->chatpane cross-fade there); 0s on compact — see the .compact override below. */
-      --pane-demote-ms: var(--pane-fade-ms);
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      min-height: 0;
-      overflow: hidden;
-      /* Solid ground behind both panes — shown through the outgoing pane as it dissolves. */
-      background: var(--app-surface);
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .chat-pane { --pane-fade-ms: 0ms; }
-    }
-    /* Mobile loading is spinner↔chatpane, NOT chatpane↔chatpane: the OUTGOING pane was hidden behind the
+        --pane-demote-ms: var(--pane-fade-ms);
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
+        /* Solid ground behind both panes — shown through the outgoing pane as it dissolves. */
+        background: var(--app-surface);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .chat-pane {
+          --pane-fade-ms: 0ms;
+        }
+      }
+      /* Mobile loading is spinner↔chatpane, NOT chatpane↔chatpane: the OUTGOING pane was hidden behind the
        spinner a moment ago, so dissolving it into the incoming one only re-reveals stale content (the two-pane
        blend). Snap it away instantly — only the demote direction; the incoming pane still fades in via
        .pane-fg, so the handoff reads as spinner → new chatpane, never two chatpanes on screen at once. */
-    .chat-pane.compact { --pane-demote-ms: 0s; }
-    /* Two stacked panes, each absolute inset:0 so BOTH keep real layout (offsetHeight) even while the
+      .chat-pane.compact {
+        --pane-demote-ms: 0s;
+      }
+      /* Two stacked panes, each absolute inset:0 so BOTH keep real layout (offsetHeight) even while the
        background one is hidden. Default = BACKGROUND resting state: invisible + behind (z1). */
-    .pane-layer {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      background: var(--app-surface);
-      opacity: 0;
-      visibility: hidden;
-      z-index: 1;
-      /* Demote (fg→bg) fades opacity out over --pane-demote-ms, THEN flips visibility to hidden after that
+      .pane-layer {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        background: var(--app-surface);
+        opacity: 0;
+        visibility: hidden;
+        z-index: 1;
+        /* Demote (fg→bg) fades opacity out over --pane-demote-ms, THEN flips visibility to hidden after that
          same delay so the dissolving pane stays paintable through the fade (on compact the delay is 0s → the
          outgoing pane is gone at once, since the spinner already covered the handoff). */
-      transition:
-        opacity var(--pane-demote-ms) cubic-bezier(0.32, 0.72, 0, 1),
-        visibility 0s linear var(--pane-demote-ms);
-    }
-    .pane-layer.pane-fg {
-      opacity: 1;
-      visibility: visible;
-      z-index: 2;
-      /* Reveal (bg→fg) makes visibility visible IMMEDIATELY (undelayed) so the incoming pane is interactive
+        transition:
+          opacity var(--pane-demote-ms) cubic-bezier(0.32, 0.72, 0, 1),
+          visibility 0s linear var(--pane-demote-ms);
+      }
+      .pane-layer.pane-fg {
+        opacity: 1;
+        visibility: visible;
+        z-index: 2;
+        /* Reveal (bg→fg) makes visibility visible IMMEDIATELY (undelayed) so the incoming pane is interactive
          as soon as it starts fading in. */
-      transition:
-        opacity var(--pane-fade-ms) cubic-bezier(0.32, 0.72, 0, 1),
-        visibility 0s;
-    }
-    .pane-layer > app-message-thread { display: block; flex: 1 1 auto; min-height: 0; }
-    /* Overlays sit at the foreground's z-index (2) but later in DOM order, so they paint above the
+        transition:
+          opacity var(--pane-fade-ms) cubic-bezier(0.32, 0.72, 0, 1),
+          visibility 0s;
+      }
+      .pane-layer > app-message-thread {
+        display: block;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      /* Overlays sit at the foreground's z-index (2) but later in DOM order, so they paint above the
        foreground pane — whether that pane is empty (cold start) or still holds stale outgoing content (a
        compact switch in flight, covered until the incoming pane promotes). */
-    .pane-empty, .pane-loading {
-      position: absolute;
-      inset: 0;
-      z-index: 2;
-      display: flex;
-      flex-direction: column;
-    }
-    .pane-empty > app-chat-empty { display: block; flex: 1 1 auto; min-height: 0; }
-    /* Opaque so the loading surface occludes a stale outgoing pane on compact. The indicator itself waits
+      .pane-empty,
+      .pane-loading {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+      }
+      .pane-empty > app-chat-empty {
+        display: block;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      /* Opaque so the loading surface occludes a stale outgoing pane on compact. The indicator itself waits
        200ms: normal warm opens finish before that threshold and therefore never flash a loading glyph. A
        genuinely cold open gets a small, quiet indicator slightly above optical center instead of dragging
        the old 80px full-page spinner through the route transition. */
-    .pane-loading {
-      box-sizing: border-box;
-      background: var(--app-surface);
-      align-items: center;
-      justify-content: center;
-      padding-bottom: 12vh;
-    }
-    .spinner {
-      width: 28px;
-      height: 28px;
-      animation:
-        chat-pane-spin 0.9s linear infinite,
-        chat-pane-spinner-in 100ms ease 200ms both;
-    }
-    .spin-track { fill: none; stroke: var(--app-border); stroke-width: 6; opacity: 0.45; }
-    .spin-arc { fill: none; stroke: var(--app-brand); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 60 100; }
-    @keyframes chat-pane-spin { to { transform: rotate(360deg); } }
-    @keyframes chat-pane-spinner-in {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .spinner { animation: chat-pane-spinner-in 0ms linear 200ms both; }
-    }
-  `],
+      .pane-loading {
+        box-sizing: border-box;
+        background: var(--app-surface);
+        align-items: center;
+        justify-content: center;
+        padding-bottom: 12vh;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        animation:
+          chat-pane-spin 0.9s linear infinite,
+          chat-pane-spinner-in 100ms ease 200ms both;
+      }
+      .spin-track {
+        fill: none;
+        stroke: var(--app-border);
+        stroke-width: 6;
+        opacity: 0.45;
+      }
+      .spin-arc {
+        fill: none;
+        stroke: var(--app-brand);
+        stroke-width: 6;
+        stroke-linecap: round;
+        stroke-dasharray: 60 100;
+      }
+      @keyframes chat-pane-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes chat-pane-spinner-in {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .spinner {
+          animation: chat-pane-spinner-in 0ms linear 200ms both;
+        }
+      }
+    `,
+  ],
 })
 export class ChatPaneComponent implements OnDestroy {
   private readonly convList = inject(ConversationListService);
@@ -196,18 +262,24 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly slotB = signal<number | undefined>(undefined);
   readonly itemA = computed(() => {
     const tid = this.slotA();
-    return tid === undefined ? undefined : this.convList.items().find((t) => t.threadId === tid);
+    return tid === undefined
+      ? undefined
+      : this.convList.items().find((t) => t.threadId === tid);
   });
   readonly itemB = computed(() => {
     const tid = this.slotB();
-    return tid === undefined ? undefined : this.convList.items().find((t) => t.threadId === tid);
+    return tid === undefined
+      ? undefined
+      : this.convList.items().find((t) => t.threadId === tid);
   });
 
   /** Which pane is foreground — the SOLE driver of the `.pane-fg` class (and thus visibility). Flipped
    *  synchronously in `promote()`; never lags an animation. */
   readonly fgSlot = signal<SlotKey>('A');
   /** Foreground pane's item — gates the first-load spinner overlay (medium/expanded). */
-  readonly fgItem = computed(() => (this.fgSlot() === 'A' ? this.itemA() : this.itemB()));
+  readonly fgItem = computed(() =>
+    this.fgSlot() === 'A' ? this.itemA() : this.itemB(),
+  );
 
   /** Whether the pane-level loading spinner shows. Mode-split, matching `overlaySlide` (compact-only):
    *  the mobile slide-in physically drags whatever pane is foreground into view, so on compact the spinner
@@ -230,12 +302,15 @@ export class ChatPaneComponent implements OnDestroy {
   // with a lighter stand-in (the strict `read` would return undefined for a non-matching type).
   private readonly threadA = viewChild<MessageThreadComponent>('threadA');
   private readonly threadB = viewChild<MessageThreadComponent>('threadB');
-  private readonly layerA = viewChild('layerA', { read: ElementRef<HTMLElement> });
-  private readonly layerB = viewChild('layerB', { read: ElementRef<HTMLElement> });
+  private readonly layerA = viewChild('layerA', {
+    read: ElementRef<HTMLElement>,
+  });
+  private readonly layerB = viewChild('layerB', {
+    read: ElementRef<HTMLElement>,
+  });
 
   /** The in-flight switch: which background pane is being awaited + the target thread it must report. */
   private pending?: { targetId: number; bgKey: SlotKey; startedAt: number };
-  private pendingTimer?: ReturnType<typeof setTimeout>;
   /** Idles a backgrounded slot's kernel once the cross-fade has finished (one-shot; re-armed per promote). */
   private teardownTimer?: ReturnType<typeof setTimeout>;
   /** Active circular-reveal animation per layer (incoming only; the outgoing pane fades purely in CSS, so it
@@ -287,7 +362,9 @@ export class ChatPaneComponent implements OnDestroy {
       // Is the target already bound to the BACKGROUND pane? Read UNTRACKED: the fresh-bind `slot.set` below
       // writes the bg slot, and if this read tracked it, the effect would re-run, hit this branch on the
       // next pass, and double-drive `reset()` on a pane whose init effect is already firing.
-      const bgTid = untracked(bgKey === 'A' ? () => this.slotA() : () => this.slotB());
+      const bgTid = untracked(
+        bgKey === 'A' ? () => this.slotA() : () => this.slotB(),
+      );
       if (bgTid === target) {
         // Background resident (warm mid-dissolve, or cold after the post-promote idle): the slot already
         // holds target, so a `slot.set` would be a signal no-op and the pane's input-keyed init effect
@@ -346,18 +423,10 @@ export class ChatPaneComponent implements OnDestroy {
     this.clearPending();
     this.pending = { targetId, bgKey, startedAt: performance.now() };
     this.perfLog('pane:init', { threadId: targetId, slot: bgKey });
-    this.pendingTimer = setTimeout(() => {
-      // Hung-fetch fallback: force-promote rather than strand the UI on the old pane forever.
-      if (this.pending?.targetId === targetId && this.pending.bgKey === bgKey) this.promote(bgKey);
-    }, PROMOTE_TIMEOUT_MS);
   }
 
   private clearPending(): void {
     this.pending = undefined;
-    if (this.pendingTimer) {
-      clearTimeout(this.pendingTimer);
-      this.pendingTimer = undefined;
-    }
   }
 
   private clearTeardown(): void {
@@ -389,7 +458,8 @@ export class ChatPaneComponent implements OnDestroy {
           : Math.round(performance.now() - pending.startedAt),
     });
     this.fgSlot.set(key); // CSS: outgoing fades out (opacity + delayed visibility), incoming fades in
-    const incoming = (key === 'A' ? this.layerA() : this.layerB())?.nativeElement;
+    const incoming = (key === 'A' ? this.layerA() : this.layerB())
+      ?.nativeElement;
     const transition = pending
       ? this.nav.consumeChatTransition(pending.targetId)
       : 'standard';
@@ -404,9 +474,14 @@ export class ChatPaneComponent implements OnDestroy {
           { clipPath: `circle(${START_RADIUS}px at 50% 50%)` },
           { clipPath: `circle(${fullR}px at 50% 50%)` },
         ],
-        { duration: GROUP_JOIN_REVEAL_MS, easing: `cubic-bezier(${EASING.join(',')})`, fill: 'none' },
+        {
+          duration: GROUP_JOIN_REVEAL_MS,
+          easing: `cubic-bezier(${EASING.join(',')})`,
+          fill: 'none',
+        },
       );
-      if (key === 'A') this.animA = reveal; else this.animB = reveal;
+      if (key === 'A') this.animA = reveal;
+      else this.animB = reveal;
     }
     this.scheduleKernelTeardown(oldFg);
   }
@@ -419,7 +494,8 @@ export class ChatPaneComponent implements OnDestroy {
     const a = slot === 'A' ? this.animA : this.animB;
     if (a) {
       a.cancel();
-      if (slot === 'A') this.animA = undefined; else this.animB = undefined;
+      if (slot === 'A') this.animA = undefined;
+      else this.animB = undefined;
     }
   }
 

@@ -55,11 +55,14 @@ object SomsFirebase {
      *  so the token Task listeners — which fire on main — see a consistent app instance. */
     fun reconfigure(ctx: Context, json: String?) {
         val trimmed = json?.trim()?.takeIf { it.isNotEmpty() }
+        SomsLog.i("Firebase") { "reconfigure start; configured=${trimmed != null}" }
         if (trimmed == null) {
             clear(ctx)
+            SomsLog.i("Firebase") { "reconfigure clear dispatched" }
             return
         }
         SomsSecureStore.setFirebaseConfig(ctx, trimmed)
+        SomsLog.i("Firebase") { "reconfigure config persisted" }
         val newOptions = optionsFromString(trimmed)
         if (newOptions == null) {
             Log.w(TAG, "setFirebaseConfig: malformed config JSON — rolling back")
@@ -70,7 +73,11 @@ object SomsFirebase {
             // Tear down the existing project before binding the new one. deleteToken is async; chain the
             // re-init on its completion so the token unregister settles first.
             try {
+                SomsLog.i("Firebase") { "reconfigure deleting old token asynchronously" }
                 FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener {
+                    SomsLog.i("Firebase") {
+                        "reconfigure old-token task complete; successful=${it.isSuccessful}"
+                    }
                     runCatching { FirebaseApp.getInstance().delete() }
                         .onFailure { e -> Log.w(TAG, "deleteApp: ${e.message}") }
                     freshInit(ctx, newOptions)
@@ -81,6 +88,7 @@ object SomsFirebase {
                 freshInit(ctx, newOptions)
             }
         } else {
+            SomsLog.i("Firebase") { "reconfigure no existing app; initializing" }
             freshInit(ctx, newOptions)
         }
     }
@@ -117,9 +125,11 @@ object SomsFirebase {
     }
 
     private fun freshInit(ctx: Context, options: FirebaseOptions) {
+        SomsLog.i("Firebase") { "freshInit start" }
         try {
             FirebaseApp.initializeApp(ctx, options)
             FirebaseMessaging.getInstance().isAutoInitEnabled = true
+            SomsLog.i("Firebase") { "freshInit complete; token request dispatched" }
             requestToken(ctx)
         } catch (e: Exception) {
             Log.e(TAG, "freshInit failed: ${e.message}")

@@ -6,6 +6,7 @@ import {
   inject,
   signal,
   DestroyRef,
+  isDevMode,
   ViewChild,
 } from '@angular/core';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -22,6 +23,7 @@ import {
   canonicalOrigin,
   listenEvent,
   originIsInsecure,
+  pickLoginOrigin,
   setApiOrigin,
   setApiOriginSecondary,
   tauriInvoke,
@@ -34,6 +36,36 @@ import { AuthViewportDirective } from '../../directives/auth-viewport.directive'
  *  bundle is downloaded + swapped as a `download` phase, then the page reloads — the running SPA is the old
  *  build, so only a reload surfaces the freshly-installed one. */
 type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done';
+
+/**
+ * Decide whether the server-advertised origins describe the address the user actually entered.
+ *
+ * `/shell/compat` advertises the deployment's canonical public origin. A user may reach the same server
+ * through an unadvertised LAN IP (for example while SOMS_LAN_DOMAIN is unset). In that case the advertised
+ * public origin and the just-probed address form the two endpoints: the existing login-time health race
+ * can then select whichever one is reachable.
+ *
+ * When the server already advertises a complete pair, use it if the entered address is one of the pair.
+ * Otherwise retain the known-reachable entered address as the fallback instead of discarding it.
+ */
+export function resolveOriginSelection(
+  reachable: string,
+  advertisedPrimary?: string | null,
+  advertisedLan?: string | null,
+): { primary: string; lan: string | null; confirmPair: boolean } {
+  const entered = canonicalOrigin(reachable);
+  const primary = advertisedPrimary ? canonicalOrigin(advertisedPrimary) : null;
+  const lan = advertisedLan ? canonicalOrigin(advertisedLan) : null;
+  const enteredIsAdvertised = entered === primary || entered === lan;
+
+  if (enteredIsAdvertised && primary && lan && primary !== lan) {
+    return { primary, lan, confirmPair: true };
+  }
+  if (primary && primary !== entered) {
+    return { primary, lan: entered, confirmPair: true };
+  }
+  return { primary: entered, lan: null, confirmPair: false };
+}
 
 /**
  * The in-SPA backend-config page (`/config`) — the single surface for first-run setup AND reconfigure.
@@ -87,7 +119,7 @@ export class ServerConfigPageComponent {
   });
   /** Pending second-server confirmation. The second endpoint is server-advertised configuration, never a
    *  user-authored field: showing the exact address and asking for consent avoids both jargon and typos. */
-  readonly autoFill = signal<{ primary: string; lan: string | null; reachable: string } | null>(null);
+  readonly autoFill = signal<{ primary: string; lan: string | null } | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
@@ -221,14 +253,16 @@ export class ServerConfigPageComponent {
       // Stash the probed Firebase client config (same for primary + lan — one backend) so finalize() applies
       // it to native regardless of which path reaches finalize (direct save or the auto-fill confirm modal).
       this.firebaseConfig = probe.firebaseConfig ?? null;
-      const primary = probe.primary ? canonicalOrigin(probe.primary) : primaryRaw;
-      const second = probe.lan ? canonicalOrigin(probe.lan) : null;
-      if (second && second !== primary) {
+      const selection = resolveOriginSelection(primaryRaw, probe.primary, probe.lan);
+      if (selection.confirmPair && selection.lan) {
         this.phase.set('form');
-        this.autoFill.set({ primary, lan: second, reachable: primaryRaw });
+        this.autoFill.set({
+          primary: selection.primary,
+          lan: selection.lan,
+        });
         return;
       }
-      await this.finalize(primary, null, primaryRaw);
+      await this.finalize(selection.primary, null);
     } catch (e) {
       this.fail(e);
     }
@@ -256,51 +290,68 @@ export class ServerConfigPageComponent {
     }
   }
 
-  /** Persist both origins + run the OTA hash check + reload/redirect. `reachable` is an origin that just
-   *  validated (used for the bundle probe — same backend ⇒ same hash regardless of which). */
-  private async finalize(primary: string, lan: string | null, reachable: string): Promise<void> {
+  /** Persist the configured pair, race every address, then use Rust's winning active endpoint for all
+   *  remaining work. Configuration is durable before the optional OTA check, so an update outage cannot
+   *  leave the app stuck on its previous server. */
+  private async finalize(primary: string, lan: string | null): Promise<void> {
     try {
+      await setApiOrigin(primary);
+      await setApiOriginSecondary(lan);
+      const active = await pickLoginOrigin(true);
+      if (isDevMode()) {
+        console.info('server-config origins selected', {
+          primary,
+          secondary: lan,
+          active,
+        });
+      }
       // Compare the installed web bundle's hash to the server's manifest. On a first run there is no
       // installed hash yet, so the fresh bundle is pulled as part of connecting. A failed probe resolves to
       // false → skip + proceed in-page; the launch-time About probe catches it later.
       const status = await tauriInvoke<{ webUpdateAvailable: boolean }>('init_update_status', {
-        origin: reachable,
+        origin: active,
       });
       if (status?.webUpdateAvailable) {
         this.phase.set('download');
         this.downloadReceived.set(0);
         this.downloadTotal.set(null);
-        // init_download_web streams + sha256-verifies + extracts + swaps the served assets. setApiOrigin +
-        // setApiOriginSecondary sync the live signals + secureStore so the mandatory reload seeds both. The
-        // reload is required: the running SPA is the OLD build, so only a reload surfaces the new bundle.
-        await tauriInvoke('init_download_web', { origin: reachable });
-        await setApiOrigin(primary);
-        await setApiOriginSecondary(lan);
+        // init_download_web streams + sha256-verifies + extracts + swaps the served assets. The running SPA
+        // is still the OLD build, so only a hard navigation can boot the freshly-installed one.
+        await tauriInvoke('init_download_web', { origin: active });
         // Apply the server's Firebase client config to native BEFORE the reload. `SomsFcm.setFirebaseConfig`
         // persists + (re)initializes FirebaseApp in the shell, and that state survives the webview reload
         // (boot's PushService.init deliberately does NOT re-apply it; the cold-start `SomsApplication`
         // reader only recovers what was already persisted). This download branch is the FIRST-RUN path, so
         // omitting it leaves native Firebase unconfigured → no FCM token → no push until a later reconfigure.
-        // `config.reload()` is intentionally NOT called here: a full reload discards the in-memory cache, so
-        // the fresh SPA re-fetches /config on the login page regardless.
-        this.push.applyFirebaseConfig(this.firebaseConfig);
+        // Firebase is ancillary to reaching login. A missing/broken Android bridge must not strand the
+        // setup flow after the bundle and both origins have already been committed.
+        try {
+          this.push.applyFirebaseConfig(this.firebaseConfig);
+        } catch (e) {
+          console.error('server-config firebase apply failed', e);
+        }
         this.phase.set('done');
-        // Reload to login, NOT the current /config URL — otherwise the booted SPA matches /config (which has
-        // no guard to leave once the origin is configured) and remounts this page, forcing a second click.
-        // reloadTo resolves the login path via the Router and `location.replace`s, so there's no stale
-        // /config history entry to back into.
+        // This must be the next operation after required persistence. The new SPA performs its normal
+        // login-time origin race; no optional post-install work is allowed to block this navigation.
+        if (isDevMode()) {
+          console.info('server-config hard navigation', { route: RoutePage.AUTH_LOGIN });
+        }
         this.route.reloadTo(RoutePage.AUTH_LOGIN);
         return;
       }
-      // Up to date (or probe skipped): persist both origins and proceed in-page to login.
-      await setApiOrigin(primary);
-      await setApiOriginSecondary(lan);
       // The new server may publish a different Firebase project — apply its /shell/compat firebaseConfig to
       // native so the Android shell re-inits FirebaseApp. The backend changed → invalidate the cached /config
       // so login re-fetches loginMode/registrationOpen.
-      this.push.applyFirebaseConfig(this.firebaseConfig);
+      try {
+        this.push.applyFirebaseConfig(this.firebaseConfig);
+      } catch (e) {
+        console.error('server-config firebase apply failed', e);
+      }
       void this.config.reload();
       this.phase.set('done');
+      if (isDevMode()) {
+        console.info('server-config SPA navigation', { route: RoutePage.AUTH_LOGIN });
+      }
       this.route.redirect(RoutePage.AUTH_LOGIN);
     } catch (e) {
       this.fail(e);
@@ -312,7 +363,7 @@ export class ServerConfigPageComponent {
     const af = this.autoFill();
     if (!af) return;
     this.autoFill.set(null);
-    await this.finalize(af.primary, af.lan, af.reachable);
+    await this.finalize(af.primary, af.lan);
   }
 
   /** Continue with only the primary endpoint when the user declines the advertised second server. */
@@ -320,7 +371,7 @@ export class ServerConfigPageComponent {
     const af = this.autoFill();
     if (!af) return;
     this.autoFill.set(null);
-    await this.finalize(af.primary, null, af.reachable);
+    await this.finalize(af.primary, null);
   }
 
   /** Surface a connect/OTA failure as a categorized toast + reset to the form for an edit-and-retry. */

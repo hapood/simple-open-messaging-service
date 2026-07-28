@@ -1,4 +1,4 @@
-@use "../../assets/utils.scss" as *;
+@use '../../assets/utils.scss' as *;
 
 // fill-parent chain: host → wrapper → msg-container. Mobile full-screen popup
 // and desktop pane both rely on it to fill their container.
@@ -53,7 +53,7 @@
 // to stop the browser from fighting our scrollTop adjustments).
 .msg-viewport {
   flex: 1 1 auto;
-  position: relative; // positioning context for the .msg-skeleton initial-load overlay
+  position: relative; // positioning context for the empty-state overlay
   // Keyboard lift is a compositor-only transform (rigid with .ci-input-bar), NOT a viewport resize: the
   // kernel measures offsetHeight/clientHeight/scrollHeight/scrollTop — all transform-invariant — so the
   // ResizeObserver stays silent and no per-frame reflow/re-pin fires. Uses --kbd-lift-effective (set on
@@ -155,7 +155,9 @@ app-chat-input {
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  &:hover { background: var(--app-hover); }
+  &:hover {
+    background: var(--app-hover);
+  }
   &:focus-visible {
     outline: 2px solid var(--app-focus-ring);
     outline-offset: 1px;
@@ -185,7 +187,10 @@ app-chat-input {
   overflow: hidden;
   &--failed {
     outline: 1px solid color-mix(in srgb, var(--app-danger) 55%, transparent);
-    .msg-transfer-progress span { width: 100%; background: var(--app-danger); }
+    .msg-transfer-progress span {
+      width: 100%;
+      background: var(--app-danger);
+    }
   }
 }
 
@@ -228,7 +233,11 @@ app-chat-input {
   justify-content: center;
   font-size: 11px;
   font-weight: 700;
-  img { width: 100%; height: 100%; object-fit: cover; }
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 }
 
 .msg-transfer-bytes {
@@ -262,14 +271,21 @@ app-chat-input {
 }
 
 @media (max-width: 420px) {
-  .msg-transfer-stack { padding-inline: 10px; }
+  .msg-transfer-stack {
+    padding-inline: 10px;
+  }
   .msg-transfer-line {
     width: 100%;
     grid-template-columns: 42px minmax(0, 1fr);
     gap: 6px;
   }
-  .msg-transfer-thumbs { grid-template-columns: repeat(5, 44px); }
-  .msg-transfer-thumb { width: 44px; height: 50px; }
+  .msg-transfer-thumbs {
+    grid-template-columns: repeat(5, 44px);
+  }
+  .msg-transfer-thumb {
+    width: 44px;
+    height: 50px;
+  }
 }
 
 .msg-latest-layer {
@@ -307,7 +323,9 @@ app-chat-input {
     color: var(--app-text);
     background: var(--app-hover);
   }
-  &:active { transform: scale(0.96); }
+  &:active {
+    transform: scale(0.96);
+  }
   &:focus-visible {
     outline: 2px solid var(--app-brand);
     outline-offset: 2px;
@@ -332,12 +350,20 @@ app-chat-input {
 }
 
 @keyframes msg-latest-enter {
-  from { opacity: 0; transform: translateY(6px) scale(0.96); }
-  to { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .msg-latest { animation: none; }
+  .msg-latest {
+    animation: none;
+  }
 }
 
 // Top sentinel: retained for kernel-A routing / playground reuse. This component
@@ -370,19 +396,17 @@ app-chat-input {
   text-align: center;
   cursor: pointer;
   border-top: 1px solid var(--app-border);
-  &:hover { background: var(--app-active, var(--app-hover)); }
+  &:hover {
+    background: var(--app-active, var(--app-hover));
+  }
   &:focus-visible {
     outline: 2px solid var(--app-focus-ring);
     outline-offset: -2px;
   }
 }
 
-// Initial-load shimmer skeleton: now in the shared global partial _cb-skeleton.scss (imported via
-// styles.scss), identical for production and the playground. .msg-viewport is the positioning context
-// (position:relative above); the component's skeletonVisible signal delay-gates the reveal.
-
-// Empty-thread hero placeholder (shown when init has settled with zero mounted items). Mirrors the .cb-skeleton
-// overlay: an absolute sibling of .msg-content inside .msg-viewport, so it stays OUT of the kernel's measured
+// Empty-thread hero placeholder (shown when init has settled with zero mounted items). It is an absolute
+// sibling of .msg-content inside .msg-viewport, so it stays OUT of the kernel's measured
 // height model entirely (totalH()/prefix-sum is unaffected). <app-empty-state> fills the overlay (:host
 // height:100%) and centers its column; the wallpaper shows through the transparent viewport. pointer-events:none
 // — the card holds no interactive element (the composer is the affordance), so the surface stays non-modal.
@@ -391,18 +415,28 @@ app-chat-input {
   inset: 0;
   z-index: 1;
   pointer-events: none;
+  // The viewport is lifted with the composer when the on-screen keyboard opens. Keep the empty-state hero
+  // visually anchored to the chat pane by cancelling that parent transform; message rows still lift normally.
+  transform: translateY(var(--kbd-lift-effective, 0px));
+  transition: transform var(--kbd-duration, 60ms) ease-out;
   // Gentle reveal so the card doesn't pop in once loading clears. Opacity-only (exempt from the integer-px
   // height rule; the overlay is outside the kernel's measured model regardless). Honors reduced-motion.
   animation: msg-empty-fade 180ms ease-out;
 }
 
 @keyframes msg-empty-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .msg-empty-overlay { animation: none; }
+  .msg-empty-overlay {
+    animation: none;
+  }
 }
 
 // Hero avatar — a sized wrapper around <app-user-avatar> (its :host fills 100% of this box), the same pattern

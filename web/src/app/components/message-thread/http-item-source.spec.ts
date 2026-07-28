@@ -131,12 +131,13 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
         isDeleted: false,
       } as unknown as User,
     ];
+    const queryUserInfo = jasmine
+      .createSpy('queryUserInfo')
+      .and.returnValue(
+        of<StandardResponse<User[]>>({ code: 0, message: 'ok', data: users }),
+      );
     const userService = {
-      queryUserInfo: jasmine
-        .createSpy('queryUserInfo')
-        .and.returnValue(
-          of<StandardResponse<User[]>>({ code: 0, message: 'ok', data: users }),
-        ),
+      queryUserInfo,
       // The source resolves the self id LIVE from sessionUserId() at shape time (not a constructor arg), so
       // the stub must expose it — user 1 is "Me" in the fixtures above.
       sessionUserId: () => 1,
@@ -145,25 +146,54 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
       reconnect$: new Subject<void>(),
     } as unknown as WebsocketService;
     const signals = jasmine.createSpy('onSignal');
+    const profiles = jasmine.createSpy('onProfile');
     const src = new HttpItemSource(conv(tid), repo, userService, ws, outbox, {
       onSignal: signals,
+      onProfile: profiles,
     });
-    return { src, repo, liveSignal$, mediaStatusLive$, signals, outbox };
+    return {
+      src,
+      repo,
+      liveSignal$,
+      mediaStatusLive$,
+      signals,
+      profiles,
+      outbox,
+      queryUserInfo,
+    };
   }
 
   it('liveSignal$ fires onSignal only for THIS thread (the repo already filtered NEW_MESSAGE)', () => {
-    const { liveSignal$, signals } = setup({
+    const { src, liveSignal$, signals } = setup({
       code: 0,
       message: 'ok',
       data: [],
       hasMore: false,
     });
+    src.finishLocalInit(undefined);
 
     liveSignal$.next({ threadId: 99, seq: 100 }); // different thread → ignored
     expect(signals.calls.count()).toBe(0);
 
     liveSignal$.next({ threadId: 42, seq: 100 }); // THIS thread → signal
     expect(signals.calls.count()).toBe(1);
+  });
+
+  it('ignores live seqs during DB init and reconciles the global HWM after init', async () => {
+    const { src, liveSignal$, signals } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: false,
+    });
+
+    liveSignal$.next({ threadId: 42, seq: 12 });
+    expect(signals).not.toHaveBeenCalled();
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(12);
+
+    expect(signals).toHaveBeenCalledOnceWith(12);
   });
 
   it('init(-1) returns the server echo confirming an optimistic send and drops the pending entry (empty-thread first message)', async () => {
@@ -202,7 +232,7 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(src.getPending().length).toBe(1);
 
     liveSignal$.next({ threadId: 42, seq: 100 }); // repo cached the echo body → signal (no shaping here)
-    expect(signals).toHaveBeenCalled();
+    expect(signals).not.toHaveBeenCalled(); // DB-init signals are intentionally ignored; HWM reconciles after init
     expect(src.getPending().length).toBe(1); // pending NOT touched by the signal — only init reconciles
 
     const items = await src.init(-1, 50, 0); // kernel pulls the cached body via the repo
@@ -211,6 +241,61 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(items[0].clientMessageId).toBe(cid); // preserved so the kernel pairs it with the optimistic bubble
     expect(items[0].boundary).toBe('both'); // sole item spanning both edges of an empty thread
     expect(src.getPending().length).toBe(0); // reconcilePending dropped the confirmed optimistic
+  });
+
+  it('offline init mounts cached messages without waiting for profile hydration', async () => {
+    const offline = spyOnProperty(navigator, 'onLine', 'get').and.returnValue(
+      false,
+    );
+    const { src, queryUserInfo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(100, 2)],
+      hasMore: false,
+    });
+
+    const items = await src.init(-1, 50, 0);
+    src.finishLocalInit(undefined);
+
+    expect(items.map((item) => item.id)).toEqual([100]);
+    expect(queryUserInfo).not.toHaveBeenCalled();
+    offline.and.callThrough();
+  });
+
+  it('online init does not wait for profile hydration and patches the shaped row later', async () => {
+    const profile$ = new Subject<StandardResponse<User[]>>();
+    const { src, queryUserInfo, profiles } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(100, 2)],
+      hasMore: false,
+    });
+    queryUserInfo.and.returnValue(profile$);
+
+    const items = await src.init(-1, 50, 0);
+    src.finishLocalInit(undefined);
+
+    expect(items.map((item) => item.id)).toEqual([100]);
+    expect(items[0].data.name).toBe('');
+    expect(profiles).not.toHaveBeenCalled();
+
+    profile$.next({
+      code: 0,
+      message: 'ok',
+      data: [
+        {
+          id: 2,
+          name: 'Alice',
+        } as User,
+      ],
+    });
+    profile$.complete();
+    await Promise.resolve();
+
+    expect(profiles).toHaveBeenCalledOnceWith(100, {
+      name: 'Alice',
+      isSelf: false,
+    });
   });
 
   it('getNewer pulls newer messages from the DB past the "at newest" state (incoming reply mounts)', async () => {

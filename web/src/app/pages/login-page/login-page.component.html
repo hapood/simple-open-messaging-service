@@ -20,11 +20,24 @@
         breakpoint), so every auth state keeps brand identity on the narrow Tauri shell / Android WebView.
         Desktop owns the full panel; showing both there would be redundant. -->
       <app-brand-logo class="form-brand" [size]="48" />
-      @if (isTauri() && originHost()) {
-        <div class="origin-banner" [class.insecure]="originInsecure()" [class.muted]="configFailed()" role="status" tabindex="0">
-          <app-icon [type]="originIcon()" [style]="{ width: '16px', height: '16px' }" />
-          <span class="origin-host">{{ originHost() }}</span>
-          <span class="origin-scheme">{{ originSchemeLabel() }}</span>
+      @if (isTauri() && configuredOrigins().length) {
+        <div class="origin-list" role="status">
+          @for (server of configuredOrigins(); track server.origin) {
+            <div
+              class="origin-banner"
+              [class.insecure]="server.insecure"
+              [class.muted]="configFailed()"
+              tabindex="0"
+            >
+              <app-icon
+                [type]="server.icon"
+                [style]="{ width: '16px', height: '16px' }"
+              />
+              <span class="origin-kind">{{ server.labelKey | transloco }}</span>
+              <span class="origin-host">{{ server.host }}</span>
+              <span class="origin-scheme">{{ server.scheme }}</span>
+            </div>
+          }
         </div>
       }
       @if (configFailed()) {

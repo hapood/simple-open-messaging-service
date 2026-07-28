@@ -93,6 +93,10 @@ export class ConversationListService {
 
   // ── delegated data signals (the same references the repo owns) ──
   readonly items = this.repo.items;
+  readonly threadSeq$ = this.repo.threadSeq$;
+  latestSeq(threadId: number): number | undefined {
+    return this.repo.latestSeq(threadId);
+  }
   readonly status = this.repo.status;
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;

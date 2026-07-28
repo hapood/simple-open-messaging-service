@@ -79,24 +79,39 @@ describe('MessageRepository', () => {
     return n;
   }
 
-  it('cold init (skip:0) backend-probes + writes through to IDB', async () => {
-    queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({
-        code: 0,
-        message: 'ok',
-        data: [msg(42, 3), msg(42, 2), msg(42, 1)],
-        hasMore: true,
-      }),
-    );
+  it('cold init treats an empty IDB result as ready and revalidates in the background', async () => {
+    const refresh$ = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(refresh$);
+    const signals: { threadId: number; seq: number }[] = [];
+    repo.liveSignal$.subscribe((s) => signals.push(s));
+
     const res = await repo.queryMessages(42, {
       skip: 0,
       take: 3,
       orderBy: 'desc',
-    });
-    expect(res.data.map((m) => m.seq)).toEqual([3, 2, 1]); // desc, as returned by the backend
-    expect(res.hasMore).toBe(true);
+    }, undefined, true);
+
+    expect(res).toEqual({ data: [], hasMore: false });
+    expect(queryMessageLogSpy).not.toHaveBeenCalled();
+    expect(signals).toEqual([]);
+
+    void repo.refreshLatest(
+      42,
+      { skip: 0, take: 3, orderBy: 'desc' },
+      undefined,
+    );
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
-    expect(await dbCount(42)).toBe(3); // write-through
+    refresh$.next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 3), msg(42, 2), msg(42, 1)],
+      hasMore: true,
+    });
+    refresh$.complete();
+    await flush(10);
+
+    expect(await dbCount(42)).toBe(3);
+    expect(signals).toEqual([{ threadId: 42, seq: 3 }]);
   });
 
   it('warm init returns the latest IDB page immediately and revalidates in the background', async () => {
@@ -144,6 +159,7 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 2, orderBy: 'desc' });
+    await flush(10);
 
     const signals: { threadId: number; seq: number }[] = [];
     repo.liveSignal$.subscribe((s) => signals.push(s));

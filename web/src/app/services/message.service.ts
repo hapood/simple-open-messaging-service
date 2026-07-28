@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import {
   HttpClient,
+  HttpContext,
   HttpEventType,
   HttpHeaders,
   HttpResponse,
@@ -9,6 +10,7 @@ import { defer, filter, map, tap, type Observable } from 'rxjs';
 import { Message, QueryMessageLogParams, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
+import { REPLAY_SAFE } from '../request-context';
 
 export type UploadProgressHandler = (loaded: number, total: number) => void;
 
@@ -41,6 +43,9 @@ export class MsgService {
     return this.http.post<StandardResponse<{ id: string; createAt: string }>>(
       `${apiPrefix()}/send-message`,
       params,
+      params.clientMessageId
+        ? { context: new HttpContext().set(REPLAY_SAFE, true) }
+        : undefined,
     );
   }
 
@@ -62,6 +67,7 @@ export class MsgService {
     return this.http.post<StandardResponse<{ clientMessageId: string }>>(
       `${apiPrefix()}/send-media`,
       params,
+      { context: new HttpContext().set(REPLAY_SAFE, true) },
     );
   }
 
@@ -317,7 +323,10 @@ export class MsgService {
         url,
         body,
         clientMessageId
-          ? { headers: this.cmidHeader(clientMessageId) }
+          ? {
+              headers: this.cmidHeader(clientMessageId),
+              context: new HttpContext().set(REPLAY_SAFE, true),
+            }
           : undefined,
       );
     }
@@ -325,6 +334,9 @@ export class MsgService {
       .post<T>(url, body, {
         headers: clientMessageId
           ? this.cmidHeader(clientMessageId)
+          : undefined,
+        context: clientMessageId
+          ? new HttpContext().set(REPLAY_SAFE, true)
           : undefined,
         observe: 'events',
         reportProgress: true,

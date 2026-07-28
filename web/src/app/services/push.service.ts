@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, isDevMode } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
 import { isAndroidNative, isTauri } from './runtime';
@@ -77,10 +77,29 @@ export class PushService {
    *  change (avoids needless token churn on identical config); an explicit {configured:false} clears native
    *  Firebase. Sync + never throws. */
   applyFirebaseConfig(data: FirebaseClientConfigPayload | null | undefined): void {
-    if (!isAndroidNative()) return;
+    if (!isAndroidNative()) {
+      if (isDevMode()) console.info('firebase config: skipped (not Android native)');
+      return;
+    }
+    if (isDevMode()) {
+      console.info('firebase config: bridge read start', {
+        configured: !!data?.configured,
+      });
+    }
     if (!data || !data.configured) {
       // Server explicitly has no FCM client config → clear native Firebase.
-      if (window.SomsFcm!.getFirebaseConfig() !== null) window.SomsFcm!.setFirebaseConfig(null);
+      const current = window.SomsFcm!.getFirebaseConfig();
+      if (isDevMode()) {
+        console.info('firebase config: bridge read complete', {
+          hasCurrentConfig: current !== null,
+        });
+      }
+      if (current !== null) {
+        window.SomsFcm!.setFirebaseConfig(null);
+        if (isDevMode()) console.info('firebase config: native clear dispatched');
+      } else if (isDevMode()) {
+        console.info('firebase config: unchanged (already clear)');
+      }
       return;
     }
     const next = JSON.stringify({
@@ -89,7 +108,19 @@ export class PushService {
       appId: data.appId,
       gcmSenderId: data.gcmSenderId,
     });
-    if (window.SomsFcm!.getFirebaseConfig() !== next) window.SomsFcm!.setFirebaseConfig(next);
+    const current = window.SomsFcm!.getFirebaseConfig();
+    if (isDevMode()) {
+      console.info('firebase config: bridge read complete', {
+        hasCurrentConfig: current !== null,
+        changed: current !== next,
+      });
+    }
+    if (current !== next) {
+      window.SomsFcm!.setFirebaseConfig(next);
+      if (isDevMode()) console.info('firebase config: native reconfigure dispatched');
+    } else if (isDevMode()) {
+      console.info('firebase config: unchanged');
+    }
   }
 
   /** Called by AuthService after a successful login — the access token is now in the interceptor, so

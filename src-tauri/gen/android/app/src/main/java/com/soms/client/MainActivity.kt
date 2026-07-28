@@ -57,8 +57,8 @@ import java.util.concurrent.TimeUnit
  *    is edge-to-edge but env(safe-area-inset-*) returns 0, so this is the only way the web layer learns
  *    the per-device inset to pad content below the status bar (see --soms-safe-top in _tokens.scss).
  *  - IME (keyboard) height: the same edge-to-edge gap blinds window.visualViewport to the soft keyboard, so
- *    the IME inset is measured via WindowInsets (Type.ime) and pushed to JS as window.__SOMS_IME_HEIGHT__
- *    (per-frame via WindowInsetsAnimation on API 30+; readable at boot via SomsShell.getImeHeight()) so the
+ *    the IME inset is measured via WindowInsets (Type.ime) and published as one structured
+ *    window.__SOMS_IME_EVENT__ stream (per-frame via WindowInsetsAnimation on API 30+; snapshot-readable)
  *    web's KbdOffsetDirective can lift the chat input bar above the keyboard (see ime-insets.service.ts).
  *
  * The webview reference comes from WryActivity.onWebViewCreate — the idiomatic Tauri v2 hook — rather
@@ -94,10 +94,16 @@ class MainActivity : TauriActivity() {
     // getWindowVisibleDisplayFrame — the canonical pre-IME-insets technique. (Type.ime() and the visible
     // frame derive from the SAME system window-frame data pre-30, so combining them would add complexity
     // without an independent signal; the visible frame is the more direct, more reliable query.) Pushed to JS
-    // as window.__SOMS_IME_HEIGHT__(px) and readable at boot via getImeHeight(). Android WebView's
+    // as structured geometry events in CSS px and readable at boot via getImeSnapshot(). Android WebView's
     // visualViewport doesn't reflect the IME (edge-to-edge, window undivided), so this is the only source of
     // the keyboard height for the web layer.
     @Volatile private var imeHeightCss = 0
+    // Captured in WindowInsetsAnimation.onPrepare, before the end-state insets are applied. onStart runs
+    // after that layout and imeHeightCss may already contain the destination, so it cannot identify the
+    // animation direction reliably there.
+    @Volatile private var imeAnimationStartCss = 0
+    @Volatile private var imeAnimationPrepared = false
+    @Volatile private var imeAnimationId = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -185,7 +191,7 @@ class MainActivity : TauriActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
                 imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
-                pushImeHeight()
+                if (!imeAnimationPrepared) pushImeEvent("change")
             }
             applySafeInsetsToWebView()
             insets
@@ -199,6 +205,15 @@ class MainActivity : TauriActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ViewCompat.setWindowInsetsAnimationCallback(content,
                 object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+                    override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+                        if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                            imeAnimationStartCss = imeHeightCss
+                            imeAnimationPrepared = true
+                            imeAnimationId += 1
+                            pushImeEvent("prepare", currentCss = imeAnimationStartCss)
+                        }
+                    }
+
                     override fun onStart(
                         animation: WindowInsetsAnimationCompat,
                         bounds: WindowInsetsAnimationCompat.BoundsCompat,
@@ -207,12 +222,18 @@ class MainActivity : TauriActivity() {
                             val d = resources.displayMetrics.density
                             val lower = Math.max(0, Math.round(bounds.lowerBound.bottom / d))
                             val upper = Math.max(0, Math.round(bounds.upperBound.bottom / d))
-                            // At onStart the current inset is normally one bound. Pick the other (farther)
-                            // bound, which also handles an IME changing height while already visible.
+                            // onStart follows the end-state layout, so use the pre-layout value captured in
+                            // onPrepare. Pick the opposite (farther) bound; this also handles a visible IME
+                            // animating between two different heights.
                             val target =
-                                if (Math.abs(imeHeightCss - lower) <= Math.abs(imeHeightCss - upper)) upper
+                                if (Math.abs(imeAnimationStartCss - lower) <= Math.abs(imeAnimationStartCss - upper)) upper
                                 else lower
-                            pushImeAnimation(target, animation.durationMillis, true)
+                            pushImeEvent(
+                                phase = "start",
+                                currentCss = imeAnimationStartCss,
+                                targetCss = target,
+                                durationMs = animation.durationMillis,
+                            )
                         }
                         return bounds
                     }
@@ -223,15 +244,14 @@ class MainActivity : TauriActivity() {
                     ): WindowInsetsCompat {
                         val d = resources.displayMetrics.density
                         imeHeightCss = Math.max(0, Math.round(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom / d))
-                        pushImeHeight()
+                        pushImeEvent("progress")
                         return insets
                     }
 
                     override fun onEnd(animation: WindowInsetsAnimationCompat) {
                         if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
-                            // Clear endpoint mode only after the native animation finishes. The last
-                            // onProgress/onApplyWindowInsets value then becomes the calibration source.
-                            pushImeAnimation(imeHeightCss, 0, false)
+                            imeAnimationPrepared = false
+                            pushImeEvent("end")
                         }
                     }
                 })
@@ -249,7 +269,7 @@ class MainActivity : TauriActivity() {
                 val derivedCss = Math.max(0, Math.round(derived / d))
                 if (derivedCss != imeHeightCss) {
                     imeHeightCss = derivedCss
-                    pushImeHeight()
+                    pushImeEvent("change")
                 }
             }
         }
@@ -278,60 +298,44 @@ class MainActivity : TauriActivity() {
         v.evaluateJavascript(js, null)
     }
 
-    /** Push the current IME (keyboard) height to the webview via window.__SOMS_IME_HEIGHT__ (installed before
-     *  bootstrap by the web's ime-insets.service.ts → ImeInsetsService). KbdOffsetDirective reads it as
-     *  offset() on Android and lifts the chat input bar above the keyboard (the browser/PWA build keeps the
-     *  visualViewport path; Android WebView's visualViewport doesn't reflect the IME). Called per inset change
-     *  and per animation frame on API 30+. A no-op before the page has loaded (the eval lands on about:blank,
-     *  harmless) — same as applySafeInsetsToWebView. */
-    private fun pushImeHeight() {
+    /** One atomic native→web geometry event. Kotlin reports Android facts in WebView CSS px; the Angular
+     *  keyboard state machine owns every layout and native↔custom handoff decision. */
+    private fun pushImeEvent(
+        phase: String,
+        currentCss: Int = imeHeightCss,
+        targetCss: Int? = null,
+        durationMs: Long = 0,
+    ) {
         val v = SomsBridge.webView ?: return
-        v.evaluateJavascript("window.__SOMS_IME_HEIGHT__&&window.__SOMS_IME_HEIGHT__($imeHeightCss);", null)
-    }
-
-    /** Announce an API-30+ IME animation endpoint before its first progress frame. Web surfaces animate
-     *  directly to this final CSS-pixel height; per-frame height pushes remain available for custom-keyboard
-     *  residual geometry and final calibration. */
-    private fun pushImeAnimation(targetCss: Int, durationMs: Long, active: Boolean) {
-        val v = SomsBridge.webView ?: return
+        val payload = JSONObject()
+            .put("phase", phase)
+            .put("currentPx", currentCss)
+            .put("targetPx", targetCss ?: JSONObject.NULL)
+            .put("durationMs", durationMs)
+            .put("animationId", imeAnimationId)
+            .put("visible", currentCss > 0)
+            .toString()
         v.evaluateJavascript(
-            "window.__SOMS_IME_ANIMATION__&&window.__SOMS_IME_ANIMATION__($targetCss,$durationMs,$active);",
+            "window.__SOMS_IME_EVENT__&&window.__SOMS_IME_EVENT__($payload);",
             null,
         )
     }
 
-    /** Show the system IME for the already-focused contenteditable inside the WebView. The web composer owns
-     *  focus/selection; this method controls only IME visibility, so switching back from the custom emoji
-     *  keyboard does not require a blur/refocus cycle that would lose the caret. */
-    private fun showIme() {
+    /** Atomic visibility request. DOM focus and keyboard-mode policy remain entirely in Angular. */
+    private fun setImeVisible(visible: Boolean) {
         val v = SomsBridge.webView ?: return
         runOnUiThread {
-            // requestFocusFromTouch follows WebView's editable/touch focus path; plain requestFocus can leave
-            // the WebView focused as a View without attaching Chromium's contenteditable InputConnection.
-            v.requestFocusFromTouch()
-            // Post after focus so WebView has an active InputConnection when the controller asks for IME.
             v.post {
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                // Re-bind IMM to Chromium's focused contenteditable before explicitly showing it. The first
-                // user tap uses Chromium's auto policy to create this connection; this method is for the
-                // later in-app emoji → system-keyboard handoff while DOM focus and the caret are preserved.
-                imm.restartInput(v)
-                WindowInsetsControllerCompat(window, v).show(WindowInsetsCompat.Type.ime())
-                // OEM/WebView fallback (notably older EMUI): repeat through InputMethodManager after the
-                // InputConnection has been created. Calling both is idempotent.
-                imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                val controller = WindowInsetsControllerCompat(window, v)
+                if (visible) {
+                    controller.show(WindowInsetsCompat.Type.ime())
+                    imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                } else {
+                    controller.hide(WindowInsetsCompat.Type.ime())
+                    imm.hideSoftInputFromWindow(v.windowToken, 0)
+                }
             }
-        }
-    }
-
-    /** Hide the system IME without clearing WebView/editor focus. Keeping the InputConnection and DOM
-     *  selection alive is what lets the custom emoji keyboard retain a real caret. */
-    private fun hideIme() {
-        val v = SomsBridge.webView ?: return
-        runOnUiThread {
-            WindowInsetsControllerCompat(window, v).hide(WindowInsetsCompat.Type.ime())
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-            imm.hideSoftInputFromWindow(v.windowToken, 0)
         }
     }
 
@@ -992,6 +996,22 @@ class MainActivity : TauriActivity() {
             a.startService(Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FORCE_RECONNECT))
         }
 
+        /** Follow Rust's authoritative HTTP origin after a successful address race, then restart SSE on
+         *  the same endpoint. The configured pair remains unchanged; only the persisted active mode moves. */
+        @JavascriptInterface
+        fun useActiveOrigin(origin: String) {
+            val a = activityRef.get() ?: return
+            val normalized = origin.trimEnd('/')
+            val secondary = SomsSecureStore.getApiOriginSecondary(a)
+            SomsSecureStore.setOriginMode(
+                a,
+                if (secondary != null && normalized == secondary.trimEnd('/')) "secondary" else "primary",
+            )
+            a.startService(
+                Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FORCE_RECONNECT),
+            )
+        }
+
         /** Re-attached-WebView (renderer reclaim / FGS-pre-connected cold start) handshake replay: hand the
          *  freshly-booted WebView the cached+merged HELLO. A retained open `/events` stream does NOT re-push
          *  HELLO on its own (it is sent once per register), so this cache (kept fresh by
@@ -1139,7 +1159,14 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun setFirebaseConfig(config: String?) {
             val a = activityRef.get() ?: return
-            a.runOnUiThread { SomsFirebase.reconfigure(a, config) }
+            SomsLog.i("Firebase") {
+                "bridge setFirebaseConfig received; configured=${!config.isNullOrBlank()}"
+            }
+            a.runOnUiThread {
+                SomsLog.i("Firebase") { "bridge reconfigure UI task start" }
+                SomsFirebase.reconfigure(a, config)
+                SomsLog.i("Firebase") { "bridge reconfigure UI task returned" }
+            }
         }
 
         /** Synchronous read of the currently-persisted Firebase client config JSON string (or null). The web
@@ -1147,7 +1174,12 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun getFirebaseConfig(): String? {
             val a = activityRef.get() ?: return null
-            return SomsSecureStore.getFirebaseConfig(a)
+            SomsLog.i("Firebase") { "bridge getFirebaseConfig start" }
+            val config = SomsSecureStore.getFirebaseConfig(a)
+            SomsLog.i("Firebase") {
+                "bridge getFirebaseConfig returned; configured=${config != null}"
+            }
+            return config
         }
     }
 
@@ -1182,21 +1214,31 @@ class MainActivity : TauriActivity() {
                 .toString()
         }
 
-        /** Current soft-keyboard (IME) height in CSS px (0 when closed). Lets the web layer seed the value at
-         *  bootstrap in case the keyboard is somehow already open (e.g. a page reload while the IME is up); the
-         *  live source is the window.__SOMS_IME_HEIGHT__ push. */
+        /** Atomic boot/reload snapshot; runtime changes arrive through __SOMS_IME_EVENT__. */
         @JavascriptInterface
-        fun getImeHeight(): Int = activityRef.get()?.imeHeightCss ?: 0
-
-        /** Explicit IME controls used by the web keyboard handoff state machine. Both preserve DOM focus. */
-        @JavascriptInterface
-        fun showIme() {
-            activityRef.get()?.showIme()
+        fun getImeSnapshot(): String {
+            val a = activityRef.get()
+            val current = a?.imeHeightCss ?: 0
+            return JSONObject()
+                .put("currentPx", current)
+                .put("visible", current > 0)
+                .toString()
         }
 
+        /** Atomic capability only; Angular owns focus, timing, and keyboard-mode policy. */
         @JavascriptInterface
-        fun hideIme() {
-            activityRef.get()?.hideIme()
+        fun setImeVisible(visible: Boolean) {
+            activityRef.get()?.setImeVisible(visible)
+        }
+
+        /** Clear HTTP memory/disk cache only. Cookies, DOM storage, IndexedDB, and login state survive. */
+        @JavascriptInterface
+        fun clearWebViewCache() {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                SomsBridge.webView?.clearCache(true)
+                SomsLog.i("Ui") { "WebView HTTP cache cleared from Settings" }
+            }
         }
     }
 

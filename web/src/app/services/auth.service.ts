@@ -278,6 +278,21 @@ export class AuthService {
    *  carries the session; there is no JS token to restore). The token passes through JS only to reach Rust;
    *  it is not retained. */
   async restoreSession(): Promise<void> {
+    // Pick the reachable origin before Angular releases APP_INITIALIZER and mounts the routed page.
+    // The logged-out login page immediately loads public `/config`, so deferring this race until the user
+    // submits the login form makes every cold-start request hit the persisted primary even when the LAN
+    // secondary is the reachable endpoint. This is intentionally independent of token restoration: a
+    // device with no stored session still needs the correct backend for its first public request.
+    if (isTauri()) {
+      try {
+        await pickLoginOrigin(true);
+      } catch {
+        // Origin selection is best-effort. If both probes fail (or native IPC is temporarily unavailable),
+        // let the UI start and show its normal retry/error state rather than rejecting APP_INITIALIZER and
+        // leaving a blank webview. A login attempt retries because pickLoginOrigin clears its failed cache.
+      }
+    }
+
     // Open the per-user IDB on the persisted lastUserId FIRST (awaited) so the threadlist can eager-paint
     // the cached list before the SSE/HELLO round-trip — the DB is open before the router resolves, so the
     // list reads it on mount. No-op on a first-ever launch (no userId persisted yet).

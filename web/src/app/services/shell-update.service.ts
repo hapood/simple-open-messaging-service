@@ -1,5 +1,10 @@
 import { Injectable, signal } from '@angular/core';
-import { apiOrigin, apiOriginIsEmpty, isTauri, tauriInvoke } from './runtime';
+import {
+  apiOriginIsEmpty,
+  getActiveApiOrigin,
+  isTauri,
+  tauriInvoke,
+} from './runtime';
 
 /** Shape returned by the Rust `init_update_status` command: local + server versions + derived flags. */
 export interface ShellUpdateStatus {
@@ -39,14 +44,18 @@ export interface ShellUpdateStatus {
 export class ShellUpdateService {
   /** The latest update-status probe, or null before the first probe / outside the Tauri shell. */
   readonly updateStatus = signal<ShellUpdateStatus | null>(null);
+  /** Origin used by the latest successful probe (also drives Settings → About's backend label). */
+  readonly probedOrigin = signal('');
 
   /** Background probe (called on launch): fill `updateStatus`, never auto-download. */
   async check(): Promise<void> {
     if (!isTauri() || apiOriginIsEmpty()) return;
     try {
+      const origin = await getActiveApiOrigin();
       this.updateStatus.set(
-        await tauriInvoke<ShellUpdateStatus>('init_update_status', { origin: apiOrigin() }),
+        await tauriInvoke<ShellUpdateStatus>('init_update_status', { origin }),
       );
+      this.probedOrigin.set(origin);
     } catch (e) {
       // Offline / server down — leave updateStatus as-is; the cached bundle keeps the app usable.
       console.warn('shell update status probe failed', e);
@@ -61,7 +70,8 @@ export class ShellUpdateService {
    */
   async downloadUpdate(): Promise<void> {
     if (!isTauri() || apiOriginIsEmpty()) return;
-    await tauriInvoke('init_download_web', { origin: apiOrigin() });
+    const origin = await getActiveApiOrigin();
+    await tauriInvoke('init_download_web', { origin });
     // Refresh so About flips from "update available" to "up to date" after the install.
     await this.check();
   }

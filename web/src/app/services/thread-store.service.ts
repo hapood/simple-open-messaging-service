@@ -93,14 +93,18 @@ export class ThreadRepository {
   private _deltaInFlight = false;
   private _pendingTailRev: number | undefined;
 
-  /** Per-thread high-water-mark of the newest message seq applied via onNewMessage. Guards against SSE
+  /** Per-thread in-memory high-water mark for the newest message seq observed in this live session. It also
+   *  avoids repeated list work for duplicate SSE
    *  redelivery (e.g. a frame duplicated across a reconnect) double-bumping the unread badge: if an inbound
    *  event's seq isn't strictly newer than the last one applied for that thread, it's discarded before
-   *  touching the list. Per-thread seq is a 0-indexed monotonic int (allocated by the backend), so a plain
-   *  numeric compare is exact. Not seeded from the loaded list (items carry lastReadSeq, not the last message
-   *  seq) — the first live event after a reload passes (it IS new to the in-memory state); only same/older
-   *  duplicates are blocked. */
+   *  touching the list. It is deliberately not seeded from or persisted with the cached thread row. */
   private readonly lastSeenSeq = new Map<number, number>();
+  private readonly _threadSeq = new Subject<{ threadId: number; seq: number }>();
+  readonly threadSeq$ = this._threadSeq.asObservable();
+
+  latestSeq(threadId: number): number | undefined {
+    return this.lastSeenSeq.get(threadId);
+  }
 
   /** Previous sessionUserId seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
@@ -475,6 +479,8 @@ export class ThreadRepository {
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(item: ConversationItem): void {
     let reconciled = this.reconcileItem(item);
+    if (typeof reconciled.lastMessageSeq === 'number')
+      this.advanceThreadSeq(reconciled.threadId, reconciled.lastMessageSeq);
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
@@ -574,10 +580,8 @@ export class ThreadRepository {
    * If the thread isn't in the list yet (a brand-new conversation), reloads to fetch it.
    */
   onNewMessage(msg: { threadId: number; seq: number; ts: number }): void {
-    // High-water-mark guard: discard a redelivered/out-of-order event whose seq isn't strictly newer.
-    const prev = this.lastSeenSeq.get(msg.threadId);
-    if (prev !== undefined && msg.seq <= prev) return;
-    this.lastSeenSeq.set(msg.threadId, msg.seq);
+    // Session-only global HWM: cached thread rows do not seed it.
+    if (!this.advanceThreadSeq(msg.threadId, msg.seq)) return;
     // The body isn't in the identity signal — advance `to` to this signal + schedule a debounced missed-
     // summary walk. That walk is what applies the authoritative unread count; only the `lastMessageAt`
     // re-sort below is instant from the signal itself.
@@ -592,7 +596,7 @@ export class ThreadRepository {
       existed = true;
       const item = list[idx];
       // No live unread bump — `unreadCount` is server-authoritative (set by mergeSummaryReadState on the
-      // missed-summary pull). Only advance recency so the thread re-sorts toward the top.
+      // missed-summary pull). Advance the public per-thread message HWM together with recency.
       changed = { ...item, lastMessageAt: msg.ts };
       const next = list.slice();
       next[idx] = changed;
@@ -604,6 +608,14 @@ export class ThreadRepository {
     // B1: the open thread received a new message — emit so the facade can advance the server read watermark
     // (debounced + coalesced to the max seq). The repo emits; the facade owns the markRead write.
     if (open === msg.threadId) this._openThreadMessage.next({ threadId: msg.threadId, seq: msg.seq });
+  }
+
+  private advanceThreadSeq(threadId: number, seq: number): boolean {
+    const prev = this.lastSeenSeq.get(threadId);
+    if (prev !== undefined && seq <= prev) return false;
+    this.lastSeenSeq.set(threadId, seq);
+    this._threadSeq.next({ threadId, seq });
+    return true;
   }
 
   /** Load the persisted missed-summary cursor from IDB — the `(threadId, seq)` of the newest message the

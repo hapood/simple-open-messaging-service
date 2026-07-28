@@ -130,6 +130,20 @@ describe('AudioPlayerComponent', () => {
     transfers.dismiss('voice-progress');
   });
 
+  it('renders a visible indeterminate progress rail while audio is downloading', async () => {
+    const fixture = TestBed.createComponent(AudioPlayerComponent);
+    fixture.componentRef.setInput('src', '/uploads/shards/aa/bb/voice.webm');
+    fixture.componentRef.setInput('status', MEDIA_STATUS.DOWNLOADING);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const rail = fixture.nativeElement.querySelector('.ap-transfer') as HTMLElement;
+    expect(rail).not.toBeNull();
+    expect(rail.classList).toContain('ap-transfer--indeterminate');
+    expect(rail.classList).toContain('ap-transfer--download');
+    expect(rail.getAttribute('aria-label')).toBe('Audio download progress');
+  });
+
   it('seeks from the waveform and cycles 1x → 1.5x → 2x → 1x', async () => {
     const { comp, audio } = await render();
     const wave = document.createElement('button');

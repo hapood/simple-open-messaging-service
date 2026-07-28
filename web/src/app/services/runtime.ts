@@ -138,6 +138,8 @@ declare global {
        *  force-reconnect channel `retryNow` cannot serve — retryNow only cancels pending backoff and is a
        *  no-op against an already-open stream. Android-only. */
       forceReconnect: () => void;
+      /** Adopt Rust's authoritative active origin in native background state and restart `/events`. */
+      useActiveOrigin: (origin: string) => void;
       /** Replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected
        *  cold start). A retained open stream does NOT re-push HELLO on its own (it is sent once per
        *  register); the native layer caches HELLO + merges every revision frame, and this hands the current
@@ -197,17 +199,14 @@ declare global {
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
      *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
-     *  main.ts before bootstrap for a FOUC-free first paint. Absent in browser/desktop. `getImeHeight()`
-     *  (the current soft-keyboard height in CSS px, 0 when closed) lets the web seed the value at boot; the
-     *  live source is {@link __SOMS_IME_HEIGHT__}. API 30+ additionally announces an animation's final
-     *  geometry through {@link __SOMS_IME_ANIMATION__}, allowing the web surface to animate once toward
-     *  the endpoint instead of chasing every native frame. */
+     *  main.ts before bootstrap for a FOUC-free first paint. IME exposure is atomic: a snapshot seeds state,
+     *  one command requests visibility, and runtime geometry arrives through {@link __SOMS_IME_EVENT__}. */
     SomsShell?: {
       getSafeInsets: () => string;
-      getImeHeight?: () => number;
-      /** Android native IME visibility controls. They preserve the focused contenteditable and caret. */
-      showIme?: () => void;
-      hideIme?: () => void;
+      getImeSnapshot?: () => string;
+      setImeVisible?: (visible: boolean) => void;
+      /** Clear Android WebView's HTTP memory/disk cache without touching cookies or web storage. */
+      clearWebViewCache?: () => void;
     };
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
      *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
@@ -313,13 +312,15 @@ declare global {
      *  enters PiP (a connected VIDEO call the user backgrounded) + `false` on exit. The call chrome hides
      *  itself in PiP (only the native remote video shows in the PiP window). Installed by CallScreenComponent. */
     __SOMS_PIP__?: (inPip: boolean) => void;
-    /** Kotlin→JS push (`MainActivity.pushImeHeight`): native calls this with the current IME (keyboard)
-     *  height in CSS px on every keyboard open/close and per animation frame on API 30+. Installed before
-     *  bootstrap by `installKeyboardInsetBridge()`; drives `KeyboardInsetService.inset`, which
-     *  `KbdOffsetDirective` reads on Android. Absent in browser/desktop (never called there). Follows the
-     *  `__SOMS_<NAME>__` bridge-hook convention. */
-    __SOMS_IME_HEIGHT__?: (px: number) => void;
-    __SOMS_IME_ANIMATION__?: (targetPx: number, durationMs: number, active: boolean) => void;
+    /** Atomic Kotlin→JS IME geometry event, installed before Angular bootstrap. */
+    __SOMS_IME_EVENT__?: (event: {
+      phase: 'prepare' | 'start' | 'progress' | 'end' | 'change';
+      currentPx: number;
+      targetPx: number | null;
+      durationMs: number;
+      animationId: number;
+      visible: boolean;
+    }) => void;
     /** Kotlin→JS push (RealtimeService.forwardToJs): one `/events` frame forwarded from the native-owned
      *  SSE, so the Android WebView consumes realtime without opening its own worker. Installed by the
      *  NativeEventTransport; absent on browser/desktop (where the WebsocketService spawns sse.worker.ts).
@@ -375,6 +376,14 @@ export function isAndroid(): boolean {
  *  absent on desktop. */
 export function isAndroidNative(): boolean {
   return isTauri() && isAndroid();
+}
+
+/** Clear Android WebView's HTTP cache only. IndexedDB, cookies, and DOM storage are untouched. */
+export function clearNativeMediaCache(): void {
+  if (!isAndroidNative()) return;
+  const clear = window.SomsShell?.clearWebViewCache;
+  if (!clear) throw new Error('Android clearWebViewCache bridge is unavailable');
+  clear();
 }
 
 /** The SessionToken `client` kind for the CURRENT platform: `'app'` (Android native), `'desktop'` (Tauri
@@ -631,19 +640,36 @@ export async function getOriginMode(): Promise<'primary' | 'secondary'> {
   return mode === 'secondary' ? 'secondary' : 'primary';
 }
 
+/** The exact backend endpoint currently used by native HTTP transports.
+ *
+ * New shells expose the authoritative Rust `ProxyState.api_origin` directly. The fallback keeps a newer
+ * OTA Web bundle usable on an older shell that only exposes mode + the two configured addresses; it is
+ * compatibility behavior, not the authoritative path on current packages.
+ */
+export async function getActiveApiOrigin(): Promise<string> {
+  if (!isTauri()) return apiOrigin();
+  return canonicalOrigin(await tauriInvoke<string>('get_active_api_origin'));
+}
+
 /** The login-init concurrent race — probe both origins' `/health`, pick the reachable one, set Rust's active
  *  origin. Call BEFORE the auth request so login targets a reachable origin (on the LAN the public origin is
  *  hairpin-unreachable — a boot-time pick could be stale if the network changed before login). ONCE per
  *  process (a QR-poll loop reuses the result instead of re-racing every tick); a failure clears the cache so
  *  a retry re-races. No-op outside Tauri (returns the configured primary). */
 let loginPickPromise: Promise<string> | null = null;
-export function pickLoginOrigin(): Promise<string> {
+export function pickLoginOrigin(force = false): Promise<string> {
   if (!isTauri()) return Promise.resolve(apiOrigin());
+  if (force) loginPickPromise = null;
   if (!loginPickPromise) {
-    loginPickPromise = tauriInvoke<string>('init_pick_origin').catch((e) => {
-      loginPickPromise = null; // allow a retry to re-race
-      throw e;
-    });
+    loginPickPromise = tauriInvoke<string>('init_pick_origin')
+      .then((origin) => {
+        window.SomsFcm?.useActiveOrigin?.(origin);
+        return origin;
+      })
+      .catch((e) => {
+        loginPickPromise = null; // allow a retry to re-race
+        throw e;
+      });
   }
   return loginPickPromise;
 }
@@ -689,4 +715,14 @@ export function installActiveOriginBridge(): void {
     // tauriInvoke; a swallowed rejection is harmless — the next signalRust (every openStreamOn) re-syncs.
     void tauriInvoke('set_active_origin', { url: origin });
   };
+  // Rust owns HTTP failover. When its concurrent race succeeds, make Android's persisted native mode
+  // follow the exact winner and force `/events` to reopen on it. Desktop has no SomsFcm bridge; its Rust
+  // SSE supervisor is reset directly through origin_notify.
+  void window.__TAURI__?.event?.listen?.(
+    'active-origin-changed',
+    (event) => {
+      const origin = typeof event.payload === 'string' ? event.payload : '';
+      if (origin) window.SomsFcm?.useActiveOrigin?.(origin);
+    },
+  );
 }

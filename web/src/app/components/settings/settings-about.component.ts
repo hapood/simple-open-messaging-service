@@ -4,7 +4,7 @@ import { MatListModule } from '@angular/material/list';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { apiOrigin, apiOriginIsEmpty, isTauri, listenEvent } from '../../services/runtime';
+import { isTauri, listenEvent } from '../../services/runtime';
 import { ShellUpdateService } from '../../services/shell-update.service';
 import { DebugToolsService } from '../../services/debug-tools.service';
 import { appVersion } from '../../version';
@@ -114,8 +114,7 @@ export class SettingsAboutComponent {
   readonly incompatible = computed(() => this.status()?.incompatible ?? false);
   readonly webUpdateAvailable = computed(() => this.status()?.webUpdateAvailable ?? false);
   readonly backendLabel = computed(() => {
-    const o = apiOrigin();
-    return o && !apiOriginIsEmpty() ? o : null;
+    return this.shellUpdate.probedOrigin() || null;
   });
   readonly downloadPercent = computed(() => {
     const total = this.downloadTotal();

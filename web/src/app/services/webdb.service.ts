@@ -5,7 +5,7 @@ import type { ConversationItem, Message } from './model';
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
  * strict 3-tier architecture (UI ↔ repositories ↔ backend). This service is PURE STORAGE: it owns the
- * per-user database, the 5 object stores, the avatar LRU GC, and exposes the typed `idb` handle via
+ * per-user database, the 5 object stores, avatar persistence, and exposes the typed `idb` handle via
  * {@link db}. It does NO HTTP, consumes NO SSE, and depends on NO domain service — opening/closing the
  * per-user DB is driven imperatively by the session owner (UserService's lifecycle effect calls
  * {@link openForUser} / {@link closeAndDelete}). Repositories read/write through
@@ -28,7 +28,7 @@ export interface AvatarRecord {
   /** The source path this blob was fetched from (opaque; used only for change detection by the profile
    *  layer — NOT a cache key, NOT parsed for a version). */
   path: string;
-  /** Render timestamp (ms) for LRU eviction. */
+  /** Last render timestamp (ms), retained as cache metadata. */
   lastRender: number;
 }
 
@@ -68,31 +68,6 @@ export interface WebdbSchema extends DBSchema {
 const DB_PREFIX = 'soms-webdb-u';
 const DB_VERSION = 1;
 
-/** Avatar byte budget (50 MB). One blob per identity (overwrite on change), so this bounds the seen set. */
-const AVATAR_BYTE_BUDGET = 50 * 1024 * 1024;
-
-/**
- * Pure LRU eviction decision — extracted so it is unit-testable without a 50 MB fixture. Given all
- * avatar records and the current total bytes, returns the identities to evict (oldest `lastRender`
- * first) so that the remaining total fits the budget. Empty when already under budget.
- */
-export function avatarEvictionVictims(
-  records: AvatarRecord[],
-  totalBytes: number,
-  budget: number,
-): string[] {
-  if (totalBytes <= budget) return [];
-  const sorted = [...records].sort((a, b) => a.lastRender - b.lastRender);
-  const victims: string[] = [];
-  let bytes = totalBytes;
-  for (const r of sorted) {
-    if (bytes <= budget) break;
-    victims.push(r.identity);
-    bytes -= r.blob.size;
-  }
-  return victims;
-}
-
 function dbName(userId: string): string {
   return `${DB_PREFIX}${userId}`;
 }
@@ -107,8 +82,6 @@ export class WebdbService implements OnDestroy {
   private dbPromise: Promise<IDBPDatabase<WebdbSchema>> | null = null;
   /** The userId whose DB is open (or being opened). */
   private currentUserId: string | null = null;
-  /** Running total of avatar blob bytes (recomputed on open). Drives the LRU GC. */
-  private avatarBytes = 0;
   /** Whether `navigator.storage.persist()` has been requested for this origin. */
   private persistedRequested = false;
 
@@ -148,7 +121,6 @@ export class WebdbService implements OnDestroy {
     });
     try {
       const db = await this.dbPromise;
-      await this.recomputeAvatarBytes(db);
       void this.requestPersistence();
       this.ready.set(true);
       return db;
@@ -168,7 +140,6 @@ export class WebdbService implements OnDestroy {
     this.dbPromise = null;
     this.currentUserId = null;
     this.ready.set(false);
-    this.avatarBytes = 0;
     if (closing) {
       try {
         (await closing).close();
@@ -219,9 +190,9 @@ export class WebdbService implements OnDestroy {
     }
   }
 
-  // ---- avatar store: identity-keyed blob + LRU GC ------------------------------------------
+  // ---- avatar store: identity-keyed blobs --------------------------------------------------
 
-  /** Read an avatar blob by identity, bumping its `lastRender` (LRU recency). */
+  /** Read an avatar blob by identity and refresh its last-render metadata. */
   async getAvatar(identity: string): Promise<AvatarRecord | undefined> {
     const db = await this.db();
     const rec = await db.get('avatars', identity);
@@ -234,43 +205,10 @@ export class WebdbService implements OnDestroy {
     return rec;
   }
 
-  /** Store/overwrite an avatar blob under its identity, then run the LRU GC if over budget. */
+  /** Store/overwrite an avatar blob under its stable identity. */
   async putAvatar(record: AvatarRecord): Promise<void> {
     const db = await this.db();
-    const tx = db.transaction('avatars', 'readwrite');
-    const existing = await tx.store.get(record.identity);
-    if (existing) this.avatarBytes -= existing.blob.size;
-    await tx.store.put(record);
-    this.avatarBytes += record.blob.size;
-    await tx.done;
-    if (this.avatarBytes > AVATAR_BYTE_BUDGET) await this.evictAvatars();
-  }
-
-  /** Evict least-recently-rendered avatars until under the byte budget (decision via the pure helper). */
-  private async evictAvatars(): Promise<void> {
-    const db = await this.db();
-    const all = await db.getAll('avatars');
-    const victims = new Set(avatarEvictionVictims(all, this.avatarBytes, AVATAR_BYTE_BUDGET));
-    if (victims.size === 0) return;
-    const tx = db.transaction('avatars', 'readwrite');
-    for (const rec of all) {
-      if (victims.has(rec.identity)) {
-        this.avatarBytes -= rec.blob.size;
-        await tx.store.delete(rec.identity);
-      }
-    }
-    await tx.done;
-  }
-
-  /** Recompute the running avatar-byte total from disk (called after open). */
-  private async recomputeAvatarBytes(db: IDBPDatabase<WebdbSchema>): Promise<void> {
-    let total = 0;
-    let cursor = await db.transaction('avatars').store.openCursor();
-    while (cursor) {
-      total += cursor.value.blob.size;
-      cursor = await cursor.continue();
-    }
-    this.avatarBytes = total;
+    await db.put('avatars', record);
   }
 
   /** Request persistent storage so the browser doesn't evict the origin under disk pressure. */
@@ -287,6 +225,7 @@ export class WebdbService implements OnDestroy {
   }
 
   ngOnDestroy(): void {
-    if (this.currentUserId != null) void this.closeAndDelete(this.currentUserId);
+    if (this.currentUserId != null)
+      void this.closeAndDelete(this.currentUserId);
   }
 }

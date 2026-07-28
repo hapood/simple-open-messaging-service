@@ -21,6 +21,7 @@ describe('KbdOffsetDirective', () => {
   let inset: ReturnType<typeof signal<number>>;
   let layoutOverride: ReturnType<typeof signal<number | null>>;
   let animation: ReturnType<typeof signal<KeyboardInsetAnimation | null>>;
+  let viewportReduction: ReturnType<typeof signal<number>>;
   let reflowFrozen: ReturnType<typeof signal<boolean>>;
   let hasPhysicalKeyboard: ReturnType<typeof signal<boolean>>;
 
@@ -29,6 +30,7 @@ describe('KbdOffsetDirective', () => {
     inset = signal(0);
     layoutOverride = signal<number | null>(null);
     animation = signal<KeyboardInsetAnimation | null>(null);
+    viewportReduction = signal(0);
     reflowFrozen = signal(false);
     hasPhysicalKeyboard = signal(false);
     TestBed.configureTestingModule({
@@ -39,6 +41,7 @@ describe('KbdOffsetDirective', () => {
           useValue: {
             inset: inset.asReadonly(),
             animation: animation.asReadonly(),
+            viewportReduction: viewportReduction.asReadonly(),
             layoutOverride: layoutOverride.asReadonly(),
             open: computed(() => inset() > 0),
             available: false,
@@ -113,6 +116,18 @@ describe('KbdOffsetDirective', () => {
     layoutOverride.set(null);
     detect();
     expect(directive.offset()).toBe(180);
+  });
+
+  it('subtracts viewport shrink already applied by the WebView', () => {
+    const { directive, detect } = setup();
+    inset.set(320);
+    viewportReduction.set(280);
+    detect();
+    expect(directive.offset()).toBe(40);
+
+    viewportReduction.set(400);
+    detect();
+    expect(directive.offset()).toBe(0);
   });
 
   it('moves directly to the announced native endpoint for the native animation duration', () => {

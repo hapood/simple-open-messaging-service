@@ -16,7 +16,10 @@ import { join } from 'path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
-import { MEDIA_TOKEN_COOKIE, refreshSessionCookies } from './auth/media-token.js';
+import {
+  MEDIA_TOKEN_COOKIE,
+  refreshSessionCookies,
+} from './auth/media-token.js';
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { BusinessCode } from './common/business-code.js';
@@ -28,15 +31,18 @@ import { BusinessCode } from './common/business-code.js';
 // 'too-large' rejection (not a 500).
 const MULTIPART_LIMIT = 100 * 1024 * 1024;
 
-/** Browser/WebView cache lifetime for authenticated uploads. Upload URLs are immutable: chat media is
- * content-addressed and avatar updates mint a new path, so a rendered asset can be safely reused. */
-const UPLOAD_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
+/** Browser/WebView cache lifetimes for authenticated uploads. Images are useful to retain briefly;
+ * video/audio get a shorter window to limit WebView disk growth. */
+const IMAGE_CACHE_MAX_AGE_SECONDS = 3 * 24 * 60 * 60;
+const VIDEO_AUDIO_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60;
+const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
 
 /** Matches a CAS shard URL at the start of a request path and captures the 64-hex digest. The
  *  /uploads/ preHandler uses this to decide whether a request needs per-object authorization (a
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
  *  across requests, which the shared hook requires. */
-const SHARD_DIGEST_GATE_RE = /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./;
+const SHARD_DIGEST_GATE_RE =
+  /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./;
 
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
  *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
@@ -51,18 +57,41 @@ function extractBearer(header: string | undefined): string | undefined {
  *  video/audio containers — the latter so <video src>/<audio src> can stream-play rather than being
  *  forced to download. Everything else (generic files: .html/.svg/.exe/...) is forced to download so
  *  it can never inline-render in this origin (XSS via the same-origin httpOnly media_token cookie). */
-const INLINE_MEDIA_EXTS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'webp', // images
-  'mp4', 'webm', 'mov', 'flv', 'avi', // video
-  'mp3', 'ogg', 'opus', 'wav', 'm4a', 'flac', 'aac', // audio
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'flv', 'avi']);
+const AUDIO_EXTS = new Set([
+  'mp3',
+  'ogg',
+  'opus',
+  'wav',
+  'm4a',
+  'flac',
+  'aac',
 ]);
+
+function resourceExtension(resourcePath: string): string {
+  const dot = resourcePath.lastIndexOf('.');
+  return dot < 0 ? '' : resourcePath.slice(dot + 1).toLowerCase();
+}
 
 /** Whether a /uploads resource path should be served inline (image/video/audio via <img>/<video>/
  *  <audio src>) or forced to a download. Non-media user uploads MUST download. */
 function isInlineMedia(resourcePath: string): boolean {
-  const dot = resourcePath.lastIndexOf('.');
-  if (dot < 0) return false;
-  return INLINE_MEDIA_EXTS.has(resourcePath.slice(dot + 1).toLowerCase());
+  const ext = resourceExtension(resourcePath);
+  return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext);
+}
+
+/** Cache policy for one authenticated upload response. Exported so the policy is pinned by a focused
+ * unit test without booting Fastify or touching the filesystem. */
+export function uploadCacheControl(resourcePath: string): string {
+  const ext = resourceExtension(resourcePath);
+  if (VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext)) {
+    return `private, max-age=${VIDEO_AUDIO_CACHE_MAX_AGE_SECONDS}, immutable`;
+  }
+  if (IMAGE_EXTS.has(ext)) {
+    return `private, max-age=${IMAGE_CACHE_MAX_AGE_SECONDS}, immutable`;
+  }
+  return `private, max-age=${FILE_CACHE_MAX_AGE_SECONDS}, immutable`;
 }
 
 /**
@@ -100,7 +129,8 @@ export async function configureApp(
   adapter.getInstance().addHook('preParsing', async (req, _reply, payload) => {
     if (!req.url.startsWith('/api/v1/s2s/')) return payload;
     const chunks: Buffer[] = [];
-    for await (const chunk of payload as AsyncIterable<Buffer>) chunks.push(chunk);
+    for await (const chunk of payload as AsyncIterable<Buffer>)
+      chunks.push(chunk);
     const raw = Buffer.concat(chunks);
     req.rawBody = raw;
     const stream = new Readable();
@@ -117,10 +147,19 @@ export async function configureApp(
   // violate (it hung the response); reply headers accumulate and are sent once at final send.
   // Scoped to API routes (static assets / SPA HTML carry no correlation value; hijacked SSE responses
   // skip Fastify's lifecycle entirely anyway).
-  adapter.getInstance().addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!request.url.startsWith('/api/') && !request.url.startsWith('/.well-known/')) return;
-    reply.header('X-Request-Id', String(request.id));
-  });
+  adapter
+    .getInstance()
+    .addHook(
+      'onRequest',
+      async (request: FastifyRequest, reply: FastifyReply) => {
+        if (
+          !request.url.startsWith('/api/') &&
+          !request.url.startsWith('/.well-known/')
+        )
+          return;
+        reply.header('X-Request-Id', String(request.id));
+      },
+    );
 
   // CORS posture — fully open: reflect any Origin, NO credentialed cross-origin.
   //
@@ -169,7 +208,8 @@ export async function configureApp(
   // specific prod instance back in with SWAGGER_ENABLED=true (e.g. behind a protected reverse proxy).
   // The web client's `gen:api` script runs against the dev server, so API-type generation is unaffected.
   const swaggerEnabled =
-    process.env.NODE_ENV !== 'production' || process.env.SWAGGER_ENABLED === 'true';
+    process.env.NODE_ENV !== 'production' ||
+    process.env.SWAGGER_ENABLED === 'true';
   if (swaggerEnabled) {
     const config = new DocumentBuilder()
       .setTitle('Simple Open Chat API')
@@ -215,61 +255,71 @@ async function registerStaticServing(
   // hooks into the @fastify/static child context that owns the /uploads/ route.
   const bearerAuth = app.get(BearerAuthService);
   const mediaAccess = app.get(MediaAccessService);
-  adapter.getInstance().addHook(
-    'preHandler',
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      if (!request.url.startsWith('/uploads/')) return; // only the media mount is gated
-      // Native <img>/<a download> can't send Authorization → they ride the httpOnly media_token
-      // cookie (same-origin browser path). Cross-origin clients (the Tauri media proxy, any
-      // native client) can't use that cookie — SameSite=Strict suppresses it cross-origin — so
-      // also accept a Bearer header. BearerAuthService resolves the session token, so the API and
-      // media surfaces enforce identical auth (and revocation) rules.
-      const fromCookie = request.cookies?.[MEDIA_TOKEN_COOKIE];
-      const raw = fromCookie ?? extractBearer(request.headers.authorization);
-      const principal = raw ? await bearerAuth.resolve(raw, { ip: request.ip }) : null;
-      if (!principal) {
-        return reply.code(401).type('application/json').send({
-          statusCode: 401,
-          code: BusinessCode.UNAUTHENTICATED,
-          message: 'unauthenticated',
-          data: null,
-        });
-      }
-      request.user = { userId: principal.userId, sessionId: principal.sessionId };
-      // Cookie sliding (same as the SessionAuthGuard): a cookie-authed persistent session that just slid its
-      // deadline re-issues the cookie so its maxAge tracks the session. Media loads count as activity.
-      if (principal.slid && principal.persistent && fromCookie) {
-        refreshSessionCookies(reply, fromCookie);
-      }
-
-      // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
-      // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by
-      // guessing/leaking the URL. Require an active thread membership for the digest. Avatars
-      // (/uploads/avatars/*) match neither the shard shape nor any MediaMessage
-      // row → they stay auth-n-only (avatars must render cross-thread).
-      const shard = SHARD_DIGEST_GATE_RE.exec(request.url);
-      if (shard) {
-        const allowed = await mediaAccess.canReadDigest(principal.userId, shard[1]);
-        if (!allowed) {
-          return reply.code(403).type('application/json').send({
-            statusCode: 403,
-            code: BusinessCode.FORBIDDEN,
-            message: 'forbidden',
+  adapter
+    .getInstance()
+    .addHook(
+      'preHandler',
+      async (request: FastifyRequest, reply: FastifyReply) => {
+        if (!request.url.startsWith('/uploads/')) return; // only the media mount is gated
+        // Native <img>/<a download> can't send Authorization → they ride the httpOnly media_token
+        // cookie (same-origin browser path). Cross-origin clients (the Tauri media proxy, any
+        // native client) can't use that cookie — SameSite=Strict suppresses it cross-origin — so
+        // also accept a Bearer header. BearerAuthService resolves the session token, so the API and
+        // media surfaces enforce identical auth (and revocation) rules.
+        const fromCookie = request.cookies?.[MEDIA_TOKEN_COOKIE];
+        const raw = fromCookie ?? extractBearer(request.headers.authorization);
+        const principal = raw
+          ? await bearerAuth.resolve(raw, { ip: request.ip })
+          : null;
+        if (!principal) {
+          return reply.code(401).type('application/json').send({
+            statusCode: 401,
+            code: BusinessCode.UNAUTHENTICATED,
+            message: 'unauthenticated',
             data: null,
           });
         }
-      }
-    },
-  );
+        request.user = {
+          userId: principal.userId,
+          sessionId: principal.sessionId,
+        };
+        // Cookie sliding (same as the SessionAuthGuard): a cookie-authed persistent session that just slid its
+        // deadline re-issues the cookie so its maxAge tracks the session. Media loads count as activity.
+        if (principal.slid && principal.persistent && fromCookie) {
+          refreshSessionCookies(reply, fromCookie);
+        }
+
+        // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
+        // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by
+        // guessing/leaking the URL. Require an active thread membership for the digest. Avatars
+        // (/uploads/avatars/*) match neither the shard shape nor any MediaMessage
+        // row → they stay auth-n-only (avatars must render cross-thread).
+        const shard = SHARD_DIGEST_GATE_RE.exec(request.url);
+        if (shard) {
+          const allowed = await mediaAccess.canReadDigest(
+            principal.userId,
+            shard[1],
+          );
+          if (!allowed) {
+            return reply.code(403).type('application/json').send({
+              statusCode: 403,
+              code: BusinessCode.FORBIDDEN,
+              message: 'forbidden',
+              data: null,
+            });
+          }
+        }
+      },
+    );
 
   // Uploaded files are served at /uploads/*. decorateReply:false because we never use
   // reply.sendFile (the SPA fallback reads index.html directly), and multiple @fastify/static
   // registrations must not re-decorate the reply.
   // cacheControl:false makes the `send` stream omit its own Cache-Control (otherwise it emits
   // "public, max-age=0" and @fastify/static applies it AFTER setHeaders, clobbering ours). With it
-  // off, setHeaders controls the directive: `private` (no proxy caching — the resource is
-  // auth-gated) with a 14-day browser/WebView lifetime. Upload URLs are immutable, so `immutable`
-  // avoids needless revalidation while fresh. Vary:Cookie keeps cookie-authenticated variants apart.
+  // off, setHeaders controls the directive: images remain private for 3 days, video/audio for 1 day,
+  // and generic downloads retain the existing 14-day policy. Vary:Cookie keeps cookie-authenticated
+  // variants apart.
   //
   // Open upload model (any file type accepted at POST /upload/file): serving-side headers carry
   // the security the old whitelist used to. nosniff is set on EVERYTHING so the extension's
@@ -287,10 +337,7 @@ async function registerStaticServing(
       res: { setHeader: (name: string, value: string) => void },
       resourcePath: string,
     ) => {
-      res.setHeader(
-        'Cache-Control',
-        `private, max-age=${UPLOAD_CACHE_MAX_AGE_SECONDS}, immutable`,
-      );
+      res.setHeader('Cache-Control', uploadCacheControl(resourcePath));
       res.setHeader('Vary', 'Cookie');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       if (!isInlineMedia(resourcePath)) {

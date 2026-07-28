@@ -24,7 +24,6 @@ import { firstValueFrom } from 'rxjs';
 import { MsgService } from '../../services/message.service';
 import { InputDeviceService } from '../../services/input-device.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
-import { hideIme, showIme } from './native-ime';
 import { isAndroidNative } from '../../services/runtime';
 import {
   NativeUploadService,
@@ -90,11 +89,10 @@ interface LinkCardPreview {
 /** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
  *  Chrome / Android WebView / Tauri webview2 / webkit2gtk → audio/webm (opus); Safari / iOS / macOS
  *  wkwebview → audio/mp4; Firefox → audio/ogg (opus). The backend's /upload/audio accepts all of these
- *  (EBML/ftyp are shared audio/video containers — see consumeMedia's sharedAsAudio branch). Some older
- *  Android/OEM WebViews can record with the engine default while reporting false for every explicit MIME,
- *  so `undefined` means "let MediaRecorder choose"; `null` alone means the API is unavailable. */
-function pickRecorderMime(): string | undefined | null {
-  if (typeof MediaRecorder === 'undefined') return null;
+ *  (EBML/ftyp are shared audio/video containers — see consumeMedia's sharedAsAudio branch). '' ⇒ the
+ *  engine cannot record audio at all; the caller surfaces that and bails. */
+function pickRecorderMime(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   for (const c of candidates) {
     try {
@@ -103,7 +101,7 @@ function pickRecorderMime(): string | undefined | null {
       /* isTypeSupported can throw on an unknown MIME in some engines — skip it */
     }
   }
-  return undefined;
+  return '';
 }
 
 /** Hard cap on a single voice clip (seconds). On reach, recording auto-stops and sends. */
@@ -149,7 +147,7 @@ function saveRecents(list: string[]): void {
  *
  * Emoji panel: a WhatsApp/Telegram-style category grid with persisted Recents. Browser/PWA and desktop use
  * a floating panel without controlling the system keyboard. The Android native shell renders the same grid
- * in-flow as a keyboard replacement and controls the IME exclusively through SomsShell.showIme/hideIme.
+ * in-flow as a keyboard replacement and uses one atomic native IME visibility capability.
  *
  * Plain-text payload: the editor is rich for composition UX, but the text send serializes to plain text
  * (`editor.getText()`) — no HTML is stored. `members` drives the @mention suggestion popup (pass `[]` for
@@ -221,6 +219,10 @@ export class ChatInputComponent implements OnDestroy {
   private readonly keyboardLayoutOwner = {};
   readonly switchingToSystem = computed(() => this.keyboardMode() === 'toSystem');
   private keyboardHandoffTimer?: ReturnType<typeof setTimeout>;
+  /** `Editor.commands.focus()` is committed by ProseMirror asynchronously on some Android WebViews.
+   *  Requesting the native IME before its real focus event makes Chromium see `isTextEditor=false` and
+   *  immediately hide the keyboard again. */
+  private systemImeRequestPending = false;
   private readonly trackKeyboardGeometry = effect(() => {
     const inset = this.keyboardInset.inset();
     const animationTarget = this.keyboardInset.animation()?.target;
@@ -415,13 +417,12 @@ export class ChatInputComponent implements OnDestroy {
     if (this.emojiKeyboard()) {
       const nativeKeyboardOpen = this.keyboardInset.inset() > 0;
       this.keyboardMode.set(nativeKeyboardOpen ? 'toEmoji' : 'emoji');
-      // ProseMirror retains its selection while blurred. Releasing DOM focus makes hiding deterministic
-      // on WebViews that immediately restore the IME for a focused contenteditable.
-      this.editor()?.blur();
+      // `virtualkeyboardpolicy=manual` keeps the real caret/selection focused while native visibility is
+      // controlled explicitly. Emoji insertion therefore uses the editor's actual cursor without reopening IME.
       // During handoff the custom residual owns only `stableHeight - nativeInset`; layout ignores the
       // native lift so the two surfaces add to one invariant slot instead of stacking at full height.
       this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
-      hideIme();
+      this.keyboardInset.setVisible(false);
     } else {
       this.keyboardMode.set('emoji');
       this.editor()?.focus();
@@ -430,6 +431,7 @@ export class ChatInputComponent implements OnDestroy {
   }
   closeEmoji(): void {
     clearTimeout(this.keyboardHandoffTimer);
+    this.systemImeRequestPending = false;
     this.keyboardMode.set('closed');
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
     this.measureBar();
@@ -440,14 +442,33 @@ export class ChatInputComponent implements OnDestroy {
     // Hide custom controls immediately, then let the native inset grow while the blank custom residual
     // shrinks by the same amount. Geometry overlaps; visible/interactive keyboard controls never do.
     this.keyboardMode.set('toSystem');
-    this.editor()?.focus();
-    if (!showIme()) this.closeEmoji();
+    this.systemImeRequestPending = true;
+    const editor = this.editor();
+    editor?.focus();
+    if (editor?.isFocused()) this.requestSystemIme();
     this.measureBar();
   }
   onEditorFocusChange(focused: boolean): void {
+    if (
+      focused &&
+      this.systemImeRequestPending &&
+      this.keyboardMode() === 'toSystem'
+    ) {
+      this.requestSystemIme();
+    }
     if (!focused && (!this.emojiKeyboard() || this.keyboardMode() === 'closed')) {
       this.closeEmoji();
     }
+  }
+
+  private requestSystemIme(): void {
+    if (!this.systemImeRequestPending) return;
+    this.systemImeRequestPending = false;
+    // Let Chromium finish committing the focused contenteditable/InputConnection before native show().
+    requestAnimationFrame(() => {
+      if (this.keyboardMode() !== 'toSystem') return;
+      if (!this.keyboardInset.setVisible(true)) this.closeEmoji();
+    });
   }
   /** Insert at the last editor selection and record it to Recents. Desktop refocuses the editor; the touch
    *  keyboard keeps it blurred so the native IME remains hidden. */
@@ -640,7 +661,7 @@ export class ChatInputComponent implements OnDestroy {
     // cannot retain focus. This also prevents Android from restoring the keyboard during mic permission.
     this.closeEmoji();
     this.editor()?.blur();
-    hideIme();
+    this.keyboardInset.setVisible(false);
     el.blur();
     this.pointerStartY = event.clientY;
     this.startRecording();
@@ -655,7 +676,7 @@ export class ChatInputComponent implements OnDestroy {
 
   private async beginRecording(session: number): Promise<void> {
     const mime = pickRecorderMime();
-    if (mime === null || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    if (!mime || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       this.flashRecordError('chat.recordMicUnsupported');
       return;
     }
@@ -674,20 +695,8 @@ export class ChatInputComponent implements OnDestroy {
       return;
     }
     this.stream = stream;
-    this.mimeForRecording = mime ?? '';
-    let rec: MediaRecorder;
-    try {
-      // An explicit MIME is preferable where the engine advertises one. Older Android/OEM WebViews often
-      // reject every isTypeSupported probe but still record successfully when allowed to choose a default.
-      rec = mime
-        ? new MediaRecorder(stream, { mimeType: mime })
-        : new MediaRecorder(stream);
-    } catch {
-      stream.getTracks().forEach((t) => t.stop());
-      this.stream = null;
-      this.flashRecordError('chat.recordMicUnsupported');
-      return;
-    }
+    this.mimeForRecording = mime;
+    const rec = new MediaRecorder(stream, { mimeType: mime });
     this.chunks = [];
     rec.ondataavailable = (ev) => { if (ev.data.size > 0) this.chunks.push(ev.data); };
     rec.onstop = () => this.finalizeRecording();

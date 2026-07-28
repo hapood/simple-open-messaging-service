@@ -1,4 +1,5 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
 import { MatRadioModule } from '@angular/material/radio';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -10,6 +11,7 @@ import {
   AttachmentUploadQueueService,
   UPLOAD_CONCURRENCY_OPTIONS,
 } from '../../services/attachment-upload-queue.service';
+import { clearNativeMediaCache, isAndroidNative } from '../../services/runtime';
 
 /**
  * Settings → Media sub-page. The image size-threshold picker as an M3 radio list (the old dropdown was
@@ -18,7 +20,7 @@ import {
  */
 @Component({
   selector: 'app-settings-media',
-  imports: [MatListModule, MatRadioModule, TranslocoPipe],
+  imports: [MatButtonModule, MatListModule, MatRadioModule, TranslocoPipe],
   template: `
     <section class="settings-group">
       <div class="settings-card">
@@ -65,6 +67,46 @@ import {
         'settings.uploadConcurrencyHint' | transloco
       }}</span>
     </section>
+    @if (showClearCache) {
+      <section class="settings-group">
+        <h3>{{ 'settings.mediaCache' | transloco }}</h3>
+        <div class="settings-card">
+          <mat-list>
+            <mat-list-item>
+              <span matListItemTitle>{{
+                'settings.clearMediaCache' | transloco
+              }}</span>
+              <span matListItemLine class="hint">{{
+                'settings.clearMediaCacheDesc' | transloco
+              }}</span>
+              <button
+                mat-button
+                matListItemMeta
+                type="button"
+                [disabled]="clearingCache()"
+                (click)="clearCache()"
+              >
+                {{
+                  (clearingCache()
+                    ? 'settings.clearingMediaCache'
+                    : 'settings.clearMediaCacheAction'
+                  ) | transloco
+                }}
+              </button>
+            </mat-list-item>
+          </mat-list>
+        </div>
+        @if (cacheCleared()) {
+          <span class="hint">{{
+            'settings.mediaCacheCleared' | transloco
+          }}</span>
+        } @else if (cacheClearFailed()) {
+          <span class="hint">{{
+            'settings.mediaCacheClearFailed' | transloco
+          }}</span>
+        }
+      </section>
+    }
   `,
   styleUrl: './sub-page.scss',
 })
@@ -79,6 +121,10 @@ export class SettingsMediaComponent {
   readonly options: readonly number[] = MEDIA_THRESHOLD_OPTIONS_KB;
   readonly uploadConcurrency = this.uploadQueue.maxConcurrent;
   readonly uploadOptions: readonly number[] = UPLOAD_CONCURRENCY_OPTIONS;
+  readonly showClearCache = isAndroidNative();
+  readonly clearingCache = signal(false);
+  readonly cacheCleared = signal(false);
+  readonly cacheClearFailed = signal(false);
 
   /** Display label for a threshold option: "512 KB" / "1 MB" / "2 MB" / "No limit". */
   label(kb: number): string {
@@ -93,5 +139,20 @@ export class SettingsMediaComponent {
 
   selectUploadConcurrency(count: number): void {
     this.uploadQueue.setMaxConcurrent(count);
+  }
+
+  clearCache(): void {
+    if (this.clearingCache()) return;
+    this.clearingCache.set(true);
+    this.cacheCleared.set(false);
+    this.cacheClearFailed.set(false);
+    try {
+      clearNativeMediaCache();
+      this.cacheCleared.set(true);
+    } catch {
+      this.cacheClearFailed.set(true);
+    } finally {
+      this.clearingCache.set(false);
+    }
   }
 }

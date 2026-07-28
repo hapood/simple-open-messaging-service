@@ -21,6 +21,11 @@ description = "Enables get_api_origin — the configured backend origin (live Pr
 commands.allow = ["get_api_origin"]
 
 [[permission]]
+identifier = "allow-get-active-api-origin"
+description = "Enables get_active_api_origin — the exact runtime endpoint currently used by Rust HTTP transports."
+commands.allow = ["get_active_api_origin"]
+
+[[permission]]
 identifier = "allow-is-origin-configured"
 description = "Enables is_origin_configured — authoritative 'has a backend been configured' (origin != the non-routable placeholder)."
 commands.allow = ["is_origin_configured"]
@@ -166,6 +171,7 @@ description = "All app-defined IPC commands: origin get/set/is-configured + sess
 permissions = [
   "allow-set-api-origin",
   "allow-get-api-origin",
+  "allow-get-active-api-origin",
   "allow-is-origin-configured",
   "allow-get-api-origin-secondary",
   "allow-set-api-origin-secondary",

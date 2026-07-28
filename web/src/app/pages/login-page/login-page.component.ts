@@ -9,7 +9,7 @@ import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.compo
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { ConfigService } from '../../services/config.service';
-import { apiOrigin, isTauri } from '../../services/runtime';
+import { apiOrigin, apiOriginSecondary, isTauri } from '../../services/runtime';
 import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
 import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
 
@@ -28,26 +28,45 @@ export class LoginPageComponent {
 
   // --- Origin banner (shows the configured backend prominently on the login page). https = green globe
   //     (cert was validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure). ---
-  readonly originHost = computed(() => {
-    const o = apiOrigin();
+  private originHost(origin: string | null): string {
     try {
-      return o ? new URL(o).host : '';
+      return origin ? new URL(origin).host : '';
     } catch {
-      return o;
+      return origin ?? '';
     }
-  });
-  readonly originInsecure = computed(() => {
-    const o = apiOrigin();
-    if (!o) return true;
+  }
+
+  private originInsecure(origin: string | null): boolean {
+    if (!origin) return true;
     try {
-      return new URL(o).protocol !== 'https:';
+      return new URL(origin).protocol !== 'https:';
     } catch {
       return true;
     }
-  });
-  readonly originSchemeLabel = computed(() => (this.originInsecure() ? 'HTTP' : 'HTTPS'));
-  readonly originIcon = computed(() => (this.originInsecure() ? AppIconType.REPORT : AppIconType.GLOBE));
+  }
 
+  /** Every configured endpoint, not only the primary one. In the unreachable pre-login state this lets
+   *  the user see which two addresses were attempted before deciding whether to retry or reconfigure. */
+  readonly configuredOrigins = computed(() =>
+    [
+      { origin: apiOrigin(), labelKey: 'settings.serverPrimary' },
+      { origin: apiOriginSecondary(), labelKey: 'settings.serverLan' },
+    ]
+      .filter(
+        (entry): entry is { origin: string; labelKey: string } =>
+          !!entry.origin,
+      )
+      .map((entry) => {
+        const insecure = this.originInsecure(entry.origin);
+        return {
+          ...entry,
+          host: this.originHost(entry.origin),
+          insecure,
+          scheme: insecure ? 'HTTP' : 'HTTPS',
+          icon: insecure ? AppIconType.REPORT : AppIconType.GLOBE,
+        };
+      }),
+  );
 
   /** Render the password form only when password is an enabled method for this platform. Before config
    *  loads (methodsForPlatform() is empty) this is false, so nothing flashes; under APP_OTP_AND_QR mode it

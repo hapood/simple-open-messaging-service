@@ -45,7 +45,9 @@
             (click)="onCellClick($index)"
             (keydown.enter)="onCellClick($index)"
           >
-            @if (c.status !== MEDIA_STATUS.READY) {
+            <!-- Audio owns its transfer state inside the player. Keeping the generic media overlay on
+                 top of it hides the player's download progress rail (overlay z-index:2, player z-index:1). -->
+            @if (c.kind !== 'audio' && c.status !== MEDIA_STATUS.READY) {
               <div class="msg-media-overlay" role="status"
                    [attr.aria-label]="c.status === MEDIA_STATUS.DOWNLOADING ? ('chat.mediaDownloading' | transloco) : ('chat.mediaFailed' | transloco)">
                 @if (c.status === MEDIA_STATUS.DOWNLOADING) {

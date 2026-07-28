@@ -1,5 +1,6 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
+import { REPLAY_SAFE } from '../request-context';
 import { apiPrefix } from './constants';
 import type { StandardResponse } from './model';
 import type {
@@ -764,7 +765,12 @@ export class WebCallAdapter implements CallAdapter {
     body: object,
   ): Promise<T | undefined> {
     const response = await firstValueFrom(
-      this.http.post<StandardResponse<T>>(`${apiPrefix()}/${path}`, body),
+      this.http.post<StandardResponse<T>>(`${apiPrefix()}/${path}`, body, {
+        context:
+          'callSid' in body
+            ? new HttpContext().set(REPLAY_SAFE, true)
+            : undefined,
+      }),
     );
     return response.data;
   }

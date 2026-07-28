@@ -10,6 +10,7 @@ import {
 } from '@angular/common/http';
 import { Observable, catchError, from, throwError } from 'rxjs';
 import { isTauri, tauriInvoke } from './services/runtime';
+import { REPLAY_SAFE } from './request-context';
 
 /**
  * The webview→backend HTTP transport (custom `HttpBackend`).
@@ -79,6 +80,9 @@ export class TauriHttpBackend implements HttpBackend {
       path: req.urlWithParams,
       headers,
       body,
+      replaySafe:
+        ['GET', 'HEAD', 'OPTIONS'].includes(req.method.toUpperCase()) ||
+        req.context.get(REPLAY_SAFE),
     });
     const respHeaders = new HttpHeaders(r.headers);
     const parsed = this.parseBody(r.body, req.responseType);

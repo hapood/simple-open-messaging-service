@@ -121,9 +121,6 @@ object NativeUploadManager {
             .build()
         val call = http.newCall(request)
         calls[uploadId] = call
-        SomsLog.i("Upload") {
-            "start id=$uploadId cid=$clientMessageId kind=$kind name=${selected.name} size=${selected.size}"
-        }
         call.enqueue(object : okhttp3.Callback {
             override fun onFailure(call: Call, e: java.io.IOException) {
                 calls.remove(uploadId)
@@ -137,8 +134,16 @@ object NativeUploadManager {
                 calls.remove(uploadId)
                 response.use {
                     val text = it.body?.string().orEmpty()
-                    SomsLog.i("Upload") {
-                        "response id=$uploadId cid=$clientMessageId status=${it.code} body=${text.take(512)}"
+                    val json = runCatching { JSONObject(text) }.getOrNull()
+                    val code = json?.optInt("code", -1) ?: -1
+                    if (!it.isSuccessful || code != 0) {
+                        val data = json?.optJSONObject("data")
+                        val category = data?.optString("category").orEmpty()
+                        val retryAfter = data?.optLong("retryAfter", -1) ?: -1
+                        SomsLog.w("Upload") {
+                            "failed id=$uploadId cid=$clientMessageId kind=$kind status=${it.code} " +
+                                "code=$code category=$category retryAfter=$retryAfter"
+                        }
                     }
                     if (!it.isSuccessful) {
                         fail(uploadId, "HTTP ${it.code}: $text")
@@ -146,7 +151,7 @@ object NativeUploadManager {
                         selections.remove(uploadId)
                         emit("__SOMS_UPLOAD_COMPLETED__", JSONObject().apply {
                             put("uploadId", uploadId)
-                            put("response", runCatching { JSONObject(text) }.getOrElse { text })
+                            put("response", json ?: text)
                         })
                     }
                 }

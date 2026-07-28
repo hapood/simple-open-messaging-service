@@ -84,6 +84,7 @@ import {
 } from '../../services/native-upload.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { AttachmentUploadQueueService } from '../../services/attachment-upload-queue.service';
+import { DebugToolsService } from '../../services/debug-tools.service';
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -155,6 +156,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly nativeUploads = inject(NativeUploadService);
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
   private readonly sendOutbox = inject(ThreadSendOutbox);
+  private readonly debugTools = inject(DebugToolsService);
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -175,14 +177,9 @@ export class MessageThreadComponent implements OnDestroy {
     return count > 99 ? '99+' : String(count);
   });
   readonly stickyDate = signal<string | null>(null);
-  /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Internal load
-   *  flag — NOT bound in the template; it arms/cancels the skeleton-reveal timer below. */
+  /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Used only to
+   *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
   readonly initialLoading = signal(true);
-  /** The skeleton shows only when the initial load has outlasted SKELETON_DELAY — fast fetches (sub-~300ms,
-   *  the common case on a fast network) produce no skeleton at all, just a clean content reveal. This avoids
-   *  the flash an always-on skeleton causes, which is the dated IM pattern in a local-first / fast-network
-   *  world. Bound in the template; cleared the moment the first batch lands. */
-  readonly skeletonVisible = signal(false);
 
   /** True when the kernel's mounted window is empty — the thread is open but has no messages (a fresh P2P
    *  friendship, a newly-created group, or after clear-history). Maintained from onScroll's `mounted` count:
@@ -190,9 +187,6 @@ export class MessageThreadComponent implements OnDestroy {
    *  the hero card reacts the instant the first message — including an optimistic send — mounts. Reset to false
    *  in teardown; the template additionally gates on !initialLoading() so the card never flashes mid-load. */
   private readonly mountedMessageCount = signal(0);
-  /** Reveal the skeleton only after this delay (ms) — the "don't flash on fast loads" gate. */
-  private static readonly SKELETON_DELAY = 300;
-  private skeletonTimer?: ReturnType<typeof setTimeout>;
   /** Scroll-driven SSE backstop for federated media status — one instance per open thread. Owns the
    *  in-flight ('downloading') seqs + the debounced/rate-limited bulk probe. See MediaProbeScheduler. */
   private readonly probe = new MediaProbeScheduler(
@@ -401,6 +395,14 @@ export class MessageThreadComponent implements OnDestroy {
           this.scroller?.updateItemData(seq, { mediaStatus: status });
           this.probe.track(seq, status === MEDIA_STATUS.DOWNLOADING);
         },
+        // Profile hydration is deliberately off the init critical path. Patch any currently mounted row
+        // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
+        onProfile: (
+          seq: number,
+          profile: { name: string; isSelf: boolean },
+        ) => {
+          this.scroller?.updateItemData(seq, profile);
+        },
       },
     );
     this.scroller = new ChatBoxScroller<ChatItemData>({
@@ -429,18 +431,9 @@ export class MessageThreadComponent implements OnDestroy {
         tailCap.appendChild(stack);
     });
     this.initialLoading.set(true);
-    this.skeletonVisible.set(false);
     this.kernelReady = false;
-    clearTimeout(this.skeletonTimer);
-    // Delay-gate: reveal the skeleton only if the first batch is still in flight past SKELETON_DELAY. A fast
-    // fetch resolves first → skeletonVisible stays false → no flash, content just appears.
-    this.skeletonTimer = setTimeout(() => {
-      if (this.initialLoading()) this.skeletonVisible.set(true);
-    }, MessageThreadComponent.SKELETON_DELAY);
     void this.scroller.init().finally(() => {
-      clearTimeout(this.skeletonTimer);
       this.initialLoading.set(false);
-      this.skeletonVisible.set(false);
       this.kernelReady = true;
       if (isDevMode()) {
         console.log('[chat-perf] scroller:ready', {
@@ -449,6 +442,9 @@ export class MessageThreadComponent implements OnDestroy {
         });
       }
       this.ready.emit(trd.threadId);
+      // Only after the DB/scroller phase is complete may the source react to the session's remote HWM and
+      // fall through to HTTP. Empty local data is still a successful ready state.
+      this.source?.finishLocalInit(this.convList.latestSeq(trd.threadId));
     });
   }
 
@@ -793,13 +789,17 @@ export class MessageThreadComponent implements OnDestroy {
       this.transfers.complete(cid);
       await this.markSent(item);
     } catch (error) {
-      console.error('[upload] native send failed', {
-        clientMessageId: cid,
-        uploadId: file.uploadId,
-        kind: file.kind,
-        name: file.name,
-        error,
-      });
+      if (this.debugTools.enabled()) {
+        console.error(
+          '[upload] native send failed',
+          JSON.stringify({
+            clientMessageId: cid,
+            uploadId: file.uploadId,
+            kind: file.kind,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
       this.transfers.fail(cid);
       await this.failPending(item);
     }
@@ -1391,7 +1391,6 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
-    clearTimeout(this.skeletonTimer);
     this.probe.destroy();
     this.mountedMessageCount.set(0);
     this.atBottom.set(true);

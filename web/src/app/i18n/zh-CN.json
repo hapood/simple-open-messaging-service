@@ -535,6 +535,13 @@
     "uploadConcurrency": "并发上传数",
     "uploadConcurrencyCount": "{{count}} 个上传任务",
     "uploadConcurrencyHint": "所有会话共享此上传上限；同一会话中的文件仍按顺序上传。",
+    "mediaCache": "媒体缓存",
+    "clearMediaCache": "清除媒体缓存",
+    "clearMediaCacheDesc": "清除图片、视频和音频使用的 WebView HTTP 缓存；不会删除头像、消息或登录状态。",
+    "clearMediaCacheAction": "清除",
+    "clearingMediaCache": "正在清除…",
+    "mediaCacheCleared": "媒体缓存已清除。",
+    "mediaCacheClearFailed": "无法清除媒体缓存。",
     "push": "推送",
     "notifications": "通知",
     "notifDesc": "标签页在后台时，新消息弹出桌面通知。",
@@ -669,8 +676,10 @@
     "exitHint": "再按一次返回键退出。",
     "backToApp": "返回应用",
     "secondDetectedTitle": "发现第二服务器",
-    "secondDetectedBody": "服务器提供了另一个可用地址。是否同时保存，以便应用在连接不可用时自动切换？",
-    "secondUse": "保存第二服务器",
-    "secondIgnore": "仅使用当前服务器"
+    "secondDetectedBody": "服务器提供了以下两个连接地址。保存后，应用会自动检测并选择可用地址。",
+    "primaryAddress": "主服务器",
+    "secondaryAddress": "第二服务器",
+    "secondUse": "保存两个地址",
+    "secondIgnore": "仅保存主地址"
   }
 }

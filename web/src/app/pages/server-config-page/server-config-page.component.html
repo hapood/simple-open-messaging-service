@@ -47,8 +47,6 @@
       />
       @if (url.invalid && url.touched) {
         <mat-error>{{ 'serverConfig.urlInvalidDetailed' | transloco }}</mat-error>
-      } @else if (insecure() && url.value.trim()) {
-        <mat-hint><span class="cfg-insecure">{{ 'serverConfig.unencryptedShort' | transloco }}</span></mat-hint>
       }
     </mat-form-field>
 
@@ -94,7 +92,16 @@
     <div class="cfg-modal">
       <h2 class="cfg-modal__title">{{ 'serverConfig.secondDetectedTitle' | transloco }}</h2>
       <p class="cfg-modal__body">{{ 'serverConfig.secondDetectedBody' | transloco }}</p>
-      <code class="cfg-modal__address">{{ autoFill()!.lan }}</code>
+      <dl class="cfg-modal__addresses">
+        <div class="cfg-modal__address-row">
+          <dt>{{ 'serverConfig.primaryAddress' | transloco }}</dt>
+          <dd><code>{{ autoFill()!.primary }}</code></dd>
+        </div>
+        <div class="cfg-modal__address-row">
+          <dt>{{ 'serverConfig.secondaryAddress' | transloco }}</dt>
+          <dd><code>{{ autoFill()!.lan }}</code></dd>
+        </div>
+      </dl>
       <div class="cfg-modal__actions">
         <button mat-button type="button" (click)="cancelAutoFill()">
           {{ 'serverConfig.secondIgnore' | transloco }}

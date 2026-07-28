@@ -67,15 +67,24 @@
   }
 }
 
-// The configured-backend banner (Tauri only). Prominent host display: https = green globe (cert was
+// Configured-backend banners (Tauri only). A dual-server setup renders both endpoints, including in the
+// pre-login unreachable state, so the user can verify every address that was attempted.
+.origin-list {
+  width: 100%;
+  max-width: 380px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+// Prominent host display: https = green globe (cert was
 // validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure).
 // Material M3 surface treatment via --app-* tokens; integer-px vertical metrics per the CSS rule; dark
 // mode covered by the token overrides in styles.scss.
 .origin-banner {
   width: 100%;
-  max-width: 380px;
   box-sizing: border-box;
-  margin-bottom: 12px;
   padding: 10px 14px;
   font-size: 13px;
   line-height: 20px;
@@ -88,6 +97,12 @@
   app-icon {
     color: var(--app-success, #2e7d32);
     flex: 0 0 auto;
+  }
+  .origin-kind {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.8;
   }
   .origin-host {
     font-weight: 600;

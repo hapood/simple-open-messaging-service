@@ -286,6 +286,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     it('restoreSession with no stored token leaves the user logged out', async () => {
       androidGlobals(null);
       await svc.restoreSession();
+      expect(invokeSpy).toHaveBeenCalledWith('init_pick_origin', undefined);
       expect(svc.loggedIn()).toBe(false);
       expect(svc.isLoggedIn()).toBe(false);
     });

@@ -1,5 +1,8 @@
 import { Directive, effect, inject, signal } from '@angular/core';
-import { KeyboardInsetService } from '../services/keyboard-inset.service';
+import {
+  KeyboardInsetService,
+  uncompensatedKbdInset,
+} from '../services/keyboard-inset.service';
 import { InputDeviceService } from '../services/input-device.service';
 import { LayoutService } from '../services/layout.service';
 
@@ -56,7 +59,13 @@ export class KbdOffsetDirective {
     if (frozen) return;
     const override = this.kbd.layoutOverride();
     const animation = this.kbd.animation();
+    const viewportReduction = this.kbd.viewportReduction();
     this.duration.set(animation?.durationMs ?? 60);
-    this.offset.set(override ?? animation?.target ?? this.kbd.inset());
+    const rawOffset = override ?? animation?.target ?? this.kbd.inset();
+    this.offset.set(
+      override !== null
+        ? rawOffset
+        : uncompensatedKbdInset(rawOffset, viewportReduction),
+    );
   });
 }

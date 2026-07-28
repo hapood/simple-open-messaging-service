@@ -60,6 +60,9 @@ export interface HttpItemSourceLiveOpts {
   /** A mediaStatus change landed for this thread (MEDIA_STATUS SSE / scroll probe / retry ack) — the
    *  kernel re-renders that one card in place via updateItemData (height-neutral). */
   onMediaStatus?: (seq: number, status: MediaStatus) => void;
+  /** Background profile enrichment landed for a message already shaped from the local cache. The component
+   *  patches mounted rows in place; unmounted rows pick the profile up from this source on their next shape. */
+  onProfile?: (seq: number, profile: { name: string; isSelf: boolean }) => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -84,7 +87,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private reconnectSub?: Subscription;
   private mediaStatusSub?: Subscription;
   private readonly onMediaStatus: (seq: number, status: MediaStatus) => void;
+  private readonly onProfile: (
+    seq: number,
+    profile: { name: string; isSelf: boolean },
+  ) => void;
   private readonly onSignal: (seq: number) => void;
+  private readonly seqsByCreator = new Map<number, Set<number>>();
+  private readonly profilesInFlight = new Set<number>();
+  private readonly profileBacklog: Message[] = [];
+  private initializingDb = true;
+  private loadedSeq = -1;
 
   constructor(
     private readonly conv: ConversationItem,
@@ -97,12 +109,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.pending = outbox.forThread(conv.threadId);
     this.onSignal = live.onSignal;
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
+    this.onProfile = live.onProfile ?? (() => {});
     // The DB-layer MessageRepository owns the NEW_MESSAGE SSE: it caches the body, THEN emits liveSignal$,
     // so this signal arrives AFTER the body is in IDB — the kernel's subsequent getNewer pull reads it from
     // the cache (no backend round-trip). Filter to THIS thread (one source per open thread).
     this.sseSub = repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
-      .subscribe((s) => this.onSignal(s.seq));
+      .subscribe((s) => {
+        if (this.initializingDb || s.seq <= this.loadedSeq) return;
+        this.onSignal(s.seq);
+      });
     // mediaStatus changes (MEDIA_STATUS SSE / scroll probe / manual-retry ack) → re-render that one card
     // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
     this.mediaStatusSub = repo.mediaStatusLive$
@@ -141,12 +157,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         this.conv.threadId,
         { skip: 0, take, orderBy: 'desc' },
         this.conv.clearedAt,
+        this.initializingDb,
       );
       if (!data || data.length === 0) return [];
       const list = [...data].reverse(); // desc → ascending (old → new)
       this.noOlder = !hasMore;
       this.noNewer = true; // anchor is the latest
-      await this.ensureProfiles(list);
+      this.profileBacklog.push(...list);
       const items = this.rawToItems(list);
       if (items.length > 0) {
         // anchor=-1 → the last item is always the global newest; noOlder means it also reached the oldest. A length-1
@@ -177,11 +194,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         this.conv.threadId,
         { skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' },
         this.conv.clearedAt,
+        this.initializingDb,
       ),
       this.repo.queryMessages(
         this.conv.threadId,
         { skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' },
         this.conv.clearedAt,
+        this.initializingDb,
       ),
     ]);
     if (!olderPage.data || olderPage.data.length === 0) return []; // target msgId not found
@@ -190,7 +209,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const list = [...older, ...newer];
     this.noOlder = !olderPage.hasMore;
     this.noNewer = !newerPage.hasMore;
-    await this.ensureProfiles(list);
+    this.profileBacklog.push(...list);
     const items = this.rawToItems(list);
     if (items.length > 0) {
       // Bidirectional fetch: noOlder/noNewer reflect each direction's hasMore. A length-1 batch spanning both edges → 'both'.
@@ -238,6 +257,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.conv.threadId,
       { skip: 1, take, lastSeq: cursorId, orderBy: 'desc' },
       this.conv.clearedAt,
+      this.initializingDb,
     );
     if (!data || data.length === 0) {
       this.noOlder = true;
@@ -245,7 +265,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     const list = [...data].reverse(); // desc → ascending
     if (!hasMore) this.noOlder = true; // hasMore is authoritative (backend take+1 method, or the cache reached seq 0)
-    await this.ensureProfiles(list);
+    this.profileBacklog.push(...list);
     const items = this.rawToItems(list);
     if (items.length === 0) return [];
     if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
@@ -268,6 +288,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.conv.threadId,
       { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' },
       this.conv.clearedAt,
+      this.initializingDb,
     );
     if (!data || data.length === 0) {
       this.noNewer = true;
@@ -275,7 +296,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     const list = [...data]; // already ascending (old → new)
     if (!hasMore) this.noNewer = true; // hasMore is authoritative (backend take+1 method, or the cache reached maxSeenSeq)
-    await this.ensureProfiles(list);
+    this.profileBacklog.push(...list);
     const items = this.rawToItems(list);
     if (items.length === 0) return [];
     if (this.noNewer)
@@ -392,6 +413,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.reconnectSub = undefined;
   }
 
+  /** Leave the DB-only phase after the scroller has initialized, then reconcile the session HWM once. */
+  finishLocalInit(latestThreadSeq: number | undefined): void {
+    this.initializingDb = false;
+    this.hydrateProfiles(this.profileBacklog.splice(0));
+    if (latestThreadSeq !== undefined && latestThreadSeq > this.loadedSeq)
+      this.onSignal(latestThreadSeq);
+  }
+
   // ---------- rawToItems (shape raw messages: dedup + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
 
   private rawToItems(msgs: Message[]): CbItem<ChatItemData>[] {
@@ -400,6 +429,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const id = m.seq;
       if (this.knownMsgIds.has(id)) continue; // IO dedup (guard against SSE/pagination duplicates)
       this.knownMsgIds.add(id);
+      if (id > this.loadedSeq) this.loadedSeq = id;
+      let creatorSeqs = this.seqsByCreator.get(m.creator);
+      if (!creatorSeqs) {
+        creatorSeqs = new Set<number>();
+        this.seqsByCreator.set(m.creator, creatorSeqs);
+      }
+      creatorSeqs.add(id);
       // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
       // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
       let images: AlbumImage[] | null = null;
@@ -481,21 +517,43 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     };
   }
 
-  private async ensureProfiles(msgs: Message[]): Promise<void> {
+  /** Start profile hydration without joining the message-page critical path. Message bodies can therefore
+   *  mount and emit `ready` even when the network is offline, half-open, retrying, or simply slow. */
+  private hydrateProfiles(msgs: Message[]): void {
     const missing = new Set<number>();
     for (const m of msgs)
-      if (!this.profiles.has(m.creator)) missing.add(m.creator);
+      if (
+        !this.profiles.has(m.creator) &&
+        !this.profilesInFlight.has(m.creator)
+      )
+        missing.add(m.creator);
     if (missing.size === 0) return;
-    const res = await firstValueFrom(
-      this.userService.queryUserInfo({ userIds: [...missing] }),
-    );
-    if (res.code === 0 && res.data) {
-      for (const u of res.data)
-        this.profiles.set(u.id, {
-          name: u.name,
-          isSelf: u.id === this.selfUserId,
-        });
-    }
+    // Avoid a doomed request while explicitly offline. A later page/re-init retries because no ids were
+    // marked in flight.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    for (const id of missing) this.profilesInFlight.add(id);
+    void (async () => {
+      try {
+        const res = await firstValueFrom(
+          this.userService.queryUserInfo({ userIds: [...missing] }),
+        );
+        if (res.code === 0 && res.data) {
+          for (const u of res.data) {
+            const profile = {
+              name: u.name,
+              isSelf: u.id === this.selfUserId,
+            };
+            this.profiles.set(u.id, profile);
+            for (const seq of this.seqsByCreator.get(u.id) ?? [])
+              this.onProfile(seq, profile);
+          }
+        }
+      } catch {
+        // Profile metadata is enrichment, not a prerequisite for rendering cached message bodies.
+      } finally {
+        for (const id of missing) this.profilesInFlight.delete(id);
+      }
+    })();
   }
 }
 

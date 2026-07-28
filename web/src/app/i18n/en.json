@@ -535,6 +535,13 @@
     "uploadConcurrency": "Concurrent uploads",
     "uploadConcurrencyCount": "{{count}} uploads",
     "uploadConcurrencyHint": "Maximum uploads shared across all conversations. Files in the same conversation upload in order.",
+    "mediaCache": "Media cache",
+    "clearMediaCache": "Clear media cache",
+    "clearMediaCacheDesc": "Clears the WebView HTTP cache used by images, video and audio. Avatars, messages and login state are kept.",
+    "clearMediaCacheAction": "Clear",
+    "clearingMediaCache": "Clearing…",
+    "mediaCacheCleared": "Media cache cleared.",
+    "mediaCacheClearFailed": "Could not clear the media cache.",
     "push": "Push",
     "notifications": "Notifications",
     "notifDesc": "Show a desktop alert when a new message arrives while this tab is in the background.",
@@ -669,8 +676,10 @@
     "exitHint": "Press back again to exit.",
     "backToApp": "Back to app",
     "secondDetectedTitle": "Second server found",
-    "secondDetectedBody": "The server provided another available address. Save it so the app can switch automatically when this connection is unavailable?",
-    "secondUse": "Save second server",
-    "secondIgnore": "Use current server only"
+    "secondDetectedBody": "The server provided these two connection addresses. Once saved, the app will automatically detect and use the available one.",
+    "primaryAddress": "Primary server",
+    "secondaryAddress": "Second server",
+    "secondUse": "Save both addresses",
+    "secondIgnore": "Save primary only"
   }
 }

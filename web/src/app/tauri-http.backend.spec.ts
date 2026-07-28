@@ -1,8 +1,9 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { HttpBackend, HttpErrorResponse, HttpRequest, HttpHeaders, provideHttpClient, withFetch } from '@angular/common/http';
+import { HttpBackend, HttpContext, HttpErrorResponse, HttpRequest, HttpHeaders, provideHttpClient, withFetch } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { TauriHttpBackend } from './tauri-http.backend';
+import { REPLAY_SAFE } from './request-context';
 
 /**
  * TauriHttpBackend DI wiring — regression guard for the NG0201 that occurred because `TauriHttpBackend`
@@ -61,7 +62,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
   const tauriWindow = (): TauriWindow => window as unknown as TauriWindow;
 
   // The webview→Rust `api_request` args captured by the fake invoke bridge.
-  let invokeArgs: { cmd: string; args: { headers?: Record<string, string>; body?: unknown } } | undefined;
+  let invokeArgs: { cmd: string; args: { headers?: Record<string, string>; body?: unknown; replaySafe?: boolean } } | undefined;
 
   beforeEach(() => {
     invokeArgs = undefined;
@@ -70,7 +71,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
     tauriWindow().__TAURI__ = {
       core: {
         invoke: async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
-          invokeArgs = { cmd, args: args as { headers?: Record<string, string>; body?: unknown } };
+          invokeArgs = { cmd, args: args as { headers?: Record<string, string>; body?: unknown; replaySafe?: boolean } };
           // A successful 200 JSON response — the body shape `api_request` returns to JS.
           return { status: 200, headers: {}, body: '{"code":0,"message":"success","data":{}}' };
         },
@@ -119,6 +120,19 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
     });
     await firstValueFrom(backend.handle(req));
     expect(invokeArgs!.args.headers?.['x-client-message-id']).toBe('voice-cid-1');
+  });
+
+  it('marks reads replay-safe automatically and requires an explicit context opt-in for writes', async () => {
+    const backend = TestBed.inject(HttpBackend);
+    await firstValueFrom(backend.handle(new HttpRequest('GET', '/api/v1/config')));
+    expect(invokeArgs!.args.replaySafe).toBeTrue();
+
+    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/x', {})));
+    expect(invokeArgs!.args.replaySafe).toBeFalse();
+
+    const context = new HttpContext().set(REPLAY_SAFE, true);
+    await firstValueFrom(backend.handle(new HttpRequest('POST', '/api/v1/x', {}, { context })));
+    expect(invokeArgs!.args.replaySafe).toBeTrue();
   });
 
   it('forwards a Blob body\'s own type as Content-Type (mirrors Angular detectContentTypeHeader → blob.type)', async () => {
