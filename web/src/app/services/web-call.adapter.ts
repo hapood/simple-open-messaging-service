@@ -36,6 +36,7 @@ interface StagedSignaling {
 export const WEB_RECONNECT_BACKSTOP_MS = 15_000;
 export const WEB_RECONNECT_BACKSTOP_SHORT_MS = 10_000;
 export const WEB_CALLEE_RECONNECT_BACKSTOP_MS = 30_000;
+export const CALL_SESSION_ENDING_EVENT = 'soms-call-session-ending';
 
 export type WebReconnectAction = 'restart' | 'fail';
 export type CallMediaErrorStep =
@@ -97,6 +98,9 @@ export class WebCallAdapter implements CallAdapter {
   private iceRestartTried = false;
   private acceptingLocally = false;
   private facingMode: 'user' | 'environment' = 'user';
+  private readonly onPageHide = () => this.finishForLifecycle('completed');
+  private readonly onSessionEnding = () =>
+    this.finishForLifecycle('completed');
 
   constructor(
     private readonly http: HttpClient,
@@ -104,6 +108,11 @@ export class WebCallAdapter implements CallAdapter {
     private readonly notifyMediaError?: (step: CallMediaErrorStep) => void,
   ) {
     this.state = { ...idle };
+    window.addEventListener('pagehide', this.onPageHide);
+    window.addEventListener(
+      CALL_SESSION_ENDING_EVENT,
+      this.onSessionEnding,
+    );
   }
 
   setSnapshotListener(listener?: CallSnapshotListener): void {
@@ -504,6 +513,20 @@ export class WebCallAdapter implements CallAdapter {
   private cancelNegotiationBackstop(): void {
     if (this.negotiationBackstop) clearTimeout(this.negotiationBackstop);
     this.negotiationBackstop = undefined;
+  }
+
+  /** Renderer-owned media cannot survive a page/session transition. Start the server end request while the
+   * credential and document are still alive, then release devices synchronously; pagehide may terminate JS
+   * before the request resolves, so cleanup must not await it. Android never constructs this adapter and its
+   * native call intentionally survives a disposable WebView reload. */
+  private finishForLifecycle(reason: string): void {
+    const callSid = this.state.callSid;
+    if (!callSid || this.state.phase === 'idle') return;
+    void this.bestEffortPost('calls/end', {
+      callSid,
+      endReason: reason,
+    });
+    this.finish();
   }
 
   private async restartIce(): Promise<void> {

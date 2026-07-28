@@ -9,6 +9,7 @@ import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 import { ToastService } from './toast.service';
+import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
 
 const IS_KEEP_LOGIN = 'is_keep_login',
   // Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
@@ -218,6 +219,7 @@ export class AuthService {
    *  maps to a tailored login notice (the one-app-session 'app_session_replaced' notice was removed when
    *  multiple trusted devices became allowed); the login page itself signals the session ended. */
   redoLoginAuth(_reason?: string) {
+    this.announceSessionEnding()
     void this.clearToken()
     // Drop the in-memory session (sessionProfile / sessionUserId / per-user DB) on the same terms as logout
     // — a 401 / FORCE_LOGOUT means this session is over, so the next account must not inherit its view state
@@ -327,6 +329,7 @@ export class AuthService {
       await firstValueFrom(this.http.post<{ code: number }>(`${apiPrefix()}/auth/logout`, {}))
     } catch { /* best-effort: if the revoke itself fails, the row is still revocable from the device page */ }
     this.toast.warn(this.t(noticeKey), IMPORTANT_NOTICE_MS)
+    this.announceSessionEnding()
     void this.clearToken()
     this.userService.clearSession()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
@@ -372,6 +375,9 @@ export class AuthService {
 
   logout() {
     if (!this.isLoggedIn()) return EMPTY
+    // Renderer-owned WebRTC must end while this session credential is still usable. Android ignores this
+    // DOM signal: its native call owner has its own lifecycle and survives WebView recreation.
+    this.announceSessionEnding()
     // Native: unregister push BEFORE the token clears, so DELETE /devices/register still carries the
     // credential (Rust injects the Bearer from ProxyState.token). Best-effort — a stale token is pruned
     // server-side on the next send anyway. Browser: push/webpush are no-ops in the shell.
@@ -392,6 +398,12 @@ export class AuthService {
         })
       }),
     )
+  }
+
+  private announceSessionEnding(): void {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(CALL_SESSION_ENDING_EVENT))
+    }
   }
 
   /** Change password: the server invalidates ALL sessions (`invalidateAllSessions` revokes every session

@@ -82,4 +82,32 @@ describe('WebCallAdapter multi-device ownership', () => {
     );
     expect(callMediaErrorStep(new Error('unknown'))).toBe('media-failed');
   });
+
+  it('ends an active renderer-owned call before the session credential is cleared', async () => {
+    const post = jasmine.createSpy('post').and.returnValue(
+      of({ code: 0, message: '' }),
+    );
+    const adapter = new WebCallAdapter(
+      { post } as unknown as HttpClient,
+      IDLE_CALL,
+    );
+    await adapter.onIncoming({
+      ...IDLE_CALL,
+      phase: 'incoming',
+      callSid: 'call-session-exit',
+      peerUserId: 7,
+    });
+    post.calls.reset();
+
+    window.dispatchEvent(new Event('soms-call-session-ending'));
+
+    expect(adapter.snapshot().phase).toBe('idle');
+    expect(post).toHaveBeenCalledOnceWith(
+      jasmine.stringMatching(/\/calls\/end$/),
+      {
+        callSid: 'call-session-exit',
+        endReason: 'completed',
+      },
+    );
+  });
 });
