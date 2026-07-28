@@ -1,6 +1,9 @@
 <app-material-dialog [isShow]="dlgList().length>0">
   @for(info of dlgList();track $index){
   <div class="popup-com-wrapper" [class.desktop]="isCard()" [class.wide]="info.wide"
+       role="dialog" aria-modal="true" [attr.aria-label]="'common.dialog' | transloco"
+       [cdkTrapFocus]="$index === dlgList().length - 1"
+       [cdkTrapFocusAutoCapture]="$index === dlgList().length - 1"
        [style]="{zIndex:$index}"
        [@dialogAnim]="isCard() ? 'desktop' : 'mobile'">
     <ng-container *ngComponentOutlet="

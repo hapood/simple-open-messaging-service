@@ -56,6 +56,7 @@
     "next": "Next",
     "remove": "Remove",
     "close": "Close",
+    "dialog": "Dialog",
     "retry": "Retry",
     "search": "Search",
     "searching": "Searching…",
@@ -298,6 +299,8 @@
   "chat": {
     "clearSearch": "Clear search",
     "emptyTagline": "Select a chat to start your conversation",
+    "messageListAria": "Conversation messages",
+    "folderFilterAria": "Conversation folder filter",
     "emptyP2PHint": "Say hello to start your conversation",
     "emptyGroupHint": "No messages yet — send the first one",
     "emptyBlockedHint": "Unblock to start your conversation",

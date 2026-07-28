@@ -45,6 +45,8 @@
         #moreTrigger="cdkOverlayOrigin"
         (click)="toggleMenu()"
         [class.active]="menuOpen()"
+        aria-haspopup="menu"
+        [attr.aria-expanded]="menuOpen()"
         [attr.aria-label]="'nav.moreAria' | transloco"
       >
         <app-icon [type]="AppIconType.MORE" [style]="{ width: '24px', height: '24px' }"></app-icon>

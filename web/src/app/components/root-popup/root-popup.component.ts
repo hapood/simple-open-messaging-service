@@ -1,9 +1,12 @@
-import { Component, Signal, inject } from '@angular/core';
+import { Component, HostListener, Signal, inject } from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import { trigger, transition, state, style, animate } from '@angular/animations';
+import { A11yModule } from '@angular/cdk/a11y';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, DlgInfo } from '../../services/route.service';
 import { MaterialDialogComponent } from '../material-dialog/material-dialog.component';
 import { LayoutService } from '../../services/layout.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
 
 // Enter/leave motion for routed popups. Medium/expanded render a centered card
 // with a scale+fade; compact renders a slide-up sheet.
@@ -38,7 +41,7 @@ const dialogAnim = trigger('dialogAnim', [
 
 @Component({
     selector: 'app-root-popup',
-    imports: [MaterialDialogComponent, NgComponentOutlet],
+    imports: [A11yModule, MaterialDialogComponent, NgComponentOutlet, TranslocoPipe],
     animations: [dialogAnim],
     templateUrl: './root-popup.component.html',
     styleUrl: './root-popup.component.scss'
@@ -47,9 +50,18 @@ export class RootPopupComponent {
   dlgList: Signal<DlgInfo[]>
   // Medium/expanded render popups as centered cards; compact uses a full-screen overlay.
   protected readonly isCard = inject(LayoutService).isAtLeastMedium
+  private readonly nav = inject(NavStateMachineService)
 
   constructor(private routeService: RouteService) {
     this.dlgList = this.routeService.dlgList
   }
 
+  @HostListener('document:keydown.escape', ['$event'])
+  onEscape(event: KeyboardEvent): void {
+    const stack = this.nav.paneStack()
+    if (stack.at(-1)?.kind !== 'dialog') return
+    event.preventDefault()
+    event.stopPropagation()
+    this.nav.back()
+  }
 }

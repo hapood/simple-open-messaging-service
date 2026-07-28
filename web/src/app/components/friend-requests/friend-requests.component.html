@@ -6,22 +6,29 @@
     <div class="popup-title">{{ 'friend.title' | transloco }}</div>
   </div>
 
-  <div class="tabs">
-    <button class="tab-item" [class.active]="activeTab()===0" (click)="setTab(0)">
+  <div class="tabs" role="tablist">
+    <button class="tab-item" type="button" role="tab" id="friend-tab-add"
+      aria-controls="friend-panel-add" [attr.aria-selected]="activeTab()===0"
+      [class.active]="activeTab()===0" (click)="setTab(0)">
       <span class="tab-text">{{ 'friend.tab.add' | transloco }}</span>
     </button>
-    <button class="tab-item" [class.active]="activeTab()===1" (click)="setTab(1)">
+    <button class="tab-item" type="button" role="tab" id="friend-tab-pending"
+      aria-controls="friend-panel-pending" [attr.aria-selected]="activeTab()===1"
+      [class.active]="activeTab()===1" (click)="setTab(1)">
       <span class="tab-text">{{ 'friend.tab.pending' | transloco }}</span>
       @if(pendingReqList().length > 0){<span class="tab-badge">{{pendingReqList().length}}</span>}
     </button>
-    <button class="tab-item" [class.active]="activeTab()===2" (click)="setTab(2)">
+    <button class="tab-item" type="button" role="tab" id="friend-tab-sent"
+      aria-controls="friend-panel-sent" [attr.aria-selected]="activeTab()===2"
+      [class.active]="activeTab()===2" (click)="setTab(2)">
       <span class="tab-text">{{ 'friend.tab.sent' | transloco }}</span>
       @if(sentReqList().length > 0){<span class="tab-badge">{{sentReqList().length}}</span>}
     </button>
   </div>
 
   <!-- Add tab -->
-  <div class="tab-pane" [hidden]="activeTab()!==0">
+  <div class="tab-pane" id="friend-panel-add" role="tabpanel"
+    aria-labelledby="friend-tab-add" [hidden]="activeTab()!==0">
     <form class="search-bar" (ngSubmit)="searchUser()" role="search">
       <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
       <input class="search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
@@ -105,7 +112,8 @@
   </div>
 
   <!-- Pending tab -->
-  <div class="tab-pane" [hidden]="activeTab()!==1">
+  <div class="tab-pane" id="friend-panel-pending" role="tabpanel"
+    aria-labelledby="friend-tab-pending" [hidden]="activeTab()!==1">
     <div class="pending-area">
       @if(pendingLoading()){
         <div class="state-hint"><div class="state-title">{{ 'common.loading' | transloco }}</div></div>
@@ -143,7 +151,8 @@
   </div>
 
   <!-- Sent tab -->
-  <div class="tab-pane" [hidden]="activeTab()!==2">
+  <div class="tab-pane" id="friend-panel-sent" role="tabpanel"
+    aria-labelledby="friend-tab-sent" [hidden]="activeTab()!==2">
     <div class="pending-area">
       @if(sentLoading()){
         <div class="state-hint"><div class="state-title">{{ 'common.loading' | transloco }}</div></div>

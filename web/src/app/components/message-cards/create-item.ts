@@ -192,6 +192,7 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
  */
 function wrapEl<T>(ref: { location: { nativeElement: HTMLElement }; destroy: () => void }, update: (item: CbItem<T>, prev: CbItem<T> | null) => void): CbElement<T> {
   const el = ref.location.nativeElement;
+  applyMessageListItemSemantics(el);
   let ro: ResizeObserver | null = null;
   let live: ((h: number) => void) | null = null;
   return {
@@ -217,4 +218,10 @@ function wrapEl<T>(ref: { location: { nativeElement: HTMLElement }; destroy: () 
       ref.destroy();
     },
   };
+}
+
+/** Message rows are virtualized, so expose the mounted window as a plain list rather than a live log.
+ *  A live region would re-announce historical rows whenever the window remounts while scrolling. */
+export function applyMessageListItemSemantics(el: HTMLElement): void {
+  el.setAttribute('role', 'listitem');
 }

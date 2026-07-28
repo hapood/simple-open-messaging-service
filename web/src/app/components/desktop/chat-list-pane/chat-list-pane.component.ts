@@ -36,11 +36,13 @@ import { AppIconType, IconComponent } from '../../icon/icon.component';
         }
       </div>
       @if (folders().length) {
-        <div class="folder-tabs">
+        <div class="folder-tabs" role="group" [attr.aria-label]="'chat.folderFilterAria' | transloco">
           <button class="ftab" [class.active]="!activeFolder()"
+            type="button" [attr.aria-pressed]="!activeFolder()"
             (click)="activeFolderId.set(undefined)">{{ 'chat.all' | transloco }}</button>
           @for (f of folders(); track f.id) {
             <button class="ftab" [class.active]="activeFolder()?.id === f.id"
+              type="button" [attr.aria-pressed]="activeFolder()?.id === f.id"
               (click)="activeFolderId.set(f.id)">{{ f.name }}</button>
           }
         </div>
