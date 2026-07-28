@@ -53,8 +53,15 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         (pointerdown)="onScreenTap()"
       >
         @if (isVideo()) {
-          <video class="remote-video" autoplay playsinline #remoteVideo></video>
-          @if (!snap().remoteCameraEnabled) {
+          <video
+            class="remote-video"
+            autoplay
+            playsinline
+            (loadeddata)="onRemoteVideoReady()"
+            (playing)="onRemoteVideoReady()"
+            #remoteVideo
+          ></video>
+          @if (showRemotePlaceholder()) {
             <div class="remote-camera-off">
               <div class="remote-avatar">
                 <app-user-avatar
@@ -64,10 +71,16 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                   [src]="snap().peerAvatar"
                 ></app-user-avatar>
               </div>
-              <span>{{
-                'call.peerCameraOff'
-                  | transloco: { name: snap().peerName || '…' }
-              }}</span>
+              <span>
+                @if (waitingForRemoteVideo()) {
+                  {{ 'call.waitingForVideo' | transloco }}
+                } @else {
+                  {{
+                    'call.peerCameraOff'
+                      | transloco: { name: snap().peerName || '…' }
+                  }}
+                }
+              </span>
             </div>
           }
           <!-- The self-view hole: native renders the LOCAL camera here (positioned top-right, the
@@ -170,6 +183,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
               <button
                 class="call-action mute"
                 [class.on]="snap().muted"
+                [attr.aria-pressed]="snap().muted"
                 type="button"
                 (click)="toggleMute()"
                 [attr.aria-label]="
@@ -229,6 +243,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
                 <button
                   class="call-action cam"
                   [class.on]="!snap().cameraEnabled"
+                  [attr.aria-pressed]="!snap().cameraEnabled"
                   type="button"
                   (click)="toggleCamera()"
                   [attr.aria-label]="
@@ -623,6 +638,7 @@ export class CallScreenComponent implements OnDestroy {
    *  any tap on the screen reveals them again. Always visible otherwise (ringing / connecting / reconnecting /
    *  audio — the user must be able to act). */
   readonly controlsVisible = signal(true);
+  readonly remoteVideoReady = signal(false);
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly HIDE_DELAY_MS = 3000;
 
@@ -649,6 +665,7 @@ export class CallScreenComponent implements OnDestroy {
   private dragOrigin = { px: 0, py: 0, left: 0, top: 0 };
   /** rAF coalescing flag so a drag burst fires at most one native setVideoRect per animation frame. */
   private rectReportPending = false;
+  private lastVideoCallSid: string | null = null;
 
   /** The self-view hole element — measured to report its rect to native so the local-camera surface is
    *  positioned over it. Null on AUDIO calls (no self-view rendered). */
@@ -682,6 +699,15 @@ export class CallScreenComponent implements OnDestroy {
     effect(() => {
       this.isVideo();
       requestAnimationFrame(() => this.reportVideoRects());
+    });
+    // A new call, camera-off transition, or renderer video remount must show the avatar until an actual
+    // decoded frame is ready. `remoteCameraEnabled` alone only means the peer intends to send video.
+    effect(() => {
+      const sid = this.snap().callSid;
+      const enabled = this.snap().remoteCameraEnabled;
+      if (sid !== this.lastVideoCallSid || !enabled)
+        this.remoteVideoReady.set(false);
+      this.lastVideoCallSid = sid;
     });
     // React to PiP enter/exit (native pushes via window.__SOMS_PIP__). In PiP the chrome hides + the self
     //  surface detaches so only the remote video shows in the PiP window; on exit both restore.
@@ -814,6 +840,16 @@ export class CallScreenComponent implements OnDestroy {
   }
 
   readonly isVideo = computed(() => this.snap().callType === 'VIDEO');
+  readonly waitingForRemoteVideo = computed(
+    () =>
+      this.isVideo() &&
+      this.snap().remoteCameraEnabled &&
+      this.adapter.rendererOwnsVideo === true &&
+      !this.remoteVideoReady(),
+  );
+  readonly showRemotePlaceholder = computed(
+    () => !this.snap().remoteCameraEnabled || this.waitingForRemoteVideo(),
+  );
   readonly canUpgradeVideo = computed(
     () =>
       this.snap().phase === 'connected' || this.snap().phase === 'reconnecting',
@@ -827,11 +863,17 @@ export class CallScreenComponent implements OnDestroy {
     // Prefer the finer WebRTC step ("offer-sent"/"answer-received"/…) when the native FSM has set one; fall
     // back to the coarse phase label. Both are stable codes localized via the `call` i18n namespace (the native
     // FSM sends codes, never display text — per the UI-text bilingual convention).
+    if (this.snap().phase === 'reconnecting') {
+      return this.transloco.translate('call.reconnecting');
+    }
     if (this.snap().videoUpgradeState === 'upgrading') {
       return this.transloco.translate('call.startingVideo');
     }
     if (this.snap().videoUpgradeState === 'failed') {
       return this.transloco.translate('call.videoUpgradeFailed');
+    }
+    if (this.waitingForRemoteVideo()) {
+      return this.transloco.translate('call.waitingForVideo');
     }
     const step = this.snap().step;
     if (step) return this.transloco.translate(`call.${step}`);
@@ -844,8 +886,6 @@ export class CallScreenComponent implements OnDestroy {
         return this.transloco.translate('call.ringing');
       case 'connecting':
         return this.transloco.translate('call.connecting');
-      case 'reconnecting':
-        return this.transloco.translate('call.reconnecting');
       default:
         return '';
     }
@@ -863,6 +903,10 @@ export class CallScreenComponent implements OnDestroy {
    *  excluded (its pointerdown stops propagation — it swaps video, not chrome). */
   onScreenTap(): void {
     this.revealControls();
+  }
+
+  onRemoteVideoReady(): void {
+    if (this.snap().remoteCameraEnabled) this.remoteVideoReady.set(true);
   }
 
   /** Show the controls now; in a connected video call, re-arm the auto-hide so they fade again after inactivity. */

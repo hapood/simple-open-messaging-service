@@ -458,6 +458,9 @@ export class WebCallAdapter implements CallAdapter {
   private onConnectionState(state: RTCPeerConnectionState): void {
     this.update({
       mediaState: state,
+      ...(state === 'connected' || state === 'disconnected'
+        ? { step: '' }
+        : {}),
       phase:
         state === 'connected'
           ? 'connected'

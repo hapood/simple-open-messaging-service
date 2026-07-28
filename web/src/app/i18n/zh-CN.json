@@ -24,6 +24,7 @@
     "startingVideo": "正在开启视频…",
     "videoUpgradeFailed": "无法开启视频",
     "peerCameraOff": "{{name}} 的摄像头已关闭",
+    "waitingForVideo": "正在等待视频画面…",
     "cameraOff": "关闭摄像头",
     "cameraOn": "开启摄像头",
     "switchCamera": "切换摄像头",

@@ -26,6 +26,7 @@ describe('CallScreenComponent', () => {
     setVideoElements: jasmine.createSpy('setVideoElements'),
     setSelfVideoPosition: jasmine.createSpy('setSelfVideoPosition'),
     swapVideo: jasmine.createSpy('swapVideo'),
+    rendererOwnsVideo: true,
   };
 
   beforeEach(() => {
@@ -37,7 +38,11 @@ describe('CallScreenComponent', () => {
       peerName: 'Alice',
       startedAt: Date.now(),
     });
-    Object.values(adapter).forEach((spy) => spy.calls.reset());
+    Object.values(adapter)
+      .filter(
+        (value): value is jasmine.Spy => typeof value === 'function',
+      )
+      .forEach((spy) => spy.calls.reset());
 
     TestBed.configureTestingModule({
       imports: [CallScreenComponent],
@@ -103,6 +108,13 @@ describe('CallScreenComponent', () => {
     expect(root.querySelectorAll('video').length).toBe(2);
     expect(root.querySelectorAll('.call-action app-icon svg').length).toBe(4);
     expect(root.querySelector('mat-icon')).toBeNull();
+    expect(root.querySelector('.remote-camera-off')?.textContent).toContain(
+      'Waiting for video…',
+    );
+
+    fixture.componentInstance.onRemoteVideoReady();
+    fixture.detectChanges();
+    expect(root.querySelector('.remote-camera-off')).toBeNull();
 
     (root.querySelector('.switch') as HTMLButtonElement).click();
     expect(adapter.switchCamera).toHaveBeenCalledTimes(1);
@@ -192,6 +204,23 @@ describe('CallScreenComponent', () => {
     );
     upgrade.click();
     expect(adapter.upgradeToVideo).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+
+  it('prioritizes reconnecting over stale signaling detail', () => {
+    callState.update((state) => ({
+      ...state,
+      phase: 'reconnecting',
+      step: 'offer-sent',
+    }));
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    fixture.detectChanges();
+
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.status')
+        ?.textContent?.trim(),
+    ).toBe('Reconnecting…');
     fixture.destroy();
   });
 });

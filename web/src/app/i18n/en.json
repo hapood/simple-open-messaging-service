@@ -24,6 +24,7 @@
     "startingVideo": "Starting video…",
     "videoUpgradeFailed": "Couldn't start video",
     "peerCameraOff": "{{name}}'s camera is off",
+    "waitingForVideo": "Waiting for video…",
     "cameraOff": "Camera off",
     "cameraOn": "Camera on",
     "switchCamera": "Flip camera",

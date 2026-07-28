@@ -258,6 +258,8 @@ export class CallAdapterService {
   readonly supported: boolean;
   /** Video media is still native-only; Web audio ships as an independently testable first phase. */
   readonly videoSupported: boolean;
+  /** Browser/desktop video needs an HTMLVideoElement first-frame gate; Android renders into native surfaces. */
+  readonly rendererOwnsVideo: boolean;
 
   constructor(
     http: HttpClient,
@@ -277,6 +279,7 @@ export class CallAdapterService {
         : new UnsupportedCallAdapter();
     this.supported = isAndroidNative() || webRtcSupported;
     this.videoSupported = this.supported;
+    this.rendererOwnsVideo = !isAndroidNative() && webRtcSupported;
   }
 
   setSnapshotListener(listener?: CallSnapshotListener): void {
