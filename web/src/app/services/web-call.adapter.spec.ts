@@ -1,9 +1,31 @@
 import { HttpClient } from '@angular/common/http';
 import { of } from 'rxjs';
 import { IDLE_CALL, type CallSnapshot } from './call-adapter';
-import { WebCallAdapter } from './web-call.adapter';
+import { WebCallAdapter, iceServersFromResponse } from './web-call.adapter';
 
 describe('WebCallAdapter multi-device ownership', () => {
+  it('unwraps the backend RTC configuration before constructing a peer connection', () => {
+    expect(
+      iceServersFromResponse({
+        iceServers: [
+          { urls: 'stun:stun.example.test:3478' },
+          {
+            urls: ['turn:turn.example.test:3478'],
+            username: 'user',
+            credential: 'secret',
+          },
+        ],
+      }),
+    ).toEqual([
+      { urls: 'stun:stun.example.test:3478' },
+      {
+        urls: ['turn:turn.example.test:3478'],
+        username: 'user',
+        credential: 'secret',
+      },
+    ]);
+  });
+
   it('dismisses this renderer when a sibling device accepts the incoming call', async () => {
     const http = {
       post: () => of({ code: 0, message: '' }),

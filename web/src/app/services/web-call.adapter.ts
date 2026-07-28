@@ -15,6 +15,18 @@ interface IceServerResponse {
   credential?: string;
 }
 
+interface IceConfigurationResponse {
+  iceServers: IceServerResponse[];
+}
+
+/** Keep the backend wire shape explicit: GET /calls/ice-servers returns `{ iceServers: [...] }`, not the
+ * array directly. Exported only so the boundary contract can be regression-tested without constructing a PC. */
+export function iceServersFromResponse(
+  response: IceConfigurationResponse | undefined,
+): RTCIceServer[] {
+  return response?.iceServers ?? [];
+}
+
 interface StagedSignaling {
   offer: string | null;
   answer: string | null;
@@ -267,8 +279,9 @@ export class WebCallAdapter implements CallAdapter {
 
   private async createPeerConnection(): Promise<void> {
     await this.acquireLocalAudio();
-    const iceServers =
-      (await this.get<IceServerResponse[]>('calls/ice-servers')) ?? [];
+    const iceServers = iceServersFromResponse(
+      await this.get<IceConfigurationResponse>('calls/ice-servers'),
+    );
     const pc = new RTCPeerConnection({ iceServers });
     this.pc = pc;
     for (const track of this.localStream!.getTracks())
