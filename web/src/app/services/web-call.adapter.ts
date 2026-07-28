@@ -33,9 +33,32 @@ interface StagedSignaling {
   ice: string[];
 }
 
+export const WEB_RECONNECT_BACKSTOP_MS = 15_000;
+export const WEB_RECONNECT_BACKSTOP_SHORT_MS = 10_000;
+export const WEB_CALLEE_RECONNECT_BACKSTOP_MS = 30_000;
+
+export type WebReconnectAction = 'restart' | 'fail';
+
+/** Keep the browser reconnect policy aligned with Android: the caller owns the single ICE-restart attempt,
+ * while the callee waits long enough for that re-offer to arrive before giving up. */
+export function webReconnectDecision(
+  isCaller: boolean,
+  iceRestartTried: boolean,
+): { delayMs: number; action: WebReconnectAction } {
+  if (isCaller && !iceRestartTried) {
+    return { delayMs: WEB_RECONNECT_BACKSTOP_MS, action: 'restart' };
+  }
+  return {
+    delayMs: isCaller
+      ? WEB_RECONNECT_BACKSTOP_SHORT_MS
+      : WEB_CALLEE_RECONNECT_BACKSTOP_MS,
+    action: 'fail',
+  };
+}
+
 /**
- * Browser/desktop WebRTC owner. It deliberately implements audio only in this first phase; the shared
- * call UI and server lifecycle are identical to Android, while media ownership stays inside the renderer.
+ * Browser/desktop WebRTC owner. The shared call UI and server lifecycle are identical to Android, while
+ * media ownership stays inside the renderer.
  */
 export class WebCallAdapter implements CallAdapter {
   private state: CallSnapshot;
@@ -50,6 +73,8 @@ export class WebCallAdapter implements CallAdapter {
   private readonly pendingIce: string[] = [];
   private connectedReported = false;
   private answerBackstop?: ReturnType<typeof setTimeout>;
+  private reconnectBackstop?: ReturnType<typeof setTimeout>;
+  private iceRestartTried = false;
   private acceptingLocally = false;
   private facingMode: 'user' | 'environment' = 'user';
 
@@ -397,15 +422,65 @@ export class WebCallAdapter implements CallAdapter {
             : this.state.phase,
     });
     if (state === 'connected' && !this.connectedReported) {
+      this.cancelReconnectBackstop();
+      this.iceRestartTried = false;
       this.connectedReported = true;
       void this.bestEffortPost('calls/connected', {
         callSid: this.state.callSid,
       });
+    } else if (state === 'connected') {
+      this.cancelReconnectBackstop();
+      this.iceRestartTried = false;
+    } else if (state === 'disconnected') {
+      this.armReconnectBackstop();
     } else if (state === 'failed') {
       const callSid = this.state.callSid;
       if (callSid)
         void this.terminate('calls/end', { callSid, endReason: 'failed' });
     }
+  }
+
+  private armReconnectBackstop(): void {
+    if (this.reconnectBackstop || !this.state.callSid) return;
+    const decision = webReconnectDecision(
+      this.state.isCaller,
+      this.iceRestartTried,
+    );
+    this.reconnectBackstop = setTimeout(() => {
+      this.reconnectBackstop = undefined;
+      if (this.pc?.connectionState !== 'disconnected') return;
+      if (decision.action === 'restart') {
+        void this.restartIce();
+      } else {
+        const callSid = this.state.callSid;
+        if (callSid)
+          void this.terminate('calls/end', { callSid, endReason: 'failed' });
+      }
+    }, decision.delayMs);
+  }
+
+  private async restartIce(): Promise<void> {
+    const pc = this.pc;
+    if (!pc || !this.state.isCaller || this.iceRestartTried) return;
+    this.iceRestartTried = true;
+    try {
+      pc.restartIce();
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      await this.signal('offer', offer.sdp ?? '');
+      this.update({ step: 'offer-sent' });
+      this.armReconnectBackstop();
+    } catch (error) {
+      console.warn('[call:web] ICE restart failed', error);
+      const callSid = this.state.callSid;
+      if (callSid)
+        void this.terminate('calls/end', { callSid, endReason: 'failed' });
+    }
+  }
+
+  private cancelReconnectBackstop(): void {
+    if (this.reconnectBackstop) clearTimeout(this.reconnectBackstop);
+    this.reconnectBackstop = undefined;
   }
 
   private playRemote(stream?: MediaStream): void {
@@ -554,6 +629,8 @@ export class WebCallAdapter implements CallAdapter {
     this.pendingOffer = undefined;
     this.pendingIce.length = 0;
     this.connectedReported = false;
+    this.cancelReconnectBackstop();
+    this.iceRestartTried = false;
     this.acceptingLocally = false;
     if (this.answerBackstop) clearTimeout(this.answerBackstop);
     this.answerBackstop = undefined;
