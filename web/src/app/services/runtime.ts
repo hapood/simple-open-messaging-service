@@ -11,7 +11,8 @@
  *    at seed time, so API/SSE URLs resolve cross-origin. The backend's httpOnly `media_token` cookie is
  *    SameSite=Strict (so the webview can't auto-attach it cross-origin) and a bare `<img src>` / CSS
  *    `url()` can't carry an Authorization header anyway, so `/uploads/*` is rewritten to a
- *    `media://localhost` custom URI scheme handled by a Rust-side proxy that injects the Bearer header.
+ *    platform-specific Tauri custom-protocol URL handled by a Rust-side proxy that injects the Bearer
+ *    header (`http://media.localhost` on Android/Windows, `media://localhost` elsewhere).
  *
  * Browser behavior is bit-for-bit unchanged when the globals are absent: every helper falls back
  * to the same-origin relative path.
@@ -430,15 +431,25 @@ const MEDIA_HOST = 'localhost';
 /**
  * Rewrite a server-relative media URL for the current runtime.
  *  - Browser → the bare path (same-origin; the httpOnly `media_token` cookie authenticates it).
- *  - Tauri   → `media://localhost<path>`, served by the Rust URI-scheme proxy, which forwards to
- *              `${apiOrigin}${path}` with `Authorization: Bearer` (the webview can't auto-attach the
- *              SameSite=Strict cookie cross-origin, and a bare `<img src>`/CSS `url()` can't set headers).
+ *  - Tauri Android/Windows → `http://media.localhost<path>`.
+ *  - Other Tauri platforms → `media://localhost<path>`.
+ * Both native forms are served by the Rust URI-scheme proxy, which forwards to `${apiOrigin}${path}`
+ * with `Authorization: Bearer` (the webview can't auto-attach the SameSite=Strict cookie cross-origin,
+ * and a bare `<img src>`/CSS `url()` can't set headers).
  * Already-absolute URLs (`data:`, `blob:`, `http:`, `https:`) pass through unchanged.
  */
 export function assetUrl(path: string | null | undefined): string {
   if (!path) return '';
   if (!path.startsWith('/')) return path; // absolute (data:/blob:/http(s):) — leave as-is
   if (!isTauri()) return path;
+  // Tauri maps registered custom protocols onto an HTTP localhost subdomain on Android and Windows;
+  // those WebViews do not recognize `media://` and fail before the Rust handler can run.
+  if (
+    typeof navigator !== 'undefined' &&
+    /(Android|Windows)/i.test(navigator.userAgent)
+  ) {
+    return `http://${MEDIA_SCHEME}.${MEDIA_HOST}${path}`;
+  }
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
 }
 

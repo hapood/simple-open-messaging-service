@@ -1,4 +1,4 @@
-import { canonicalOrigin } from './runtime';
+import { assetUrl, canonicalOrigin } from './runtime';
 
 /**
  * canonicalOrigin unit tests — the //api/v1 prevention.
@@ -47,5 +47,52 @@ describe('canonicalOrigin', () => {
     // "...7667//api/v1/auth/login" and would not match. (Asserting `.not.toContain('//')` directly is a
     // trap — every https URL contains "//" in its scheme.)
     expect(url).toBe('https://soms.example.com:7667/api/v1/auth/login');
+  });
+});
+
+describe('assetUrl', () => {
+  const originalTauriInternals = window.__TAURI_INTERNALS__;
+  const originalUserAgent = navigator.userAgent;
+
+  afterEach(() => {
+    window.__TAURI_INTERNALS__ = originalTauriInternals;
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: originalUserAgent,
+    });
+  });
+
+  function setRuntime(tauri: boolean, userAgent: string): void {
+    window.__TAURI_INTERNALS__ = tauri ? {} : undefined;
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: userAgent,
+    });
+  }
+
+  it('uses the Android HTTP custom-protocol mapping', () => {
+    setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
+    expect(assetUrl('/uploads/shards/a.png')).toBe(
+      'http://media.localhost/uploads/shards/a.png',
+    );
+  });
+
+  it('uses the Windows HTTP custom-protocol mapping', () => {
+    setRuntime(true, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+    expect(assetUrl('/uploads/shards/a.png')).toBe(
+      'http://media.localhost/uploads/shards/a.png',
+    );
+  });
+
+  it('keeps the native scheme on other Tauri platforms', () => {
+    setRuntime(true, 'Mozilla/5.0 (X11; Linux x86_64)');
+    expect(assetUrl('/uploads/shards/a.png')).toBe(
+      'media://localhost/uploads/shards/a.png',
+    );
+  });
+
+  it('keeps relative paths unchanged in the browser', () => {
+    setRuntime(false, 'Mozilla/5.0 (Linux; Android 15)');
+    expect(assetUrl('/uploads/shards/a.png')).toBe('/uploads/shards/a.png');
   });
 });
