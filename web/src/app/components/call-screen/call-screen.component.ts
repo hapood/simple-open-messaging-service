@@ -9,7 +9,6 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { MatIconModule } from '@angular/material/icon';
 import { TranslocoModule } from '@jsverse/transloco';
 import { TranslocoService } from '@jsverse/transloco';
 import { CallEventService } from '../../services/call-event.service';
@@ -18,6 +17,10 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
+import {
+  AppIconType,
+  IconComponent,
+} from '../icon/icon.component';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
@@ -87,7 +90,11 @@ import {
             #selfHole
           >
             @if (!snap().cameraEnabled) {
-              <mat-icon class="self-off-icon">videocam_off</mat-icon>
+              <app-icon
+                class="self-off-icon"
+                [type]="AppIconType.VIDEO_OFF"
+                [style]="actionIconSize"
+              ></app-icon>
               <span class="self-off">{{ 'call.cameraOff' | transloco }}</span>
             }
           </div>
@@ -138,7 +145,12 @@ import {
                 (click)="decline()"
                 [attr.aria-label]="'call.decline' | transloco"
               >
-                <span class="action-icon"><mat-icon>call_end</mat-icon></span>
+                <span class="action-icon">
+                  <app-icon
+                    [type]="AppIconType.PHONE_END"
+                    [style]="actionIconSize"
+                  ></app-icon>
+                </span>
                 <span class="action-label">{{
                   'call.decline' | transloco
                 }}</span>
@@ -149,7 +161,12 @@ import {
                 (click)="accept()"
                 [attr.aria-label]="'call.accept' | transloco"
               >
-                <span class="action-icon"><mat-icon>call</mat-icon></span>
+                <span class="action-icon">
+                  <app-icon
+                    [type]="AppIconType.PHONE"
+                    [style]="actionIconSize"
+                  ></app-icon>
+                </span>
                 <span class="action-label">{{
                   'call.accept' | transloco
                 }}</span>
@@ -165,11 +182,12 @@ import {
                   (snap().muted ? 'call.unmute' : 'call.mute') | transloco
                 "
               >
-                <span class="action-icon"
-                  ><mat-icon>{{
-                    snap().muted ? 'mic_off' : 'mic'
-                  }}</mat-icon></span
-                >
+                <span class="action-icon">
+                  <app-icon
+                    [type]="snap().muted ? AppIconType.MIC_OFF : AppIconType.MIC"
+                    [style]="actionIconSize"
+                  ></app-icon>
+                </span>
                 <span class="action-label">{{
                   (snap().muted ? 'call.unmute' : 'call.mute') | transloco
                 }}</span>
@@ -191,7 +209,10 @@ import {
                     @if (snap().videoUpgradeState === 'upgrading') {
                       <span class="upgrade-spinner" aria-hidden="true"></span>
                     } @else {
-                      <mat-icon>videocam</mat-icon>
+                      <app-icon
+                        [type]="AppIconType.VIDEO"
+                        [style]="actionIconSize"
+                      ></app-icon>
                     }
                   </span>
                   <span class="action-label">
@@ -215,11 +236,16 @@ import {
                       | transloco
                   "
                 >
-                  <span class="action-icon"
-                    ><mat-icon>{{
-                      snap().cameraEnabled ? 'videocam' : 'videocam_off'
-                    }}</mat-icon></span
-                  >
+                  <span class="action-icon">
+                    <app-icon
+                      [type]="
+                        snap().cameraEnabled
+                          ? AppIconType.VIDEO
+                          : AppIconType.VIDEO_OFF
+                      "
+                      [style]="actionIconSize"
+                    ></app-icon>
+                  </span>
                   <span class="action-label">{{
                     (snap().cameraEnabled ? 'call.cameraOff' : 'call.cameraOn')
                       | transloco
@@ -232,9 +258,12 @@ import {
                   (click)="switchCamera()"
                   [attr.aria-label]="'call.switchCamera' | transloco"
                 >
-                  <span class="action-icon"
-                    ><mat-icon>cameraswitch</mat-icon></span
-                  >
+                  <span class="action-icon">
+                    <app-icon
+                      [type]="AppIconType.CAMERA_SWITCH"
+                      [style]="actionIconSize"
+                    ></app-icon>
+                  </span>
                   <span class="action-label">{{
                     'call.switchCamera' | transloco
                   }}</span>
@@ -246,7 +275,12 @@ import {
                 (click)="hangUp()"
                 [attr.aria-label]="'call.end' | transloco"
               >
-                <span class="action-icon"><mat-icon>call_end</mat-icon></span>
+                <span class="action-icon">
+                  <app-icon
+                    [type]="AppIconType.PHONE_END"
+                    [style]="actionIconSize"
+                  ></app-icon>
+                </span>
                 <span class="action-label">{{ 'call.end' | transloco }}</span>
               </button>
             }
@@ -255,7 +289,7 @@ import {
       </div>
     }
   `,
-  imports: [MatIconModule, TranslocoModule, UserAvatarComponent],
+  imports: [TranslocoModule, UserAvatarComponent, IconComponent],
   styles: [
     `
       .call-screen {
@@ -472,10 +506,9 @@ import {
           transform 120ms ease,
           background-color 120ms ease;
       }
-      .action-icon mat-icon {
-        width: 24px;
-        height: 24px;
-        font-size: 24px;
+      .action-icon app-icon,
+      .self-off-icon {
+        display: inline-flex;
       }
       .action-label {
         max-width: 76px;
@@ -761,6 +794,8 @@ export class CallScreenComponent implements OnDestroy {
   );
   /** Exposed for the template (the avatar component's [type] input). */
   readonly UserAvatarType = UserAvatarType;
+  readonly AppIconType = AppIconType;
+  readonly actionIconSize = { width: '24px', height: '24px' };
 
   readonly statusLabel = computed(() => {
     // Prefer the finer WebRTC step ("offer-sent"/"answer-received"/…) when the native FSM has set one; fall

@@ -99,6 +99,8 @@ describe('CallScreenComponent', () => {
     );
     expect(root.querySelectorAll('.call-action').length).toBe(4);
     expect(root.querySelector('.upgrade')).toBeNull();
+    expect(root.querySelectorAll('.call-action app-icon svg').length).toBe(4);
+    expect(root.querySelector('mat-icon')).toBeNull();
 
     (root.querySelector('.switch') as HTMLButtonElement).click();
     expect(adapter.switchCamera).toHaveBeenCalledTimes(1);
