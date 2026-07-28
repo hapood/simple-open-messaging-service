@@ -31,7 +31,8 @@
     "offer-sent": "Offer sent",
     "offer-received": "Offer received",
     "answer-sent": "Answer sent",
-    "answer-received": "Answer received"
+    "answer-received": "Answer received",
+    "microphone-failed": "Microphone unavailable — tap Accept to retry"
   },
   "common": {
     "appName": "SOMS",

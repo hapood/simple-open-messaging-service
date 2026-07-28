@@ -89,4 +89,18 @@ describe('CallEventService web call routing', () => {
     expect(service.callState().phase).toBe('connected');
     expect(adapter.applyLifecycle).not.toHaveBeenCalled();
   });
+
+  it('ignores lifecycle events for a call this renderer does not own', () => {
+    const service = TestBed.inject(CallEventService);
+
+    events.next({
+      event: 'CALL_EVENT',
+      status: 200,
+      message: '',
+      data: { type: 'accepted', callSid: 'accepted-on-another-device' },
+    });
+
+    expect(service.callState().phase).toBe('idle');
+    expect(adapter.applyLifecycle).not.toHaveBeenCalled();
+  });
 });

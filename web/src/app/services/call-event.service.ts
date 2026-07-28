@@ -169,6 +169,7 @@ export class CallEventService implements OnDestroy {
       return;
     }
     if (p.type === 'incoming') {
+      if (cur.phase !== 'idle') return;
       const snap: CallSnapshot = {
         ...IDLE_CALL,
         phase: 'incoming',
@@ -184,12 +185,14 @@ export class CallEventService implements OnDestroy {
       };
       this.commit(snap);
       this.adapter.onIncoming(snap);
-      // Ignore a stray incoming for a call we're already in (race / multi-device echo).
-      if (cur.phase === 'idle') this.incoming$.next(snap);
+      this.incoming$.next(snap);
       return;
     }
     const phase = PHASE_BY_EVENT[p.type];
     if (!phase) return;
+    // Account-wide lifecycle events also reach sibling devices. A renderer with no matching local call
+    // must not materialize a phantom connecting/connected overlay.
+    if (cur.phase === 'idle' || cur.callSid !== p.callSid) return;
     // The caller's `ringing` (server Phase 1) only applies to the caller; the callee is already `incoming`.
     if (p.type === 'ringing' && !cur.isCaller) return;
     this.commit({

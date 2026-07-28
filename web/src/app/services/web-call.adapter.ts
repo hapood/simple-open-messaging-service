@@ -35,6 +35,7 @@ export class WebCallAdapter implements CallAdapter {
   private readonly pendingIce: string[] = [];
   private connectedReported = false;
   private answerBackstop?: ReturnType<typeof setTimeout>;
+  private acceptingLocally = false;
 
   constructor(
     private readonly http: HttpClient,
@@ -72,6 +73,9 @@ export class WebCallAdapter implements CallAdapter {
   ): Promise<void> {
     let registered = false;
     try {
+      // Request the mic directly from the click chain. Waiting for the HTTP round-trip first loses browser
+      // user activation, which makes Tauri WebView/browser permission prompts reject getUserMedia.
+      await this.acquireLocalAudio();
       const response = await this.post<{ threadId: number }>('calls/initiate', {
         callSid,
         calleeUserId,
@@ -95,7 +99,7 @@ export class WebCallAdapter implements CallAdapter {
       await this.signal('offer', offer.sdp ?? '');
       this.update({ step: 'offer-sent' });
     } catch (error) {
-      console.warn('[call:web] outgoing setup failed', this.safeError(error));
+      console.error('[call:web] outgoing setup failed', error);
       if (registered) await this.bestEffortPost('calls/cancel', { callSid });
       this.finish();
     }
@@ -113,8 +117,12 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private async acceptIncoming(callSid: string): Promise<void> {
+    this.acceptingLocally = true;
+    let acceptedOnServer = false;
     try {
+      await this.acquireLocalAudio();
       await this.post('calls/accept', { callSid });
+      acceptedOnServer = true;
       this.update({ phase: 'connecting' });
       await this.createPeerConnection();
       if (this.pendingOffer) {
@@ -131,9 +139,18 @@ export class WebCallAdapter implements CallAdapter {
       }
       await this.flushPendingIce();
     } catch (error) {
-      console.warn('[call:web] accept failed', this.safeError(error));
-      await this.bestEffortPost('calls/end', { callSid, endReason: 'failed' });
-      this.finish();
+      console.error('[call:web] accept failed', error);
+      if (acceptedOnServer) {
+        await this.bestEffortPost('calls/end', {
+          callSid,
+          endReason: 'failed',
+        });
+        this.finish();
+      } else {
+        this.acceptingLocally = false;
+        this.releaseMedia();
+        this.update({ phase: 'incoming', step: 'microphone-failed' });
+      }
     }
   }
 
@@ -183,6 +200,7 @@ export class WebCallAdapter implements CallAdapter {
       if (!this.pc) this.pendingOffer = signal.payload;
       else await this.applyOffer(signal.payload);
     } else if (signal.kind === 'answer' && this.pc) {
+      if (this.answerBackstop) clearTimeout(this.answerBackstop);
       await this.pc.setRemoteDescription({
         type: 'answer',
         sdp: signal.payload,
@@ -201,6 +219,16 @@ export class WebCallAdapter implements CallAdapter {
       snapshot.callSid !== this.state.callSid
     )
       return;
+    if (
+      this.state.phase === 'incoming' &&
+      snapshot.phase === 'connecting' &&
+      !this.acceptingLocally
+    ) {
+      // Lifecycle events are account-wide. Only the renderer whose user pressed Accept owns media;
+      // sibling devices dismiss the incoming overlay when that accepted event arrives.
+      this.finish();
+      return;
+    }
     const shouldFetchAnswer =
       this.state.isCaller &&
       snapshot.phase === 'connecting' &&
@@ -233,14 +261,29 @@ export class WebCallAdapter implements CallAdapter {
       }
       for (const candidate of staged?.ice ?? []) await this.applyIce(candidate);
     } catch (error) {
-      console.warn(
-        '[call:web] staged answer fetch failed',
-        this.safeError(error),
-      );
+      console.warn('[call:web] staged answer fetch failed', error);
     }
   }
 
   private async createPeerConnection(): Promise<void> {
+    await this.acquireLocalAudio();
+    const iceServers =
+      (await this.get<IceServerResponse[]>('calls/ice-servers')) ?? [];
+    const pc = new RTCPeerConnection({ iceServers });
+    this.pc = pc;
+    for (const track of this.localStream!.getTracks())
+      pc.addTrack(track, this.localStream!);
+    pc.onicecandidate = ({ candidate }) => {
+      if (!candidate) return;
+      void this.signal('ice', JSON.stringify(candidate.toJSON()));
+    };
+    pc.ontrack = ({ streams }) => this.playRemote(streams[0]);
+    pc.onconnectionstatechange = () =>
+      this.onConnectionState(pc.connectionState);
+  }
+
+  private async acquireLocalAudio(): Promise<void> {
+    if (this.localStream?.active) return;
     this.localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -249,19 +292,6 @@ export class WebCallAdapter implements CallAdapter {
       },
       video: false,
     });
-    const iceServers =
-      (await this.get<IceServerResponse[]>('calls/ice-servers')) ?? [];
-    const pc = new RTCPeerConnection({ iceServers });
-    this.pc = pc;
-    for (const track of this.localStream.getTracks())
-      pc.addTrack(track, this.localStream);
-    pc.onicecandidate = ({ candidate }) => {
-      if (!candidate) return;
-      void this.signal('ice', JSON.stringify(candidate.toJSON()));
-    };
-    pc.ontrack = ({ streams }) => this.playRemote(streams[0]);
-    pc.onconnectionstatechange = () =>
-      this.onConnectionState(pc.connectionState);
   }
 
   private async applyOffer(sdp: string): Promise<void> {
@@ -354,6 +384,7 @@ export class WebCallAdapter implements CallAdapter {
     this.pendingOffer = undefined;
     this.pendingIce.length = 0;
     this.connectedReported = false;
+    this.acceptingLocally = false;
     if (this.answerBackstop) clearTimeout(this.answerBackstop);
     this.answerBackstop = undefined;
   }
@@ -379,11 +410,7 @@ export class WebCallAdapter implements CallAdapter {
     try {
       await this.post(path, body);
     } catch (error) {
-      console.warn(`[call:web] ${path} failed`, this.safeError(error));
+      console.warn(`[call:web] ${path} failed`, error);
     }
-  }
-
-  private safeError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
   }
 }

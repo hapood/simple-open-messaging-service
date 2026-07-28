@@ -31,7 +31,8 @@
     "offer-sent": "邀请已发送",
     "offer-received": "收到邀请",
     "answer-sent": "应答已发送",
-    "answer-received": "收到应答"
+    "answer-received": "收到应答",
+    "microphone-failed": "无法使用麦克风，请点击接听重试"
   },
   "common": {
     "appName": "SOMS",
