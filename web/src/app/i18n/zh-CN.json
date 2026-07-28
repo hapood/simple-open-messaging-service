@@ -36,6 +36,7 @@
     "media-permission-denied": "无法访问麦克风或摄像头，请检查系统权限后重试",
     "media-device-not-found": "未找到可用的麦克风或摄像头",
     "media-device-busy": "麦克风或摄像头正被其他应用占用",
+    "media-device-lost": "麦克风或摄像头连接已中断",
     "media-failed": "无法启动麦克风或摄像头，请重试"
   },
   "common": {

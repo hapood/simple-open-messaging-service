@@ -5,6 +5,7 @@ import {
   WebCallAdapter,
   callMediaErrorStep,
   iceServersFromResponse,
+  localTrackEndAction,
   webReconnectDecision,
 } from './web-call.adapter';
 
@@ -81,6 +82,11 @@ describe('WebCallAdapter multi-device ownership', () => {
       'media-device-busy',
     );
     expect(callMediaErrorStep(new Error('unknown'))).toBe('media-failed');
+  });
+
+  it('ends on microphone loss but keeps audio alive when only the camera is lost', () => {
+    expect(localTrackEndAction('audio')).toBe('end-call');
+    expect(localTrackEndAction('video')).toBe('disable-video');
   });
 
   it('ends an active renderer-owned call before the session credential is cleared', async () => {

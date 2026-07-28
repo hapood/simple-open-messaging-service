@@ -43,7 +43,16 @@ export type CallMediaErrorStep =
   | 'media-permission-denied'
   | 'media-device-not-found'
   | 'media-device-busy'
+  | 'media-device-lost'
   | 'media-failed';
+
+export type LocalTrackEndAction = 'end-call' | 'disable-video';
+
+export function localTrackEndAction(
+  kind: MediaStreamTrack['kind'],
+): LocalTrackEndAction {
+  return kind === 'audio' ? 'end-call' : 'disable-video';
+}
 
 export function callMediaErrorStep(error: unknown): CallMediaErrorStep {
   const name =
@@ -413,6 +422,8 @@ export class WebCallAdapter implements CallAdapter {
       },
       video: withVideo ? { facingMode: this.facingMode } : false,
     });
+    for (const track of this.localStream.getTracks())
+      this.bindLocalTrackLifecycle(track);
     this.update({ cameraEnabled: withVideo });
     if (this.selfVideo) this.selfVideo.srcObject = this.localStream;
   }
@@ -569,8 +580,17 @@ export class WebCallAdapter implements CallAdapter {
     if (!event.streams[0] && !stream.getTracks().includes(event.track))
       stream.addTrack(event.track);
     this.remoteStream = stream;
-    if (event.track.kind === 'video')
-      this.update({ remoteCameraEnabled: event.track.enabled });
+    if (event.track.kind === 'video') {
+      const syncRemoteVideoState = () =>
+        this.update({
+          remoteCameraEnabled:
+            event.track.readyState === 'live' && !event.track.muted,
+        });
+      event.track.onmute = syncRemoteVideoState;
+      event.track.onunmute = syncRemoteVideoState;
+      event.track.onended = syncRemoteVideoState;
+      syncRemoteVideoState();
+    }
     if (this.remoteVideo) {
       this.remoteVideo.srcObject = stream;
       void this.remoteVideo.play().catch(() => undefined);
@@ -598,6 +618,7 @@ export class WebCallAdapter implements CallAdapter {
       if (!track) throw new Error('camera returned no video track');
       this.localStream ??= new MediaStream();
       this.localStream.addTrack(track);
+      this.bindLocalTrackLifecycle(track);
       this.pc.addTrack(track, this.localStream);
       if (this.selfVideo) this.selfVideo.srcObject = this.localStream;
       this.update({ cameraEnabled: true });
@@ -646,6 +667,7 @@ export class WebCallAdapter implements CallAdapter {
       this.localStream!.removeTrack(oldTrack);
       oldTrack.stop();
       this.localStream!.addTrack(nextTrack);
+      this.bindLocalTrackLifecycle(nextTrack);
       this.facingMode = nextFacing;
       if (this.selfVideo) this.selfVideo.srcObject = this.localStream!;
     } catch (error) {
@@ -659,6 +681,25 @@ export class WebCallAdapter implements CallAdapter {
     } catch {
       return false;
     }
+  }
+
+  private bindLocalTrackLifecycle(track: MediaStreamTrack): void {
+    track.onended = () => {
+      if (!this.localStream?.getTracks().includes(track)) return;
+      this.notifyMediaError?.('media-device-lost');
+      if (localTrackEndAction(track.kind) === 'end-call') {
+        const callSid = this.state.callSid;
+        if (callSid)
+          void this.terminate('calls/end', {
+            callSid,
+            endReason: 'failed',
+          });
+        return;
+      }
+      this.localStream.removeTrack(track);
+      this.update({ cameraEnabled: false });
+      void this.signal('video-state', JSON.stringify({ enabled: false }));
+    };
   }
 
   private async signal(kind: string, payload: string): Promise<void> {
@@ -686,9 +727,17 @@ export class WebCallAdapter implements CallAdapter {
   private releaseMedia(): void {
     this.pc?.close();
     this.pc = undefined;
-    for (const track of this.localStream?.getTracks() ?? []) track.stop();
+    for (const track of this.localStream?.getTracks() ?? []) {
+      track.onended = null;
+      track.stop();
+    }
     this.localStream = undefined;
-    for (const track of this.remoteStream?.getTracks() ?? []) track.stop();
+    for (const track of this.remoteStream?.getTracks() ?? []) {
+      track.onmute = null;
+      track.onunmute = null;
+      track.onended = null;
+      track.stop();
+    }
     this.remoteStream = undefined;
     if (this.remoteAudio) this.remoteAudio.srcObject = null;
     this.remoteAudio = undefined;
