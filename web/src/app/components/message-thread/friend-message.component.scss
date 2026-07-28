@@ -360,14 +360,20 @@ app-chat-input {
   // height:48px keeps the centered text whole while the --app-hover background extends under the bar
   // (seamless, mirroring .ci-input-bar). No keyboard in the blocked state, so a static inset suffices.
   padding: 0 16px var(--soms-safe-bottom, 0px);
+  border: 0;
   background: var(--app-hover);
   color: var(--app-text);
+  font-family: inherit;
   font-size: 13px;
   line-height: 20px;
   text-align: center;
   cursor: pointer;
   border-top: 1px solid var(--app-border);
   &:hover { background: var(--app-active, var(--app-hover)); }
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: -2px;
+  }
 }
 
 // Initial-load shimmer skeleton: now in the shared global partial _cb-skeleton.scss (imported via

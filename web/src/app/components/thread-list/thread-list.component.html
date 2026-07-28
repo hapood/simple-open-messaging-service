@@ -1,5 +1,8 @@
 <div class="thread-list" [attr.aria-busy]="status() === LoadStatus.LOADING">
   @switch (status()) {
+    @case (LoadStatus.LOADING) {
+      <span class="thread-loading-status" role="status">{{ 'common.loading' | transloco }}</span>
+    }
     @case (LoadStatus.ERROR) {
       <app-empty-state tone="error" [title]="errorMsg()" [subtitle]="'threadList.couldNotLoad' | transloco"
         [ctaLabel]="'threadList.retry' | transloco" (ctaClick)="genThreadList()" />

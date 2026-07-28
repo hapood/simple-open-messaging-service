@@ -93,6 +93,17 @@ describe('ThreadListComponent', () => {
     expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps initial loading visually quiet while exposing an accessible status', async () => {
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const host = fixture.nativeElement as HTMLElement;
+    expect(host.querySelector('.thread-list')?.getAttribute('aria-busy')).toBe('true');
+    expect(host.querySelector('[role="status"]')?.textContent?.trim())
+      .toBe(TestBed.inject(TranslocoService).translate('common.loading'));
+    expect(host.querySelector('.tl-skeleton')).toBeNull();
+  });
+
   it('ngOnInit skips load() when the list is already loaded (READY)', () => {
     status.set(ConversationLoadStatus.READY);
     items.set([p2p(1, 11)]);

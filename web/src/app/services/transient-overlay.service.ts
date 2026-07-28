@@ -1,4 +1,5 @@
 import { ComponentRef, effect, inject, Injectable, OnDestroy, Type } from '@angular/core';
+import { FocusTrap, FocusTrapFactory } from '@angular/cdk/a11y';
 import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import { NavStateMachineService, type PaneKind } from './nav-state.service';
@@ -20,10 +21,14 @@ import { NavStateMachineService, type PaneKind } from './nav-state.service';
               // because inject() counts as an Angular feature (NG2007). Subclasses inherit this decorator.
 export abstract class TransientOverlayService<TInputs> implements OnDestroy {
   private readonly overlay = inject(Overlay);
+  private readonly focusTrapFactory = inject(FocusTrapFactory);
   private readonly nav = inject(NavStateMachineService);
   private ref: OverlayRef | null = null;
   private closeSub?: { unsubscribe(): void };
   private detachSub?: { unsubscribe(): void };
+  private keydownSub?: { unsubscribe(): void };
+  private focusTrap: FocusTrap | null = null;
+  private previouslyFocused: HTMLElement | null = null;
   /** The pane entry id currently rendered (null = no overlay). Guards the effect so an unrelated pane-stack
    *  change (a different kind pushed/removed) doesn't re-create our CDK overlay while our entry is unchanged. */
   private currentId: number | null = null;
@@ -65,6 +70,7 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
   /** Create the CDK overlay with `inputs` applied to the hosted component (replaces any overlay already open). */
   private present(inputs: TInputs): void {
     this.disposeOverlay();
+    this.previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const ref = this.overlay.create({
       positionStrategy: this.overlay.position().global().top('0').left('0'),
       scrollStrategy: this.overlay.scrollStrategies.block(),
@@ -75,8 +81,15 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
     const inst = cmp.instance as { close?: { subscribe: (fn: () => void) => { unsubscribe(): void } } };
     if (inst.close) this.closeSub = inst.close.subscribe(() => this.close());
     this.detachSub = ref.detachments().subscribe(() => this.onDetached());
+    this.keydownSub = ref.keydownEvents().subscribe((event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      this.close();
+    });
     cmp.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually
     this.ref = ref;
+    this.focusTrap = this.focusTrapFactory.create(ref.overlayElement);
+    void this.focusTrap.focusInitialElementWhenReady();
   }
 
   /** Apply inputs to the attached component. Default: spread the record onto the component via setInput. Override
@@ -93,13 +106,25 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
     this.currentId = null;
     this.closeSub?.unsubscribe(); this.closeSub = undefined;
     this.detachSub?.unsubscribe(); this.detachSub = undefined;
+    this.keydownSub?.unsubscribe(); this.keydownSub = undefined;
+    this.destroyFocusTrapAndRestoreFocus();
     this.ref = null;
   }
 
   private disposeOverlay(): void {
     this.closeSub?.unsubscribe(); this.closeSub = undefined;
     this.detachSub?.unsubscribe(); this.detachSub = undefined;
+    this.keydownSub?.unsubscribe(); this.keydownSub = undefined;
+    this.destroyFocusTrapAndRestoreFocus();
     this.ref?.dispose();
     this.ref = null;
+  }
+
+  private destroyFocusTrapAndRestoreFocus(): void {
+    this.focusTrap?.destroy();
+    this.focusTrap = null;
+    const target = this.previouslyFocused;
+    this.previouslyFocused = null;
+    if (target?.isConnected) target.focus();
   }
 }

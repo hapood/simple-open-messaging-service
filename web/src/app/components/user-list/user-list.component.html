@@ -1,5 +1,7 @@
 <div>@for (thread of dispThreadList(); track thread.id) {
-  <div class="thread-item" (click)="onUsrTrdClick(thread)">
+  <button type="button" class="thread-item"
+    [attr.aria-pressed]="thread.selected === true"
+    (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
       <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.account"
         [identityId]="thread.peerUser.id" [src]="thread.peerUser.avatar"></app-user-avatar>
@@ -15,6 +17,6 @@
         <app-federated-badge class="thread-fed" [domain]="thread.peerUser.domain"></app-federated-badge>
       }
     </div>
-  </div>
+  </button>
   }
 </div>

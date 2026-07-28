@@ -1,13 +1,28 @@
 .thread-item {
+  width: 100%;
   height: 72px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 
   &:hover {
     background: var(--app-hover);
+  }
+
+  &:active {
+    background: var(--app-pressed);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: -2px;
   }
 
   .thread-avatar {

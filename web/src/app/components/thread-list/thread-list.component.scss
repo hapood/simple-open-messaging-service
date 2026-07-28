@@ -6,6 +6,18 @@
   box-sizing: border-box;
 }
 
+.thread-loading-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .thread-item {
   position: relative;
   width: 100%;
@@ -179,89 +191,9 @@
   animation: tl-flip-enter 300ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-// ── Loading skeleton (Material-style tonal shimmer, delay-gated — see skeletonVisible) ───────
-// Mimics .thread-item geometry (72px row, 54px avatar, two text lines) so the handoff to real rows
-// is seamless. Per Material placeholder guidance the surface is the lower-emphasis tonal token
-// (--app-bg-muted, not a flat gray); the shimmer is a single calm 1.6s linear sweep (purposeful,
-// not attention-grabbing), disabled under prefers-reduced-motion. The component is NOT virtualized,
-// so these heights aren't kernel-measured, but integers keep the skeleton→real handoff pixel-stable.
-.tl-skeleton {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden; // surplus rows clip on short viewports; the skeleton never scrolls
-  pointer-events: none;
-  box-sizing: border-box;
-}
-.tl-sk-item {
-  height: 72px;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-}
-.tl-sk-avatar {
-  flex: 0 0 auto;
-  width: 54px;
-  height: 54px;
-}
-.tl-sk-info {
-  flex: 1;
-  min-width: 0;
-  padding-left: 8px;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--app-border); // match the real row separator → seamless handoff
-}
-.tl-sk-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  &:last-child {
-    margin-top: 4px;
-  }
-}
-// Widths for the name/msg bars come from inline [style.width.%]; flex stays at basis auto so the bar
-// keeps its cosmetic width instead of growing to fill. The time bar hugs the right edge via
-// margin-left:auto (the real row achieves the same by letting .thread-name grow).
-.tl-sk-name { flex: 0 0 auto; height: 16px; }
-.tl-sk-time { flex: 0 0 auto; width: 36px; height: 16px; margin-left: auto; }
-.tl-sk-msg  { flex: 0 0 auto; height: 14px; }
-
-// Shared tonal surface + shimmer sweep (avatar circle + text bars). Same gradient/timing as the chat
-// skeleton (_cb-skeleton.scss) for one consistent shimmer language app-wide; the highlight travels
-// right→left across a 200% band so the loop has no visible seam, and 0.35 reads on both the light and
-// dark --app-bg-muted surface. The shimmer is a non-box background-position sweep (exempt from the
-// integer-px rule).
-.tl-sk-avatar,
-.tl-sk-bar {
-  position: relative;
-  overflow: hidden;
-  background-color: var(--app-bg-muted);
-  &::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background-image: linear-gradient(100deg, transparent 35%, rgba(255, 255, 255, 0.35) 50%, transparent 65%);
-    background-size: 200% 100%;
-    background-repeat: no-repeat;
-    animation: tl-sk-shimmer 1.6s linear infinite;
-  }
-}
-.tl-sk-avatar { border-radius: 50%; }       // full circle, like the real avatar
-.tl-sk-bar    { border-radius: 4px; }       // Material small-component corner for the text bars
-@keyframes tl-sk-shimmer {
-  from { background-position: 200% 0; }
-  to   { background-position: -200% 0; }
-}
 @media (prefers-reduced-motion: reduce) {
   .thread-item.tl-flip-move,
   .thread-item.tl-flip-enter {
     animation: none;
   }
-  .tl-sk-avatar::after,
-  .tl-sk-bar::after { animation: none; }
 }

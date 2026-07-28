@@ -209,9 +209,9 @@
     }
 
     @if (blockedPeer()) {
-      <div class="msg-blocked-banner" (click)="unblockPeer()">
+      <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
         {{ 'chat.blockedBanner' | transloco }}
-      </div>
+      </button>
     } @else {
       <app-chat-input
         [members]="[]"
