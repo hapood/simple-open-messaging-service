@@ -1,4 +1,4 @@
-<div class="auth-shell">
+<div class="auth-shell" appAuthViewport>
   <app-auth-brand aria-hidden="true"></app-auth-brand>
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
@@ -55,11 +55,13 @@
         resolves the switchers — no init-time height jump. -->
       <div class="auth-footer">
         <div class="auth-footer__methods">
-          @if (canQr()) {
-            <button type="button" class="link-btn" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
-          }
-          @if (canOtp()) {
-            <button type="button" class="link-btn" (click)="jumpToOtp()">{{ 'auth.switchToOtp' | transloco }}</button>
+          @if (canQr() || canOtp()) {
+            <app-auth-method-menu
+              [qr]="canQr()"
+              [otp]="canOtp()"
+              (qrSelected)="jumpToQr()"
+              (otpSelected)="jumpToOtp()"
+            />
           }
         </div>
         @if (isTauri() && !configFailed()) {

@@ -269,13 +269,19 @@ class MainActivity : TauriActivity() {
     private fun showIme() {
         val v = SomsBridge.webView ?: return
         runOnUiThread {
-            v.requestFocus()
-            // Post after requestFocus so WebView has an active InputConnection when the controller asks for IME.
+            // requestFocusFromTouch follows WebView's editable/touch focus path; plain requestFocus can leave
+            // the WebView focused as a View without attaching Chromium's contenteditable InputConnection.
+            v.requestFocusFromTouch()
+            // Post after focus so WebView has an active InputConnection when the controller asks for IME.
             v.post {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                // Re-bind IMM to Chromium's focused contenteditable before explicitly showing it. The first
+                // user tap uses Chromium's auto policy to create this connection; this method is for the
+                // later in-app emoji → system-keyboard handoff while DOM focus and the caret are preserved.
+                imm.restartInput(v)
                 WindowInsetsControllerCompat(window, v).show(WindowInsetsCompat.Type.ime())
                 // OEM/WebView fallback (notably older EMUI): repeat through InputMethodManager after the
                 // InputConnection has been created. Calling both is idempotent.
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
             }
         }

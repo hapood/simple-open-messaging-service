@@ -64,11 +64,14 @@ export class MediaRowComponent {
     const moreIdx = this.layout().moreCount > 0 ? this.layout().rects.length - 1 : -1;
     const failed = this.unplayableVideos();
     const thr = this.threshold();
-    const loaded = this.loadedBig();
+    const loading = this.loadingImages();
+    const loadFailed = this.failedImages();
+    // Read the service signal through isLoaded below. It is intentionally shared across row remounts.
     return this.layout().rects.map((rect, i) => {
       const m = imgs[i];
       const kind = m?.kind ?? 'image';
       const size = m?.size ?? 0;
+      const mediaKey = this.mediaKey(m, i);
       return {
         rect,
         kind,
@@ -80,7 +83,18 @@ export class MediaRowComponent {
         status: this.data().mediaStatus ?? MEDIA_STATUS.READY,
         // Size-tiered placeholder: only IMAGE over threshold, not yet tapped-to-load. VIDEO/AUDIO are
         // unaffected (they are a gray cell / first-frame already).
-        placeholder: kind === 'image' && thr > 0 && size > thr && !loaded.has(i),
+        placeholder:
+          kind === 'image' &&
+          thr > 0 &&
+          size > thr &&
+          !this.thresholdSvc.isLoaded(mediaKey),
+        loading: loading.has(mediaKey),
+        loadFailed: loadFailed.has(mediaKey),
+        showGate:
+          kind === 'image' &&
+          (loading.has(mediaKey) ||
+            loadFailed.has(mediaKey) ||
+            (thr > 0 && size > thr && !this.thresholdSvc.isLoaded(mediaKey))),
         sizeText: formatBytes(size),
       };
     });
@@ -100,24 +114,71 @@ export class MediaRowComponent {
   /** Size-tiered lazy load: IMAGE cells over the user threshold start as a "Tap to load" placeholder;
    *  the first click loads them (tracked here). Below threshold or already loaded → load immediately. */
   readonly threshold = computed(() => this.thresholdSvc.threshold());
-  private readonly loadedBig = signal<Set<number>>(new Set());
-
+  private readonly loadingImages = signal<ReadonlySet<string>>(new Set());
+  private readonly failedImages = signal<ReadonlySet<string>>(new Set());
   /** Cell click: image — if it's a size-tiered placeholder, the first click loads it (no gallery yet);
    *  otherwise open the gallery viewer. Video/audio are a no-op for now (interaction deferred). */
   onCellClick(i: number): void {
     const cell = this.cells()[i];
     if (cell.kind !== 'image') return;
-    if (cell.placeholder) {
-      this.loadedBig.update((s) => {
-        if (s.has(i)) return s;
-        const next = new Set(s);
-        next.add(i);
-        return next;
-      });
+    if (cell.placeholder || cell.loadFailed) {
+      this.loadImage(i);
       return;
     }
     this.openImage.emit({ images: this.data().images ?? [], index: i });
   }
+
+  private loadImage(index: number): void {
+    const media = this.data().images?.[index];
+    if (!media) return;
+    const key = this.mediaKey(media, index);
+    if (this.loadingImages().has(key)) return;
+    this.updateKeySet(this.failedImages, key, false);
+    this.updateKeySet(this.loadingImages, key, true);
+    // Grant rendering immediately so the real card <img> mounts underneath the loading gate. Its own
+    // load/error events are the single source of truth; a detached `new Image()` can finish without the
+    // dynamically-created row being refreshed, leaving the chat card gated even though the viewer works.
+    this.thresholdSvc.markLoaded(key);
+  }
+
+  onImageLoad(index: number): void {
+    const media = this.data().images?.[index];
+    if (!media) return;
+    const key = this.mediaKey(media, index);
+    this.updateKeySet(this.loadingImages, key, false);
+    this.updateKeySet(this.failedImages, key, false);
+    this.thresholdSvc.markLoaded(key);
+  }
+
+  onImageError(index: number): void {
+    const media = this.data().images?.[index];
+    if (!media) return;
+    const key = this.mediaKey(media, index);
+    this.updateKeySet(this.loadingImages, key, false);
+    this.updateKeySet(this.failedImages, key, true);
+  }
+
+  private updateKeySet(
+    target: { update(fn: (value: ReadonlySet<string>) => ReadonlySet<string>): void },
+    key: string,
+    present: boolean,
+  ): void {
+    target.update((current) => {
+      if (current.has(key) === present) return current;
+      const next = new Set(current);
+      if (present) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  private mediaKey(media: AlbumImage | undefined, index: number): string {
+    return `${media?.msgId ?? this.data().msgId}:${media?.src ?? ''}:${index}`;
+  }
+
+  readonly isAudioOnly = computed(
+    () => this.data().images?.length === 1 && this.data().images?.[0]?.kind === 'audio',
+  );
 
   /** Media meta bar (EVERY media row — single OR album): media counts (images / videos / audios) on
    *  the left + the send time on the right. Replaces the prior single-only size bar and the prior

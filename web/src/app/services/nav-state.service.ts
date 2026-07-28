@@ -13,6 +13,11 @@ export type AsidePanel = 'profile' | 'group-info';
  *  overlap is only lexical. */
 export type TopSection = 'chats' | 'settings' | 'profile';
 
+/** One-shot visual intent for opening a chat. Ordinary navigation stays lightweight; a successful group
+ *  join may opt into the celebratory reveal. The intent is tied to a thread so a later navigation cannot
+ *  accidentally replay it on another conversation. */
+export type ChatOpenTransition = 'standard' | 'group-joined';
+
 /** One entry on the aside overlay stack. Single-depth — peer-profile / group-info are root-only. */
 export interface AsideEntry {
   readonly id: number;
@@ -73,6 +78,9 @@ export class NavStateMachineService {
 
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
+  private readonly pendingChatTransition = signal<
+    { readonly threadId: number; readonly kind: ChatOpenTransition } | undefined
+  >(undefined);
   /** The aside overlay stack (peer-profile / group-info). Single-depth — 0 or 1 entry. */
   readonly aside = signal<readonly AsideEntry[]>([]);
   /** The topmost aside entry, or `undefined` when the aside is closed. */
@@ -138,15 +146,24 @@ export class NavStateMachineService {
    *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
    *  Also clears the pane stack and the in-chat search — a thread switch scopes away any open
    *  dialog/overlay/search. */
-  openChat(threadId: number): void {
+  openChat(threadId: number, transition: ChatOpenTransition = 'standard'): void {
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
+    this.pendingChatTransition.set({ threadId, kind: transition });
     this.chatThreadId.set(threadId);
+  }
+  /** Consume the transition intent exactly once when ChatPane is ready to reveal the requested thread. */
+  consumeChatTransition(threadId: number): ChatOpenTransition {
+    const pending = this.pendingChatTransition();
+    if (pending?.threadId !== threadId) return 'standard';
+    this.pendingChatTransition.set(undefined);
+    return pending.kind;
   }
   /** Leave the chat → home. Also closes the aside + search and clears the pane stack. */
   closeChat(): void {
     this.closeAllPanes();
+    this.pendingChatTransition.set(undefined);
     this.chatThreadId.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
@@ -228,6 +245,7 @@ export class NavStateMachineService {
    *  fresh-login `/` back to the previous user's `/chat/N`. */
   private resetForSessionEnd(): void {
     this.closeAllPanes();
+    this.pendingChatTransition.set(undefined);
     this.chatThreadId.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);

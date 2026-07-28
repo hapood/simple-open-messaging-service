@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, ElementRef, OnDestroy, signal, untracked, viewChild } from '@angular/core';
+import { Component, computed, effect, inject, ElementRef, isDevMode, OnDestroy, signal, untracked, viewChild } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { ChatEmptyComponent } from '../../chat-empty/chat-empty.component';
@@ -8,11 +8,12 @@ import { LayoutService } from '../../../services/layout.service';
 import { prefersReducedMotion } from '../../../lib/motion-utils';
 import type { ConversationItem } from '../../../services/model';
 
+/** Celebratory group-join reveal duration (ms). Ordinary thread changes use the shorter CSS dissolve. */
+const GROUP_JOIN_REVEAL_MS = 300;
 /** Cross-fade duration (ms) — also the grace period before a backgrounded pane's kernel is idled, so its
  *  content stays visible through the dissolve. Kept in sync with `--pane-fade-ms` in the styles below. */
-const ENTER_MS = 300;
-/** Easing + start radius for the circular clip-path reveal on the incoming pane (matches the group-join
- *  hero's circle-expand, so a thread switch and a join feel like the same motion). */
+const ENTER_MS = 150;
+/** Easing + start radius for the circular clip-path reveal reserved for a successful group join. */
 const EASING = [0.32, 0.72, 0, 1];
 const START_RADIUS = 40;
 /** Force-promote fallback if a background init stalls (hung fetch). */
@@ -81,7 +82,7 @@ type SlotKey = 'A' | 'B';
   styles: [`
     :host { display: block; height: 100%; }
     .chat-pane {
-      --pane-fade-ms: 300ms;
+      --pane-fade-ms: 150ms;
       /* Demote (fg→bg) duration. Equals the fade on desktop/tablet (a graceful dissolve is part of the
          chatpane<->chatpane cross-fade there); 0s on compact — see the .compact override below. */
       --pane-demote-ms: var(--pane-fade-ms);
@@ -143,13 +144,34 @@ type SlotKey = 'A' | 'B';
       flex-direction: column;
     }
     .pane-empty > app-chat-empty { display: block; flex: 1 1 auto; min-height: 0; }
-    /* Opaque so the spinner occludes the stale outgoing pane beneath it on compact (it slides in as part of
-       the chat overlay); medium/expanded only ever show it over an empty foreground, where opacity is moot. */
-    .pane-loading { background: var(--app-surface); align-items: center; justify-content: center; }
-    .spinner { width: 80px; height: 80px; animation: chat-pane-spin 0.9s linear infinite; }
-    .spin-track { fill: none; stroke: var(--app-border); stroke-width: 5; opacity: 0.5; }
-    .spin-arc { fill: none; stroke: var(--app-brand); stroke-width: 5; stroke-linecap: round; stroke-dasharray: 60 100; }
+    /* Opaque so the loading surface occludes a stale outgoing pane on compact. The indicator itself waits
+       200ms: normal warm opens finish before that threshold and therefore never flash a loading glyph. A
+       genuinely cold open gets a small, quiet indicator slightly above optical center instead of dragging
+       the old 80px full-page spinner through the route transition. */
+    .pane-loading {
+      box-sizing: border-box;
+      background: var(--app-surface);
+      align-items: center;
+      justify-content: center;
+      padding-bottom: 12vh;
+    }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      animation:
+        chat-pane-spin 0.9s linear infinite,
+        chat-pane-spinner-in 100ms ease 200ms both;
+    }
+    .spin-track { fill: none; stroke: var(--app-border); stroke-width: 6; opacity: 0.45; }
+    .spin-arc { fill: none; stroke: var(--app-brand); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 60 100; }
     @keyframes chat-pane-spin { to { transform: rotate(360deg); } }
+    @keyframes chat-pane-spinner-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: chat-pane-spinner-in 0ms linear 200ms both; }
+    }
   `],
 })
 export class ChatPaneComponent implements OnDestroy {
@@ -212,7 +234,7 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly layerB = viewChild('layerB', { read: ElementRef<HTMLElement> });
 
   /** The in-flight switch: which background pane is being awaited + the target thread it must report. */
-  private pending?: { targetId: number; bgKey: SlotKey };
+  private pending?: { targetId: number; bgKey: SlotKey; startedAt: number };
   private pendingTimer?: ReturnType<typeof setTimeout>;
   /** Idles a backgrounded slot's kernel once the cross-fade has finished (one-shot; re-armed per promote). */
   private teardownTimer?: ReturnType<typeof setTimeout>;
@@ -305,6 +327,11 @@ export class ChatPaneComponent implements OnDestroy {
   onReady(key: SlotKey, tid: number): void {
     const p = this.pending;
     if (!p || p.bgKey !== key || p.targetId !== tid) return;
+    this.perfLog('pane:ready', {
+      threadId: tid,
+      slot: key,
+      elapsedMs: Math.round(performance.now() - p.startedAt),
+    });
     this.promote(key);
   }
 
@@ -317,7 +344,8 @@ export class ChatPaneComponent implements OnDestroy {
 
   private armPending(targetId: number, bgKey: SlotKey): void {
     this.clearPending();
-    this.pending = { targetId, bgKey };
+    this.pending = { targetId, bgKey, startedAt: performance.now() };
+    this.perfLog('pane:init', { threadId: targetId, slot: bgKey });
     this.pendingTimer = setTimeout(() => {
       // Hung-fetch fallback: force-promote rather than strand the UI on the old pane forever.
       if (this.pending?.targetId === targetId && this.pending.bgKey === bgKey) this.promote(bgKey);
@@ -339,20 +367,33 @@ export class ChatPaneComponent implements OnDestroy {
     }
   }
 
-  /** Commit a switch: flip `fgSlot` synchronously (the `.pane-fg` class swap drives a pure-CSS opacity
-   *  cross-fade — idempotent, nothing to leak), AND run a tracked circular clip-path reveal on the INCOMING
-   *  pane so new content opens with the same circle-expand motion as the group-join hero. The reveal is the
-   *  ONLY WAAPI here — the outgoing pane dissolves purely in CSS, so there is no fire-and-forget fade-out
+  /** Commit a switch: flip `fgSlot` synchronously (the `.pane-fg` class swap drives a short pure-CSS
+   *  cross-fade — idempotent, nothing to leak). Only a successful group join runs the tracked circular
+   *  clip-path reveal on the incoming pane. The reveal is the ONLY WAAPI here — the outgoing pane dissolves
+   *  purely in CSS, so there is no fire-and-forget fade-out
    *  that could linger and reassert `opacity:0` over a later foreground (the original blank bug). The reveal
    *  uses `fill:'none'` (reverts to the CSS resting clip-path on finish) and is held as a tracked reference,
    *  canceled on the next promote. Then schedule the outgoing kernel's teardown past the fade. */
   private promote(key: SlotKey): void {
+    const pending = this.pending;
     this.clearPending();
     const oldFg = this.fgSlot();
     if (key === oldFg) return; // already foreground — CSS already shows it, nothing to cross-fade
+    this.perfLog('animation:start', {
+      threadId: pending?.targetId,
+      fromSlot: oldFg,
+      toSlot: key,
+      elapsedMs:
+        pending === undefined
+          ? undefined
+          : Math.round(performance.now() - pending.startedAt),
+    });
     this.fgSlot.set(key); // CSS: outgoing fades out (opacity + delayed visibility), incoming fades in
     const incoming = (key === 'A' ? this.layerA() : this.layerB())?.nativeElement;
-    if (incoming && !this.reducedMotion) {
+    const transition = pending
+      ? this.nav.consumeChatTransition(pending.targetId)
+      : 'standard';
+    if (transition === 'group-joined' && incoming && !this.reducedMotion) {
       // Cancel any in-flight reveal on either layer first (deterministic, tracked — not getAnimations()).
       this.cancelSlotAnim('A');
       this.cancelSlotAnim('B');
@@ -363,11 +404,15 @@ export class ChatPaneComponent implements OnDestroy {
           { clipPath: `circle(${START_RADIUS}px at 50% 50%)` },
           { clipPath: `circle(${fullR}px at 50% 50%)` },
         ],
-        { duration: ENTER_MS, easing: `cubic-bezier(${EASING.join(',')})`, fill: 'none' },
+        { duration: GROUP_JOIN_REVEAL_MS, easing: `cubic-bezier(${EASING.join(',')})`, fill: 'none' },
       );
       if (key === 'A') this.animA = reveal; else this.animB = reveal;
     }
     this.scheduleKernelTeardown(oldFg);
+  }
+
+  private perfLog(event: string, detail: Record<string, unknown>): void {
+    if (isDevMode()) console.log(`[chat-perf] ${event}`, detail);
   }
 
   private cancelSlotAnim(slot: SlotKey): void {

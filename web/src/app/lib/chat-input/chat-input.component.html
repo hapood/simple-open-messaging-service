@@ -10,9 +10,8 @@
 <form class="ci-input-bar" [class.ci-input-bar--emoji-keyboard]="emojiKeyboard()"
       [style.--emoji-kbd-height.px]="emojiKeyboardHeight()"
       #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
-  <!-- Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid. Floats above the bar; the
-       native keyboard stays up on mobile (no VirtualKeyboard swap — hide() is broken on Chrome Android,
-       crbug.com/40912131). Backdrop / Esc closes. The Recents tab is first when non-empty. -->
+  <!-- Emoji panel — WhatsApp/Telegram-style category tabs + grid. It floats above the bar on browser/PC;
+       the Android native shell reflows it below as an IME replacement. Recents is first when non-empty. -->
   <!-- ALWAYS MOUNTED (not behind @if): the panel and every category grid render ONCE at component init, so
        opening the panel and switching tabs are both pure CSS toggles with zero DOM creation/destruction. The
        panel hides via opacity+pointer-events (NOT display:none) so the grids stay painted and their glyphs stay
@@ -112,7 +111,6 @@
         </svg>
       </button>
       <app-chat-editor class="ci-input" [members]="members()" [placeholder]="placeholder()"
-                       (pointerdown)="onEditorPointerDown($event)"
                        (focusChange)="onEditorFocusChange($event)"
                        (attachmentPaste)="onAttachmentPaste($event)"
                        (html)="onHtml($event)" (send)="onEditorSend()"></app-chat-editor>

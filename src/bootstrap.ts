@@ -28,6 +28,10 @@ import { BusinessCode } from './common/business-code.js';
 // 'too-large' rejection (not a 500).
 const MULTIPART_LIMIT = 100 * 1024 * 1024;
 
+/** Browser/WebView cache lifetime for authenticated uploads. Upload URLs are immutable: chat media is
+ * content-addressed and avatar updates mint a new path, so a rendered asset can be safely reused. */
+const UPLOAD_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
+
 /** Matches a CAS shard URL at the start of a request path and captures the 64-hex digest. The
  *  /uploads/ preHandler uses this to decide whether a request needs per-object authorization (a
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
@@ -264,8 +268,8 @@ async function registerStaticServing(
   // cacheControl:false makes the `send` stream omit its own Cache-Control (otherwise it emits
   // "public, max-age=0" and @fastify/static applies it AFTER setHeaders, clobbering ours). With it
   // off, setHeaders controls the directive: `private` (no proxy caching — the resource is
-  // auth-gated) with a short browser max-age; Vary:Cookie so a shared browser doesn't reuse one
-  // session's response for another.
+  // auth-gated) with a 14-day browser/WebView lifetime. Upload URLs are immutable, so `immutable`
+  // avoids needless revalidation while fresh. Vary:Cookie keeps cookie-authenticated variants apart.
   //
   // Open upload model (any file type accepted at POST /upload/file): serving-side headers carry
   // the security the old whitelist used to. nosniff is set on EVERYTHING so the extension's
@@ -283,7 +287,10 @@ async function registerStaticServing(
       res: { setHeader: (name: string, value: string) => void },
       resourcePath: string,
     ) => {
-      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.setHeader(
+        'Cache-Control',
+        `private, max-age=${UPLOAD_CACHE_MAX_AGE_SECONDS}, immutable`,
+      );
       res.setHeader('Vary', 'Cookie');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       if (!isInlineMedia(resourcePath)) {

@@ -219,6 +219,34 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(items[0].lastMessageSenderId).toBe(77);
   });
 
+  it('warm HELLO replay preserves the cached preview while local hydration is pending', async () => {
+    const cached = p2p(1, 77, {
+      lastMessageSeq: 5,
+      lastMessagePreview: 'cached preview',
+      lastMessageSenderId: 77,
+    });
+    await seedCachedThread(cached);
+
+    // Hold hydration open so this assertion observes the exact gap between the body-less delta replay and
+    // the eventual IDB preview read. This was the Android restart flicker window.
+    spyOn(TestBed.inject(MessageRepository), 'getNewestMessages').and.returnValue(
+      new Promise<Map<number, Message>>(() => undefined),
+    );
+    repo.load();
+    await flush(20);
+    expect(repo.items()[0].lastMessagePreview).toBe('cached preview');
+
+    queryThreadDeltaSpy.and.returnValue(of({
+      code: 0,
+      data: [addOp(p2p(1, 77, { lastMessageSeq: 5 }))],
+    }));
+    emitHello({ userId: 1, threadRevision: 5 });
+    await flush(20);
+
+    expect(repo.items()[0].lastMessagePreview).toBe('cached preview');
+    expect(repo.items()[0].lastMessageSenderId).toBe(77);
+  });
+
   // ── HELLO (the network-refresh half: delta-replay + missed-summary walk) ───────────────────────
 
   it('HELLO without a userId is ignored (no session established, no fetch)', async () => {

@@ -17,8 +17,14 @@ function flush(ms = 0): Promise<void> {
 /** A minimal Message row (seq is the IDB key second component + the cursor the kernel uses). */
 function msg(threadId: number, seq: number, content = `m${seq}`): Message {
   return {
-    seq, contentType: 'PURE_TEXT', content, threadId, creator: 1,
-    createdAt: seq * 1000, updatedAt: seq * 1000, isDeleted: false,
+    seq,
+    contentType: 'PURE_TEXT',
+    content,
+    threadId,
+    creator: 1,
+    createdAt: seq * 1000,
+    updatedAt: seq * 1000,
+    isDeleted: false,
   } as unknown as Message;
 }
 
@@ -65,34 +71,142 @@ describe('MessageRepository', () => {
   async function dbCount(threadId: number): Promise<number> {
     const db = await webdb.db();
     let n = 0;
-    let cursor = await db.transaction('messages').store.openCursor(
-      IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity], false, false),
-    );
-    while (cursor) { n++; cursor = await cursor.continue(); }
+    let cursor = await db.transaction('messages').store.openCursor(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity], false, false));
+    while (cursor) {
+      n++;
+      cursor = await cursor.continue();
+    }
     return n;
   }
 
-  it('init (skip:0) backend-probes + writes through to IDB', async () => {
+  it('cold init (skip:0) backend-probes + writes through to IDB', async () => {
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 3), msg(42, 2), msg(42, 1)], hasMore: true }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 3), msg(42, 2), msg(42, 1)],
+        hasMore: true,
+      }),
     );
-    const res = await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
+    const res = await repo.queryMessages(42, {
+      skip: 0,
+      take: 3,
+      orderBy: 'desc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([3, 2, 1]); // desc, as returned by the backend
     expect(res.hasMore).toBe(true);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
     expect(await dbCount(42)).toBe(3); // write-through
   });
 
+  it('warm init returns the latest IDB page immediately and revalidates in the background', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 3), msg(42, 2), msg(42, 1)],
+        hasMore: true,
+      }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
+    queryMessageLogSpy.calls.reset();
+
+    const refresh$ = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(refresh$);
+
+    const warm = await repo.queryMessages(42, {
+      skip: 0,
+      take: 3,
+      orderBy: 'desc',
+    });
+    expect(warm.data.map((m) => m.seq)).toEqual([3, 2, 1]);
+    expect(warm.hasMore).toBe(true);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+
+    refresh$.next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 4), msg(42, 3), msg(42, 2)],
+      hasMore: true,
+    });
+    refresh$.complete();
+    await flush(10);
+    expect(await dbCount(42)).toBe(4);
+  });
+
+  it('warm init emits a live signal when background revalidation finds a newer tail', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 2), msg(42, 1)],
+        hasMore: false,
+      }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 2, orderBy: 'desc' });
+
+    const signals: { threadId: number; seq: number }[] = [];
+    repo.liveSignal$.subscribe((s) => signals.push(s));
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 3), msg(42, 2)],
+        hasMore: true,
+      }),
+    );
+
+    await repo.queryMessages(42, { skip: 0, take: 2, orderBy: 'desc' });
+    await flush(20);
+    expect(signals).toEqual([{ threadId: 42, seq: 3 }]);
+  });
+
+  it('warm init never exposes cached messages at or before the clear-history watermark', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 3), msg(42, 2), msg(42, 1)],
+        hasMore: true,
+      }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
+    queryMessageLogSpy.calls.reset();
+
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 3)],
+        hasMore: false,
+      }),
+    );
+    const warm = await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' }, 2500);
+
+    expect(warm.data.map((m) => m.seq)).toEqual([3]);
+    expect(warm.data.every((m) => m.createdAt > 2500)).toBe(true);
+  });
+
   it('getOlder (skip:1) is a cache HIT for a contiguous held range → no backend call', async () => {
     // Seed the cache with seqs 1..5 (a prior session's scroll).
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [5, 4, 3, 2, 1].map((s) => msg(42, s)), hasMore: true }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [5, 4, 3, 2, 1].map((s) => msg(42, s)),
+        hasMore: true,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 5, orderBy: 'desc' });
     queryMessageLogSpy.calls.reset();
 
     // getOlder(cursor=6, take=3): the cache holds [3,4,5] contiguously below 6 → served from IDB.
-    const res = await repo.queryMessages(42, { skip: 1, take: 3, lastSeq: 6, orderBy: 'desc' });
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 3,
+      lastSeq: 6,
+      orderBy: 'desc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([5, 4, 3]); // desc, highest-first below 6
     expect(res.hasMore).toBe(true); // seq 3 > 0 → there is older
     expect(queryMessageLogSpy).not.toHaveBeenCalled(); // cache HIT — no duplicate pull
@@ -101,9 +215,19 @@ describe('MessageRepository', () => {
   it('getOlder GAP-FILLS when the cache lacks the range → backend called + cached', async () => {
     // Empty cache; getOlder(cursor=6, take=3) must backfill from the API.
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [5, 4, 3].map((s) => msg(42, s)), hasMore: true }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [5, 4, 3].map((s) => msg(42, s)),
+        hasMore: true,
+      }),
     );
-    const res = await repo.queryMessages(42, { skip: 1, take: 3, lastSeq: 6, orderBy: 'desc' });
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 3,
+      lastSeq: 6,
+      orderBy: 'desc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([5, 4, 3]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
     expect(await dbCount(42)).toBe(3); // gap-fill persisted → next time is a cache hit
@@ -112,13 +236,23 @@ describe('MessageRepository', () => {
   it('getOlder floor: a contiguous cache reaching seq 0 reports hasMore=false (no backend)', async () => {
     // Seed [0,1,2] (the whole small thread) + establish hasMore via the seeding call.
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [2, 1, 0].map((s) => msg(42, s)), hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [2, 1, 0].map((s) => msg(42, s)),
+        hasMore: false,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
     queryMessageLogSpy.calls.reset();
 
     // getOlder(cursor=2, take=3): cache holds [0,1] below 2, contiguous to the floor (seq 0) → hit, hasMore=false.
-    const res = await repo.queryMessages(42, { skip: 1, take: 3, lastSeq: 2, orderBy: 'desc' });
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 3,
+      lastSeq: 2,
+      orderBy: 'desc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([1, 0]);
     expect(res.hasMore).toBe(false); // reached seq 0 → no older
     expect(queryMessageLogSpy).not.toHaveBeenCalled();
@@ -128,15 +262,30 @@ describe('MessageRepository', () => {
     // Seed only [5, 3] (missing 4 — e.g. a jump-to-message left a gap). getOlder(cursor=6, take=3) must NOT
     // serve the gapped [5, 3] — it backfills the contiguous truth from the API.
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [5, 3].map((s) => msg(42, s)), hasMore: true }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [5, 3].map((s) => msg(42, s)),
+        hasMore: true,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 2, orderBy: 'desc' });
     queryMessageLogSpy.calls.reset();
 
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [5, 4, 3].map((s) => msg(42, s)), hasMore: true }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [5, 4, 3].map((s) => msg(42, s)),
+        hasMore: true,
+      }),
     );
-    const res = await repo.queryMessages(42, { skip: 1, take: 3, lastSeq: 6, orderBy: 'desc' });
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 3,
+      lastSeq: 6,
+      orderBy: 'desc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([5, 4, 3]); // contiguous, not the gapped [5, 3]
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
   });
@@ -146,7 +295,11 @@ describe('MessageRepository', () => {
     repo.liveSignal$.subscribe((s) => (emitted = s));
 
     // Identity-only frame {threadId, seq, ts} — no body (single data source = pull).
-    eventSubject.next({ event: 'NEW_MESSAGE', status: 0, data: { threadId: 42, seq: 7, ts: 7000 } });
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      status: 0,
+      data: { threadId: 42, seq: 7, ts: 7000 },
+    });
     await flush(10);
 
     expect(emitted).toEqual({ threadId: 42, seq: 7 }); // signal fired (kernel will pull the body)
@@ -156,27 +309,51 @@ describe('MessageRepository', () => {
   it('getNewer after a NEW_MESSAGE gap-fills from the backend (identity-only → body not pre-cached)', async () => {
     // Establish seq 5 as the prior latest via a backend init (sets maxSeenSeq).
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 5)], hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 5)],
+        hasMore: false,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' });
 
     // A live arrival (seq 6) is identity-only — the body is NOT cached.
-    eventSubject.next({ event: 'NEW_MESSAGE', status: 0, data: { threadId: 42, seq: 6, ts: 6000 } });
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      status: 0,
+      data: { threadId: 42, seq: 6, ts: 6000 },
+    });
     await flush(10);
     queryMessageLogSpy.calls.reset();
 
     // The kernel pulls newer-than-5 → cache MISS (no body cached by NEW_MESSAGE) → backend gap-fill.
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 6)], hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 6)],
+        hasMore: false,
+      }),
     );
-    const res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 5, orderBy: 'asc' });
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 30,
+      lastSeq: 5,
+      orderBy: 'asc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([6]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill — the body wasn't pre-cached
   });
 
   it('writes dedup by [threadId, seq] (idempotent put — no duplicate rows)', async () => {
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 1)], hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 1)],
+        hasMore: false,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' });
     await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' }); // same row again
@@ -184,10 +361,12 @@ describe('MessageRepository', () => {
   });
 
   it('a backend failure degrades to an empty page (the cache survives a transient outage)', async () => {
-    queryMessageLogSpy.and.returnValue(
-      throwError(() => new Error('net')),
-    );
-    const res = await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
+    queryMessageLogSpy.and.returnValue(throwError(() => new Error('net')));
+    const res = await repo.queryMessages(42, {
+      skip: 0,
+      take: 3,
+      orderBy: 'desc',
+    });
     expect(res.data).toEqual([]);
     expect(res.hasMore).toBe(false);
   });
@@ -195,11 +374,21 @@ describe('MessageRepository', () => {
   it('deleteByThread purges the thread cache but leaves other threads untouched (cache GC)', async () => {
     // Seed two threads: 42 ([1,2,3]) and 99 ([1,2]).
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [3, 2, 1].map((s) => msg(42, s)), hasMore: true }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [3, 2, 1].map((s) => msg(42, s)),
+        hasMore: true,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [2, 1].map((s) => msg(99, s)), hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [2, 1].map((s) => msg(99, s)),
+        hasMore: false,
+      }),
     );
     await repo.queryMessages(99, { skip: 0, take: 2, orderBy: 'desc' });
     expect(await dbCount(42)).toBe(3);
@@ -214,16 +403,31 @@ describe('MessageRepository', () => {
   it('after deleteByThread, a getNewer gap-fills from the backend (the stale cache + ceiling are gone)', async () => {
     // Seed thread 42 + establish seq 5 as the prior ceiling.
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 5)], hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 5)],
+        hasMore: false,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' });
     await repo.deleteByThread(42); // purge the cached body + clear maxSeenSeq
     queryMessageLogSpy.calls.reset();
 
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 6)], hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 6)],
+        hasMore: false,
+      }),
     );
-    const res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 5, orderBy: 'asc' });
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 30,
+      lastSeq: 5,
+      orderBy: 'asc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([6]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill — nothing stale served from the purged cache
   });
@@ -235,13 +439,23 @@ describe('MessageRepository', () => {
   it('session-end reset clears maxSeenSeq (a getNewer cache HIT becomes a gap-fill)', async () => {
     // Seed [5,6,7] + establish seq 7 as the ceiling (init sets maxSeenSeq).
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [7, 6, 5].map((s) => msg(42, s)), hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [7, 6, 5].map((s) => msg(42, s)),
+        hasMore: false,
+      }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
     queryMessageLogSpy.calls.reset();
 
     // getNewer (above 4): cache holds [5,6,7] contiguously up to the ceiling (7) → HIT, no backend.
-    let res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 4, orderBy: 'asc' });
+    let res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 30,
+      lastSeq: 4,
+      orderBy: 'asc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
     expect(res.hasMore).toBe(false); // reached the ceiling
     expect(queryMessageLogSpy).not.toHaveBeenCalled();
@@ -253,9 +467,19 @@ describe('MessageRepository', () => {
     // Same query now gap-fills: with no ceiling, the short cached range is not authoritative → backend.
     // (orderBy:'asc' → the backend returns the page ascending.)
     queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [5, 6, 7].map((s) => msg(42, s)), hasMore: false }),
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [5, 6, 7].map((s) => msg(42, s)),
+        hasMore: false,
+      }),
     );
-    res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 4, orderBy: 'asc' });
+    res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 30,
+      lastSeq: 4,
+      orderBy: 'asc',
+    });
     expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill after the ceiling was cleared
   });
@@ -277,7 +501,10 @@ describe('MessageRepository', () => {
       repo.liveSignal$.subscribe((s) => signals.push(s));
       await repo.applyMissed([msg(42, 1), msg(42, 5), msg(42, 3), msg(99, 2)]);
       // thread 42 collapses to seq 5, thread 99 to seq 2 — exactly two signals, in first-seen order.
-      expect(signals).toEqual([{ threadId: 42, seq: 5 }, { threadId: 99, seq: 2 }]);
+      expect(signals).toEqual([
+        { threadId: 42, seq: 5 },
+        { threadId: 99, seq: 2 },
+      ]);
     });
 
     it('an empty page is a no-op (no signal)', async () => {

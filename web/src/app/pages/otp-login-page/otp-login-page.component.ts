@@ -14,6 +14,8 @@ import { ConfigService } from '../../services/config.service';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { translateBizResult } from '../../services/biz-code';
 import { isTauri } from '../../services/runtime';
+import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
+import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
 
 /**
  * One-time-code login page (every platform). The user enters the account the admin issued the code for + the
@@ -35,6 +37,8 @@ import { isTauri } from '../../services/runtime';
     MatInputModule,
     MatProgressBarModule,
     RouterLink,
+    AuthViewportDirective,
+    AuthMethodMenuComponent,
   ],
   templateUrl: './otp-login-page.component.html',
   styleUrl: './otp-login-page.component.scss',

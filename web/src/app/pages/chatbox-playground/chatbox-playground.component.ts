@@ -28,11 +28,6 @@ import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { StickyDateOverlayComponent } from '../../components/message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
 
-// Angular production AOT sets the global ngDevMode to falsy and uses it for dead-code elimination (same pattern as the
-// virtual-scroll kernel). It guards the "dev badge injection" — production builds create no badge DOM (zero overhead);
-// in non-Angular environments the global is undefined, which likewise disables it.
-declare const ngDevMode: boolean | null | undefined;
-
 // Kernel tuning defaults (kept in sync with DEFAULTS in chat-box-scroller.ts / anchor.ts). mountPx was removed (dead param of the array kernel).
 const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
 
@@ -103,7 +98,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly atBottom = signal(true);
   /** Debug mode: enables FAB badges + balance diagnostics to the console; all off in performance mode. */
   readonly debugMode = signal(true);
-  /** Debug: disables mount checkpoints (balance won't trigger loadOlder/loadNewer). Default false (checkpoints load normally). Dev-only (kernel ngDevMode-guarded; stripped by production AOT). */
+  /** Debug: disables mount checkpoints (balance won't trigger loadOlder/loadNewer). Default false (checkpoints load normally). Dev-only (kernel isDevMode()-guarded; stripped by production AOT). */
   readonly closeCheckpoint = signal(false);
   /** Source get latency (ms, simulates slow IO). Default 200; adjustable to 0/1s/5s to test loading/compensation behavior. */
   readonly sourceLatency = signal(200);
@@ -350,12 +345,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       (images, index) => this.galleryViewer.open(images, index, 0),
       (data) => this.fileDetail.open(data, 0),
     );
-    // Dev badge (head/body + message id): injected into the row by the playground; ngDevMode-guarded → production AOT creates none.
-    if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
+    // Dev badge (head/body + message id): injected into the row by the playground; isDevMode()-guarded → production AOT creates none.
+    if (isDevMode()) this.attachDevBadge(vs.el, item, isShowHead);
     return vs;
   }
 
-  /** Inject a dev badge into .msg-row: head (green) / body (orange) + message id (+ PENDING/FAKE tag when kind is set). Dev-only (ngDevMode); destroyed with the component. */
+  /** Inject a dev badge into .msg-row: head (green) / body (orange) + message id (+ PENDING/FAKE tag when kind is set). Dev-only (isDevMode()); destroyed with the component. */
   private attachDevBadge(host: HTMLElement, item: CbItem<ChatItemData>, isHead: boolean): void {
     const d = item.data;
     if (d.type !== 'msg') return; // message rows only (date rows have no grouping concept)

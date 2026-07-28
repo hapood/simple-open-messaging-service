@@ -1,39 +1,35 @@
-import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { provideTransloco } from '@jsverse/transloco';
+import { Subject } from 'rxjs';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
-import { UpdateBannerComponent } from './update-banner.component';
-import { UpdateService } from '../../services/update.service';
 import { LanguageService } from '../../services/language.service';
-import { IndicatorSlotService } from '../../services/indicator-slot.service';
+import { UpdateService } from '../../services/update.service';
+import { UpdateBannerComponent } from './update-banner.component';
 
-/** Minimal UpdateService stub: just the surface the banner reads (`available`) + dismiss flips it back
- *  off, mirroring the real service. applyUpdate is a no-op (the real one reloads the page). */
-function makeUpdateStub(): UpdateService {
+describe('UpdateBannerComponent (global Material snackbar)', () => {
+  const action$ = new Subject<void>();
+  const dismissed$ = new Subject<void>();
+  const ref = {
+    onAction: () => action$.asObservable(),
+    afterDismissed: () => dismissed$.asObservable(),
+    dismiss: jasmine.createSpy('dismiss'),
+  };
+  const snackBar = { open: jasmine.createSpy('open').and.returnValue(ref) };
   const available = signal(false);
-  return {
+  const update = {
     available,
-    bannerVisible: available,
-    applyUpdate: () => Promise.resolve(),
-    dismiss: () => available.set(false),
-  } as unknown as UpdateService;
-}
-
-/** Drive the banner and wait for zoneless CD + afterRenderEffect to settle. */
-async function stabilize<T>(fixture: { detectChanges: () => void; whenStable: () => Promise<unknown>}): Promise<void> {
-  fixture.detectChanges();
-  await fixture.whenStable();
-  // let Motion's enter spring run so afterRenderEffect's async work doesn't leak across tests
-  await new Promise((r) => setTimeout(r, 60));
-}
-
-describe('UpdateBannerComponent (indicator-slot priority + queueing)', () => {
-  let update: UpdateService;
-  let slot: IndicatorSlotService;
+    applyUpdate: jasmine.createSpy('applyUpdate').and.resolveTo(),
+    dismiss: jasmine.createSpy('dismiss').and.callFake(() => available.set(false)),
+  };
 
   beforeEach(() => {
-    TestBed.resetTestingModule();
-    update = makeUpdateStub();
+    available.set(false);
+    snackBar.open.calls.reset();
+    ref.dismiss.calls.reset();
+    update.applyUpdate.calls.reset();
+    update.dismiss.calls.reset();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -46,89 +42,57 @@ describe('UpdateBannerComponent (indicator-slot priority + queueing)', () => {
           loader: InlineTranslocoLoader,
         }),
         LanguageService,
-        IndicatorSlotService,
         { provide: UpdateService, useValue: update },
+        { provide: MatSnackBar, useValue: snackBar },
       ],
     });
-    slot = TestBed.inject(IndicatorSlotService);
   });
-  afterEach(() => TestBed.resetTestingModule());
 
-  function create(): { nativeElement: HTMLElement; detectChanges: () => void; whenStable: () => Promise<unknown> } {
+  it('does not open while no update is available', async () => {
     const fixture = TestBed.createComponent(UpdateBannerComponent);
-    return {
-      nativeElement: fixture.nativeElement as HTMLElement,
-      detectChanges: () => fixture.detectChanges(),
-      whenStable: () => fixture.whenStable(),
-    };
-  }
-
-  it('stays hidden when no update is available', async () => {
-    const f = create();
-    await stabilize(f);
-    expect(f.nativeElement.querySelector('.banner')).toBeNull();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(snackBar.open).not.toHaveBeenCalled();
   });
 
-  it('shows when an update is available and the connection chip is not occupying the slot', async () => {
-    const f = create();
-    update.available.set(true);
-    await stabilize(f);
-    expect(f.nativeElement.querySelector('.banner')).not.toBeNull();
-  });
-
-  it('defers while the connection chip occupies the slot (priority)', async () => {
-    const f = create();
-    update.available.set(true);
-    slot.priorityOccupied.set(true); // the connection chip is showing
-    await stabilize(f);
-    expect(f.nativeElement.querySelector('.banner')).toBeNull();
-  });
-
-  it('surfaces once the connection chip clears the slot (when one is gone, the second shows)', async () => {
-    const f = create();
-    update.available.set(true);
-    slot.priorityOccupied.set(true);
-    await stabilize(f);
-    expect(f.nativeElement.querySelector('.banner')).toBeNull();
-    slot.priorityOccupied.set(false); // chip clears
-    await stabilize(f);
-    expect(f.nativeElement.querySelector('.banner')).not.toBeNull();
-  });
-
-  it('shares the .tonal-chip shell with the connection chip', async () => {
-    const f = create();
-    update.available.set(true);
-    await stabilize(f);
-    expect(f.nativeElement.querySelector('.banner.tonal-chip')).not.toBeNull();
-  });
-
-  // --- Demo contract (playground override; production leaves demoAvailable unset) ---
-
-  it('demoAvailable=true overrides the service (surfaces even when the service has no update)', async () => {
+  it('opens a standard bottom notification when an update becomes available', async () => {
     const fixture = TestBed.createComponent(UpdateBannerComponent);
-    expect(update.available()).toBe(false); // service is idle
-    fixture.componentRef.setInput('demoAvailable', true); // playground preview forces it on
-    await stabilize({ detectChanges: () => fixture.detectChanges(), whenStable: () => fixture.whenStable() });
-    expect(fixture.nativeElement.querySelector('.banner')).not.toBeNull();
+    fixture.detectChanges();
+    available.set(true);
+    await fixture.whenStable();
+    expect(snackBar.open).toHaveBeenCalledWith(
+      jasmine.any(String),
+      jasmine.any(String),
+      jasmine.objectContaining({ duration: 60000 }),
+    );
   });
 
-  it('demoAvailable=true still defers to the connection chip (the shared slot priority is unchanged)', async () => {
+  it('applies the update from the snackbar action', async () => {
+    const fixture = TestBed.createComponent(UpdateBannerComponent);
+    available.set(true);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    action$.next();
+    expect(update.applyUpdate).toHaveBeenCalled();
+  });
+
+  it('dismisses the pending update when the snackbar closes', async () => {
+    const fixture = TestBed.createComponent(UpdateBannerComponent);
+    available.set(true);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    dismissed$.next();
+    expect(update.dismiss).toHaveBeenCalled();
+  });
+
+  it('supports the playground override and emits demoDismiss', async () => {
     const fixture = TestBed.createComponent(UpdateBannerComponent);
     fixture.componentRef.setInput('demoAvailable', true);
-    slot.priorityOccupied.set(true);
-    await stabilize({ detectChanges: () => fixture.detectChanges(), whenStable: () => fixture.whenStable() });
-    expect(fixture.nativeElement.querySelector('.banner')).toBeNull();
-  });
-
-  it('Dismiss in demo mode emits demoDismiss (production would call the service instead)', async () => {
-    const fixture = TestBed.createComponent(UpdateBannerComponent);
-    fixture.componentRef.setInput('demoAvailable', true);
-    let dismissed = 0;
-    fixture.componentInstance.demoDismiss.subscribe(() => { dismissed++; });
-    await stabilize({ detectChanges: () => fixture.detectChanges(), whenStable: () => fixture.whenStable() });
-    (fixture.nativeElement.querySelector('.btn.ghost') as HTMLButtonElement).click();
-    expect(dismissed).toBe(1);
-    // The real service stays untouched in demo mode.
-    expect(update.available()).toBe(false);
+    let count = 0;
+    fixture.componentInstance.demoDismiss.subscribe(() => count++);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    dismissed$.next();
+    expect(count).toBe(1);
   });
 });

@@ -3,18 +3,22 @@
 // px on every height-contributing value (button, track, line-height) per the project's CSS rule.
 
 .ap {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  gap: 6px;
+  padding: 0 8px;
 }
 .ap-btn {
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
+  position: relative;
+  z-index: 2;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -28,27 +32,85 @@
   &:active { transform: scale(0.92); }
   &:disabled { background: var(--app-text-muted); cursor: not-allowed; }
 }
-.ap-track {
-  flex: 1 1 auto;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--app-hover);
-  overflow: hidden;
+.ap-pending-ring {
+  position: absolute;
+  inset: -3px;
+  width: 32px;
+  height: 32px;
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.68);
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-dasharray: 56 32;
+  pointer-events: none;
+  animation: ap-pending-spin 0.85s linear infinite;
 }
-.ap-fill {
+@keyframes ap-pending-spin {
+  to { transform: rotate(360deg); }
+}
+.ap-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ap-wave {
+  z-index: 2;
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--im-bubble-text) 32%, transparent) 0 2px,
+    transparent 2px 5px
+  );
+  mask: linear-gradient(0deg, transparent 1px, #000 1px 5px, transparent 5px 7px, #000 7px 14px, transparent 14px);
+  cursor: pointer;
+  overflow: hidden;
+  &:disabled { cursor: default; }
+}
+.ap-wave-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
   height: 100%;
-  border-radius: 2px;
-  background: var(--app-brand);
+  background: repeating-linear-gradient(
+    90deg,
+    var(--app-brand) 0 2px,
+    transparent 2px 5px
+  );
   transition: width 0.1s linear;
 }
-.ap-dur {
-  flex: 0 0 auto;
-  font-size: 12px;
-  line-height: 20px;
+.ap-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 12px;
   color: var(--app-text-muted);
   font-variant-numeric: tabular-nums;
 }
-.ap--failed .ap-fill { background: var(--app-text-muted); }
+.ap-meta-end { display: inline-flex; align-items: center; gap: 3px; }
+.ap-unplayed {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--app-brand);
+}
+.ap-rate {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 28px;
+  width: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--app-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ap--failed .ap-wave-fill { background: var(--app-text-muted); }
 
 // The <audio> element has no controls — it is the playback engine only. Hidden (still plays + fires events).
 .ap-el {

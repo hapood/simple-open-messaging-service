@@ -1,4 +1,12 @@
-import { layoutAlbum, ALBUM_W, ALBUM_MIN_ROW_H_RATIO, ALBUM_MAX_ROW_H_RATIO, ALBUM_SINGLE_MAX_H } from './layout';
+import {
+  layoutAlbum,
+  ALBUM_W,
+  ALBUM_MIN_ROW_H_RATIO,
+  ALBUM_MAX_ROW_H_RATIO,
+  ALBUM_SINGLE_MAX_H,
+  VOICE_BAR_H,
+  VOICE_BAR_W,
+} from './layout';
 
 describe('layoutAlbum', () => {
   const mkFixed = (n: number, w = 400, h = 300) => Array.from({ length: n }, () => ({ w, h }));
@@ -102,6 +110,22 @@ describe('layoutAlbum', () => {
     const { rects, totalH } = assertInvariants(mkMixed([[3, 16], [3, 16]]));
     expect(rects[0].hPx).toBeLessThanOrEqual(MAX_H);
     expect(totalH).toBeLessThanOrEqual(MAX_H);
+    expect(rects[1].xPct + rects[1].wPct).toBeCloseTo(100, 5);
+  });
+
+  it('audio uses the compact fixed voice-note dimensions', () => {
+    const result = layoutAlbum([{ kind: 'audio', w: 0, h: 0 }]);
+    expect(result.containerW).toBe(VOICE_BAR_W);
+    expect(result.totalH).toBe(VOICE_BAR_H);
+  });
+
+  it('grows longer voice notes within the compact width cap', () => {
+    const short = layoutAlbum([{ kind: 'audio', w: 0, h: 0, duration: 2 }]);
+    const long = layoutAlbum([{ kind: 'audio', w: 0, h: 0, duration: 120 }]);
+    expect(short.containerW).toBeGreaterThanOrEqual(VOICE_BAR_W);
+    expect(long.containerW).toBeGreaterThan(short.containerW);
+    expect(long.containerW).toBeLessThanOrEqual(ALBUM_W);
+    expect(long.totalH).toBe(VOICE_BAR_H);
   });
 
   it('single ultra-wide panorama: row height clamped by minH not squashed, width does not explode', () => {

@@ -1,10 +1,9 @@
 import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { isDevMode } from '@angular/core';
 import { catchError, finalize, tap } from 'rxjs';
 
-/** Dev-build-only compile gate (mirrors Angular's own per-file declaration): truthy under `ng serve`,
- *  folded to a constant and dead-code-eliminated in prod AOT. Gates the chatty cancel/abort trace below
+/** Dev-build-only gate. Gates the chatty cancel/abort trace below
  *  so production logs carry only REAL failures, not normal RxJS teardown. See {@link httpTraceInterceptor}. */
-declare const ngDevMode: boolean | null | undefined;
 
 /**
  * Always-on HTTP visibility interceptor: logs every FAILED request to the webview console so
@@ -59,21 +58,21 @@ export const httpTraceInterceptor: HttpInterceptorFn = (req, next) => {
         // null/ProgressEvent for a status-0 network failure; the parsed body for an HTTP status failure).
         const cause = err.error;
         if (cause?.name === 'AbortError') {
-          if (ngDevMode) console.warn(`[http] aborted ${req.method} ${req.url}${ridSuffix}`);
+          if (isDevMode()) console.warn(`[http] aborted ${req.method} ${req.url}${ridSuffix}`);
         } else if (err.status === 0) {
           console.error(`[http] network ${req.method} ${req.url}${ridSuffix}`, err.message || '');
         } else if (err.status >= 500) {
-          console.error(`[http] ${err.status} ${req.method} ${req.url}${ridSuffix}`, ...(ngDevMode ? [cause] : []));
+          console.error(`[http] ${err.status} ${req.method} ${req.url}${ridSuffix}`, ...(isDevMode() ? [cause] : []));
         } else {
           console.warn(`[http] ${err.status} ${req.method} ${req.url}${ridSuffix}`);
         }
-      } else if (ngDevMode) {
+      } else if (isDevMode()) {
         console.error(`[http] error ${req.method} ${req.url}${ridSuffix}`, err);
       }
       throw err;
     }),
     finalize(() => {
-      if (ngDevMode && !settled) {
+      if (isDevMode() && !settled) {
         console.warn(`[http] cancelled ${req.method} ${req.url}${ridSuffix}`);
       }
     }),

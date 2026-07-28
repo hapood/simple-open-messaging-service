@@ -29,6 +29,9 @@ export class AudioPlayerComponent {
   readonly src = input.required<string>();
   /** Clip duration in seconds (client-probed / recorded). Display + the progress denominator. */
   readonly duration = input(0);
+  readonly time = input('');
+  readonly pending = input(false);
+  readonly showUnplayed = input(true);
   /** Federated media localize status (message-level — every cell of the message shares it). Anything but
    *  'ready' ('downloading' = still localizing, 'failed' = localize failed) means the local shard URL is
    *  not playable, so {@link inert} suppresses play (the media-row overlay already surfaces a spinner /
@@ -56,8 +59,12 @@ export class AudioPlayerComponent {
   /** The button is non-functional while the clip is not playable: a prior decode/load error (failed), OR
    *  the federated asset is not ready — still localizing ('downloading') or localize failed ('failed').
    *  Centralized so the template's [disabled] and toggle()'s guard share one source and never drift. */
-  readonly inert = computed(() => this.failed() || this.status() !== MEDIA_STATUS.READY);
+  readonly inert = computed(
+    () => this.failed() || this.status() !== MEDIA_STATUS.READY,
+  );
   readonly durLabel = computed(() => formatDuration(this.duration()));
+  readonly played = signal(false);
+  readonly rate = signal(1);
 
   toggle(): void {
     const el = this.audioRef()?.nativeElement;
@@ -81,7 +88,30 @@ export class AudioPlayerComponent {
     this.progress.set(d > 0 ? Math.min(1, el.currentTime / d) : 0);
   }
 
-  onPlay(): void { this.playing.set(true); }
+  seek(event: MouseEvent): void {
+    const el = this.audioRef()?.nativeElement;
+    const target = event.currentTarget as HTMLElement | null;
+    if (!el || !target || this.inert()) return;
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const duration =
+      el.duration && Number.isFinite(el.duration) ? el.duration : this.duration();
+    if (duration > 0) el.currentTime = ratio * duration;
+    this.progress.set(ratio);
+  }
+
+  cycleRate(): void {
+    const next = this.rate() === 1 ? 1.5 : this.rate() === 1.5 ? 2 : 1;
+    this.rate.set(next);
+    const el = this.audioRef()?.nativeElement;
+    if (el) el.playbackRate = next;
+  }
+
+  onPlay(): void {
+    this.played.set(true);
+    this.playing.set(true);
+  }
   onPause(): void { this.playing.set(false); }
   onEnded(): void {
     this.playing.set(false);

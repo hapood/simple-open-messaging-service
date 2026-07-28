@@ -27,6 +27,7 @@
     }
     <div
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media"
+      [class.msg-media--audio]="isAudioOnly()"
       [class.msg-sending]="isSending()"
       [style.width.px]="containerW()"
     >
@@ -38,7 +39,6 @@
             [style.top.px]="c.rect.yPx"
             [style.width.%]="c.rect.wPct"
             [style.height.px]="c.rect.hPx"
-            [style.background-image]="c.kind === 'image' && !c.placeholder ? ('url(&quot;' + c.src + '&quot;)') : null"
             [attr.role]="c.kind === 'image' ? 'button' : null"
             [attr.tabindex]="c.kind === 'image' ? 0 : null"
             [attr.aria-label]="c.kind === 'image' ? ('chat.openImageAria' | transloco) : null"
@@ -55,8 +55,37 @@
                 }
               </div>
             }
-            @if (c.placeholder) {
-              <span class="msg-media-tap">{{ 'chat.tapToLoad' | transloco }}</span>
+            @if (c.kind === 'image' && !c.placeholder) {
+              <img
+                class="msg-media-image"
+                [src]="c.src"
+                alt=""
+                (load)="onImageLoad($index)"
+                (error)="onImageError($index)"
+              />
+            }
+            @if (c.showGate) {
+              <span class="msg-media-tap">
+                @if (c.loading) {
+                  <svg class="msg-media-tap-spinner" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                  </svg>
+                  <span>{{ 'chat.imageLoading' | transloco }}</span>
+                } @else if (c.loadFailed) {
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 7v5h-5M4 17v-5h5M18.4 9A7 7 0 006.7 6.7L4 9m16 6-2.7 2.3A7 7 0 015.6 15"></path>
+                  </svg>
+                  <span>{{ 'chat.imageLoadRetry' | transloco }}</span>
+                } @else {
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+                    <circle cx="9" cy="10" r="2"></circle>
+                    <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+                  </svg>
+                  <span>{{ 'chat.tapToLoad' | transloco }}</span>
+                  <small>{{ c.sizeText || ('chat.unknownSize' | transloco) }}</small>
+                }
+              </span>
             }
             @if (c.kind === 'video' && !c.unplayable) {
               <video
@@ -75,7 +104,14 @@
             }
             @if (c.kind === 'audio') {
               <!-- Flat voice player — fills the cell; playback only animates a width fill (height-stable). -->
-              <app-audio-player [src]="c.src" [duration]="c.duration ?? 0" [status]="c.status" />
+              <app-audio-player
+                [src]="c.src"
+                [duration]="c.duration ?? 0"
+                [status]="c.status"
+                [time]="metaBar().time"
+                [pending]="isSending()"
+                [showUnplayed]="!data().isSelf"
+              />
             }
             @if (c.kind !== 'audio') {
               <span class="msg-media-size">{{ c.sizeText || ('chat.unknownSize' | transloco) }}</span>
@@ -87,11 +123,12 @@
         }
       </div>
 
+      @if (!isAudioOnly()) {
       <div class="msg-media-meta">
         <span class="msg-media-meta-count">
-          @if (metaBar().images) { <span>{{ 'chat.mediaCount.image' | transloco: { count: metaBar().images } }}</span> }
+          @if (metaBar().images > 1) { <span>{{ 'chat.mediaCount.image' | transloco: { count: metaBar().images } }}</span> }
           @if (metaBar().videos) { <span>{{ 'chat.mediaCount.video' | transloco: { count: metaBar().videos } }}</span> }
-          @if (metaBar().audios) { <span>{{ 'chat.mediaCount.audio' | transloco: { count: metaBar().audios } }}</span> }
+          @if (metaBar().audios > 1) { <span>{{ 'chat.mediaCount.audio' | transloco: { count: metaBar().audios } }}</span> }
         </span>
         @if (data().mediaStatus !== MEDIA_STATUS.READY) {
           <span class="msg-media-status msg-media-status--{{ data().mediaStatus }}">
@@ -105,6 +142,7 @@
         }
         <span class="msg-media-meta-time">{{ metaBar().time }}</span>
       </div>
+      }
 
       @if (statusTick()) {
         @if (!isFailed()) {

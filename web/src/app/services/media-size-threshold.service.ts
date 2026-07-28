@@ -20,6 +20,9 @@ export const MEDIA_THRESHOLD_OPTIONS_KB = [512, 1024, 2048, 0] as const;
 @Injectable({ providedIn: 'root' })
 export class MediaSizeThresholdService {
   private readonly _kb = signal<number>(this.readStored());
+  /** Session-scoped manual-load grants. Keeping these above the row component means opening and closing
+   * the gallery (which remounts virtual rows) cannot turn an already loaded thumbnail back into a gate. */
+  private readonly loadedMedia = signal<ReadonlySet<string>>(new Set());
 
   /** The user's choice in KB (0 = unlimited). */
   readonly kb = this._kb.asReadonly();
@@ -37,6 +40,19 @@ export class MediaSizeThresholdService {
     } catch {
       // localStorage disabled (private mode) — keep the in-memory signal only.
     }
+  }
+
+  isLoaded(key: string): boolean {
+    return this.loadedMedia().has(key);
+  }
+
+  markLoaded(key: string): void {
+    if (this.loadedMedia().has(key)) return;
+    this.loadedMedia.update((current) => {
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
   }
 
   private readStored(): number {

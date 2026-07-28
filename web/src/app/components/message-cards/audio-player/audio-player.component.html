@@ -11,12 +11,28 @@
         <path d="M8 5v14l11-7z" />
       </svg>
     }
+    @if (pending()) {
+      <svg class="ap-pending-ring" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="14"></circle>
+      </svg>
+    }
   </button>
-  <div class="ap-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"
-       [attr.aria-valuenow]="progressPct()">
-    <div class="ap-fill" [style.width.%]="progressPct()"></div>
+  <div class="ap-body">
+    <button type="button" class="ap-wave" (click)="seek($event)"
+            [disabled]="inert()" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            [attr.aria-valuenow]="progressPct()" aria-label="Seek voice message">
+      <span class="ap-wave-fill" [style.width.%]="progressPct()"></span>
+    </button>
+    <div class="ap-meta">
+      <span class="ap-dur">{{ durLabel() }}</span>
+      <span class="ap-meta-end">
+        @if (showUnplayed() && !played()) { <span class="ap-unplayed" aria-label="Unplayed"></span> }
+        <span>{{ time() }}</span>
+      </span>
+    </div>
   </div>
-  <span class="ap-dur">{{ durLabel() }}</span>
+  <button type="button" class="ap-rate" (click)="cycleRate()"
+          [attr.aria-label]="'Playback speed ' + rate() + ' times'">{{ rate() }}×</button>
 </div>
 <!-- No controls attr — the button + progress bar are the UI. preload="none" (NOT metadata): every visible
      voice cell mounts one of these, and "metadata" would fire a network request per clip just to mount. The

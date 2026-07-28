@@ -13,6 +13,8 @@ import { AuthService } from '../../services/auth.service';
 import { ConfigService } from '../../services/config.service';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { isTauri, sessionClient } from '../../services/runtime';
+import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
+import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
 
 type QrView = 'loading' | 'pending' | 'scanned' | 'error';
 
@@ -44,6 +46,8 @@ type QrView = 'loading' | 'pending' | 'scanned' | 'error';
     MatProgressBarModule,
     MatProgressSpinnerModule,
     RouterLink,
+    AuthViewportDirective,
+    AuthMethodMenuComponent,
   ],
   templateUrl: './qr-login-page.component.html',
   styleUrl: './qr-login-page.component.scss',
@@ -73,6 +77,10 @@ export class QrLoginPageComponent implements OnDestroy {
    *  Not rendered as text anymore — it drives the determinate bar's danger-color threshold
    *  ({@link QR_WARN_SEC}). */
   readonly qrRemainingSec = signal(0);
+  readonly qrRemainingText = computed(() => {
+    const seconds = Math.max(0, this.qrRemainingSec());
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  });
   /** Permanent-session trust for THIS QR: a trusted native client (Android app / desktop — both keep the
    *  token in OS secure storage) gets a permanent session; the browser gets a 14-day sliding one. The
    *  platform is the trust signal (no opt-in toggle). Drives the session lifetime + the notice shown. */

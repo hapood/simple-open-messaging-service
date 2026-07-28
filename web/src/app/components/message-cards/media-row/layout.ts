@@ -30,6 +30,7 @@ export interface AlbumImageLike {
   /** Media kind — present on real AlbumMedia cells. layoutAlbum special-cases audio (a fixed slim bar that
    *  bypasses image aspect math); image/video fall through to the aspect-ratio regimes. */
   kind?: 'image' | 'video' | 'audio';
+  duration?: number;
 }
 
 export interface AlbumRect {
@@ -58,8 +59,10 @@ export const ALBUM_W = 280;
  *  of truth: the optimistic send (sendVoice) and the receive-side parse (http-item-source.parseAudioContent)
  *  both render at exactly this size, so the optimistic↔real swap never jumps height (which would break the
  *  virtual-scroll anchor). Integer px per the project's CSS integer-pixel rule. */
-export const VOICE_BAR_W = 220;
-export const VOICE_BAR_H = 52;
+export const VOICE_BAR_W = 188;
+export const VOICE_BAR_H = 44;
+export const VOICE_BAR_MIN_W = 172;
+export const VOICE_BAR_MAX_W = 240;
 
 const ALBUM_GAP = 2;
 /** Fallback aspect ratio (h/w) for bad w/h, 4:3 (matches historical data). */
@@ -108,7 +111,9 @@ function layoutRow(items: AlbumImageLike[], W: number, gap: number, baseW: numbe
   } else {
     // out of range: clamp the row height, cells become equal-width, the ratio gap is cover-cropped
     rowH = Math.max(minH, Math.min(maxH, rawH));
-    const eqW = (W - (count - 1) * gap) / count;
+    // W already excludes the inter-cell gaps (the caller passes baseW - gaps). Subtracting them a
+    // second time left a transparent strip at the trailing edge of clamped album rows.
+    const eqW = W / count;
     widths = rs.map(() => eqW);
   }
 
@@ -149,7 +154,13 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
   // height-model invariant (totalH === Σ offsetHeight) holds during play.
   if (n === 1 && images[0].kind === 'audio') {
     const totalH = VOICE_BAR_H;
-    const widthPx = Math.min(baseW, VOICE_BAR_W);
+    // Short clips stay compact; longer clips gain a little waveform room without growing unbounded.
+    const duration = Math.max(0, Number.isFinite(images[0].duration) ? images[0].duration ?? 0 : 0);
+    const widthPx = Math.min(
+      baseW,
+      VOICE_BAR_MAX_W,
+      Math.max(VOICE_BAR_MIN_W, Math.round(VOICE_BAR_W + Math.min(duration, 52))),
+    );
     return {
       rects: [{ xPct: 0, wPct: 100, yPx: 0, hPx: totalH }],
       totalH,

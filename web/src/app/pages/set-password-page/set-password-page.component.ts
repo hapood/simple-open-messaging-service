@@ -11,6 +11,7 @@ import { IconComponent, AppIconType } from '../../components/icon/icon.component
 import { AuthService } from '../../services/auth.service';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { translateBizResult } from '../../services/biz-code';
+import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
 
 /**
  * Forced set-own-password screen — reached proactively after any login (password / OTP / QR) whose session
@@ -33,6 +34,7 @@ import { translateBizResult } from '../../services/biz-code';
     MatFormFieldModule,
     MatInputModule,
     MatProgressBarModule,
+    AuthViewportDirective,
   ],
   templateUrl: './set-password-page.component.html',
   styleUrl: './set-password-page.component.scss',

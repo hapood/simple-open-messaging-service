@@ -109,15 +109,13 @@
          not in the scroll container, so it neither scrolls with the document flow nor participates in
          virtual-scroll recycling; the component updates its text from the scroll position in real time. -->
     <app-sticky-date-overlay [label]="stickyDate()" />
-    <!-- Demo indicators use the SAME slot architecture as production: a single <app-indicator-slot> anchor,
-         with the indicators themselves carrying no positioning. The playground overrides the SLOT's position
-         to absolute within .pg-stage (see the stylesheet) so it tracks the chat column; the two indicators
-         are byte-for-byte identical to their production instances. `demoState` / `demoAvailable` override the
-         live services so the panel can drive every state; Dismiss emits demoDismiss → clears the signal. -->
+    <!-- The connection preview uses the same positioned slot as production; the playground overrides the
+         slot to absolute within .pg-stage so it tracks the chat column. The update preview is a headless
+         controller for the same global Material snackbar used in production. -->
     <app-indicator-slot>
       <app-connection-banner [demoState]="connStatus()" />
-      <app-update-banner [demoAvailable]="updateDemo()" (demoDismiss)="setUpdateDemo(false)" />
     </app-indicator-slot>
+    <app-update-banner [demoAvailable]="updateDemo()" (demoDismiss)="setUpdateDemo(false)" />
     @if (toast()) {
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }
@@ -300,10 +298,10 @@
 
     <details>
       <summary>Top-right indicator slot</summary>
-      <p class="pg-hint">The fixed top-right corner shows ONE indicator at a time. The connection chip is priority — while it's visible (Connecting/Reconnecting/Closed) the update banner defers; set the chip to Open to make a pending update surface.</p>
+      <p class="pg-hint">Connection status uses the top-center status lane. Update availability uses the application's standard bottom Material snackbar.</p>
       <section>
         <h4>Connection chip <span class="pg-sec-tag" [class.pg-sec-tag--on]="connStatus() === 'reconnecting'">{{ connStatus() }}</span></h4>
-        <p class="pg-hint">Drives the restyled Material chip at the top-right (below the header). `Open` hides it (steady state); `Closed` shows the offline glyph (playground-only — production navigates away instead); `Recover` replays the reconnecting→open flourish.</p>
+        <p class="pg-hint">Drives the restyled Material chip at the top center (below the header). `Open` hides it (steady state); `Closed` shows the offline glyph (playground-only — production navigates away instead); `Recover` replays the reconnecting→open flourish.</p>
         <div class="pg-btns">
           <button (click)="setConnStatus('connecting')" [class.active]="connStatus() === 'connecting'">Connecting</button>
           <button (click)="setConnStatus('reconnecting')" [class.active]="connStatus() === 'reconnecting'">Reconnecting</button>

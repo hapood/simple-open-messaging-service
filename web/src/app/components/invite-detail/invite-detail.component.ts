@@ -175,7 +175,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
     }
     const tid = (res.data as { threadId?: number } | undefined)?.threadId ?? this.detail()?.threadId ?? null;
     // openChat clears the pane stack → the invite-detail entry is removed → the overlay is disposed.
-    if (tid != null) this.nav.openChat(tid);
+    if (tid != null) this.nav.openChat(tid, 'group-joined');
   }
 
   /** Already joined → open the group. openChat clears the pane stack → overlay disposed. */

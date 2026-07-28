@@ -18,9 +18,10 @@ import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 import { CallEventService } from './services/call-event.service';
 import { CallOverlayService } from './services/call-overlay.service';
 import { ChatAppearanceService } from './services/chat-appearance.service';
+import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
 @Component({
     selector: 'app-root',
-    imports: [RouterOutlet, NotifPopupComponent, DebugLogFabComponent],
+    imports: [RouterOutlet, NotifPopupComponent, DebugLogFabComponent, UpdateBannerComponent],
     templateUrl: './app.component.html',
     styleUrl: './app.component.scss'
 })

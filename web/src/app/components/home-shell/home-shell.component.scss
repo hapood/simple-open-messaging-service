@@ -180,7 +180,16 @@
 
 // ── compact: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
 .mode-compact {
-  .drawer-body { flex: 1 1 auto; min-width: 0; }
+  .drawer-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+    transition:
+      transform 230ms cubic-bezier(0.32, 0.72, 0, 1),
+      opacity 230ms cubic-bezier(0.32, 0.72, 0, 1);
+    will-change: transform, opacity;
+  }
   .chat-slot {
     position: fixed;
     inset: 0;
@@ -205,6 +214,14 @@
     /* Same transform-driven show/hide as .chat-slot above: [@overlaySlide] slides this overlay in/out on
        mobile (over the chat at z-index 40); display stays flex so the routed panel lays out off-screen. */
   }
+}
+.mode-compact.chat-open .drawer-body {
+  transform: translate3d(-12%, 0, 0);
+  opacity: .96;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-compact .drawer-body { transition-duration: 0ms; }
 }
 
 // Conversation-list column (compact/medium): header + list stack and fill.

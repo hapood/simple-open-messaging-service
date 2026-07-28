@@ -474,12 +474,31 @@ export class ThreadRepository {
   /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(item: ConversationItem): void {
-    const reconciled = this.reconcileItem(item);
+    let reconciled = this.reconcileItem(item);
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
       if (idx === -1) base.unshift(reconciled);
-      else base[idx] = reconciled;
+      else {
+        const current = base[idx];
+        // The hydrated thread delta deliberately carries no message body/preview. During a warm boot the
+        // cached row already has the locally-derived preview, so replacing it with the body-less delta row
+        // would flash "no messages" until hydratePreviews reads the same body back from IDB. Preserve the
+        // local preview only when both rows describe the same newest message; a genuinely newer seq must be
+        // hydrated from its new body instead of temporarily presenting the previous message as current.
+        if (
+          reconciled.lastMessageSeq === current.lastMessageSeq &&
+          reconciled.lastMessagePreview == null &&
+          current.lastMessagePreview != null
+        ) {
+          reconciled = {
+            ...reconciled,
+            lastMessagePreview: current.lastMessagePreview,
+            lastMessageSenderId: current.lastMessageSenderId,
+          };
+        }
+        base[idx] = reconciled;
+      }
       const sorted = base.sort(byPinRank);
       return this._pendingTopId === reconciled.threadId ? moveToTop(sorted, reconciled.threadId) : sorted;
     });
@@ -852,14 +871,25 @@ export class ThreadRepository {
       });
     }
     if (byThread.size === 0) return;
-    this._items.update((list) =>
-      list.map((it) => {
+    let changed = false;
+    const hydrated = this._items().map((it) => {
         const patch = byThread.get(it.threadId);
-        return patch ? { ...it, ...patch } : it;
-      }),
-    );
+        if (
+          !patch ||
+          (it.lastMessagePreview === patch.lastMessagePreview &&
+            it.lastMessageSenderId === patch.lastMessageSenderId)
+        ) {
+          return it;
+        }
+        changed = true;
+        return { ...it, ...patch };
+      });
+    // Boot can request hydration from cache-paint, HELLO and the missed walk. Do not emit an identical
+    // array for each request: on Android every emission rebinds the WebView rows and makes previews flicker.
+    if (!changed) return;
+    this._items.set(hydrated);
     // Persist so the next boot's cached paint already carries the derived preview (no "暂无消息" flash).
-    void this.persistThreads(this._items());
+    void this.persistThreads(hydrated);
   }
 
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────

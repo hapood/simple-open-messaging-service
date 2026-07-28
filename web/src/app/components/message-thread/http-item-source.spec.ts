@@ -186,4 +186,31 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     const items = await src.init(-1, 50, 0);
     expect(items[0].data.status).toBeUndefined();
   });
+
+  it('restores a persisted AUDIO message as a playable voice card after reopening the thread', async () => {
+    const audio = {
+      ...row(101, 1),
+      contentType: 'AUDIO',
+      content: JSON.stringify({
+        url: '/uploads/shards/aa/bb/voice.webm',
+        name: 'voice.webm',
+        size: 1234,
+        mimeType: 'audio/webm',
+        duration: 7.5,
+      }),
+      mediaStatus: 'ready',
+    } as unknown as Message;
+    const { src } = setup({ code: 0, message: 'ok', data: [audio], hasMore: false });
+
+    const items = await src.init(-1, 50, 0);
+
+    expect(items.length).toBe(1);
+    expect(items[0].data.contentType).toBe('AUDIO');
+    expect(items[0].data.images?.[0]).toEqual(jasmine.objectContaining({
+      kind: 'audio',
+      src: '/uploads/shards/aa/bb/voice.webm',
+      duration: 7.5,
+      msgId: 101,
+    }));
+  });
 });

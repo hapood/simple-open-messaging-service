@@ -32,11 +32,12 @@ const unlinkAsync = promisify(unlink);
  *
  * Cache: keyed by the sorted `(userId, avatarUrl, displayName)` tuples (sort → order-independent), stored
  * at `data/uploads/notif-icons/<sha1>.png`. Served by the EXISTING `/uploads/*` static handler (no new
- * route), so it inherits the media_token-cookie auth gate + `Cache-Control: private, max-age=300`.
+ * route), so it inherits the media_token-cookie auth gate and upload cache policy.
  * Invalidation is automatic: a user changing their avatar changes their `avatarUrl` → the key changes → a
  * fresh composite. The OLD composite is orphaned by that key change, so a TTL sweep ({@link gc}) reaps
  * anything older than {@link MAX_AGE_MS} — a notif-icon renders one momentary unread summary (the client
- * caches it max-age=300), so an hour-old file is stale + unreachable. Without the sweep the dir would grow
+ * caches it independently), so an hour-old server file can be removed without invalidating bytes already
+ * held by a client. Without the sweep the dir would grow
  * unbounded (every distinct sender set + every avatar change writes a new file, none ever deleted).
  */
 @Injectable()
@@ -65,7 +66,7 @@ export class AvatarStackService implements OnModuleInit, OnModuleDestroy {
   /** How often the orphan-TTL sweep runs ({@link gc}). */
   private static readonly GC_INTERVAL_MS = 60 * 60 * 1000; // 1h
   /** A notif-icon older than this is stale + unreachable → reaped by {@link gc} to bound the on-disk cache. */
-  private static readonly MAX_AGE_MS = 60 * 60 * 1000; // 1h (≫ the client's max-age=300)
+  private static readonly MAX_AGE_MS = 60 * 60 * 1000;
   private gcTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly upload: UploadService) {}

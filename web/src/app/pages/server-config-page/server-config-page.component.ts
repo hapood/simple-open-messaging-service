@@ -2,23 +2,23 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  ElementRef,
   inject,
   signal,
   DestroyRef,
+  ViewChild,
 } from '@angular/core';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatSnackBar } from '@angular/material/snack-bar';
-import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
+import { TranslocoModule } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 import { ConfigService } from '../../services/config.service';
 import { PushService, type FirebaseClientConfigPayload } from '../../services/push.service';
 import {
   apiOrigin,
-  apiOriginSecondary,
   canonicalOrigin,
   listenEvent,
   originIsInsecure,
@@ -27,6 +27,7 @@ import {
   tauriInvoke,
 } from '../../services/runtime';
 import { RouteService, RoutePage } from '../../services/route.service';
+import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
 
 /** The connect flow phase — surfaced as a progress value + a step label. After compat + cert the installed
  *  web bundle's hash is compared to the server's manifest; if they differ (or none is installed yet) the
@@ -58,6 +59,7 @@ type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done';
     MatProgressBarModule,
     TranslocoModule,
     BrandLogoComponent,
+    AuthViewportDirective,
   ],
   templateUrl: './server-config-page.component.html',
   styleUrl: './server-config-page.component.scss',
@@ -66,8 +68,6 @@ type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done';
 export class ServerConfigPageComponent {
   private readonly route = inject(RouteService);
   private readonly destroyRef = inject(DestroyRef);
-  private readonly snackBar = inject(MatSnackBar);
-  private readonly transloco = inject(TranslocoService);
   private readonly config = inject(ConfigService);
   private readonly push = inject(PushService);
   /** The most recent /shell/compat firebaseConfig probed for the origin being connected — applied to native
@@ -77,6 +77,7 @@ export class ServerConfigPageComponent {
   private prevBack: typeof window.__SOMS_BACK__ = window.__SOMS_BACK__;
   /** Arming timer for the double-back-to-exit pattern (first-run only); cleared on destroy. */
   private backExitTimer: ReturnType<typeof setTimeout> | null = null;
+  @ViewChild('serverInput') private serverInput?: ElementRef<HTMLInputElement>;
 
   readonly url = new FormControl(canonicalOrigin(apiOrigin()), {
     nonNullable: true,
@@ -84,16 +85,8 @@ export class ServerConfigPageComponent {
     // user is guided inline instead of sending a bare host to Rust and getting an opaque failure.
     validators: [Validators.required, Validators.pattern(/^https?:\/\//i)],
   });
-  /** Optional LAN (secondary) origin — field-2. Symmetric with `url`: the user may enter EITHER; the other
-   *  is auto-filled from `/shell/compat` (primaryOrigin/lanOrigin) and confirmed via a modal. Empty ⇒ no
-   *  fallback configured. Seeded from the persisted secondary the same way `url` is seeded from the primary. */
-  readonly lanUrl = new FormControl(apiOriginSecondary() ?? '', {
-    nonNullable: true,
-    // Optional: empty OR a full http(s) URL. No `required` — the field-2 fallback is opt-in.
-    validators: [Validators.pattern(/^https?:\/\/|^$/i)],
-  });
-  /** Pending auto-fill confirmation: `{primary, lan, reachable}`. Non-null ⇒ the modal is shown. The field
-   *  values are already populated (the user sees what was filled); confirm → finalize, cancel → stay. */
+  /** Pending second-server confirmation. The second endpoint is server-advertised configuration, never a
+   *  user-authored field: showing the exact address and asking for consent avoids both jargon and typos. */
   readonly autoFill = signal<{ primary: string; lan: string | null; reachable: string } | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
@@ -109,6 +102,21 @@ export class ServerConfigPageComponent {
   readonly isReconfigure = signal(false);
   readonly canGoBack = computed(() => this.isReconfigure());
   readonly busy = computed(() => this.phase() !== 'form');
+  readonly titleKey = computed(() =>
+    this.isReconfigure() ? 'serverConfig.reconfigureTitle' : 'serverConfig.firstRunTitle',
+  );
+  readonly introKey = computed(() =>
+    this.isReconfigure() ? 'serverConfig.reconfigureHint' : 'serverConfig.firstRunHint',
+  );
+  readonly actionKey = computed(() =>
+    this.isReconfigure() ? 'serverConfig.switchServer' : 'serverConfig.connectContinue',
+  );
+  readonly errorKey = signal<string | null>(null);
+  readonly errorDetail = signal('');
+
+  canSubmit(): boolean {
+    return this.url.value.trim().length > 0;
+  }
   readonly insecure = computed(() => originIsInsecure(this.origin()));
   /** Byte-progress for the `download` phase, fed by the `web-download-progress` Tauri event. `total` is
    *  null until the first chunk carries a Content-Length (or for a chunked transfer with none) — the bar
@@ -140,6 +148,14 @@ export class ServerConfigPageComponent {
     const total = this.downloadTotal();
     return this.phase() === 'download' && (!total || total <= 0) ? 'indeterminate' : 'determinate';
   });
+  readonly downloadProgressText = computed(() => {
+    if (this.phase() !== 'download') return '';
+    const total = this.downloadTotal();
+    if (!total) return '';
+    const received = Math.min(this.downloadReceived(), total);
+    const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    return `${Math.round((received / total) * 100)}% · ${mb(received)} / ${mb(total)}`;
+  });
   /** transloco key for the current step label (empty when on the form). */
   readonly stepKey = computed(() => {
     switch (this.phase()) {
@@ -157,7 +173,11 @@ export class ServerConfigPageComponent {
   });
 
   constructor() {
-    this.url.valueChanges.subscribe((v) => this.origin.set(v));
+    this.url.valueChanges.subscribe((v) => {
+      this.origin.set(v);
+      this.errorKey.set(null);
+      this.errorDetail.set('');
+    });
     // Authoritative first-run vs reconfigure detection (drives the back button): is_origin_configured is
     // true iff a backend has been configured (persisted origin != the non-routable placeholder).
     void tauriInvoke<boolean>('is_origin_configured')
@@ -180,62 +200,35 @@ export class ServerConfigPageComponent {
     event?.preventDefault();
     // A connect flow is in flight OR the modal is up — ignore re-submits (Enter) that would race it.
     if (this.busy() || this.autoFill()) return;
-    const primaryRaw = this.url.value.trim() ? canonicalOrigin(this.url.value) : null;
-    const lanRaw = this.lanUrl.value.trim() ? canonicalOrigin(this.lanUrl.value) : null;
-    if (!primaryRaw && !lanRaw) {
+    if (!this.canSubmit()) {
       this.url.markAsTouched();
+      queueMicrotask(() => this.serverInput?.nativeElement.focus());
+      return;
+    }
+    const primaryRaw = this.url.value.trim() ? canonicalOrigin(this.url.value) : null;
+    if (!primaryRaw || this.url.invalid) {
+      this.url.markAsTouched();
+      queueMicrotask(() => this.serverInput?.nativeElement.focus());
       return;
     }
     try {
       this.phase.set('compat');
-      // Validate each entered origin (compat + cert); only ONE need pass — on the LAN the public origin is
-      // unreachable (no hairpin NAT), and vice-versa on the WAN. Capture the last error so a total failure
-      // still surfaces a specific message (addr / compat / cert) instead of a generic one.
-      let validated: {
-        origin: string;
-        primary?: string | null;
-        lan?: string | null;
-        firebaseConfig?: FirebaseClientConfigPayload | null;
-      } | null = null;
-      let lastErr: unknown = null;
-      if (primaryRaw) {
-        const r = await this.probe(primaryRaw);
-        if (r.ok) validated = { origin: primaryRaw, primary: r.primary, lan: r.lan, firebaseConfig: r.firebaseConfig };
-        else lastErr = r.error;
-      }
-      if (!validated && lanRaw) {
-        const r = await this.probe(lanRaw);
-        if (r.ok) validated = { origin: lanRaw, primary: r.primary, lan: r.lan, firebaseConfig: r.firebaseConfig };
-        else lastErr = r.error;
-      }
-      if (!validated) {
-        this.fail(lastErr);
+      const probe = await this.probe(primaryRaw);
+      if (!probe.ok) {
+        this.fail(probe.error);
         return;
       }
       // Stash the probed Firebase client config (same for primary + lan — one backend) so finalize() applies
       // it to native regardless of which path reaches finalize (direct save or the auto-fill confirm modal).
-      this.firebaseConfig = validated.firebaseConfig ?? null;
-      // Resolve the canonical pair: what the user entered wins; the other is auto-filled from the server's
-      // advertised origins (same backend). `primary` is always required (federation identity + the config
-      // guard) — Part B guarantees primaryOrigin is always present in /shell/compat.
-      const primary = primaryRaw ?? validated.primary ?? null;
-      const lan = lanRaw ?? validated.lan ?? null;
-      if (!primary) {
-        this.fail(new Error('address: server did not advertise a primary origin'));
-        return;
-      }
-      const filledPrimary = !primaryRaw && primaryRaw !== primary;
-      const filledLan = !lanRaw && !!lan;
-      if (filledPrimary) this.url.setValue(primary);
-      if (filledLan && lan) this.lanUrl.setValue(lan);
-      // If anything was auto-filled from the server's advertisement, confirm via the modal before trusting
-      // it as a connection target (HTTPS-only; the user explicitly confirms). Otherwise proceed directly.
-      if (filledPrimary || filledLan) {
+      this.firebaseConfig = probe.firebaseConfig ?? null;
+      const primary = probe.primary ? canonicalOrigin(probe.primary) : primaryRaw;
+      const second = probe.lan ? canonicalOrigin(probe.lan) : null;
+      if (second && second !== primary) {
         this.phase.set('form');
-        this.autoFill.set({ primary, lan, reachable: validated.origin });
+        this.autoFill.set({ primary, lan: second, reachable: primaryRaw });
         return;
       }
-      await this.finalize(primary, lan, validated.origin);
+      await this.finalize(primary, null, primaryRaw);
     } catch (e) {
       this.fail(e);
     }
@@ -322,22 +315,22 @@ export class ServerConfigPageComponent {
     await this.finalize(af.primary, af.lan, af.reachable);
   }
 
-  /** Modal cancel → stay on the form (the fields keep the auto-filled values for the user to edit). */
-  cancelAutoFill(): void {
+  /** Continue with only the primary endpoint when the user declines the advertised second server. */
+  async cancelAutoFill(): Promise<void> {
+    const af = this.autoFill();
+    if (!af) return;
     this.autoFill.set(null);
-    this.phase.set('form');
+    await this.finalize(af.primary, null, af.reachable);
   }
 
   /** Surface a connect/OTA failure as a categorized toast + reset to the form for an edit-and-retry. */
   private fail(e: unknown): void {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('server-config connect failed', msg);
-    this.snackBar.open(
-      this.transloco.translate(this.errorKeyFor(e)),
-      this.transloco.translate('common.ok'),
-      { duration: 6000, horizontalPosition: 'center', verticalPosition: 'bottom' },
-    );
+    this.errorKey.set(this.errorKeyFor(e));
+    this.errorDetail.set(msg);
     this.phase.set('form');
+    queueMicrotask(() => this.serverInput?.nativeElement.focus());
   }
 
   /** Map the failing step → the matching i18n error key (the step that threw is the current phase). */

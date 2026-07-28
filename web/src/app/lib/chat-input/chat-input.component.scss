@@ -30,11 +30,11 @@ app-chat-input {
   transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
   transition: transform 60ms linear;
   // Bottom padding carries ONLY the static gesture-/navigation-bar inset (closed keyboard): the bar's own
-  // --app-bg-muted background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal
+  // Composer background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal
   // strip). The keyboard region itself is covered by the translated bar + the IME, so there is no gap.
   // --soms-safe-bottom is 0 on desktop/browser, so this resolves to the base 8px there.
   padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
-  background: var(--app-surface);
+  background: var(--im-composer-bar-bg);
   border-top: 1px solid var(--app-border);
 }
 
@@ -55,10 +55,8 @@ app-chat-input {
 }
 
 // ── Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid ───────────────────────────
-// Floats ABOVE the bar (position:absolute bottom:100%). The native keyboard stays up on mobile (no swap —
-// the VirtualKeyboard API hide() is broken on Chrome Android, crbug.com/40912131; this popup path is the
-// aligned-with-industry approach). Every height-contributing value is integer px per the CSS integer-pixel
-// rule; line-height is a length.
+// Floats above the bar on browser/PC. The Android-native modifier below turns it into an in-flow keyboard
+// replacement controlled through SomsShell. Every height-contributing value is integer px.
 .ci-emoji-panel {
   position: absolute;
   left: max(12px, calc((100% - 800px) / 2));
@@ -236,13 +234,13 @@ app-chat-input {
   align-items: flex-end;
   gap: 2px;
   padding: 4px;
-  background: var(--app-bg-muted);
+  background: var(--im-composer-input-bg);
   border: 1px solid transparent;
   border-radius: var(--app-radius-pill);
   transition: background 0.12s, box-shadow 0.12s;
   &:focus-within {
-    background: var(--app-surface-elevated);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-brand) 24%, transparent);
+    background: var(--im-composer-input-focus-bg);
+    box-shadow: 0 0 0 var(--im-composer-input-focus-ring-width) var(--im-composer-input-focus-ring);
   }
 }
 
@@ -338,7 +336,9 @@ app-chat-input {
   transition: height 160ms ease, margin-top 160ms ease, border-width 0s 160ms;
 }
 .ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--open {
-  height: var(--emoji-kbd-height, 300px);
+  // Defensive CSS clamp as well as the TS geometry clamp: a stale/small native inset must not reduce the
+  // panel to only its border and margin (the symptom is the composer moving a few pixels with no buttons).
+  height: max(240px, var(--emoji-kbd-height, 300px));
   margin-top: 8px;
   border-top-width: 1px;
   opacity: 1;

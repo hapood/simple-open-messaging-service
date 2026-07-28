@@ -13,7 +13,9 @@ import type { NotificationDescriptor, NotifAction } from '../../services/notific
  * only work in a SW context — the shade notification there shows the same buttons, but in-tab they need this).
  *
  * Pure render of service state — no fetch logic of its own (UnreadAttentionService feeds the service). Fixed
- * at the top-center; transient (cleared on focus-regain). One card per distinct `tag` (replace-by-tag).
+ * at the top trailing edge on desktop/tablet, away from the top-center connection status; compact screens
+ * place it below the app header/status lane. Transient (cleared on focus-regain). One card per distinct
+ * `tag` (replace-by-tag).
  */
 @Component({
   selector: 'app-notif-popup',
@@ -50,15 +52,22 @@ import type { NotificationDescriptor, NotifAction } from '../../services/notific
     `
       :host {
         position: fixed;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
+        top: calc(16px + var(--soms-safe-top, 0px));
+        right: 16px;
         z-index: 900; /* shell (40) < this toast < modal (1000) */
         display: flex;
         flex-direction: column;
         gap: 8px;
         pointer-events: none; /* the container never blocks; each card re-enables */
         width: min(92vw, 440px);
+      }
+      @media (max-width: 599px) {
+        :host {
+          top: calc(108px + var(--soms-safe-top, 0px));
+          right: auto;
+          left: 50%;
+          transform: translateX(-50%);
+        }
       }
       .notif-card {
         pointer-events: auto;

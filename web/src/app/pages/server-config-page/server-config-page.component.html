@@ -1,3 +1,4 @@
+<div class="cfg-viewport" appAuthViewport>
 @if (canGoBack()) {
   <button
     class="cfg-back"
@@ -14,7 +15,12 @@
 @if (busy()) {
   <mat-progress-bar class="cfg-progress" [mode]="progressMode()" [value]="progress()" />
   @if (stepKey()) {
-    <p class="cfg-step" role="status" aria-live="polite">{{ stepKey() | transloco }}</p>
+    <p class="cfg-step" role="status" aria-live="polite">
+      {{ stepKey() | transloco }}
+      @if (downloadProgressText()) {
+        <span>{{ downloadProgressText() }}</span>
+      }
+    </p>
   }
 }
 
@@ -22,49 +28,47 @@
   button + the fixed overlays above), so its position is identical in every phase. -->
 <div class="cfg-shell">
   <app-brand-logo class="cfg-logo" [size]="84" />
-  <!-- Visually-hidden heading keeps the page a navigable landmark for screen readers; the logo wordmark
-    + the "Backend URL" label carry the visible identity (a cleaner, login-like top). -->
-  <h1 class="sr-only">{{ 'serverConfig.title' | transloco }}</h1>
+  <h1 class="cfg-title">{{ titleKey() | transloco }}</h1>
+  <p class="cfg-intro">{{ introKey() | transloco }}</p>
 
   <form class="cfg-form" novalidate (submit)="save($event)">
     <mat-form-field appearance="fill" class="cfg-field">
       <mat-label>{{ 'serverConfig.urlLabel' | transloco }}</mat-label>
       <input
+        #serverInput
         matInput
         type="url"
         inputmode="url"
         autocomplete="off"
         spellcheck="false"
+        enterkeyhint="go"
         [formControl]="url"
         [placeholder]="'serverConfig.placeholder' | transloco"
       />
       @if (url.invalid && url.touched) {
-        <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
+        <mat-error>{{ 'serverConfig.urlInvalidDetailed' | transloco }}</mat-error>
       } @else if (insecure() && url.value.trim()) {
-        <mat-hint><span class="cfg-insecure">{{ 'serverConfig.insecure' | transloco }}</span></mat-hint>
+        <mat-hint><span class="cfg-insecure">{{ 'serverConfig.unencryptedShort' | transloco }}</span></mat-hint>
       }
     </mat-form-field>
 
-    <!-- Optional LAN (secondary) origin — field-2. The user may enter EITHER field; the other is
-      auto-filled from /shell/compat and confirmed via the modal below. -->
-    <mat-form-field appearance="fill" class="cfg-field">
-      <mat-label>{{ 'serverConfig.lanLabel' | transloco }}</mat-label>
-      <input
-        matInput
-        type="url"
-        inputmode="url"
-        autocomplete="off"
-        spellcheck="false"
-        [formControl]="lanUrl"
-        [placeholder]="'serverConfig.lanPlaceholder' | transloco"
-      />
-      @if (lanUrl.invalid && lanUrl.touched) {
-        <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
-      }
-    </mat-form-field>
+    @if (insecure() && url.value.trim() && !url.invalid) {
+      <div class="cfg-security-note" role="note">
+        <strong>{{ 'serverConfig.unencryptedTitle' | transloco }}</strong>
+        <span>{{ 'serverConfig.unencryptedBody' | transloco }}</span>
+      </div>
+    }
 
-    @if (lanUrl.value.trim()) {
-      <p class="cfg-note">{{ 'serverConfig.cantValidateBoth' | transloco }}</p>
+    @if (errorKey()) {
+      <div class="cfg-error" role="alert">
+        <strong>{{ errorKey()! | transloco }}</strong>
+        @if (errorDetail()) {
+          <details>
+            <summary>{{ 'serverConfig.technicalDetails' | transloco }}</summary>
+            <code>{{ errorDetail() }}</code>
+          </details>
+        }
+      </div>
     }
 
     <button
@@ -72,15 +76,12 @@
       color="primary"
       type="submit"
       class="cfg-action"
-      [disabled]="(url.invalid && lanUrl.invalid) || busy() || autoFill()"
+      [disabled]="!canSubmit() || busy() || autoFill()"
     >
-      {{ (busy() ? 'serverConfig.connecting' : 'serverConfig.connect') | transloco }}
+      {{ (busy() ? 'serverConfig.connecting' : actionKey()) | transloco }}
     </button>
   </form>
 </div>
-
-<!-- Page description, pinned to the bottom out of flow. Faded + small so it reads as a footnote. -->
-<p class="cfg-desc">{{ 'serverConfig.hint' | transloco }}</p>
 
 @if (exitHint()) {
   <div class="cfg-toast" role="status">{{ 'serverConfig.exitHint' | transloco }}</div>
@@ -91,15 +92,18 @@
 @if (autoFill()) {
   <div class="cfg-modal-scrim" role="dialog" aria-modal="true">
     <div class="cfg-modal">
-      <p class="cfg-modal__body">{{ 'serverConfig.autoFillDetected' | transloco }}</p>
+      <h2 class="cfg-modal__title">{{ 'serverConfig.secondDetectedTitle' | transloco }}</h2>
+      <p class="cfg-modal__body">{{ 'serverConfig.secondDetectedBody' | transloco }}</p>
+      <code class="cfg-modal__address">{{ autoFill()!.lan }}</code>
       <div class="cfg-modal__actions">
         <button mat-button type="button" (click)="cancelAutoFill()">
-          {{ 'serverConfig.autoFillEdit' | transloco }}
+          {{ 'serverConfig.secondIgnore' | transloco }}
         </button>
         <button mat-flat-button color="primary" type="button" (click)="confirmAutoFill()">
-          {{ 'serverConfig.autoFillUse' | transloco }}
+          {{ 'serverConfig.secondUse' | transloco }}
         </button>
       </div>
     </div>
   </div>
 }
+</div>

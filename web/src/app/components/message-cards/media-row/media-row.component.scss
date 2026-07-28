@@ -13,11 +13,6 @@
   max-width: 100%;
   display: block; // override the text bubble's flex vertical-centering
   overflow: hidden;
-  // Media cards have NO bubble fill — the image IS the bubble (WhatsApp style). Drop the self/other
-  // bubble color so the picture + the translucent meta chip float directly on the chat background.
-  background: transparent !important;
-  // No tail on media cards: row-base paints a msg-head ::before tail in the bubble color, and with no
-  // bubble fill it would float as a stray green/white triangle beside the image.
   &::before {
     display: none !important;
   }
@@ -38,20 +33,73 @@
   background-repeat: no-repeat;
 }
 
+.msg-media-cell--image {
+  // An explicit opaque canvas prevents both gated images and the fractional edge of a decoded image
+  // from revealing the chat wallpaper.
+  background-color: var(--app-surface, #fff);
+}
+
+.msg-media-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+app-audio-player {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+}
+
 // "Tap to load · {size}" placeholder for IMAGE cells over the user size threshold. Centered text over
 // the gray cell; pointer-events:none so the click reaches the cell div (which loads the image).
 .msg-media-tap {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   text-align: center;
   padding: 0 12px;
-  color: rgba(0, 0, 0, 0.5);
+  color: var(--app-text-muted);
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--app-brand) 9%, transparent), transparent 38%),
+    color-mix(in srgb, var(--app-surface, #fff) 92%, var(--app-brand) 8%);
   font-size: 12px;
   line-height: 16px;
   pointer-events: none;
+
+  svg {
+    width: 28px;
+    height: 28px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  small {
+    font-size: 10px;
+    line-height: 12px;
+    opacity: 0.75;
+  }
+}
+
+.msg-media-tap-spinner {
+  stroke-dasharray: 42 18;
+  animation: media-tap-spin 0.85s linear infinite;
+}
+
+@keyframes media-tap-spin {
+  to { transform: rotate(360deg); }
 }
 
 // <video> fills its cell — the browser renders the first frame (preload=metadata). object-fit:cover so
@@ -119,7 +167,7 @@
 }
 
 // Bottom meta bar (EVERY media row — single OR album): media counts (left) + send time (right).
-// Narrow + on its own neutral grey chip background (NOT the bubble color) — a compact info strip
+// Narrow + on its own opaque surface background — a compact info strip
 // under the media, in the spirit of Telegram/WeChat's tight media captions. Integer-px line-heights.
 .msg-media-meta {
   display: flex;
@@ -128,14 +176,13 @@
   gap: 6px;
   padding: 2px 8px;
   min-height: 18px;
-  // Translucent grey chip on the chat background. The media bubble itself is transparent (no
-  // self/other fill), so this never picks up a bubble color — it reads as a subtle info strip that
-  // adapts to light/dark via the background it sits on.
-  background: rgba(127, 127, 127, 0.16);
+  // Opaque so chat wallpaper cannot show through and make the strip look detached from the media edge.
+  background: var(--app-surface, #fff);
   color: var(--im-bubble-text);
   font-size: 11px;
   line-height: 14px;
 }
+
 .msg-media-meta-count {
   display: flex;
   gap: 6px;

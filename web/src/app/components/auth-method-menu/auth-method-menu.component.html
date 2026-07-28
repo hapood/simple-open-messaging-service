@@ -1,0 +1,22 @@
+<button mat-button type="button" [matMenuTriggerFor]="methods">
+  {{ 'auth.otherMethods' | transloco }}
+  <span class="chevron" aria-hidden="true">⌄</span>
+</button>
+
+<mat-menu #methods="matMenu">
+  @if (password()) {
+    <button mat-menu-item type="button" (click)="passwordSelected.emit()">
+      {{ 'auth.switchToPassword' | transloco }}
+    </button>
+  }
+  @if (otp()) {
+    <button mat-menu-item type="button" (click)="otpSelected.emit()">
+      {{ 'auth.switchToOtp' | transloco }}
+    </button>
+  }
+  @if (qr()) {
+    <button mat-menu-item type="button" (click)="qrSelected.emit()">
+      {{ 'auth.switchToQr' | transloco }}
+    </button>
+  }
+</mat-menu>

@@ -10,10 +10,12 @@ import { IconComponent, AppIconType } from '../../components/icon/icon.component
 import { RouteService, RoutePage } from '../../services/route.service';
 import { ConfigService } from '../../services/config.service';
 import { apiOrigin, isTauri } from '../../services/runtime';
+import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
+import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
 
 @Component({
     selector: 'app-login-page',
-    imports: [LoginComponent, AuthBrandComponent, AuthToolbarComponent, BrandLogoComponent, TranslocoPipe, MatButtonModule, MatProgressSpinnerModule, IconComponent],
+    imports: [LoginComponent, AuthBrandComponent, AuthToolbarComponent, BrandLogoComponent, TranslocoPipe, MatButtonModule, MatProgressSpinnerModule, IconComponent, AuthViewportDirective, AuthMethodMenuComponent],
     templateUrl: './login-page.component.html',
     styleUrl: './login-page.component.scss'
 })

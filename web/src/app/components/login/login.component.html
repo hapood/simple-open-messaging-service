@@ -9,13 +9,13 @@
 
   <mat-form-field class="field" appearance="fill">
     <mat-label>{{ 'auth.account' | transloco }}</mat-label>
-    <input matInput name="account" autocomplete="username" autofocus
+    <input matInput name="account" autocomplete="username" enterkeyhint="next" autofocus
       [ngModel]="account()" (ngModelChange)="onAccountInput($event)">
   </mat-form-field>
 
   <mat-form-field class="field" appearance="fill">
     <mat-label>{{ 'auth.password' | transloco }}</mat-label>
-    <input matInput name="password" autocomplete="current-password"
+    <input matInput name="password" autocomplete="current-password" enterkeyhint="go"
       [type]="showPassword() ? 'text' : 'password'"
       [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
     <button mat-icon-button matSuffix type="button" (click)="togglePassword()"

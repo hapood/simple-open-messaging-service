@@ -30,10 +30,7 @@ export interface StoredMediaStatus {
  * {@link MessageRepository.setMediaDownloading} (which keeps sv), so any later backend terminal (greater
  * sv) overrides it.
  */
-export function reduceMediaStatus(
-  cur: StoredMediaStatus | undefined,
-  ev: { status: 'ready' | 'failed'; sv: number },
-): StoredMediaStatus | null {
+export function reduceMediaStatus(cur: StoredMediaStatus | undefined, ev: { status: 'ready' | 'failed'; sv: number }): StoredMediaStatus | null {
   if (cur && ev.sv <= cur.sv) return null; // stale / out-of-order → drop
   if (cur && cur.status === ev.status && cur.sv === ev.sv) return null; // idempotent
   return { status: ev.status, sv: ev.sv };
@@ -55,10 +52,11 @@ export function reduceMediaStatus(
  * command, so individual messages are never removed; the ONE exception is whole-thread cache GC when a
  * thread leaves the user's roster (see {@link deleteByThread}).
  *
- * **Boot/init freshness:** `init` (`skip:0`) always backend-probes + writes through — the SSE stream does
- * NOT replay messages received while the app was closed, so the latest page must be re-read to stay fresh
- * (mirrors the conversation-list snapshot-on-boot). The cache value is in `getOlder`/`getNewer` (`skip:1`):
- * scrolling through already-cached history + live arrivals are cache hits.
+ * **Boot/init freshness:** `init` (`skip:0`) is stale-while-revalidate: a contiguous latest page already
+ * held in IDB is returned immediately, while a backend probe refreshes the page in the background. If that
+ * probe discovers a newer seq it emits the normal live signal, so the priming kernel replays/pulls the delta.
+ * A cold/fragmented cache still awaits the backend. `getOlder`/`getNewer` (`skip:1`) remain cache-first with
+ * gap-fill.
  *
  * **NEW_MESSAGE → cache → signal (in that order):** the body is `await`-cached in IDB BEFORE the
  * {@link liveSignal$} fires, so the kernel's subsequent `getNewer` pull (triggered by the signal) is a
@@ -85,7 +83,11 @@ export class MessageRepository {
    * filters to its threadId and calls `kernel.updateItemData(seq)` to re-render that one card in place
    * (zero height change — the status overlay/meta slot never alter the cell's measured height).
    */
-  private readonly mediaStatusSignal$ = new Subject<{ threadId: number; seq: number; status: MediaStatus }>();
+  private readonly mediaStatusSignal$ = new Subject<{
+    threadId: number;
+    seq: number;
+    status: MediaStatus;
+  }>();
   readonly mediaStatusLive$ = this.mediaStatusSignal$.asObservable();
 
   /** Per-thread highest seq observed (via NEW_MESSAGE or a backend response body). In-memory only —
@@ -99,30 +101,22 @@ export class MessageRepository {
     // Own the NEW_MESSAGE SSE: identity-only {threadId, seq, ts} (no body — single data source = pull).
     // Advance the per-thread ceiling + emit the live signal so the open chat-box pulls the body via
     // getNewer; nothing is cached here (the body arrives via the missed-summary pull / query-messages).
-    this.ws.eventSubject
-      .pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined))
-      .subscribe((m) => this.onNewMessage(m.data as { threadId: number; seq: number; ts: number }));
+    this.ws.eventSubject.pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined)).subscribe((m) => this.onNewMessage(m.data as { threadId: number; seq: number; ts: number }));
 
     // Own the MEDIA_STATUS SSE: a federated media message finished localizing ('ready') or failed
     // ('failed'). Flow it through the reducer (anti-regression by sv) + IDB write + the mediaStatus signal
     // so the card flips off its optimistic 'downloading'. The frame is {threadId, seq, status, v}.
-    this.ws.eventSubject
-      .pipe(filter((m) => m.event === 'MEDIA_STATUS' && m.status === 0 && m.data !== undefined))
-      .subscribe((m) => {
-        const d = m.data as unknown as {
-          threadId: number;
-          seq: number;
-          status: 'ready' | 'failed';
-          v: number;
-        };
-        if (
-          typeof d?.threadId === 'number' &&
-          typeof d?.seq === 'number' &&
-          (d.status === 'ready' || d.status === 'failed')
-        ) {
-          void this.applyMediaStatus(d.threadId, d.seq, d.status, d.v, 'sse');
-        }
-      });
+    this.ws.eventSubject.pipe(filter((m) => m.event === 'MEDIA_STATUS' && m.status === 0 && m.data !== undefined)).subscribe((m) => {
+      const d = m.data as unknown as {
+        threadId: number;
+        seq: number;
+        status: 'ready' | 'failed';
+        v: number;
+      };
+      if (typeof d?.threadId === 'number' && typeof d?.seq === 'number' && (d.status === 'ready' || d.status === 'failed')) {
+        void this.applyMediaStatus(d.threadId, d.seq, d.status, d.v, 'sse');
+      }
+    });
 
     // Session-end reset: maxSeenSeq is documented "in-memory only — re-established by the init
     // backend-probe each session", so it must not survive an account switch (a stale ceiling from the
@@ -152,18 +146,27 @@ export class MessageRepository {
    * - `skip: 1` (getOlder/getNewer): cache-first when the held range is contiguous + the far boundary is
    *   known (floor = seq 0 present; ceiling = maxSeenSeq); gap-fill from the API otherwise.
    */
-  async queryMessages(
-    threadId: number,
-    q: MessageQuery,
-  ): Promise<{ data: Message[]; hasMore: boolean }> {
+  async queryMessages(threadId: number, q: MessageQuery, clearedAfter?: number | null): Promise<{ data: Message[]; hasMore: boolean }> {
+    if (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined) {
+      const cached = await this.latestContiguous(threadId, q.take, clearedAfter);
+      if (cached.length > 0) {
+        const cachedNewestSeq = cached[0].seq;
+        // Stale-while-revalidate: do not put network RTT on the thread-switch critical path. The scroller
+        // already preserves a live signal received during init and replays it after priming, so even a very
+        // fast refresh cannot race the cached mount and lose newly discovered rows.
+        void this.revalidateLatest(threadId, q, cachedNewestSeq);
+        const oldestSeq = cached[cached.length - 1].seq;
+        return {
+          data: cached,
+          hasMore: oldestSeq > 0,
+        };
+      }
+    }
     if (q.skip === 0) return this.backend(threadId, q);
     // skip === 1 → getOlder (desc, below lastSeq) / getNewer (asc, above lastSeq): cache-first.
     const anchor = q.lastSeq;
     if (anchor === undefined) return this.backend(threadId, q); // no cursor → can't range the cache
-    const cached =
-      q.orderBy === 'desc'
-        ? await this.rangeDesc(threadId, anchor, q.take)
-        : await this.rangeAsc(threadId, anchor, q.take);
+    const cached = q.orderBy === 'desc' ? await this.rangeDesc(threadId, anchor, q.take, clearedAfter) : await this.rangeAsc(threadId, anchor, q.take, clearedAfter);
     const verdict = this.cacheVerdict(cached, anchor, q.take, q.orderBy, threadId);
     if (verdict.hit) return { data: cached, hasMore: verdict.hasMore };
     return this.backend(threadId, q); // gap-fill: the cache lacks a contiguous held range here
@@ -199,10 +202,7 @@ export class MessageRepository {
   }
 
   /** Backend read + write-through cache. Returns the page in `orderBy` order + the authoritative hasMore. */
-  private async backend(
-    threadId: number,
-    q: MessageQuery,
-  ): Promise<{ data: Message[]; hasMore: boolean }> {
+  private async backend(threadId: number, q: MessageQuery): Promise<{ data: Message[]; hasMore: boolean }> {
     try {
       const res = await firstValueFrom(this.msg.queryMessageLog({ threadId, ...q }));
       const data = res.code === 0 ? (res.data ?? []) : [];
@@ -215,6 +215,15 @@ export class MessageRepository {
       return { data, hasMore: res.hasMore ?? data.length >= q.take };
     } catch {
       return { data: [], hasMore: false };
+    }
+  }
+
+  /** Refresh a cache-served latest page and wake the open kernel only when the server advanced its tail. */
+  private async revalidateLatest(threadId: number, q: MessageQuery, cachedNewestSeq: number): Promise<void> {
+    const fresh = await this.backend(threadId, q);
+    const freshNewestSeq = fresh.data[0]?.seq;
+    if (freshNewestSeq !== undefined && freshNewestSeq > cachedNewestSeq) {
+      this.signal$.next({ threadId, seq: freshNewestSeq });
     }
   }
 
@@ -270,10 +279,7 @@ export class MessageRepository {
       const tx = (await this.webdb.db()).transaction('messages', 'readonly');
       await Promise.all(
         threadIds.map(async (tid) => {
-          const cursor = await tx.store.openCursor(
-            IDBKeyRange.bound([tid, -Infinity], [tid, Infinity]),
-            'prev',
-          );
+          const cursor = await tx.store.openCursor(IDBKeyRange.bound([tid, -Infinity], [tid, Infinity]), 'prev');
           if (cursor?.value) out.set(tid, cursor.value);
         }),
       );
@@ -289,13 +295,7 @@ export class MessageRepository {
    * anchor; asc: lowest-first above it). Contiguity is required because multiple jump-to-message windows
    * can fragment the cached set; a gapped range must be backfilled from the API (the contiguous truth).
    */
-  private cacheVerdict(
-    cached: Message[],
-    anchor: number,
-    take: number,
-    orderBy: 'desc' | 'asc',
-    threadId: number,
-  ): { hit: boolean; hasMore: boolean } {
+  private cacheVerdict(cached: Message[], anchor: number, take: number, orderBy: 'desc' | 'asc', threadId: number): { hit: boolean; hasMore: boolean } {
     if (cached.length === 0) return { hit: false, hasMore: true };
     const step = orderBy === 'desc' ? -1 : 1;
     for (let i = 0; i < cached.length; i++) {
@@ -312,39 +312,52 @@ export class MessageRepository {
     const ceiling = this.maxSeenSeq.get(threadId);
     const reachedCeiling = ceiling !== undefined && lastSeq >= ceiling;
     const hit = cached.length === take || reachedCeiling;
-    return { hit, hasMore: hit ? ceiling !== undefined && lastSeq < ceiling : true };
+    return {
+      hit,
+      hasMore: hit ? ceiling !== undefined && lastSeq < ceiling : true,
+    };
   }
 
   // ── IDB range helpers (best-effort; IDB unavailable → empty → gap-fill) ─────────────────────
 
+  /** Latest cached page, newest-first. Reject a fragmented page so init never renders across a cache gap. */
+  private async latestContiguous(threadId: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
+    try {
+      const db = await this.webdb.db();
+      const range = IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]);
+      const cached = (await this.collect(db, range, 'prev', take)).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
+      for (let i = 1; i < cached.length; i++) {
+        if (cached[i].seq !== cached[i - 1].seq - 1) return [];
+      }
+      return cached;
+    } catch {
+      return [];
+    }
+  }
+
   /** The `take` messages with seq < `belowSeq`, highest-first (desc). */
-  private async rangeDesc(threadId: number, belowSeq: number, take: number): Promise<Message[]> {
+  private async rangeDesc(threadId: number, belowSeq: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
     try {
       const db = await this.webdb.db();
       const range = IDBKeyRange.bound([threadId, -Infinity], [threadId, belowSeq], false, true);
-      return await this.collect(db, range, 'prev', take);
+      return (await this.collect(db, range, 'prev', take)).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
     } catch {
       return [];
     }
   }
 
   /** The `take` messages with seq > `aboveSeq`, lowest-first (asc). */
-  private async rangeAsc(threadId: number, aboveSeq: number, take: number): Promise<Message[]> {
+  private async rangeAsc(threadId: number, aboveSeq: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
     try {
       const db = await this.webdb.db();
       const range = IDBKeyRange.bound([threadId, aboveSeq], [threadId, Infinity], true, false);
-      return await this.collect(db, range, 'next', take);
+      return (await this.collect(db, range, 'next', take)).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
     } catch {
       return [];
     }
   }
 
-  private async collect(
-    db: Awaited<ReturnType<WebdbService['db']>>,
-    range: IDBKeyRange,
-    direction: 'next' | 'prev',
-    take: number,
-  ): Promise<Message[]> {
+  private async collect(db: Awaited<ReturnType<WebdbService['db']>>, range: IDBKeyRange, direction: 'next' | 'prev', take: number): Promise<Message[]> {
     const out: Message[] = [];
     let cursor = await db.transaction('messages').store.openCursor(range, direction);
     while (cursor && out.length < take) {
@@ -392,19 +405,10 @@ export class MessageRepository {
    * Best-effort: a not-cached message (never pulled) is a no-op (the next query-messages carries the
    * authoritative status from the backend).
    */
-  async applyMediaStatus(
-    threadId: number,
-    seq: number,
-    status: 'ready' | 'failed',
-    sv: number,
-    _source: 'sse' | 'probe' | 'retry' = 'sse',
-  ): Promise<boolean> {
+  async applyMediaStatus(threadId: number, seq: number, status: 'ready' | 'failed', sv: number, _source: 'sse' | 'probe' | 'retry' = 'sse'): Promise<boolean> {
     const cur = await this.getOne(threadId, seq);
     if (!cur) return false;
-    const curState: StoredMediaStatus | undefined =
-      cur.mediaStatus !== undefined
-        ? { status: cur.mediaStatus, sv: cur.sv ?? 0 }
-        : undefined;
+    const curState: StoredMediaStatus | undefined = cur.mediaStatus !== undefined ? { status: cur.mediaStatus, sv: cur.sv ?? 0 } : undefined;
     const next = reduceMediaStatus(curState, { status, sv });
     if (!next) return false;
     await this.put({ ...cur, mediaStatus: next.status, sv: next.sv });
@@ -422,7 +426,11 @@ export class MessageRepository {
     const cur = await this.getOne(threadId, seq);
     if (!cur || cur.mediaStatus === MEDIA_STATUS.DOWNLOADING) return;
     await this.put({ ...cur, mediaStatus: MEDIA_STATUS.DOWNLOADING });
-    this.mediaStatusSignal$.next({ threadId, seq, status: MEDIA_STATUS.DOWNLOADING });
+    this.mediaStatusSignal$.next({
+      threadId,
+      seq,
+      status: MEDIA_STATUS.DOWNLOADING,
+    });
   }
 
   /**
@@ -430,10 +438,7 @@ export class MessageRepository {
    * emitting a signal per changed row so each card flips as its row resolves (no batch latency). The
    * scroll probe is the SSE backstop — it corrects statuses the client missed while disconnected.
    */
-  async markMediaStatusBatch(
-    threadId: number,
-    entries: Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>,
-  ): Promise<void> {
+  async markMediaStatusBatch(threadId: number, entries: Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>): Promise<void> {
     for (const e of entries) {
       await this.applyMediaStatus(threadId, e.seq, e.status, e.sv, 'probe');
     }

@@ -48,6 +48,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
       <div
         class="call-screen"
         [class.video]="isVideo()"
+        [class.incoming]="snap().phase === 'incoming'"
         [class.controls-hidden]="!controlsVisible()"
         [class.pip]="inPip()"
         (pointerdown)="onScreenTap()"
@@ -319,13 +320,47 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         padding: calc(24px + var(--soms-safe-top, 0px)) 24px
           calc(32px + var(--soms-safe-bottom, 0px));
         box-sizing: border-box;
-        background: radial-gradient(
-            circle at 50% 22%,
-            rgba(255, 255, 255, 0.1),
-            transparent 34%
+        background:
+          radial-gradient(
+            circle at 50% 24%,
+            color-mix(in srgb, var(--app-brand) 18%, transparent),
+            transparent 38%
           ),
-          #111216;
+          linear-gradient(160deg, #171a21 0%, #111216 58%, #0d0e12 100%);
         color: #fff;
+        overflow: hidden;
+      }
+      /* Incoming calls get a little more visual focus without becoming a separate design language: the
+         brand glow and surface geometry reuse the application's semantic tokens, while the dark base keeps
+         the lock-screen presentation calm and readable. */
+      .call-screen.incoming::before,
+      .call-screen.incoming::after {
+        content: '';
+        position: absolute;
+        border-radius: 50%;
+        pointer-events: none;
+        filter: blur(2px);
+      }
+      .call-screen.incoming::before {
+        width: min(76vw, 520px);
+        aspect-ratio: 1;
+        top: -34%;
+        background: color-mix(
+          in srgb,
+          var(--app-brand) 12%,
+          transparent
+        );
+      }
+      .call-screen.incoming::after {
+        width: 240px;
+        height: 240px;
+        bottom: -150px;
+        right: -90px;
+        background: color-mix(
+          in srgb,
+          var(--app-brand-accent) 10%,
+          transparent
+        );
       }
       /* VIDEO: full-bleed + transparent so the native remote SurfaceViewRenderer (a sibling view BEHIND the
          WebView, via the barcode-scanner overlay technique) shows through. The native side sets the WebView
@@ -334,6 +369,10 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         background: transparent;
         justify-content: flex-end;
         padding-bottom: calc(32px + var(--soms-safe-bottom, 0px));
+      }
+      .call-screen.video::before,
+      .call-screen.video::after {
+        display: none;
       }
       /* The chrome (name/status + controls) fades in/out on auto-hide. opacity only — no layout shift, so the
          native video-surface rects never need re-reporting (a hidden control keeps its space, just invisible). */
@@ -428,6 +467,8 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         box-shadow: 0 16px 44px rgba(0, 0, 0, 0.32);
       }
       .top-bar {
+        position: relative;
+        z-index: 1;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -445,17 +486,22 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         opacity: 0.62;
       }
       .peer {
+        position: relative;
+        z-index: 1;
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 12px;
       }
       .avatar {
-        width: 120px;
-        height: 120px;
-        border-radius: 24px;
+        width: 128px;
+        height: 128px;
+        border: 3px solid rgba(255, 255, 255, 0.16);
+        border-radius: 50%;
         overflow: hidden;
-        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+        box-shadow:
+          0 14px 42px rgba(0, 0, 0, 0.32),
+          0 0 0 8px rgba(255, 255, 255, 0.035);
       }
       .name {
         max-width: min(360px, calc(100vw - 48px));
@@ -493,6 +539,8 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         font-variant-numeric: tabular-nums;
       }
       .controls {
+        position: relative;
+        z-index: 1;
         display: flex;
         align-items: flex-start;
         gap: clamp(12px, 4vw, 24px);
@@ -507,6 +555,18 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
+      }
+      .call-screen.incoming .controls {
+        gap: clamp(40px, 15vw, 76px);
+        width: min(100%, 360px);
+        padding: 16px 20px;
+        border-color: rgba(255, 255, 255, 0.08);
+        background: rgba(22, 23, 28, 0.58);
+      }
+      .call-screen.incoming .action-icon {
+        width: 58px;
+        height: 58px;
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
       }
       .call-action {
         width: 72px;
@@ -565,11 +625,11 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         outline-offset: 3px;
       }
       .accept .action-icon {
-        background: #2e7d32;
+        background: var(--app-success, #16a34a);
       }
       .decline .action-icon,
       .end .action-icon {
-        background: #d32f2f;
+        background: var(--app-danger, #dc2626);
       }
       .mute.on .action-icon,
       .cam.on .action-icon {
@@ -601,6 +661,15 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
         }
         .call-action {
           width: 64px;
+        }
+      }
+      @media (max-height: 620px) {
+        .call-screen {
+          gap: 18px;
+        }
+        .avatar {
+          width: 104px;
+          height: 104px;
         }
       }
       @media (prefers-reduced-motion: reduce) {

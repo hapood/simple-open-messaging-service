@@ -7,7 +7,7 @@ import { httpTraceInterceptor } from './http-trace.interceptor';
  *
  * Pure unit (interceptor + a stub `HttpHandlerFn`, no TestBed). Asserts the severity mapping is correct
  * and that the interceptor LOGS ONLY — it rethrows every error so downstream (AuthInterceptor + the
- * caller) still see it. The cancel/abort trace is dev-build-only (ngDevMode), so those specs run under
+ * caller) still see it. The cancel/abort trace is dev-build-only (`isDevMode()`), so those specs run under
  * Karma (dev) and would be folded away in a prod AOT build.
  */
 describe('httpTraceInterceptor (HTTP failure visibility)', () => {

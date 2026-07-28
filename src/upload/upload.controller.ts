@@ -214,8 +214,10 @@ export class UploadController {
     );
     // Promote a staged AUDIO send if a client-message-id is present. data is {url,name,size,mimeType};
     // the staged meta {duration} is merged in at promote → the full AUDIO content shape.
-    await this.withStageFailure(req, () => this.maybePromote(req, data));
-    return data;
+    const promoted = await this.withStageFailure(req, () =>
+      this.maybePromote(req, data),
+    );
+    return { ...data, promoted };
   }
 
   /** Map a ConsumedMedia image rejection reason to a user-facing message. */
@@ -302,9 +304,9 @@ export class UploadController {
   private async maybePromote(
     req: FastifyRequest,
     contentPayload: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const clientMessageId = this.clientMessageId(req);
-    if (!clientMessageId) return; // plain upload — no staged send to promote
+    if (!clientMessageId) return false; // plain upload — no staged send to promote
     const digest = extractDigests(String(contentPayload.url))[0];
     if (digest) {
       await this.messageService.linkStagedDigest(
@@ -321,5 +323,6 @@ export class UploadController {
     // Fire-and-forget: promoteStaged already committed the Message (the upload response confirms that);
     // the recipient fan-out runs off the request critical path, same as the text send path.
     if (promoted) void this.fanout.dispatch(promoted);
+    return promoted !== null;
   }
 }

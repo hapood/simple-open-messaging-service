@@ -121,6 +121,19 @@ describe('NavStateMachineService', () => {
     expect(svc.chatThreadId()).toBe(2);
   });
 
+  it('consumes a group-joined transition once and does not replay it', () => {
+    svc.openChat(22, 'group-joined');
+    expect(svc.consumeChatTransition(22)).toBe('group-joined');
+    expect(svc.consumeChatTransition(22)).toBe('standard');
+  });
+
+  it('does not leak a group-joined transition into a later ordinary open', () => {
+    svc.openChat(22, 'group-joined');
+    svc.openChat(23);
+    expect(svc.consumeChatTransition(22)).toBe('standard');
+    expect(svc.consumeChatTransition(23)).toBe('standard');
+  });
+
   it('closeChat clears panes/aside/search + chatThreadId', () => {
     svc.openChat(4);
     svc.pushPane({ kind: 'dialog' });

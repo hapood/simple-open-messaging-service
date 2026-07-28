@@ -155,12 +155,26 @@
   color: var(--app-text-muted);
   border-radius: var(--app-radius-pill);
   cursor: pointer;
-  &:hover, &.active {
+
+  // Keep the persistent highlight for real component state (the More menu), while
+  // touch devices get feedback only for the duration of the press. Android WebView
+  // can retain :hover after a tap; applying hover only to hover-capable pointers
+  // prevents the call button from looking selected after it starts a call.
+  &.active,
+  &:active {
     color: var(--app-text);
     background: var(--app-hover);
   }
+
   &:focus-visible {
     outline: 2px solid var(--app-brand);
     outline-offset: 1px;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover {
+    color: var(--app-text);
+    background: var(--app-hover);
   }
 }

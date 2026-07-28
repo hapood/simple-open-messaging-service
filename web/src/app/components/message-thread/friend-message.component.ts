@@ -6,6 +6,7 @@ import {
   EnvironmentInjector,
   inject,
   input,
+  isDevMode,
   OnDestroy,
   output,
   signal,
@@ -261,12 +262,18 @@ export class MessageThreadComponent implements OnDestroy {
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
   private pendingOptimistic: CbItem<ChatItemData>[] = [];
-  /** Original File for each in-flight image/file send (keyed by clientMessageId), so a failed-send retry can
+  /** Original File for each in-flight attachment send (keyed by clientMessageId), so a failed-send retry can
    *  replay the upload + send. Cleaned by sweepPendingFiles as confirms drop the pending entries. */
   private readonly pendingFiles = new Map<
     string,
-    | { file: File; kind: 'image' | 'file' | 'video' | 'audio' }
+    | { file: File; kind: 'image' | 'file' | 'video' }
     | { native: NativeUploadSelection }
+  >();
+  /** Voice notes have their own lifecycle and retry metadata. They are deliberately not attachments:
+   * recordings render as voice bubbles immediately and never participate in image/file batching. */
+  private readonly pendingVoices = new Map<
+    string,
+    { file: File; duration: number }
   >();
   /** Object URLs created for optimistic FILE cards (download anchor); revoked on teardown to avoid leaks. */
   private readonly blobUrls = new Set<string>();
@@ -303,6 +310,12 @@ export class MessageThreadComponent implements OnDestroy {
     content: HTMLDivElement,
     trd: ConversationItem,
   ): void {
+    const initStartedAt = performance.now();
+    if (isDevMode()) {
+      console.log('[chat-perf] scroller:init', {
+        threadId: trd.threadId,
+      });
+    }
     this.source = new HttpItemSource(
       trd,
       this.msgRepo,
@@ -361,6 +374,12 @@ export class MessageThreadComponent implements OnDestroy {
       this.initialLoading.set(false);
       this.skeletonVisible.set(false);
       this.kernelReady = true;
+      if (isDevMode()) {
+        console.log('[chat-perf] scroller:ready', {
+          threadId: trd.threadId,
+          elapsedMs: Math.round(performance.now() - initStartedAt),
+        });
+      }
       this.ready.emit(trd.threadId);
     });
   }
@@ -687,18 +706,27 @@ export class MessageThreadComponent implements OnDestroy {
     if (text) this.sendText(text);
   }
 
-  /** Send an in-app recorded voice clip as an AUDIO message. The MediaRecorder Blob is wrapped in a File and
-   *  rides the same staged send-media flow as any other media; the duration is already known (no <audio>
-   *  probe needed). The slim bar dims (220×52) match layoutAlbum's audio branch + the AudioPlayerComponent,
-   *  and are integer px so the kernel's height model stays exact. */
+  /** Send an in-app recording through the dedicated voice pending path. */
   private sendVoice(blob: Blob, duration: number, mimeType: string): void {
     if (!this.threadId()) return;
     const cid = this.newClientMessageId();
     const f = new File([blob], `voice.${mimeTypeToExt(mimeType)}`, {
       type: mimeType || 'audio/webm',
     });
-    const item = this.makeOptimisticItem(cid, '', 'AUDIO', null, null);
-    this.pendingFiles.set(cid, { file: f, kind: 'audio' });
+    const preview = URL.createObjectURL(blob);
+    this.blobUrls.add(preview);
+    const images: AlbumImage[] = [{
+      kind: 'audio',
+      src: preview,
+      w: VOICE_BAR_W,
+      h: VOICE_BAR_H,
+      size: f.size,
+      duration,
+      name: f.name,
+    }];
+    const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
+    this.pendingVoices.set(cid, { file: f, duration });
+    this.dispatchPending(item);
     void this.uploadAndSendAudio(cid, f, item, { duration });
   }
 
@@ -914,7 +942,7 @@ export class MessageThreadComponent implements OnDestroy {
           (loaded, total) => this.transfers.progress(cid, loaded, total),
         ).pipe(takeUntil(this.transfers.cancelled(cid))),
       );
-      if (up.code !== 0) {
+      if (up.code !== 0 || up.data?.promoted !== true) {
         this.transfers.fail(cid);
         await this.failPending(item);
       } else {
@@ -978,6 +1006,17 @@ export class MessageThreadComponent implements OnDestroy {
     const item = source.retryPending(clientMessageId);
     if (!item) return;
     await scroller.reconcilePending(); // morph failed→sending in place
+    const voice = this.pendingVoices.get(clientMessageId);
+    if (voice) {
+      void this.uploadAndSendAudio(
+        clientMessageId,
+        voice.file,
+        item,
+        { duration: voice.duration },
+        true,
+      );
+      return;
+    }
     const pending = this.pendingFiles.get(clientMessageId);
     if (pending) {
       if ('native' in pending) {
@@ -989,8 +1028,7 @@ export class MessageThreadComponent implements OnDestroy {
         );
         return;
       }
-      // Replay the ORIGINAL send path for the pending kind. (audio/video previously fell through to
-      // uploadAndSendFile — a latent bug that re-sent them as a FILE attachment on retry.)
+      // Replay the original attachment send path.
       switch (pending.kind) {
         case 'image':
           void this.uploadAndSendImage(
@@ -1010,17 +1048,6 @@ export class MessageThreadComponent implements OnDestroy {
             true,
           );
           break;
-        case 'audio': {
-          const meta = await readAudioMeta(pending.file);
-          void this.uploadAndSendAudio(
-            clientMessageId,
-            pending.file,
-            item,
-            meta,
-            true,
-          );
-          break;
-        }
         default:
           void this.uploadAndSendFile(
             clientMessageId,
@@ -1044,6 +1071,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.nativeUploads.discard(pending.native.uploadId);
     }
     this.pendingFiles.delete(clientMessageId);
+    this.pendingVoices.delete(clientMessageId);
     this.transfers.discard(clientMessageId);
     await scroller.reconcilePending();
   }
@@ -1160,7 +1188,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  onScroll so confirms clean up promptly. Object URLs are revoked on teardown (they may still be rendering). */
   private sweepPendingFiles(): void {
     const source = this.source;
-    if (!source || this.pendingFiles.size === 0) return;
+    if (!source || (this.pendingFiles.size === 0 && this.pendingVoices.size === 0)) return;
     const live = new Set(source.getPending().map((p) => p.clientMessageId));
     for (const cid of this.pendingFiles.keys()) {
       if (!live.has(cid)) {
@@ -1170,6 +1198,9 @@ export class MessageThreadComponent implements OnDestroy {
         }
         this.pendingFiles.delete(cid);
       }
+    }
+    for (const cid of this.pendingVoices.keys()) {
+      if (!live.has(cid)) this.pendingVoices.delete(cid);
     }
   }
 
@@ -1190,6 +1221,7 @@ export class MessageThreadComponent implements OnDestroy {
       if ('native' in pending) this.nativeUploads.discard(pending.native.uploadId);
     }
     this.pendingFiles.clear();
+    this.pendingVoices.clear();
     for (const u of this.blobUrls) URL.revokeObjectURL(u);
     this.blobUrls.clear();
   }
@@ -1256,7 +1288,14 @@ export class MessageThreadComponent implements OnDestroy {
   /** Clear-history landed on the server: the now-empty view (filtered by the caller's clearedAt watermark)
    *  must reload from scratch. Data changed beneath a possibly-warm pane, so force a re-init regardless of
    *  warmth ({@link reinit}, not {@link reset}). */
-  onHistoryCleared(): void {
+  async onHistoryCleared(): Promise<void> {
+    const threadId = this.threadId();
+    if (threadId !== undefined) {
+      // Clear-for-me is a server-side watermark, not a Message delete. Purge the local mirror before
+      // re-init so cache-first startup cannot briefly remount pre-watermark rows while THREAD_META is
+      // still propagating the new clearedAt into the conversation item.
+      await this.msgRepo.deleteByThread(threadId);
+    }
     this.reinit();
   }
 
@@ -1334,25 +1373,6 @@ function mimeTypeToExt(mime: string): string {
   if (m.includes('mp4') || m.includes('m4a')) return 'mp4';
   if (m.includes('ogg')) return 'ogg';
   return 'webm'; // default: the Chrome/Android/Tauri MediaRecorder output
-}
-
-/** Probe an audio clip's duration via <audio> loadedmetadata (for the AUDIO message content + overlay). */
-function readAudioMeta(f: File): Promise<{ duration: number }> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(f);
-    const a = document.createElement('audio');
-    a.preload = 'metadata';
-    a.onloadedmetadata = () => {
-      const duration = Number.isFinite(a.duration) ? a.duration : 0;
-      URL.revokeObjectURL(url);
-      resolve({ duration });
-    };
-    a.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve({ duration: 0 });
-    };
-    a.src = url;
-  });
 }
 
 function formatTransferBytes(bytes: number): string {

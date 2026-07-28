@@ -96,7 +96,7 @@ $dark-theme: mat.define-theme((
 @property --c-brand-2 { syntax: '<color>'; inherits: true; initial-value: #bbdefb; }
 @property --c-brand   { syntax: '<color>'; inherits: true; initial-value: #2196f3; }
 
-/* === Shared `.tonal-chip` shell — the M3 treatment both top-right indicators wear. ===
+/* === Shared `.tonal-chip` shell — the M3 treatment both top-center indicators wear. ===
  * A two-stop <color>-var gradient (--g-from/--g-to) over the themed surface, M3 level-1 elevation, a
  * pill shape, and currentColor text/icon. The connection chip (amber/green/red per state) and the update
  * banner (brand blue) each set their own --g-from/--g-to/--ic + --c-* palette on `:host`; this class
@@ -115,6 +115,21 @@ $dark-theme: mat.define-theme((
   box-shadow:
     0 1px 2px 0 rgba(0, 0, 0, 0.30),
     0 1px 3px 1px rgba(0, 0, 0, 0.15);
+}
+
+/* LiveAnnouncer appends its status node directly under <body>. Keep a defensive structural rule here so
+ * connection recovery announcements never enter document flow or create a scrollbar, including during the
+ * first frame before CDK's runtime-loaded visually-hidden stylesheet is available. */
+.cdk-live-announcer-element.cdk-visually-hidden {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* === Auth language dropdown: keep options on a single line.
@@ -141,6 +156,17 @@ $dark-theme: mat.define-theme((
  * .mat-mdc-snack-bar-container margin rule without resorting to !important. */
 .soms-snack-bar.mat-mdc-snack-bar-container {
   margin-bottom: calc(var(--soms-safe-bottom, 0px) + 8px);
+}
+
+/* Semantic variants used by ToastService while retaining Material's standard snackbar structure. */
+.soms-snack-bar--warn.mat-mdc-snack-bar-container {
+  --mdc-snackbar-container-color: color-mix(in srgb, var(--app-warning) 28%, #211b12);
+  --mdc-snackbar-supporting-text-color: #fff;
+}
+
+.soms-snack-bar--info.mat-mdc-snack-bar-container {
+  --mdc-snackbar-container-color: var(--app-surface-inverse, #303034);
+  --mdc-snackbar-supporting-text-color: var(--app-on-surface-inverse, #fff);
 }
 
 /* === QR scanner overlay: make the app transparent so the native camera shows through. ===

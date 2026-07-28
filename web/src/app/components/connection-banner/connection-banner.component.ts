@@ -1,4 +1,4 @@
-import { afterRenderEffect, Component, computed, effect, ElementRef, inject, input, OnDestroy, signal, viewChild } from '@angular/core';
+import { Component, computed, effect, ElementRef, inject, input, OnDestroy, signal, viewChild } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { LiveAnnouncer } from '@angular/cdk/a11y';
 import { type AnimationPlaybackControls } from 'motion';
@@ -23,7 +23,7 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
 
 /**
  * Compact connection-status chip. NOT self-positioned: it is projected into `<app-indicator-slot>`,
- * the single top-right anchor that clears the 56px header (see IndicatorSlotComponent). One position for
+ * the single top-center anchor that clears the 56px header (see IndicatorSlotComponent). One position for
  * every indicator — this component only owns its own appearance and behavior.
  *
  * The whole reason this exists: a silent SSE disconnect must not read as "messages just stopped arriving".
@@ -89,20 +89,18 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
             </g>
           </svg>
         </span>
-        <!-- The VISIBLE detail text (NOT behind @if): the text column's width is JS-measured (scrollWidth →
-             --text-w on the chip) and transitioned, so the dot↔pill morph is continuous both ways AND a label
-             swap can't snap the width (content-driven width isn't transitionable; a measured, transitioned
-             width is). aria-hidden because this text can TICK every second in 'reconnecting' — assistive tech
-             must NOT hear it per-second. State transitions are voiced instead via the CDK LiveAnnouncer (see
-             the transition effect's announce() calls), once per transition; the chip's aria-label names it. -->
-        <span #text class="text" aria-hidden="true">{{ label() }}</span>
+        <!-- The visible detail text stays mounted so the dot↔pill transition can be CSS-only. Its wrapper
+             animates max-width instead of measuring scrollWidth on every countdown tick; tabular digits keep
+             equal-length countdown values stable. aria-hidden prevents per-second screen-reader chatter.
+             State transitions are voiced once via the CDK LiveAnnouncer. -->
+        <span class="text" aria-hidden="true">{{ label() }}</span>
       </button>
     }
   `,
   styles: [`
     :host {
       /* No positioning here — this component is projected into <app-indicator-slot>, the single
-         top-right anchor (its :host carries the position/top/right/z-index). This :host only owns
+         top-center anchor (its :host carries the position/top/centering/z-index). This :host only owns
          the palette; layout is the slot's job. */
       display: block;
       /* Palette source-of-truth: theme-aware concrete colors resolved from --app-* tokens. The --c-* vars
@@ -124,12 +122,10 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
     .chip {
       box-sizing: border-box;
       height: 36px;
-      /* width is auto (content-driven): collapsed content = 36px icon ⇒ a 36px circle; expanded content =
-         icon + gap + text + padding ⇒ a pill. The continuous dot↔pill transition is driven by the text
-         column's width (see .text) plus gap/padding below — NOT by transitioning this element's width
-         (auto isn't animatable) or max-width (a constant safety cap for long labels). */
+      /* width is content-driven: collapsed content = 36px icon; expanded content adds the CSS-clipped text
+         column. No DOM width measurement is used, so countdown updates cannot accumulate rounding pixels. */
       width: auto;
-      max-width: 340px; /* safety cap; the text column is JS-measured, so the chip sizes to real content */
+      max-width: min(340px, calc(100vw - 32px));
       padding: 0;
       gap: 0; /* collapsed: 0 gap ⇒ icon(36) + text(0) + padding(0) = exactly the 36px circle */
       cursor: pointer;
@@ -140,7 +136,7 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
          chip — a moving line that read as a drifting crosshair (the dropped conn-shimmer). The gradient
          stays static during the spin state; Motion morphs it on state changes, and the revolving .arc
          carries the loading motion. */
-      /* gap + padding transition alongside the text's width → the dot↔pill morph is continuous. Easing is
+      /* gap + padding transition alongside the text's max-width → the dot↔pill morph is continuous. Easing is
          the M3 standard curve. (gradient + color are OWNED by Motion's spring, excluded to avoid fighting it.) */
       transition:
         gap 0.30s cubic-bezier(0.2, 0, 0, 1),
@@ -247,12 +243,11 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
        means leaving 'closed' still fades the glyph out immediately. */
     .chip[data-state="closed"]       .off-ring,
     .chip[data-state="closed"]       .slash { opacity: 1; stroke-dashoffset: 0; transition-delay: 0.30s; }
-    /* The text column's width is JS-measured (the effect writes scrollWidth → --text-w on the chip) and
-       transitioned, NOT content-driven. This is the fix for the label-swap width glitch: content width can't
-       be transitioned, so a label change while the pill is open used to snap the chip width instantly. With a
-       measured target, width always animates 0 ↔ --text-w (or old --text-w ↔ new --text-w), smoothly.
-       min-width:0 + overflow:hidden beat the flex shrink-floor so width:0 actually collapses it. */
+    /* CSS-only text reveal. The old scrollWidth + 2px measurement fed the already-constrained width back
+       into itself on every countdown render, allowing rounding to grow the pill a pixel at a time. A bounded
+       max-width transition keeps the same dot↔pill reveal without synchronous layout reads. */
     .text {
+      display: block;
       white-space: nowrap;
       /* M3 label-large (14 / 500 / 20). line-height stays an integer-px length per the rule. */
       font-size: 14px;
@@ -264,15 +259,16 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
          keep the countdown's width constant across ticks. Not a height-contributing property (exempt). */
       font-variant-numeric: tabular-nums;
       min-width: 0;
-      width: 0;
+      max-width: 0;
       opacity: 0;
       overflow: hidden;
+      text-overflow: ellipsis;
       transition:
-        width 0.30s cubic-bezier(0.2, 0, 0, 1),
+        max-width 0.30s cubic-bezier(0.2, 0, 0, 1),
         opacity 0.20s linear;
     }
     .chip.expanded .text {
-      width: var(--text-w, 200px); /* fallback only; the effect sets the real measured width */
+      max-width: 274px; /* 340px chip cap minus icon, gap, and horizontal padding */
       opacity: 1;
       transition-delay: 0.08s; /* let the pill begin opening before the text shows */
     }
@@ -317,7 +313,7 @@ export class ConnectionBannerComponent implements OnDestroy {
    *  aria-hidden visible text, never announced per-second). */
   private readonly liveAnnouncer = inject(LiveAnnouncer);
   private readonly language = inject(LanguageService);
-  /** The top-right indicator slot — this component is its PRIORITY occupant. While visible, it occupies
+  /** The top-center indicator slot — this component is its PRIORITY occupant. While visible, it occupies
    *  the slot so the lower-priority update banner defers (and shows once the chip clears, if still wanted). */
   private readonly slot = inject(IndicatorSlotService);
 
@@ -344,9 +340,6 @@ export class ConnectionBannerComponent implements OnDestroy {
 
   /** The chip button, populated by the `@if` once show() turns truthy. Motion drives its children. */
   private readonly chipRef = viewChild<ElementRef<HTMLButtonElement>>('chip');
-
-  /** The detail-text span. Its scrollWidth is measured to drive the expanded pill width (see afterRenderEffect). */
-  private readonly textRef = viewChild<ElementRef<HTMLSpanElement>>('text');
 
   /** Active Motion controls — stopped before each morph so transitions never overlap/fight. */
   private controls: AnimationPlaybackControls[] = [];
@@ -460,28 +453,6 @@ export class ConnectionBannerComponent implements OnDestroy {
       this.slot.priorityOccupied.set(!!this.show());
     });
 
-    /* Measure the detail label's natural width whenever it changes (state or language) and publish it as
-       --text-w on the chip. The .text column transitions its `width` to var(--text-w), so the pill sizes to
-       the real label AND a label swap animates width old → new instead of snapping (content width itself
-       can't be transitioned — that snap was the glitch).
-       Measurement reads el.scrollWidth — REAL layout, not Canvas TextMetrics. The label is CJK in zh-CN
-       ("连接中断——{{s}}秒后重连…"), and the page font stack is Latin-only (-apple-system, …, sans-serif), so
-       CJK glyphs render via the OS's implicit fallback font. Canvas measureText is handed that Latin
-       font-family (via getComputedStyle().font) and — on the WebViews this app targets — does NOT reconcile
-       the DOM's CJK fallback, so it under-measures each CJK advance; across ~10 glyphs the cumulative
-       shortfall beat the old +2px buffer and the trailing "重连…" was clipped by .chip/.text overflow:hidden.
-       scrollWidth is produced by the same layout pass that paints the glyphs (fallback font included), so it
-       matches what is rendered; reading it forces a synchronous reflow, so there's no frame lag. Because
-       .text is white-space:nowrap + overflow:hidden, scrollWidth is its full natural content width regardless
-       of the column's own (transitioning, 0↔--text-w) width. +2px guards the integer-rounding seam. */
-    afterRenderEffect(() => {
-      this.label(); // track: re-measure on any state/language change (and every countdown tick)
-      const textEl = this.textRef()?.nativeElement;
-      const chipEl = this.chipRef()?.nativeElement;
-      if (!textEl || !chipEl) return;
-      const w = textEl.scrollWidth + 2;
-      if (w > 2) chipEl.style.setProperty('--text-w', `${w}px`);
-    });
   }
 
   /** Spring the gradient stops + icon color to the new state's palette. The icon shapes' visibility and

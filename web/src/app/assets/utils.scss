@@ -28,14 +28,17 @@
 @mixin auth-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: calc(100vh - var(--auth-keyboard-inset, 0px));
+  height: calc(100dvh - var(--auth-keyboard-inset, 0px));
+  min-height: 0;
+  overflow: auto;
   // border-box + padding-top so the grid's 100dvh height INCLUDES the status-bar safe-area inset:
   // the auth toolbar (absolute top:16px on .form-pane) and the form card then sit BELOW the status bar
   // instead of under it. Android WebView is edge-to-edge and env(safe-area-inset-top) is 0 there, so
   // --soms-safe-top is injected by the native shell (see _tokens.scss).
   box-sizing: border-box;
   padding-top: var(--soms-safe-top, 0px);
+  transition: height 160ms ease-out;
 
   .form-pane {
     // Anchor for <app-auth-toolbar>'s absolute top-right placement.
@@ -47,6 +50,21 @@
     box-sizing: border-box; // padding stays inside the grid-stretched size — no explicit height is set
     padding: 32px 24px;
     background: var(--app-bg);
+  }
+
+  // With the IME open, prioritize the focused form over decorative chrome. The scrollable pane keeps
+  // every field reachable even on short landscape viewports.
+  &.auth-keyboard-open .form-pane {
+    justify-content: flex-start;
+    padding-top: 20px;
+    padding-bottom: 20px;
+  }
+
+  &.auth-keyboard-open app-auth-brand,
+  &.auth-keyboard-open app-auth-toolbar,
+  &.auth-keyboard-open .form-brand,
+  &.auth-keyboard-open .auth-footer {
+    display: none;
   }
 
   @media (max-width: 899px) {

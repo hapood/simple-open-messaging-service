@@ -85,7 +85,10 @@ describe('ChatPaneComponent A/B coordinator', () => {
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
         // Minimal mock ConvList: real signals the coordinator reads, spy for the actions it takes.
         { provide: ConversationListService, useValue: { openThreadId, items, status, load: loadSpy } },
-        { provide: NavStateMachineService, useValue: { closeChat: closeChatSpy } },
+        {
+          provide: NavStateMachineService,
+          useValue: { closeChat: closeChatSpy, consumeChatTransition: () => 'standard' },
+        },
         { provide: LayoutService, useValue: { mode } },
       ],
     });

@@ -19,11 +19,12 @@
  *   balance mounts from cache when the user scrolls back). Compensation uses the [measured] height at resolve time,
  *   not a snapshot from request time.
  *
- * Framework-agnostic: does not import Angular. `declare ngDevMode` guards diagnostics (dead-code-eliminated in prod AOT).
+ * Development diagnostics are guarded by Angular's public `isDevMode()` API.
  */
-declare const ngDevMode: boolean | null | undefined;
+import { isDevMode } from '@angular/core';
 
 import type { CbSource } from './cb-source';
+
 
 export interface CbItem<T = unknown> {
   /** Real data id (the msgId from the source). Only a source cursor + read by createItem for data; **takes no part in position arithmetic** (kernel position uses the array index). */
@@ -381,7 +382,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private get steady(): boolean { return this.state === 'steady'; }
   private get filling(): boolean { return this.state === 'filling'; }
   private get destroyed(): boolean { return this.state === 'destroyed'; }
-  /** Debug switch: turn off the mount checkpoint (balance will not trigger loadOlder/loadNewer). Guarded by ngDevMode inside balance → removed in prod AOT. Default false (checkpoint loads normally). */
+  /** Debug switch: turn off the mount checkpoint (balance will not trigger loadOlder/loadNewer). Guarded by isDevMode() inside balance → removed in prod AOT. Default false (checkpoint loads normally). */
   closeCheckpoint = false;
 
   /** Queue of entries awaiting real-height measurement (stores entry refs; the callback reads the current index via indexOf). */
@@ -882,7 +883,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   scrollToIndex(id: number, anchor: 'top' | 'center' | 'bottom' = 'center', highlight = false): void {
     if (this.destroyed) return;
     const idx = this.indexOfId(id);
-    if (ngDevMode) console.log('[JUMP] scrollToIndex id=', id, 'alreadyMounted idx=', idx);
+    if (isDevMode()) console.log('[JUMP] scrollToIndex id=', id, 'alreadyMounted idx=', idx);
     if (idx >= 0) { // mounted: position directly
       this.positionMounted(idx, anchor);
       if (highlight) this.flashHighlight(idx);
@@ -903,20 +904,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    */
   private async openAround(id: number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
     const g = ++this.gen;
-    if (ngDevMode) console.log('[JUMP] openAround start id=', id, 'gen=', g, 'vh=', this.vh, 'threshold=', this.threshold);
+    if (isDevMode()) console.log('[JUMP] openAround start id=', id, 'gen=', g, 'vh=', this.vh, 'threshold=', this.threshold);
     this.resetWindowState();
     try {
       const batch = await this.source.init(id, this.cfg.mountItem, this.cfg.mountItem, this.initOpts);
-      if (this.destroyed || g !== this.gen) { if (ngDevMode) console.log('[JUMP] bail: gen overtaken / destroyed'); return; } // overtaken by a newer jump / destroyed
+      if (this.destroyed || g !== this.gen) { if (isDevMode()) console.log('[JUMP] bail: gen overtaken / destroyed'); return; } // overtaken by a newer jump / destroyed
       const merged = this.mergeBatch(batch);
       const key = String(id);
       const hasTarget = merged.some(it => this.itemHasId(it, id));
-      if (ngDevMode) console.log('[JUMP] init batch merged=', merged.length, 'hasTarget=', hasTarget, 'ids=', merged.slice(0, 2).map(i => i.id), '..', merged.slice(-2).map(i => i.id), 'noOlder/noNewer=', this.noOlder, this.noNewer);
+      if (isDevMode()) console.log('[JUMP] init batch merged=', merged.length, 'hasTarget=', hasTarget, 'ids=', merged.slice(0, 2).map(i => i.id), '..', merged.slice(-2).map(i => i.id), 'noOlder/noNewer=', this.noOlder, this.noNewer);
       if (merged.length === 0 || !hasTarget) { this.updateGhost(); this.emit(); return; } // source did not return the target
       this.absorbBoundary(merged);
       this.mountBatch(merged, 'init');
       this.measurePending();
-      if (ngDevMode) console.log('[JUMP] after init mount+measure: mounted=', this.mounted.length, 'totalH=', Math.round(this.totalH()), 'sampleH=', this.mounted.slice(0, 5).map(e => Math.round(e.height)));
+      if (isDevMode()) console.log('[JUMP] after init mount+measure: mounted=', this.mounted.length, 'totalH=', Math.round(this.totalH()), 'sampleH=', this.mounted.slice(0, 5).map(e => Math.round(e.height)));
       // Pin the target to its anchor BEFORE the first async fill await yields to the painter.
       // resetWindowState left scrollTop=0; without this early pin the init batch paints at the window
       // top and the target only "arrives" via a visible scroll at the end (show-then-scroll glitch).
@@ -926,8 +927,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         if (initIdx >= 0) this.positionMounted(initIdx, anchor);
       }
       await this.fillAround(id, anchor, g); // fill both ways to threshold/2 each (boundary exceptions) + when one side hits a boundary fill the other to threshold; re-pin after each batch
-      if (this.destroyed || g !== this.gen) { if (ngDevMode) console.log('[JUMP] bail after fill: gen overtaken'); return; }
-      if (ngDevMode) console.log('[JUMP] fill done: mounted=', this.mounted.length, 'range=', this.mounted[0]?.item.id, '..', this.mounted[this.mounted.length - 1]?.item.id, 'totalH=', Math.round(this.totalH()), 'noOlder/noNewer=', this.noOlder, this.noNewer);
+      if (this.destroyed || g !== this.gen) { if (isDevMode()) console.log('[JUMP] bail after fill: gen overtaken'); return; }
+      if (isDevMode()) console.log('[JUMP] fill done: mounted=', this.mounted.length, 'range=', this.mounted[0]?.item.id, '..', this.mounted[this.mounted.length - 1]?.item.id, 'totalH=', Math.round(this.totalH()), 'noOlder/noNewer=', this.noOlder, this.noNewer);
       const idx = this.indexOfId(id);
       if (idx >= 0) {
         this.positionMounted(idx, anchor);
@@ -981,7 +982,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         pin();
       }
     }
-    if (ngDevMode) console.log('[JUMP] fill iters up/down/comp=', upIter, downIter, compIter, 'totalH=', Math.round(this.totalH()));
+    if (isDevMode()) console.log('[JUMP] fill iters up/down/comp=', upIter, downIter, compIter, 'totalH=', Math.round(this.totalH()));
   }
 
   /** Total height of all mounted entries above targetId (= topOf(targetIdx)). If the target is not in the window, treat everything as above. */
@@ -1036,7 +1037,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const h = this.mounted[idx].height;
     const offset = anchor === 'center' ? h / 2 - this.vh / 2 : anchor === 'bottom' ? h - this.vh : 0;
     this.applyAnchor({ mode: 'item', id: this.mounted[idx].item.id, offset, fallbackId: null });
-    if (ngDevMode) console.log('[JUMP] positionMounted idx=', idx, 'id=', this.mounted[idx]?.item.id, 'topOf=', Math.round(topOfIdx), 'h=', Math.round(h), 'offset=', Math.round(offset), 'vh=', this.vh, '-> scrollTop=', Math.round(this.viewport.scrollTop));
+    if (isDevMode()) console.log('[JUMP] positionMounted idx=', idx, 'id=', this.mounted[idx]?.item.id, 'topOf=', Math.round(topOfIdx), 'h=', Math.round(h), 'offset=', Math.round(offset), 'vh=', this.vh, '-> scrollTop=', Math.round(this.viewport.scrollTop));
   }
 
   /** Clear the window + reset all load/boundary state (called at the start of openAround). unmountAll already cleared mounted/prefix/pending/ghost. */
@@ -1196,7 +1197,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  `animate` (default false) marks a mount that should play cb-enter after its height settles — only insertAfter and
    *  appendLive pass true; scroll-loaded history batches (init/older/newer) never animate. */
   private createEntry(item: CbItem<T>, prev: CbItem<T> | null, anchorEl?: HTMLElement | null, animate = false): Entry<T> {
-    if (ngDevMode) this.mountTick++;
+    if (isDevMode()) this.mountTick++;
     const vs = this.createVs(item, prev);
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
@@ -1231,7 +1232,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private rebuildEntry(entry: Entry<T>, newItem: CbItem<T> = entry.item): void {
     const idx = this.mounted.indexOf(entry);
     if (idx < 0) return;
-    if (ngDevMode) this.mountTick++;
+    if (isDevMode()) this.mountTick++;
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null; // older neighbor (one index lower)
     const newVs = this.createVs(newItem, newPrev);
     const newEl = newVs.el;
@@ -1259,7 +1260,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
     e.vs.destroy();
     this.mounted.shift();
-    if (ngDevMode) this.unmountTick++;
+    if (isDevMode()) this.unmountTick++;
     this.dirtyPrefix = true;
     return true;
   }
@@ -1272,7 +1273,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
     e.vs.destroy();
     this.mounted.pop();
-    if (ngDevMode) this.unmountTick++;
+    if (isDevMode()) this.unmountTick++;
     this.dirtyPrefix = true;
     return true;
   }
@@ -1286,7 +1287,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
     e.vs.destroy();
     this.mounted.splice(i, 1);
-    if (ngDevMode) this.unmountTick++;
+    if (isDevMode()) this.unmountTick++;
     this.dirtyPrefix = true;
     return true;
   }
@@ -1345,7 +1346,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = true;
     this.pendingMeasure = [];
     this.ghostEntry = null;
-    // Invariant (dev-only — ngDevMode is stripped in AOT, so prod pays nothing): after unmounting every tracked
+    // Invariant (dev-only — isDevMode() is stripped in AOT, so prod pays nothing): after unmounting every tracked
     // row, .msg-content must hold NO kernel-tagged ([data-cb-id]) children. A remaining one is an orphan — a row
     // mounted by a scroller whose async fetch was overtaken by destroy() but that mounted anyway. Every await-then-
     // mount path (init / openAround / loadOlder / loadNewer / runMessageSignal) re-checks `this.destroyed` after its
@@ -1353,7 +1354,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // sweeping would (a) leak the orphan host's Angular component ref + ResizeObserver (there is no handle to
     // destroy() them) and (b) mask the root cause behind a quiet warn. The sentinel (#topSentinel) and the tail cap
     // carry no data-cb-id, so they never trip this.
-    if (ngDevMode) {
+    if (isDevMode()) {
       const orphanCount = this.content.querySelectorAll('[data-cb-id]').length;
       if (orphanCount > 0) {
         throw new Error(`[chat-box] unmountAll invariant violated: ${orphanCount} orphaned row(s) remain in content — a scroller mounted rows after being destroyed (re-audit the post-await \`destroyed\` guard in init()/openAround/load*)`);
@@ -1479,8 +1480,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  the returned promise, and `animating>0` / inflight guards prevent harmful re-entry. */
   private async balance(): Promise<void> {
     if (this.destroyed || this.mounted.length === 0) return;
-    if (ngDevMode && this.closeCheckpoint) return; // debug: turn off the mount checkpoint (do not trigger loadOlder/loadNewer; removed in prod AOT)
-    const t0 = ngDevMode ? performance.now() : 0;
+    if (isDevMode() && this.closeCheckpoint) return; // debug: turn off the mount checkpoint (do not trigger loadOlder/loadNewer; removed in prod AOT)
+    const t0 = isDevMode() ? performance.now() : 0;
     const m0 = this.mountTick, u0 = this.unmountTick;
     const st = this.viewport.scrollTop;
     const dir = this.scrollDir(st);
@@ -1493,7 +1494,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (atTop && dir !== 'down' && !this.noOlder) { await this.loadOlder(); this.trimNewer(); }
     else if (atBottom && dir !== 'up' && !this.noNewer) { await this.loadNewer(); await this.reconcileOptimistic(); this.trimOlder(); }
 
-    if (ngDevMode && this.onDebug) {
+    if (isDevMode() && this.onDebug) {
       this.onDebug({
         ms: performance.now() - t0, mount: this.mountTick - m0, unmount: this.unmountTick - u0,
         scrollTop: Math.round(st), oldestId: this.mounted[0]?.item.id ?? null, newestId: this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : null,
@@ -2200,7 +2201,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     for (const entry of entries) {
       if (this.mounted.indexOf(entry) < 0) continue; // already unmounted (guards leftovers after trim)
       const h = entry.el.offsetHeight;
-      if (ngDevMode && h === 0) zeros++;
+      if (isDevMode() && h === 0) zeros++;
       this.onElHeight(entry, h); // `measuring` suppresses compensation + balance (loadOlder does the unified compensation)
       if (entry.animate) { // cb-enter kicks off on the next frame; keep cb-pending (hidden) until then so enterAnim
         // can drop it atomically with the enter class — the first painted frame is the @keyframes `from` (opacity:0),
@@ -2213,7 +2214,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       }
     }
     this.measuring = false;
-    if (ngDevMode && (zeros > 0 || this.filling)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
+    if (isDevMode() && (zeros > 0 || this.filling)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
     // Integer-height verification: totalH (Σ item offsetHeight + tailCap) vs content.scrollHeight. With the integer
     // line-height contract in _row-base.scss these must agree up to a CONSTANT sentinel offset — d must NOT grow with
     // the mounted count. Before that contract d drifted ~+11px over 63 items (summing rounded per-item heights vs one
@@ -2231,7 +2232,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // not per-row drift (sub-pixel accumulation could never reach hundreds of px at n=2). The regression this guard
     // catches only manifests at scale, i.e. once content overflows and min-height saturates, so the gate loses no real
     // signal.
-    if (ngDevMode) {
+    if (isDevMode()) {
       const sh = this.content.scrollHeight;
       if (sh > this.vh) { // min-height saturated → scrollHeight reflects true content height (valid independent check)
         const t = this.totalH();

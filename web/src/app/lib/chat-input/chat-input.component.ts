@@ -23,7 +23,7 @@ import { firstValueFrom } from 'rxjs';
 import { MsgService } from '../../services/message.service';
 import { InputDeviceService } from '../../services/input-device.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
-import { hideIme, showIme } from './vkb-support';
+import { hideIme, showIme } from './native-ime';
 import { isAndroidNative } from '../../services/runtime';
 import {
   NativeUploadService,
@@ -60,6 +60,10 @@ interface EmojiTab {
 
 const RECENTS_KEY = 'soms.chat.emojiRecents';
 const RECENTS_MAX = 32;
+// Android edge-to-edge builds can briefly report only the navigation/gesture inset as the IME height.
+// That value is useful for neither the native-keyboard slot nor the emoji grid and would collapse the
+// replacement panel to a thin strip. A real usable keyboard surface needs room for tabs plus several rows.
+const MIN_EMOJI_KEYBOARD_HEIGHT = 240;
 
 /** A single bare http(s) URL with no surrounding whitespace — the trigger for sending a link card rather
  *  than plain text. The server's LinkPreviewService builds the OG preview; the composer only classifies
@@ -139,11 +143,9 @@ function saveRecents(list: string[]): void {
  *    pins its viewport above the bar (the playground) can track the auto-grown height; a flex-layout host
  *    (production) may ignore it.
  *
- * Emoji panel: a WhatsApp/Telegram-style floating panel (category tabs + scrollable grid + a persisted
- * Recents tab). The native soft keyboard stays up on mobile — there is NO VirtualKeyboard swap. That API's
- * `hide()` is broken on Chrome Android (crbug.com/40912131, open since 2023); the swap path was abandoned in
- * favor of the popup-everywhere approach the major web chat clients use. See the `emoji-keyboard-vkb-swap`
- * memory.
+ * Emoji panel: a WhatsApp/Telegram-style category grid with persisted Recents. Browser/PWA and desktop use
+ * a floating panel without controlling the system keyboard. The Android native shell renders the same grid
+ * in-flow as a keyboard replacement and controls the IME exclusively through SomsShell.showIme/hideIme.
  *
  * Plain-text payload: the editor is rich for composition UX, but the text send serializes to plain text
  * (`editor.getText()`) — no HTML is stored. `members` drives the @mention suggestion popup (pass `[]` for
@@ -206,7 +208,9 @@ export class ChatInputComponent implements OnDestroy {
   private keyboardHandoffTimer?: ReturnType<typeof setTimeout>;
   private readonly trackKeyboardGeometry = effect(() => {
     const inset = this.keyboardInset.inset();
-    if (inset > 0 && !this.emojiOpen()) this.emojiKeyboardHeight.set(inset);
+    if (inset > 0 && !this.emojiOpen()) {
+      this.emojiKeyboardHeight.set(Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, inset));
+    }
     if (this.keyboardHandoff() && !this.switchingToSystem() && inset === 0) {
       requestAnimationFrame(() => this.keyboardHandoff.set(false));
     }
@@ -379,13 +383,15 @@ export class ChatInputComponent implements OnDestroy {
     this.closeAttach();
     if (this.recents().length) this.activeCategory.set('recent');
     this.emojiOpen.set(true);
-    this.editor()?.focus();
     if (this.emojiKeyboard()) {
+      this.editor()?.focus();
       this.keyboardHandoff.set(this.keyboardInset.inset() > 0);
       // The in-flow emoji panel now owns the entire slot. Atomically stop applying native inset to the
       // viewport/input bar; subsequent IME close frames are intentionally ignored by layout.
       this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
       hideIme();
+    } else {
+      this.editor()?.focus();
     }
     this.measureBar();
   }
@@ -409,14 +415,6 @@ export class ChatInputComponent implements OnDestroy {
     // native inset, so one replaces the other frame-for-frame; the geometry effect closes it at first inset.
     this.switchingToSystem.set(true);
     this.keyboardHandoff.set(true);
-  }
-  /** Tapping the draft while the emoji keyboard owns the input surface must not focus contenteditable and
-   *  stack the system IME on top. The ABC key is the intentional switch back to normal typing. */
-  onEditorPointerDown(_event: PointerEvent): void {
-    if (!this.emojiKeyboard()) return;
-    if (this.emojiOpen()) return; // manual VK policy keeps selection positioning without summoning the IME
-    this.editor()?.focus();
-    showIme();
   }
   onEditorFocusChange(focused: boolean): void {
     if (!focused) {

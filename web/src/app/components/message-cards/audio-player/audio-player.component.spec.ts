@@ -54,6 +54,20 @@ describe('AudioPlayerComponent', () => {
     expect(playSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('routes a real DOM button click to the hidden audio engine', async () => {
+    const fixture = TestBed.createComponent(AudioPlayerComponent);
+    fixture.componentRef.setInput('src', '/uploads/shards/aa/bb/voice.webm');
+    fixture.componentRef.setInput('duration', 5);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const audio = fixture.nativeElement.querySelector('audio') as HTMLAudioElement;
+    const playSpy = spyOn(audio, 'play').and.resolveTo();
+
+    (fixture.nativeElement.querySelector('.ap-btn') as HTMLButtonElement).click();
+
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('stays inert once a load/decode failure has been recorded', async () => {
     const { comp, playSpy } = await render(MEDIA_STATUS.READY);
     comp.failed.set(true);
@@ -74,5 +88,54 @@ describe('AudioPlayerComponent', () => {
 
     expect(playSpy).not.toHaveBeenCalled();
     expect(comp.failed()).toBe(false); // inert preempts play, so onError never trips a spurious failed
+  });
+
+  it('uses the same playable player structure for an optimistic blob URL', async () => {
+    const fixture = TestBed.createComponent(AudioPlayerComponent);
+    fixture.componentRef.setInput('src', 'blob:voice');
+    fixture.componentRef.setInput('duration', 8);
+    fixture.componentRef.setInput('pending', true);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(fixture.componentInstance.inert()).toBe(false);
+    expect(fixture.nativeElement.querySelector('.ap-pending-ring')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.ap-btn').disabled).toBe(false);
+    expect(fixture.nativeElement.querySelector('.ap-wave')).not.toBeNull();
+  });
+
+  it('seeks from the waveform and cycles 1x → 1.5x → 2x → 1x', async () => {
+    const { comp, audio } = await render();
+    const wave = document.createElement('button');
+    spyOn(wave, 'getBoundingClientRect').and.returnValue({
+      left: 10,
+      width: 100,
+    } as DOMRect);
+
+    comp.seek({ currentTarget: wave, clientX: 60 } as unknown as MouseEvent);
+    expect(audio.currentTime).toBeCloseTo(2.5, 5);
+    expect(comp.progress()).toBeCloseTo(0.5, 5);
+
+    comp.cycleRate();
+    expect(comp.rate()).toBe(1.5);
+    expect(audio.playbackRate).toBe(1.5);
+    comp.cycleRate();
+    expect(comp.rate()).toBe(2);
+    comp.cycleRate();
+    expect(comp.rate()).toBe(1);
+  });
+
+  it('marks the clip played and removes the unread dot when playback starts', async () => {
+    const fixture = TestBed.createComponent(AudioPlayerComponent);
+    fixture.componentRef.setInput('src', '/voice.mp3');
+    fixture.componentRef.setInput('time', '14:30');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('.ap-unplayed')).not.toBeNull();
+
+    fixture.componentInstance.onPlay();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.ap-unplayed')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('14:30');
   });
 });

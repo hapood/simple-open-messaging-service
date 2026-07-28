@@ -57,6 +57,13 @@ $app-gray-900: #111827;
   --app-overlay:        rgba(0, 0, 0, 0.40);
   --app-overlay-strong: rgba(0, 0, 0, 0.72);
 
+  // Chat composer surfaces. Components consume these semantic roles without branching on the active theme.
+  --im-composer-bar-bg:          var(--app-bg-muted);
+  --im-composer-input-bg:        var(--app-bg-muted);
+  --im-composer-input-focus-bg:  var(--app-surface-elevated);
+  --im-composer-input-focus-ring-width: 2px;
+  --im-composer-input-focus-ring: color-mix(in srgb, var(--app-brand) 24%, transparent);
+
   // Borders & interaction-state fills (replaces #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6)
   --app-border:        #{$app-gray-200};
   --app-border-strong: #{$app-gray-300};
@@ -247,6 +254,13 @@ $app-gray-900: #111827;
   --app-selected-strong: var(--app-active);
   --app-overlay:        rgba(0, 0, 0, 0.62);
   --app-overlay-strong: rgba(0, 0, 0, 0.82);
+
+  // Keep the dark composer capsule distinct from its bar while avoiding a bright active outline.
+  --im-composer-bar-bg:           var(--app-bg-muted);
+  --im-composer-input-bg:         var(--app-hover);
+  --im-composer-input-focus-bg:   var(--app-hover);
+  --im-composer-input-focus-ring-width: 1px;
+  --im-composer-input-focus-ring: color-mix(in srgb, var(--app-brand) 14%, transparent);
 
   // Dark elevation. Lift the floating-panel fill with an 8% primary tint (M3 dark tonal elevation — the
   // same convention as --im-sticky-date-bg) so the surface reads as a layer above the deep --app-bg, and

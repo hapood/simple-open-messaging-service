@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -170,8 +171,12 @@ class CallService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, hangUpPi))
+            .setStyle(
+                NotificationCompat.CallStyle.forOngoingCall(person, hangUpPi)
+                    .setIsVideo(CallController.callType == "VIDEO"),
+            )
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setOngoing(true)
             .build()
     }
 
@@ -215,6 +220,12 @@ class CallService : Service() {
             .setName(incomingCallerName.ifEmpty { getString(R.string.app_name) })
             .apply { avatarBitmap?.let { setIcon(IconCompat.createWithBitmap(it)) } }
             .build()
+        val callStyle = NotificationCompat.CallStyle
+            .forIncomingCall(caller, declinePi, answerPi)
+            .setIsVideo(incomingCallType == "VIDEO")
+            // Hints only: Android / the OEM still owns the final CallStyle button shape and iconography.
+            .setAnswerButtonColorHint(Color.rgb(22, 163, 74))
+            .setDeclineButtonColorHint(Color.rgb(220, 38, 38))
         return NotificationCompat.Builder(this, CHANNEL_INCOMING)
             .setSmallIcon(R.mipmap.ic_launcher)
             // forIncomingCall(person, declineIntent, answerIntent) — decline FIRST (the framework signature;
@@ -222,8 +233,11 @@ class CallService : Service() {
             // sets the Answer/Decline actions, the caller display, + the full-screen promotion on API 31+.
             // setCategory + setFullScreenIntent cover the API < 31 degrade (standard-notification path) +
             // ensure CATEGORY_CALL for the full-screen auto-grant on API 34+.
-            .setStyle(NotificationCompat.CallStyle.forIncomingCall(caller, declinePi, answerPi))
+            .setStyle(callStyle)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true)
+            .setContentIntent(showIncomingPi)
             .setFullScreenIntent(showIncomingPi, true)
             .build()
     }

@@ -1,6 +1,4 @@
-import { Injectable, signal } from '@angular/core';
-
-declare const ngDevMode: boolean | null | undefined;
+import { Injectable, isDevMode, signal } from '@angular/core';
 
 const STORAGE_KEY = 'soms-debug';
 /** Number of quick taps on the app-version label that toggles the debug tools in production. */
@@ -14,11 +12,11 @@ const GESTURE_WINDOW_MS = 2000;
  * on later without a rebuild.
  *
  * Enabled when EITHER holds:
- *  - the running bundle is a dev build (`ngDevMode` defined + truthy — auto-on for `ng serve` / dev), OR
+ *  - the running bundle is a dev build (`isDevMode()` — auto-on for `ng serve` / dev), OR
  *  - the hidden entry flipped the persisted flag: tapping the app-version label `GESTURE_TAPS` times, or
  *    loading with `?debug=1` in the URL. Persisted in `localStorage` so it survives reloads.
  *
- * `ngDevMode` is undefined in production builds, so dev builds read the flag as a no-op (always on); the
+ * Dev builds read the flag as a no-op (always on); the
  * persisted flag is the only production path. Kept as a plain signal (no persistence effect) so reads are
  * synchronous — the FAB/overlay query `enabled()` directly in their templates.
  */
@@ -81,6 +79,6 @@ export class DebugToolsService {
   }
 
   private isDevBuild(): boolean {
-    return typeof ngDevMode !== 'undefined' && !!ngDevMode;
+    return isDevMode();
   }
 }

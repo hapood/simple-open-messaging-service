@@ -290,7 +290,6 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   let content: HTMLDivElement;
   let scroller: ChatBoxScroller<number> | undefined;
   let rafSpy: jasmine.Spy;
-  let savedNgDev: unknown;
 
   beforeEach(() => {
     viewport = document.createElement('div');
@@ -302,8 +301,6 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     Object.defineProperty(viewport, 'scrollTop', { configurable: true, get: () => st, set: (v: number) => { st = v; } });
     Object.defineProperty(content, 'scrollHeight', { configurable: true, get: () => sumChildrenHeight(content) });
     rafSpy = spyOn(window, 'requestAnimationFrame').and.callFake((cb: FrameRequestCallback) => { cb(0); return 0; });
-    savedNgDev = (globalThis as { ngDevMode?: unknown }).ngDevMode;
-    (globalThis as { ngDevMode?: unknown }).ngDevMode = true;
   });
 
   afterEach(() => {
@@ -311,7 +308,6 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     scroller = undefined;
     viewport.remove();
     rafSpy.and.callThrough?.();
-    (globalThis as { ngDevMode?: unknown }).ngDevMode = savedNgDev;
   });
 
   it('init loads the newest batch, pins to bottom, window boundary msgIds correct', async () => {

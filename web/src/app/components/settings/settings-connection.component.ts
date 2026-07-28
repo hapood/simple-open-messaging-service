@@ -172,7 +172,7 @@ export class SettingsConnectionComponent {
 
   // ── Active server (origin mode) ────────────────────────────────────────────────────────────
 
-  /** Pill label: "Primary" normally, "LAN" (warn) when on the fallback. */
+  /** Pill label: "Primary" normally, "Second server" (warn) when on the fallback. */
   readonly originPillLabel = computed(() => {
     void this.language.lang();
     return this.transloco.translate(
@@ -180,7 +180,7 @@ export class SettingsConnectionComponent {
     );
   });
 
-  /** Detail line: the LAN-fallback notice when on secondary, else the configured primary origin. */
+  /** Detail line: the second-server fallback notice when on secondary, else the configured primary origin. */
   readonly activeOriginHint = computed(() => {
     void this.language.lang();
     if (this.originMode() === 'secondary') {

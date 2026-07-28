@@ -18,7 +18,6 @@ import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
-import { isAndroidNative } from '../../services/runtime';
 
 /** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
  *  so the production port swaps in GroupService.getMembers() unchanged. */
@@ -62,9 +61,8 @@ export class ChatEditorComponent {
   readonly placeholder = input('');
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-  /** INPUT axis (physical vs soft keyboard) — drives the Enter convention ({@link InputDeviceService.enterToSend})
-   *  and the emoji-swap `virtualkeyboardpolicy`. Injected, not threaded as an `input()`, so hosts need not
-   *  pass a modality signal into the composer. */
+  /** INPUT axis (physical vs soft keyboard) — drives the Enter convention
+   *  ({@link InputDeviceService.enterToSend}). Injected rather than threaded through every host. */
   private readonly inputDevice = inject(InputDeviceService);
 
   /** Fires on every keystroke with the current inline-HTML content (the value to store/send). */
@@ -103,9 +101,8 @@ export class ChatEditorComponent {
   private readonly initEditor = effect((onCleanup) => {
     const el = this.editorEl()?.nativeElement;
     if (!el || this.editor) return;
-    // Default `virtualkeyboardpolicy: auto` — focus auto-shows the soft keyboard, blur auto-dismisses it.
-    // The emoji swap rides this standard OS behavior (no VirtualKeyboard API): blur dismisses the keyboard
-    // when the panel opens; the ABC chip's focus brings it back. See [[emoji-keyboard-vkb-swap]].
+    // Android WebView handles the first user-initiated contenteditable focus through its normal path to
+    // create the InputConnection. Subsequent emoji/ABC visibility handoffs use the native SomsShell bridge.
     const editor = new Editor({
       element: el,
       extensions: [
@@ -132,11 +129,6 @@ export class ChatEditorComponent {
           class: 'cb-editor-prose',
           role: 'textbox',
           'aria-multiline': 'true',
-          // Chromium: keep the caret/selection focused while the app swaps the native IME for its emoji
-          // keyboard. Physical-keyboard devices retain normal automatic behavior.
-          // Only the Android shell can reliably control IME visibility while retaining focus. Browser/PWA
-          // composers keep the standard auto policy and use the floating emoji popup.
-          virtualkeyboardpolicy: isAndroidNative() ? 'manual' : 'auto',
         },
       },
     });

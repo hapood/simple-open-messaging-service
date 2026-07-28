@@ -1,4 +1,4 @@
-import { Injectable, signal, effect, untracked, OnDestroy } from '@angular/core';
+import { Injectable, signal, effect, untracked, OnDestroy, isDevMode } from '@angular/core';
 import { Subject } from 'rxjs';
 import { AuthService } from './auth.service';
 import { apiOrigin, isAndroidNative, isTauri } from './runtime';
@@ -16,9 +16,7 @@ import { RustChannelSseTransport } from './rust-channel-sse.transport';
 // already import these from here — the canonical home is now realtime-transport.ts.
 export type { StandardMessage, ConnectionState } from './realtime-transport';
 
-/** Dev-build-only diagnostic gate (mirrors Angular's own per-file declaration): truthy under
- *  `ng serve`, dead-code-eliminated in prod AOT — see the [sse] recv trace below. */
-declare const ngDevMode: boolean | null | undefined;
+/** Dev-build-only diagnostic gate for the [sse] receive trace below. */
 
 /**
  * Realtime downlink facade — the single public surface every consumer already depends on
@@ -76,8 +74,8 @@ export class WebsocketService implements OnDestroy {
     const sink: RealtimeSink = {
       onEvent: (m) => {
         // Dev-only: trace every realtime business event, so signal reception is visible under `ng serve`.
-        // Gated by ngDevMode → stripped in prod AOT.
-        if (ngDevMode) console.log('[sse] recv', m.event, m.data);
+        // Gated by isDevMode() → stripped in prod AOT.
+        if (isDevMode()) console.log('[sse] recv', m.event, m.data);
         // HELLO landed — the connect handshake succeeded; cancel the deadline that would otherwise force a
         // reconnect. (Intercepted here, before fan-out, so the timeout clears even though the threadlist is
         // the downstream consumer — mirrors how FORCE_LOGOUT is intercepted in each transport.)
@@ -85,7 +83,7 @@ export class WebsocketService implements OnDestroy {
         this.eventSubject.next(m);
       },
       onState: (s) => {
-        // Unconditional (NOT ngDevMode-gated): realtime connection-state transitions are low-frequency
+        // Unconditional (NOT isDevMode()-gated): realtime connection-state transitions are low-frequency
         // and the single most important trail for "messages stopped arriving" field reports — the bundle's
         // JS slice must carry them in production. Feeds the durable mirror like every other console.* call.
         console.info('[sse] realtime state →', s);

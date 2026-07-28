@@ -362,6 +362,15 @@ impl<R: Runtime> Assets<R> for OtaAssets<R> {
             if let Some(bytes) = read_ota_asset(&dir, key.as_ref()) {
                 return Some(Cow::Owned(bytes));
             }
+            // Angular uses history-mode routes. A hard navigation after installing an OTA bundle requests
+            // e.g. `auth/login`, not `index.html`. Falling through to EmbeddedAssets here can return the
+            // embedded baseline's SPA fallback, silently booting the OLD bundle after a successful update.
+            // Route-like keys must therefore resolve to the active bundle's entry document.
+            if is_spa_route_key(key.as_ref()) {
+                if let Some(bytes) = read_ota_asset(&dir, "index.html") {
+                    return Some(Cow::Owned(bytes));
+                }
+            }
         }
         self.fallback.get(key)
     }
@@ -376,6 +385,35 @@ impl<R: Runtime> Assets<R> for OtaAssets<R> {
         // embedded hashes neither over-restrict (hashes only ADD to the allow-list) nor under-restrict
         // (script-src 'self' already covers every OTA script) for an OTA-served page.
         self.fallback.csp_hashes(html_path)
+    }
+}
+
+fn is_spa_route_key(key: &str) -> bool {
+    let rel = key.trim_start_matches('/').trim_end_matches('/');
+    rel.is_empty()
+        || rel
+            .rsplit('/')
+            .next()
+            .is_some_and(|part| !part.contains('.'))
+}
+
+#[cfg(test)]
+mod ota_asset_tests {
+    use super::is_spa_route_key;
+
+    #[test]
+    fn angular_history_routes_use_the_active_entry_document() {
+        assert!(is_spa_route_key(""));
+        assert!(is_spa_route_key("/"));
+        assert!(is_spa_route_key("/auth/login"));
+        assert!(is_spa_route_key("settings/devices/"));
+    }
+
+    #[test]
+    fn static_asset_requests_do_not_fall_back_to_the_entry_document() {
+        assert!(!is_spa_route_key("index.html"));
+        assert!(!is_spa_route_key("/main-ABC123.js"));
+        assert!(!is_spa_route_key("assets/icons/app.svg"));
     }
 }
 

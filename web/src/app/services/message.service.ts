@@ -217,6 +217,8 @@ export class MsgService {
       name: string;
       size: number;
       mimeType: string;
+      /** True only when the staged AUDIO intent was durably promoted to a Message row. */
+      promoted: boolean;
     }>
   > {
     if (this.canStream(file)) {
@@ -226,6 +228,7 @@ export class MsgService {
           name: string;
           size: number;
           mimeType: string;
+          promoted: boolean;
         }>(file, '/upload/audio', {}, clientMessageId, onProgress),
       );
     }
@@ -237,6 +240,7 @@ export class MsgService {
         name: string;
         size: number;
         mimeType: string;
+        promoted: boolean;
       }>
     >(
       `${apiPrefix()}/upload/audio`,
