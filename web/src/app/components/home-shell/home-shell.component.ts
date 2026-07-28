@@ -1,6 +1,6 @@
 import { Component, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { trigger, transition, state, style, animate, type AnimationEvent } from '@angular/animations';
-import { LayoutService } from '../../services/layout.service';
+import { LayoutService, type LayoutMode } from '../../services/layout.service';
 import { NavStateMachineService, type AsidePanel } from '../../services/nav-state.service';
 import { IconRailComponent } from '../desktop/icon-rail/icon-rail.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
@@ -28,6 +28,11 @@ export function nextConversationListWidth(current: number, key: string): number 
   else if (key === 'End') candidate = MAX_LIST
   else return undefined
   return Math.min(MAX_LIST, Math.max(MIN_LIST, candidate))
+}
+
+/** Only expanded has a different top-level destination model (rail + dialogs instead of inline sections). */
+export function crossesExpandedLayout(previous: LayoutMode, next: LayoutMode): boolean {
+  return previous !== next && (previous === 'expanded' || next === 'expanded')
 }
 
 /** Compact overlay transition state. `static` = medium/expanded (inline chat / side panel, no transform);
@@ -104,8 +109,9 @@ export class HomeShellComponent {
     this.mode() === 'compact' ? (this.asideActive() ? 'mobile-open' : 'mobile-closed') : 'static',
   )
 
-  /** Guards the breakpoint effect so the transient-state reset does NOT fire on the initial mode read. */
-  private modeInitialized = false
+  /** Previous adaptive mode, used to distinguish compact↔medium (same top-section model) from transitions
+   *  involving expanded layout, where the inline Profile/Settings section has no mount point. */
+  private previousMode: LayoutMode | undefined
 
   constructor() {
     // Nav state → openThreadId coordination. The state machine is the source of truth for which chat is
@@ -123,13 +129,14 @@ export class HomeShellComponent {
       // compact close: deferred to onSlideDone('chat', → mobile-closed) below.
     })
 
-    // Viewport crossed an adaptive-layout boundary: drop transient nav state (open dialogs, aside,
-    // in-chat search, and the active section) — the section/overlay model differs per layout — but KEEP
-    // the open chat (the user's anchor context). Skipped on the initial read (state is already default).
+    // Responsive overlays, search, and chat-scoped asides survive resize/rotation. Only a transition into
+    // or out of expanded layout leaves the compact/medium inline Profile/Settings section, because expanded
+    // exposes those destinations through the rail/dialog model instead. Compact↔medium keeps everything.
     effect(() => {
-      this.mode()
-      if (!this.modeInitialized) { this.modeInitialized = true; return }
-      this.navState.resetTransientExceptChat()
+      const mode = this.mode()
+      const previous = this.previousMode
+      this.previousMode = mode
+      if (previous !== undefined && crossesExpandedLayout(previous, mode)) this.navState.resetAdaptiveTopSection()
     })
   }
 

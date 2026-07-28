@@ -1,4 +1,4 @@
-import { nextConversationListWidth } from './home-shell.component';
+import { crossesExpandedLayout, nextConversationListWidth } from './home-shell.component';
 
 describe('expanded conversation-list keyboard resizer', () => {
   it('moves one 16px step with the horizontal arrow keys', () => {
@@ -18,5 +18,17 @@ describe('expanded conversation-list keyboard resizer', () => {
 
   it('leaves unrelated keyboard input to the browser', () => {
     expect(nextConversationListWidth(360, 'Tab')).toBeUndefined();
+  });
+});
+
+describe('adaptive top-section reconciliation', () => {
+  it('preserves state between compact and medium because they share the inline section model', () => {
+    expect(crossesExpandedLayout('compact', 'medium')).toBeFalse();
+    expect(crossesExpandedLayout('medium', 'compact')).toBeFalse();
+  });
+
+  it('reconciles the top section when either side of the transition is expanded', () => {
+    expect(crossesExpandedLayout('medium', 'expanded')).toBeTrue();
+    expect(crossesExpandedLayout('expanded', 'compact')).toBeTrue();
   });
 });

@@ -212,22 +212,18 @@ export class NavStateMachineService {
     for (let i = stack.length - 1; i >= 0; i--) stack[i].onResult?.(undefined);
   }
 
-  /** Reset every transient nav layer (open dialogs, the aside, in-chat search, the settings drill-down, and
-   *  the active section) but KEEP {@link chatThreadId}. Called when the viewport crosses an adaptive-layout
-   *  breakpoint: the section / overlay model differs per layout, so transient state that doesn't make sense
-   *  in the new layout is dropped, while the open chat — the user's anchor context — survives. */
-  resetTransientExceptChat(): void {
-    this.closeAllPanes();
-    this.aside.set([]);
-    this.searchOpen.set(false);
+  /** Leave the compact/medium-only top section when entering or leaving expanded layout. Dialogs, media
+   *  overlays, the chat-scoped aside, search, and the open chat all have responsive treatments and therefore
+   *  survive the breakpoint. Only the inline Profile/Settings section has no expanded-layout mount point. */
+  resetAdaptiveTopSection(): void {
     this.settingsCategoryStack.set([]);
     this.topSection.set('chats');
   }
 
   /** Drop ALL nav layers — including the open chat. Called on session end (logout / 401-bounce / account
    *  switch), where the previous user's chat thread, open dialogs, aside, and mobile section must not
-   *  survive into the next account's session. Unlike {@link resetTransientExceptChat} (which keeps the chat
-   *  as the user's anchor across a layout breakpoint), this clears the chat too — a session boundary is a
+   *  survive into the next account's session. Unlike {@link resetAdaptiveTopSection} (which keeps the chat
+   *  and responsive overlays across an expanded-layout boundary), this clears the chat too — a session boundary is a
    *  hard reset, and a stale `chatThreadId` would otherwise make the URL-mirror effect above rewrite the
    *  fresh-login `/` back to the previous user's `/chat/N`. */
   private resetForSessionEnd(): void {

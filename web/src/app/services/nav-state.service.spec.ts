@@ -90,19 +90,19 @@ describe('NavStateMachineService', () => {
     expect(svc.chatThreadId()).toBe(5);
   });
 
-  // ── resetTransientExceptChat (breakpoint-change reset) ──
+  // ── resetAdaptiveTopSection (expanded-layout boundary) ──
 
-  it('resetTransientExceptChat drops panes/aside/search/settingsCategoryStack/topSection but keeps the chat', () => {
+  it('resetAdaptiveTopSection leaves the mobile section but preserves responsive chat layers', () => {
     svc.openChat(9);
     svc.setTopSection('settings');
     svc.openSettingsCategory('devices');
     svc.pushPane({ kind: 'dialog' });
     svc.openSearch();
     svc.openAside('profile');
-    svc.resetTransientExceptChat();
-    expect(svc.paneStack().length).toBe(0);
-    expect(svc.aside().length).toBe(0);
-    expect(svc.searchOpen()).toBe(false);
+    svc.resetAdaptiveTopSection();
+    expect(svc.paneStack().length).toBe(1);
+    expect(svc.aside().length).toBe(1);
+    expect(svc.searchOpen()).toBe(true);
     expect(svc.settingsCategoryTop()).toBeUndefined();
     expect(svc.topSection()).toBe('chats');
     expect(svc.chatThreadId()).toBe(9); // the anchor survives
