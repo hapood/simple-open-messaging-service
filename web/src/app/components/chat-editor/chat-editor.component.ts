@@ -200,10 +200,10 @@ export class ChatEditorComponent {
 
   /** Run ProseMirror's real Backspace command so selections, mentions and Unicode text are deleted with
    *  the same semantics as the native keyboard. */
-  deleteBackward(): void {
+  deleteBackward(focus = true): void {
     const editor = this.editor;
     if (!editor) return;
-    editor.commands.focus();
+    if (focus) editor.commands.focus();
     baseKeymap['Backspace']?.(
       editor.state,
       (transaction) => editor.view.dispatch(transaction),

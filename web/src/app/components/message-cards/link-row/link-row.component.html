@@ -12,11 +12,11 @@
   @if (isFailed() || isSending()) {
     <div class="msg-failed-actions">
       @if (isFailed()) {
-        <button type="button" (click)="retry.emit(data().msgId)" [attr.aria-label]="'transfer.retry' | transloco">
+        <button type="button" class="msg-action--retry" (click)="retry.emit(data().msgId)" [attr.aria-label]="'transfer.retry' | transloco">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7"/></svg>
         </button>
       }
-      <button type="button" (click)="cancel.emit(data().msgId)" [attr.aria-label]="'transfer.cancel' | transloco">
+      <button type="button" class="msg-action--cancel" (click)="cancel.emit(data().msgId)" [attr.aria-label]="'transfer.cancel' | transloco">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>

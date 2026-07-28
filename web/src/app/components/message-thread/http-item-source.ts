@@ -27,10 +27,17 @@ import dayjs from 'dayjs';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
+import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
-import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo, MediaStatus } from '../message-cards/chat-item';
+import type {
+  AlbumImage,
+  ChatItemData,
+  ChatMsgData,
+  FileInfo,
+  MediaStatus,
+} from '../message-cards/chat-item';
 import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
 
 /**
@@ -62,13 +69,17 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private noOlder = false;
   private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
-  private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
+  private readonly profiles = new Map<
+    number,
+    { name: string; isSelf: boolean }
+  >();
   private readonly knownMsgIds = new Set<number>();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
    *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
    *  dropped by reconcilePending inside init/getNewer, and the kernel's reconcileOptimistic removes the mounted
-   *  optimistic bubble. Failed entries STAY here (status:'failed') so the failure survives a remount and retry works. */
-  private readonly pending: CbItem<ChatItemData>[] = [];
+   *  optimistic bubble. The array is owned by the application-scoped ThreadSendOutbox, so failed/in-flight
+   *  entries survive destruction and recreation of this thread source. */
+  private readonly pending: CbItem<ChatItemData>[];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
   private mediaStatusSub?: Subscription;
@@ -80,20 +91,28 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly repo: MessageRepository,
     private readonly userService: UserService,
     wsService: WebsocketService,
+    private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
   ) {
+    this.pending = outbox.forThread(conv.threadId);
     this.onSignal = live.onSignal;
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     // The DB-layer MessageRepository owns the NEW_MESSAGE SSE: it caches the body, THEN emits liveSignal$,
     // so this signal arrives AFTER the body is in IDB — the kernel's subsequent getNewer pull reads it from
     // the cache (no backend round-trip). Filter to THIS thread (one source per open thread).
-    this.sseSub = repo.liveSignal$.pipe(filter((s) => s.threadId === this.conv.threadId)).subscribe((s) => this.onSignal(s.seq));
+    this.sseSub = repo.liveSignal$
+      .pipe(filter((s) => s.threadId === this.conv.threadId))
+      .subscribe((s) => this.onSignal(s.seq));
     // mediaStatus changes (MEDIA_STATUS SSE / scroll probe / manual-retry ack) → re-render that one card
     // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
-    this.mediaStatusSub = repo.mediaStatusLive$.pipe(filter((s) => s.threadId === this.conv.threadId)).subscribe((s) => this.onMediaStatus(s.seq, s.status));
+    this.mediaStatusSub = repo.mediaStatusLive$
+      .pipe(filter((s) => s.threadId === this.conv.threadId))
+      .subscribe((s) => this.onMediaStatus(s.seq, s.status));
     // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
     // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
-    this.reconnectSub = wsService.reconnect$.subscribe(() => this.onSignal(Number.MAX_SAFE_INTEGER));
+    this.reconnectSub = wsService.reconnect$.subscribe(() =>
+      this.onSignal(Number.MAX_SAFE_INTEGER),
+    );
   }
 
   /**
@@ -106,14 +125,23 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *    global edges).
    * Returns ascending raw messages; the global oldest/newest carry a boundary flag.
    */
-  async init(anchorId: number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
+  async init(
+    anchorId: number,
+    olderCount: number,
+    newerCount: number,
+    _opts?: CbSourceInitOpts,
+  ): Promise<CbItem<ChatItemData>[]> {
     if (anchorId === -1) {
       // Cap at MAX_PAGE (backend @Max(50)); the kernel top-ups the rest via getOlder. hasMore is
       // authoritative (backend take+1 method), so it alone drives noOlder — the old `list.length < olderCount`
       // heuristic would falsely signal exhaustion now that take is clamped below olderCount. init (skip:0)
       // returns a contiguous IDB page immediately when warm; the repo revalidates it in the background.
       const take = Math.min(olderCount, MAX_PAGE);
-      const { data, hasMore } = await this.repo.queryMessages(this.conv.threadId, { skip: 0, take, orderBy: 'desc' }, this.conv.clearedAt);
+      const { data, hasMore } = await this.repo.queryMessages(
+        this.conv.threadId,
+        { skip: 0, take, orderBy: 'desc' },
+        this.conv.clearedAt,
+      );
       if (!data || data.length === 0) return [];
       const list = [...data].reverse(); // desc → ascending (old → new)
       this.noOlder = !hasMore;
@@ -124,7 +152,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         // anchor=-1 → the last item is always the global newest; noOlder means it also reached the oldest. A length-1
         // batch spanning both edges is a sole item → 'both' (the boundary field is single-valued; otherwise items[0]='oldest'
         // and items[last]='newest' collide on it and noOlder is lost → a permanent top ghost on a single-message thread).
-        if (this.noOlder && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+        if (this.noOlder && items.length === 1)
+          items[0] = { ...items[0], boundary: 'both' };
         else {
           if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
           items[items.length - 1] = {
@@ -144,8 +173,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const olderTake = Math.min(olderCount, MAX_PAGE);
     const newerTake = Math.min(newerCount, MAX_PAGE);
     const [olderPage, newerPage] = await Promise.all([
-      this.repo.queryMessages(this.conv.threadId, { skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' }, this.conv.clearedAt),
-      this.repo.queryMessages(this.conv.threadId, { skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' }, this.conv.clearedAt),
+      this.repo.queryMessages(
+        this.conv.threadId,
+        { skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' },
+        this.conv.clearedAt,
+      ),
+      this.repo.queryMessages(
+        this.conv.threadId,
+        { skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' },
+        this.conv.clearedAt,
+      ),
     ]);
     if (!olderPage.data || olderPage.data.length === 0) return []; // target msgId not found
     const older = [...olderPage.data].reverse(); // desc → ascending: [older..anchorId] (includes anchorId)
@@ -157,7 +194,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const items = this.rawToItems(list);
     if (items.length > 0) {
       // Bidirectional fetch: noOlder/noNewer reflect each direction's hasMore. A length-1 batch spanning both edges → 'both'.
-      if (this.noOlder && this.noNewer && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+      if (this.noOlder && this.noNewer && items.length === 1)
+        items[0] = { ...items[0], boundary: 'both' };
       else {
         if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
         if (this.noNewer)
@@ -180,17 +218,27 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private reconcilePending(reals: CbItem<ChatItemData>[]): void {
     for (const r of reals) {
       if (r.clientMessageId === undefined) continue;
-      const pi = this.pending.findIndex((p) => p.clientMessageId === r.clientMessageId);
+      const pi = this.pending.findIndex(
+        (p) => p.clientMessageId === r.clientMessageId,
+      );
       if (pi >= 0) this.pending.splice(pi, 1);
     }
+    this.outbox.releaseIfEmpty(this.conv.threadId);
   }
 
   /** Fetch `count` messages older than cursorId (desc, then reversed to ascending). out[0] is tagged
    *  'oldest' when the DB floor is reached. */
-  async getOlder(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getOlder(
+    cursorId: number,
+    count: number,
+  ): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const take = Math.min(count, MAX_PAGE);
-    const { data, hasMore } = await this.repo.queryMessages(this.conv.threadId, { skip: 1, take, lastSeq: cursorId, orderBy: 'desc' }, this.conv.clearedAt);
+    const { data, hasMore } = await this.repo.queryMessages(
+      this.conv.threadId,
+      { skip: 1, take, lastSeq: cursorId, orderBy: 'desc' },
+      this.conv.clearedAt,
+    );
     if (!data || data.length === 0) {
       this.noOlder = true;
       return [];
@@ -211,9 +259,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  kernel's loadNewer already guards `if (!force && this.noNewer) return 0` before calling, so no noNewer
    *  guard is needed here — and none COULD be, since a signal must be able to pull past "at newest" (that is
    *  the whole point: a NEW_MESSAGE arrived, so there IS newer data even though noNewer was true). */
-  async getNewer(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getNewer(
+    cursorId: number,
+    count: number,
+  ): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
-    const { data, hasMore } = await this.repo.queryMessages(this.conv.threadId, { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' }, this.conv.clearedAt);
+    const { data, hasMore } = await this.repo.queryMessages(
+      this.conv.threadId,
+      { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' },
+      this.conv.clearedAt,
+    );
     if (!data || data.length === 0) {
       this.noNewer = true;
       return [];
@@ -261,7 +316,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * entry matches the clientMessageId (e.g. the confirm already arrived and dropped it).
    */
   failPending(clientMessageId: string): boolean {
-    const i = this.pending.findIndex((p) => p.clientMessageId === clientMessageId);
+    const i = this.pending.findIndex(
+      (p) => p.clientMessageId === clientMessageId,
+    );
     if (i < 0) return false;
     const entry = this.pending.splice(i, 1)[0];
     const failed: CbItem<ChatItemData> = {
@@ -280,7 +337,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * pending entry matches (e.g. it was confirmed/dropped meanwhile).
    */
   retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
-    const i = this.pending.findIndex((p) => p.clientMessageId === clientMessageId);
+    const i = this.pending.findIndex(
+      (p) => p.clientMessageId === clientMessageId,
+    );
     if (i < 0) return undefined;
     const retrying: CbItem<ChatItemData> = {
       ...this.pending[i],
@@ -292,9 +351,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Permanently discard a failed optimistic send after explicit user confirmation/action. */
   discardPending(clientMessageId: string): boolean {
-    const index = this.pending.findIndex((item) => item.clientMessageId === clientMessageId);
+    const index = this.pending.findIndex(
+      (item) => item.clientMessageId === clientMessageId,
+    );
     if (index < 0) return false;
     this.pending.splice(index, 1);
+    this.outbox.releaseIfEmpty(this.conv.threadId);
     return true;
   }
 
@@ -309,7 +371,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * already confirmed+dropped it → the real owns the choreography, the rare SSE-beats-HTTP race).
    */
   markPendingSent(clientMessageId: string): boolean {
-    const i = this.pending.findIndex((p) => p.clientMessageId === clientMessageId);
+    const i = this.pending.findIndex(
+      (p) => p.clientMessageId === clientMessageId,
+    );
     if (i < 0) return false;
     const entry = this.pending[i];
     this.pending[i] = {
@@ -340,7 +404,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
       let images: AlbumImage[] | null = null;
       if (m.contentType === 'IMAGE') {
-        images = [{ ...parseImageContent(m.content), msgId: id, status: m.mediaStatus }];
+        images = [
+          { ...parseImageContent(m.content), msgId: id, status: m.mediaStatus },
+        ];
       } else if (m.contentType === 'VIDEO') {
         const v = parseVideoContent(m.content);
         if (v) images = [{ ...v, msgId: id, status: m.mediaStatus }];
@@ -349,7 +415,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         if (a) images = [{ ...a, msgId: id, status: m.mediaStatus }];
       }
       // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
-      const file: FileInfo | null = m.contentType === 'FILE' ? parseFileContent(m.content) : null;
+      const file: FileInfo | null =
+        m.contentType === 'FILE' ? parseFileContent(m.content) : null;
       // Surface the clientMessageId so the kernel can pair this server-confirmed real with the optimistic
       // bubble that shares it (mountNewerReals flags resortTarget by clientMessageId; reconcileOptimistic then
       // removes the optimistic duplicate). Without this the optimistic would never be reconciled away → two
@@ -367,8 +434,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         // and the cb-confirmed the kernel tags on it is inert (no .msg-status--sent to animate) → the animation fires
         // exactly once. History / incoming (no pending match) never carry a tick. `this.pending` still holds the entry
         // here: the source reconcilePending that drops fulfilled cids runs AFTER rawToItems (see getNewer / init).
-        const pending = this.pending.find((p) => p.clientMessageId === m.clientMessageId);
-        if (pending && pending.data.status === 'sending') item.data = { ...item.data, status: 'sent' };
+        const pending = this.pending.find(
+          (p) => p.clientMessageId === m.clientMessageId,
+        );
+        if (pending && pending.data.status === 'sending')
+          item.data = { ...item.data, status: 'sent' };
       }
       out.push(item);
     }
@@ -382,10 +452,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  rendered both sides' messages on the peer's side (the "reconnect attribution" bug). Falls back to the
    *  profile id, then `0` only when the session is genuinely unknown (shaped before any HELLO). */
   private get selfUserId(): number {
-    return this.userService.sessionUserId() ?? this.userService.sessionProfile()?.id ?? 0;
+    return (
+      this.userService.sessionUserId() ??
+      this.userService.sessionProfile()?.id ??
+      0
+    );
   }
 
-  private toMsgData(m: Message, images: AlbumImage[] | null, file: FileInfo | null): ChatMsgData {
+  private toMsgData(
+    m: Message,
+    images: AlbumImage[] | null,
+    file: FileInfo | null,
+  ): ChatMsgData {
     const p = this.profiles.get(m.creator);
     return {
       type: 'msg',
@@ -405,9 +483,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private async ensureProfiles(msgs: Message[]): Promise<void> {
     const missing = new Set<number>();
-    for (const m of msgs) if (!this.profiles.has(m.creator)) missing.add(m.creator);
+    for (const m of msgs)
+      if (!this.profiles.has(m.creator)) missing.add(m.creator);
     if (missing.size === 0) return;
-    const res = await firstValueFrom(this.userService.queryUserInfo({ userIds: [...missing] }));
+    const res = await firstValueFrom(
+      this.userService.queryUserInfo({ userIds: [...missing] }),
+    );
     if (res.code === 0 && res.data) {
       for (const u of res.data)
         this.profiles.set(u.id, {

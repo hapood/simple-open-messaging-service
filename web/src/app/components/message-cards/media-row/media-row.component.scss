@@ -202,7 +202,7 @@ app-audio-player {
   border-radius: 50%;
   color: #fff;
   &.msg-status--failed {
-    color: var(--im-danger, #ff5252);
+    color: var(--app-danger, #ff5252);
   }
 }
 

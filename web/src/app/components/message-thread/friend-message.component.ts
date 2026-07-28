@@ -44,7 +44,10 @@ import {
 } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
-import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarType,
   conversationAvatarIdentityId,
@@ -65,7 +68,11 @@ import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
-import { displayThreadName, type ConversationItem, type StandardResponse } from '../../services/model';
+import {
+  displayThreadName,
+  type ConversationItem,
+  type StandardResponse,
+} from '../../services/model';
 import { isMessageViewportAtBottom } from './message-scroll-state';
 import {
   MediaTransferService,
@@ -75,6 +82,8 @@ import {
   NativeUploadService,
   type NativeUploadSelection,
 } from '../../services/native-upload.service';
+import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
+import { AttachmentUploadQueueService } from '../../services/attachment-upload-queue.service';
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -124,6 +133,8 @@ export class MessageThreadComponent implements OnDestroy {
     viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef =
     viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly transferStackRef =
+    viewChild<ElementRef<HTMLDivElement>>('transferStack');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date
    *  pill. The viewport carries the keyboard-lift `transform`, so its own `getBoundingClientRect().top`
    *  slides under the header while the keyboard is up; the header does not transform, so its bottom is the
@@ -142,6 +153,8 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly convList = inject(ConversationListService);
   private readonly transfers = inject(MediaTransferService);
   private readonly nativeUploads = inject(NativeUploadService);
+  private readonly attachmentUploads = inject(AttachmentUploadQueueService);
+  private readonly sendOutbox = inject(ThreadSendOutbox);
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -176,7 +189,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  the kernel's emit() fires on init's empty branch, on every mount, and on optimistic/incoming inserts, so
    *  the hero card reacts the instant the first message — including an optimistic send — mounts. Reset to false
    *  in teardown; the template additionally gates on !initialLoading() so the card never flashes mid-load. */
-  readonly threadEmpty = signal(false);
+  private readonly mountedMessageCount = signal(0);
   /** Reveal the skeleton only after this delay (ms) — the "don't flash on fast loads" gate. */
   private static readonly SKELETON_DELAY = 300;
   private skeletonTimer?: ReturnType<typeof setTimeout>;
@@ -192,35 +205,60 @@ export class MessageThreadComponent implements OnDestroy {
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
   readonly uploadingTransfers = computed(() => {
     const threadId = this.threadId();
-    return this.transfers.tasks().filter(
-      (task) => task.threadId === threadId && task.status === 'uploading',
-    );
+    return this.transfers
+      .tasks()
+      .filter(
+        (task) =>
+          task.threadId === threadId &&
+          task.kind !== 'audio' &&
+          task.status === 'uploading',
+      );
   });
-  /** Uploading plus the service's short-lived completed tail. Keeping completed tasks in the same
-   * aggregate card bridges sequential uploads: completing file N can never make the card empty for a
-   * frame before file N+1 starts. The service removes the completed tail once the whole batch is quiet. */
+  /** Pending attachments shown in the aggregate send box. Completed tasks leave this view as soon as
+   * their real message arrives, preventing the box and a standalone message from showing the same file. */
   readonly sendingTransfers = computed(() => {
     const threadId = this.threadId();
-    return this.transfers.tasks().filter(
-      (task) => task.threadId === threadId && task.status !== 'failed',
-    );
+    return this.transfers
+      .tasks()
+      .filter(
+        (task) =>
+          task.threadId === threadId &&
+          task.kind !== 'audio' &&
+          task.status === 'uploading',
+      );
   });
   readonly failedTransfers = computed(() => {
     const threadId = this.threadId();
-    return this.transfers.tasks().filter(
-      (task) => task.threadId === threadId && task.status === 'failed',
-    );
+    return this.transfers
+      .tasks()
+      .filter(
+        (task) =>
+          task.threadId === threadId &&
+          task.kind !== 'audio' &&
+          task.status === 'failed',
+      );
   });
+  /** The global attachment card is one logical mounted tail item regardless of the number of files it
+   * aggregates. Include it in empty-state accounting even though the kernel stores it in its measured tail
+   * slot rather than in the message cursor array. */
+  readonly threadEmpty = computed(
+    () =>
+      this.mountedMessageCount() === 0 &&
+      this.sendingTransfers().length === 0 &&
+      this.failedTransfers().length === 0,
+  );
   readonly uploadProgress = computed(() => {
     const tasks = this.sendingTransfers();
     if (tasks.length === 0) return null;
-    const completed = tasks.filter((task) => task.status === 'completed').length;
-    return Math.round((completed / tasks.length) * 100);
+    const loaded = tasks.reduce(
+      (sum, task) => sum + Math.min(Math.max(0, task.loaded), task.size),
+      0,
+    );
+    const total = tasks.reduce((sum, task) => sum + Math.max(0, task.size), 0);
+    return total > 0 ? Math.round((loaded / total) * 100) : null;
   });
   readonly uploadCountLabel = computed(() => {
-    const tasks = this.sendingTransfers();
-    const completed = tasks.filter((task) => task.status === 'completed').length;
-    return `${completed}/${tasks.length}`;
+    return String(this.sendingTransfers().length);
   });
   readonly uploadBytesLabel = computed(() => {
     const tasks = this.sendingTransfers();
@@ -275,10 +313,27 @@ export class MessageThreadComponent implements OnDestroy {
     string,
     { file: File; duration: number }
   >();
+  /** Non-audio attachments share one FIFO upload lane. All selected tasks are registered before the
+   * first upload starts, so the aggregate send box is the only pending UI and keeps the full batch in
+   * selection order. Voice notes deliberately bypass this lane. */
   /** Object URLs created for optimistic FILE cards (download anchor); revoked on teardown to avoid leaks. */
   private readonly blobUrls = new Set<string>();
 
   constructor() {
+    // The aggregate attachment card is a single kernel tail item. Moving the Angular-owned node into the
+    // kernel's measured tail cap makes it part of the scrollable content/total-height model instead of a
+    // fixed row above the composer. The cap's ResizeObserver accounts for show/hide and progress updates.
+    effect(() => {
+      // Keep the effect reactive to task changes even when the conditional view has not been created yet.
+      this.sendingTransfers();
+      this.failedTransfers();
+      const stack = this.transferStackRef()?.nativeElement;
+      const content = this.contentRef()?.nativeElement;
+      if (!stack || !content) return;
+      const tailCap = content.querySelector<HTMLElement>('.cb-tail-cap');
+      if (tailCap && stack.parentElement !== tailCap)
+        tailCap.appendChild(stack);
+    });
     effect(() => {
       const request = this.transfers.latestRequest();
       if (!request || request.threadId !== this.threadId()) return;
@@ -321,6 +376,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.msgRepo,
       this.userService,
       this.wsService,
+      this.sendOutbox,
       // SSE live path is SIGNAL-ONLY: onSseEvent filters by threadId and fires onSignal — the body is not
       // shaped/cached here (the conversation-list preview reads it in its own subscriber; the chatbox treats
       // the frame as "newer data exists, go pull it"). onMessageSignal pulls from the DB via getNewer /
@@ -329,7 +385,8 @@ export class MessageThreadComponent implements OnDestroy {
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
       {
         onSignal: (seq: number) => {
-          if (!this.atBottom()) this.newMessageCount.update((count) => count + 1);
+          if (!this.atBottom())
+            this.newMessageCount.update((count) => count + 1);
           // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
           // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
           // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
@@ -359,6 +416,17 @@ export class MessageThreadComponent implements OnDestroy {
       onScroll: (info) => this.onScroll(info),
       // Immunity frame: hold the kernel's viewport reflow while a route-transition slide is in flight.
       isFrozen: () => this.layout.reflowFrozen(),
+    });
+    // The tail cap is created synchronously with the scroller. If transfers survived a pane remount, the
+    // conditional stack may already exist and needs one post-construction placement pass.
+    queueMicrotask(() => {
+      const stack = this.transferStackRef()?.nativeElement;
+      const tailCap =
+        this.contentRef()?.nativeElement.querySelector<HTMLElement>(
+          '.cb-tail-cap',
+        );
+      if (stack && tailCap && stack.parentElement !== tailCap)
+        tailCap.appendChild(stack);
     });
     this.initialLoading.set(true);
     this.skeletonVisible.set(false);
@@ -423,7 +491,7 @@ export class MessageThreadComponent implements OnDestroy {
     const atVisibleBottom = isMessageViewportAtBottom(info);
     this.atBottom.set(atVisibleBottom);
     if (atVisibleBottom) this.newMessageCount.set(0);
-    this.threadEmpty.set(info.mounted === 0);
+    this.mountedMessageCount.set(info.mounted);
     this.updateStickyDate();
     this.probe.schedule(this.threadId() ?? 0);
   }
@@ -495,7 +563,9 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       case 'image':
         void this.sendAttachments(
-          Array.from(intent.files).filter((file) => file.type.startsWith('image/')),
+          Array.from(intent.files).filter((file) =>
+            file.type.startsWith('image/'),
+          ),
         );
         return;
       case 'file':
@@ -552,27 +622,26 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     if (!this.threadId()) return;
     const prepared = await Promise.all(
-      Array.from(files)
-        .map(async (file) => {
-          const cid = this.newClientMessageId();
-          if (file.type.startsWith('image/')) {
-            return {
-              file,
-              cid,
-              kind: 'image' as const,
-              meta: await readImageDims(file),
-            };
-          }
-          if (file.type.startsWith('video/')) {
-            return {
-              file,
-              cid,
-              kind: 'video' as const,
-              meta: await readVideoMeta(file),
-            };
-          }
-          return { file, cid, kind: 'file' as const, meta: null };
-        }),
+      Array.from(files).map(async (file) => {
+        const cid = this.newClientMessageId();
+        if (file.type.startsWith('image/')) {
+          return {
+            file,
+            cid,
+            kind: 'image' as const,
+            meta: await readImageDims(file),
+          };
+        }
+        if (file.type.startsWith('video/')) {
+          return {
+            file,
+            cid,
+            kind: 'video' as const,
+            meta: await readVideoMeta(file),
+          };
+        }
+        return { file, cid, kind: 'file' as const, meta: null };
+      }),
     );
     const uploads: Promise<void>[] = [];
     for (const entry of prepared) {
@@ -595,14 +664,14 @@ export class MessageThreadComponent implements OnDestroy {
       });
       if (entry.kind === 'image') {
         uploads.push(
-          this.uploadAndSendImage(entry.cid, entry.file, item, entry.meta),
+          this.queueImageUpload(entry.cid, entry.file, item, entry.meta),
         );
       } else if (entry.kind === 'video') {
         uploads.push(
-          this.uploadAndSendVideo(entry.cid, entry.file, item, entry.meta),
+          this.queueVideoUpload(entry.cid, entry.file, item, entry.meta),
         );
       } else {
-        uploads.push(this.uploadAndSendFile(entry.cid, entry.file, item));
+        uploads.push(this.queueFileUpload(entry.cid, entry.file, item));
       }
     }
     if (waitForUploads) await Promise.all(uploads);
@@ -615,19 +684,25 @@ export class MessageThreadComponent implements OnDestroy {
     for (const file of files) {
       const cid = this.newClientMessageId();
       const contentType =
-        file.kind === 'image' ? 'IMAGE' : file.kind === 'video' ? 'VIDEO' : 'FILE';
+        file.kind === 'image'
+          ? 'IMAGE'
+          : file.kind === 'video'
+            ? 'VIDEO'
+            : 'FILE';
       const images: AlbumImage[] | null =
         file.kind === 'file'
           ? null
-          : [{
-              kind: file.kind,
-              src: file.preview ?? '',
-              w: file.w,
-              h: file.h,
-              size: file.size,
-              duration: file.duration,
-              name: file.name,
-            }];
+          : [
+              {
+                kind: file.kind,
+                src: file.preview ?? '',
+                w: file.w,
+                h: file.h,
+                size: file.size,
+                duration: file.duration,
+                name: file.name,
+              },
+            ];
       const fileInfo: FileInfo | null =
         file.kind === 'file'
           ? {
@@ -637,11 +712,43 @@ export class MessageThreadComponent implements OnDestroy {
               mimeType: file.mimeType,
             }
           : null;
-      const item = this.makeOptimisticItem(cid, '', contentType, images, fileInfo);
+      const item = this.makeOptimisticItem(
+        cid,
+        '',
+        contentType,
+        images,
+        fileInfo,
+      );
       this.pendingFiles.set(cid, { native: file });
-      this.dispatchPending(item);
-      void this.uploadAndSendNative(cid, file, item);
+      void this.queueNativeUpload(cid, file, item);
     }
+  }
+
+  private queueNativeUpload(
+    cid: string,
+    file: NativeUploadSelection,
+    item: CbItem<ChatItemData>,
+    retry = false,
+  ): Promise<void> {
+    const tid = this.threadId() ?? 0;
+    if (!tid) return Promise.resolve();
+    this.transfers.start({
+      clientMessageId: cid,
+      threadId: tid,
+      kind: file.kind,
+      name: file.name,
+      size: file.size,
+      previewUrl: file.preview,
+    });
+    this.transfers.registerRetry(cid, () => {
+      void this.queueNativeUpload(cid, file, item, true);
+    });
+    this.transfers.registerCancel(cid, () => {
+      this.nativeUploads.cancel(file.uploadId);
+    });
+    return this.enqueueAttachmentUpload(cid, () =>
+      this.uploadAndSendNative(cid, file, item, retry),
+    );
   }
 
   private async uploadAndSendNative(
@@ -652,48 +759,47 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    this.transfers.start({
-      clientMessageId: cid,
-      threadId: tid,
-      kind: file.kind,
-      name: file.name,
-      size: file.size,
-      previewUrl: file.preview,
-    });
-    this.transfers.registerRetry(cid, () => {
-      void this.uploadAndSendNative(cid, file, item, true);
-    });
-    this.transfers.registerCancel(cid, () => {
-      this.nativeUploads.cancel(file.uploadId);
-    });
     try {
       const contentType =
-        file.kind === 'image' ? 'IMAGE' : file.kind === 'video' ? 'VIDEO' : 'FILE';
+        file.kind === 'image'
+          ? 'IMAGE'
+          : file.kind === 'video'
+            ? 'VIDEO'
+            : 'FILE';
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
-          threadId: tid,
-          contentType,
-          clientMessageId: cid,
-          meta:
-            file.kind === 'video'
-              ? { w: file.w, h: file.h, duration: file.duration }
-              : undefined,
-          retry,
-        }).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .sendMedia({
+            threadId: tid,
+            contentType,
+            clientMessageId: cid,
+            meta:
+              file.kind === 'video'
+                ? { w: file.w, h: file.h, duration: file.duration }
+                : undefined,
+            retry,
+          })
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) throw new Error(staged.message);
-      const response = await this.nativeUploads.upload<StandardResponse<unknown>>(
+      const response = await this.nativeUploads.upload<
+        StandardResponse<unknown>
+      >(
         file,
         cid,
-        file.kind === 'image'
-          ? { w: String(file.w), h: String(file.h) }
-          : {},
+        file.kind === 'image' ? { w: String(file.w), h: String(file.h) } : {},
         (loaded, total) => this.transfers.progress(cid, loaded, total),
       );
       if (response.code !== 0) throw new Error(response.message);
       this.transfers.complete(cid);
       await this.markSent(item);
-    } catch {
+    } catch (error) {
+      console.error('[upload] native send failed', {
+        clientMessageId: cid,
+        uploadId: file.uploadId,
+        kind: file.kind,
+        name: file.name,
+        error,
+      });
       this.transfers.fail(cid);
       await this.failPending(item);
     }
@@ -715,15 +821,17 @@ export class MessageThreadComponent implements OnDestroy {
     });
     const preview = URL.createObjectURL(blob);
     this.blobUrls.add(preview);
-    const images: AlbumImage[] = [{
-      kind: 'audio',
-      src: preview,
-      w: VOICE_BAR_W,
-      h: VOICE_BAR_H,
-      size: f.size,
-      duration,
-      name: f.name,
-    }];
+    const images: AlbumImage[] = [
+      {
+        kind: 'audio',
+        src: preview,
+        w: VOICE_BAR_W,
+        h: VOICE_BAR_H,
+        size: f.size,
+        duration,
+        name: f.name,
+      },
+    ];
     const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
     this.pendingVoices.set(cid, { file: f, duration });
     this.dispatchPending(item);
@@ -770,6 +878,72 @@ export class MessageThreadComponent implements OnDestroy {
       .catch(() => void this.failPending(item));
   }
 
+  /** Append one non-audio upload to the component-wide FIFO. The returned promise represents this
+   * exact job (not the whole queue), which lets paste wait for its attachments before sending text. */
+  private enqueueAttachmentUpload(
+    clientMessageId: string,
+    job: () => Promise<void>,
+  ): Promise<void> {
+    const threadId = this.threadId() ?? 0;
+    return threadId
+      ? this.attachmentUploads.enqueue(threadId, () =>
+          this.transfers.isUploading(clientMessageId)
+            ? job()
+            : Promise.resolve(),
+        )
+      : Promise.resolve();
+  }
+
+  private queueImageUpload(
+    cid: string,
+    file: File,
+    item: CbItem<ChatItemData>,
+    dims: { w: number; h: number },
+    retry = false,
+  ): Promise<void> {
+    const tid = this.threadId() ?? 0;
+    if (!tid) return Promise.resolve();
+    this.trackTransfer(cid, tid, 'image', file, () =>
+      this.queueImageUpload(cid, file, item, dims, true),
+    );
+    return this.enqueueAttachmentUpload(cid, () =>
+      this.uploadAndSendImage(cid, file, item, dims, retry, true),
+    );
+  }
+
+  private queueFileUpload(
+    cid: string,
+    file: File,
+    item: CbItem<ChatItemData>,
+    retry = false,
+  ): Promise<void> {
+    const tid = this.threadId() ?? 0;
+    if (!tid) return Promise.resolve();
+    this.trackTransfer(cid, tid, 'file', file, () =>
+      this.queueFileUpload(cid, file, item, true),
+    );
+    return this.enqueueAttachmentUpload(cid, () =>
+      this.uploadAndSendFile(cid, file, item, retry, true),
+    );
+  }
+
+  private queueVideoUpload(
+    cid: string,
+    file: File,
+    item: CbItem<ChatItemData>,
+    meta: { w: number; h: number; duration: number },
+    retry = false,
+  ): Promise<void> {
+    const tid = this.threadId() ?? 0;
+    if (!tid) return Promise.resolve();
+    this.trackTransfer(cid, tid, 'video', file, () =>
+      this.queueVideoUpload(cid, file, item, meta, true),
+    );
+    return this.enqueueAttachmentUpload(cid, () =>
+      this.uploadAndSendVideo(cid, file, item, meta, retry, true),
+    );
+  }
+
   /** Send-media-first flow: POST /send-media stages a PendingMedia (durable intent, keyed by cid),
    *  then the upload (carrying the same cid via the x-client-message-id header) writes the file and the
    *  server promotes the stage to a real Message. The NEW_MESSAGE SSE echo (matched by cid) reconciles
@@ -780,20 +954,24 @@ export class MessageThreadComponent implements OnDestroy {
     item: CbItem<ChatItemData>,
     dims: { w: number; h: number },
     retry = false,
+    tracked = false,
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    this.trackTransfer(cid, tid, 'image', f, () =>
-      this.uploadAndSendImage(cid, f, item, dims, true),
-    );
+    if (!tracked)
+      this.trackTransfer(cid, tid, 'image', f, () =>
+        this.queueImageUpload(cid, f, item, dims, true),
+      );
     try {
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
-          threadId: tid,
-          contentType: 'IMAGE',
-          clientMessageId: cid,
-          retry,
-        }).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .sendMedia({
+            threadId: tid,
+            contentType: 'IMAGE',
+            clientMessageId: cid,
+            retry,
+          })
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
         this.transfers.fail(cid);
@@ -801,13 +979,11 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const up = await firstValueFrom(
-        this.msgService.uploadMedia(
-          f,
-          dims.w,
-          dims.h,
-          cid,
-          (loaded, total) => this.transfers.progress(cid, loaded, total),
-        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .uploadMedia(f, dims.w, dims.h, cid, (loaded, total) =>
+            this.transfers.progress(cid, loaded, total),
+          )
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (up.code !== 0) {
         this.transfers.fail(cid);
@@ -827,20 +1003,24 @@ export class MessageThreadComponent implements OnDestroy {
     f: File,
     item: CbItem<ChatItemData>,
     retry = false,
+    tracked = false,
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    this.trackTransfer(cid, tid, 'file', f, () =>
-      this.uploadAndSendFile(cid, f, item, true),
-    );
+    if (!tracked)
+      this.trackTransfer(cid, tid, 'file', f, () =>
+        this.queueFileUpload(cid, f, item, true),
+      );
     try {
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
-          threadId: tid,
-          contentType: 'FILE',
-          clientMessageId: cid,
-          retry,
-        }).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .sendMedia({
+            threadId: tid,
+            contentType: 'FILE',
+            clientMessageId: cid,
+            retry,
+          })
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
         this.transfers.fail(cid);
@@ -867,21 +1047,25 @@ export class MessageThreadComponent implements OnDestroy {
     item: CbItem<ChatItemData>,
     meta: { w: number; h: number; duration: number },
     retry = false,
+    tracked = false,
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    this.trackTransfer(cid, tid, 'video', f, () =>
-      this.uploadAndSendVideo(cid, f, item, meta, true),
-    );
+    if (!tracked)
+      this.trackTransfer(cid, tid, 'video', f, () =>
+        this.queueVideoUpload(cid, f, item, meta, true),
+      );
     try {
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
-          threadId: tid,
-          contentType: 'VIDEO',
-          clientMessageId: cid,
-          meta: { w: meta.w, h: meta.h, duration: meta.duration },
-          retry,
-        }).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .sendMedia({
+            threadId: tid,
+            contentType: 'VIDEO',
+            clientMessageId: cid,
+            meta: { w: meta.w, h: meta.h, duration: meta.duration },
+            retry,
+          })
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
         this.transfers.fail(cid);
@@ -889,11 +1073,11 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const up = await firstValueFrom(
-        this.msgService.uploadVideo(
-          f,
-          cid,
-          (loaded, total) => this.transfers.progress(cid, loaded, total),
-        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .uploadVideo(f, cid, (loaded, total) =>
+            this.transfers.progress(cid, loaded, total),
+          )
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (up.code !== 0) {
         this.transfers.fail(cid);
@@ -922,13 +1106,15 @@ export class MessageThreadComponent implements OnDestroy {
     );
     try {
       const staged = await firstValueFrom(
-        this.msgService.sendMedia({
-          threadId: tid,
-          contentType: 'AUDIO',
-          clientMessageId: cid,
-          meta: { duration: meta.duration },
-          retry,
-        }).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .sendMedia({
+            threadId: tid,
+            contentType: 'AUDIO',
+            clientMessageId: cid,
+            meta: { duration: meta.duration },
+            retry,
+          })
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (staged.code !== 0) {
         this.transfers.fail(cid);
@@ -936,11 +1122,11 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const up = await firstValueFrom(
-        this.msgService.uploadAudio(
-          f,
-          cid,
-          (loaded, total) => this.transfers.progress(cid, loaded, total),
-        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .uploadAudio(f, cid, (loaded, total) =>
+            this.transfers.progress(cid, loaded, total),
+          )
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       if (up.code !== 0 || up.data?.promoted !== true) {
         this.transfers.fail(cid);
@@ -984,11 +1170,11 @@ export class MessageThreadComponent implements OnDestroy {
       // Both upload paths report bytes through the callback but still reduce to the same final
       // {code,message,data} envelope here.
       const up = await firstValueFrom(
-        this.msgService.uploadFile(
-          f,
-          cid,
-          (loaded, total) => this.transfers.progress(cid, loaded, total),
-        ).pipe(takeUntil(this.transfers.cancelled(cid))),
+        this.msgService
+          .uploadFile(f, cid, (loaded, total) =>
+            this.transfers.progress(cid, loaded, total),
+          )
+          .pipe(takeUntil(this.transfers.cancelled(cid))),
       );
       return up.data ?? null;
     } catch {
@@ -1020,7 +1206,7 @@ export class MessageThreadComponent implements OnDestroy {
     const pending = this.pendingFiles.get(clientMessageId);
     if (pending) {
       if ('native' in pending) {
-        void this.uploadAndSendNative(
+        void this.queueNativeUpload(
           clientMessageId,
           pending.native,
           item,
@@ -1031,7 +1217,7 @@ export class MessageThreadComponent implements OnDestroy {
       // Replay the original attachment send path.
       switch (pending.kind) {
         case 'image':
-          void this.uploadAndSendImage(
+          void this.queueImageUpload(
             clientMessageId,
             pending.file,
             item,
@@ -1040,7 +1226,7 @@ export class MessageThreadComponent implements OnDestroy {
           );
           break;
         case 'video':
-          void this.uploadAndSendVideo(
+          void this.queueVideoUpload(
             clientMessageId,
             pending.file,
             item,
@@ -1049,12 +1235,7 @@ export class MessageThreadComponent implements OnDestroy {
           );
           break;
         default:
-          void this.uploadAndSendFile(
-            clientMessageId,
-            pending.file,
-            item,
-            true,
-          );
+          void this.queueFileUpload(clientMessageId, pending.file, item, true);
           break;
       }
     } else {
@@ -1065,7 +1246,11 @@ export class MessageThreadComponent implements OnDestroy {
   private async cancelPending(clientMessageId: string): Promise<void> {
     const source = this.source;
     const scroller = this.scroller;
-    if (!source || !scroller || !source.discardPending(clientMessageId)) return;
+    if (!source || !scroller) return;
+    const item = source
+      .getPending()
+      .find((pending) => pending.clientMessageId === clientMessageId);
+    if (!item || !source.discardPending(clientMessageId)) return;
     const pending = this.pendingFiles.get(clientMessageId);
     if (pending && 'native' in pending) {
       this.nativeUploads.discard(pending.native.uploadId);
@@ -1073,7 +1258,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.pendingFiles.delete(clientMessageId);
     this.pendingVoices.delete(clientMessageId);
     this.transfers.discard(clientMessageId);
-    await scroller.reconcilePending();
+    scroller.removeItem(item.id);
   }
 
   /** Mark an optimistic send FAILED: the source flips its pending entry to status:'failed' (stable identity);
@@ -1154,7 +1339,7 @@ export class MessageThreadComponent implements OnDestroy {
   ): CbItem<ChatItemData> {
     const profile = this.userService.sessionProfile();
     const now = new Date();
-    const placeholderId = this.nextOptimisticId--;
+    const placeholderId = this.sendOutbox.allocatePlaceholderId();
     const stampedImages =
       images?.map((im) => ({ ...im, msgId: placeholderId })) ?? null;
     const data: ChatMsgData = {
@@ -1175,9 +1360,6 @@ export class MessageThreadComponent implements OnDestroy {
     return { id: placeholderId, data, clientMessageId };
   }
 
-  /** Next synthetic id for an in-flight optimistic send (decrements from -1 so it never collides with a server seq). */
-  private nextOptimisticId = -1;
-
   private newClientMessageId(): string {
     // Always a spec-compliant UUID — the backend validates clientMessageId as a UUID. lib/uuid falls back to
     // crypto.getRandomValues (not secure-context-gated, unlike randomUUID) so this works on http non-localhost origins.
@@ -1188,7 +1370,11 @@ export class MessageThreadComponent implements OnDestroy {
    *  onScroll so confirms clean up promptly. Object URLs are revoked on teardown (they may still be rendering). */
   private sweepPendingFiles(): void {
     const source = this.source;
-    if (!source || (this.pendingFiles.size === 0 && this.pendingVoices.size === 0)) return;
+    if (
+      !source ||
+      (this.pendingFiles.size === 0 && this.pendingVoices.size === 0)
+    )
+      return;
     const live = new Set(source.getPending().map((p) => p.clientMessageId));
     for (const cid of this.pendingFiles.keys()) {
       if (!live.has(cid)) {
@@ -1207,7 +1393,7 @@ export class MessageThreadComponent implements OnDestroy {
   private teardown(): void {
     clearTimeout(this.skeletonTimer);
     this.probe.destroy();
-    this.threadEmpty.set(false);
+    this.mountedMessageCount.set(0);
     this.atBottom.set(true);
     this.newMessageCount.set(0);
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
@@ -1218,7 +1404,8 @@ export class MessageThreadComponent implements OnDestroy {
     // thread switch / going home — so no per-pane reset is needed here.)
     this.pendingOptimistic = [];
     for (const pending of this.pendingFiles.values()) {
-      if ('native' in pending) this.nativeUploads.discard(pending.native.uploadId);
+      if ('native' in pending)
+        this.nativeUploads.discard(pending.native.uploadId);
     }
     this.pendingFiles.clear();
     this.pendingVoices.clear();
@@ -1377,6 +1564,7 @@ function mimeTypeToExt(mime: string): string {
 
 function formatTransferBytes(bytes: number): string {
   const value = Math.max(0, bytes);
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
+  if (value < 1024 * 1024)
+    return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
   return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }

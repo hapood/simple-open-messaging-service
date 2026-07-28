@@ -58,13 +58,13 @@
   // kernel measures offsetHeight/clientHeight/scrollHeight/scrollTop — all transform-invariant — so the
   // ResizeObserver stays silent and no per-frame reflow/re-pin fires. Uses --kbd-lift-effective (set on
   // .msg-container) — the raw --kbd-lift minus the safe-bottom the bar's own padding already covers — so
-  // no extra gap opens between the editor and the keyboard. The 60ms transition low-pass-filters the
-  // native↔JS push jitter (Android) and mirrors .ci-input-bar's cadence so the two translate as one rigid
-  // unit. translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
+  // no extra gap opens between the editor and the keyboard. The shared duration mirrors .ci-input-bar so
+  // both surfaces move as one rigid unit.
+  // translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
   // absolute skeleton, which rides the transform) and below the header (z-index:2) so lifted content slides
   // UNDER the header.
   transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
-  transition: transform 60ms linear;
+  transition: transform var(--kbd-duration, 60ms) ease-out;
   overflow-x: hidden;
   overflow-y: auto;
   overflow-anchor: none;
@@ -100,19 +100,16 @@ app-chat-input {
   flex: 0 0 auto;
 }
 
-// One stable transport row per state. It lives in normal flow directly above the composer, so it reads as
-// the newest outgoing message without entering the virtual scroller's height model. The card and its
-// thumbnail rail have fixed dimensions: individual completions only change paint, never surrounding layout.
+// One stable transport row per state. Angular creates it beside the viewport, then the component moves it
+// into the kernel's measured tail cap so it scrolls with the mounted window and contributes to total height.
+// The card and its thumbnail rail have fixed dimensions: individual completions only change paint.
 .msg-transfer-stack {
-  flex: 0 0 auto;
   box-sizing: border-box;
   padding: 6px max(16px, calc((100% - 800px) / 2 + 16px)) 2px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 6px;
-  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
-  transition: transform 60ms linear;
   pointer-events: none;
 }
 
@@ -166,6 +163,10 @@ app-chat-input {
   &--cancel {
     border-color: var(--app-border);
     color: var(--app-text-muted);
+  }
+  &--retry {
+    border-color: color-mix(in srgb, var(--app-danger) 42%, var(--app-border));
+    color: var(--app-danger);
   }
 }
 

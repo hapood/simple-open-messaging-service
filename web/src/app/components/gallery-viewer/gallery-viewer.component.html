@@ -1,54 +1,30 @@
-<!-- The dark fullscreen stage (CDK overlay positions the host; this fills it). All pointer interaction lives here so a
-     drag starting anywhere controls pan/swipe. The <img> owns double-click (zoom); the buttons are siblings on top. -->
-<div class="gv-stage"
-     (pointerdown)="onPointerDown($event)"
-     (pointermove)="onPointerMove($event)"
-     (pointerup)="onPointerUp($event)"
-     (pointercancel)="onPointerUp($event)"
-     (wheel)="onWheel($event)">
-  @if (current(); as img) {
-    <img class="gv-image"
-         [src]="imgSrc()"
-         [style.transform]="transform()"
-         [style.opacity]="imgOpacity()"
-         alt=""
-         draggable="false"
-         (load)="onImgLoad()"
-         (error)="onImgError()"
-         (dblclick)="onDoubleClick($event)" />
-  }
-</div>
+<div #mount class="gv-mount"></div>
 
 @if (currentStatus() === MEDIA_STATUS.FAILED) {
-  <!-- Backend never localized the bytes (status 'failed') — retry re-runs localize on the server. Sibling of
-       the stage (z-above) so a tap reaches the button, not the pan/swipe handlers. -->
-  <button type="button" class="gv-retry gv-retry--backend" (click)="relocalizeCurrent()"
-          [attr.aria-label]="'chat.retryDownload' | transloco">
+  <button
+    type="button"
+    class="gv-retry"
+    (click)="relocalizeCurrent()"
+    [attr.aria-label]="'chat.retryDownload' | transloco">
     <span class="gv-retry-icon">&#8635;</span>
     <span class="gv-retry-text">{{ 'chat.mediaFailed' | transloco }}</span>
     <span class="gv-retry-hint">{{ 'chat.retryDownload' | transloco }}</span>
   </button>
 } @else if (currentStatus() === MEDIA_STATUS.DOWNLOADING) {
-  <div class="gv-status" role="status" [attr.aria-label]="'chat.mediaDownloading' | transloco">
+  <div
+    class="gv-status"
+    role="status"
+    [attr.aria-label]="'chat.mediaDownloading' | transloco">
     <mat-progress-spinner mode="indeterminate" [diameter]="32" />
   </div>
-} @else if (loadState() === 'error') {
-  <!-- Bytes are local (status 'ready') but the <img> failed to fetch (transient network/auth) — cache-bust retry. -->
-  <button type="button" class="gv-retry" (click)="retryLoad()" [attr.aria-label]="'gallery.retryAria' | transloco">
+} @else if (currentLoadFailed()) {
+  <button
+    type="button"
+    class="gv-retry"
+    (click)="retryLoad()"
+    [attr.aria-label]="'gallery.retryAria' | transloco">
     <span class="gv-retry-icon">&#8635;</span>
     <span class="gv-retry-text">{{ 'gallery.failed' | transloco }}</span>
     <span class="gv-retry-hint">{{ 'gallery.tapRetry' | transloco }}</span>
   </button>
-}
-
-<div class="gv-topbar">
-  @if (canNav()) {
-    <span class="gv-counter">{{ index() + 1 }} / {{ count() }}</span>
-  }
-  <button type="button" class="gv-iconbtn gv-close" (click)="close.emit()" [attr.aria-label]="'gallery.closeAria' | transloco">&times;</button>
-</div>
-
-@if (canNav()) {
-  <button type="button" class="gv-nav gv-prev" (click)="prev()" [attr.aria-label]="'gallery.prevAria' | transloco">&#8249;</button>
-  <button type="button" class="gv-nav gv-next" (click)="next()" [attr.aria-label]="'gallery.nextAria' | transloco">&#8250;</button>
 }

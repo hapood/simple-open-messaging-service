@@ -5,6 +5,10 @@ import {
   output,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
+import {
+  AppIconType,
+  IconComponent,
+} from '../../components/icon/icon.component';
 
 export interface PastePanelItem {
   id: string;
@@ -14,7 +18,7 @@ export interface PastePanelItem {
 
 @Component({
   selector: 'app-paste-panel',
-  imports: [TranslocoPipe],
+  imports: [IconComponent, TranslocoPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="pp-backdrop" role="presentation" (click)="cancel.emit()">
@@ -43,7 +47,9 @@ export interface PastePanelItem {
                 @if (item.previewUrl) {
                   <img [src]="item.previewUrl" alt="" />
                 } @else {
-                  <div class="pp-file-glyph" aria-hidden="true">📄</div>
+                  <div class="pp-file-glyph" aria-hidden="true">
+                    <app-icon [type]="AppIconType.FILE" />
+                  </div>
                 }
                 <div class="pp-item-copy">
                   <strong [title]="item.file.name">{{ item.file.name }}</strong>
@@ -81,6 +87,7 @@ export interface PastePanelItem {
   styleUrl: './paste-panel.component.scss',
 })
 export class PastePanelComponent {
+  readonly AppIconType = AppIconType;
   readonly items = input.required<readonly PastePanelItem[]>();
   readonly text = input('');
   readonly textChange = output<string>();

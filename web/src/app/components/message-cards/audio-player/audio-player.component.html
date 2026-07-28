@@ -33,6 +33,13 @@
   </div>
   <button type="button" class="ap-rate" (click)="cycleRate()"
           [attr.aria-label]="'Playback speed ' + rate() + ' times'">{{ rate() }}×</button>
+  @if (showTransfer()) {
+    <span class="ap-transfer" [class.ap-transfer--indeterminate]="transferIndeterminate()"
+          role="progressbar" aria-label="Media transfer progress"
+          [attr.aria-valuenow]="transferProgress()">
+      <span [style.width.%]="transferProgress() ?? 32"></span>
+    </span>
+  }
 </div>
 <!-- No controls attr — the button + progress bar are the UI. preload="none" (NOT metadata): every visible
      voice cell mounts one of these, and "metadata" would fire a network request per clip just to mount. The

@@ -26,6 +26,11 @@ import { isAndroid, isTauri } from './runtime';
  *  listener (browser). Module-scoped so the eager bridge function — which runs before DI exists — and
  *  the service share one signal. */
 const inset = signal(0);
+export interface KeyboardInsetAnimation {
+  target: number;
+  durationMs: number;
+}
+const animation = signal<KeyboardInsetAnimation | null>(null);
 const layoutOverride = signal<number | null>(null);
 let layoutOverrideOwner: object | null = null;
 
@@ -53,6 +58,20 @@ export function browserKbdInset(
 export function installKeyboardInsetBridge(): void {
   if (typeof window === 'undefined') return;
   window.__SOMS_IME_HEIGHT__ = (px: number): void => { inset.set(clampPx(px)); };
+  window.__SOMS_IME_ANIMATION__ = (
+    targetPx: number,
+    durationMs: number,
+    active: boolean,
+  ): void => {
+    if (!active) {
+      animation.set(null);
+      return;
+    }
+    animation.set({
+      target: clampPx(targetPx),
+      durationMs: Math.max(0, Math.trunc(durationMs)),
+    });
+  };
   const current = window.SomsShell?.getImeHeight?.();
   if (typeof current === 'number' && current > 0) inset.set(current);
 }
@@ -62,6 +81,9 @@ export class KeyboardInsetService {
   /** Current keyboard occlusion height (CSS px, 0 when closed). Updated by the native push (Android) or
    *  the `visualViewport` listener (browser). */
   readonly inset = inset.asReadonly();
+  /** API 30+ animation endpoint. While present, layout surfaces move directly to `target` once instead of
+   *  chasing every `inset` frame delivered by the native animation callback. */
+  readonly animation = animation.asReadonly();
   /** Keyboard-open event: true while a soft keyboard occludes the viewport. */
   readonly open = computed(() => inset() > 0);
   /** Composer-owned layout override. During an explicit native↔custom keyboard handoff the custom panel

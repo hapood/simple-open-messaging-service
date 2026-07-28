@@ -25,7 +25,10 @@ import { LayoutService } from '../services/layout.service';
  */
 @Directive({
   selector: '[appKbdOffset]',
-  host: { '[style.--kbd-lift]': 'offset() + "px"' },
+  host: {
+    '[style.--kbd-lift]': 'offset() + "px"',
+    '[style.--kbd-duration]': 'duration() + "ms"',
+  },
 })
 export class KbdOffsetDirective {
   private readonly kbd = inject(KeyboardInsetService);
@@ -35,6 +38,9 @@ export class KbdOffsetDirective {
   /** Soft-keyboard lift height (px) — bound as `--kbd-lift` on the host so `.msg-viewport` and
    *  `.ci-input-bar` translate the surface above the keyboard. ~0 when no keyboard is open. */
   readonly offset = signal(0);
+  /** Native IME duration while an endpoint-driven animation is active; 60ms retains the existing
+   *  low-pass smoothing for ordinary/non-animated inset corrections. */
+  readonly duration = signal(60);
 
   private readonly track = effect(() => {
     const frozen = this.layout.reflowFrozen(); // track → re-run on freeze/thaw edges
@@ -49,6 +55,8 @@ export class KbdOffsetDirective {
     // `reflowFrozen()`, so it re-runs on thaw.
     if (frozen) return;
     const override = this.kbd.layoutOverride();
-    this.offset.set(override ?? this.kbd.inset());
+    const animation = this.kbd.animation();
+    this.duration.set(animation?.durationMs ?? 60);
+    this.offset.set(override ?? animation?.target ?? this.kbd.inset());
   });
 }

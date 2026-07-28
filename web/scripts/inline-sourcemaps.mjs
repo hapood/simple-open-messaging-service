@@ -14,7 +14,7 @@
 // `data:` URI is left untouched, so a re-run (e.g. via the OTA bundle packager) is safe.
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = join(here, '..', 'dist', 'web', 'browser');
@@ -37,12 +37,13 @@ function listFiles(d) {
 }
 
 let inlined = 0;
-let skipped = 0;
+const skipped = [];
 for (const file of listFiles(dir)) {
   const isJs = file.endsWith('.js');
   const isCss = file.endsWith('.css');
   if (!isJs && !isCss) continue;
 
+  const rel = relative(dir, file);
   const src = readFileSync(file, 'utf8');
   // JS:  `//# sourceMappingURL=foo.js.map`
   // CSS: `/*# sourceMappingURL=foo.css.map */`
@@ -50,13 +51,14 @@ for (const file of listFiles(dir)) {
     ? /\/\/#\s*sourceMappingURL=(\S+)/
     : /\/\*#\s*sourceMappingURL=([^\s*]+)\s*\*\//;
   const m = src.match(re);
-  if (!m) { skipped++; continue; }
+  if (!m) { skipped.push([rel, 'no sourceMappingURL comment']); continue; }
 
   const mapRef = m[1];
-  if (mapRef.startsWith('data:')) { skipped++; continue; } // already inlined
+  // Already inlined on a prior run — leave it untouched (idempotent).
+  if (mapRef.startsWith('data:')) { skipped.push([rel, 'already inlined (data: URI)']); continue; }
 
   const mapPath = join(dirname(file), mapRef);
-  if (!existsSync(mapPath)) { skipped++; continue; }
+  if (!existsSync(mapPath)) { skipped.push([rel, `referenced map not found: ${mapRef}`]); continue; }
 
   // Base64 alphabet is `$`-free, so the result is safe to use as a String.replace replacement.
   const dataUri = `data:application/json;charset=utf-8;base64,${readFileSync(mapPath).toString('base64')}`;
@@ -66,6 +68,9 @@ for (const file of listFiles(dir)) {
   writeFileSync(file, src.replace(re, replacement));
   inlined++;
 }
+for (const [rel, reason] of skipped) {
+  console.log(`[inline-sourcemaps] skipped ${rel} — ${reason}`);
+}
 console.log(
-  `[inline-sourcemaps] inlined ${inlined} map(s) into dist/web/browser (${skipped} file(s) skipped)`,
+  `[inline-sourcemaps] inlined ${inlined} map(s) into dist/web/browser (${skipped.length} file(s) skipped)`,
 );

@@ -983,7 +983,17 @@ async fn api_request(
     // `x-request-id` is the correlation id the JS `correlationIdInterceptor` stamps — forward it so the
     // backend honors it as request.id (→ pino req.id + the echoed response header), making a webview
     // `[http] … req=<id>` failure greppable in the server logs for the same request.
-    for name in ["content-type", "accept", "accept-language", "range", "x-request-id"] {
+    for name in [
+        "content-type",
+        "accept",
+        "accept-language",
+        "range",
+        "x-request-id",
+        // Upload endpoints need this opaque client UUID to promote the staged media intent. Omitting it
+        // uploads the bytes but strands PendingMedia in `pending`, so every Android/Tauri upload appears
+        // to fail even though the asset reached the server.
+        "x-client-message-id",
+    ] {
         if let Some(v) = headers.get(name) {
             req = req.header(name, v);
         }

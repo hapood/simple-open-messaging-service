@@ -110,6 +110,17 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
     expect(invokeArgs!.args.headers?.['content-type']).toBe('application/json; charset=utf-8');
   });
 
+  it('forwards the client message id required to promote staged media uploads', async () => {
+    const backend = TestBed.inject(HttpBackend);
+    const fd = new FormData();
+    fd.append('file', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }), 'voice.webm');
+    const req = new HttpRequest('POST', '/api/v1/upload/audio', fd, {
+      headers: new HttpHeaders({ 'x-client-message-id': 'voice-cid-1' }),
+    });
+    await firstValueFrom(backend.handle(req));
+    expect(invokeArgs!.args.headers?.['x-client-message-id']).toBe('voice-cid-1');
+  });
+
   it('forwards a Blob body\'s own type as Content-Type (mirrors Angular detectContentTypeHeader → blob.type)', async () => {
     const backend = TestBed.inject(HttpBackend);
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });

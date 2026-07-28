@@ -6,6 +6,10 @@ import {
   MediaSizeThresholdService,
   MEDIA_THRESHOLD_OPTIONS_KB,
 } from '../../services/media-size-threshold.service';
+import {
+  AttachmentUploadQueueService,
+  UPLOAD_CONCURRENCY_OPTIONS,
+} from '../../services/attachment-upload-queue.service';
 
 /**
  * Settings → Media sub-page. The image size-threshold picker as an M3 radio list (the old dropdown was
@@ -26,7 +30,8 @@ import {
                 matListItemMeta
                 name="media-threshold"
                 [checked]="current() === kb"
-                [attr.aria-label]="label(kb)">
+                [attr.aria-label]="label(kb)"
+              >
               </mat-radio-button>
             </mat-list-item>
           }
@@ -34,17 +39,46 @@ import {
       </div>
       <span class="hint">{{ 'settings.mediaThresholdHint' | transloco }}</span>
     </section>
+    <section class="settings-group">
+      <h3>{{ 'settings.uploadConcurrency' | transloco }}</h3>
+      <div class="settings-card">
+        <mat-list>
+          @for (count of uploadOptions; track count) {
+            <mat-list-item (click)="selectUploadConcurrency(count)">
+              <span matListItemTitle>
+                {{ 'settings.uploadConcurrencyCount' | transloco: { count } }}
+              </span>
+              <mat-radio-button
+                matListItemMeta
+                name="upload-concurrency"
+                [checked]="uploadConcurrency() === count"
+                [attr.aria-label]="
+                  'settings.uploadConcurrencyCount' | transloco: { count }
+                "
+              >
+              </mat-radio-button>
+            </mat-list-item>
+          }
+        </mat-list>
+      </div>
+      <span class="hint">{{
+        'settings.uploadConcurrencyHint' | transloco
+      }}</span>
+    </section>
   `,
   styleUrl: './sub-page.scss',
 })
 export class SettingsMediaComponent {
   private readonly media = inject(MediaSizeThresholdService);
+  private readonly uploadQueue = inject(AttachmentUploadQueueService);
   private readonly transloco = inject(TranslocoService);
 
   /** Current threshold in KB (0 = unlimited). */
   readonly current = this.media.kb;
   /** The offered threshold options. */
   readonly options: readonly number[] = MEDIA_THRESHOLD_OPTIONS_KB;
+  readonly uploadConcurrency = this.uploadQueue.maxConcurrent;
+  readonly uploadOptions: readonly number[] = UPLOAD_CONCURRENCY_OPTIONS;
 
   /** Display label for a threshold option: "512 KB" / "1 MB" / "2 MB" / "No limit". */
   label(kb: number): string {
@@ -55,5 +89,9 @@ export class SettingsMediaComponent {
 
   select(kb: number): void {
     this.media.setKb(kb);
+  }
+
+  selectUploadConcurrency(count: number): void {
+    this.uploadQueue.setMaxConcurrent(count);
   }
 }

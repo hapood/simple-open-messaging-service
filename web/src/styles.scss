@@ -1,4 +1,5 @@
 @use '@angular/material' as mat;
+@use 'photoswipe/dist/photoswipe.css';
 @use './app/assets/tokens';
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
 @use './app/lib/chat-box/cb-skeleton'; // shared chat shimmer skeleton (.cb-skeleton) — used by MessageThread + playground
@@ -167,6 +168,30 @@ $dark-theme: mat.define-theme((
 .soms-snack-bar--info.mat-mdc-snack-bar-container {
   --mdc-snackbar-container-color: var(--app-surface-inverse, #303034);
   --mdc-snackbar-supporting-text-color: var(--app-on-surface-inverse, #fff);
+}
+
+/* PhotoSwipe is mounted inside GalleryViewerComponent, but creates its DOM
+ * imperatively, outside Angular's style encapsulation. Keep shell-specific
+ * safe-area and stacking rules global. */
+.soms-gallery-pswp {
+  --pswp-root-z-index: 0;
+}
+
+.soms-gallery-pswp .pswp__top-bar {
+  height: calc(var(--soms-safe-top, 0px) + 60px);
+  padding-top: var(--soms-safe-top, 0px);
+  box-sizing: border-box;
+}
+
+.soms-gallery-pswp .pswp__button--close {
+  width: 48px;
+  height: 48px;
+  margin-right: max(6px, var(--soms-safe-right, 0px));
+}
+
+.soms-gallery-pswp .pswp__counter {
+  margin-top: 15px;
+  margin-inline-start: max(20px, var(--soms-safe-left, 0px));
 }
 
 /* === QR scanner overlay: make the app transparent so the native camera shows through. ===

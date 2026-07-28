@@ -3,7 +3,10 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { By } from '@angular/platform-browser';
 import { KbdOffsetDirective } from './kbd-offset.directive';
-import { KeyboardInsetService } from '../services/keyboard-inset.service';
+import {
+  KeyboardInsetAnimation,
+  KeyboardInsetService,
+} from '../services/keyboard-inset.service';
 import { LayoutService } from '../services/layout.service';
 import { InputDeviceService } from '../services/input-device.service';
 
@@ -17,6 +20,7 @@ describe('KbdOffsetDirective', () => {
   // Writable backing signals for the mocked services — each test drives these directly.
   let inset: ReturnType<typeof signal<number>>;
   let layoutOverride: ReturnType<typeof signal<number | null>>;
+  let animation: ReturnType<typeof signal<KeyboardInsetAnimation | null>>;
   let reflowFrozen: ReturnType<typeof signal<boolean>>;
   let hasPhysicalKeyboard: ReturnType<typeof signal<boolean>>;
 
@@ -24,6 +28,7 @@ describe('KbdOffsetDirective', () => {
     TestBed.resetTestingModule();
     inset = signal(0);
     layoutOverride = signal<number | null>(null);
+    animation = signal<KeyboardInsetAnimation | null>(null);
     reflowFrozen = signal(false);
     hasPhysicalKeyboard = signal(false);
     TestBed.configureTestingModule({
@@ -33,6 +38,7 @@ describe('KbdOffsetDirective', () => {
           provide: KeyboardInsetService,
           useValue: {
             inset: inset.asReadonly(),
+            animation: animation.asReadonly(),
             layoutOverride: layoutOverride.asReadonly(),
             open: computed(() => inset() > 0),
             available: false,
@@ -107,6 +113,29 @@ describe('KbdOffsetDirective', () => {
     layoutOverride.set(null);
     detect();
     expect(directive.offset()).toBe(180);
+  });
+
+  it('moves directly to the announced native endpoint for the native animation duration', () => {
+    const { directive, host, detect } = setup();
+    inset.set(12);
+    animation.set({ target: 320, durationMs: 250 });
+    detect();
+
+    expect(directive.offset()).toBe(320);
+    expect(directive.duration()).toBe(250);
+    expect(host.style.getPropertyValue('--kbd-lift')).toBe('320px');
+    expect(host.style.getPropertyValue('--kbd-duration')).toBe('250ms');
+
+    // Progress frames no longer move the target.
+    inset.set(180);
+    detect();
+    expect(directive.offset()).toBe(320);
+
+    inset.set(320);
+    animation.set(null);
+    detect();
+    expect(directive.offset()).toBe(320);
+    expect(directive.duration()).toBe(60);
   });
 
   it('immunity frame: holds the offset while frozen, recomputes on thaw', () => {

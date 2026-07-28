@@ -128,8 +128,10 @@ export function installConsoleBuffer(): void {
   if (installed) return;
   installed = true;
   for (const level of LEVELS) {
-    const orig = console[level].bind(console);
-    // Arrow (not reassigning `console[level]` as a method) so `this`/receiver stay correct.
+    const orig = console[level];
+    // Huawei's Android WebView exposes console methods through a Java bridge. Function.bind() turns that
+    // method into a wrapper the bridge rejects as a "non-injected object", so preserve the original
+    // function and provide its real receiver at call time instead.
     const capture = (...args: unknown[]): void => {
       try {
         const entry: ConsoleEntry = {
@@ -144,7 +146,7 @@ export function installConsoleBuffer(): void {
       } catch {
         // A capture failure must never break the actual log — swallow.
       }
-      orig(...args);
+      Reflect.apply(orig, console, args);
     };
     console[level] = capture as (typeof console)[Level];
   }

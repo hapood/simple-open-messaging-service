@@ -105,6 +105,9 @@ export function createMsgCbElement(
   ref.setInput('isShowHead', isShowHead);
   ref.setInput('isGroupStart', isGroupStart);
   ref.setInput('showDate', showDate);
+  if (comp === MediaRowComponent) {
+    ref.setInput('clientMessageId', item.clientMessageId ?? '');
+  }
   ref.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually (triggers ngOnInit)
 
   // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
@@ -117,6 +120,9 @@ export function createMsgCbElement(
     ref.setInput('isShowHead', flags.isShowHead);
     ref.setInput('isGroupStart', flags.isGroupStart);
     ref.setInput('showDate', flags.showDate);
+    if (comp === MediaRowComponent) {
+      ref.setInput('clientMessageId', nextItem.clientMessageId ?? '');
+    }
     ref.changeDetectorRef.detectChanges();
   };
 

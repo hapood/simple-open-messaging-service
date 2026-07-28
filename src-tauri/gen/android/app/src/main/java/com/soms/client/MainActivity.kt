@@ -199,6 +199,24 @@ class MainActivity : TauriActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ViewCompat.setWindowInsetsAnimationCallback(content,
                 object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+                    override fun onStart(
+                        animation: WindowInsetsAnimationCompat,
+                        bounds: WindowInsetsAnimationCompat.BoundsCompat,
+                    ): WindowInsetsAnimationCompat.BoundsCompat {
+                        if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                            val d = resources.displayMetrics.density
+                            val lower = Math.max(0, Math.round(bounds.lowerBound.bottom / d))
+                            val upper = Math.max(0, Math.round(bounds.upperBound.bottom / d))
+                            // At onStart the current inset is normally one bound. Pick the other (farther)
+                            // bound, which also handles an IME changing height while already visible.
+                            val target =
+                                if (Math.abs(imeHeightCss - lower) <= Math.abs(imeHeightCss - upper)) upper
+                                else lower
+                            pushImeAnimation(target, animation.durationMillis, true)
+                        }
+                        return bounds
+                    }
+
                     override fun onProgress(
                         insets: WindowInsetsCompat,
                         runningAnims: MutableList<WindowInsetsAnimationCompat>,
@@ -207,6 +225,14 @@ class MainActivity : TauriActivity() {
                         imeHeightCss = Math.max(0, Math.round(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom / d))
                         pushImeHeight()
                         return insets
+                    }
+
+                    override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                        if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                            // Clear endpoint mode only after the native animation finishes. The last
+                            // onProgress/onApplyWindowInsets value then becomes the calibration source.
+                            pushImeAnimation(imeHeightCss, 0, false)
+                        }
                     }
                 })
         }
@@ -261,6 +287,17 @@ class MainActivity : TauriActivity() {
     private fun pushImeHeight() {
         val v = SomsBridge.webView ?: return
         v.evaluateJavascript("window.__SOMS_IME_HEIGHT__&&window.__SOMS_IME_HEIGHT__($imeHeightCss);", null)
+    }
+
+    /** Announce an API-30+ IME animation endpoint before its first progress frame. Web surfaces animate
+     *  directly to this final CSS-pixel height; per-frame height pushes remain available for custom-keyboard
+     *  residual geometry and final calibration. */
+    private fun pushImeAnimation(targetCss: Int, durationMs: Long, active: Boolean) {
+        val v = SomsBridge.webView ?: return
+        v.evaluateJavascript(
+            "window.__SOMS_IME_ANIMATION__&&window.__SOMS_IME_ANIMATION__($targetCss,$durationMs,$active);",
+            null,
+        )
     }
 
     /** Show the system IME for the already-focused contenteditable inside the WebView. The web composer owns

@@ -6,9 +6,9 @@
      leaves it anchored to the real viewport. -->
 <div class="ci-backdrop" appPreventFocusSteal
      [class.ci-backdrop--keyboard]="emojiKeyboard()"
-     [hidden]="!emojiOpen()" (click)="closeEmoji()"></div>
+     [hidden]="!emojiMounted()" (click)="closeEmoji()"></div>
 <form class="ci-input-bar" [class.ci-input-bar--emoji-keyboard]="emojiKeyboard()"
-      [style.--emoji-kbd-height.px]="emojiKeyboardHeight()"
+      [style.--emoji-kbd-height.px]="emojiPanelHeight()"
       #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
   <!-- Emoji panel — WhatsApp/Telegram-style category tabs + grid. It floats above the bar on browser/PC;
        the Android native shell reflows it below as an IME replacement. Recents is first when non-empty. -->
@@ -19,7 +19,7 @@
        (opacity alone would leave it reachable to AT). appPreventFocusSteal on the panel covers every button via
        mousedown bubbling (one directive, not ~440). -->
   <div class="ci-emoji-panel" appPreventFocusSteal
-       [class.ci-emoji-panel--open]="emojiOpen()"
+       [class.ci-emoji-panel--open]="emojiMounted()"
        [class.ci-emoji-panel--keyboard]="emojiKeyboard()"
        [class.ci-emoji-panel--handoff]="keyboardHandoff()"
        [class.ci-emoji-panel--system-handoff]="switchingToSystem()"
@@ -124,8 +124,8 @@
         </svg>
       </button>
     </div>
-    <!-- Send key: draft present ⇒ emphasized paper plane; empty ⇒ neutral mic. Pointer events drive
-         recording on the empty state (they no-op when a draft is present). -->
+    <!-- Send key: draft present ⇒ emphasized paper plane; empty ⇒ neutral mic. Mouse/keyboard clicks
+         toggle recording; touch/pen use press-hold, release-to-send and slide-to-cancel. -->
     <button type="button" class="ci-send" appPreventFocusSteal
             [class.ci-send--has-draft]="!!draftHtml()"
             [class.ci-send-recording]="recording()"

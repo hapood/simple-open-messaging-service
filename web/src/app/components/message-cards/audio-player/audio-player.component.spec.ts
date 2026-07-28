@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { AudioPlayerComponent } from './audio-player.component';
 import { MEDIA_STATUS, type MediaStatus } from '../chat-item';
+import { MediaTransferService } from '../../../services/media-transfer.service';
 
 /**
  * Guards the federated playback bug: while a clip is not playable — still localizing (status
@@ -104,6 +105,31 @@ describe('AudioPlayerComponent', () => {
     expect(fixture.nativeElement.querySelector('.ap-wave')).not.toBeNull();
   });
 
+  it('renders upload progress as a height-neutral bottom rail', async () => {
+    const transfers = TestBed.inject(MediaTransferService);
+    transfers.start({
+      clientMessageId: 'voice-progress',
+      threadId: 1,
+      kind: 'audio',
+      name: 'voice.webm',
+      size: 100,
+    });
+    transfers.progress('voice-progress', 40, 100);
+    const fixture = TestBed.createComponent(AudioPlayerComponent);
+    fixture.componentRef.setInput('src', 'blob:voice');
+    fixture.componentRef.setInput('pending', true);
+    fixture.componentRef.setInput('transferId', 'voice-progress');
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const rail = fixture.nativeElement.querySelector('.ap-transfer') as HTMLElement;
+    const fill = rail.querySelector('span') as HTMLElement;
+    expect(rail).not.toBeNull();
+    expect(rail.classList).not.toContain('ap-transfer--indeterminate');
+    expect(fill.style.width).toBe('40%');
+    transfers.dismiss('voice-progress');
+  });
+
   it('seeks from the waveform and cycles 1x → 1.5x → 2x → 1x', async () => {
     const { comp, audio } = await render();
     const wave = document.createElement('button');
@@ -134,7 +160,6 @@ describe('AudioPlayerComponent', () => {
     expect(fixture.nativeElement.querySelector('.ap-unplayed')).not.toBeNull();
 
     fixture.componentInstance.onPlay();
-    fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.ap-unplayed')).toBeNull();
     expect(fixture.nativeElement.textContent).toContain('14:30');
   });

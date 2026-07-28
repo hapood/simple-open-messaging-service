@@ -3,6 +3,7 @@ import {
   ChangeDetectionStrategy,
   ViewEncapsulation,
   ElementRef,
+  HostListener,
   computed,
   effect,
   inject,
@@ -58,6 +59,8 @@ interface EmojiTab {
   readonly icons: readonly string[];
 }
 
+type KeyboardMode = 'closed' | 'toEmoji' | 'emoji' | 'toSystem';
+
 const RECENTS_KEY = 'soms.chat.emojiRecents';
 const RECENTS_MAX = 32;
 // Android edge-to-edge builds can briefly report only the navigation/gesture inset as the IME height.
@@ -87,10 +90,11 @@ interface LinkCardPreview {
 /** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
  *  Chrome / Android WebView / Tauri webview2 / webkit2gtk → audio/webm (opus); Safari / iOS / macOS
  *  wkwebview → audio/mp4; Firefox → audio/ogg (opus). The backend's /upload/audio accepts all of these
- *  (EBML/ftyp are shared audio/video containers — see consumeMedia's sharedAsAudio branch). '' ⇒ the
- *  engine cannot record audio at all; the caller surfaces that and bails. */
-function pickRecorderMime(): string {
-  if (typeof MediaRecorder === 'undefined') return '';
+ *  (EBML/ftyp are shared audio/video containers — see consumeMedia's sharedAsAudio branch). Some older
+ *  Android/OEM WebViews can record with the engine default while reporting false for every explicit MIME,
+ *  so `undefined` means "let MediaRecorder choose"; `null` alone means the API is unavailable. */
+function pickRecorderMime(): string | undefined | null {
+  if (typeof MediaRecorder === 'undefined') return null;
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   for (const c of candidates) {
     try {
@@ -99,7 +103,7 @@ function pickRecorderMime(): string {
       /* isTypeSupported can throw on an unknown MIME in some engines — skip it */
     }
   }
-  return '';
+  return undefined;
 }
 
 /** Hard cap on a single voice clip (seconds). On reach, recording auto-stops and sends. */
@@ -194,36 +198,62 @@ export class ChatInputComponent implements OnDestroy {
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
   readonly draftHtml = signal('');
-  /** Emoji panel open flag. */
-  readonly emojiOpen = signal(false);
+  /** One authoritative keyboard-switch state. Derived view flags below cannot form illegal combinations. */
+  private readonly keyboardMode = signal<KeyboardMode>('closed');
+  readonly emojiOpen = computed(() => this.keyboardMode() === 'emoji');
+  readonly emojiMounted = computed(() => this.keyboardMode() !== 'closed');
   /** Only the Android native shell has the reliable focus-preserving IME bridge required for a keyboard
    *  replacement. Desktop and mobile browsers both use the floating popup. */
   readonly emojiKeyboard = signal(isAndroidNative());
   /** Stable keyboard slot height. During a native↔emoji handoff the native inset and custom panel divide
    *  this height between them, keeping the composer at one constant Y position. */
   readonly emojiKeyboardHeight = signal(300);
-  readonly keyboardHandoff = signal(false);
+  readonly keyboardHandoff = computed(() => {
+    const mode = this.keyboardMode();
+    return mode === 'toEmoji' || mode === 'toSystem';
+  });
+  readonly emojiPanelHeight = computed(() => {
+    const stableHeight = this.emojiKeyboardHeight();
+    return this.keyboardHandoff()
+      ? Math.max(0, stableHeight - this.keyboardInset.inset())
+      : stableHeight;
+  });
   private readonly keyboardLayoutOwner = {};
-  readonly switchingToSystem = signal(false);
+  readonly switchingToSystem = computed(() => this.keyboardMode() === 'toSystem');
   private keyboardHandoffTimer?: ReturnType<typeof setTimeout>;
   private readonly trackKeyboardGeometry = effect(() => {
     const inset = this.keyboardInset.inset();
-    if (inset > 0 && !this.emojiOpen()) {
+    const animationTarget = this.keyboardInset.animation()?.target;
+    // When returning to the system keyboard, Android 11+ tells us its final height before the first
+    // visible animation frame. Adopt that as the invariant slot immediately; the shrinking custom
+    // residual can then meet the growing IME at the exact final input-bar position.
+    if (
+      this.keyboardMode() === 'toSystem' &&
+      animationTarget !== undefined &&
+      animationTarget > 0
+    ) {
+      this.emojiKeyboardHeight.set(Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, animationTarget));
+    }
+    // Capture the stable slot only during ordinary native-keyboard use. Updating it during a handoff
+    // would make both sides of `nativeInset + emojiResidual = stableHeight` shrink together.
+    if (inset > 0 && this.keyboardMode() === 'closed') {
       this.emojiKeyboardHeight.set(Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, inset));
     }
-    if (this.keyboardHandoff() && !this.switchingToSystem() && inset === 0) {
-      requestAnimationFrame(() => this.keyboardHandoff.set(false));
+    if (this.keyboardMode() === 'toEmoji' && inset === 0) {
+      requestAnimationFrame(() => {
+        if (this.keyboardMode() !== 'toEmoji') return;
+        this.keyboardMode.set('emoji');
+        this.measureBar();
+      });
     }
     if (this.switchingToSystem() && inset > 0) {
       // Do not unmount at the first animation frame (often 1–10px): the residual emoji height is what
       // keeps the slot full while the IME grows. Close only after geometry has settled briefly.
       clearTimeout(this.keyboardHandoffTimer);
       this.keyboardHandoffTimer = setTimeout(() => {
-        this.switchingToSystem.set(false);
-        this.emojiOpen.set(false);
+        this.keyboardMode.set('closed');
         this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
         this.measureBar();
-        requestAnimationFrame(() => this.keyboardHandoff.set(false));
       }, 80);
     }
   });
@@ -379,64 +409,87 @@ export class ChatInputComponent implements OnDestroy {
 
   /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
   toggleEmoji(): void {
-    if (this.emojiOpen()) { this.closeEmoji(); return; }
+    if (this.keyboardMode() !== 'closed') { this.closeEmoji(); return; }
     this.closeAttach();
     if (this.recents().length) this.activeCategory.set('recent');
-    this.emojiOpen.set(true);
     if (this.emojiKeyboard()) {
-      this.editor()?.focus();
-      this.keyboardHandoff.set(this.keyboardInset.inset() > 0);
-      // The in-flow emoji panel now owns the entire slot. Atomically stop applying native inset to the
-      // viewport/input bar; subsequent IME close frames are intentionally ignored by layout.
+      const nativeKeyboardOpen = this.keyboardInset.inset() > 0;
+      this.keyboardMode.set(nativeKeyboardOpen ? 'toEmoji' : 'emoji');
+      // ProseMirror retains its selection while blurred. Releasing DOM focus makes hiding deterministic
+      // on WebViews that immediately restore the IME for a focused contenteditable.
+      this.editor()?.blur();
+      // During handoff the custom residual owns only `stableHeight - nativeInset`; layout ignores the
+      // native lift so the two surfaces add to one invariant slot instead of stacking at full height.
       this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
       hideIme();
     } else {
+      this.keyboardMode.set('emoji');
       this.editor()?.focus();
     }
     this.measureBar();
   }
   closeEmoji(): void {
     clearTimeout(this.keyboardHandoffTimer);
-    this.switchingToSystem.set(false);
-    this.emojiOpen.set(false);
+    this.keyboardMode.set('closed');
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
-    this.keyboardHandoff.set(false);
     this.measureBar();
   }
   /** Switch from the custom emoji keyboard back to normal typing. This explicit action is the only path
    *  that focuses the editor while the touch emoji surface is open. */
   showSystemKeyboard(): void {
+    // Hide custom controls immediately, then let the native inset grow while the blank custom residual
+    // shrinks by the same amount. Geometry overlaps; visible/interactive keyboard controls never do.
+    this.keyboardMode.set('toSystem');
     this.editor()?.focus();
-    if (!showIme()) {
-      this.closeEmoji();
-      return;
-    }
-    // Keep the emoji surface mounted while the native IME animates in. Its CSS height subtracts the live
-    // native inset, so one replaces the other frame-for-frame; the geometry effect closes it at first inset.
-    this.switchingToSystem.set(true);
-    this.keyboardHandoff.set(true);
+    if (!showIme()) this.closeEmoji();
+    this.measureBar();
   }
   onEditorFocusChange(focused: boolean): void {
-    if (!focused) {
-      this.switchingToSystem.set(false);
+    if (!focused && (!this.emojiKeyboard() || this.keyboardMode() === 'closed')) {
       this.closeEmoji();
     }
   }
   /** Insert at the last editor selection and record it to Recents. Desktop refocuses the editor; the touch
    *  keyboard keeps it blurred so the native IME remains hidden. */
   insertEmoji(e: string): void {
-    this.editor()?.insertText(e);
+    this.editor()?.insertText(e, !this.emojiKeyboard());
     this.pushRecent(e);
   }
   deleteEmojiInput(): void {
-    this.editor()?.deleteBackward();
+    this.editor()?.deleteBackward(!this.emojiKeyboard());
   }
 
-  /** Send key: draft present → send text. Empty → the mic (press-hold record) owns the empty state, so a
-   *  plain click here is a no-op (the pointerdown/up handlers drive recording; click only carries the text send). */
+  /** Close the emoji surface when interaction leaves the composer. The form contains the input, emoji
+   *  toggle, category buttons and glyphs, so browser emoji interactions remain exempt and keep the IME. */
+  @HostListener('document:pointerdown', ['$event'])
+  onDocumentPointerDown(event: PointerEvent): void {
+    if (this.keyboardMode() === 'closed') return;
+    const target = event.target;
+    if (!(target instanceof Node) || !this.inputBar()?.nativeElement.contains(target)) {
+      this.closeEmoji();
+    }
+  }
+
+  /** Send key: draft present → send text. On pointer-accurate devices the empty mic toggles recording on
+   *  successive clicks; touch/pen keep the press-hold gesture handled by the pointer callbacks below. */
   onSendClick(): void {
     if (this.sending()) return;
-    if (this.draftHtml()) this.sendText();
+    if (this.draftHtml()) {
+      this.sendText();
+      return;
+    }
+    // A completed touch/pen gesture produces a compatibility click after pointerup. Its recording has
+    // already been stopped (and normally sent) there, so consuming that click prevents an immediate,
+    // surprising second recording from starting.
+    if (this.suppressNextMicClick) {
+      this.suppressNextMicClick = false;
+      return;
+    }
+    if (this.recording()) {
+      void this.stopRecording(false);
+      return;
+    }
+    this.startRecording();
   }
 
   /** Desktop Enter (the editor's `send` output): same as the text branch of the send key. */
@@ -549,6 +602,8 @@ export class ChatInputComponent implements OnDestroy {
   private stream: MediaStream | null = null;
   private mimeForRecording = '';
   private pointerStartY = 0;
+  /** Touch/pen pointerup is followed by a synthetic click; consume it after the hold gesture completes. */
+  private suppressNextMicClick = false;
   private recordStartedAt = 0;
   private pendingCancel = false;
   /** Generation counter for the in-flight press — bumped on every pointerdown/up/cancel/destroy. beginRecording
@@ -569,10 +624,29 @@ export class ChatInputComponent implements OnDestroy {
    *  getUserMedia/MediaRecorder.start() follow, and recordAborted short-circuits a gesture that already ended. */
   onMicPointerDown(event: PointerEvent): void {
     if (this.sending() || this.draftHtml() || this.recording()) return;
+    // Mouse users expect a button click, not a press-and-hold gesture. Let the subsequent click toggle
+    // recording; touch and pen retain hold/release/slide-to-cancel semantics.
+    if (event.pointerType === 'mouse') {
+      this.suppressNextMicClick = false;
+      return;
+    }
     event.preventDefault();
+    this.suppressNextMicClick = true;
     const el = event.currentTarget as HTMLElement;
+    // Capture before closing a keyboard: that layout change can move the button under the stationary
+    // finger, but the active recording gesture must continue receiving move/up events.
     try { el.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+    // Voice recording is not a text-editing state: close the IME and ensure the touch target itself
+    // cannot retain focus. This also prevents Android from restoring the keyboard during mic permission.
+    this.closeEmoji();
+    this.editor()?.blur();
+    hideIme();
+    el.blur();
     this.pointerStartY = event.clientY;
+    this.startRecording();
+  }
+
+  private startRecording(): void {
     this.recordSession++; // a fresh press invalidates any in-flight beginRecording
     this.recordCancelled.set(false);
     this.recordError.set('');
@@ -581,7 +655,7 @@ export class ChatInputComponent implements OnDestroy {
 
   private async beginRecording(session: number): Promise<void> {
     const mime = pickRecorderMime();
-    if (!mime || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    if (mime === null || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       this.flashRecordError('chat.recordMicUnsupported');
       return;
     }
@@ -600,8 +674,20 @@ export class ChatInputComponent implements OnDestroy {
       return;
     }
     this.stream = stream;
-    this.mimeForRecording = mime;
-    const rec = new MediaRecorder(stream, { mimeType: mime });
+    this.mimeForRecording = mime ?? '';
+    let rec: MediaRecorder;
+    try {
+      // An explicit MIME is preferable where the engine advertises one. Older Android/OEM WebViews often
+      // reject every isTypeSupported probe but still record successfully when allowed to choose a default.
+      rec = mime
+        ? new MediaRecorder(stream, { mimeType: mime })
+        : new MediaRecorder(stream);
+    } catch {
+      stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+      this.flashRecordError('chat.recordMicUnsupported');
+      return;
+    }
     this.chunks = [];
     rec.ondataavailable = (ev) => { if (ev.data.size > 0) this.chunks.push(ev.data); };
     rec.onstop = () => this.finalizeRecording();
@@ -633,12 +719,14 @@ export class ChatInputComponent implements OnDestroy {
 
   /** Track the slide-up gesture (pointer capture keeps these arriving on the mic element). */
   onMicPointerMove(event: PointerEvent): void {
+    if (event.pointerType === 'mouse') return;
     if (!this.recording()) return;
     this.recordCancelled.set(event.clientY - this.pointerStartY < -CANCEL_SLIDE_PX);
   }
 
   /** Release → send unless the gesture slid into cancel territory. */
   onMicPointerUp(event: PointerEvent): void {
+    if (event.pointerType === 'mouse') return;
     event.preventDefault();
     if (!this.recording()) { this.recordSession++; return; } // ended before start → invalidate the in-flight begin
     void this.stopRecording(this.recordCancelled());

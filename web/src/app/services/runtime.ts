@@ -199,7 +199,9 @@ declare global {
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
      *  main.ts before bootstrap for a FOUC-free first paint. Absent in browser/desktop. `getImeHeight()`
      *  (the current soft-keyboard height in CSS px, 0 when closed) lets the web seed the value at boot; the
-     *  live source is {@link __SOMS_IME_HEIGHT__}. */
+     *  live source is {@link __SOMS_IME_HEIGHT__}. API 30+ additionally announces an animation's final
+     *  geometry through {@link __SOMS_IME_ANIMATION__}, allowing the web surface to animate once toward
+     *  the endpoint instead of chasing every native frame. */
     SomsShell?: {
       getSafeInsets: () => string;
       getImeHeight?: () => number;
@@ -317,6 +319,7 @@ declare global {
      *  `KbdOffsetDirective` reads on Android. Absent in browser/desktop (never called there). Follows the
      *  `__SOMS_<NAME>__` bridge-hook convention. */
     __SOMS_IME_HEIGHT__?: (px: number) => void;
+    __SOMS_IME_ANIMATION__?: (targetPx: number, durationMs: number, active: boolean) => void;
     /** Kotlin→JS push (RealtimeService.forwardToJs): one `/events` frame forwarded from the native-owned
      *  SSE, so the Android WebView consumes realtime without opening its own worker. Installed by the
      *  NativeEventTransport; absent on browser/desktop (where the WebsocketService spawns sse.worker.ts).

@@ -121,16 +121,25 @@ object NativeUploadManager {
             .build()
         val call = http.newCall(request)
         calls[uploadId] = call
+        SomsLog.i("Upload") {
+            "start id=$uploadId cid=$clientMessageId kind=$kind name=${selected.name} size=${selected.size}"
+        }
         call.enqueue(object : okhttp3.Callback {
             override fun onFailure(call: Call, e: java.io.IOException) {
                 calls.remove(uploadId)
-                if (!call.isCanceled()) fail(uploadId, e.message ?: "upload failed")
+                if (!call.isCanceled()) {
+                    SomsLog.w("Upload", e) { "failed id=$uploadId cid=$clientMessageId" }
+                    fail(uploadId, e.message ?: "upload failed")
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 calls.remove(uploadId)
                 response.use {
                     val text = it.body?.string().orEmpty()
+                    SomsLog.i("Upload") {
+                        "response id=$uploadId cid=$clientMessageId status=${it.code} body=${text.take(512)}"
+                    }
                     if (!it.isSuccessful) {
                         fail(uploadId, "HTTP ${it.code}: $text")
                     } else {

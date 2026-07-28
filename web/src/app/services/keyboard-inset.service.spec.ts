@@ -99,6 +99,17 @@ describe('KeyboardInsetService', () => {
     expect(svc.inset()).toBe(123);
   });
 
+  it('the native bridge publishes and clears an endpoint-driven animation', () => {
+    installKeyboardInsetBridge();
+    const svc = TestBed.inject(KeyboardInsetService);
+
+    window.__SOMS_IME_ANIMATION__!(321.9, 249.8, true);
+    expect(svc.animation()).toEqual({ target: 321, durationMs: 249 });
+
+    window.__SOMS_IME_ANIMATION__!(321, 0, false);
+    expect(svc.animation()).toBeNull();
+  });
+
   it('visualViewport resize (browser) feeds inset and drives the open event', () => {
     // Pin the layout height so the occlusion is deterministic regardless of the test iframe size.
     realClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'clientHeight');

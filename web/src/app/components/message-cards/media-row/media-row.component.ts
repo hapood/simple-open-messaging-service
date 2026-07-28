@@ -1,4 +1,4 @@
-import { Component, computed, input, output, signal } from '@angular/core';
+import { ChangeDetectorRef, Component, computed, inject, input, output, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
@@ -32,6 +32,7 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
   styleUrl: './media-row.component.scss',
 })
 export class MediaRowComponent {
+  private readonly cdr = inject(ChangeDetectorRef);
   readonly UserAvatarType = UserAvatarType;
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
@@ -39,6 +40,8 @@ export class MediaRowComponent {
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input<boolean>(false);
+  /** Correlates an optimistic media row with its app-scoped upload task. Empty on persisted rows. */
+  readonly clientMessageId = input('');
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());
@@ -109,6 +112,7 @@ export class MediaRowComponent {
       next.add(i);
       return next;
     });
+    this.render();
   }
 
   /** Size-tiered lazy load: IMAGE cells over the user threshold start as a "Tap to load" placeholder;
@@ -139,6 +143,9 @@ export class MediaRowComponent {
     // load/error events are the single source of truth; a detached `new Image()` can finish without the
     // dynamically-created row being refreshed, leaving the chat card gated even though the viewer works.
     this.thresholdSvc.markLoaded(key);
+    // Message rows are imperatively created and not attached to ApplicationRef. Signal writes alone do
+    // not repaint this detached view, so refresh now to mount the real <img> under the loading gate.
+    this.render();
   }
 
   onImageLoad(index: number): void {
@@ -148,6 +155,7 @@ export class MediaRowComponent {
     this.updateKeySet(this.loadingImages, key, false);
     this.updateKeySet(this.failedImages, key, false);
     this.thresholdSvc.markLoaded(key);
+    this.render();
   }
 
   onImageError(index: number): void {
@@ -156,6 +164,11 @@ export class MediaRowComponent {
     const key = this.mediaKey(media, index);
     this.updateKeySet(this.loadingImages, key, false);
     this.updateKeySet(this.failedImages, key, true);
+    this.render();
+  }
+
+  private render(): void {
+    this.cdr.detectChanges();
   }
 
   private updateKeySet(

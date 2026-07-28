@@ -38,7 +38,10 @@ export interface ThreadTransferSummary {
  */
 @Injectable({ providedIn: 'root' })
 export class MediaTransferService {
-  private readonly cleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private readonly cleanupTimers = new Map<
+    number,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly cancelSignals = new Map<string, ReplaySubject<void>>();
   private readonly retryActions = new Map<string, () => void>();
   private readonly cancelActions = new Map<string, () => void>();
@@ -84,8 +87,7 @@ export class MediaTransferService {
           : null;
       grouped.set(task.threadId, summary);
     }
-    return [...grouped.values()]
-      .sort((a, b) => b.latestAt - a.latestAt);
+    return [...grouped.values()].sort((a, b) => b.latestAt - a.latestAt);
   });
 
   readonly activeCount = computed(
@@ -98,6 +100,10 @@ export class MediaTransferService {
 
   summaryFor(threadId: number): ThreadTransferSummary | undefined {
     return this.summaries().find((summary) => summary.threadId === threadId);
+  }
+
+  isUploading(clientMessageId: string): boolean {
+    return this.taskMap().get(clientMessageId)?.status === 'uploading';
   }
 
   start(params: {
@@ -167,7 +173,9 @@ export class MediaTransferService {
     this.cancelSignals.delete(clientMessageId);
     this.cancelActions.get(clientMessageId)?.();
     if (isTauri()) {
-      void tauriInvoke('cancel_upload', { clientMessageId }).catch(() => undefined);
+      void tauriInvoke('cancel_upload', { clientMessageId }).catch(
+        () => undefined,
+      );
     }
     this.fail(clientMessageId);
   }
@@ -183,7 +191,9 @@ export class MediaTransferService {
       subject?.complete();
       this.cancelActions.get(clientMessageId)?.();
       if (isTauri()) {
-        void tauriInvoke('cancel_upload', { clientMessageId }).catch(() => undefined);
+        void tauriInvoke('cancel_upload', { clientMessageId }).catch(
+          () => undefined,
+        );
       }
     }
     this.dismiss(clientMessageId);

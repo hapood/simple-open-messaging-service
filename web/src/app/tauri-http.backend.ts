@@ -130,7 +130,17 @@ export class TauriHttpBackend implements HttpBackend {
    *  Bearer from `ProxyState.token` (JS does not handle the token). */
   private pickHeaders(h: HttpHeaders): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const name of ['content-type', 'accept', 'accept-language', 'range', 'x-request-id']) {
+    for (const name of [
+      'content-type',
+      'accept',
+      'accept-language',
+      'range',
+      'x-request-id',
+      // Upload routes use this correlation key to promote the already-staged media intent into a Message.
+      // Dropping it makes the bytes upload successfully but leaves the stage pending, which the UI reports
+      // as a failed send. It is an opaque client UUID, not a credential.
+      'x-client-message-id',
+    ]) {
       const v = h.get(name);
       if (v !== null) out[name] = v;
     }

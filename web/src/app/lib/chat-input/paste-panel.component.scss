@@ -96,7 +96,12 @@
 .pp-file-glyph {
   display: grid;
   place-items: center;
-  font-size: 28px;
+  color: var(--app-text-muted);
+}
+
+.pp-file-glyph app-icon {
+  width: 30px;
+  height: 30px;
 }
 
 .pp-item-copy {

@@ -85,6 +85,11 @@
 .cb-tail-cap {
   box-sizing: border-box;
   // base = hidden (no height); --gap / --loading modifiers supply the height. Kernel measures the real offsetHeight.
+  // An aggregate attachment transfer is Angular-owned but mounted inside this kernel-owned slot. Let its
+  // natural height replace the ordinary gap so it participates in scrolling and total-height accounting.
+  &:has(.msg-transfer-stack) {
+    height: auto;
+  }
 }
 .cb-tail-cap--gap {
   height: 14px; // small breathing room between the last message and the input bar (at the global newest)
@@ -197,4 +202,3 @@
 @media (prefers-reduced-motion: reduce) {
   .cb-enter, .cb-enter-above, .cb-leave, .cb-move { animation-duration: 0.01s; }
 }
-

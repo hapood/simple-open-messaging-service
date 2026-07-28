@@ -131,11 +131,11 @@
   // the kernel measures offsetHeight/clientHeight/scrollHeight/scrollTop (all transform-invariant), so the
   // ResizeObserver stays silent and no per-frame reflow fires. Uses --kbd-lift-effective (set on .pg-stage)
   // — the raw --kbd-lift minus the safe-bottom the bar's own padding already covers — so no extra gap opens
-  // between the editor and the keyboard. The 60ms transition low-pass-filters the native↔JS push jitter and
-  // matches .ci-input-bar's cadence so the two translate as one rigid unit. translateY(0px) is a permanent
+  // between the editor and the keyboard. The shared duration keeps it rigid with .ci-input-bar.
+  // translateY(0px) is a permanent
   // stacking context, below the header (z-index:2) so lifted content slides UNDER it.
   transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
-  transition: transform 60ms linear;
+  transition: transform var(--kbd-duration, 60ms) ease-out;
   overflow-y: auto;
   // Plan B (default -b route): the kernel manages scrollTop anchor compensation
   // itself, so browser scroll anchoring is disabled to avoid fighting it.

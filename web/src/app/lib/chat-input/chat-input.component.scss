@@ -21,14 +21,13 @@ app-chat-input {
   // set on the host (.msg-container / .pg-stage) by KbdOffsetDirective's host binding; --kbd-lift-effective
   // (derived there) = max(0, --kbd-lift − --soms-safe-bottom) — the bar's own bottom padding already carries
   // the safe-bottom to clear the gesture bar, so subtracting it here avoids an extra gap between the editor
-  // and the keyboard when it's open. The 60ms LINEAR transition low-pass-filters the native↔JS push jitter
-  // on Android (evaluateJavascript latency jitters a few ms; the browser build's visualViewport.resize is
-  // in-process and smooth). Lag ≈ this duration — tune DOWN (≈30ms) for tighter tracking, UP (≈100ms) for
-  // more smoothing. No-op on desktop (--kbd-lift: 0). translateY(0px) is non-`none`, so it is a permanent
+  // and the keyboard when it's open. API 30+ supplies --kbd-duration with the native animation endpoint;
+  // ordinary corrections retain the 60ms fallback that smooths sparse OEM WebView frames.
+  // No-op on desktop (--kbd-lift: 0). translateY(0px) is non-`none`, so it is a permanent
   // stacking context / containing block for fixed descendants — which is exactly why the .ci-backdrop was
   // re-parented out of the form.
   transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
-  transition: transform 60ms linear;
+  transition: transform var(--kbd-duration, 60ms) ease-out;
   // Bottom padding carries ONLY the static gesture-/navigation-bar inset (closed keyboard): the bar's own
   // Composer background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal
   // strip). The keyboard region itself is covered by the translated bar + the IME, so there is no gap.
@@ -336,8 +335,6 @@ app-chat-input {
   transition: height 160ms ease, margin-top 160ms ease, border-width 0s 160ms;
 }
 .ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--open {
-  // Defensive CSS clamp as well as the TS geometry clamp: a stale/small native inset must not reduce the
-  // panel to only its border and margin (the symptom is the composer moving a few pixels with no buttons).
   height: max(240px, var(--emoji-kbd-height, 300px));
   margin-top: 8px;
   border-top-width: 1px;
@@ -345,11 +342,16 @@ app-chat-input {
   transition: height 160ms ease, margin-top 160ms ease;
 }
 .ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--handoff {
+  // The handoff residual is allowed to approach zero; the normal 240px usability clamp must not apply.
+  // Native inset + this residual stays equal to the captured stable keyboard height.
+  height: max(0px, var(--emoji-kbd-height, 0px));
+  margin-top: 0;
+  border-top-width: 0;
   transition: none;
 }
-.ci-emoji-panel--system-handoff .ci-emoji-tabs,
-.ci-emoji-panel--system-handoff .ci-emoji-grids,
-.ci-emoji-panel--system-handoff .ci-emoji-backspace {
+.ci-emoji-panel--handoff .ci-emoji-tabs,
+.ci-emoji-panel--handoff .ci-emoji-grids,
+.ci-emoji-panel--handoff .ci-emoji-backspace {
   opacity: 0;
   pointer-events: none;
 }

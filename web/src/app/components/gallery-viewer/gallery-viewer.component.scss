@@ -1,156 +1,63 @@
-// Gallery viewer: a dark fullscreen stage laid out by the CDK overlay (the service places the host at the viewport's
-// top-left; :host fills 100vw/100vh). Self-contained — no backdrop element (the dark stage IS the backdrop), so all
-// close gestures (button / Esc / swipe-down / tap-on-margin) are handled in the component.
-
 :host {
-  display: block;
   position: fixed;
   inset: 0;
+  display: block;
   width: 100vw;
-  height: 100vh;
-  // animate in: fade the stage + settle the image from a slight zoom.
-  animation: gv-enter 0.18s ease-out;
-  z-index: 1100; // above the app shell; below nothing (top-most overlay)
-}
-
-.gv-stage {
-  position: absolute;
-  inset: 0;
+  height: 100dvh;
+  overflow: hidden;
   background: #000;
-  touch-action: none; // the component handles all gestures (pan/swipe); suppress the browser's scrolling/zoom
-  cursor: grab;
-
-  &:active { cursor: grabbing; }
+  z-index: 1100;
 }
 
-.gv-image {
+.gv-mount {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  object-position: center;
-  transform-origin: center;
-  user-select: none;
-  -webkit-user-drag: none;
-  transition: none; // transform is signal-driven each move; no transition (would lag the drag)
 }
 
-// top bar: counter (left) + close (right)
-.gv-topbar {
+.gv-status,
+.gv-retry {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  pointer-events: none; // the bar is a layout container; buttons re-enable themselves
-}
-
-.gv-counter {
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  padding: 4px 10px;
-}
-
-.gv-iconbtn,
-.gv-nav {
-  pointer-events: auto;
+  inset: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  cursor: pointer;
-  border-radius: 50%;
-  transition: background 0.15s ease;
-
-  &:hover { background: rgba(0, 0, 0, 0.7); }
-  &:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.7); outline-offset: 2px; }
 }
 
-.gv-iconbtn {
-  width: 40px;
-  height: 40px;
-  font-size: 26px;
-  line-height: 1;
-}
-
-.gv-close { margin-left: auto; }
-
-.gv-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  font-size: 30px;
-  line-height: 1;
-}
-
-.gv-prev { left: 16px; }
-.gv-next { right: 16px; }
-
-// Tap-to-retry card shown when the <img> fails to load. Full-stage overlay (sibling of the stage, z-above) so the tap
-// reaches the button instead of the pan/swipe handlers; centered content on the dark stage.
-// Backend-localize-in-flight spinner (status 'downloading') — full-stage centered, same layer as the
-// retry card. pointer-events:none (no interaction while the server is fetching the bytes).
 .gv-status {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   pointer-events: none;
 }
 
 .gv-retry {
-  position: absolute;
-  inset: 0;
-  display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   gap: 6px;
-  border: none;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.85);
-  cursor: pointer;
+  width: 100%;
+  border: 0;
   padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+  color: rgba(255, 255, 255, 0.88);
   text-align: center;
-
-  &:hover .gv-retry-icon { background: rgba(255, 255, 255, 0.18); }
-  &:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.7); outline-offset: 4px; }
+  cursor: pointer;
 }
 
 .gv-retry-icon {
-  width: 52px;
-  height: 52px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 30px;
-  line-height: 1;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
+  width: 52px;
+  height: 52px;
   margin-bottom: 6px;
-  transition: background 0.15s ease;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 30px;
 }
 
-.gv-retry-text { font-size: 15px; font-weight: 500; }
-.gv-retry-hint { font-size: 13px; opacity: 0.7; }
-
-@keyframes gv-enter {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+.gv-retry-text {
+  font-size: 15px;
+  font-weight: 500;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :host { animation: none; }
+.gv-retry-hint {
+  font-size: 13px;
+  opacity: 0.72;
 }
