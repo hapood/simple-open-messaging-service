@@ -17,10 +17,7 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
-import {
-  AppIconType,
-  IconComponent,
-} from '../icon/icon.component';
+import { AppIconType, IconComponent } from '../icon/icon.component';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
@@ -184,7 +181,9 @@ import {
               >
                 <span class="action-icon">
                   <app-icon
-                    [type]="snap().muted ? AppIconType.MIC_OFF : AppIconType.MIC"
+                    [type]="
+                      snap().muted ? AppIconType.MIC_OFF : AppIconType.MIC
+                    "
                     [style]="actionIconSize"
                   ></app-icon>
                 </span>
@@ -192,7 +191,11 @@ import {
                   (snap().muted ? 'call.unmute' : 'call.mute') | transloco
                 }}</span>
               </button>
-              @if (!isVideo() && canUpgradeVideo()) {
+              @if (
+                !isVideo() &&
+                canUpgradeVideo() &&
+                adapter.videoSupported !== false
+              ) {
                 <button
                   class="call-action upgrade"
                   type="button"
@@ -589,7 +592,7 @@ import {
 })
 export class CallScreenComponent implements OnDestroy {
   readonly events = inject(CallEventService);
-  private readonly adapter = inject(CallAdapterService);
+  readonly adapter = inject(CallAdapterService);
   private readonly transloco = inject(TranslocoService);
 
   readonly snap = computed(() => this.events.callState());

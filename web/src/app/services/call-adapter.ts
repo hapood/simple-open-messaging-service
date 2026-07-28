@@ -1,5 +1,7 @@
+import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { isAndroidNative } from './runtime';
+import { WebCallAdapter } from './web-call.adapter';
 
 /** The UI phase of a 1:1 call — the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels
  *  + the reconnecting/weak UX). `idle` = no live call. */
@@ -70,6 +72,14 @@ export const IDLE_CALL: CallSnapshot = {
   step: '',
 };
 
+export type CallSnapshotListener = (snapshot: CallSnapshot) => void;
+export interface CallSignalPayload {
+  callSid: string;
+  fromUserId: number;
+  kind: string;
+  payload: string;
+}
+
 /**
  * The call COMMAND adapter — hides platform differences behind one polymorphic surface (mirrors
  * {@link NotificationAdapter}). On Android the RTCPeerConnection + the call lifecycle FSM live in NATIVE
@@ -81,6 +91,7 @@ export const IDLE_CALL: CallSnapshot = {
  * channel + the native `window.__SOMS_CALL_EVENT__` snapshot push, consumed by {@link CallEventService}.
  */
 export abstract class CallAdapter {
+  abstract setSnapshotListener(listener?: CallSnapshotListener): void;
   /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO.
    *  `peerName` + `peerAvatar` (a /uploads path) are the callee's display info for the call UI.
    *  `peerAvatarDataUrl` is the callee's avatar as a base64 data URL (read from the IDB cache by the caller)
@@ -118,11 +129,15 @@ export abstract class CallAdapter {
   abstract swapVideo(): void;
   /** Synchronous snapshot of the live call (re-derive on boot / WebView reclaim). */
   abstract snapshot(): CallSnapshot;
+  abstract onIncoming(snapshot: CallSnapshot): void | Promise<void>;
+  abstract handleSignal(signal: CallSignalPayload): void | Promise<void>;
+  abstract applyLifecycle(snapshot: CallSnapshot): void;
 }
 
 /** Android: delegates to the Kotlin `window.SomsCall` bridge. Per the native-bridge rule, runs only on
  *  Android so `window.SomsCall` is guaranteed present — call with `!`. */
 class AndroidCallAdapter extends CallAdapter {
+  setSnapshotListener(): void {}
   initiate(
     calleeUserId: number,
     callSid: string,
@@ -189,11 +204,15 @@ class AndroidCallAdapter extends CallAdapter {
       return { ...IDLE_CALL };
     }
   }
+  onIncoming(): void {}
+  handleSignal(): void {}
+  applyLifecycle(): void {}
 }
 
 /** Web/desktop: no native call layer (calling is deferred on those platforms). Commands are no-ops;
  *  `snapshot()` returns idle. The UI gates the call button on `CallAdapterService.supported`. */
 class UnsupportedCallAdapter extends CallAdapter {
+  setSnapshotListener(): void {}
   initiate(): void {}
   accept(): void {}
   decline(): void {}
@@ -209,6 +228,9 @@ class UnsupportedCallAdapter extends CallAdapter {
   snapshot(): CallSnapshot {
     return { ...IDLE_CALL };
   }
+  onIncoming(): void {}
+  handleSignal(): void {}
+  applyLifecycle(): void {}
 }
 
 /**
@@ -221,12 +243,29 @@ class UnsupportedCallAdapter extends CallAdapter {
  */
 @Injectable({ providedIn: 'root' })
 export class CallAdapterService {
-  private readonly adapter: CallAdapter = isAndroidNative()
-    ? new AndroidCallAdapter()
-    : new UnsupportedCallAdapter();
+  private readonly adapter: CallAdapter;
 
-  /** Whether 1:1 calling is supported on this platform (Android native only, for now). */
-  readonly supported = isAndroidNative();
+  /** WebRTC is native-owned on Android and renderer-owned in capable browser/desktop builds. */
+  readonly supported: boolean;
+  /** Video media is still native-only; Web audio ships as an independently testable first phase. */
+  readonly videoSupported = isAndroidNative();
+
+  constructor(http: HttpClient) {
+    const webRtcSupported =
+      typeof RTCPeerConnection !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices?.getUserMedia;
+    this.adapter = isAndroidNative()
+      ? new AndroidCallAdapter()
+      : webRtcSupported
+        ? new WebCallAdapter(http, IDLE_CALL)
+        : new UnsupportedCallAdapter();
+    this.supported = isAndroidNative() || webRtcSupported;
+  }
+
+  setSnapshotListener(listener?: CallSnapshotListener): void {
+    this.adapter.setSnapshotListener(listener);
+  }
 
   initiate(
     calleeUserId: number,
@@ -280,5 +319,14 @@ export class CallAdapterService {
   }
   snapshot(): CallSnapshot {
     return this.adapter.snapshot();
+  }
+  onIncoming(snapshot: CallSnapshot): void {
+    void this.adapter.onIncoming(snapshot);
+  }
+  handleSignal(signal: CallSignalPayload): void {
+    void this.adapter.handleSignal(signal);
+  }
+  applyLifecycle(snapshot: CallSnapshot): void {
+    this.adapter.applyLifecycle(snapshot);
   }
 }

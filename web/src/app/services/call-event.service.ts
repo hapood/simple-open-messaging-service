@@ -79,17 +79,43 @@ export class CallEventService implements OnDestroy {
     // Seed from native (re-derive on boot / WebView reclaim — a call may already be live). On web/desktop
     // (no native bridge) this returns idle.
     this.callState.set(this.adapter.snapshot());
+    this.adapter.setSnapshotListener((snap) => this.applyAdapter(snap));
     // Native snapshot push — authoritative for phase/mediaState (CallController.pushSnapshot).
     window.__SOMS_CALL_EVENT__ = (snap) => this.applyNative(snap);
     // SSE CALL_EVENT lifecycle (the incoming frame carries the peer display info).
     this.sub = this.ws.eventSubject
-      .pipe(filter((m) => m.event === 'CALL_EVENT' && m.data !== undefined))
-      .subscribe((m) => this.handleCallEvent(m.data as CallEventPayload));
+      .pipe(
+        filter(
+          (m) =>
+            (m.event === 'CALL_EVENT' || m.event === 'CALL_SIGNAL') &&
+            m.data !== undefined,
+        ),
+      )
+      .subscribe((m) => {
+        if (m.event === 'CALL_SIGNAL') {
+          this.adapter.handleSignal(
+            m.data as {
+              callSid: string;
+              fromUserId: number;
+              kind: string;
+              payload: string;
+            },
+          );
+        } else {
+          this.handleCallEvent(m.data as CallEventPayload);
+        }
+      });
   }
 
   /** Set the call state, folding a terminal ('ended') to 'idle' so the overlay dismisses and the state is
    *  clean for the next call. The terminal CALL bubble in the thread is the user-visible record. */
   private commit(next: CallSnapshot): void {
+    const normalized = next.phase === 'ended' ? { ...IDLE_CALL } : next;
+    this.callState.set(normalized);
+    this.adapter.applyLifecycle(normalized);
+  }
+
+  private applyAdapter(next: CallSnapshot): void {
     this.callState.set(next.phase === 'ended' ? { ...IDLE_CALL } : next);
   }
 
@@ -157,6 +183,7 @@ export class CallEventService implements OnDestroy {
         peerAvatar: p.callerAvatar ?? '',
       };
       this.commit(snap);
+      this.adapter.onIncoming(snap);
       // Ignore a stray incoming for a call we're already in (race / multi-device echo).
       if (cur.phase === 'idle') this.incoming$.next(snap);
       return;
@@ -176,6 +203,7 @@ export class CallEventService implements OnDestroy {
 
   ngOnDestroy(): void {
     this.sub.unsubscribe();
+    this.adapter.setSnapshotListener(undefined);
     window.__SOMS_CALL_EVENT__ = undefined;
   }
 }
