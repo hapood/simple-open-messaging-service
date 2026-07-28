@@ -45,6 +45,10 @@ class SomsActionReceiver : BroadcastReceiver() {
             if (sid.isNotEmpty()) CallController.end(sid, "completed")
             return
         }
+        if (intent.getBooleanExtra(EXTRA_CALL_TOGGLE_MUTE, false)) {
+            CallController.setMuted(!CallController.muted)
+            return
+        }
         val actionId = intent.getStringExtra(EXTRA_ACTION_ID) ?: return
         val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, SomsMessagingService.AWAY_NOTIF_ID)
@@ -113,6 +117,8 @@ class SomsActionReceiver : BroadcastReceiver() {
         const val EXTRA_CALL_DECLINE = "soms_call_decline"
         /** The callSid for an ongoing-call Hang-up action (the CallService ongoing notification's button). */
         const val EXTRA_CALL_END = "soms_call_end"
+        /** Toggle local microphone state from an Android system PiP RemoteAction. */
+        const val EXTRA_CALL_TOGGLE_MUTE = "soms_call_toggle_mute"
         const val EXTRA_TAG = "soms_tag"
         const val EXTRA_NOTIF_ID = "soms_notif_id"
         /** #5: dismiss routes per-thread (in-memory HWM) vs all-mode (global HWM) — set explicitly by the

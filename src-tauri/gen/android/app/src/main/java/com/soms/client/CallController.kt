@@ -2,6 +2,7 @@ package com.soms.client
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -104,6 +105,12 @@ object CallController {
         private set
     @Volatile var muted: Boolean = false
         private set
+    @Volatile var cameraEnabled: Boolean = false
+        private set
+    @Volatile var remoteCameraEnabled: Boolean = false
+        private set
+    @Volatile var videoUpgradeState: String = "idle"
+        private set
 
     private val appContext: Context?
         get() = SomsApplication.appContext
@@ -147,6 +154,9 @@ object CallController {
      *  fresh answer is expected: [initiate], [teardown], and [offerSdpObserver] (an ICE-restart offer expects a
      *  new answer, so the guard must reset or the restart answer would be skipped as a "duplicate"). */
     @Volatile private var answerApplied = false
+    /** Only the original caller creates renegotiation offers, avoiding offer glare when both participants
+     *  enable cameras at nearly the same time. Cleared when the corresponding answer is applied. */
+    @Volatile private var videoRenegotiationInFlight = false
     /** Posted on [mainHandler] when the PC goes DISCONNECTED; hops to [callExecutor]. Cancelled on CONNECTED +
      *  [teardown]. Bounds "Reconnecting…": after the grace the caller restarts ICE once (re-arming a shorter
      *  backstop), then the call fails. */
@@ -267,7 +277,10 @@ object CallController {
         val track = f.createAudioTrack("ARDAMSa0", source)
         localAudioTrack = track
         connection.addTrack(track, listOf("ARDAMS"))
-        if (callType == "VIDEO") video.setupVideoCapture(f, connection)
+        if (callType == "VIDEO") {
+            cameraEnabled = video.setupVideoCapture(f, connection)
+            remoteCameraEnabled = true
+        }
         return connection
     }
 
@@ -276,11 +289,42 @@ object CallController {
     /** Flip front↔back camera. No-op on an AUDIO call. */
     fun switchCamera() = video.switchCamera()
 
-    /** Camera on/off (mute video, keep audio). */
-    fun setCameraEnabled(enabled: Boolean) = video.setCameraEnabled(enabled)
+    /** Camera on/off (mute video, keep audio). Enabling a not-yet-created track uses the same renegotiation
+     *  path as AUDIO→VIDEO; the Activity has already gated CAMERA permission. */
+    fun setCameraEnabled(enabled: Boolean) {
+        callExecutor.execute {
+            if (!enabled) {
+                video.setCameraEnabled(false)
+                cameraEnabled = false
+                signalVideoState(false)
+                pushSnapshot()
+                return@execute
+            }
+            if (callType == "VIDEO" && video.hasLocalVideoTrack()) {
+                video.setCameraEnabled(true)
+                cameraEnabled = true
+                videoUpgradeState = "idle"
+                signalVideoState(true)
+                pushSnapshot()
+                return@execute
+            }
+            enableLocalVideo()
+        }
+    }
+
+    fun hasLocalVideoTrack(): Boolean = video.hasLocalVideoTrack()
 
     /** Mount/position the remote + self video surfaces, or detach (both rects null). */
     fun setVideoRect(remoteRect: String?, selfRect: String?) = video.setVideoRect(remoteRect, selfRect)
+
+    /** High-frequency self-view drag position in absolute CSS px (translation-only; no layout/sink churn). */
+    fun setSelfVideoPosition(x: Double, y: Double) = video.setSelfVideoPosition(x, y)
+
+    fun setSystemPipMode(enabled: Boolean) = video.setSystemPipMode(enabled)
+
+    fun remoteVideoSurfaceRect(): Rect? = video.remoteSurfaceRect()
+
+    fun setVideoGeometryListener(listener: (() -> Unit)?) = video.setGeometryListener(listener)
 
     /** Swap which video is full-bleed vs PiP (tap the self PiP). No-op on an AUDIO call. */
     fun swapVideo() = video.swapVideo()
@@ -405,6 +449,10 @@ object CallController {
     private fun handleSignalFrame(obj: JSONObject) {
         val kind = obj.optString("kind")
         val payload = obj.optString("payload")
+        if (kind == "video-state") {
+            handleRemoteVideoState(payload)
+            return
+        }
         if (pc == null) {
             when (kind) {
                 "offer" -> { pendingOffer = payload; SomsLog.d(TAG) { "buffered offer (pc not created yet — pre-accept)" }; setStep("offer-received") }
@@ -433,6 +481,10 @@ object CallController {
                 answerApplied = true
                 SomsLog.d(TAG) { "applying remote answer → setRemoteDescription" }
                 setRemote(connection, Type.ANSWER, payload)
+                if (videoRenegotiationInFlight) {
+                    videoRenegotiationInFlight = false
+                    completeVideoUpgrade()
+                }
                 if (phase == "calling" || phase == "ringing") {
                     step = "answer-received"
                     phase = "connecting"
@@ -533,6 +585,11 @@ object CallController {
                     pushSnapshot()
                 }
             }
+            "video-upgraded" -> {
+                callType = "VIDEO"
+                videoUpgradeState = "idle"
+                pushSnapshot()
+            }
             "declined", "cancelled", "missed", "ended" -> {
                 if (CallFsm.nextPhase(phase, isCaller, type) == "ended") {
                     phase = "ended"
@@ -552,7 +609,8 @@ object CallController {
             // OfferToReceiveVideo: true for a VIDEO call (sendrecv — we WANT the peer's camera), false for
             // AUDIO. Was hardcoded false (an AUDIO-only-phase leftover) → the offer was video-sendonly → the
             // callee answered recvonly → the caller never received the peer's video (one-way video).
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == "VIDEO") "true" else "false"))
+            val wantsVideo = callType == "VIDEO" || videoUpgradeState == "upgrading"
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (wantsVideo) "true" else "false"))
         }
 
     /** setRemoteDescription wrapper that logs failure (a bad SDP usually means a signaling race; the call
@@ -575,13 +633,35 @@ object CallController {
             // so re-arm the answer-idempotency guard — otherwise the restart answer would be skipped as a "duplicate".
             answerApplied = false
             SomsLog.d(TAG) { "offer created → setLocalDescription + relay" }
-            connection.setLocalDescription(EmptySdpObserver, sdp)
-            postSignal(sid, peerUserId, "offer", sdp.description)
-            setStep("offer-sent")
+            if (videoRenegotiationInFlight) {
+                connection.setLocalDescription(object : SdpObserver {
+                    override fun onCreateSuccess(p0: SessionDescription?) {}
+                    override fun onSetSuccess() {
+                        postSignal(sid, peerUserId, "offer", sdp.description)
+                        setStep("offer-sent")
+                    }
+                    override fun onCreateFailure(p0: String?) {}
+                    override fun onSetFailure(error: String?) {
+                        failVideoUpgrade("set-local-offer: $error")
+                    }
+                }, sdp)
+            } else {
+                connection.setLocalDescription(EmptySdpObserver, sdp)
+                postSignal(sid, peerUserId, "offer", sdp.description)
+                setStep("offer-sent")
+            }
         }
         override fun onSetSuccess() {}
-        override fun onCreateFailure(error: String?) { SomsLog.w(TAG) { "createOffer failed: $error" } }
-        override fun onSetFailure(error: String?) {}
+        override fun onCreateFailure(error: String?) {
+            SomsLog.w(TAG) { "createOffer failed: $error" }
+            if (videoRenegotiationInFlight) failVideoUpgrade("create-offer")
+            else abortOutgoingSetup("create-offer")
+        }
+        override fun onSetFailure(error: String?) {
+            SomsLog.w(TAG) { "setLocalDescription(offer) failed: $error" }
+            if (videoRenegotiationInFlight) failVideoUpgrade("set-local-offer")
+            else abortOutgoingSetup("set-local-offer")
+        }
     }
 
     private val answerSdpObserver = object : SdpObserver {
@@ -590,13 +670,34 @@ object CallController {
             val sid = callSid ?: return
             if (sdp == null) return
             SomsLog.d(TAG) { "answer created → setLocalDescription + relay" }
-            connection.setLocalDescription(EmptySdpObserver, sdp)
-            postSignal(sid, peerUserId, "answer", sdp.description)
-            setStep("answer-sent")
+            if (videoUpgradeState == "upgrading") {
+                connection.setLocalDescription(object : SdpObserver {
+                    override fun onCreateSuccess(p0: SessionDescription?) {}
+                    override fun onSetSuccess() {
+                        postSignal(sid, peerUserId, "answer", sdp.description)
+                        setStep("answer-sent")
+                        completeVideoUpgrade()
+                    }
+                    override fun onCreateFailure(p0: String?) {}
+                    override fun onSetFailure(error: String?) {
+                        failVideoUpgrade("set-local-answer: $error")
+                    }
+                }, sdp)
+            } else {
+                connection.setLocalDescription(EmptySdpObserver, sdp)
+                postSignal(sid, peerUserId, "answer", sdp.description)
+                setStep("answer-sent")
+            }
         }
         override fun onSetSuccess() {}
-        override fun onCreateFailure(error: String?) { SomsLog.w(TAG) { "createAnswer failed: $error" } }
-        override fun onSetFailure(error: String?) {}
+        override fun onCreateFailure(error: String?) {
+            SomsLog.w(TAG) { "createAnswer failed: $error" }
+            if (videoUpgradeState == "upgrading") failVideoUpgrade("create-answer")
+        }
+        override fun onSetFailure(error: String?) {
+            SomsLog.w(TAG) { "setLocalDescription(answer) failed: $error" }
+            if (videoUpgradeState == "upgrading") failVideoUpgrade("set-local-answer")
+        }
     }
 
     private object EmptySdpObserver : SdpObserver {
@@ -613,16 +714,31 @@ object CallController {
      *  routing is in comms mode. */
     fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String, avatarDataUrl: String) {
         callExecutor.execute {
+            var registeredOnServer = false
+            var origin: String? = null
             try {
                 SomsLog.i(TAG) { "initiate calleeUserId=$calleeUserId sid=$sid type=$type" }
-                val origin = activeOrigin() ?: run { SomsLog.w(TAG) { "initiate: no origin" }; return@execute }
+                origin = activeOrigin()
+                if (origin == null) {
+                    SomsLog.w(TAG) { "initiate: no origin" }
+                    teardown()
+                    return@execute
+                }
                 val r = post("$origin${SomsSecureStore.API_PREFIX}/calls/initiate",
                     JSONObject().put("callSid", sid).put("calleeUserId", calleeUserId).put("callType", type))
-                if (!r.ok) { SomsLog.w(TAG) { "initiate: POST /calls/initiate failed" }; return@execute }
+                if (!r.ok) {
+                    SomsLog.w(TAG) { "initiate: POST /calls/initiate failed" }
+                    teardown()
+                    return@execute
+                }
+                registeredOnServer = true
                 callSid = sid
                 threadId = r.data?.optInt("threadId") ?: 0
                 peerUserId = calleeUserId
                 callType = type
+                cameraEnabled = false
+                remoteCameraEnabled = type == "VIDEO"
+                videoUpgradeState = "idle"
                 isCaller = true
                 // INVARIANT: phase = "calling" (→ the outgoing UI shows) is set ONLY after /calls/initiate
                 // succeeds — NOT optimistically before the POST. This gates the outgoing UI on the server's
@@ -647,7 +763,38 @@ object CallController {
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())
             } catch (e: Exception) {
                 SomsLog.w(TAG) { "initiate failed: ${e.message}" }
+                if (registeredOnServer) {
+                    // The server already reserved both participants. Release that reservation before dropping
+                    // the local PC/service; otherwise a local setup failure leaves both users busy until the
+                    // ringing timeout.
+                    origin?.let {
+                        post("$it${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
+                    }
+                    phase = "ended"
+                    pushSnapshot()
+                }
+                teardown()
             }
+        }
+    }
+
+    /** An asynchronous offer callback failed after /calls/initiate succeeded. Serialize cleanup with every
+     *  other PC operation, cancel the still-ringing server call, then release the FGS/audio/media resources.
+     *  Idempotent against a peer terminal event racing the callback. */
+    private fun abortOutgoingSetup(reason: String) {
+        callExecutor.execute {
+            val sid = callSid ?: run {
+                teardown()
+                return@execute
+            }
+            if (!isCaller || (phase != "calling" && phase != "ringing")) return@execute
+            SomsLog.w(TAG) { "abort outgoing setup reason=$reason sid=$sid" }
+            activeOrigin()?.let {
+                post("$it${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
+            }
+            phase = "ended"
+            pushSnapshot()
+            teardown()
         }
     }
 
@@ -724,6 +871,102 @@ object CallController {
         postSignal(sid, toUserId, kind, payload)
     }
 
+    /** Begin the one-way AUDIO→VIDEO upgrade after the Activity granted CAMERA permission. The existing
+     *  audio track/DTLS connection stays live. Only the original caller creates the offer; a callee enabling
+     *  video signals intent and answers the caller's renegotiation offer, preventing offer glare. */
+    fun upgradeToVideo() {
+        callExecutor.execute {
+            if (phase != "connected" && phase != "reconnecting") return@execute
+            if (callType == "VIDEO" && video.hasLocalVideoTrack()) return@execute
+            videoUpgradeState = "upgrading"
+            pushSnapshot()
+            enableLocalVideo()
+        }
+    }
+
+    fun videoUpgradePermissionDenied() {
+        videoUpgradeState = "failed"
+        pushSnapshot()
+    }
+
+    private fun enableLocalVideo() {
+        val connection = pc ?: run {
+            videoUpgradeState = "failed"
+            pushSnapshot()
+            return
+        }
+        val f = factory ?: ensureFactory()
+        if (!video.setupVideoCapture(f, connection)) {
+            videoUpgradeState = "failed"
+            cameraEnabled = false
+            pushSnapshot()
+            return
+        }
+        cameraEnabled = true
+        videoUpgradeState = "upgrading"
+        signalVideoState(true)
+        pushSnapshot()
+        if (isCaller) createVideoRenegotiationOffer(connection)
+    }
+
+    private fun signalVideoState(enabled: Boolean) {
+        val sid = callSid ?: return
+        if (peerUserId == 0) return
+        postSignal(
+            sid,
+            peerUserId,
+            "video-state",
+            JSONObject().put("enabled", enabled).toString(),
+        )
+    }
+
+    private fun handleRemoteVideoState(payload: String) {
+        val enabled = runCatching { JSONObject(payload).optBoolean("enabled", false) }.getOrDefault(false)
+        remoteCameraEnabled = enabled
+        if (enabled && callType == "AUDIO") videoUpgradeState = "upgrading"
+        pushSnapshot()
+        val connection = pc ?: return
+        if (enabled && isCaller) createVideoRenegotiationOffer(connection)
+    }
+
+    private fun createVideoRenegotiationOffer(connection: PeerConnection) {
+        if (videoRenegotiationInFlight) return
+        videoRenegotiationInFlight = true
+        answerApplied = false
+        connection.createOffer(offerSdpObserver, videoOfferConstraints())
+    }
+
+    private fun videoOfferConstraints(): MediaConstraints =
+        MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        }
+
+    /** SDP answer exchange completed. Persist the one-way type transition only now, so a failed camera/SDP
+     *  setup leaves the call classified and rendered as AUDIO. The endpoint is idempotent across both peers. */
+    private fun completeVideoUpgrade() {
+        val sid = callSid ?: return
+        val origin = activeOrigin() ?: return
+        val upgraded = post(
+            "$origin${SomsSecureStore.API_PREFIX}/calls/upgrade-video",
+            JSONObject().put("callSid", sid),
+        ).ok
+        if (upgraded) {
+            callType = "VIDEO"
+            videoUpgradeState = "idle"
+        } else {
+            videoUpgradeState = "failed"
+        }
+        pushSnapshot()
+    }
+
+    private fun failVideoUpgrade(reason: String) {
+        SomsLog.w(TAG) { "video upgrade failed: $reason" }
+        videoRenegotiationInFlight = false
+        videoUpgradeState = "failed"
+        pushSnapshot()
+    }
+
     /** Mute/unmute the mic (local audio track enabled state). */
     fun setMuted(value: Boolean) {
         muted = value
@@ -746,6 +989,9 @@ object CallController {
         .put("step", step)
         .put("startedAt", startedAt)
         .put("muted", muted)
+        .put("cameraEnabled", cameraEnabled)
+        .put("remoteCameraEnabled", remoteCameraEnabled)
+        .put("videoUpgradeState", videoUpgradeState)
         .put("swapped", video.swapped)
         .toString()
 
@@ -828,6 +1074,9 @@ object CallController {
         peerName = name
         peerAvatar = avatar
         callType = type
+        cameraEnabled = false
+        remoteCameraEnabled = type == "VIDEO"
+        videoUpgradeState = "idle"
         isCaller = false
         phase = "incoming"
         startedAt = 0L
@@ -882,6 +1131,10 @@ object CallController {
         peerUserId = 0
         startedAt = 0L
         mediaState = "new"
+        cameraEnabled = false
+        remoteCameraEnabled = false
+        videoUpgradeState = "idle"
+        videoRenegotiationInFlight = false
         iceRestartTried = false
         answerApplied = false
         peerName = ""

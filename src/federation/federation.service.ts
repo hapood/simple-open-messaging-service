@@ -150,7 +150,8 @@ export type S2SCallOp =
   | 'ended'
   | 'missed'
   | 'signal'
-  | 'connected';
+  | 'connected'
+  | 'video-upgraded';
 
 export interface S2SCallFrame extends S2SOpsBase {
   from: S2SAddress; // sender; from.domain === signer (binding rule)

@@ -9,6 +9,8 @@
     <string name="notif_fgs_running">"正在后台运行"</string>
     <string name="call_channel_incoming">"来电"</string>
     <string name="call_channel_ongoing">"通话中"</string>
+    <string name="pip_toggle_mute">静音或取消静音</string>
+    <string name="pip_hang_up">挂断</string>
     <plurals name="notif_group_summary">
         <item quantity="other">"%d 个新会话"</item>
     </plurals>

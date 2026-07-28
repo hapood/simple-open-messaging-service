@@ -2,6 +2,7 @@ package com.soms.client
 
 import android.Manifest
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.content.Context
 import android.content.pm.PackageManager
@@ -13,6 +14,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.graphics.drawable.Icon
 import android.util.Log
 import android.util.Rational
 import android.webkit.JavascriptInterface
@@ -60,6 +63,7 @@ import java.util.concurrent.TimeUnit
  * than fishing it out of the view tree, so this stays stable across Tauri versions.
  */
 class MainActivity : TauriActivity() {
+    private var currentPipParams: PictureInPictureParams? = null
 
     // System-bar insets (status bar / gesture bar) in CSS px, measured per-device via WindowInsets
     // (see installInsetsListener). Android WebView is edge-to-edge but env(safe-area-inset-*) is 0, so
@@ -109,7 +113,16 @@ class MainActivity : TauriActivity() {
             intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
         }
         // Reflect call-phase changes in the show-when-locked / turn-screen-on flags (lock-screen incoming UI).
-        CallController.setPhaseListener { runOnUiThread { applyCallDisplayFlags() } }
+        CallController.setPhaseListener {
+            runOnUiThread {
+                applyCallDisplayFlags()
+                updateVideoPipParams()
+                // Android has no public "exit PiP but keep this Activity backgrounded" API. Finishing the
+                // disposable Web Activity is the clean terminal transition; the native call is already ended.
+                if (isInPictureInPictureMode && (it == "idle" || it == "ended")) finish()
+            }
+        }
+        CallController.setVideoGeometryListener { runOnUiThread { updateVideoPipParams() } }
         applyCallDisplayFlags()
         // Kick off the FCM token fetch, throttled to once/day (a mainland-China device without GMS shouldn't hammer
         // Google on every launch). First run (no cached token) always fetches so FCM works from session one.
@@ -385,7 +398,18 @@ class MainActivity : TauriActivity() {
         if (CallController.callType != "VIDEO") return
         val p = CallController.phase
         if (p != "connected" && p != "reconnecting") return
-        enterVideoPiP()
+        // Remove the in-app self surface before WindowManager captures the transition. Android 12+ then
+        // auto-enters from the preconfigured params; older releases still need the explicit call.
+        CallController.setSystemPipMode(true)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            enterVideoPiP()
+        } else {
+            // Auto-enter can be disabled by the user/system. Do not leave the self surface suppressed if no
+            // PiP transition actually follows this leave hint.
+            window.decorView.postDelayed({
+                if (!isInPictureInPictureMode) CallController.setSystemPipMode(false)
+            }, PIP_ENTER_CONFIRM_MS)
+        }
     }
 
     /** Build + enter the PiP params for the active video call. The aspect ratio follows the current window
@@ -393,14 +417,61 @@ class MainActivity : TauriActivity() {
     private fun enterVideoPiP() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         try {
-            val builder = PictureInPictureParams.Builder().setAspectRatio(pipAspectRatio())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setSeamlessResizeEnabled(true) // smoother resize as the PiP window is dragged
-            }
-            enterPictureInPictureMode(builder.build())
+            updateVideoPipParams()
+            val entered = currentPipParams?.let { enterPictureInPictureMode(it) } ?: false
+            if (!entered) CallController.setSystemPipMode(false)
         } catch (e: Exception) {
             SomsLog.w("SomsActivity") { "PiP enter failed: ${e.message}" }
+            CallController.setSystemPipMode(false)
         }
+    }
+
+    /** Preconfigure the system transition while the video is steady. Android 12+ auto-enter starts at the
+     *  Home gesture's first frame; sourceRectHint anchors the animation to the actual native remote Surface. */
+    private fun updateVideoPipParams() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val phase = CallController.phase
+        val eligible = CallController.callType == "VIDEO" &&
+            (phase == "connected" || phase == "reconnecting")
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(pipAspectRatio())
+            .setActions(if (eligible) buildPipActions() else emptyList())
+        CallController.remoteVideoSurfaceRect()?.let { builder.setSourceRectHint(it) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder
+                .setAutoEnterEnabled(eligible)
+                .setSeamlessResizeEnabled(true)
+        }
+        val params = builder.build()
+        currentPipParams = params
+        runCatching { setPictureInPictureParams(params) }
+            .onFailure { SomsLog.w("SomsActivity") { "PiP params failed: ${it.message}" } }
+    }
+
+    /** System-owned controls remain usable while the Web chrome is hidden in PiP. Broadcast intents route to
+     *  the process-global CallController, so they also work when the Activity is paused. */
+    private fun buildPipActions(): List<RemoteAction> {
+        val icon = Icon.createWithResource(this, R.drawable.ic_notification)
+        val muteIntent = Intent(this, SomsActionReceiver::class.java)
+            .putExtra(SomsActionReceiver.EXTRA_CALL_TOGGLE_MUTE, true)
+        val mutePi = PendingIntent.getBroadcast(
+            this,
+            PIP_REQ_MUTE,
+            muteIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val endIntent = Intent(this, SomsActionReceiver::class.java)
+            .putExtra(SomsActionReceiver.EXTRA_CALL_END, CallController.callSid ?: "")
+        val endPi = PendingIntent.getBroadcast(
+            this,
+            PIP_REQ_END,
+            endIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return listOf(
+            RemoteAction(icon, getString(R.string.pip_toggle_mute), getString(R.string.pip_toggle_mute), mutePi),
+            RemoteAction(icon, getString(R.string.pip_hang_up), getString(R.string.pip_hang_up), endPi),
+        )
     }
 
     /** The PiP aspect ratio: the remote video's frame dimensions if known (the PiP window should match the
@@ -423,6 +494,7 @@ class MainActivity : TauriActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        CallController.setSystemPipMode(isInPictureInPictureMode)
         // Tell the web chrome it's in PiP so it hides the top-bar/controls/self-view (only the native remote
         // video should show in the PiP window). The native surfaces are siblings of the WebView, so they keep
         // rendering regardless; the web just stops drawing chrome over them.
@@ -489,6 +561,7 @@ class MainActivity : TauriActivity() {
         // nor hold orphaned video surfaces. The call itself survives (CallController + CallService FGS are
         // process-global); only the activity-bound bindings are dropped here.
         CallController.setPhaseListener(null)
+        CallController.setVideoGeometryListener(null)
         CallController.onWebViewGone()
         super.onDestroy()
     }
@@ -513,9 +586,14 @@ class MainActivity : TauriActivity() {
             // unusable). pendingCallStart is one-shot — cleared here either way.
             val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
             val action = pendingCallStart
+            val denied = pendingCallDenied
             pendingCallStart = null
+            pendingCallDenied = null
             if (granted) action?.invoke()
-            else SomsLog.w("Ui") { "call permissions denied — mic/camera unavailable, call aborted" }
+            else {
+                denied?.invoke()
+                SomsLog.w("Ui") { "call media permission denied" }
+            }
         }
     }
 
@@ -610,6 +688,7 @@ class MainActivity : TauriActivity() {
     /** The deferred call-start action awaiting a RECORD_AUDIO (+ CAMERA for VIDEO) grant. One-shot: cleared
      *  in [onRequestPermissionsResult] whether granted or not. Null when no call is pending a permission. */
     private var pendingCallStart: (() -> Unit)? = null
+    private var pendingCallDenied: (() -> Unit)? = null
 
     /** Accept the incoming call launched from its ringing notification's Answer button / full-screen intent.
      *  CallController was already seeded incoming by the FCM wake-up (CallService.startIncoming); accept stops
@@ -658,10 +737,10 @@ class MainActivity : TauriActivity() {
         // permission is premature (and it's an API 31+ perm that returns DENIED on older devices, which used
         // to fail the whole batch). When BT-headset routing lands, request it JUST-IN-TIME on detecting a
         // connected headset (AudioManager BluetoothHeadset profile) so the prompt only fires when relevant.
-        val perms = arrayOf(
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.CAMERA,
-        )
+        val perms = buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            if (callType == "VIDEO") add(Manifest.permission.CAMERA)
+        }
         val needed = perms.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -670,7 +749,23 @@ class MainActivity : TauriActivity() {
             return
         }
         pendingCallStart = andThen
+        pendingCallDenied = null
         requestPermissions(needed.toTypedArray(), REQ_CALL_PERMS)
+    }
+
+    /** Camera is requested just-in-time when an established audio call upgrades. A denial is non-terminal:
+     *  the native controller reports a failed upgrade while the existing microphone/audio connection stays
+     *  active. */
+    private fun ensureVideoPermission(andThen: () -> Unit, onDenied: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            andThen()
+            return
+        }
+        pendingCallStart = andThen
+        pendingCallDenied = onDenied
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CALL_PERMS)
     }
 
     /** Next scheduled WorkManager poll time (epoch ms), or -1 if not scheduled. For the Settings display.
@@ -1139,6 +1234,19 @@ class MainActivity : TauriActivity() {
             CallController.setMuted(muted)
         }
 
+        /** One-way AUDIO→VIDEO upgrade. Camera permission is requested just in time; denying it leaves the
+         *  established audio call untouched and only marks the upgrade attempt failed. */
+        @JavascriptInterface
+        fun upgradeToVideo() {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                a.ensureVideoPermission(
+                    andThen = { CallController.upgradeToVideo() },
+                    onDenied = { CallController.videoUpgradePermissionDenied() },
+                )
+            }
+        }
+
         /** Flip front↔back camera (video only — WhatsApp/FaceTime "flip"). */
         @JavascriptInterface
         fun switchCamera() {
@@ -1148,7 +1256,17 @@ class MainActivity : TauriActivity() {
         /** Camera on/off (mute video, keep audio). */
         @JavascriptInterface
         fun setCameraEnabled(enabled: Boolean) {
-            CallController.setCameraEnabled(enabled)
+            val a = activityRef.get() ?: return
+            if (!enabled || CallController.hasLocalVideoTrack()) {
+                CallController.setCameraEnabled(enabled)
+                return
+            }
+            a.runOnUiThread {
+                a.ensureVideoPermission(
+                    andThen = { CallController.setCameraEnabled(true) },
+                    onDenied = { CallController.videoUpgradePermissionDenied() },
+                )
+            }
         }
 
         /** Report the remote + self video "hole" rects (JSON `{x,y,w,h}` in CSS px) so native mounts/positions
@@ -1156,6 +1274,13 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun setVideoRect(remote: String?, self: String?) {
             CallController.setVideoRect(remote, self)
+        }
+
+        /** High-frequency self-view drag path. Unlike setVideoRect this only applies a native compositor
+         *  translation, so a drag frame never causes SurfaceView layout or WebRTC sink churn. */
+        @JavascriptInterface
+        fun setSelfVideoPosition(x: Double, y: Double) {
+            CallController.setSelfVideoPosition(x, y)
         }
 
         /** Swap which video is full-bleed vs PiP (a tap on the self PiP) — the local camera ↔ the peer's swap
@@ -1176,6 +1301,9 @@ class MainActivity : TauriActivity() {
         /** Runtime-permission request for a call's mic (+ camera for VIDEO) — see ensureCallPermissions.
          *  Distinct from REQ_POST_NOTIF so onRequestPermissionsResult routes the result to the deferred call. */
         private const val REQ_CALL_PERMS = 1002
+        private const val PIP_REQ_MUTE = 7101
+        private const val PIP_REQ_END = 7102
+        private const val PIP_ENTER_CONFIRM_MS = 750L
         private const val NOTIF_SYNC_WORK = "soms-notif-sync"
         /** FCM availability auto-check cadence (the user's "once/day" requirement). */
         private const val FCM_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000

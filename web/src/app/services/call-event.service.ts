@@ -134,6 +134,14 @@ export class CallEventService implements OnDestroy {
    *  {@link incoming$}; the rest map to a phase via {@link PHASE_BY_EVENT}. */
   private handleCallEvent(p: CallEventPayload): void {
     const cur = this.callState();
+    if (p.type === 'video-upgraded') {
+      this.commit({
+        ...cur,
+        callType: 'VIDEO',
+        videoUpgradeState: 'idle',
+      });
+      return;
+    }
     if (p.type === 'incoming') {
       const snap: CallSnapshot = {
         ...IDLE_CALL,

@@ -20,10 +20,11 @@ All routes are under the `/api/v1` prefix. Every response is the `ApiResult` env
 | POST | `/calls/initiate` | `{ callSid, calleeUserId, callType }` | Caller starts a call. Returns `{ callSid, threadId }`. |
 | POST | `/calls/accept` | `{ callSid }` | Callee answered (negotiating — NOT connected yet). |
 | POST | `/calls/connected` | `{ callSid }` | Either side: **the media leg is actually up** (DTLS-SRTP connected). This is the real connect marker — the basis for the call record's duration. **Idempotent** (second side's report is a no-op). |
+| POST | `/calls/upgrade-video` | `{ callSid }` | Permanently classify a connected AUDIO call as VIDEO after renegotiation succeeds. Idempotent; there is no VIDEO→AUDIO transition. |
 | POST | `/calls/decline` | `{ callSid }` | Callee rejects (ringing only). |
 | POST | `/calls/cancel` | `{ callSid }` | Caller cancels (ringing only). |
 | POST | `/calls/end` | `{ callSid, endReason? }` | Either side hangs up. `endReason ∈ {completed, timeout, failed}`. |
-| POST | `/calls/signal` | `{ callSid, toUserId, kind, payload }` | Relay one WebRTC frame. `kind ∈ {offer, answer, ice, renegotiate, media-state}`; `payload` is opaque SDP/ICE JSON (≤32 KB). `toUserId` = the OTHER participant (the server authorizes this). |
+| POST | `/calls/signal` | `{ callSid, toUserId, kind, payload }` | Relay one WebRTC frame. `kind ∈ {offer, answer, ice, renegotiate, media-state, video-state}`; `payload` is opaque SDP/ICE/control JSON (≤32 KB). `toUserId` = the OTHER participant (the server authorizes this). |
 
 **`callSid`** is a client-generated **ULID (26 Crockford-base32) or UUID** — the call's idempotency key
 + the address every signaling frame carries. Validated by `CALL_SID_RE` (`src/dto/call.dto.ts`).
@@ -97,6 +98,11 @@ preview is a status-aware label (`[Missed call]`, `[Call]`, …) computed server
 - Callee: on `CALL_SIGNAL{kind:'offer'}` → `setRemoteDescription` → `createAnswer` →
   `setLocalDescription` → POST `/calls/signal {kind:'answer', …}` + ICE candidates.
 - On `pc.connectionState === 'connected'` → POST `/calls/connected` (either side; idempotent).
+- AUDIO→VIDEO is one-way. The enabling side adds/enables its video track and relays
+  `video-state {enabled:true}`. To avoid offer glare, the original caller creates the renegotiation offer.
+  After the answer exchange succeeds, either side may POST `/calls/upgrade-video` (idempotent). Turning a
+  camera off later relays `video-state {enabled:false}` and pauses only that track; it does not downgrade
+  the call type.
 - Media is **P2P, E2E (DTLS-SRTP)** — the server never carries media. TURN is OFF in current SOMS →
   STUN/P2P only; a hard-NAT pair fails → the client reports `/calls/end {endReason:'failed'}`.
 

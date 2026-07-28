@@ -59,6 +59,10 @@ export class RingingCallDto extends CallSidDto {}
  *  callee answered). Idempotent: the second party's report is a no-op. */
 export class ConnectedCallDto extends CallSidDto {}
 
+/** Permanently upgrade an established AUDIO call to VIDEO. This transition is idempotent and one-way for
+ *  the lifetime of the call; turning a camera off later pauses only that participant's video track. */
+export class UpgradeCallVideoDto extends CallSidDto {}
+
 /** The callee declines an incoming ring. */
 export class DeclineCallDto extends CallSidDto {}
 
@@ -94,10 +98,10 @@ export class SignalCallDto {
   toUserId!: number;
 
   @ApiProperty({
-    enum: ['offer', 'answer', 'ice', 'renegotiate', 'media-state'],
+    enum: ['offer', 'answer', 'ice', 'renegotiate', 'media-state', 'video-state'],
     description: 'Signaling frame kind.',
   })
-  @IsIn(['offer', 'answer', 'ice', 'renegotiate', 'media-state'])
+  @IsIn(['offer', 'answer', 'ice', 'renegotiate', 'media-state', 'video-state'])
   kind!: string;
 
   @ApiProperty({

@@ -23,6 +23,7 @@ import {
   EndCallDto,
   SignalCallDto,
   ConnectedCallDto,
+  UpgradeCallVideoDto,
 } from '../dto/call.dto.js';
 
 /**
@@ -74,6 +75,19 @@ export class CallsController {
   @ApiOperation({ summary: 'Report the media leg is up (either party) — the real connect marker' })
   async connected(@Request() req: FastifyRequest, @Body() dto: ConnectedCallDto): Promise<void> {
     await this.calls.connected(req.user.userId, dto.callSid);
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(30, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('calls/upgrade-video')
+  @ApiOperation({ summary: 'Permanently upgrade an established audio call to video' })
+  async upgradeVideo(
+    @Request() req: FastifyRequest,
+    @Body() dto: UpgradeCallVideoDto,
+  ): Promise<void> {
+    await this.calls.upgradeVideo(req.user.userId, dto.callSid);
   }
 
   @UseGuards(ThrottleGuard)

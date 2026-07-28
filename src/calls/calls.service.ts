@@ -324,6 +324,24 @@ export class CallsService implements OnModuleDestroy {
     this.notifyBoth(call, 'connected', { startedAt: call.startedAt });
   }
 
+  /** Permanently upgrade a connected AUDIO call to VIDEO. Camera enable/disable remains client-local after
+   *  this transition; the server only owns the durable call type so both live clients and the terminal CALL
+   *  bubble agree that this became a video call. Idempotent when another device/participant races the same
+   *  upgrade. */
+  async upgradeVideo(userId: number, callSid: string): Promise<void> {
+    const call = this.activeCalls.get(callSid);
+    if (!call || call.state !== 'connected') {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no connected call to upgrade');
+    }
+    if (userId !== call.callerId && userId !== call.calleeId) {
+      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+    }
+    if (call.callType === 'VIDEO') return;
+    call.callType = 'VIDEO';
+    this.syncCallState(call);
+    this.notifyBoth(call, 'video-upgraded', { callType: 'VIDEO', upgradedBy: userId });
+  }
+
   /** The callee declines a ringing call: fans `declined`, then writes the terminal bubble on the ORIGIN.
    *  Idempotent on an already-terminal call (no live entry → no-op). */
   async decline(calleeId: number, callSid: string): Promise<void> {
@@ -445,6 +463,8 @@ export class CallsService implements OnModuleDestroy {
         return this.onInboundRinging(frame);
       case 'connected':
         return this.onInboundConnected(frame);
+      case 'video-upgraded':
+        return this.onInboundVideoUpgraded(localUserId, frame);
       case 'signal':
         return this.onInboundSignal(localUserId, peerStubId, frame);
       case 'declined':
@@ -547,6 +567,19 @@ export class CallsService implements OnModuleDestroy {
     this.syncCallState(call);
     this.clearRingTimer(frame.callSid);
     this.emit(this.localUserId(call), 'connected', { callSid: call.callSid });
+  }
+
+  /** Federated peer permanently upgraded the live call to video. The frame is idempotent and carries no
+   *  media; clients perform SDP renegotiation separately over the ordinary signaling relay. */
+  private onInboundVideoUpgraded(localUserId: number, frame: S2SCallFrame): void {
+    const call = this.activeCalls.get(frame.callSid);
+    if (!call || call.state !== 'connected') return;
+    call.callType = 'VIDEO';
+    this.syncCallState(call);
+    this.emit(localUserId, 'video-upgraded', {
+      callSid: call.callSid,
+      callType: 'VIDEO',
+    });
   }
 
   /** Inbound `signal`: relay one WebRTC frame from the peer to the local participant. No authorization

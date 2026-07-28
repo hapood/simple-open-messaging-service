@@ -2,9 +2,11 @@ package com.soms.client
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.HapticFeedbackConstants
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -58,6 +60,16 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
     @Volatile private var remoteRenderer: SurfaceViewRenderer? = null
     /** Local-camera (self-view) renderer — a small positioned sibling above the WebView (media-overlay z). */
     @Volatile private var selfRenderer: SurfaceViewRenderer? = null
+    /** Rect presence is independent for each renderer. In particular Android PiP hides the self surface while
+     *  keeping the remote surface alive; CSS cannot hide these sibling-of-WebView native views. */
+    @Volatile private var remoteVisible = false
+    @Volatile private var selfVisible = false
+    /** System Activity PiP suppresses the in-app self surface without discarding its requested layout. */
+    @Volatile private var systemPipMode = false
+    /** The self renderer's committed layout origin in device px. Drag frames use translation relative to this
+     *  stable base; pointer-up commits the final rect and resets translation to zero. */
+    @Volatile private var selfBaseX = 0
+    @Volatile private var selfBaseY = 0
     /** The WebView's saved background, restored on detach (the overlay sets it TRANSPARENT while video is up). */
     private var savedWebViewBg: android.graphics.drawable.Drawable? = null
     /** The last remote frame dimensions, tracked by [dimensionsSink] so PiP can size its window to the video
@@ -71,10 +83,12 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         if (f.rotatedWidth != remoteWidth || f.rotatedHeight != remoteHeight) {
             remoteWidth = f.rotatedWidth
             remoteHeight = f.rotatedHeight
+            mainHandler.post { geometryListener?.invoke() }
         }
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var geometryListener: (() -> Unit)? = null
 
     /** Lazily create the shared EGL base once (reused across calls + borrowed by the PeerConnectionFactory's
      *  video encode/decode factories via [eglBase]). */
@@ -87,15 +101,22 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
 
     /** Create the front-camera capturer + a local VideoTrack + add it to the PC (the self-view renderer
      *  attaches in [setVideoRect] when the WebView reports its hole rects). AUDIO calls skip this. */
-    fun setupVideoCapture(factory: PeerConnectionFactory, connection: PeerConnection) {
-        val ctx = contextProvider() ?: return
+    fun setupVideoCapture(factory: PeerConnectionFactory, connection: PeerConnection): Boolean {
+        if (localVideoTrack != null) {
+            localVideoTrack?.setEnabled(true)
+            return true
+        }
+        val ctx = contextProvider() ?: return false
         val base = eglBase()
         val enumerator = Camera2Enumerator(ctx)
         val names = enumerator.deviceNames
         var name: String? = null
         for (n in names) if (enumerator.isFrontFacing(n)) { name = n; break }
         if (name == null && names.isNotEmpty()) name = names[0]
-        val deviceName = name ?: run { SomsLog.w(TAG) { "no camera device" }; return }
+        val deviceName = name ?: run {
+            SomsLog.w(TAG) { "no camera device" }
+            return false
+        }
         val capturer = enumerator.createCapturer(deviceName, CameraEventsHandler)
         videoCapturer = capturer
         val helper = SurfaceTextureHelper.create("SomsCapture", base.eglBaseContext)
@@ -112,6 +133,7 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         localVideoTrack = vtrack
         connection.addTrack(vtrack)
         relinkVideoSinks() // the self renderer may already be mounted (ensureRenderers raced ahead) — sink now
+        return true
     }
 
     /** Flip front↔back camera (WhatsApp/FaceTime). */
@@ -123,6 +145,10 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
     fun setCameraEnabled(enabled: Boolean) {
         localVideoTrack?.setEnabled(enabled)
     }
+
+    fun hasLocalVideoTrack(): Boolean = localVideoTrack != null
+
+    fun isCameraEnabled(): Boolean = localVideoTrack?.enabled() == true
 
     /** The remote video's frame dimensions (rotated), or null until the first frame — for PiP aspect sizing. */
     fun remoteDimensions(): Pair<Int, Int>? =
@@ -145,7 +171,56 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
             val v = SomsBridge.webView ?: return@post
             if (remoteRect == null && selfRect == null) { detachVideoSurfaces(v); return@post }
             ensureRenderers(v)
+            val nextRemoteVisible = remoteRect != null
+            val nextSelfVisible = selfRect != null
+            val visibilityChanged =
+                nextRemoteVisible != remoteVisible || nextSelfVisible != selfVisible
+            remoteVisible = nextRemoteVisible
+            selfVisible = nextSelfVisible
+            remoteRenderer?.visibility = if (remoteVisible) View.VISIBLE else View.GONE
+            selfRenderer?.visibility = if (selfVisible && !systemPipMode) View.VISIBLE else View.GONE
+            positionRemote(v, remoteRect)
             positionSelf(v, selfRect)
+            // Position-only updates must never detach/reattach video sinks. Relink only when the physical
+            // target set changes (mount/show/hide, notably entering/leaving Android system PiP).
+            if (visibilityChanged) relinkVideoSinks()
+        }
+    }
+
+    /** Native-first system PiP switch: media surfaces change before the disposable Web chrome catches up. */
+    fun setSystemPipMode(enabled: Boolean) {
+        val update = update@ {
+            if (systemPipMode == enabled) return@update
+            systemPipMode = enabled
+            selfRenderer?.visibility = if (selfVisible && !enabled) View.VISIBLE else View.GONE
+            relinkVideoSinks()
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) update()
+        else mainHandler.post { update() }
+    }
+
+    fun setGeometryListener(listener: (() -> Unit)?) {
+        geometryListener = listener
+    }
+
+    /** Current remote video bounds in screen coordinates for PictureInPictureParams.sourceRectHint. */
+    fun remoteSurfaceRect(): Rect? {
+        val renderer = remoteRenderer ?: return null
+        if (!remoteVisible || renderer.visibility != View.VISIBLE) return null
+        return Rect().takeIf { renderer.getGlobalVisibleRect(it) && !it.isEmpty }
+    }
+
+    /** High-frequency drag path. Move the already-mounted self renderer with a compositor translation only:
+     *  no JSON, layoutParams, view-tree layout, or track↔sink relink. Coordinates are absolute CSS px; the
+     *  translation is relative to the last rect committed by [positionSelf]. */
+    fun setSelfVideoPosition(xCss: Double, yCss: Double) {
+        mainHandler.post {
+            val webView = SomsBridge.webView ?: return@post
+            val self = selfRenderer ?: return@post
+            if (!selfVisible) return@post
+            val d = webView.context.resources.displayMetrics.density
+            self.translationX = (xCss * d).toFloat() - selfBaseX
+            self.translationY = (yCss * d).toFloat() - selfBaseY
         }
     }
 
@@ -197,16 +272,26 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
     fun relinkVideoSinks() {
         val local = localVideoTrack
         val remote = remoteVideoTrack
-        val big = remoteRenderer    // full-bleed surface (behind the WebView)
-        val pip = selfRenderer      // PiP overlay surface (media-overlay)
+        val rawBig = remoteRenderer
+        val rawPip = selfRenderer
+        val big = rawBig?.takeIf { remoteVisible } // full-bleed surface (behind the WebView)
+        val effectiveSelfVisible = selfVisible && !systemPipMode
+        val pip = rawPip?.takeIf { effectiveSelfVisible } // PiP overlay surface (media-overlay)
         SomsLog.d(TAG) { "relink: local=${local != null} remote=${remote != null} big=${big != null} pip=${pip != null} swapped=$swapped" }
-        if (local != null) { big?.let { local.removeSinkSafe(it) }; pip?.let { local.removeSinkSafe(it) } }
-        if (remote != null) { big?.let { remote.removeSinkSafe(it) }; pip?.let { remote.removeSinkSafe(it) } }
+        // Always detach from BOTH physical renderers before selecting the visible targets. A renderer that
+        // just changed to GONE is intentionally absent from `big`/`pip`, but may still hold the old sink.
+        if (local != null) { rawBig?.let { local.removeSinkSafe(it) }; rawPip?.let { local.removeSinkSafe(it) } }
+        if (remote != null) { rawBig?.let { remote.removeSinkSafe(it) }; rawPip?.let { remote.removeSinkSafe(it) } }
         // Default: local→PiP (self-view), remote→big (peer full-bleed). Swapped: local→big, remote→PiP.
-        val (localTarget, remoteTarget) = if (swapped) big to pip else pip to big
+        // With no PiP renderer (Android system PiP), always show the peer in the remaining big renderer.
+        // Preserve `swapped` itself so leaving system PiP restores the user's prior in-app mapping.
+        val (localTarget, remoteTarget) =
+            if (!effectiveSelfVisible) null to big
+            else if (swapped) big to pip
+            else pip to big
         local?.let { l -> localTarget?.let { l.addSinkSafe(it, "local") } }
         remote?.let { r -> remoteTarget?.let { r.addSinkSafe(it, "remote") } }
-        big?.setMirror(swapped)     // big shows the local cam ⇔ swapped
+        big?.setMirror(effectiveSelfVisible && swapped) // system PiP forces remote→big; never mirror peer
         pip?.setMirror(!swapped)    // pip shows the local cam ⇔ !swapped
     }
 
@@ -237,10 +322,41 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
                 (o.optDouble("w", 120.0) * d).toInt(),
                 (o.optDouble("h", 160.0) * d).toInt(),
             )
-            lp.setMargins((o.optDouble("x", 0.0) * d).toInt(), (o.optDouble("y", 0.0) * d).toInt(), 0, 0)
+            selfBaseX = (o.optDouble("x", 0.0) * d).toInt()
+            selfBaseY = (o.optDouble("y", 0.0) * d).toInt()
+            lp.setMargins(selfBaseX, selfBaseY, 0, 0)
             self.layoutParams = lp
+            self.translationX = 0f
+            self.translationY = 0f
         } catch (e: Exception) {
             SomsLog.w(TAG) { "setVideoRect parse: ${e.message}" }
+        }
+    }
+
+    /** Position the remote renderer to the reported CSS rect. The current UI reports full viewport, but
+     *  honoring the bridge contract keeps split-screen, foldables, and future non-fullscreen layouts correct. */
+    private fun positionRemote(webView: WebView, remoteRect: String?) {
+        val r = remoteRect ?: return
+        val remote = remoteRenderer ?: return
+        try {
+            val o = org.json.JSONObject(r)
+            val d = webView.context.resources.displayMetrics.density
+            val lp = FrameLayout.LayoutParams(
+                (o.optDouble("w", (webView.width / d).toDouble()) * d).toInt(),
+                (o.optDouble("h", (webView.height / d).toDouble()) * d).toInt(),
+            )
+            lp.setMargins(
+                (o.optDouble("x", 0.0) * d).toInt(),
+                (o.optDouble("y", 0.0) * d).toInt(),
+                0,
+                0,
+            )
+            remote.layoutParams = lp
+            // Wait until ViewRoot commits the new bounds; sourceRectHint must describe the actual Surface,
+            // not the previous layout pass.
+            remote.post { geometryListener?.invoke() }
+        } catch (e: Exception) {
+            SomsLog.w(TAG) { "set remote video rect parse: ${e.message}" }
         }
     }
 
@@ -253,6 +369,11 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         selfRenderer?.let { runCatching { parent?.removeView(it); it.release() } }
         remoteRenderer = null
         selfRenderer = null
+        remoteVisible = false
+        selfVisible = false
+        systemPipMode = false
+        selfBaseX = 0
+        selfBaseY = 0
         if (savedWebViewBg != null) { webView.background = savedWebViewBg; savedWebViewBg = null }
         else webView.setBackgroundColor(Color.WHITE)
     }
@@ -276,6 +397,11 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         selfRenderer?.let { runCatching { it.release() } }
         remoteRenderer = null
         selfRenderer = null
+        remoteVisible = false
+        selfVisible = false
+        systemPipMode = false
+        selfBaseX = 0
+        selfBaseY = 0
         savedWebViewBg = null
     }
 

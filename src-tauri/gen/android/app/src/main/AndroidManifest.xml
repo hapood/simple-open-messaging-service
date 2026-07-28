@@ -19,6 +19,11 @@
          associates with an in-progress call (Telecom / call-screen integration). Declared in addition to
          the base FOREGROUND_SERVICE. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <!-- Runtime prerequisite for a phoneCall foreground service on targetSdk 34+: a self-managed VoIP app
+         must either declare MANAGE_OWN_CALLS or hold ROLE_DIALER. SOMS is not a system dialer, so it uses the
+         self-managed-call permission. Without this declaration startForeground(...PHONE_CALL) throws a
+         SecurityException on Android 14+. This is a normal permission (no runtime prompt). -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <!-- Full-screen intent for the incoming-call notification (CallService.buildIncomingNotification) — shows
          the call surface over the lock screen / the system call screen. Required on Android 14+ (API 34) to
          honor setFullScreenIntent (else the system downgrades to heads-up); for CATEGORY_CALL notifications

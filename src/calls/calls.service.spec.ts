@@ -376,6 +376,42 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     );
   });
 
+  it('upgrades a connected audio call once and persists the terminal bubble as video', async () => {
+    const { svc, m } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.accept(2, 'cs1');
+    await svc.connected(1, 'cs1');
+    m.sse.onCallEvent.mockClear();
+
+    await svc.upgradeVideo(2, 'cs1');
+    await svc.upgradeVideo(1, 'cs1');
+
+    const upgraded = m.sse.onCallEvent.mock.calls.filter(
+      ([, event]) => event.type === 'video-upgraded',
+    );
+    expect(upgraded).toHaveLength(2);
+    expect(upgraded.map(([userId]) => userId).sort()).toEqual([1, 2]);
+
+    await svc.end(1, 'cs1');
+    expect(lastBubbleContent(m)).toMatchObject({
+      callType: 'VIDEO',
+      status: 'completed',
+    });
+  });
+
+  it('rejects video upgrade before media connects or from a non-participant', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.accept(2, 'cs1');
+    await expect(svc.upgradeVideo(1, 'cs1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
+    );
+    await svc.connected(1, 'cs1');
+    await expect(svc.upgradeVideo(99, 'cs1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
+    );
+  });
+
   it('decline / cancel are idempotent on an already-terminal call (no second bubble)', async () => {
     const { svc, m } = mkService();
     await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
@@ -601,6 +637,37 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     });
     expect(lastBubbleContent(m)?.status).toBe('completed');
     expect(lastBubbleContent(m)?.startedAt).toBe(1000); // from the `connected` frame, not `accepted`
+  });
+
+  it('applies a federated video upgrade to the mirror and notifies its local participant', async () => {
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, {
+      localUserId: 2,
+      peerStubId: 5,
+      frame: mkFrame({ op: 'accepted' }),
+    });
+    await inbound(svc, {
+      localUserId: 2,
+      peerStubId: 5,
+      frame: mkFrame({ op: 'connected', startedAt: Date.now() }),
+    });
+    m.sse.onCallEvent.mockClear();
+
+    await inbound(svc, {
+      localUserId: 2,
+      peerStubId: 5,
+      frame: mkFrame({ op: 'video-upgraded', callType: 'VIDEO' }),
+    });
+
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      2,
+      expect.objectContaining({
+        type: 'video-upgraded',
+        callSid: 'cs1',
+        callType: 'VIDEO',
+      }),
+    );
   });
 
   it('an inbound `ringing` frame emits `ringing` to the origin caller (idempotent on replay)', async () => {
