@@ -32,7 +32,11 @@
     "offer-received": "收到邀请",
     "answer-sent": "应答已发送",
     "answer-received": "收到应答",
-    "microphone-failed": "无法使用麦克风，请点击接听重试"
+    "microphone-failed": "无法使用麦克风，请点击接听重试",
+    "media-permission-denied": "无法访问麦克风或摄像头，请检查系统权限后重试",
+    "media-device-not-found": "未找到可用的麦克风或摄像头",
+    "media-device-busy": "麦克风或摄像头正被其他应用占用",
+    "media-failed": "无法启动麦克风或摄像头，请重试"
   },
   "common": {
     "appName": "SOMS",

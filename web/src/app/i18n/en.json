@@ -32,7 +32,11 @@
     "offer-received": "Offer received",
     "answer-sent": "Answer sent",
     "answer-received": "Answer received",
-    "microphone-failed": "Microphone unavailable — tap Accept to retry"
+    "microphone-failed": "Microphone unavailable — tap Accept to retry",
+    "media-permission-denied": "Microphone or camera access was denied. Check system permissions and try again",
+    "media-device-not-found": "No microphone or camera was found",
+    "media-device-busy": "The microphone or camera is in use by another app",
+    "media-failed": "Couldn't start the microphone or camera. Please try again"
   },
   "common": {
     "appName": "SOMS",

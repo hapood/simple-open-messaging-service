@@ -3,6 +3,7 @@ import { of } from 'rxjs';
 import { IDLE_CALL, type CallSnapshot } from './call-adapter';
 import {
   WebCallAdapter,
+  callMediaErrorStep,
   iceServersFromResponse,
   webReconnectDecision,
 } from './web-call.adapter';
@@ -67,5 +68,18 @@ describe('WebCallAdapter multi-device ownership', () => {
       delayMs: 30_000,
       action: 'fail',
     });
+  });
+
+  it('classifies browser media failures into actionable UI states', () => {
+    expect(callMediaErrorStep({ name: 'NotAllowedError' })).toBe(
+      'media-permission-denied',
+    );
+    expect(callMediaErrorStep({ name: 'NotFoundError' })).toBe(
+      'media-device-not-found',
+    );
+    expect(callMediaErrorStep({ name: 'NotReadableError' })).toBe(
+      'media-device-busy',
+    );
+    expect(callMediaErrorStep(new Error('unknown'))).toBe('media-failed');
   });
 });

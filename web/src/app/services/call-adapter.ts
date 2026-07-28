@@ -1,7 +1,9 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+import { TranslocoService } from '@jsverse/transloco';
 import { isAndroidNative } from './runtime';
 import { WebCallAdapter } from './web-call.adapter';
+import { ToastService } from './toast.service';
 
 /** The UI phase of a 1:1 call — the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels
  *  + the reconnecting/weak UX). `idle` = no live call. */
@@ -257,7 +259,11 @@ export class CallAdapterService {
   /** Video media is still native-only; Web audio ships as an independently testable first phase. */
   readonly videoSupported: boolean;
 
-  constructor(http: HttpClient) {
+  constructor(
+    http: HttpClient,
+    toast: ToastService,
+    transloco: TranslocoService,
+  ) {
     const webRtcSupported =
       typeof RTCPeerConnection !== 'undefined' &&
       typeof navigator !== 'undefined' &&
@@ -265,7 +271,9 @@ export class CallAdapterService {
     this.adapter = isAndroidNative()
       ? new AndroidCallAdapter()
       : webRtcSupported
-        ? new WebCallAdapter(http, IDLE_CALL)
+        ? new WebCallAdapter(http, IDLE_CALL, (step) =>
+            toast.warn(transloco.translate(`call.${step}`)),
+          )
         : new UnsupportedCallAdapter();
     this.supported = isAndroidNative() || webRtcSupported;
     this.videoSupported = this.supported;

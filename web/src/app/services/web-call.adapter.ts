@@ -38,6 +38,25 @@ export const WEB_RECONNECT_BACKSTOP_SHORT_MS = 10_000;
 export const WEB_CALLEE_RECONNECT_BACKSTOP_MS = 30_000;
 
 export type WebReconnectAction = 'restart' | 'fail';
+export type CallMediaErrorStep =
+  | 'media-permission-denied'
+  | 'media-device-not-found'
+  | 'media-device-busy'
+  | 'media-failed';
+
+export function callMediaErrorStep(error: unknown): CallMediaErrorStep {
+  const name =
+    typeof error === 'object' && error && 'name' in error
+      ? String(error.name)
+      : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError')
+    return 'media-permission-denied';
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError')
+    return 'media-device-not-found';
+  if (name === 'NotReadableError' || name === 'TrackStartError')
+    return 'media-device-busy';
+  return 'media-failed';
+}
 
 /** Keep the browser reconnect policy aligned with Android: the caller owns the single ICE-restart attempt,
  * while the callee waits long enough for that re-offer to arrive before giving up. */
@@ -73,6 +92,7 @@ export class WebCallAdapter implements CallAdapter {
   private readonly pendingIce: string[] = [];
   private connectedReported = false;
   private answerBackstop?: ReturnType<typeof setTimeout>;
+  private negotiationBackstop?: ReturnType<typeof setTimeout>;
   private reconnectBackstop?: ReturnType<typeof setTimeout>;
   private iceRestartTried = false;
   private acceptingLocally = false;
@@ -81,6 +101,7 @@ export class WebCallAdapter implements CallAdapter {
   constructor(
     private readonly http: HttpClient,
     private readonly idle: CallSnapshot,
+    private readonly notifyMediaError?: (step: CallMediaErrorStep) => void,
   ) {
     this.state = { ...idle };
   }
@@ -139,9 +160,11 @@ export class WebCallAdapter implements CallAdapter {
       await this.pc!.setLocalDescription(offer);
       await this.signal('offer', offer.sdp ?? '');
       this.update({ step: 'offer-sent' });
+      this.armNegotiationBackstop();
     } catch (error) {
       console.error('[call:web] outgoing setup failed', error);
       if (registered) await this.bestEffortPost('calls/cancel', { callSid });
+      else this.notifyMediaError?.(callMediaErrorStep(error));
       this.finish();
     }
   }
@@ -165,6 +188,7 @@ export class WebCallAdapter implements CallAdapter {
       await this.post('calls/accept', { callSid });
       acceptedOnServer = true;
       this.update({ phase: 'connecting' });
+      this.armNegotiationBackstop();
       await this.createPeerConnection();
       if (this.pendingOffer) {
         const offer = this.pendingOffer;
@@ -190,7 +214,7 @@ export class WebCallAdapter implements CallAdapter {
       } else {
         this.acceptingLocally = false;
         this.releaseMedia();
-        this.update({ phase: 'incoming', step: 'microphone-failed' });
+        this.update({ phase: 'incoming', step: callMediaErrorStep(error) });
       }
     }
   }
@@ -422,6 +446,7 @@ export class WebCallAdapter implements CallAdapter {
             : this.state.phase,
     });
     if (state === 'connected' && !this.connectedReported) {
+      this.cancelNegotiationBackstop();
       this.cancelReconnectBackstop();
       this.iceRestartTried = false;
       this.connectedReported = true;
@@ -429,6 +454,7 @@ export class WebCallAdapter implements CallAdapter {
         callSid: this.state.callSid,
       });
     } else if (state === 'connected') {
+      this.cancelNegotiationBackstop();
       this.cancelReconnectBackstop();
       this.iceRestartTried = false;
     } else if (state === 'disconnected') {
@@ -457,6 +483,27 @@ export class WebCallAdapter implements CallAdapter {
           void this.terminate('calls/end', { callSid, endReason: 'failed' });
       }
     }, decision.delayMs);
+  }
+
+  private armNegotiationBackstop(): void {
+    if (this.negotiationBackstop || !this.state.callSid) return;
+    this.negotiationBackstop = setTimeout(() => {
+      this.negotiationBackstop = undefined;
+      if (
+        this.state.phase !== 'calling' &&
+        this.state.phase !== 'ringing' &&
+        this.state.phase !== 'connecting'
+      )
+        return;
+      const callSid = this.state.callSid;
+      if (callSid)
+        void this.terminate('calls/end', { callSid, endReason: 'timeout' });
+    }, 45_000);
+  }
+
+  private cancelNegotiationBackstop(): void {
+    if (this.negotiationBackstop) clearTimeout(this.negotiationBackstop);
+    this.negotiationBackstop = undefined;
   }
 
   private async restartIce(): Promise<void> {
@@ -629,6 +676,7 @@ export class WebCallAdapter implements CallAdapter {
     this.pendingOffer = undefined;
     this.pendingIce.length = 0;
     this.connectedReported = false;
+    this.cancelNegotiationBackstop();
     this.cancelReconnectBackstop();
     this.iceRestartTried = false;
     this.acceptingLocally = false;
