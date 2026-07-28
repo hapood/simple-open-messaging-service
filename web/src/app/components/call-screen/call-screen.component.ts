@@ -79,8 +79,7 @@ import {
           <div
             class="self-view"
             [class.off]="!snap().cameraEnabled"
-            [style.left.px]="selfLeft()"
-            [style.top.px]="selfTop()"
+            [style.transform]="selfTransform()"
             (pointerdown)="onSelfPointerDown($event)"
             (pointermove)="onSelfPointerMove($event)"
             (pointerup)="onSelfPointerUp($event)"
@@ -308,8 +307,11 @@ import {
       }
       .self-view {
         position: absolute;
+        left: 0;
+        top: 0;
         width: 120px;
         height: 160px;
+        will-change: transform;
         /* touch-action:none lets the pointer drag own the gesture (the browser won't steal it as scroll/zoom). */
         touch-action: none;
         /* No frame: this div is a transparent positioning anchor + the drag/tap target. The native self
@@ -589,6 +591,10 @@ export class CallScreenComponent implements OnDestroy {
       : 0,
   );
   readonly selfTop = signal(64);
+  /** Compositor-only web hit-frame movement. The native video surface follows through the translation bridge. */
+  readonly selfTransform = computed(
+    () => `translate3d(${this.selfLeft()}px, ${this.selfTop()}px, 0)`,
+  );
   private dragging = false;
   private dragOrigin = { px: 0, py: 0, left: 0, top: 0 };
   /** rAF coalescing flag so a drag burst fires at most one native setVideoRect per animation frame. */
@@ -627,7 +633,9 @@ export class CallScreenComponent implements OnDestroy {
     //  surface detaches so only the remote video shows in the PiP window; on exit both restore.
     window.__SOMS_PIP__ = (v) => {
       this.inPip.set(v);
-      this.reportVideoRects();
+      // Native owns the media-surface switch synchronously. On exit, wait for Angular to remount the
+      // self-view hit frame before committing its normal layout; entering needs no Web→native round trip.
+      if (!v) requestAnimationFrame(() => this.reportVideoRects());
     };
   }
 
@@ -680,7 +688,7 @@ export class CallScreenComponent implements OnDestroy {
         window.innerHeight - CallScreenComponent.SELF_H,
       ),
     );
-    this.scheduleRectReport();
+    this.schedulePositionSync();
   }
 
   onSelfPointerUp(e: PointerEvent): void {
@@ -698,14 +706,16 @@ export class CallScreenComponent implements OnDestroy {
     return v < lo ? lo : v > hi ? hi : v;
   }
 
-  /** Coalesce drag-move rect reports to one per animation frame — the native bridge call is cheap, but a drag
-   *  burst fires pointermove at touch rate (~60–120/s) and a per-event bridge call would jank. */
-  private scheduleRectReport(): void {
+  /** Coalesce drag movement to one native compositor translation per animation frame. Full rect/layout
+   *  synchronization happens only on pointer-up, resize, mount, and visibility changes. */
+  private schedulePositionSync(): void {
     if (this.rectReportPending) return;
     this.rectReportPending = true;
     requestAnimationFrame(() => {
       this.rectReportPending = false;
-      this.reportVideoRects();
+      if (this.dragging) {
+        this.adapter.setSelfVideoPosition(this.selfLeft(), this.selfTop());
+      }
     });
   }
 

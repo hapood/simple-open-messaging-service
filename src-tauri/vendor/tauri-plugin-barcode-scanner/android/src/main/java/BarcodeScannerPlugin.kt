@@ -239,6 +239,9 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
     private fun destroy() {
         dismantleCamera()
         savedInvoke = null
+        scanner?.close()
+        scanner = null
+        scannerOptions = null
         if (windowed) {
             if (webViewBackground != null) {
                 webView.background = webViewBackground
@@ -286,7 +289,15 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
 
     override fun analyze(image: ImageProxy) {
         @SuppressLint("UnsafeOptInUsageError") val mediaImage = image.image
-        if (mediaImage != null) {
+        if (mediaImage == null) {
+            image.close()
+            return
+        }
+        if (scanner == null) {
+            image.close()
+            return
+        }
+        try {
             val inputImage =
                 InputImage.fromMediaImage(mediaImage, image.imageInfo.rotationDegrees)
             scanner
@@ -320,9 +331,13 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
                     Logger.error(e.message ?: e.toString())
                 }
                 ?.addOnCompleteListener {
+                    // Closing ImageProxy releases its underlying Image. Closing both objects can double-close
+                    // the same camera buffer on OEM CameraX implementations.
                     image.close()
-                    mediaImage.close()
                 }
+        } catch (e: Exception) {
+            image.close()
+            fail("Barcode analysis failed: ${e.message ?: e}")
         }
     }
 

@@ -25,6 +25,10 @@ import { InputDeviceService } from '../../services/input-device.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
 import { hideIme, showIme } from './vkb-support';
 import { isAndroidNative } from '../../services/runtime';
+import {
+  NativeUploadService,
+  type NativeUploadSelection,
+} from '../../services/native-upload.service';
 import { uuid } from '../uuid';
 import {
   PastePanelComponent,
@@ -41,6 +45,7 @@ export type ChatSendIntent =
   | { kind: 'text'; text: string }
   | { kind: 'image'; files: FileList }
   | { kind: 'file'; files: FileList }
+  | { kind: 'native-files'; files: readonly NativeUploadSelection[] }
   | { kind: 'link'; url: string }
   | { kind: 'paste'; text: string; files: readonly File[] }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
@@ -163,6 +168,7 @@ function saveRecents(list: string[]): void {
   encapsulation: ViewEncapsulation.None,
 })
 export class ChatInputComponent implements OnDestroy {
+  private readonly nativeUploads = inject(NativeUploadService);
   /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
    *  the editor; updates do NOT recreate the editor. */
   readonly members = input<ChatMember[]>([]);
@@ -457,6 +463,12 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   onAttachClick(): void {
+    if (this.nativeUploads.supported()) {
+      void this.nativeUploads.pick('image').then((files) => {
+        if (files.length) this.send.emit({ kind: 'native-files', files });
+      });
+      return;
+    }
     this.attachInput()?.nativeElement.click();
   }
   onAttachChange(e: Event): void {
@@ -466,6 +478,12 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   onFileClick(): void {
+    if (this.nativeUploads.supported()) {
+      void this.nativeUploads.pick('file').then((files) => {
+        if (files.length) this.send.emit({ kind: 'native-files', files });
+      });
+      return;
+    }
     this.fileInput()?.nativeElement.click();
   }
   onFileChange(e: Event): void {

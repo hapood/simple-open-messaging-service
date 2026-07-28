@@ -19,6 +19,10 @@
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
 // headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict so it can't cross origins).
 
+mod navigation;
+#[cfg(desktop)]
+mod secure_storage;
+
 use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
@@ -520,9 +524,9 @@ pub fn run() {
                     set_active_origin,
                     set_session_token,
                     clear_session_token,
-                    secure_get_token,
-                    secure_set_token,
-                    secure_clear_token,
+                    secure_storage::secure_get_token,
+                    secure_storage::secure_set_token,
+                    secure_storage::secure_clear_token,
                     get_shell_version,
                     init_check_compat,
                     init_validate_cert,
@@ -540,7 +544,7 @@ pub fn run() {
                     read_native_log,
                     api_request,
                     media_request,
-                    open_external_url,
+                    navigation::open_external_url,
                 ]
             }
             #[cfg(not(desktop))]
@@ -566,7 +570,7 @@ pub fn run() {
                     read_native_log,
                     api_request,
                     media_request,
-                    open_external_url,
+                    navigation::open_external_url,
                 ]
             }
         })
@@ -624,7 +628,7 @@ pub fn run() {
             // asset dir via `Context::set_assets` (the Assets provider), not a second origin.
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("SOMS")
-                .on_navigation(nav_allowed)
+                .on_navigation(navigation::is_allowed)
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(900.0, 600.0)
                 .build()?;
@@ -1100,12 +1104,28 @@ async fn upload_stream_file(
     fields: std::collections::HashMap<String, String>,
     client_message_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    if !matches!(
+        endpoint.as_str(),
+        "/upload" | "/upload/file" | "/upload/video" | "/upload/audio" | "/upload/avatar"
+    ) {
+        return Err("unsupported upload endpoint".to_string());
+    }
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let url = format!("{}/api/v1{}", origin, endpoint);
     let client = proxy.api_client(&origin);
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| format!("open file: {e}"))?;
+    let actual_size = file
+        .metadata()
+        .await
+        .map_err(|e| format!("file metadata: {e}"))?
+        .len();
+    if actual_size != size {
+        return Err(format!(
+            "file changed after selection (selected {size} bytes, now {actual_size} bytes)"
+        ));
+    }
     let progress_id = client_message_id.clone();
     let mut loaded = 0_u64;
     let mut last_reported = 0_u64;
@@ -1822,39 +1842,6 @@ fn set_session_token(token: String, state: tauri::State<'_, ProxyState>) {
 fn clear_session_token(state: tauri::State<'_, ProxyState>) {
     if let Ok(mut g) = state.token.lock() {
         *g = None;
-    }
-}
-
-// --- trusted-device secure storage (desktop only) ------------------------------------------
-
-#[cfg(desktop)]
-fn secure_entry() -> Result<keyring::Entry, keyring::Error> {
-    keyring::Entry::new("soms", "session")
-}
-
-#[cfg(desktop)]
-#[tauri::command]
-fn secure_set_token(token: String) -> Result<(), String> {
-    secure_entry().map_err(|e| e.to_string())?.set_password(&token).map_err(|e| e.to_string())
-}
-
-#[cfg(desktop)]
-#[tauri::command]
-fn secure_get_token() -> Result<Option<String>, String> {
-    match secure_entry().map_err(|e| e.to_string())?.get_password() {
-        Ok(s) => Ok(Some(s)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[cfg(desktop)]
-#[tauri::command]
-fn secure_clear_token() -> Result<(), String> {
-    match secure_entry().map_err(|e| e.to_string())?.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -3160,45 +3147,4 @@ async fn init_update_status(origin: String, app: tauri::AppHandle) -> Result<ser
         "incompatible": incompatible,
         "webUpdateAvailable": web_update_available,
     }))
-}
-
-// --- document-navigation guard ------------------------------------------------------------
-
-/// Top-level navigation guard, registered on the single window's `WebviewWindowBuilder` via
-/// `.on_navigation(nav_allowed)`. Confines the webview's DOCUMENT to the app's own origin —
-/// `tauri://localhost` (`http://tauri.localhost` on Android), where the bundled SPA is served — plus
-/// `about:blank` (the pre-navigation frame). Every other URL — any external http(s) site — is refused.
-///
-/// Why: the webview carries the app's full privileges (IPC, secure storage, the bearer-token media proxy,
-/// native bridges). Letting it navigate to an arbitrary page would run that page in a privileged context
-/// (IPC probes, phishing, token theft) and break Tauri's trust model (the webview IS the trusted UI).
-/// This does NOT restrict the SPA's fetch/SSE to the runtime-configured backend — that is API traffic
-/// (CSP `connect-src`), not document navigation. Legitimate external LINKS must be routed to the system
-/// browser (tauri-plugin-opener), never loaded inside the webview.
-///
-/// Android: wry routes this through `RustWebViewClient.shouldOverrideUrlLoading` → `Rust.shouldOverride`,
-/// so the guard is enforced on-device, not only on desktop.
-fn nav_allowed(url: &reqwest::Url) -> bool {
-    let scheme = url.scheme();
-    let host = url.host_str().unwrap_or("");
-    scheme == "tauri" || scheme == "about" || host == "tauri.localhost"
-}
-
-/// Open an external URL in the system's default browser. The webview's navigation guard (`nav_allowed`)
-/// confines document navigation to the app origin, so an external link — notably a LINK message card's
-/// target page — is handed to the OS browser via tauri-plugin-opener instead of navigated in-app (an
-/// arbitrary page loaded in the webview would run with IPC / secure-storage / media-proxy access).
-#[tauri::command]
-async fn open_external_url(url: String, app: tauri::AppHandle) -> Result<(), String> {
-    // Defense-in-depth: only http/https is ever handed to the OS opener. The URL arrives from a LINK
-    // card whose content parseLinkContent already constrained to http(s) at storage time, but re-check
-    // here so no future caller (or forged payload) can lure the opener into handling file:/javascript:/
-    // etc. — which the OS might dispatch to a handler with more privilege than a browser tab.
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(format!("refused non-http(s) url: {url}"));
-    }
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|e| e.to_string())
 }

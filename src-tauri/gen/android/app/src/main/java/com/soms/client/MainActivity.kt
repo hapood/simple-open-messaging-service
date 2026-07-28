@@ -21,6 +21,8 @@ import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -64,6 +66,16 @@ import java.util.concurrent.TimeUnit
  */
 class MainActivity : TauriActivity() {
     private var currentPipParams: PictureInPictureParams? = null
+    private val nativePhotoPicker = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(20),
+    ) { uris ->
+        NativeUploadManager.accept(this, uris, "image")
+    }
+    private val nativeFilePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        NativeUploadManager.accept(this, if (uri == null) emptyList() else listOf(uri), "file")
+    }
 
     // System-bar insets (status bar / gesture bar) in CSS px, measured per-device via WindowInsets
     // (see installInsetsListener). Android WebView is edge-to-edge but env(safe-area-inset-*) is 0, so
@@ -342,6 +354,9 @@ class MainActivity : TauriActivity() {
         // window.__SOMS_EVENT__ (CALL_EVENT/CALL_SIGNAL) + CallController's window.__SOMS_CALL_EVENT__
         // snapshot push. Added before the page boots like the other bridges.
         webView.addJavascriptInterface(SomsCallInterface(this), "SomsCall")
+        // Privacy-scoped system picker + native streaming uploads. File bytes never cross into the
+        // webview; JS receives metadata, a bounded preview, progress, and the final API envelope.
+        webView.addJavascriptInterface(SomsUploadInterface(this), "SomsUpload")
         // Pin the renderer at IMPORTANT priority even while the app is backgrounded (app-wide, on every
         // WebView (re)creation — see applyCallRendererPolicy).
         applyCallRendererPolicy()
@@ -354,6 +369,45 @@ class MainActivity : TauriActivity() {
         // This (re)created WebView replaces any prior one — release its orphaned video surfaces so the next
         // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
         CallController.onWebViewGone()
+    }
+
+    private class SomsUploadInterface(activity: MainActivity) {
+        private val activityRef = java.lang.ref.WeakReference(activity)
+
+        @JavascriptInterface
+        fun pickPhotos() {
+            val activity = activityRef.get() ?: return
+            activity.runOnUiThread {
+                activity.nativePhotoPicker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+                )
+            }
+        }
+
+        @JavascriptInterface
+        fun pickFile() {
+            val activity = activityRef.get() ?: return
+            activity.runOnUiThread {
+                activity.nativeFilePicker.launch(arrayOf("*/*"))
+            }
+        }
+
+        @JavascriptInterface
+        fun upload(uploadId: String, kind: String, clientMessageId: String?, fieldsJson: String?) {
+            activityRef.get()?.let {
+                NativeUploadManager.upload(it.applicationContext, uploadId, kind, clientMessageId, fieldsJson)
+            }
+        }
+
+        @JavascriptInterface
+        fun discard(uploadId: String) {
+            NativeUploadManager.discard(uploadId)
+        }
+
+        @JavascriptInterface
+        fun cancel(uploadId: String) {
+            NativeUploadManager.cancel(uploadId)
+        }
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.

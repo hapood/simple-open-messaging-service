@@ -70,6 +70,10 @@ import {
   MediaTransferService,
   type MediaTransferKind,
 } from '../../services/media-transfer.service';
+import {
+  NativeUploadService,
+  type NativeUploadSelection,
+} from '../../services/native-upload.service';
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -136,6 +140,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly fileDetail = inject(FileDetailService);
   private readonly convList = inject(ConversationListService);
   private readonly transfers = inject(MediaTransferService);
+  private readonly nativeUploads = inject(NativeUploadService);
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -260,7 +265,8 @@ export class MessageThreadComponent implements OnDestroy {
    *  replay the upload + send. Cleaned by sweepPendingFiles as confirms drop the pending entries. */
   private readonly pendingFiles = new Map<
     string,
-    { file: File; kind: 'image' | 'file' | 'video' | 'audio' }
+    | { file: File; kind: 'image' | 'file' | 'video' | 'audio' }
+    | { native: NativeUploadSelection }
   >();
   /** Object URLs created for optimistic FILE cards (download anchor); revoked on teardown to avoid leaks. */
   private readonly blobUrls = new Set<string>();
@@ -476,6 +482,9 @@ export class MessageThreadComponent implements OnDestroy {
       case 'file':
         void this.sendAttachments(intent.files);
         return;
+      case 'native-files':
+        void this.sendNativeAttachments(intent.files);
+        return;
       case 'link':
         this.sendLink(intent.url);
         return;
@@ -578,6 +587,97 @@ export class MessageThreadComponent implements OnDestroy {
       }
     }
     if (waitForUploads) await Promise.all(uploads);
+  }
+
+  private async sendNativeAttachments(
+    files: readonly NativeUploadSelection[],
+  ): Promise<void> {
+    if (!this.threadId()) return;
+    for (const file of files) {
+      const cid = this.newClientMessageId();
+      const contentType =
+        file.kind === 'image' ? 'IMAGE' : file.kind === 'video' ? 'VIDEO' : 'FILE';
+      const images: AlbumImage[] | null =
+        file.kind === 'file'
+          ? null
+          : [{
+              kind: file.kind,
+              src: file.preview ?? '',
+              w: file.w,
+              h: file.h,
+              size: file.size,
+              duration: file.duration,
+              name: file.name,
+            }];
+      const fileInfo: FileInfo | null =
+        file.kind === 'file'
+          ? {
+              url: '',
+              name: file.name,
+              size: file.size,
+              mimeType: file.mimeType,
+            }
+          : null;
+      const item = this.makeOptimisticItem(cid, '', contentType, images, fileInfo);
+      this.pendingFiles.set(cid, { native: file });
+      this.dispatchPending(item);
+      void this.uploadAndSendNative(cid, file, item);
+    }
+  }
+
+  private async uploadAndSendNative(
+    cid: string,
+    file: NativeUploadSelection,
+    item: CbItem<ChatItemData>,
+    retry = false,
+  ): Promise<void> {
+    const tid = this.threadId() ?? 0;
+    if (!tid) return;
+    this.transfers.start({
+      clientMessageId: cid,
+      threadId: tid,
+      kind: file.kind,
+      name: file.name,
+      size: file.size,
+      previewUrl: file.preview,
+    });
+    this.transfers.registerRetry(cid, () => {
+      void this.uploadAndSendNative(cid, file, item, true);
+    });
+    this.transfers.registerCancel(cid, () => {
+      this.nativeUploads.cancel(file.uploadId);
+    });
+    try {
+      const contentType =
+        file.kind === 'image' ? 'IMAGE' : file.kind === 'video' ? 'VIDEO' : 'FILE';
+      const staged = await firstValueFrom(
+        this.msgService.sendMedia({
+          threadId: tid,
+          contentType,
+          clientMessageId: cid,
+          meta:
+            file.kind === 'video'
+              ? { w: file.w, h: file.h, duration: file.duration }
+              : undefined,
+          retry,
+        }).pipe(takeUntil(this.transfers.cancelled(cid))),
+      );
+      if (staged.code !== 0) throw new Error(staged.message);
+      const response = await this.nativeUploads.upload<StandardResponse<unknown>>(
+        file,
+        cid,
+        file.kind === 'image'
+          ? { w: String(file.w), h: String(file.h) }
+          : {},
+        (loaded, total) => this.transfers.progress(cid, loaded, total),
+      );
+      if (response.code !== 0) throw new Error(response.message);
+      this.transfers.complete(cid);
+      await this.markSent(item);
+    } catch {
+      this.transfers.fail(cid);
+      await this.failPending(item);
+    }
   }
 
   /** Confirmed paste-panel contents are still ordinary independent messages. Send attachments in panel
@@ -880,6 +980,15 @@ export class MessageThreadComponent implements OnDestroy {
     await scroller.reconcilePending(); // morph failed→sending in place
     const pending = this.pendingFiles.get(clientMessageId);
     if (pending) {
+      if ('native' in pending) {
+        void this.uploadAndSendNative(
+          clientMessageId,
+          pending.native,
+          item,
+          true,
+        );
+        return;
+      }
       // Replay the ORIGINAL send path for the pending kind. (audio/video previously fell through to
       // uploadAndSendFile — a latent bug that re-sent them as a FILE attachment on retry.)
       switch (pending.kind) {
@@ -930,6 +1039,10 @@ export class MessageThreadComponent implements OnDestroy {
     const source = this.source;
     const scroller = this.scroller;
     if (!source || !scroller || !source.discardPending(clientMessageId)) return;
+    const pending = this.pendingFiles.get(clientMessageId);
+    if (pending && 'native' in pending) {
+      this.nativeUploads.discard(pending.native.uploadId);
+    }
     this.pendingFiles.delete(clientMessageId);
     this.transfers.discard(clientMessageId);
     await scroller.reconcilePending();
@@ -1050,7 +1163,13 @@ export class MessageThreadComponent implements OnDestroy {
     if (!source || this.pendingFiles.size === 0) return;
     const live = new Set(source.getPending().map((p) => p.clientMessageId));
     for (const cid of this.pendingFiles.keys()) {
-      if (!live.has(cid)) this.pendingFiles.delete(cid);
+      if (!live.has(cid)) {
+        const pending = this.pendingFiles.get(cid);
+        if (pending && 'native' in pending) {
+          this.nativeUploads.discard(pending.native.uploadId);
+        }
+        this.pendingFiles.delete(cid);
+      }
     }
   }
 
@@ -1067,6 +1186,9 @@ export class MessageThreadComponent implements OnDestroy {
     // (In-chat search visibility lives on NavStateMachineService now — cleared by openChat/closeChat on
     // thread switch / going home — so no per-pane reset is needed here.)
     this.pendingOptimistic = [];
+    for (const pending of this.pendingFiles.values()) {
+      if ('native' in pending) this.nativeUploads.discard(pending.native.uploadId);
+    }
     this.pendingFiles.clear();
     for (const u of this.blobUrls) URL.revokeObjectURL(u);
     this.blobUrls.clear();

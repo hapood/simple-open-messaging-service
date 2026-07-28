@@ -111,6 +111,8 @@ export abstract class CallAdapter {
   /** Report the remote + self video "hole" rects (JSON `{x,y,w,h}` CSS px) so native positions its surface
    *  overlays; nulls hide the surfaces. */
   abstract setVideoRect(remote: string | null, self: string | null): void;
+  /** High-frequency self-view drag position in absolute CSS px; native applies translation only. */
+  abstract setSelfVideoPosition(x: number, y: number): void;
   /** Swap which video is full-bleed vs PiP (tap the self PiP) — the local camera ↔ the peer's swap renderers
    *  (mirrors follow). No-op on an AUDIO call. */
   abstract swapVideo(): void;
@@ -165,6 +167,9 @@ class AndroidCallAdapter extends CallAdapter {
   setVideoRect(remote: string | null, self: string | null): void {
     window.SomsCall!.setVideoRect(remote, self);
   }
+  setSelfVideoPosition(x: number, y: number): void {
+    window.SomsCall!.setSelfVideoPosition(x, y);
+  }
   swapVideo(): void {
     window.SomsCall!.swapVideo();
   }
@@ -199,6 +204,7 @@ class UnsupportedCallAdapter extends CallAdapter {
   switchCamera(): void {}
   setCameraEnabled(): void {}
   setVideoRect(): void {}
+  setSelfVideoPosition(): void {}
   swapVideo(): void {}
   snapshot(): CallSnapshot {
     return { ...IDLE_CALL };
@@ -265,6 +271,9 @@ export class CallAdapterService {
   }
   setVideoRect(remote: string | null, self: string | null): void {
     this.adapter.setVideoRect(remote, self);
+  }
+  setSelfVideoPosition(x: number, y: number): void {
+    this.adapter.setSelfVideoPosition(x, y);
   }
   swapVideo(): void {
     this.adapter.swapVideo();

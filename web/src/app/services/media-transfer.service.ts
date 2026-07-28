@@ -41,6 +41,7 @@ export class MediaTransferService {
   private readonly cleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private readonly cancelSignals = new Map<string, ReplaySubject<void>>();
   private readonly retryActions = new Map<string, () => void>();
+  private readonly cancelActions = new Map<string, () => void>();
   private readonly taskMap = signal<ReadonlyMap<string, MediaTransferTask>>(
     new Map(),
   );
@@ -103,21 +104,27 @@ export class MediaTransferService {
     clientMessageId: string;
     threadId: number;
     kind: MediaTransferKind;
-    file: File;
+    file?: File;
+    name?: string;
+    size?: number;
+    previewUrl?: string | null;
   }): void {
+    const name = params.file?.name ?? params.name ?? 'attachment';
+    const size = params.file?.size ?? params.size ?? 0;
     const previous = this.taskMap().get(params.clientMessageId);
     this.patch(params.clientMessageId, {
       clientMessageId: params.clientMessageId,
       threadId: params.threadId,
       kind: params.kind,
-      name: params.file.name,
-      size: params.file.size,
+      name,
+      size,
       status: 'uploading',
       loaded: previous?.status === 'failed' ? 0 : (previous?.loaded ?? 0),
       startedAt: previous?.startedAt ?? Date.now(),
       previewUrl:
         previous?.previewUrl ??
-        (params.kind === 'image' && typeof URL !== 'undefined'
+        params.previewUrl ??
+        (params.file && params.kind === 'image' && typeof URL !== 'undefined'
           ? URL.createObjectURL(params.file)
           : null),
     });
@@ -158,6 +165,7 @@ export class MediaTransferService {
     subject?.next();
     subject?.complete();
     this.cancelSignals.delete(clientMessageId);
+    this.cancelActions.get(clientMessageId)?.();
     if (isTauri()) {
       void tauriInvoke('cancel_upload', { clientMessageId }).catch(() => undefined);
     }
@@ -173,6 +181,7 @@ export class MediaTransferService {
       const subject = this.cancelSignals.get(clientMessageId);
       subject?.next();
       subject?.complete();
+      this.cancelActions.get(clientMessageId)?.();
       if (isTauri()) {
         void tauriInvoke('cancel_upload', { clientMessageId }).catch(() => undefined);
       }
@@ -182,6 +191,10 @@ export class MediaTransferService {
 
   registerRetry(clientMessageId: string, retry: () => void): void {
     this.retryActions.set(clientMessageId, retry);
+  }
+
+  registerCancel(clientMessageId: string, cancel: () => void): void {
+    this.cancelActions.set(clientMessageId, cancel);
   }
 
   retry(clientMessageId: string): void {
@@ -256,5 +269,6 @@ export class MediaTransferService {
     this.cancelSignals.get(clientMessageId)?.complete();
     this.cancelSignals.delete(clientMessageId);
     this.retryActions.delete(clientMessageId);
+    this.cancelActions.delete(clientMessageId);
   }
 }

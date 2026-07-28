@@ -31,12 +31,12 @@ import { signal } from '@angular/core';
  *    platform — no isAndroid() branching at the call sites.
  */
 interface SomsSecureStore {
-  getApiOrigin(): string | null
-  setApiOrigin(origin: string | null): void
+  getApiOrigin(): string | null;
+  setApiOrigin(origin: string | null): void;
   /** Secondary (LAN) origin for native fallback — null when no fallback is configured. Same surface so the
    *  Android Kotlin SSE (RealtimeService) reads the same store the web writes. */
-  getApiOriginSecondary(): string | null
-  setApiOriginSecondary(origin: string | null): void
+  getApiOriginSecondary(): string | null;
+  setApiOriginSecondary(origin: string | null): void;
 }
 
 declare global {
@@ -49,19 +49,33 @@ declare global {
      *  instead of the `@tauri-apps/api` npm package so the browser build has zero extra deps and the
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: {
-      core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+      core?: {
+        invoke: (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ) => Promise<unknown>;
+      };
       /** The event surface (withGlobalTauri): emit an event the Rust side listens for, or subscribe to
        *  one Rust emits. Used by `listenEvent` (the OTA `web-download-progress` + the desktop SSE
        *  supervisor's `soms-sse-*` events) and `emitTauriEvent`. */
       event?: {
         emit: (event: string, payload?: unknown) => Promise<void> | void;
-        listen?: (event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>;
+        listen?: (
+          event: string,
+          handler: (e: { payload: unknown }) => void,
+        ) => Promise<() => void>;
       };
       /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs), used by the DESKTOP
        *  NotificationAdapter (pc/mac/linux). `identifier` is the replace-by-id param — posting with the same
        *  identifier replaces the prior notification. Desktop-only: Android has its own Kotlin `SomsNotify`
        *  bridge (the Tauri notification plugin is deliberately not used on Android). */
-      notification?: { sendNotification: (n: { title: string; body?: string; identifier?: string }) => Promise<void> | void };
+      notification?: {
+        sendNotification: (n: {
+          title: string;
+          body?: string;
+          identifier?: string;
+        }) => Promise<void> | void;
+      };
     };
     /** FCM bridge injected by the Android shell (SomsMessagingService / MainActivity). `SomsFcm` is a
      *  Kotlin `@JavascriptInterface` exposing the current FCM token + permission request. The two hooks
@@ -175,7 +189,11 @@ declare global {
      *  AndroidNotificationAdapter wraps this — it maps the unified `merge` param onto `replace` (smoothing the
      *  platform difference into one JS adapter function). Android-only; guaranteed present after the
      *  isAndroidNative() gate, so call sites use `!`. */
-    SomsNotify?: { show: (text: string, replace: boolean) => void; showDescriptor: (json: string) => void; clear: () => void };
+    SomsNotify?: {
+      show: (text: string, replace: boolean) => void;
+      showDescriptor: (json: string) => void;
+      clear: () => void;
+    };
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
      *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
@@ -196,12 +214,24 @@ declare global {
      *  PLUS the {@link __SOMS_CALL_EVENT__} snapshot push (phase/mediaState transitions the native FSM owns).
      *  Android-only; guaranteed present after the isAndroidNative() gate, so call sites use `!`. */
     SomsCall?: {
-      initiate: (calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string) => void;
+      initiate: (
+        calleeUserId: number,
+        callSid: string,
+        callType: 'AUDIO' | 'VIDEO',
+        peerName: string,
+        peerAvatar: string,
+        peerAvatarDataUrl: string,
+      ) => void;
       accept: (callSid: string) => void;
       decline: (callSid: string) => void;
       cancel: (callSid: string) => void;
       end: (callSid: string, reason?: string) => void;
-      signal: (callSid: string, toUserId: number, kind: string, payload: string) => void;
+      signal: (
+        callSid: string,
+        toUserId: number,
+        kind: string,
+        payload: string,
+      ) => void;
       setMuted: (muted: boolean) => void;
       /** One-way AUDIO→VIDEO upgrade on the existing RTCPeerConnection. Permission and SDP renegotiation
        *  are native-owned; failure leaves the audio leg connected. */
@@ -221,10 +251,41 @@ declare global {
        *  holes the Angular layout punches (the barcode-scanner overlay technique). Called on mount, resize,
        *  scroll, rotation; pass nulls to hide the surfaces. */
       setVideoRect: (remote: string | null, self: string | null) => void;
+      /** High-frequency self-view drag path in absolute CSS px. Native uses translationX/Y only; the final
+       *  position is committed through setVideoRect when the gesture ends. */
+      setSelfVideoPosition: (x: number, y: number) => void;
       /** Swap which video is full-bleed vs PiP (a tap on the self PiP): the local camera ↔ the peer's swap
        *  renderers (mirrors follow). No-op on an AUDIO call. */
       swapVideo: () => void;
     };
+    SomsUpload?: {
+      pickPhotos: () => void;
+      pickFile: () => void;
+      upload: (
+        uploadId: string,
+        kind: string,
+        clientMessageId: string | null,
+        fieldsJson: string | null,
+      ) => void;
+      cancel: (uploadId: string) => void;
+      discard: (uploadId: string) => void;
+    };
+    __SOMS_UPLOAD_PICKED__?: (payload: {
+      items: import('./native-upload.service').NativeUploadSelection[];
+    }) => void;
+    __SOMS_UPLOAD_PROGRESS__?: (payload: {
+      uploadId: string;
+      loaded: number;
+      total: number;
+    }) => void;
+    __SOMS_UPLOAD_COMPLETED__?: (payload: {
+      uploadId: string;
+      response: unknown;
+    }) => void;
+    __SOMS_UPLOAD_FAILED__?: (payload: {
+      uploadId: string;
+      message: string;
+    }) => void;
     /** Kotlin→JS push (CallController.pushSnapshot): the native call FSM's current snapshot
      *  ({phase, callSid, …, mediaState, startedAt, muted}) whenever a transition the native layer owns
      *  fires (media connect/disconnect/failed, mute, phase changes). Installed by {@link CallEventService};
@@ -284,14 +345,18 @@ declare global {
 /** True when running inside the Tauri desktop webview. Detected via the IPC global Tauri injects
  *  before page scripts run — no SDK import needed. */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && window.__TAURI_INTERNALS__ !== undefined;
+  return (
+    typeof window !== 'undefined' && window.__TAURI_INTERNALS__ !== undefined
+  );
 }
 
 /** True when the current Tauri shell is the Android APK (vs the desktop build). Used to gate the
  *  "disconnect SSE on background" rule — mobile Android should close the stream gracefully (the OS will
  *  kill it anyway), while PC/desktop keeps it alive. UA-based: the Android WebView UA carries "Android". */
 export function isAndroid(): boolean {
-  return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+  return (
+    typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
+  );
 }
 
 /** True when running in the Android Tauri shell — the platform whose realtime connection is owned
@@ -325,8 +390,12 @@ export function sessionClient(): 'app' | 'web' | 'desktop' {
  *  propagates — so Rust-side failures (capability rejections, command errors, network failures) always
  *  show up even when a caller swallows the rejection. Callers MUST still guard with `isTauri()` and
  *  swallow errors for non-critical handoffs (e.g. token sync to the media proxy). */
-export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const invoke = typeof window !== 'undefined' ? window.__TAURI__?.core?.invoke : undefined;
+export function tauriInvoke<T = unknown>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  const invoke =
+    typeof window !== 'undefined' ? window.__TAURI__?.core?.invoke : undefined;
   if (!invoke) return Promise.reject(new Error('not in Tauri'));
   const p = invoke(cmd, args) as Promise<T>;
   p.catch((e) => console.error(`[tauri] ${cmd} failed:`, e));
@@ -339,7 +408,11 @@ export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unkn
  *  adapter layer (`NotificationAdapter`) wraps this instead of reaching into `window.__TAURI__?.notification?.…`
  *  itself. `identifier` is the replace-by-id param (same identifier replaces the prior notification). No-op when
  *  not in a Tauri shell or the plugin global is absent. Desktop-only — Android uses the Kotlin `SomsNotify` bridge. */
-export function tauriSendNotification(options: { title: string; body?: string; identifier?: string }): void {
+export function tauriSendNotification(options: {
+  title: string;
+  body?: string;
+  identifier?: string;
+}): void {
   window.__TAURI__?.notification?.sendNotification(options);
 }
 
@@ -355,7 +428,8 @@ export async function listenEvent<T = unknown>(
   event: string,
   handler: (e: { payload: T }) => void,
 ): Promise<(() => void) | undefined> {
-  const listen = typeof window !== 'undefined' ? window.__TAURI__?.event?.listen : undefined;
+  const listen =
+    typeof window !== 'undefined' ? window.__TAURI__?.event?.listen : undefined;
   if (!listen) return undefined;
   return listen(event, (e) => handler({ payload: e.payload as T }));
 }
@@ -366,14 +440,14 @@ export async function listenEvent<T = unknown>(
  *  `validate_origin` strip; applied at the seed so the signal is canonical regardless of what was typed
  *  or what an older build persisted. */
 export function canonicalOrigin(raw: string): string {
-  return raw.trim().replace(/\/+$/, '')
+  return raw.trim().replace(/\/+$/, '');
 }
 
 /** True when `origin` is empty or not `https://` — used to flag the http/IP insecure posture (the
  *  cert-validation step is skipped there; not guaranteed secure). Mirrors the Rust validate_origin
  *  posture and the former shell-config bootstrap helper. */
 export function originIsInsecure(origin: string): boolean {
-  return !origin || !/^https:\/\//i.test(origin)
+  return !origin || !/^https:\/\//i.test(origin);
 }
 
 /** The concrete persistence surface: the native `@JavascriptInterface` on Android, or a localStorage
@@ -385,24 +459,36 @@ const secureStore: SomsSecureStore =
     ? window.SomsSecureStore
     : {
         getApiOrigin: () => {
-          try { return localStorage.getItem('api_origin') } catch { return null }
+          try {
+            return localStorage.getItem('api_origin');
+          } catch {
+            return null;
+          }
         },
         setApiOrigin: (o) => {
           try {
-            if (o) localStorage.setItem('api_origin', o)
-            else localStorage.removeItem('api_origin')
-          } catch { /* storage unavailable — best-effort */ }
+            if (o) localStorage.setItem('api_origin', o);
+            else localStorage.removeItem('api_origin');
+          } catch {
+            /* storage unavailable — best-effort */
+          }
         },
         getApiOriginSecondary: () => {
-          try { return localStorage.getItem('api_origin_secondary') } catch { return null }
+          try {
+            return localStorage.getItem('api_origin_secondary');
+          } catch {
+            return null;
+          }
         },
         setApiOriginSecondary: (o) => {
           try {
-            if (o) localStorage.setItem('api_origin_secondary', o)
-            else localStorage.removeItem('api_origin_secondary')
-          } catch { /* storage unavailable — best-effort */ }
+            if (o) localStorage.setItem('api_origin_secondary', o);
+            else localStorage.removeItem('api_origin_secondary');
+          } catch {
+            /* storage unavailable — best-effort */
+          }
         },
-      }
+      };
 
 /** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser) /
  *  not-yet-configured (Tauri first run). A LIVE writable signal — the single source of truth for where
@@ -410,7 +496,9 @@ const secureStore: SomsSecureStore =
  *  global, so a renderer-reclaim reload after a server-config change re-reads the live value instead of
  *  a stale snapshot. `''` (not a localhost default) means "no server configured yet"; the server-config
  *  form pre-fills a placeholder. Read via `apiOrigin()`; only `setApiOrigin` writes it. */
-export const apiOrigin = signal<string>(canonicalOrigin(secureStore.getApiOrigin() ?? ''));
+export const apiOrigin = signal<string>(
+  canonicalOrigin(secureStore.getApiOrigin() ?? ''),
+);
 
 /** The configured LAN (secondary) origin for native fallback, or null when no fallback is configured (dev /
  *  a server without SOMS_LAN_DOMAIN). Seeded from the same persistence surface as {@link apiOrigin}. This is
@@ -485,7 +573,8 @@ export function apiOriginIsEmpty(): boolean {
  * label) picks up the new host at once, with NO page reload. Returns the canonical origin Rust stored.
  */
 export async function setApiOrigin(url: string): Promise<string> {
-  if (!isTauri()) throw new Error('setApiOrigin is only available under the Tauri shell');
+  if (!isTauri())
+    throw new Error('setApiOrigin is only available under the Tauri shell');
   const normalized = await tauriInvoke<string>('set_api_origin', { url });
   apiOrigin.set(normalized);
   secureStore.setApiOrigin(normalized);
@@ -506,9 +595,17 @@ export function syncApiOriginSignal(origin: string): void {
  *  `null`/empty clears it (disables fallback). Rust validates + persists it (a separate file from the
  *  primary) and `select_origin` begins using it; the same value is written to the platform store (Android
  *  EncryptedSharedPreferences — the store RealtimeService reads). Returns the canonical value Rust stored. */
-export async function setApiOriginSecondary(url: string | null): Promise<string | null> {
-  if (!isTauri()) throw new Error('setApiOriginSecondary is only available under the Tauri shell');
-  const normalized = await tauriInvoke<string | null>('set_api_origin_secondary', { url });
+export async function setApiOriginSecondary(
+  url: string | null,
+): Promise<string | null> {
+  if (!isTauri())
+    throw new Error(
+      'setApiOriginSecondary is only available under the Tauri shell',
+    );
+  const normalized = await tauriInvoke<string | null>(
+    'set_api_origin_secondary',
+    { url },
+  );
   const canonical = normalized ? canonicalOrigin(normalized) : null;
   apiOriginSecondary.set(canonical);
   secureStore.setApiOriginSecondary(canonical);
@@ -558,7 +655,10 @@ export function pickLoginOrigin(): Promise<string> {
 export function applySafeInsets(): void {
   if (typeof window === 'undefined' || !window.SomsShell) return;
   try {
-    const { top, bottom } = JSON.parse(window.SomsShell.getSafeInsets()) as { top: number; bottom: number };
+    const { top, bottom } = JSON.parse(window.SomsShell.getSafeInsets()) as {
+      top: number;
+      bottom: number;
+    };
     const root = document.documentElement;
     root.style.setProperty('--soms-safe-top', `${top}px`);
     root.style.setProperty('--soms-safe-bottom', `${bottom}px`);

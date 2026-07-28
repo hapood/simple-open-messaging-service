@@ -23,6 +23,7 @@ describe('CallScreenComponent', () => {
     switchCamera: jasmine.createSpy('switchCamera'),
     setCameraEnabled: jasmine.createSpy('setCameraEnabled'),
     setVideoRect: jasmine.createSpy('setVideoRect'),
+    setSelfVideoPosition: jasmine.createSpy('setSelfVideoPosition'),
     swapVideo: jasmine.createSpy('swapVideo'),
   };
 
@@ -101,6 +102,49 @@ describe('CallScreenComponent', () => {
 
     (root.querySelector('.switch') as HTMLButtonElement).click();
     expect(adapter.switchCamera).toHaveBeenCalledTimes(1);
+    fixture.destroy();
+  });
+
+  it('moves the self view through the lightweight position bridge while dragging', () => {
+    callState.update((state) => ({
+      ...state,
+      callType: 'VIDEO',
+      cameraEnabled: true,
+      remoteCameraEnabled: true,
+    }));
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    const startLeft = component.selfLeft();
+    const startTop = component.selfTop();
+    let animationFrame: FrameRequestCallback | undefined;
+    spyOn(window, 'requestAnimationFrame').and.callFake((callback) => {
+      animationFrame = callback;
+      return 1;
+    });
+
+    component.onSelfPointerDown({
+      stopPropagation: () => undefined,
+      clientX: 10,
+      clientY: 20,
+      pointerId: 1,
+      currentTarget: { setPointerCapture: () => undefined },
+    } as unknown as PointerEvent);
+    component.onSelfPointerMove({
+      clientX: 30,
+      clientY: 50,
+    } as PointerEvent);
+    animationFrame?.(0);
+
+    const expectedLeft = Math.min(startLeft + 20, window.innerWidth - 120);
+    const expectedTop = Math.min(startTop + 30, window.innerHeight - 160);
+    expect(adapter.setSelfVideoPosition).toHaveBeenCalledOnceWith(
+      expectedLeft,
+      expectedTop,
+    );
+    expect(component.selfTransform()).toBe(
+      `translate3d(${expectedLeft}px, ${expectedTop}px, 0)`,
+    );
     fixture.destroy();
   });
 
