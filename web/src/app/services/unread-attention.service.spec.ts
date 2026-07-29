@@ -5,7 +5,6 @@ import { UnreadAttentionService } from './unread-attention.service';
 import { ConversationListService } from './conversation-list.service';
 import { WebsocketService } from './websocket.service';
 import { MissedSyncService } from './missed-sync.service';
-import { NotifPopupService } from './notif-popup.service';
 import { NotificationPrefsService } from './notification-prefs.service';
 import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
@@ -50,7 +49,6 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
         },
         { provide: WebsocketService, useValue: { eventSubject } },
         { provide: MissedSyncService, useValue: { fetchAwayNotifications: fetchAway } },
-        { provide: NotifPopupService, useValue: { show: jasmine.createSpy('show'), clear: jasmine.createSpy('clear') } },
         { provide: NotificationPrefsService, useValue: { enabled: () => true, grouping: () => 'thread', sound: () => true } },
         { provide: NavStateMachineService, useValue: { openChat } },
       ],

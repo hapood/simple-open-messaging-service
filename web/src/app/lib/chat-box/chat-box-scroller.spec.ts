@@ -811,6 +811,40 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(viewport.scrollTop).toBe(750);                  // album (idx 10 · topOf 1000 · h 100) centered
   });
 
+  it('uses the last member id of a merged album as the newer cursor', async () => {
+    let newerCursor: number | undefined;
+    const source: CbSource<number> = {
+      init: async () => [
+        { id: 100, data: 1000 },
+        { id: 101, data: 1001, boundary: 'newest' as const },
+      ],
+      getOlder: async () => [],
+      getNewer: async (cursor) => {
+        newerCursor = cursor;
+        return [];
+      },
+      pushLive: () => {},
+      getPending: () => [],
+      destroy: () => {},
+    };
+    const mergeItems = (items: CbItem<number>[]): CbItem<number>[] =>
+      items.length === 2 && items[0].id === 100 && items[1].id === 101
+        ? [{ ...items[0], ids: [100, 101], boundary: 'newest' }]
+        : items;
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks: { ...hooks, mergeItems },
+      source,
+    });
+    await scroller.init();
+
+    await scroller.onMessageSignal();
+
+    expect(newerCursor).toBe(101);
+  });
+
   it('jump near oldest → noOlder, above < threshold/2 → downward compensation to threshold', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });

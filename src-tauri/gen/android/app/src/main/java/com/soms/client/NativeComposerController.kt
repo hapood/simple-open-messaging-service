@@ -330,7 +330,11 @@ class NativeComposerController(
                 event.actionMasked == android.view.MotionEvent.ACTION_MOVE &&
                 activity.nativeVoiceRecording()
             ) {
-                val next = voiceDownY - event.rawY >= dp(48)
+                val next = VoiceRecordingGesture.nextCancelState(
+                    voiceCancelArmed,
+                    voiceDownY - event.rawY,
+                    density,
+                )
                 if (next && !voiceCancelArmed) {
                     action.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                 }
@@ -487,6 +491,7 @@ class NativeComposerController(
         recordingStatus.setTextColor(
             if (cancel) RECORDING else if (darkTheme) Color.rgb(255, 166, 166) else Color.rgb(177, 38, 38),
         )
+        action.background = rounded(if (cancel) secondary else RECORDING, 24)
         recordingStatus.contentDescription = activity.getString(
             if (cancel) R.string.composer_recording_cancel else R.string.composer_recording,
         )

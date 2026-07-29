@@ -152,11 +152,12 @@ export class NotificationQueryService {
     }
 
     const blocked = await this.userBlockService.blockedByMe(userId);
+    const hiddenCreators = [...blocked, userId];
     const { counts, overflow } = await this.messageService.senderCountsSince(
       userId,
       sinceId,
       1000,
-      [...blocked],
+      hiddenCreators,
     );
     if (counts.size === 0) return { notifications: [this.clearDescriptor(locale)] }; // nothing new → clear
 
@@ -223,8 +224,14 @@ export class NotificationQueryService {
     threadHwms?: Record<number, number>,
   ): Promise<NotificationDescriptor[]> {
     const blocked = await this.userBlockService.blockedByMe(userId);
+    const hiddenCreators = [...blocked, userId];
     // Query A: threads with new LIVE messages since the global HWM — {count, latestSeq}, newest-first, capped.
-    const buckets = await this.messageService.threadAwayBuckets(userId, sinceId, THREAD_NOTIF_CAP, [...blocked]);
+    const buckets = await this.messageService.threadAwayBuckets(
+      userId,
+      sinceId,
+      THREAD_NOTIF_CAP,
+      hiddenCreators,
+    );
     if (buckets.size === 0) return []; // nothing new → client clears all soms-thread-* notifications
 
     // Query B (ONE batched query): for each thread the client dismissed (in threadHwms), count since its HWM.
@@ -235,7 +242,12 @@ export class NotificationQueryService {
       .map((tid) => ({ tid, sinceSeq: hwms[tid] }));
     const boundsCounts =
       dismissedPairs.length > 0
-        ? await this.messageService.threadCountsSinceBounds(userId, sinceId, dismissedPairs, [...blocked])
+        ? await this.messageService.threadCountsSinceBounds(
+            userId,
+            sinceId,
+            dismissedPairs,
+            hiddenCreators,
+          )
         : new Map<number, number>();
     const counts = new Map<number, number>();
     for (const [tid, { count }] of buckets) {

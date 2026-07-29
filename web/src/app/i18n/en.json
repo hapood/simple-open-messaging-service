@@ -382,6 +382,9 @@
     "recordReleaseCancel": "Release to cancel",
     "recordMicUnsupported": "Microphone recording is not supported in this browser.",
     "recordMicDenied": "Microphone permission was denied.",
+    "recordTooShort": "Recording is too short.",
+    "recordCancel": "Cancel",
+    "recordSend": "Send",
     "emojiTab": {
       "recent": "Recent",
       "smileys": "Smileys & People",
@@ -427,7 +430,13 @@
     "retryAria": "Retry image load",
     "closeAria": "Close gallery",
     "prevAria": "Previous image",
-    "nextAria": "Next image"
+    "nextAria": "Next image",
+    "openVideoAria": "Open video",
+    "downloadAria": "Download current media",
+    "videoNetworkFailed": "Video couldn't be loaded. Check your connection and try again.",
+    "videoUnsupported": "This video format or codec isn't supported on this device.",
+    "mediaRailAria": "Media thumbnails",
+    "openMediaAria": "Open media {{index}}"
   },
   "fileDetail": {
     "title": "File",

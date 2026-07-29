@@ -38,6 +38,10 @@ import {
   PastePanelComponent,
   type PastePanelItem,
 } from './paste-panel.component';
+import {
+  isVoiceRecordingTooShort,
+  nextVoiceCancelState,
+} from './voice-recording-state';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -109,11 +113,6 @@ function pickRecorderMime(): string {
 
 /** Hard cap on a single voice clip (seconds). On reach, recording auto-stops and sends. */
 const MAX_RECORD_SECS = 60;
-/** Press-holds shorter than this (ms) are treated as an accidental tap and discarded. */
-const MIN_RECORD_MS = 500;
-/** Slide-up distance (px) beyond the press point that flips the gesture to "cancel". */
-const CANCEL_SLIDE_PX = 48;
-
 /** Load the persisted recents list (SSR/private-mode safe). */
 function loadRecents(): string[] {
   if (typeof localStorage === 'undefined') return [];
@@ -195,6 +194,7 @@ export class ChatInputComponent implements OnDestroy {
     viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgService = inject(MsgService);
   private readonly inputDevice = inject(InputDeviceService);
+  readonly desktopRecordingControls = this.inputDevice.hasPhysicalKeyboard;
   private readonly keyboardInset = inject(KeyboardInsetService);
 
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
@@ -411,6 +411,22 @@ export class ChatInputComponent implements OnDestroy {
       return;
     }
     this.startRecording();
+  }
+
+  /** Desktop recording has explicit actions because mouse users should not need to discover a drag gesture. */
+  sendDesktopRecording(): void {
+    if (this.recording()) void this.stopRecording(false);
+  }
+
+  cancelDesktopRecording(): void {
+    if (this.recording()) void this.stopRecording(true);
+  }
+
+  @HostListener('document:keydown.escape')
+  cancelDesktopRecordingWithEscape(): void {
+    if (this.desktopRecordingControls() && this.recording()) {
+      this.cancelDesktopRecording();
+    }
   }
 
   /** Desktop Enter (the editor's `send` output): same as the text branch of the send key. */
@@ -681,7 +697,10 @@ export class ChatInputComponent implements OnDestroy {
     if (event.pointerType === 'mouse') return;
     if (!this.recording()) return;
     this.recordCancelled.set(
-      event.clientY - this.pointerStartY < -CANCEL_SLIDE_PX,
+      nextVoiceCancelState(
+        this.recordCancelled(),
+        this.pointerStartY - event.clientY,
+      ),
     );
   }
 
@@ -726,7 +745,12 @@ export class ChatInputComponent implements OnDestroy {
     const chunks = this.chunks;
     this.chunks = [];
     const mime = this.mimeForRecording;
-    if (cancel || durationMs < MIN_RECORD_MS || chunks.length === 0) return;
+    if (cancel) return;
+    if (isVoiceRecordingTooShort(durationMs)) {
+      this.flashRecordError('chat.recordTooShort');
+      return;
+    }
+    if (chunks.length === 0) return;
     const blob = new Blob(chunks, {
       type: mime || chunks[0].type || 'audio/webm',
     });

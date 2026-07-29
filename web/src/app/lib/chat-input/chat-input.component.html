@@ -88,16 +88,33 @@
   >
     <span class="ci-record-dot"></span>
     <span class="ci-record-time">{{ recordTimeLabel() }}</span>
-    <span
-      class="ci-record-hint"
-      [class.ci-record-hint--cancel]="recordCancelled()"
-    >
-      {{
-        recordCancelled()
-          ? ('chat.recordReleaseCancel' | transloco)
-          : ('chat.recordSlideCancel' | transloco)
-      }}
-    </span>
+    @if (desktopRecordingControls()) {
+      <button
+        type="button"
+        class="ci-record-action ci-record-action--cancel"
+        (click)="cancelDesktopRecording()"
+      >
+        {{ 'chat.recordCancel' | transloco }}
+      </button>
+      <button
+        type="button"
+        class="ci-record-action ci-record-action--send"
+        (click)="sendDesktopRecording()"
+      >
+        {{ 'chat.recordSend' | transloco }}
+      </button>
+    } @else {
+      <span
+        class="ci-record-hint"
+        [class.ci-record-hint--cancel]="recordCancelled()"
+      >
+        {{
+          recordCancelled()
+            ? ('chat.recordReleaseCancel' | transloco)
+            : ('chat.recordSlideCancel' | transloco)
+        }}
+      </span>
+    }
   </div>
   @if (recordError()) {
     <div class="ci-record-error" role="alert">

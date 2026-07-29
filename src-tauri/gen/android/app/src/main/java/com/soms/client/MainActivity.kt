@@ -904,8 +904,15 @@ class MainActivity : TauriActivity() {
         nativeComposer.onVoiceRecordingFinished()
         runCatching { recorder.stop() }
         runCatching { recorder.release() }
-        if (cancel || duration < 500L || file == null || !file.isFile || file.length() == 0L) {
+        if (cancel || VoiceRecordingGesture.isTooShort(duration) || file == null || !file.isFile || file.length() == 0L) {
             file?.delete()
+            if (!cancel && VoiceRecordingGesture.isTooShort(duration)) {
+                android.widget.Toast.makeText(
+                    this,
+                    getString(R.string.composer_recording_too_short),
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
             return
         }
         RustUploadBridge.uploadVoicePath(

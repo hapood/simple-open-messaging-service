@@ -1,5 +1,15 @@
 <div>
-  <div class="msg-container" #container appKbdOffset appComposerWidthSource>
+  <div
+    class="msg-container"
+    [class.msg-container--has-floating-composer]="
+      !blockedPeer() &&
+      !mediaViewerOpen() &&
+      (!nativeComposer.supported || nativeComposerActive())
+    "
+    #container
+    appKbdOffset
+    appComposerWidthSource
+  >
     <app-message-header
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
@@ -201,7 +211,10 @@
       </div>
     }
 
-    @if (blockedPeer()) {
+    @if (mediaViewerOpen()) {
+      <!-- The fullscreen player owns the interaction surface. Keep no composer DOM behind it, and let
+           the matching component effect hide the native sibling composer as well. -->
+    } @else if (blockedPeer()) {
       <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
         {{ 'chat.blockedBanner' | transloco }}
       </button>

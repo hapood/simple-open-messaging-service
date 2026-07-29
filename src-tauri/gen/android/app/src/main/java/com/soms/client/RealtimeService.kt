@@ -146,8 +146,10 @@ class RealtimeService : Service() {
         when (intent?.action) {
             ACTION_FOREGROUND -> {
                 // App visible: the process has foreground priority, so the connection survives without FGS
-                // status — drop the persistent notification (annoying while in use) but keep the stream.
-                Log.i(TAG, "onStartCommand foreground (drop persistent notification)")
+                // status — cancel any background NEW_MESSAGE debounce, drop the persistent notification
+                // (annoying while in use), but keep the stream.
+                Log.i(TAG, "onStartCommand foreground (cancel away debounce + drop persistent notification)")
+                handler.removeCallbacks(awayCoalesceTask)
                 dropForegroundNotification()
             }
             ACTION_RETRY -> {
@@ -484,6 +486,12 @@ class RealtimeService : Service() {
     }
 
     private val awayCoalesceTask = Runnable {
+        // The app may have resumed during the debounce. Activity lifecycle is authoritative on Android;
+        // never start a stale /notifications/missed fetch after foregrounding.
+        if (SomsMessagingService.appInForeground) {
+            SomsLog.d("Rt") { "awayCoalesceTask skipped: app is foreground" }
+            return@Runnable
+        }
         // renderAwayNotification does a SYNCHRONOUS network fetch — it MUST run off the main thread
         // (NetworkOnMainThreadException otherwise). This Runnable is on the main-looper handler for the
         // debounce timing; hop the fetch+render onto ioExecutor. NotificationManager.notify is thread-safe,

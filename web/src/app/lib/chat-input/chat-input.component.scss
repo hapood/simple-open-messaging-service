@@ -432,6 +432,24 @@ app-chat-input {
     font-weight: 600;
   }
 }
+.ci-record-action {
+  min-width: 44px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--app-radius-pill);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.ci-record-action--cancel {
+  background: transparent;
+  color: var(--app-danger, #d33);
+}
+.ci-record-action--send {
+  background: var(--app-brand);
+  color: #fff;
+}
 .ci-record-error {
   position: absolute;
   left: max(12px, calc((100% - 800px) / 2));

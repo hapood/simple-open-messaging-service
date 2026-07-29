@@ -120,10 +120,17 @@ export class MediaRowComponent {
   readonly threshold = computed(() => this.thresholdSvc.threshold());
   private readonly loadingImages = signal<ReadonlySet<string>>(new Set());
   private readonly failedImages = signal<ReadonlySet<string>>(new Set());
-  /** Cell click: image — if it's a size-tiered placeholder, the first click loads it (no gallery yet);
-   *  otherwise open the gallery viewer. Video/audio are a no-op for now (interaction deferred). */
+  /** Cell click: images and videos open the singleton mixed-media viewer (after the optional image
+   *  size gate). Audio owns its interaction inside AudioPlayerComponent. */
   onCellClick(i: number): void {
     const cell = this.cells()[i];
+    if (cell.kind === 'video') {
+      // Even a card whose first-frame probe failed must remain openable: the detail viewer gives the
+      // user a precise playback error plus retry/download actions.
+      if (cell.status === MEDIA_STATUS.READY)
+        this.openImage.emit({ images: this.data().images ?? [], index: i });
+      return;
+    }
     if (cell.kind !== 'image') return;
     if (cell.placeholder || cell.loadFailed) {
       this.loadImage(i);

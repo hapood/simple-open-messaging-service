@@ -26,7 +26,10 @@ import { MessageRepository } from '../../services/message-repository.service';
 /** Business metadata kept alongside PhotoSwipe's image data. */
 interface GallerySlideData extends SlideData {
   galleryIndex: number;
+  kind: AlbumImage['kind'];
 }
+
+type VideoPlaybackError = 'network' | 'unsupported';
 
 /**
  * Fullscreen gallery powered by PhotoSwipe's gesture engine. Angular owns the chat-specific state
@@ -48,11 +51,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   @ViewChild('mount', { static: true })
   private readonly mount?: ElementRef<HTMLElement>;
+  @ViewChild('thumbRail')
+  private readonly thumbRail?: ElementRef<HTMLElement>;
 
   readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly index = signal(0);
   readonly statusOverrides = signal<Map<number, MediaStatus>>(new Map());
   readonly loadErrors = signal<Set<number>>(new Set());
+  readonly videoErrors = signal<Map<number, VideoPlaybackError>>(new Map());
   readonly current = computed(() => this.images()[this.index()] ?? null);
   readonly currentStatus = computed<MediaStatus>(
     () =>
@@ -62,6 +68,12 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   );
   readonly currentLoadFailed = computed(() =>
     this.loadErrors().has(this.index()),
+  );
+  readonly currentVideoError = computed(() =>
+    this.videoErrors().get(this.index()) ?? null,
+  );
+  readonly currentUrl = computed(() =>
+    assetUrl(this.current()?.src ?? ''),
   );
 
   private readonly retryKeys = new Map<number, number>();
@@ -124,12 +136,30 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
     pswp.on('change', () => {
       this.index.set(pswp.currIndex);
+      this.pauseInactiveVideos(pswp.currIndex);
+      queueMicrotask(() => this.scrollCurrentThumbIntoView());
     });
     pswp.on('loadComplete', ({ content, isError }) => {
       this.setLoadError(content.index, Boolean(isError));
     });
     pswp.on('loadError', ({ content }) => {
       this.setLoadError(content.index, true);
+    });
+    pswp.on('contentAppend', ({ content }) => {
+      const slide = content.data as GallerySlideData;
+      if (slide.kind !== 'video') return;
+      const video = content.element?.querySelector<HTMLVideoElement>('.gv-slide-video');
+      if (!video || video.dataset['errorBound'] === 'true') return;
+      video.dataset['errorBound'] = 'true';
+      video.addEventListener('loadeddata', () => this.setVideoError(slide.galleryIndex, null));
+      video.addEventListener('error', () => {
+        const code = video.error?.code;
+        if (code === MediaError.MEDIA_ERR_ABORTED) return;
+        this.setVideoError(
+          slide.galleryIndex,
+          code === MediaError.MEDIA_ERR_NETWORK ? 'network' : 'unsupported',
+        );
+      });
     });
     pswp.on('destroy', () => {
       this.pswp = null;
@@ -142,8 +172,17 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.destroying = true;
+    this.pauseInactiveVideos(-1);
     this.pswp?.destroy();
     this.pswp = null;
+  }
+
+  goTo(index: number): void {
+    this.pswp?.goTo(index);
+  }
+
+  mediaUrl(media: AlbumImage): string {
+    return assetUrl(media.src);
   }
 
   /** Retry a transient image fetch with a cache-busted URL. */
@@ -154,6 +193,26 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     this.retryKeys.set(i, (this.retryKeys.get(i) ?? 0) + 1);
     this.slides[i].src = this.imageUrl(image, i);
     this.setLoadError(i, false);
+    this.pswp?.refreshSlideContent(i);
+  }
+
+  retryVideo(): void {
+    const i = this.index();
+    const media = this.images()[i];
+    if (!media || media.kind !== 'video') return;
+    this.retryKeys.set(i, (this.retryKeys.get(i) ?? 0) + 1);
+    const src = this.imageUrl(media, i);
+    const escaped = this.escapeAttribute(src);
+    this.slides[i].html =
+      `<video class="gv-slide-video" controls playsinline preload="metadata" ` +
+      `data-gallery-index="${i}" src="${escaped}"></video>`;
+    this.setVideoError(i, null);
+    this.mount?.nativeElement
+      .querySelectorAll<HTMLVideoElement>(`.gv-slide-video[data-gallery-index="${i}"]`)
+      .forEach((video) => {
+        video.src = src;
+        video.load();
+      });
     this.pswp?.refreshSlideContent(i);
   }
 
@@ -189,12 +248,25 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private toSlide(image: AlbumImage, galleryIndex: number): GallerySlideData {
+    if (image.kind === 'video') {
+      const src = this.escapeAttribute(this.imageUrl(image, galleryIndex));
+      return {
+        html:
+          `<video class="gv-slide-video" controls playsinline preload="metadata" ` +
+          `data-gallery-index="${galleryIndex}" src="${src}"></video>`,
+        width: Math.max(1, image.w),
+        height: Math.max(1, image.h),
+        galleryIndex,
+        kind: image.kind,
+      };
+    }
     return {
       src: this.imageUrl(image, galleryIndex),
       width: Math.max(1, image.w),
       height: Math.max(1, image.h),
       alt: '',
       galleryIndex,
+      kind: image.kind,
     };
   }
 
@@ -220,5 +292,38 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       else next.delete(index);
       return next;
     });
+  }
+
+  private setVideoError(index: number, error: VideoPlaybackError | null): void {
+    this.videoErrors.update((current) => {
+      const next = new Map(current);
+      if (error) next.set(index, error);
+      else next.delete(index);
+      return next;
+    });
+  }
+
+  private pauseInactiveVideos(activeIndex: number): void {
+    const root = this.mount?.nativeElement;
+    if (!root) return;
+    // PhotoSwipe recycles three slide holders and does not expose their logical indices on the DOM.
+    // Pause every video at a page boundary; the visible video keeps its position and can be resumed.
+    void activeIndex;
+    root.querySelectorAll<HTMLVideoElement>('.gv-slide-video').forEach((video) => video.pause());
+  }
+
+  private scrollCurrentThumbIntoView(): void {
+    const current = this.thumbRail?.nativeElement.querySelector<HTMLElement>(
+      `[data-index="${this.index()}"]`,
+    );
+    current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
+
+  private escapeAttribute(value: string): string {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
   }
 }

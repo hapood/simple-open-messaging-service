@@ -14,6 +14,114 @@
   inset: 0;
 }
 
+:host ::ng-deep .gv-slide-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.gv-download {
+  position: absolute;
+  z-index: 3;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.48);
+
+  svg {
+    width: 23px;
+    height: 23px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+}
+
+.gv-thumbs {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  max-width: calc(100vw - 28px);
+  padding: 7px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.5);
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.gv-thumb {
+  position: relative;
+  flex: 0 0 54px;
+  width: 54px;
+  height: 54px;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: #252525;
+  opacity: 0.68;
+  cursor: pointer;
+
+  img,
+  video {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+  }
+
+  &.gv-thumb--active {
+    border-color: #fff;
+    opacity: 1;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+}
+
+.gv-thumb-play {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.58);
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 9px;
+    border-width: 5px 0 5px 7px;
+    border-style: solid;
+    border-color: transparent transparent transparent #fff;
+  }
+}
+
 .gv-status,
 .gv-retry {
   position: absolute;
@@ -60,4 +168,22 @@
 .gv-retry-hint {
   font-size: 13px;
   opacity: 0.72;
+}
+
+.gv-error-retry {
+  margin-top: 12px;
+  min-width: 104px;
+  box-sizing: border-box;
+  padding: 9px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
 }

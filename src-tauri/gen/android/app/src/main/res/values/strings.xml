@@ -21,6 +21,7 @@
     <string name="composer_recording_cancel_format">● %s  ·  Release to cancel</string>
     <string name="composer_recording_failed">Could not start recording</string>
     <string name="composer_recording_permission_denied">Microphone permission is required</string>
+    <string name="composer_recording_too_short">Recording is too short</string>
     <string name="composer_backspace">Delete</string>
     <!-- Per-thread ("thread" grouping) notification bundle summary — the collapsed header counting how many
          conversations have new messages. Android picks the plural by count + device locale. -->

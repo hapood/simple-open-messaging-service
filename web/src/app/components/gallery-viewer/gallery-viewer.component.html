@@ -1,5 +1,49 @@
 <div #mount class="gv-mount"></div>
 
+@if (currentStatus() === MEDIA_STATUS.READY && currentUrl()) {
+  <a
+    class="gv-download"
+    [href]="currentUrl()"
+    [download]="current().name || null"
+    target="_blank"
+    rel="noopener"
+    [attr.aria-label]="'gallery.downloadAria' | transloco"
+  >
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+    </svg>
+  </a>
+}
+
+@if (images().length > 1) {
+  <nav #thumbRail class="gv-thumbs" [attr.aria-label]="'gallery.mediaRailAria' | transloco">
+    @for (media of images(); track media.msgId ?? $index) {
+      <button
+        type="button"
+        class="gv-thumb"
+        [class.gv-thumb--active]="$index === index()"
+        [attr.data-index]="$index"
+        [attr.aria-current]="$index === index() ? 'true' : null"
+        [attr.aria-label]="'gallery.openMediaAria' | transloco: { index: $index + 1 }"
+        (click)="goTo($index)"
+      >
+        @if (media.kind === 'video') {
+          <video
+            muted
+            playsinline
+            preload="metadata"
+            [src]="mediaUrl(media)"
+            aria-hidden="true"
+          ></video>
+          <span class="gv-thumb-play" aria-hidden="true"></span>
+        } @else {
+          <img [src]="mediaUrl(media)" alt="" />
+        }
+      </button>
+    }
+  </nav>
+}
+
 @if (currentStatus() === MEDIA_STATUS.FAILED) {
   <button
     type="button"
@@ -16,6 +60,16 @@
     role="status"
     [attr.aria-label]="'chat.mediaDownloading' | transloco">
     <mat-progress-spinner mode="indeterminate" [diameter]="32" />
+  </div>
+} @else if (currentVideoError(); as videoError) {
+  <div class="gv-retry" role="alert">
+    <span class="gv-retry-icon">!</span>
+    <span class="gv-retry-text">
+      {{ (videoError === 'network' ? 'gallery.videoNetworkFailed' : 'gallery.videoUnsupported') | transloco }}
+    </span>
+    <button type="button" class="gv-error-retry" (click)="retryVideo()">
+      {{ 'common.retry' | transloco }}
+    </button>
   </div>
 } @else if (currentLoadFailed()) {
   <button

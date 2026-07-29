@@ -382,6 +382,9 @@
     "recordReleaseCancel": "松开取消",
     "recordMicUnsupported": "此浏览器不支持录音。",
     "recordMicDenied": "麦克风权限被拒绝。",
+    "recordTooShort": "录音时间太短。",
+    "recordCancel": "取消",
+    "recordSend": "发送",
     "emojiTab": {
       "recent": "最近",
       "smileys": "笑脸与人物",
@@ -427,7 +430,13 @@
     "retryAria": "重试加载图片",
     "closeAria": "关闭图片查看器",
     "prevAria": "上一张",
-    "nextAria": "下一张"
+    "nextAria": "下一张",
+    "openVideoAria": "打开视频",
+    "downloadAria": "下载当前媒体",
+    "videoNetworkFailed": "视频加载失败，请检查网络后重试。",
+    "videoUnsupported": "此设备不支持该视频格式或编码。",
+    "mediaRailAria": "媒体缩略图",
+    "openMediaAria": "打开第 {{index}} 个媒体"
   },
   "fileDetail": {
     "title": "文件",

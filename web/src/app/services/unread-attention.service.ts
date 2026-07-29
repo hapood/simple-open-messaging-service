@@ -5,11 +5,9 @@ import { WebsocketService } from './websocket.service';
 import { isAndroidNative, isTauri } from './runtime';
 import { NotificationPrefsService } from './notification-prefs.service';
 import { MissedSyncService } from './missed-sync.service';
-import { NotifPopupService } from './notif-popup.service';
 import { NotificationAdapter } from './notification-adapter';
 import { BrowserNotificationAdapter } from './browser-notification.adapter';
 import { TauriNotificationAdapter } from './tauri-notification.adapter';
-import { AndroidNotificationAdapter } from './android-notification.adapter';
 import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG, type SwNotifMessage } from './sw-notif-protocol';
 
@@ -28,10 +26,9 @@ import { SOMS_NOTIF_MSG, type SwNotifMessage } from './sw-notif-protocol';
  *     the stacked-avatar icon, so there is no local tally/composition). The notification is dismissed the
  *     instant the window regains focus.
  *
- * Stops the moment the window regains focus (the user is now looking at the app). Mobile Android selects the
- * AndroidNotificationAdapter, but it is dormant here — the WebView is never unfocused while the activity is
- * alive, so this service never fires; Android's notifications come from the native paths
- * (FCM/WorkManager/RealtimeService), and a title prefix on a mobile activity is meaningless.
+ * Stops the moment the window regains focus (the user is now looking at the app). Android returns before
+ * installing any focus/SSE listeners: Activity lifecycle is the authoritative foreground signal there, and
+ * native FCM/WorkManager/RealtimeService own its away notifications.
  */
 @Injectable({ providedIn: 'root' })
 export class UnreadAttentionService {
@@ -39,7 +36,6 @@ export class UnreadAttentionService {
   private readonly ws = inject(WebsocketService);
   private readonly prefs = inject(NotificationPrefsService);
   private readonly missedSync = inject(MissedSyncService);
-  private readonly popup = inject(NotifPopupService);
   private readonly nav = inject(NavStateMachineService);
 
   /** The page's original title, captured at construction before any prefix is applied. */
@@ -68,13 +64,14 @@ export class UnreadAttentionService {
   private readonly adapter!: NotificationAdapter;
 
   constructor() {
-    // Select the per-platform display adapter ONCE (mirrors WebsocketService's transport selection).
-    this.adapter = isAndroidNative()
-      ? new AndroidNotificationAdapter()
-      : isTauri()
-        ? new TauriNotificationAdapter()
-        : new BrowserNotificationAdapter(this.prefs);
     if (typeof document === 'undefined') return;
+    // Android notification visibility is owned by MainActivity.onResume/onStop + the native background
+    // delivery paths. WebView blur/visibility events do not reliably represent Activity foreground state.
+    if (isAndroidNative()) return;
+    // Select the desktop/browser display adapter ONCE (mirrors WebsocketService's transport selection).
+    this.adapter = isTauri()
+      ? new TauriNotificationAdapter()
+      : new BrowserNotificationAdapter(this.prefs);
     // Track focus. visibilitychange catches tab-switch; blur/focus catches the window losing focus to
     // another app without the tab hiding (the desktop case the user specifically wants covered).
     window.addEventListener('blur', () => this.onFocusChange(false), { passive: true });
@@ -118,8 +115,8 @@ export class UnreadAttentionService {
   }
 
   /** Tear down the away notification when the user returns to the tab: cancel any pending pull (so a
-   *  burst's trailing render can't fire AFTER focus returns), dismiss the system notification, clear the
-   *  in-app popup, and reset the per-thread dismiss-HWMs (the Android "foreground → all per-thread HWMs
+   *  burst's trailing render can't fire AFTER focus returns), dismiss the system notification, and reset
+   *  the per-thread dismiss-HWMs (the Android "foreground → all per-thread HWMs
    *  reset" model — a dismissed thread re-fires next away period). */
   private dismissActive(): void {
     if (this.awayFlushTimer !== null) {
@@ -127,7 +124,6 @@ export class UnreadAttentionService {
       this.awayFlushTimer = null;
     }
     void this.adapter.clear();
-    this.popup.clear();
     this.convList.clearThreadDismiss();
   }
 
@@ -162,8 +158,8 @@ export class UnreadAttentionService {
   }
 
   /** Pull the current unread snapshot (the away-notification descriptors) and render each via the adapter,
-   *  plus the in-app popup on platforms that need it. Sends the per-thread dismiss-HWM map (`threadHwms`) so
-   *  a dismissed thread's count resets server-side. Uses the away path's OWN single-flight (independent of
+   *  Sends the per-thread dismiss-HWM map (`threadHwms`) so a dismissed thread's count resets server-side.
+   *  Uses the away path's OWN single-flight (independent of
    *  the threadlist catch-up path) so a threadlist pull at the same instant cannot starve the away-
    *  notification. A `kind:'clear'` descriptor (nothing unread+unmuted) dismisses the prior notification.
    *  Fire-and-forget. */
@@ -175,10 +171,6 @@ export class UnreadAttentionService {
         this.convList.threadHwms(),
       );
       await Promise.all(notifications.map((d) => this.adapter.showDescriptor(d)));
-      // The in-app popup is the action surface ONLY on platforms whose system notifications lack action
-      // buttons (the desktop Tauri bridge exposes none; Android is dormant here). Browser renders dismiss +
-      // deep-link on the SW-owned system notification, so it gets no in-app popup.
-      if (isTauri() || isAndroidNative()) this.popup.show(notifications);
     } catch {
       /* best-effort — a transient fetch failure just means no notification this cycle */
     }

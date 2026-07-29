@@ -69,6 +69,7 @@ import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   displayThreadName,
   type ConversationItem,
@@ -169,6 +170,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly layout = inject(LayoutService);
   private readonly galleryViewer = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
+  private readonly nav = inject(NavStateMachineService);
   private readonly convList = inject(ConversationListService);
   private readonly transfers = inject(MediaTransferService);
   private readonly nativeUploads = inject(NativeUploadService);
@@ -223,6 +225,11 @@ export class MessageThreadComponent implements OnDestroy {
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
+  /** The media viewer must also suppress the native sibling composer, which otherwise sits outside the
+   *  WebView DOM and can remain visible above a CDK overlay. The browser composer uses the same flag. */
+  readonly mediaViewerOpen = computed(() =>
+    this.nav.paneStack().some((pane) => pane.kind === 'gallery'),
+  );
   readonly uploadingTransfers = computed(() => {
     const threadId = this.threadId();
     return this.transfers
@@ -370,7 +377,8 @@ export class MessageThreadComponent implements OnDestroy {
         this.nativeComposerActive() &&
         threadId !== undefined &&
         !this.initialLoading() &&
-        !this.blockedPeer();
+        !this.blockedPeer() &&
+        !this.mediaViewerOpen();
       if (!shouldShow) {
         this.hideNativeComposer();
         return;
@@ -567,6 +575,11 @@ export class MessageThreadComponent implements OnDestroy {
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
       {
         onSignal: (seq: number) => {
+          console.info('[album-debug] SSE signal', {
+            threadId: trd.threadId,
+            seq,
+            atBottom: this.atBottom(),
+          });
           if (!this.atBottom())
             this.newMessageCount.update((count) => count + 1);
           // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection

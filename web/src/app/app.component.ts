@@ -12,7 +12,6 @@ import { BackgroundSyncService } from './services/background-sync.service';
 import { NavStateMachineService } from './services/nav-state.service';
 import { ShellUpdateService } from './services/shell-update.service';
 import { RouteService, PopupType } from './services/route.service';
-import { NotifPopupComponent } from './components/notif-popup/notif-popup.component';
 import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.component';
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 import { CallEventService } from './services/call-event.service';
@@ -24,7 +23,6 @@ import { ComposerGeometryService } from './services/composer-geometry.service';
   selector: 'app-root',
   imports: [
     RouterOutlet,
-    NotifPopupComponent,
     DebugLogFabComponent,
     UpdateBannerComponent,
   ],

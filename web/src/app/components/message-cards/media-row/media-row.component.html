@@ -39,9 +39,13 @@
             [style.top.px]="c.rect.yPx"
             [style.width.%]="c.rect.wPct"
             [style.height.px]="c.rect.hPx"
-            [attr.role]="c.kind === 'image' ? 'button' : null"
-            [attr.tabindex]="c.kind === 'image' ? 0 : null"
-            [attr.aria-label]="c.kind === 'image' ? ('chat.openImageAria' | transloco) : null"
+            [attr.role]="c.kind === 'image' || c.kind === 'video' ? 'button' : null"
+            [attr.tabindex]="c.kind === 'image' || c.kind === 'video' ? 0 : null"
+            [attr.aria-label]="c.kind === 'image'
+              ? ('chat.openImageAria' | transloco)
+              : c.kind === 'video'
+                ? ('gallery.openVideoAria' | transloco)
+                : null"
             (click)="onCellClick($index)"
             (keydown.enter)="onCellClick($index)"
           >

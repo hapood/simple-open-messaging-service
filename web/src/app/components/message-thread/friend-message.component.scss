@@ -343,6 +343,14 @@ app-chat-input {
   }
 }
 
+// The layer's zero-height anchor sits at the chat pane's layout bottom. The composer is deliberately
+// absolute, so it does not move that anchor upward; consume the same measured reserve as the tail cap
+// to keep this control 14px above the real browser/native composer (including the safe-area inset).
+// Blocked threads keep their banner in normal flex flow and therefore retain the plain 14px offset.
+.msg-container--has-floating-composer .msg-latest {
+  bottom: calc(14px + var(--soms-content-bottom-reserve, 0px));
+}
+
 .msg-latest-count {
   min-width: 18px;
   height: 18px;

@@ -218,6 +218,20 @@ describe('NotificationQueryService', () => {
       { avatarUrl: '/a.webp', displayName: 'Alice', userId: 11 },
       { avatarUrl: '/b.webp', displayName: 'Bob', userId: 22 },
     ]);
+    expect(senderCountsSince).toHaveBeenCalledWith(1, 100n, 1000, [1]);
+  });
+
+  it('buildNotifyResponse: excludes the caller together with blocked senders', async () => {
+    wireAway({
+      counts: new Map([[11, 1]]),
+      blocked: [22],
+      senders: [{ id: 11, name: 'Alice', avatar: '' }],
+    });
+    await svc.buildNotifyResponse(1, {
+      since: { threadId: 1, seq: 5 },
+      acceptLanguage: 'en',
+    });
+    expect(senderCountsSince).toHaveBeenCalledWith(1, 100n, 1000, [22, 1]);
   });
 
   it('buildNotifyResponse: overflow (≥1000 sampled) → "999+" capped body', async () => {
@@ -259,6 +273,7 @@ describe('NotificationQueryService', () => {
     expect(carol.icon).toBeNull(); // no per-thread avatar composition
     expect(carol.data).toEqual({ threadId: 3, seq: 9 }); // dismiss target = latest seq (from Query A)
     expect(res.notifications[1].body).toBe('Bob sent you a message'); // count 1 → the "one" template
+    expect(threadAwayBuckets).toHaveBeenCalledWith(1, 5n, 30, [1]);
   });
 
   it('grouping:thread → nothing new → empty list (client clears all soms-thread-*)', async () => {
@@ -326,5 +341,11 @@ describe('NotificationQueryService', () => {
     expect(byThread.get(1)?.body).toBe('Alice sent you 2 messages'); // Query B (since dismiss seq 7)
     expect(byThread.get(2)?.body).toBe('Bob sent you 3 messages'); // not dismissed → Query A count
     expect(byThread.has(3)).toBe(false); // dismissed with 0 new → dropped
+    expect(threadCountsSinceBounds).toHaveBeenCalledWith(
+      1,
+      5n,
+      [{ tid: 1, sinceSeq: 7 }, { tid: 3, sinceSeq: 10 }],
+      [1],
+    );
   });
 });
