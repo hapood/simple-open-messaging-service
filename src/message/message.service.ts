@@ -353,6 +353,7 @@ export class MessageService implements OnModuleInit {
     clientMessageId: string,
     uploadPayload: Record<string, unknown>,
     userId?: number,
+    contentTypeOverride?: ContentType,
   ): Promise<Omit<Message, 'id'> | null> {
     const committed = await this.prisma.message.findUnique({
       where: { clientMessageId },
@@ -371,7 +372,14 @@ export class MessageService implements OnModuleInit {
     const meta = stage.content
       ? (JSON.parse(stage.content) as Record<string, unknown>)
       : {};
-    const content = JSON.stringify({ ...uploadPayload, ...meta });
+    const finalContentType = contentTypeOverride ?? stage.contentType;
+    // A server-side format fallback can promote an IMAGE intent as FILE. Image/video/audio display
+    // metadata is meaningful only while the staged and final types match; never leak w/h/duration
+    // into a generic FILE content object.
+    const content = JSON.stringify({
+      ...uploadPayload,
+      ...(finalContentType === stage.contentType ? meta : {}),
+    });
     let created: Omit<Message, 'id'>;
     try {
       created = await this.prisma.$transaction(async (tx) => {
@@ -383,7 +391,7 @@ export class MessageService implements OnModuleInit {
         const msg = await tx.message.create({
           data: {
             content,
-            contentType: stage.contentType,
+            contentType: finalContentType,
             threadId: stage.threadId,
             creator: stage.creatorId,
             clientMessageId,
@@ -395,7 +403,7 @@ export class MessageService implements OnModuleInit {
           where: { id: stage.threadId },
           data: {
             lastMessageSeq: seq,
-            lastMessagePreview: derivePreview(stage.contentType, content),
+            lastMessagePreview: derivePreview(finalContentType, content),
             lastMessageAt: msg.createdAt,
           },
         });

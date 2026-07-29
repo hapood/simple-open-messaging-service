@@ -29,7 +29,9 @@ use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "android")]
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 // `log` facade macros (warn!/error!) — backed at runtime by `tauri-plugin-log`, registered FIRST in
@@ -48,13 +50,13 @@ use tokio::sync::Notify;
 // owns SSE in Kotlin) doesn't carry unused imports.
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(desktop)]
-use std::time::Instant;
-#[cfg(desktop)]
 use tokio_util::sync::CancellationToken;
 
 /// The custom URI scheme the frontend rewrites `/uploads/*` media URLs to (see web/.../runtime.ts).
 const MEDIA_SCHEME: &str = "media";
+
+#[cfg(target_os = "android")]
+static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 /// TCP-connect timeout for EVERY backend reqwest client (`proxy_api`, `upload_stream_file`, the SSE
 /// supervisor, the OTA commands) — set on the client builder in `http_client_for`. Bounds the "backend
@@ -172,9 +174,8 @@ struct ProxyState {
     /// `OtaAssets` resolver — `init_download_web` swaps it, boot `setup()` seeds it, and the NEXT asset
     /// request serves from the new dir. None → the embedded baseline (`frontendDist`) is served.
     ota_active: Arc<Mutex<Option<PathBuf>>>,
-    /// Desktop streaming uploads keyed by clientMessageId. A frontend cancel action resolves the token,
-    /// which drops the in-flight reqwest future and closes the request body stream.
-    #[cfg(desktop)]
+    /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
+    /// the in-flight reqwest future and closes the request body stream/file descriptor.
     upload_cancels:
         Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
 }
@@ -462,7 +463,6 @@ pub fn run() {
         // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
         api_http: Arc::new(Mutex::new((initial_origin.clone(), http_client_for(&initial_origin)))),
         ota_active: ota_active.clone(),
-        #[cfg(desktop)]
         upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
     let proxy_for_media = proxy_state.clone();
@@ -605,6 +605,8 @@ pub fn run() {
                     init_validate_cert,
                     init_download_web,
                     init_update_status,
+                    upload_stream_file,
+                    cancel_upload,
                     report_diagnostics,
                     log_js,
                     read_native_log,
@@ -615,6 +617,10 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            #[cfg(target_os = "android")]
+            {
+                let _ = ANDROID_APP.set(app.handle().clone());
+            }
             // Route panics through the `log` facade (→ webview console + stdout + log file). The release
             // profile sets `panic = "abort"`, but the hook still runs before the abort, so a Rust panic
             // leaves a trace instead of vanishing. Installed in setup() — by then the log plugin has
@@ -1187,22 +1193,46 @@ async fn media_request(
     })
 }
 
-/// Desktop-only streaming upload: POST a file straight from its on-disk `path` to `${origin}${endpoint}`
+/// Shell-wide streaming upload: POST a file straight from its on-disk `path` to `${origin}${endpoint}`
 /// as a multipart form, WITHOUT buffering the whole file into the webview / IPC. Tauri's `<input
-/// type=file>` injects the real filesystem path as `File.path` on desktop; the frontend (MsgService)
-/// routes uploads here when `file.path` is present + `isTauri()`, and falls back to the HttpClient-via-
-/// `api://` path otherwise (browser, where the File is already an in-memory blob, + Android, where
-/// `File.path` is not populated). Auth uses `ProxyState.token` (uploads happen post-login, so it's set).
+/// type=file>` injects the real filesystem path as `File.path` on desktop. Mobile native surfaces pass
+/// app-private recording/selection paths to the same upload core, so file bytes stay outside the WebView.
+/// Browser/PWA has no Rust shell and continues to use HttpClient. Auth uses `ProxyState.token` (uploads
+/// happen post-login, so it is set).
 ///
 /// Streaming: `tokio::fs::File` + `ReaderStream` → `reqwest::Body::wrap_stream` → multipart
 /// `Part::stream_with_length(size)`. The file is read + sent in chunks; the peak memory is one chunk,
 /// not the whole file — so a multi-GB video upload never materializes in RAM (the `api://` URI-scheme
 /// proxy CAN'T do this: Tauri hands it a `Request<Vec<u8>>`, fully buffered at the IPC boundary).
-#[cfg(desktop)]
 #[tauri::command]
 async fn upload_stream_file(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ProxyState>,
+    path: String,
+    endpoint: String,
+    filename: String,
+    mime: String,
+    size: u64,
+    fields: std::collections::HashMap<String, String>,
+    client_message_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    upload_stream_path_core(
+        app,
+        proxy.inner().clone(),
+        path,
+        endpoint,
+        filename,
+        mime,
+        size,
+        fields,
+        client_message_id,
+    )
+    .await
+}
+
+async fn upload_stream_path_core(
+    app: tauri::AppHandle,
+    proxy: ProxyState,
     path: String,
     endpoint: String,
     filename: String,
@@ -1228,11 +1258,12 @@ async fn upload_stream_file(
         .await
         .map_err(|e| format!("file metadata: {e}"))?
         .len();
-    if actual_size != size {
+    if size > 0 && actual_size != size {
         return Err(format!(
             "file changed after selection (selected {size} bytes, now {actual_size} bytes)"
         ));
     }
+    let size = if size > 0 { size } else { actual_size };
     let progress_id = client_message_id.clone();
     let mut loaded = 0_u64;
     let mut last_reported = 0_u64;
@@ -1244,7 +1275,7 @@ async fn upload_stream_file(
             loaded = loaded.saturating_add(bytes.len() as u64);
             let due_bytes = loaded.saturating_sub(last_reported) >= 256 * 1024;
             let due_time = last_report_at.elapsed() >= Duration::from_millis(100);
-            if due_bytes || due_time || loaded >= size {
+            if due_bytes || due_time || (size > 0 && loaded >= size) {
                 if let Some(cid) = progress_id.as_ref() {
                     let _ = app.emit(
                         "upload-progress",
@@ -1261,10 +1292,15 @@ async fn upload_stream_file(
         }
         result
     });
-    let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
-        .file_name(filename)
-        .mime_str(&mime)
-        .map_err(|e| format!("mime: {e}"))?;
+    let body = reqwest::Body::wrap_stream(stream);
+    let part = if size > 0 {
+        reqwest::multipart::Part::stream_with_length(body, size)
+    } else {
+        reqwest::multipart::Part::stream(body)
+    }
+    .file_name(filename)
+    .mime_str(&mime)
+    .map_err(|e| format!("mime: {e}"))?;
     let mut form = reqwest::multipart::Form::new();
     for (k, v) in fields {
         form = form.text(k, v);
@@ -1321,9 +1357,195 @@ async fn upload_stream_file(
     serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
 }
 
-/// Cancel one desktop streaming upload. Idempotent: a task that already completed or has not reached the
-/// streaming phase simply has no token. Browser/Android cancellation is owned by HttpClient unsubscribe.
-#[cfg(desktop)]
+/// Android's source adapter transfers ownership of a readable descriptor (system-picker content URI or
+/// app-private recorder file) to Rust. Only metadata crosses JNI; Rust opens `/proc/self/fd/<n>` and then
+/// uses the exact same path uploader, cancellation table, origin failover, and progress event as desktop.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
+    mut env: jni::JNIEnv,
+    _receiver: jni::objects::JObject,
+    fd: jni::sys::jint,
+    upload_id: jni::objects::JString,
+    attempt_id: jni::objects::JString,
+    endpoint: jni::objects::JString,
+    filename: jni::objects::JString,
+    mime: jni::objects::JString,
+    size: jni::sys::jlong,
+    fields_json: jni::objects::JString,
+    client_message_id: jni::objects::JString,
+) {
+    let read = |env: &mut jni::JNIEnv, value: jni::objects::JString| {
+        env.get_string(&value)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let upload_id = read(&mut env, upload_id);
+    let attempt_id = read(&mut env, attempt_id);
+    let endpoint = read(&mut env, endpoint);
+    let filename = read(&mut env, filename);
+    let mime = read(&mut env, mime);
+    let fields_json = read(&mut env, fields_json);
+    let client_message_id = read(&mut env, client_message_id);
+    let fields = serde_json::from_str::<std::collections::HashMap<String, String>>(&fields_json)
+        .unwrap_or_default();
+    let Some(app) = ANDROID_APP.get().cloned() else {
+        unsafe { libc::close(fd) };
+        return;
+    };
+    let proxy = app.state::<ProxyState>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let result = upload_stream_path_core(
+            app.clone(),
+            proxy,
+            format!("/proc/self/fd/{fd}"),
+            endpoint,
+            filename,
+            mime,
+            size.max(0) as u64,
+            fields,
+            Some(client_message_id),
+        )
+        .await;
+        unsafe { libc::close(fd) };
+        let payload = match result {
+            Ok(response) => serde_json::json!({
+                "uploadId": upload_id,
+                "attemptId": attempt_id,
+                "ok": true,
+                "response": response,
+            }),
+            Err(message) => serde_json::json!({
+                "uploadId": upload_id,
+                "attemptId": attempt_id,
+                "ok": false,
+                "message": message,
+            }),
+        };
+        let _ = app.emit("native-upload-result", payload);
+    });
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustUploadBridge_cancelUpload(
+    mut env: jni::JNIEnv,
+    _receiver: jni::objects::JObject,
+    client_message_id: jni::objects::JString,
+) {
+    let Ok(client_message_id) = env.get_string(&client_message_id) else {
+        return;
+    };
+    let Some(app) = ANDROID_APP.get() else {
+        return;
+    };
+    cancel_upload(
+        app.state::<ProxyState>(),
+        client_message_id.to_string_lossy().into_owned(),
+    );
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
+    mut env: jni::JNIEnv,
+    _receiver: jni::objects::JObject,
+    path: jni::objects::JString,
+    context_id: jni::sys::jlong,
+    thread_id: jni::sys::jlong,
+    client_message_id: jni::objects::JString,
+    duration_ms: jni::sys::jlong,
+    size: jni::sys::jlong,
+) {
+    let read = |env: &mut jni::JNIEnv, value: jni::objects::JString| {
+        env.get_string(&value)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let path = read(&mut env, path);
+    let client_message_id = read(&mut env, client_message_id);
+    let Some(app) = ANDROID_APP.get().cloned() else {
+        return;
+    };
+    let proxy = app.state::<ProxyState>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let emit_phase = |phase: &str, error: Option<&str>| {
+            let _ = app.emit(
+                "native-voice-upload",
+                serde_json::json!({
+                    "contextId": context_id,
+                    "threadId": thread_id,
+                    "clientMessageId": client_message_id,
+                    "durationMs": duration_ms,
+                    "size": size,
+                    "phase": phase,
+                    "error": error,
+                }),
+            );
+        };
+        emit_phase("started", None);
+        let origin = proxy.api_origin.lock().expect("origin lock").clone();
+        let token = proxy.token.lock().ok().and_then(|value| value.clone());
+        let stage_body = serde_json::json!({
+            "threadId": thread_id,
+            "contentType": "AUDIO",
+            "clientMessageId": client_message_id,
+            "meta": { "duration": duration_ms as f64 / 1000.0 },
+        })
+        .to_string();
+        let mut stage = proxy
+            .api_client(&origin)
+            .post(format!("{origin}/api/v1/send-media"))
+            .header("content-type", "application/json")
+            .body(stage_body);
+        if let Some(token) = token {
+            stage = stage.header("authorization", format!("Bearer {token}"));
+        }
+        let stage_result = async {
+            let response = stage.send().await.map_err(|e| format!("stage send: {e}"))?;
+            let status = response.status();
+            let text = response.text().await.map_err(|e| format!("stage read: {e}"))?;
+            if !status.is_success() {
+                return Err(format!("stage HTTP {}: {text}", status.as_u16()));
+            }
+            let envelope: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("stage parse: {e}"))?;
+            if envelope.get("code").and_then(|v| v.as_i64()) != Some(0) {
+                return Err(format!("stage rejected: {text}"));
+            }
+            Ok(())
+        }
+        .await;
+        let result = match stage_result {
+            Ok(()) => {
+                upload_stream_path_core(
+                    app.clone(),
+                    proxy,
+                    path.clone(),
+                    "/upload/audio".to_string(),
+                    "voice.m4a".to_string(),
+                    "audio/mp4".to_string(),
+                    size.max(0) as u64,
+                    std::collections::HashMap::new(),
+                    Some(client_message_id.clone()),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(response) if response.get("code").and_then(|v| v.as_i64()) == Some(0) => {
+                emit_phase("completed", None)
+            }
+            Ok(response) => emit_phase("failed", Some(&format!("upload rejected: {response}"))),
+            Err(error) => emit_phase("failed", Some(&error)),
+        }
+        let _ = fs::remove_file(path);
+    });
+}
+
+/// Cancel one shell streaming upload. Idempotent: a task that already completed or has not reached the
+/// streaming phase simply has no token. Browser cancellation remains owned by HttpClient unsubscribe.
 #[tauri::command]
 fn cancel_upload(
     proxy: tauri::State<'_, ProxyState>,

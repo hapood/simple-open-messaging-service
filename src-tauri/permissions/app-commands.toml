@@ -142,6 +142,11 @@ description = "Enables upload_stream_file — desktop streaming multipart upload
 commands.allow = ["upload_stream_file"]
 
 [[permission]]
+identifier = "allow-cancel-upload"
+description = "Enables cancel_upload — idempotently cancel one desktop streaming upload by its client message ID."
+commands.allow = ["cancel_upload"]
+
+[[permission]]
 identifier = "allow-report-diagnostics"
 description = "Enables report_diagnostics — build a gzip-tar diagnostic bundle (Rust logs + webview console capture + manifest) and upload it to the backend for field support; on failure it is cached under app_cache_dir for next-launch retry."
 commands.allow = ["report_diagnostics"]
@@ -194,6 +199,7 @@ permissions = [
   "allow-sse-net",
   "allow-sse-replay-hello",
   "allow-upload-stream-file",
+  "allow-cancel-upload",
   "allow-report-diagnostics",
   "allow-read-native-log",
   "allow-api-request",

@@ -170,4 +170,22 @@ describe('Local media send staging (PendingMedia)', () => {
     });
     expect(count).toBe(1);
   });
+
+  it('can promote an IMAGE stage as FILE and drops image-only metadata', async () => {
+    const cid = randomUUID();
+    await messages.stageMedia(userId, threadId, 'IMAGE' as never, cid, {
+      w: 4032,
+      h: 3024,
+    });
+    await messages.linkStagedDigest(cid, digest);
+
+    const committed = await messages.promoteStaged(
+      cid,
+      uploadPayload,
+      userId,
+      'FILE' as never,
+    );
+    expect(committed?.contentType).toBe('FILE');
+    expect(JSON.parse(committed!.content)).toEqual(uploadPayload);
+  });
 });

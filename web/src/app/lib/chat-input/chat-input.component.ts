@@ -15,8 +15,14 @@ import {
 } from '@angular/core';
 import { ConnectedPosition, OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
-import { ChatEditorComponent, type ChatMember } from '../../components/chat-editor/chat-editor.component';
-import { ChatActionMenuComponent, type ChatMenuEntry } from '../../components/chat-action-menu/chat-action-menu.component';
+import {
+  ChatEditorComponent,
+  type ChatMember,
+} from '../../components/chat-editor/chat-editor.component';
+import {
+  ChatActionMenuComponent,
+  type ChatMenuEntry,
+} from '../../components/chat-action-menu/chat-action-menu.component';
 import { AppIconType } from '../../components/icon/icon.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
@@ -24,7 +30,6 @@ import { firstValueFrom } from 'rxjs';
 import { MsgService } from '../../services/message.service';
 import { InputDeviceService } from '../../services/input-device.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
-import { isAndroidNative } from '../../services/runtime';
 import {
   NativeUploadService,
   type NativeUploadSelection,
@@ -93,7 +98,12 @@ interface LinkCardPreview {
  *  engine cannot record audio at all; the caller surfaces that and bails. */
 function pickRecorderMime(): string {
   if (typeof MediaRecorder === 'undefined') return '';
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+  ];
   for (const c of candidates) {
     try {
       if (MediaRecorder.isTypeSupported(c)) return c;
@@ -117,7 +127,9 @@ function loadRecents(): string[] {
   try {
     const raw = localStorage.getItem(RECENTS_KEY);
     const parsed = raw ? (JSON.parse(raw) as unknown) : null;
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((x): x is string => typeof x === 'string')
+      : [];
   } catch {
     return [];
   }
@@ -179,16 +191,18 @@ export class ChatInputComponent implements OnDestroy {
   readonly placeholder = input('');
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);
-
   /** Structured send intent — the host switches on `kind`. */
   readonly send = output<ChatSendIntent>();
   /** The input bar's measured height (auto-grows with the editor); the host may bind its viewport bottom to it. */
   readonly heightChange = output<number>();
 
   private readonly editor = viewChild(ChatEditorComponent);
-  private readonly inputBar = viewChild<ElementRef<HTMLFormElement>>('inputBar');
-  private readonly attachInput = viewChild<ElementRef<HTMLInputElement>>('attachInput');
-  private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
+  private readonly inputBar =
+    viewChild<ElementRef<HTMLFormElement>>('inputBar');
+  private readonly attachInput =
+    viewChild<ElementRef<HTMLInputElement>>('attachInput');
+  private readonly fileInput =
+    viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly msgService = inject(MsgService);
   private readonly inputDevice = inject(InputDeviceService);
   private readonly keyboardInset = inject(KeyboardInsetService);
@@ -200,9 +214,9 @@ export class ChatInputComponent implements OnDestroy {
   private readonly keyboardMode = signal<KeyboardMode>('closed');
   readonly emojiOpen = computed(() => this.keyboardMode() === 'emoji');
   readonly emojiMounted = computed(() => this.keyboardMode() !== 'closed');
-  /** Only the Android native shell has the reliable focus-preserving IME bridge required for a keyboard
-   *  replacement. Desktop and mobile browsers both use the floating popup. */
-  readonly emojiKeyboard = signal(isAndroidNative());
+  /** The Web composer is now browser/desktop-only. Android renders no controls from this component and
+   * owns its emoji replacement in NativeComposerController, so the Web panel is always a floating popup. */
+  readonly emojiKeyboard = signal(false);
   /** Stable keyboard slot height. During a native↔emoji handoff the native inset and custom panel divide
    *  this height between them, keeping the composer at one constant Y position. */
   readonly emojiKeyboardHeight = signal(300);
@@ -217,8 +231,13 @@ export class ChatInputComponent implements OnDestroy {
       : stableHeight;
   });
   private readonly keyboardLayoutOwner = {};
-  readonly switchingToSystem = computed(() => this.keyboardMode() === 'toSystem');
-  private keyboardHandoffTimer?: ReturnType<typeof setTimeout>;
+  readonly switchingToSystem = computed(
+    () => this.keyboardMode() === 'toSystem',
+  );
+  private keyboardTransitionId = 0;
+  private expectedImeRequestId: number | null = null;
+  private expectedImeVisible: boolean | null = null;
+  private keyboardWatchdog?: ReturnType<typeof setTimeout>;
   /** `Editor.commands.focus()` is committed by ProseMirror asynchronously on some Android WebViews.
    *  Requesting the native IME before its real focus event makes Chromium see `isTextEditor=false` and
    *  immediately hide the keyboard again. */
@@ -226,6 +245,7 @@ export class ChatInputComponent implements OnDestroy {
   private readonly trackKeyboardGeometry = effect(() => {
     const inset = this.keyboardInset.inset();
     const animationTarget = this.keyboardInset.animation()?.target;
+    const event = this.keyboardInset.event();
     // When returning to the system keyboard, Android 11+ tells us its final height before the first
     // visible animation frame. Adopt that as the invariant slot immediately; the shrinking custom
     // residual can then meet the growing IME at the exact final input-bar position.
@@ -234,30 +254,29 @@ export class ChatInputComponent implements OnDestroy {
       animationTarget !== undefined &&
       animationTarget > 0
     ) {
-      this.emojiKeyboardHeight.set(Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, animationTarget));
+      this.emojiKeyboardHeight.set(
+        Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, animationTarget),
+      );
     }
     // Capture the stable slot only during ordinary native-keyboard use. Updating it during a handoff
     // would make both sides of `nativeInset + emojiResidual = stableHeight` shrink together.
-    if (inset > 0 && this.keyboardMode() === 'closed') {
+    if (
+      event?.isFinal &&
+      event.visible &&
+      inset > 0 &&
+      this.keyboardMode() === 'closed'
+    ) {
       this.emojiKeyboardHeight.set(Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, inset));
     }
-    if (this.keyboardMode() === 'toEmoji' && inset === 0) {
-      requestAnimationFrame(() => {
-        if (this.keyboardMode() !== 'toEmoji') return;
-        this.keyboardMode.set('emoji');
-        this.measureBar();
-      });
-    }
-    if (this.switchingToSystem() && inset > 0) {
-      // Do not unmount at the first animation frame (often 1–10px): the residual emoji height is what
-      // keeps the slot full while the IME grows. Close only after geometry has settled briefly.
-      clearTimeout(this.keyboardHandoffTimer);
-      this.keyboardHandoffTimer = setTimeout(() => {
-        this.keyboardMode.set('closed');
-        this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
-        this.measureBar();
-      }, 80);
-    }
+    if (!event?.isFinal || this.expectedImeVisible === null) return;
+    if (
+      event.requestId !== null &&
+      this.expectedImeRequestId !== null &&
+      event.requestId !== this.expectedImeRequestId
+    )
+      return;
+    if (event.visible !== this.expectedImeVisible) return;
+    this.finishKeyboardTransition(event.visible);
   });
   /** Live link-card preview when the draft is a single bare URL (WeChat/WhatsApp-style; built
    *  server-side). Null when the draft isn't a bare URL or the fetch hasn't landed yet. The send path
@@ -283,7 +302,9 @@ export class ChatInputComponent implements OnDestroy {
    *  (the category's first glyph — Telegram-style) and its glyph list. */
   readonly emojiTabs = computed<EmojiTab[]>(() => {
     const rec = this.recents();
-    const recentsTab: EmojiTab[] = rec.length ? [{ id: 'recent', icon: '🕐', icons: rec }] : [];
+    const recentsTab: EmojiTab[] = rec.length
+      ? [{ id: 'recent', icon: '🕐', icons: rec }]
+      : [];
     const categoryTabs = EMOJI_CATEGORIES.map((c) => ({
       id: c.id,
       icon: c.icons[0] ?? '',
@@ -296,7 +317,9 @@ export class ChatInputComponent implements OnDestroy {
    *  instance per emoji button across ~440 glyphs, and it stays valid as the active grid toggles (the buttons
    *  are never re-created on tab switch, only shown/hidden). */
   onGridClick(event: MouseEvent): void {
-    const btn = (event.target as HTMLElement).closest<HTMLElement>('[data-emoji]');
+    const btn = (event.target as HTMLElement).closest<HTMLElement>(
+      '[data-emoji]',
+    );
     if (btn) this.insertEmoji(btn.dataset['emoji']!);
   }
 
@@ -353,7 +376,9 @@ export class ChatInputComponent implements OnDestroy {
   removePasteItem(id: string): void {
     const item = this.pasteItems().find((candidate) => candidate.id === id);
     if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
-    this.pasteItems.update((items) => items.filter((candidate) => candidate.id !== id));
+    this.pasteItems.update((items) =>
+      items.filter((candidate) => candidate.id !== id),
+    );
   }
 
   cancelPaste(): void {
@@ -411,18 +436,30 @@ export class ChatInputComponent implements OnDestroy {
 
   /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
   toggleEmoji(): void {
-    if (this.keyboardMode() !== 'closed') { this.closeEmoji(); return; }
+    if (this.keyboardMode() !== 'closed') {
+      if (this.emojiKeyboard() && this.keyboardMode() === 'toSystem') {
+        this.cancelKeyboardTransition();
+        this.keyboardMode.set('toEmoji');
+        this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
+        this.beginKeyboardTransition(false);
+      } else if (this.emojiKeyboard()) {
+        this.showSystemKeyboard();
+      } else {
+        this.closeEmoji();
+      }
+      return;
+    }
     this.closeAttach();
     if (this.recents().length) this.activeCategory.set('recent');
     if (this.emojiKeyboard()) {
-      const nativeKeyboardOpen = this.keyboardInset.inset() > 0;
+      const nativeKeyboardOpen = this.keyboardInset.visible();
       this.keyboardMode.set(nativeKeyboardOpen ? 'toEmoji' : 'emoji');
-      // `virtualkeyboardpolicy=manual` keeps the real caret/selection focused while native visibility is
-      // controlled explicitly. Emoji insertion therefore uses the editor's actual cursor without reopening IME.
+      // Keep Tiptap's real DOM focus, InputConnection, selection and visible caret. The Android bridge
+      // controls IME visibility independently; emoji commands therefore operate on the live caret.
       // During handoff the custom residual owns only `stableHeight - nativeInset`; layout ignores the
       // native lift so the two surfaces add to one invariant slot instead of stacking at full height.
       this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
-      this.keyboardInset.setVisible(false);
+      if (nativeKeyboardOpen) this.beginKeyboardTransition(false);
     } else {
       this.keyboardMode.set('emoji');
       this.editor()?.focus();
@@ -430,15 +467,20 @@ export class ChatInputComponent implements OnDestroy {
     this.measureBar();
   }
   closeEmoji(): void {
-    clearTimeout(this.keyboardHandoffTimer);
+    this.cancelKeyboardTransition();
     this.systemImeRequestPending = false;
     this.keyboardMode.set('closed');
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
     this.measureBar();
   }
-  /** Switch from the custom emoji keyboard back to normal typing. This explicit action is the only path
-   *  that focuses the editor while the touch emoji surface is open. */
+  /** Switch from the custom emoji keyboard back to the native IME while retaining the live editor caret. */
   showSystemKeyboard(): void {
+    if (!this.emojiKeyboard()) {
+      this.closeEmoji();
+      return;
+    }
+    if (this.keyboardMode() === 'toSystem') return;
+    this.cancelKeyboardTransition();
     // Hide custom controls immediately, then let the native inset grow while the blank custom residual
     // shrinks by the same amount. Geometry overlaps; visible/interactive keyboard controls never do.
     this.keyboardMode.set('toSystem');
@@ -448,6 +490,15 @@ export class ChatInputComponent implements OnDestroy {
     if (editor?.isFocused()) this.requestSystemIme();
     this.measureBar();
   }
+
+  /** A focused contenteditable does not emit a second focus event when tapped. In emoji mode that tap is
+   * an explicit request to replace the custom surface with the native IME. */
+  onEditorPointerDown(): void {
+    const mode = this.keyboardMode();
+    if (!this.emojiKeyboard() || (mode !== 'emoji' && mode !== 'toEmoji'))
+      return;
+    this.showSystemKeyboard();
+  }
   onEditorFocusChange(focused: boolean): void {
     if (
       focused &&
@@ -456,7 +507,10 @@ export class ChatInputComponent implements OnDestroy {
     ) {
       this.requestSystemIme();
     }
-    if (!focused && (!this.emojiKeyboard() || this.keyboardMode() === 'closed')) {
+    if (
+      !focused &&
+      (!this.emojiKeyboard() || this.keyboardMode() === 'closed')
+    ) {
       this.closeEmoji();
     }
   }
@@ -467,11 +521,58 @@ export class ChatInputComponent implements OnDestroy {
     // Let Chromium finish committing the focused contenteditable/InputConnection before native show().
     requestAnimationFrame(() => {
       if (this.keyboardMode() !== 'toSystem') return;
-      if (!this.keyboardInset.setVisible(true)) this.closeEmoji();
+      this.beginKeyboardTransition(true);
     });
   }
-  /** Insert at the last editor selection and record it to Recents. Desktop refocuses the editor; the touch
-   *  keyboard keeps it blurred so the native IME remains hidden. */
+
+  private beginKeyboardTransition(visible: boolean): void {
+    clearTimeout(this.keyboardWatchdog);
+    const transitionId = ++this.keyboardTransitionId;
+    this.expectedImeVisible = visible;
+    this.expectedImeRequestId = this.keyboardInset.setVisible(visible);
+    if (this.expectedImeRequestId === null) {
+      this.closeEmoji();
+      return;
+    }
+    this.keyboardWatchdog = setTimeout(() => {
+      if (transitionId !== this.keyboardTransitionId) return;
+      this.keyboardInset.reconcileSnapshot();
+      queueMicrotask(() => {
+        if (transitionId !== this.keyboardTransitionId) return;
+        if (this.keyboardInset.visible() === visible) {
+          this.finishKeyboardTransition(visible);
+        } else {
+          // Never leave an empty keyboard slot: failed show returns to emoji; failed hide returns to
+          // ordinary system-keyboard mode.
+          this.finishKeyboardTransition(!visible);
+        }
+      });
+    }, 700);
+  }
+
+  private cancelKeyboardTransition(): void {
+    clearTimeout(this.keyboardWatchdog);
+    this.keyboardTransitionId++;
+    this.expectedImeRequestId = null;
+    this.expectedImeVisible = null;
+  }
+
+  private finishKeyboardTransition(visible: boolean): void {
+    clearTimeout(this.keyboardWatchdog);
+    this.keyboardTransitionId++;
+    this.expectedImeRequestId = null;
+    this.expectedImeVisible = null;
+    if (visible) {
+      this.keyboardMode.set('closed');
+      this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
+    } else {
+      this.keyboardMode.set('emoji');
+      this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
+    }
+    this.measureBar();
+  }
+  /** Insert at the live editor selection and record it to Recents. Android keeps the editor focused while
+   * the native bridge independently hides the system IME, so the real caret remains authoritative. */
   insertEmoji(e: string): void {
     this.editor()?.insertText(e, !this.emojiKeyboard());
     this.pushRecent(e);
@@ -486,7 +587,10 @@ export class ChatInputComponent implements OnDestroy {
   onDocumentPointerDown(event: PointerEvent): void {
     if (this.keyboardMode() === 'closed') return;
     const target = event.target;
-    if (!(target instanceof Node) || !this.inputBar()?.nativeElement.contains(target)) {
+    if (
+      !(target instanceof Node) ||
+      !this.inputBar()?.nativeElement.contains(target)
+    ) {
       this.closeEmoji();
     }
   }
@@ -531,7 +635,9 @@ export class ChatInputComponent implements OnDestroy {
     this.closeEmoji();
     this.closeAttach();
     this.measureBar();
-    this.send.emit(isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text });
+    this.send.emit(
+      isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text },
+    );
   }
 
   onAttachClick(): void {
@@ -545,7 +651,8 @@ export class ChatInputComponent implements OnDestroy {
   }
   onAttachChange(e: Event): void {
     const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) this.send.emit({ kind: 'image', files: input.files });
+    if (input.files && input.files.length > 0)
+      this.send.emit({ kind: 'image', files: input.files });
     input.value = ''; // reset so the same file can be picked again
   }
 
@@ -560,7 +667,8 @@ export class ChatInputComponent implements OnDestroy {
   }
   onFileChange(e: Event): void {
     const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) this.send.emit({ kind: 'file', files: input.files });
+    if (input.files && input.files.length > 0)
+      this.send.emit({ kind: 'file', files: input.files });
     input.value = '';
   }
 
@@ -571,21 +679,50 @@ export class ChatInputComponent implements OnDestroy {
   /** The popover entries — Photo (image picker) + File (generic picker). Mirrors the header MORE menu's
    *  ChatActionMenuComponent usage; ChatActionMenuComponent renders labels via labelKey (transloco). */
   readonly attachEntries: ChatMenuEntry[] = [
-    { kind: 'action', key: 'photo', labelKey: 'chat.sendPhoto', icon: AppIconType.IMAGE },
-    { kind: 'action', key: 'file', labelKey: 'chat.sendFile', icon: AppIconType.FILE },
+    {
+      kind: 'action',
+      key: 'photo',
+      labelKey: 'chat.sendPhoto',
+      icon: AppIconType.IMAGE,
+    },
+    {
+      kind: 'action',
+      key: 'file',
+      labelKey: 'chat.sendFile',
+      icon: AppIconType.FILE,
+    },
   ];
   /** The composer sits at the viewport bottom, so prefer opening upward. This also keeps the file/photo
    *  choices visible after the touch keyboard is dismissed. */
   readonly attachPositions: ConnectedPosition[] = [
-    { originX: 'start', originY: 'top', overlayX: 'start', overlayY: 'bottom', offsetY: -4 },
-    { originX: 'end', originY: 'top', overlayX: 'end', overlayY: 'bottom', offsetY: -4 },
-    { originX: 'start', originY: 'bottom', overlayX: 'start', overlayY: 'top', offsetY: 4 },
+    {
+      originX: 'start',
+      originY: 'top',
+      overlayX: 'start',
+      overlayY: 'bottom',
+      offsetY: -4,
+    },
+    {
+      originX: 'end',
+      originY: 'top',
+      overlayX: 'end',
+      overlayY: 'bottom',
+      offsetY: -4,
+    },
+    {
+      originX: 'start',
+      originY: 'bottom',
+      overlayX: 'start',
+      overlayY: 'top',
+      offsetY: 4,
+    },
   ];
 
   toggleAttach(): void {
     const opening = !this.attachOpen();
     this.closeEmoji();
-    if (opening && !this.inputDevice.hasPhysicalKeyboard()) this.editor()?.blur();
+    if (opening && !this.inputDevice.hasPhysicalKeyboard())
+      this.editor()?.blur();
     this.attachOpen.set(opening);
   }
   closeAttach(): void {
@@ -656,7 +793,11 @@ export class ChatInputComponent implements OnDestroy {
     const el = event.currentTarget as HTMLElement;
     // Capture before closing a keyboard: that layout change can move the button under the stationary
     // finger, but the active recording gesture must continue receiving move/up events.
-    try { el.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+    try {
+      el.setPointerCapture(event.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
     // Voice recording is not a text-editing state: close the IME and ensure the touch target itself
     // cannot retain focus. This also prevents Android from restoring the keyboard during mic permission.
     this.closeEmoji();
@@ -676,7 +817,11 @@ export class ChatInputComponent implements OnDestroy {
 
   private async beginRecording(session: number): Promise<void> {
     const mime = pickRecorderMime();
-    if (!mime || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    if (
+      !mime ||
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
       this.flashRecordError('chat.recordMicUnsupported');
       return;
     }
@@ -698,7 +843,9 @@ export class ChatInputComponent implements OnDestroy {
     this.mimeForRecording = mime;
     const rec = new MediaRecorder(stream, { mimeType: mime });
     this.chunks = [];
-    rec.ondataavailable = (ev) => { if (ev.data.size > 0) this.chunks.push(ev.data); };
+    rec.ondataavailable = (ev) => {
+      if (ev.data.size > 0) this.chunks.push(ev.data);
+    };
     rec.onstop = () => this.finalizeRecording();
     this.recorder = rec;
     this.recordStartedAt = Date.now();
@@ -721,29 +868,45 @@ export class ChatInputComponent implements OnDestroy {
       return;
     }
     this.tickTimer = setInterval(() => {
-      this.recordSecs.set(Math.min(MAX_RECORD_SECS, Math.floor((Date.now() - this.recordStartedAt) / 1000)));
+      this.recordSecs.set(
+        Math.min(
+          MAX_RECORD_SECS,
+          Math.floor((Date.now() - this.recordStartedAt) / 1000),
+        ),
+      );
     }, 250);
-    this.capTimer = setTimeout(() => this.stopRecording(false), MAX_RECORD_SECS * 1000);
+    this.capTimer = setTimeout(
+      () => this.stopRecording(false),
+      MAX_RECORD_SECS * 1000,
+    );
   }
 
   /** Track the slide-up gesture (pointer capture keeps these arriving on the mic element). */
   onMicPointerMove(event: PointerEvent): void {
     if (event.pointerType === 'mouse') return;
     if (!this.recording()) return;
-    this.recordCancelled.set(event.clientY - this.pointerStartY < -CANCEL_SLIDE_PX);
+    this.recordCancelled.set(
+      event.clientY - this.pointerStartY < -CANCEL_SLIDE_PX,
+    );
   }
 
   /** Release → send unless the gesture slid into cancel territory. */
   onMicPointerUp(event: PointerEvent): void {
     if (event.pointerType === 'mouse') return;
     event.preventDefault();
-    if (!this.recording()) { this.recordSession++; return; } // ended before start → invalidate the in-flight begin
+    if (!this.recording()) {
+      this.recordSession++;
+      return;
+    } // ended before start → invalidate the in-flight begin
     void this.stopRecording(this.recordCancelled());
   }
 
   /** System interrupt (scroll / IME / etc.) → always cancel. */
   onMicPointerCancel(): void {
-    if (!this.recording()) { this.recordSession++; return; } // ended before start → invalidate the in-flight begin
+    if (!this.recording()) {
+      this.recordSession++;
+      return;
+    } // ended before start → invalidate the in-flight begin
     void this.stopRecording(true);
   }
 
@@ -769,7 +932,9 @@ export class ChatInputComponent implements OnDestroy {
     this.chunks = [];
     const mime = this.mimeForRecording;
     if (cancel || durationMs < MIN_RECORD_MS || chunks.length === 0) return;
-    const blob = new Blob(chunks, { type: mime || chunks[0].type || 'audio/webm' });
+    const blob = new Blob(chunks, {
+      type: mime || chunks[0].type || 'audio/webm',
+    });
     const duration = Math.max(1, Math.round(durationMs / 1000));
     this.send.emit({ kind: 'audio', blob, duration, mimeType: blob.type });
   }
@@ -790,13 +955,17 @@ export class ChatInputComponent implements OnDestroy {
     clearInterval(this.tickTimer);
     clearTimeout(this.errorTimer);
     clearTimeout(this.previewTimer);
-    clearTimeout(this.keyboardHandoffTimer);
+    clearTimeout(this.keyboardWatchdog);
+    this.keyboardTransitionId++;
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */
   private pushRecent(e: string): void {
-    const next = [e, ...this.recents().filter((x) => x !== e)].slice(0, RECENTS_MAX);
+    const next = [e, ...this.recents().filter((x) => x !== e)].slice(
+      0,
+      RECENTS_MAX,
+    );
     this.recents.set(next);
     saveRecents(next);
   }

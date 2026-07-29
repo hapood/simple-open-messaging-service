@@ -57,6 +57,29 @@ export type ConsumedImage =
   | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
 
 /**
+ * Chat-image upload result. Unlike consumeImage (used by avatars too), the chat upload keeps an
+ * unsupported image selection as a generic file so formats such as HEIC/AVIF can still be sent.
+ * Supported image MIME types remain subject to the controller's magic-byte check; a corrupt or
+ * forged JPEG/PNG/GIF/WebP is preserved through the same forced-download file fallback.
+ */
+export type ConsumedChatImage =
+  | {
+      kind: 'file';
+      mimetype: string;
+      buffer: Buffer;
+      filename: string;
+      w: number;
+      h: number;
+    }
+  | {
+      kind: 'fallback-file';
+      mimetype: string;
+      buffer: Buffer;
+      filename: string;
+    }
+  | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
+
+/**
  * consumeFile return: success carries buffer + original filename; failure is discriminated by
  * reason (the controller maps reason → business code). The size cap MAX_FILE_BYTES is backed by
  * main.ts's multipart limits.fileSize (raised) + a second check here.
@@ -154,6 +177,43 @@ export class UploadService {
   }
 
   /**
+   * Consume the chat-image route without discarding unsupported MIME types. The photo picker can
+   * yield HEIC/HEIF/AVIF (or application/octet-stream on less capable WebViews); those bytes are
+   * stored through the generic-file path and served as an attachment. This deliberately retains the
+   * image route's 10 MiB cap rather than inheriting the generic-file route's larger allowance.
+   */
+  async consumeChatImage(req: FastifyRequest): Promise<ConsumedChatImage> {
+    const r = await this.consumeSingle(req, {
+      maxBytes: UploadService.MAX_IMAGE_BYTES,
+    });
+    if (r.kind === 'rejected') {
+      return { kind: 'rejected', reason: r.reason };
+    }
+    if (r.buffer.length === 0) {
+      return { kind: 'rejected', reason: 'no-file' };
+    }
+    if (!r.filename) {
+      return { kind: 'rejected', reason: 'wrong-type' };
+    }
+    if (!(r.mimetype in IMG_EXT)) {
+      return {
+        kind: 'fallback-file',
+        mimetype: r.mimetype,
+        buffer: r.buffer,
+        filename: r.filename,
+      };
+    }
+    return {
+      kind: 'file',
+      mimetype: r.mimetype,
+      buffer: r.buffer,
+      filename: r.filename,
+      w: Number(r.fields.w) || 0,
+      h: Number(r.fields.h) || 0,
+    };
+  }
+
+  /**
    * Consume a single generic file from multipart/form-data: buffer it (capped at MAX_FILE_BYTES),
    * require a filename, reject an empty body, then resolve a safe on-disk extension + a display
    * MIME. The open model accepts ANY file type — there is no whitelist, and the client-declared
@@ -234,7 +294,9 @@ export class UploadService {
     // (MediaMessage) + nosniff, and <audio> plays webm/opus + mp4 natively. The VIDEO route stays
     // strict (no shared-container acceptance) — a video uploaded to /upload/video is unambiguous.
     const sharedAsAudio =
-      family === 'audio' && detected.family === 'video' && (detected.ext === 'webm' || detected.ext === 'mp4');
+      family === 'audio' &&
+      detected.family === 'video' &&
+      (detected.ext === 'webm' || detected.ext === 'mp4');
     if (detected.family !== family && !sharedAsAudio) {
       return { kind: 'rejected', reason: 'wrong-type' };
     }
@@ -432,12 +494,16 @@ export class UploadService {
     mimetype: string,
     originalName: string,
     buf: Buffer,
+    forceAttachment = false,
   ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
     const ext = parseFileExt(originalName);
     // Open model: any file type is accepted, so the on-disk ext comes from the sanitized client
     // filename (there is no trustworthy magic byte for arbitrary file types). Fall back to 'bin' so
     // the CAS path always carries an extension — served as application/octet-stream + attachment.
-    const casExt = ext || 'bin';
+    // Image-route fallbacks use .bin even when the claimed filename ends in .png/.jpg. Static
+    // serving decides inline-vs-attachment from the trusted CAS extension, so .bin guarantees that
+    // corrupt/forged image bytes are downloaded rather than fed to an inline image decoder.
+    const casExt = forceAttachment ? 'bin' : ext || 'bin';
     const { url, digest, size } = await this.saveCas(casExt, buf);
     await this.mediaAsset.upsertAndRef(digest, BigInt(size));
     return {

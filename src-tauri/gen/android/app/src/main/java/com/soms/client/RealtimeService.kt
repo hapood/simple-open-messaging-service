@@ -19,7 +19,6 @@ import okhttp3.sse.EventSources
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** logcat tag for this otherwise-headless service. The FGS runs with no WebView and used to
  *  be a total black box — these calls (onOpen / onEvent / onClosed / onFailure) are the only way to see
@@ -30,11 +29,6 @@ private const val TAG = "SomsFgs"
 /** Coalesce window for the background away-notification: a burst of NEW_MESSAGE frames collapses into one
  *  summary fetch + one notification (cancel + reschedule on each new frame). */
 private const val COALESCE_DELAY_MS = 500L
-
-/** Short-timeout reachability probe (s). [probeHealth] bounds connect + headers at this value, so a probe of a
- *  hairpin-unreachable origin fails in ~3s instead of the SSE client's 15s connect timeout — the origin race
- *  ([resolveOrigin]) stays snappy. Mirrors the Rust side's HEALTH_PROBE_TIMEOUT. */
-private const val HEALTH_PROBE_TIMEOUT_S = 3L
 
 /**
  * The single native-owned realtime channel. A (optionally foreground) service holding a long-lived SSE
@@ -95,15 +89,6 @@ class RealtimeService : Service() {
      *  the notification's replace-by-id. Shut down in [onDestroy]. */
     private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsAwayIo") }
     private var attempt = 0
-
-    /** Dedicated client for the unauthenticated `/health` reachability probe — SEPARATE from [client] (the
-     *  long-lived SSE client) so its short [HEALTH_PROBE_TIMEOUT_S] connect+read caps don't bleed into the
-     *  stream (which needs readTimeout 0 + a 25s ping). Probes are infrequent (connect / failure / reconnect),
-     *  so a fresh client per probe is cheap and shares OkHttp's default connection pool / dispatcher. */
-    private val probeClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(HEALTH_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
-        .readTimeout(HEALTH_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
-        .build()
 
     /** Single-flight lock for [establishConnection]. Probes + the open decision are serialized through this so
      *  two concurrent triggers (e.g. onFailure firing while ConnectivityManager.onAvailable races in) launch at
@@ -257,8 +242,8 @@ class RealtimeService : Service() {
      *
      *  - `asState` is the banner state to surface while resolving ("connecting" for boot, "reconnecting" for a
      *    failure/retry). Overridden to "disconnected" when the OS network is down.
-     *  - [resolveOrigin] picks the reachable origin (current-wins-ties; flip to the other if the current is
-     *    down; both-down ⇒ null). null ⇒ [scheduleReopen] (backoff, whose retry re-runs this).
+     *  - [OriginSelector] races both origins and returns the first healthy one (both-down ⇒ null).
+     *    null ⇒ [scheduleReopen] (backoff, whose retry re-runs this).
      *  - On a chosen origin: [signalRust] so Rust's API transports follow (no API⇄SSE origin split), then open. */
     private fun establishConnection(asState: String) {
         synchronized(establishLock) {
@@ -274,7 +259,7 @@ class RealtimeService : Service() {
                     SomsLog.w("Rt") { "establish abort (no token) → stopSelf" }
                     stopSelf(); return@execute
                 }
-                val origin = resolveOrigin()
+                val origin = OriginSelector.select(this)
                 if (origin == null) {
                     // Both origins down (or the single configured origin is down) → backoff; the retry re-runs
                     // establishConnection (which races again). The "reconnecting" + countdown are pushed by
@@ -291,61 +276,6 @@ class RealtimeService : Service() {
             } finally {
                 synchronized(establishLock) { establishing = false }
             }
-        }
-    }
-
-    /** Pick the origin to open, or null if neither is reachable. CONCURRENT probe of the current + the other
-     *  (two short-lived threads, each bounded by [HEALTH_PROBE_TIMEOUT_S]); **current wins ties** so a transient
-     *  blip on a reachable origin doesn't flap us to the other, and a LAN-foregrounded device stays on the LAN
-     *  origin it's already on. If the current is down + the other up → flip the persisted mode + return the
-     *  other. Both down → null (caller backs off). With no secondary configured this degenerates to a single
-     *  probe of the primary (the dev / no-SOMS_LAN_DOMAIN case — behaves exactly as before).
-     *
-     *  This ONE function is both the runtime smooth-switch (current up ⇒ stay) AND the reconnect race (concurrent
-     *  probe of both) — the distinction collapses because "current wins ties" makes a concurrent race safe at
-     *  runtime (it never churns a healthy current). Mirrors the Rust side's probe + current-wins-ties rule. */
-    private fun resolveOrigin(): String? {
-        val primary = SomsSecureStore.getApiOrigin(this) ?: return null
-        val secondary = SomsSecureStore.getApiOriginSecondary(this)
-        if (secondary == null) {
-            // Single-origin: healthy ⇒ open it; down ⇒ null (caller backs off). No mode to flip.
-            return if (probeHealth(primary)) primary else null
-        }
-        val mode = SomsSecureStore.getOriginMode(this)
-        val current = if (mode == "secondary") secondary else primary
-        val other = if (mode == "secondary") primary else secondary
-        val curOk = AtomicBoolean(false)
-        val otherOk = AtomicBoolean(false)
-        val t1 = Thread { curOk.set(probeHealth(current)) }
-        val t2 = Thread { otherOk.set(probeHealth(other)) }
-        t1.start(); t2.start(); t1.join(); t2.join()
-        return when {
-            curOk.get() -> current // current healthy → stay (no flap)
-            otherOk.get() -> {
-                val next = if (mode == "secondary") "primary" else "secondary"
-                SomsSecureStore.setOriginMode(this, next)
-                Log.i(TAG, "resolveOrigin → flip mode $mode → $next")
-                other
-            }
-            else -> null // both down
-        }
-    }
-
-    /** Short-timeout UNAUTHENTICATED probe of `{origin}/api/v1/health` — true iff it answered a healthy (2xx)
-     *  response within [HEALTH_PROBE_TIMEOUT_S]. No Bearer: health is public, so this works PRE-LOGIN and needs
-     *  no token. Synchronous (blocks the caller — run off-main, e.g. via [ioExecutor] or a resolve thread).
-     *  Any failure (timeout / connect / DNS / TLS / non-2xx) ⇒ false (not healthy). */
-    private fun probeHealth(origin: String): Boolean {
-        val req = Request.Builder()
-            .url("$origin${SomsSecureStore.API_PREFIX}/health")
-            .get()
-            .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
-            .build()
-        return try {
-            probeClient.newCall(req).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            SomsLog.d("Rt") { "probeHealth $origin → ${e.javaClass.simpleName}: ${e.message}" }
-            false
         }
     }
 
@@ -468,11 +398,10 @@ class RealtimeService : Service() {
                 stopSelf()
                 return
             }
-            // Network failure (not 401): re-resolve + reopen via establishConnection. resolveOrigin probes the
-            // current origin (a transient drop ⇒ still healthy ⇒ reopen it — no needless flip); if it's down it
-            // flips to the other (the LAN secondary, on a hairpin-NAT LAN where the primary is unreachable); if
-            // both are down it returns null and establishConnection falls through to scheduleReopen (backoff,
-            // whose retry races again). Kotlin owns this decision and signals Rust (signalRust) so the API
+            // Network failure (not 401): re-resolve + reopen via establishConnection. OriginSelector races both
+            // configured addresses, immediately adopts the first healthy one, and cancels the loser. If both are
+            // down, establishConnection falls through to scheduleReopen (backoff, whose retry races again).
+            // Kotlin owns this decision and signals Rust (signalRust) so the API
             // transports follow — no origin split. (401 is handled above — session-dead.)
             this@RealtimeService.establishConnection("reconnecting")
         }

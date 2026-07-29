@@ -46,6 +46,10 @@ describe('translateBizResult', () => {
     expect(translateBizResult(res(BusinessCode.UNAUTHENTICATED), transloco)).toBe('errors.biz.unauthenticated');
     expect(translateBizResult(res(BusinessCode.FORBIDDEN), transloco)).toBe('errors.biz.forbidden');
     expect(translateBizResult(res(BusinessCode.RATE_LIMITED), transloco)).toBe('errors.biz.rateLimited');
+    expect(translateBizResult(res(BusinessCode.QUOTA_EXCEEDED), transloco)).toBe('errors.biz.quotaExceeded');
+    expect(translateBizResult(res(BusinessCode.FEDERATION_QUOTA_EXCEEDED), transloco)).toBe(
+      'errors.biz.federationQuotaExceeded',
+    );
     expect(translateBizResult(res(BusinessCode.INTERNAL), transloco)).toBe('errors.biz.internal');
   });
 

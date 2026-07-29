@@ -18,7 +18,7 @@
 // component styling uses the CSS variables below.) ---------------------------
 // Gray scale follows Tailwind gray (matches existing icon-rail / folder-editor /
 // chat-list-pane, minimizing migration cost).
-$app-gray-50:  #f9fafb;
+$app-gray-50: #f9fafb;
 $app-gray-100: #f3f4f6;
 $app-gray-200: #e5e7eb;
 $app-gray-300: #d1d5db;
@@ -30,47 +30,51 @@ $app-gray-900: #111827;
 // ---- Semantic tokens (CSS variables; what components actually consume) -----
 :root {
   // Brand (unifies the 7 legacy blues: #3370ff/#2563eb/#3390ec/#448aff/#005cbb/#2196f3/#2ca9bc → M3 primary)
-  --app-brand:        #2196f3;
-  --app-brand-hover:  #1976d2;   // darkened on hover / press
+  --app-brand: #2196f3;
+  --app-brand-hover: #1976d2; // darkened on hover / press
   --app-brand-pressed: #1565c0;
-  --app-brand-soft:   #e3f2fd;   // light brand fill (selected pill / highlight)
-  --app-brand-accent: #2ca9bc;   // gradient accent (auth brand-page decoration)
-  --app-on-brand:      #ffffff;
+  --app-brand-soft: #e3f2fd; // light brand fill (selected pill / highlight)
+  --app-brand-accent: #2ca9bc; // gradient accent (auth brand-page decoration)
+  --app-on-brand: #ffffff;
   --app-on-brand-soft: #0d4770;
-  --app-focus-ring:    #0b74c5;
+  --app-focus-ring: #0b74c5;
 
   // Text (replaces the many "near-blacks": #000000 / #111827 / #1f2329 / #2b2f3a / #374151)
-  --app-text:        #{$app-gray-900};   // primary text
-  --app-text-muted:  #{$app-gray-500};   // secondary text (replaces #6b7280/#707579/#707991/#8a919d/#4e5969)
-  --app-text-faint:  #{$app-gray-400};   // weaker: timestamps / placeholders (replaces #898989/#9ca3af/#a2acb4/#a8aeb8)
+  --app-text: #{$app-gray-900}; // primary text
+  --app-text-muted: #{$app-gray-500}; // secondary text (replaces #6b7280/#707579/#707991/#8a919d/#4e5969)
+  --app-text-faint: #{$app-gray-400}; // weaker: timestamps / placeholders (replaces #898989/#9ca3af/#a2acb4/#a8aeb8)
   --app-text-disabled: #a6afb7;
-  --app-text-inverse:  #ffffff;
+  --app-text-inverse: #ffffff;
 
   // Surfaces & backgrounds (replaces the many "whites/light-grays": #fff/#ffffff/#eeeeee/#f4f6f9/#f3f4f6/#faf9fd/#eef0f3)
-  --app-surface:     #ffffff;            // card / panel white
-  --app-bg:          #f0f2f5;            // page / pane-separator background (WhatsApp-style warm-neutral chrome gray, softer than pure white)
-  --app-bg-muted:    #f0f2f5;            // secondary bg (rail / input bar / hover fill)
+  --app-surface: #ffffff; // card / panel white
+  --app-bg: #f0f2f5; // page / pane-separator background (WhatsApp-style warm-neutral chrome gray, softer than pure white)
+  --app-bg-muted: #f0f2f5; // secondary bg (rail / input bar / hover fill)
   // T0 compatibility values: the new four-level surface API starts visually identical to the existing
   // UI. W1/W2 opt individual regions into distinct values after the responsive shell is in place.
   --app-surface-subtle: var(--app-bg-muted);
   --app-surface-sunken: var(--app-bg-muted);
-  --app-overlay:        rgba(0, 0, 0, 0.40);
+  --app-overlay: rgba(0, 0, 0, 0.4);
   --app-overlay-strong: rgba(0, 0, 0, 0.72);
 
   // Chat composer surfaces. Components consume these semantic roles without branching on the active theme.
-  --im-composer-bar-bg:          var(--app-bg-muted);
-  --im-composer-input-bg:        var(--app-bg-muted);
-  --im-composer-input-focus-bg:  var(--app-surface-elevated);
+  --im-composer-bar-bg: var(--app-bg-muted);
+  --im-composer-input-bg: var(--app-surface);
+  --im-composer-input-focus-bg: var(--app-surface-elevated);
   --im-composer-input-focus-ring-width: 2px;
-  --im-composer-input-focus-ring: color-mix(in srgb, var(--app-brand) 24%, transparent);
+  --im-composer-input-focus-ring: color-mix(
+    in srgb,
+    var(--app-brand) 24%,
+    transparent
+  );
 
   // Borders & interaction-state fills (replaces #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6)
-  --app-border:        #{$app-gray-200};
+  --app-border: #{$app-gray-200};
   --app-border-strong: #{$app-gray-300};
-  --app-hover:   #{$app-gray-100};   // list-item hover
-  --app-active:  #{$app-gray-200};   // list-item active / selected (replaces #dddddd)
-  --app-pressed:         #{$app-gray-200};
-  --app-selected:        var(--app-brand-soft);
+  --app-hover: #{$app-gray-100}; // list-item hover
+  --app-active: #{$app-gray-200}; // list-item active / selected (replaces #dddddd)
+  --app-pressed: #{$app-gray-200};
+  --app-selected: var(--app-brand-soft);
   --app-selected-strong: var(--app-active);
   --app-disabled-opacity: 0.44;
 
@@ -80,95 +84,102 @@ $app-gray-900: #111827;
   // drop-casting shadow for floating chrome (the bottom navigation bar); the dark override raises its
   // alpha/spread so it registers against the deep --app-bg.
   --app-surface-elevated: var(--app-surface);
-  --app-shadow-0:          none;
-  --app-shadow-1:          0 1px 3px rgba(0, 0, 0, 0.12);
-  --app-shadow-2:          0 4px 16px rgba(0, 0, 0, 0.18);
-  --app-shadow-3:          0 16px 48px rgba(0, 0, 0, 0.22);
-  --app-shadow-float:     0 4px 16px rgba(0, 0, 0, 0.18);
+  --app-shadow-0: none;
+  --app-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --app-shadow-2: 0 4px 16px rgba(0, 0, 0, 0.18);
+  --app-shadow-3: 0 16px 48px rgba(0, 0, 0, 0.22);
+  --app-shadow-float: 0 4px 16px rgba(0, 0, 0, 0.18);
 
   // Semantic colors
-  --app-danger:       #dc2626;   // error / danger (replaces #d93025 / #ba1a1a)
-  --app-danger-soft:  #fef2f2;   // error soft fill
-  --app-success:      #16a34a;   // success / recovered (green-600) — the connection chip's "back online" check
-  --app-success-soft: #afefc8;   // success soft fill (invite cards)
-  --app-warning:      #b45309;   // warning / in-progress (connecting, waiting) — amber-700; the connection chip derives its tint from this
+  --app-danger: #dc2626; // error / danger (replaces #d93025 / #ba1a1a)
+  --app-danger-soft: #fef2f2; // error soft fill
+  --app-success: #16a34a; // success / recovered (green-600) — the connection chip's "back online" check
+  --app-success-soft: #afefc8; // success soft fill (invite cards)
+  --app-warning: #b45309; // warning / in-progress (connecting, waiting) — amber-700; the connection chip derives its tint from this
   --app-warning-soft: #fff3dc;
-  --app-info:         var(--app-brand);
-  --app-info-soft:    var(--app-brand-soft);
-  --app-on-status:    #ffffff;
+  --app-info: var(--app-brand);
+  --app-info-soft: var(--app-brand-soft);
+  --app-on-status: #ffffff;
 
   // Message bubbles (core IM semantics)
-  --app-bubble-self:  var(--app-brand);     // own messages
-  --app-bubble-other: #{$app-gray-100};     // other-party messages (replaces #eeeeee)
+  --app-bubble-self: var(--app-brand); // own messages
+  --app-bubble-other: #{$app-gray-100}; // other-party messages (replaces #eeeeee)
 
   // Radius (consolidates the legacy 4/6/8/9/10/12/16/20px eight steps → four + pill)
-  --app-radius-xs:   4px;
-  --app-radius-sm:   6px;
-  --app-radius-md:   10px;
-  --app-radius-lg:   16px;
-  --app-radius-xl:   24px;
+  --app-radius-xs: 4px;
+  --app-radius-sm: 6px;
+  --app-radius-md: 10px;
+  --app-radius-lg: 16px;
+  --app-radius-xl: 24px;
   --app-radius-pill: 9999px;
 
   // Spacing (consolidates common 4/8/12/16)
   --app-space-0-5: 2px;
-  --app-space-1:   4px;
-  --app-space-2:   8px;
-  --app-space-3:   12px;
-  --app-space-4:   16px;
-  --app-space-5:   20px;
-  --app-space-6:   24px;
-  --app-space-8:   32px;
-  --app-space-10:  40px;
+  --app-space-1: 4px;
+  --app-space-2: 8px;
+  --app-space-3: 12px;
+  --app-space-4: 16px;
+  --app-space-5: 20px;
+  --app-space-6: 24px;
+  --app-space-8: 32px;
+  --app-space-10: 40px;
 
   // Control geometry. --app-touch-target is an interaction-area minimum, not necessarily the painted
   // glyph/button size; compact desktop controls may be visually smaller while retaining a 44px hit target.
-  --app-control-sm:    32px;
-  --app-control-md:    40px;
-  --app-control-lg:    48px;
-  --app-touch-target:  44px;
+  --app-control-sm: 32px;
+  --app-control-md: 40px;
+  --app-control-lg: 48px;
+  --app-touch-target: 44px;
   --app-header-compact: 56px;
   --app-header-expanded: 64px;
-  --app-content-max:   720px;
+  --app-content-max: 720px;
 
   // Typography roles. Components migrate by core flow instead of changing all pages in one global step.
-  --app-font-size-page-title:    24px;
-  --app-line-height-page-title:  32px;
+  --app-font-size-page-title: 24px;
+  --app-line-height-page-title: 32px;
   --app-font-size-section-title: 20px;
   --app-line-height-section-title: 28px;
-  --app-font-size-nav-title:     18px;
-  --app-line-height-nav-title:   24px;
-  --app-font-size-list-title:    16px;
-  --app-line-height-list-title:  22px;
-  --app-font-size-body:          15px;
-  --app-line-height-body:        22px;
-  --app-font-size-body-small:    14px;
-  --app-line-height-body-small:  20px;
-  --app-font-size-caption:       12px;
-  --app-line-height-caption:     16px;
-  --app-font-size-label:         13px;
-  --app-line-height-label:       18px;
-  --app-font-weight-regular:     400;
-  --app-font-weight-medium:      500;
-  --app-font-weight-semibold:    600;
-  --app-font-weight-bold:        700;
+  --app-font-size-nav-title: 18px;
+  --app-line-height-nav-title: 24px;
+  --app-font-size-list-title: 16px;
+  --app-line-height-list-title: 22px;
+  --app-font-size-body: 15px;
+  --app-line-height-body: 22px;
+  --app-font-size-body-small: 14px;
+  --app-line-height-body-small: 20px;
+  --app-font-size-caption: 12px;
+  --app-line-height-caption: 16px;
+  --app-font-size-label: 13px;
+  --app-line-height-label: 18px;
+  --app-font-weight-regular: 400;
+  --app-font-weight-medium: 500;
+  --app-font-weight-semibold: 600;
+  --app-font-weight-bold: 700;
 
   // Shared motion language. Platform synchronization timings (Android IME lift, virtual-list measurement)
   // remain local performance parameters and deliberately do not consume these visual-duration tokens.
   --app-motion-instant: 80ms;
-  --app-motion-fast:    140ms;
-  --app-motion-medium:  220ms;
-  --app-motion-slow:    320ms;
+  --app-motion-fast: 140ms;
+  --app-motion-medium: 220ms;
+  --app-motion-slow: 320ms;
   --app-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --app-ease-enter:    cubic-bezier(0, 0, 0, 1);
-  --app-ease-exit:     cubic-bezier(0.3, 0, 1, 1);
+  --app-ease-enter: cubic-bezier(0, 0, 0, 1);
+  --app-ease-exit: cubic-bezier(0.3, 0, 1, 1);
 
   // Safe-area insets (status bar / gesture bar). Default = the CSS env() values, which browsers and
   // iOS PWA forward correctly. Android WebView does NOT forward the status-bar inset through env()
   // (it returns 0), so the native Tauri shell measures the real inset via WindowInsets and overrides
   // these on :root at boot (see MainActivity + main.ts). Never hardcode a device-specific px here —
   // the value varies per device/orientation (Huawei 32px today, different tomorrow).
-  --soms-safe-top:    env(safe-area-inset-top, 0px);
+  --soms-safe-top: env(safe-area-inset-top, 0px);
   --soms-safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  // Android native-chat geometry. The composer height is the native component itself and NEVER includes
+  // safe-area or IME space. NativeComposerService updates these root-scoped values from the global native
+  // geometry + IME event streams. Outside an active native chat they remain zero.
+  --soms-composer-height: 0px;
+  --soms-ime-height: 0px;
+  --soms-chat-bottom-offset: 0px;
 }
 
 // ---- Chat / IM semantic tokens (WhatsApp-aligned, --im-*) ------------------
@@ -180,28 +191,37 @@ $app-gray-900: #111827;
 // Values track current WhatsApp Web (light: outgoing #d9fdd3, incoming #fff;
 // dark: #005c4b / #202c33).
 :root {
-  --im-chat-bg:        #efeae2;   // chat-area background (WhatsApp beige, wallpaper feel)
+  --im-chat-bg: #efeae2; // chat-area background (WhatsApp beige, wallpaper feel)
   // Low-contrast wallpaper: a tiled line-art doodle (heart / star / speech
   // bubble / smiley / sparkle) as an inline SVG. Opacity is baked into
   // stroke-opacity, so this is layered as background-image over the bg color on
   // the same element — no pseudo-element / stacking context needed (an element's
   // own background always paints behind its content).
-  --im-chat-pattern:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.05'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
-  --im-bubble-self:    #d9fdd3;   // outgoing bubble (current WhatsApp green; legacy #dcf8c6)
-  --im-bubble-other:   #ffffff;   // incoming bubble
-  --im-bubble-text:    #111b21;   // bubble body text
+  --im-chat-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.05'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
+  --im-bubble-self: #d9fdd3; // outgoing bubble (current WhatsApp green; legacy #dcf8c6)
+  --im-bubble-other: #ffffff; // incoming bubble
+  --im-bubble-text: #111b21; // bubble body text
   // Group-invite card surface: ONE opaque brand-tinted fill for BOTH sides (side-agnostic — the green/white
   // bubble colors do not apply to an invite card). Lifting the incoming-bubble surface toward the brand makes
   // the card read as an invite, and stays opaque in both themes so the chat wallpaper never bleeds through.
   // Defined once: it references --im-bubble-other and --app-brand, both of which flip per theme, so it resolves
   // correctly under [data-theme="dark"]. The watermark opacity in invite-row.component.scss is tuned for this
   // brand-tinted surface.
-  --invite-bg:         color-mix(in srgb, var(--im-bubble-other) 85%, var(--app-brand) 15%);
-  --im-meta-bg:        #ececf1;   // media meta bar fill (independent of bubble color — neutral grey chip)
-  --im-time:           #667781;   // in-bubble timestamp (gray-green shared by green/white bubbles)
-  --im-avatar-other:   #c7c7cc;   // other avatar fill (placeholder gray)
-  --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // date-separator pill fill (inline timeline rows)
-  --im-date-pill-text: var(--app-text-faint);  // date-separator text
+  --invite-bg: color-mix(
+    in srgb,
+    var(--im-bubble-other) 85%,
+    var(--app-brand) 15%
+  );
+  --im-meta-bg: #ececf1; // media meta bar fill (independent of bubble color — neutral grey chip)
+  --im-time: #667781; // in-bubble timestamp (gray-green shared by green/white bubbles)
+  --im-avatar-other: #c7c7cc; // other avatar fill (placeholder gray)
+  --im-date-pill-bg: rgba(
+    0,
+    0,
+    0,
+    0.06
+  ); // date-separator pill fill (inline timeline rows)
+  --im-date-pill-text: var(--app-text-faint); // date-separator text
   // Sticky-date overlay tokens (the floating pill only; the inline date-row consumes just -bg/-text above).
   // The floating pill MUST be opaque so it reads as elevated over the wallpaper — the inline date-row's
   // translucent rgba fill would show the doodle pattern through. Light mode floats on the M3 surface
@@ -209,24 +229,25 @@ $app-gray-900: #111827;
   --im-sticky-date-bg: var(--app-surface);
   // M3 elevation shadow (≈ Level 2), IDENTICAL in light and dark — M3 uses one shadow value across themes;
   // dark mode's primary cue is the tonal-elevation fill, not a different shadow.
-  --im-date-pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 2px 6px rgba(0, 0, 0, 0.15);
-  --im-media-gap:      2px;       // album grid gap
-  --im-media-radius:   var(--app-radius-md);   // album cell radius
+  --im-date-pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.3),
+    0 2px 6px rgba(0, 0, 0, 0.15);
+  --im-media-gap: 2px; // album grid gap
+  --im-media-radius: var(--app-radius-md); // album cell radius
 
   // SOMS chat-domain API. T0 aliases the current IM values so adding the new semantic names is a
   // zero-visual-change migration. W5 switches the underlying values to the SOMS blue-neutral palette,
   // then removes the --im-* compatibility layer after every message card has migrated.
-  --chat-bg:                   var(--im-chat-bg);
-  --chat-pattern:              var(--im-chat-pattern);
-  --chat-bubble-outgoing:      var(--im-bubble-self);
-  --chat-bubble-incoming:      var(--im-bubble-other);
-  --chat-text:                 var(--im-bubble-text);
-  --chat-meta:                 var(--im-time);
-  --chat-meta-on-media:        #ffffff;
-  --chat-date-bg:              var(--im-date-pill-bg);
-  --chat-date-text:            var(--im-date-pill-text);
-  --chat-media-meta-bg:        rgba(0, 0, 0, 0.45);
-  --chat-message-shadow:       0 1px 0.5px rgba(0, 0, 0, 0.13);
+  --chat-bg: var(--im-chat-bg);
+  --chat-pattern: var(--im-chat-pattern);
+  --chat-bubble-outgoing: var(--im-bubble-self);
+  --chat-bubble-incoming: var(--im-bubble-other);
+  --chat-text: var(--im-bubble-text);
+  --chat-meta: var(--im-time);
+  --chat-meta-on-media: #ffffff;
+  --chat-date-bg: var(--im-date-pill-bg);
+  --chat-date-text: var(--im-date-pill-text);
+  --chat-media-meta-bg: rgba(0, 0, 0, 0.45);
+  --chat-message-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
 }
 
 // ============================================================================
@@ -236,75 +257,102 @@ $app-gray-900: #111827;
 // hangs it on the .pg root; site-wide dark hangs it on <html>). Descendants
 // inherit the variables — no component edits required.
 // ============================================================================
-[data-theme="dark"] {
+[data-theme='dark'] {
   // General tokens, dark (replaces the former placeholder comments)
-  --app-bg:          #0b141a;
-  --app-bg-muted:    #202c33;
-  --app-surface:     #202c33;
-  --app-text:        #e9edef;
-  --app-text-muted:  #8696a0;
-  --app-text-faint:  #667781;
+  --app-bg: #0b141a;
+  --app-bg-muted: #202c33;
+  --app-surface: #202c33;
+  --app-text: #e9edef;
+  --app-text-muted: #8696a0;
+  --app-text-faint: #667781;
   --app-text-disabled: #66747c;
-  --app-text-inverse:  #10181e;
-  --app-border:        #2a3942;
-  --app-border-strong: #3b4a54;   // one step lighter than --app-border, for inputs/tabs that need definition (was missing → inherited the bright light #d1d5db)
-  --app-hover:         #2a3942;
-  --app-active:      #37424a;
-  --app-pressed:       #37424a;
+  --app-text-inverse: #10181e;
+  --app-border: #2a3942;
+  --app-border-strong: #3b4a54; // one step lighter than --app-border, for inputs/tabs that need definition (was missing → inherited the bright light #d1d5db)
+  --app-hover: #2a3942;
+  --app-active: #37424a;
+  --app-pressed: #37424a;
   --app-selected-strong: var(--app-active);
-  --app-overlay:        rgba(0, 0, 0, 0.62);
+  --app-overlay: rgba(0, 0, 0, 0.62);
   --app-overlay-strong: rgba(0, 0, 0, 0.82);
 
   // Keep the dark composer capsule distinct from its bar while avoiding a bright active outline.
-  --im-composer-bar-bg:           var(--app-bg-muted);
-  --im-composer-input-bg:         var(--app-hover);
-  --im-composer-input-focus-bg:   var(--app-hover);
+  --im-composer-bar-bg: var(--app-bg-muted);
+  --im-composer-input-bg: var(--app-hover);
+  --im-composer-input-focus-bg: var(--app-hover);
   --im-composer-input-focus-ring-width: 1px;
-  --im-composer-input-focus-ring: color-mix(in srgb, var(--app-brand) 14%, transparent);
+  --im-composer-input-focus-ring: color-mix(
+    in srgb,
+    var(--app-brand) 14%,
+    transparent
+  );
 
   // Dark elevation. Lift the floating-panel fill with an 8% primary tint (M3 dark tonal elevation — the
   // same convention as --im-sticky-date-bg) so the surface reads as a layer above the deep --app-bg, and
   // raise the float shadow's alpha/spread so it registers against the near-black backdrop (a 0.18 shadow
   // disappears there).
-  --app-surface-elevated: color-mix(in srgb, var(--app-surface) 92%, var(--app-brand) 8%);
-  --app-shadow-1:          0 1px 3px rgba(0, 0, 0, 0.34);
-  --app-shadow-2:          0 4px 24px rgba(0, 0, 0, 0.55);
-  --app-shadow-3:          0 16px 56px rgba(0, 0, 0, 0.64);
-  --app-shadow-float:     0 4px 24px rgba(0, 0, 0, 0.55);
+  --app-surface-elevated: color-mix(
+    in srgb,
+    var(--app-surface) 92%,
+    var(--app-brand) 8%
+  );
+  --app-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.34);
+  --app-shadow-2: 0 4px 24px rgba(0, 0, 0, 0.55);
+  --app-shadow-3: 0 16px 56px rgba(0, 0, 0, 0.64);
+  --app-shadow-float: 0 4px 24px rgba(0, 0, 0, 0.55);
 
   // Brand & semantic, dark — the light "soft" fills (#e3f2fd / #fef2f2 / #afefc8) are near-white
   // and would glare; replace with subtle washes tinted over the dark surface.
-  --app-brand-soft:   rgba(33, 150, 243, 0.18);   // selected pill / highlight — brand wash over dark
+  --app-brand-soft: rgba(
+    33,
+    150,
+    243,
+    0.18
+  ); // selected pill / highlight — brand wash over dark
   --app-brand-pressed: #42a5f5;
-  --app-on-brand:      #071a28;
+  --app-on-brand: #071a28;
   --app-on-brand-soft: #b9e1fb;
-  --app-focus-ring:    #90caf9;
-  --app-danger:       #ef4444;                    // brighter red for legibility on dark
-  --app-danger-soft:  rgba(239, 68, 68, 0.18);    // soft error fill — red wash (was bright #fef2f2 pink)
-  --app-success:      #22c55e;                    // brighter green for legibility on dark (connection-recovered check)
-  --app-success-soft: rgba(52, 211, 153, 0.18);   // soft success fill — green wash (was bright #afefc8)
-  --app-warning:      #f59e0b;                    // brighter amber for legibility on dark (connecting / waiting)
+  --app-focus-ring: #90caf9;
+  --app-danger: #ef4444; // brighter red for legibility on dark
+  --app-danger-soft: rgba(
+    239,
+    68,
+    68,
+    0.18
+  ); // soft error fill — red wash (was bright #fef2f2 pink)
+  --app-success: #22c55e; // brighter green for legibility on dark (connection-recovered check)
+  --app-success-soft: rgba(
+    52,
+    211,
+    153,
+    0.18
+  ); // soft success fill — green wash (was bright #afefc8)
+  --app-warning: #f59e0b; // brighter amber for legibility on dark (connecting / waiting)
   --app-warning-soft: #46341b;
-  --app-on-status:    #0e171c;
-  --app-bubble-other: #202c33;                    // generic other-party bubble (chat uses --im-*; overridden for completeness, was bright gray-100)
+  --app-on-status: #0e171c;
+  --app-bubble-other: #202c33; // generic other-party bubble (chat uses --im-*; overridden for completeness, was bright gray-100)
 
   // IM tokens, dark (WhatsApp dark)
-  --im-chat-bg:        #0b141a;
+  --im-chat-bg: #0b141a;
   // Dark wallpaper variant: the same doodles with light strokes; opacity is
   // nudged up so the pattern stays legible on the deep background.
-  --im-chat-pattern:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.06'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
-  --im-bubble-self:    #005c4b;
-  --im-bubble-other:   #202c33;
-  --im-bubble-text:    #e9edef;
-  --im-meta-bg:        #111b21;   // media meta bar fill (deeper than the bubble so it reads as a chip)
-  --im-time:           rgba(233, 237, 239, 0.5);
-  --im-avatar-other:   #37424a;
-  --im-date-pill-bg:   #182229;
+  --im-chat-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.06'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
+  --im-bubble-self: #005c4b;
+  --im-bubble-other: #202c33;
+  --im-bubble-text: #e9edef;
+  --im-meta-bg: #111b21; // media meta bar fill (deeper than the bubble so it reads as a chip)
+  --im-time: rgba(233, 237, 239, 0.5);
+  --im-avatar-other: #37424a;
+  --im-date-pill-bg: #182229;
   --im-date-pill-text: #8696a0;
   // M3 dark TONAL ELEVATION: lift the inline surface (--im-date-pill-bg) with a ~12% PRIMARY tint toward
   // --app-brand — M3 expresses dark elevation as a primary-color overlay, not a neutral gray. This
   // brand-tinted lift is the robust floating cue (the shared elevation shadow stays subtle on the near-black
   // wallpaper, especially on OLED), and it ties the pill to the theme. The shadow token is intentionally
   // INHERITED from :root unchanged (one value/theme).
-  --im-sticky-date-bg: color-mix(in srgb, var(--im-date-pill-bg) 88%, var(--app-brand) 12%);
+  --im-sticky-date-bg: color-mix(
+    in srgb,
+    var(--im-date-pill-bg) 88%,
+    var(--app-brand) 12%
+  );
 }

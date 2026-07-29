@@ -4,12 +4,21 @@
      `transform: translateY(-K)`, and a transformed ancestor becomes the containing block for this
      `position: fixed` mask — breaking its full-screen `inset: 0`. Keeping the backdrop outside the form
      leaves it anchored to the real viewport. -->
-<div class="ci-backdrop" appPreventFocusSteal
-     [class.ci-backdrop--keyboard]="emojiKeyboard()"
-     [hidden]="!emojiMounted()" (click)="closeEmoji()"></div>
-<form class="ci-input-bar" [class.ci-input-bar--emoji-keyboard]="emojiKeyboard()"
-      [style.--emoji-kbd-height.px]="emojiPanelHeight()"
-      #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
+<div
+  class="ci-backdrop"
+  appPreventFocusSteal
+  [class.ci-backdrop--keyboard]="emojiKeyboard()"
+  [hidden]="!emojiMounted()"
+  (click)="closeEmoji()"
+></div>
+<form
+  class="ci-input-bar"
+  [class.ci-input-bar--emoji-keyboard]="emojiKeyboard()"
+  [style.--emoji-kbd-height.px]="emojiPanelHeight()"
+  #inputBar
+  (submit)="$event.preventDefault()"
+  (keydown.escape)="closeEmoji()"
+>
   <!-- Emoji panel — WhatsApp/Telegram-style category tabs + grid. It floats above the bar on browser/PC;
        the Android native shell reflows it below as an IME replacement. Recents is first when non-empty. -->
   <!-- ALWAYS MOUNTED (not behind @if): the panel and every category grid render ONCE at component init, so
@@ -18,26 +27,43 @@
        rasterized — see chat-input.component.scss. [aria-hidden] keeps the closed panel out of the a11y tree
        (opacity alone would leave it reachable to AT). appPreventFocusSteal on the panel covers every button via
        mousedown bubbling (one directive, not ~440). -->
-  <div class="ci-emoji-panel" appPreventFocusSteal
-       [class.ci-emoji-panel--open]="emojiMounted()"
-       [class.ci-emoji-panel--keyboard]="emojiKeyboard()"
-       [class.ci-emoji-panel--handoff]="keyboardHandoff()"
-       [class.ci-emoji-panel--system-handoff]="switchingToSystem()"
-       [attr.aria-hidden]="!emojiOpen()"
-       (click)="$event.stopPropagation()" role="dialog" [attr.aria-label]="'chat.emojiAria' | transloco">
+  <div
+    class="ci-emoji-panel"
+    appPreventFocusSteal
+    [class.ci-emoji-panel--open]="emojiMounted()"
+    [class.ci-emoji-panel--keyboard]="emojiKeyboard()"
+    [class.ci-emoji-panel--handoff]="keyboardHandoff()"
+    [class.ci-emoji-panel--system-handoff]="switchingToSystem()"
+    [attr.aria-hidden]="!emojiOpen()"
+    (click)="$event.stopPropagation()"
+    role="dialog"
+    [attr.aria-label]="'chat.emojiAria' | transloco"
+  >
     <div class="ci-emoji-tabs" role="tablist">
       @if (emojiKeyboard()) {
-        <button type="button" class="ci-emoji-tab ci-emoji-tab--abc"
-                (click)="showSystemKeyboard()" aria-label="ABC">ABC</button>
+        <button
+          type="button"
+          class="ci-emoji-tab ci-emoji-tab--abc"
+          (click)="showSystemKeyboard()"
+          aria-label="ABC"
+        >
+          ABC
+        </button>
       }
       @for (cat of emojiTabs(); track cat.id) {
-        <button type="button" class="ci-emoji-tab"
-                role="tab"
-                [id]="'emoji-tab-' + cat.id"
-                [attr.aria-controls]="'emoji-panel-' + cat.id"
-                [attr.aria-selected]="activeCategory() === cat.id"
-                [class.ci-emoji-tab--active]="activeCategory() === cat.id"
-                (click)="activeCategory.set(cat.id)" [attr.aria-label]="('chat.emojiTab.' + cat.id) | transloco">{{ cat.icon }}</button>
+        <button
+          type="button"
+          class="ci-emoji-tab"
+          role="tab"
+          [id]="'emoji-tab-' + cat.id"
+          [attr.aria-controls]="'emoji-panel-' + cat.id"
+          [attr.aria-selected]="activeCategory() === cat.id"
+          [class.ci-emoji-tab--active]="activeCategory() === cat.id"
+          (click)="activeCategory.set(cat.id)"
+          [attr.aria-label]="'chat.emojiTab.' + cat.id | transloco"
+        >
+          {{ cat.icon }}
+        </button>
       }
     </div>
     <!-- All category grids are always present; only the active one is opacity:1 + on top. Switching tabs toggles
@@ -45,24 +71,41 @@
          data-emoji. -->
     <div class="ci-emoji-grids" (click)="onGridClick($event)">
       @for (tab of emojiTabs(); track tab.id) {
-        <div class="ci-emoji-grid"
-             role="tabpanel"
-             [id]="'emoji-panel-' + tab.id"
-             [attr.aria-labelledby]="'emoji-tab-' + tab.id"
-             [attr.aria-hidden]="activeCategory() !== tab.id"
-             [attr.inert]="activeCategory() === tab.id ? null : ''"
-             [class.ci-emoji-grid--active]="activeCategory() === tab.id">
+        <div
+          class="ci-emoji-grid"
+          role="tabpanel"
+          [id]="'emoji-panel-' + tab.id"
+          [attr.aria-labelledby]="'emoji-tab-' + tab.id"
+          [attr.aria-hidden]="activeCategory() !== tab.id"
+          [attr.inert]="activeCategory() === tab.id ? null : ''"
+          [class.ci-emoji-grid--active]="activeCategory() === tab.id"
+        >
           @for (e of tab.icons; track e) {
-            <button type="button" class="ci-emoji" [attr.data-emoji]="e">{{ e }}</button>
+            <button type="button" class="ci-emoji" [attr.data-emoji]="e">
+              {{ e }}
+            </button>
           }
         </div>
       }
     </div>
     @if (emojiKeyboard()) {
-      <button type="button" class="ci-emoji-backspace" appPreventFocusSteal
-              (click)="deleteEmojiInput()" aria-label="Backspace">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <button
+        type="button"
+        class="ci-emoji-backspace"
+        appPreventFocusSteal
+        (click)="deleteEmojiInput()"
+        aria-label="Backspace"
+      >
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <path d="M21 4H8l-6 8 6 8h13a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1Z" />
           <path d="m10 9 6 6m0-6-6 6" />
         </svg>
@@ -72,16 +115,33 @@
   <!-- Recording indicator — floats above the bar while the mic is held. position:absolute bottom:100% (like
        the emoji panel; the form is the positioned/transformed containing block). A sibling of the capsule, so
        it never enters the message kernel's height model. Integer-px heights per the project rule. -->
-  <div class="ci-record" [class.ci-record--open]="recording()" role="status"
-       [attr.aria-label]="recordCancelled() ? ('chat.recordReleaseCancel' | transloco) : ('chat.recordingAria' | transloco: { time: recordTimeLabel() })">
+  <div
+    class="ci-record"
+    [class.ci-record--open]="recording()"
+    role="status"
+    [attr.aria-label]="
+      recordCancelled()
+        ? ('chat.recordReleaseCancel' | transloco)
+        : ('chat.recordingAria' | transloco: { time: recordTimeLabel() })
+    "
+  >
     <span class="ci-record-dot"></span>
     <span class="ci-record-time">{{ recordTimeLabel() }}</span>
-    <span class="ci-record-hint" [class.ci-record-hint--cancel]="recordCancelled()">
-      {{ recordCancelled() ? ('chat.recordReleaseCancel' | transloco) : ('chat.recordSlideCancel' | transloco) }}
+    <span
+      class="ci-record-hint"
+      [class.ci-record-hint--cancel]="recordCancelled()"
+    >
+      {{
+        recordCancelled()
+          ? ('chat.recordReleaseCancel' | transloco)
+          : ('chat.recordSlideCancel' | transloco)
+      }}
     </span>
   </div>
   @if (recordError()) {
-    <div class="ci-record-error" role="alert">{{ recordError() | transloco }}</div>
+    <div class="ci-record-error" role="alert">
+      {{ recordError() | transloco }}
+    </div>
   }
   <!-- Live link-card preview — shown above the bar while the draft is a single bare URL (WeChat/WhatsApp-
        style). Built server-side via POST /link-preview; tapping is inert (the card is sent as-is on send).
@@ -100,51 +160,116 @@
   }
   <div class="ci-controls">
     <div class="ci-input-wrap">
-      <button type="button" class="ci-input-ico" appPreventFocusSteal
-              cdkOverlayOrigin #plusTrigger="cdkOverlayOrigin"
-              (click)="toggleAttach()" [class.active]="attachOpen()"
-              aria-haspopup="menu" [attr.aria-expanded]="attachOpen()"
-              [attr.aria-label]="'chat.attachAria' | transloco">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+      <button
+        type="button"
+        class="ci-input-ico"
+        appPreventFocusSteal
+        cdkOverlayOrigin
+        #plusTrigger="cdkOverlayOrigin"
+        (click)="toggleAttach()"
+        [class.active]="attachOpen()"
+        aria-haspopup="menu"
+        [attr.aria-expanded]="attachOpen()"
+        [attr.aria-label]="'chat.attachAria' | transloco"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+          />
         </svg>
       </button>
-      <app-chat-editor class="ci-input" [members]="members()" [placeholder]="placeholder()"
-                       (focusChange)="onEditorFocusChange($event)"
-                       (attachmentPaste)="onAttachmentPaste($event)"
-                       (html)="onHtml($event)" (send)="onEditorSend()"></app-chat-editor>
-      <button type="button" class="ci-input-ico" appPreventFocusSteal
-              (click)="toggleEmoji()" [attr.aria-expanded]="emojiOpen()"
-              [attr.aria-label]="'chat.emojiAria' | transloco">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" />
-          <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+      <app-chat-editor
+        class="ci-input"
+        [members]="members()"
+        [placeholder]="placeholder()"
+        (pointerdown)="onEditorPointerDown()"
+        (focusChange)="onEditorFocusChange($event)"
+        (attachmentPaste)="onAttachmentPaste($event)"
+        (html)="onHtml($event)"
+        (send)="onEditorSend()"
+      ></app-chat-editor>
+      <button
+        type="button"
+        class="ci-input-ico"
+        appPreventFocusSteal
+        (click)="toggleEmoji()"
+        [attr.aria-expanded]="emojiOpen()"
+        [attr.aria-label]="'chat.emojiAria' | transloco"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+          <line x1="9" y1="9" x2="9.01" y2="9" />
+          <line x1="15" y1="9" x2="15.01" y2="9" />
         </svg>
       </button>
     </div>
     <!-- Send key: draft present ⇒ emphasized paper plane; empty ⇒ neutral mic. Mouse/keyboard clicks
          toggle recording; touch/pen use press-hold, release-to-send and slide-to-cancel. -->
-    <button type="button" class="ci-send" appPreventFocusSteal
-            [class.ci-send--has-draft]="!!draftHtml()"
-            [class.ci-send-recording]="recording()"
-            [class.ci-send-cancelled]="recording() && recordCancelled()"
-            (click)="onSendClick()"
-            (pointerdown)="onMicPointerDown($event)"
-            (pointermove)="onMicPointerMove($event)"
-            (pointerup)="onMicPointerUp($event)"
-            (pointercancel)="onMicPointerCancel()"
-            [disabled]="sending()"
-            [attr.aria-label]="draftHtml() ? ('chat.sendAria' | transloco) : (recording() ? ('chat.recordingStateAria' | transloco) : ('chat.recordVoiceAria' | transloco))">
+    <button
+      type="button"
+      class="ci-send"
+      appPreventFocusSteal
+      [class.ci-send--has-draft]="!!draftHtml()"
+      [class.ci-send-recording]="recording()"
+      [class.ci-send-cancelled]="recording() && recordCancelled()"
+      (click)="onSendClick()"
+      (pointerdown)="onMicPointerDown($event)"
+      (pointermove)="onMicPointerMove($event)"
+      (pointerup)="onMicPointerUp($event)"
+      (pointercancel)="onMicPointerCancel()"
+      [disabled]="sending()"
+      [attr.aria-label]="
+        draftHtml()
+          ? ('chat.sendAria' | transloco)
+          : recording()
+            ? ('chat.recordingStateAria' | transloco)
+            : ('chat.recordVoiceAria' | transloco)
+      "
+    >
       @if (draftHtml()) {
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
         </svg>
       } @else {
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <rect x="9" y="3" width="6" height="11" rx="3" />
           <path d="M5 11a7 7 0 0 0 14 0" />
           <line x1="12" y1="18" x2="12" y2="21" />
@@ -162,7 +287,14 @@
     (select)="onAttachSelect($event)"
     (closed)="closeAttach()"
   />
-  <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
+  <input
+    #attachInput
+    type="file"
+    accept="image/*"
+    multiple
+    hidden
+    (change)="onAttachChange($event)"
+  />
   <input #fileInput type="file" hidden (change)="onFileChange($event)" />
 </form>
 @if (pasteOpen()) {

@@ -258,7 +258,7 @@ object SomsSecureStore {
      *  fetch in SomsMessagingService (FCM / WorkManager / the RealtimeService away-coalesce all route through
      *  those). Without it a device on the LAN secondary would route background traffic at the hairpin-
      *  unreachable primary and silently drop every background notification. The /events stream follows via
-     *  RealtimeService.resolveOrigin; Rust's API transports follow via the set_active_origin signal. */
+     *  OriginSelector; Rust's API transports follow via the set_active_origin signal. */
     fun getActiveOrigin(ctx: Context): String? {
         val secondary = getApiOriginSecondary(ctx)
         return if (secondary != null && getOriginMode(ctx) == "secondary") secondary else getApiOrigin(ctx)

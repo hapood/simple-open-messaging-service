@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.media.MediaRecorder
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
@@ -37,6 +38,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import org.json.JSONObject
+import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -66,15 +69,26 @@ import java.util.concurrent.TimeUnit
  */
 class MainActivity : TauriActivity() {
     private var currentPipParams: PictureInPictureParams? = null
+    private var nativePhotoRequestId: String? = null
+    private var nativeFileRequestId: String? = null
     private val nativePhotoPicker = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(20),
     ) { uris ->
-        NativeUploadManager.accept(this, uris, "image")
+        val requestId = nativePhotoRequestId.orEmpty()
+        nativePhotoRequestId = null
+        NativeUploadManager.accept(this, uris, "image", requestId)
     }
     private val nativeFilePicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        NativeUploadManager.accept(this, if (uri == null) emptyList() else listOf(uri), "file")
+        val requestId = nativeFileRequestId.orEmpty()
+        nativeFileRequestId = null
+        NativeUploadManager.accept(
+            this,
+            if (uri == null) emptyList() else listOf(uri),
+            "file",
+            requestId,
+        )
     }
 
     // System-bar insets (status bar / gesture bar) in CSS px, measured per-device via WindowInsets
@@ -104,6 +118,24 @@ class MainActivity : TauriActivity() {
     @Volatile private var imeAnimationStartCss = 0
     @Volatile private var imeAnimationPrepared = false
     @Volatile private var imeAnimationId = 0
+    @Volatile private var imeAnimationRequestId: Long? = null
+    // Visibility is independent of bottom occlusion: a floating IME is visible while reporting a zero
+    // bottom inset. The web state machine uses visibility to choose the active keyboard surface and height
+    // only for layout.
+    @Volatile private var imeVisible = false
+    @Volatile private var imeRequestId: Long? = null
+    @Volatile private var imeRequestVisible: Boolean? = null
+    private val nativeComposer by lazy {
+        NativeComposerController(this) { visible ->
+            setImeVisible(visible, System.currentTimeMillis() * 1000)
+        }
+    }
+    private var nativeVoiceRecorder: MediaRecorder? = null
+    private var nativeVoiceFile: File? = null
+    private var nativeVoiceStartedAt = 0L
+    private var nativeVoiceContextId = 0L
+    private var nativeVoiceThreadId = 0L
+    private var pendingVoiceStart: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -116,6 +148,7 @@ class MainActivity : TauriActivity() {
         // handleBackNavigation=false (WryActivity's webview-history default is off), so we own back here.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (nativeComposer.handleBack()) return
                 SomsBridge.eval("window.__SOMS_BACK__ && window.__SOMS_BACK__();")
             }
         })
@@ -191,7 +224,17 @@ class MainActivity : TauriActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
                 imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
-                if (!imeAnimationPrepared) pushImeEvent("change")
+                imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+                if (!imeAnimationPrepared) {
+                    pushImeEvent(
+                        phase = "change",
+                        targetCss = imeHeightCss,
+                        isFinal = true,
+                    )
+                }
+                nativeComposer.updateInsets(ime.bottom, navBottomDevicePx)
+            } else {
+                nativeComposer.updateInsets(0, navBottomDevicePx)
             }
             applySafeInsetsToWebView()
             insets
@@ -199,9 +242,8 @@ class MainActivity : TauriActivity() {
         // On API 30+ the IME animates open/close (~250ms). Follow it frame-by-frame so the chat input bar
         // slides up in sync with the keyboard (DISPATCH_MODE_STOP: we own the lift — the WebView must NOT
         // auto-resize/scroll for the IME during the animation; after the animation onApplyWindowInsets above
-        // fires once with the settled inset). Below API 30 the IME shows/hides instantly, so the
-        // onApplyWindowInsets push already carries the final height (the Compat layer never calls onProgress
-        // pre-R, so this callback is inert there).
+        // fires once with the settled inset). Below API 30 this callback is inert; the visible-frame listener
+        // below publishes every observed geometry frame and a debounced final.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ViewCompat.setWindowInsetsAnimationCallback(content,
                 object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
@@ -210,7 +252,13 @@ class MainActivity : TauriActivity() {
                             imeAnimationStartCss = imeHeightCss
                             imeAnimationPrepared = true
                             imeAnimationId += 1
-                            pushImeEvent("prepare", currentCss = imeAnimationStartCss)
+                            imeAnimationRequestId = imeRequestId
+                            pushImeEvent(
+                                phase = "prepare",
+                                currentCss = imeAnimationStartCss,
+                                isFinal = false,
+                                requestId = imeAnimationRequestId,
+                            )
                         }
                     }
 
@@ -233,6 +281,8 @@ class MainActivity : TauriActivity() {
                                 currentCss = imeAnimationStartCss,
                                 targetCss = target,
                                 durationMs = animation.durationMillis,
+                                isFinal = false,
+                                requestId = imeAnimationRequestId,
                             )
                         }
                         return bounds
@@ -244,32 +294,72 @@ class MainActivity : TauriActivity() {
                     ): WindowInsetsCompat {
                         val d = resources.displayMetrics.density
                         imeHeightCss = Math.max(0, Math.round(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom / d))
-                        pushImeEvent("progress")
+                        imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+                        nativeComposer.updateInsets(
+                            insets.getInsets(WindowInsetsCompat.Type.ime()).bottom,
+                            navBottomDevicePx,
+                        )
+                        pushImeEvent(
+                            phase = "progress",
+                            isFinal = false,
+                            requestId = imeAnimationRequestId,
+                        )
                         return insets
                     }
 
                     override fun onEnd(animation: WindowInsetsAnimationCompat) {
                         if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
                             imeAnimationPrepared = false
-                            pushImeEvent("end")
+                            // onEnd can follow a cancelled/reversed animation. Re-sample root insets rather
+                            // than trusting the last progress frame, then publish one authoritative final.
+                            ViewCompat.getRootWindowInsets(content)?.let { finalInsets ->
+                                val d = resources.displayMetrics.density
+                                imeHeightCss = Math.max(
+                                    0,
+                                    Math.round(finalInsets.getInsets(WindowInsetsCompat.Type.ime()).bottom / d),
+                                )
+                                imeVisible = finalInsets.isVisible(WindowInsetsCompat.Type.ime())
+                            }
+                            pushImeEvent(
+                                phase = "end",
+                                targetCss = imeHeightCss,
+                                isFinal = true,
+                                requestId = imeAnimationRequestId,
+                            )
+                            imeAnimationRequestId = null
                         }
                     }
                 })
         }
         // Pre-API-30 IME source: a global-layout listener that recomputes the keyboard height from the content
-        // view's visible display frame. Opening/closing the keyboard resizes the visible frame, which triggers a
-        // layout pass → this fires. (onApplyWindowInsets also delivers Type.ime() pre-30, but its Compat backport
-        // is unreliable on OEM ROMs — see imeHeightCss.) Guarded on change so a layout pass that doesn't move the
-        // keyboard is a no-op. Gated to pre-R: on API 30+ Type.ime() plus the WindowInsetsAnimation callback above
-        // are authoritative, so this listener is dormant there.
+        // view's visible display frame. Every observed geometry change is still published as progress so the
+        // native protocol loses no information; today's web layout deliberately ignores those old-platform
+        // progress frames and commits only the debounced final. (onApplyWindowInsets also delivers Type.ime()
+        // pre-30, but its Compat backport is unreliable on OEM ROMs — see imeHeightCss.) Gated to pre-R:
+        // on API 30+ Type.ime() plus WindowInsetsAnimation are authoritative.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            var finalRunnable: Runnable? = null
             content.viewTreeObserver.addOnGlobalLayoutListener {
                 val d = resources.displayMetrics.density
                 val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
                 val derivedCss = Math.max(0, Math.round(derived / d))
                 if (derivedCss != imeHeightCss) {
                     imeHeightCss = derivedCss
-                    pushImeEvent("change")
+                    imeVisible = derivedCss > 0
+                    nativeComposer.updateInsets(derived, navBottomDevicePx)
+                    pushImeEvent(
+                        phase = "progress",
+                        targetCss = derivedCss,
+                        isFinal = false,
+                    )
+                    finalRunnable?.let(content::removeCallbacks)
+                    finalRunnable = Runnable {
+                        pushImeEvent(
+                            phase = "change",
+                            targetCss = imeHeightCss,
+                            isFinal = true,
+                        )
+                    }.also { content.postDelayed(it, 80L) }
                 }
             }
         }
@@ -305,6 +395,8 @@ class MainActivity : TauriActivity() {
         currentCss: Int = imeHeightCss,
         targetCss: Int? = null,
         durationMs: Long = 0,
+        isFinal: Boolean,
+        requestId: Long? = imeRequestId,
     ) {
         val v = SomsBridge.webView ?: return
         val payload = JSONObject()
@@ -313,24 +405,56 @@ class MainActivity : TauriActivity() {
             .put("targetPx", targetCss ?: JSONObject.NULL)
             .put("durationMs", durationMs)
             .put("animationId", imeAnimationId)
-            .put("visible", currentCss > 0)
+            .put("requestId", requestId ?: JSONObject.NULL)
+            .put("visible", imeVisible)
+            .put("isFinal", isFinal)
             .toString()
         v.evaluateJavascript(
             "window.__SOMS_IME_EVENT__&&window.__SOMS_IME_EVENT__($payload);",
             null,
         )
+        if (
+            isFinal &&
+            requestId != null &&
+            imeRequestId == requestId &&
+            imeRequestVisible == imeVisible
+        ) {
+            imeRequestId = null
+            imeRequestVisible = null
+        }
     }
 
     /** Atomic visibility request. DOM focus and keyboard-mode policy remain entirely in Angular. */
-    private fun setImeVisible(visible: Boolean) {
+    private fun setImeVisible(visible: Boolean, requestId: Long) {
         val v = SomsBridge.webView ?: return
+        imeRequestId = requestId
+        imeRequestVisible = visible
         runOnUiThread {
             v.post {
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 val controller = WindowInsetsControllerCompat(window, v)
+                if (imeVisible == visible) {
+                    pushImeEvent(
+                        phase = "change",
+                        targetCss = imeHeightCss,
+                        isFinal = true,
+                    )
+                    return@post
+                }
                 if (visible) {
+                    // Re-establish the WebView/InputConnection for the explicit emoji → system-keyboard
+                    // handoff. Normal editor taps use Chromium's automatic keyboard policy.
+                    v.requestFocusFromTouch()
+                    imm.restartInput(v)
                     controller.show(WindowInsetsCompat.Type.ime())
-                    imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    // WindowInsetsController is the primary API. Some older OEM WebViews ignore it even
+                    // with a live InputConnection; only then issue the InputMethodManager fallback.
+                    v.postDelayed({
+                        if (imeRequestId == requestId && !imeVisible) {
+                            imm.restartInput(v)
+                            imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                        }
+                    }, 120L)
                 } else {
                     controller.hide(WindowInsetsCompat.Type.ime())
                     imm.hideSoftInputFromWindow(v.windowToken, 0)
@@ -422,9 +546,10 @@ class MainActivity : TauriActivity() {
         private val activityRef = java.lang.ref.WeakReference(activity)
 
         @JavascriptInterface
-        fun pickPhotos() {
+        fun pickPhotos(requestId: String) {
             val activity = activityRef.get() ?: return
             activity.runOnUiThread {
+                activity.nativePhotoRequestId = requestId
                 activity.nativePhotoPicker.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
                 )
@@ -432,17 +557,31 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
-        fun pickFile() {
+        fun pickFile(requestId: String) {
             val activity = activityRef.get() ?: return
             activity.runOnUiThread {
+                activity.nativeFileRequestId = requestId
                 activity.nativeFilePicker.launch(arrayOf("*/*"))
             }
         }
 
         @JavascriptInterface
-        fun upload(uploadId: String, kind: String, clientMessageId: String?, fieldsJson: String?) {
+        fun upload(
+            uploadId: String,
+            attemptId: String,
+            kind: String,
+            clientMessageId: String?,
+            fieldsJson: String?,
+        ) {
             activityRef.get()?.let {
-                NativeUploadManager.upload(it.applicationContext, uploadId, kind, clientMessageId, fieldsJson)
+                NativeUploadManager.upload(
+                    it.applicationContext,
+                    uploadId,
+                    attemptId,
+                    kind,
+                    clientMessageId,
+                    fieldsJson,
+                )
             }
         }
 
@@ -452,8 +591,23 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
-        fun cancel(uploadId: String) {
-            NativeUploadManager.cancel(uploadId)
+        fun release(uploadId: String) {
+            NativeUploadManager.release(uploadId)
+        }
+
+        @JavascriptInterface
+        fun cancel(uploadId: String, attemptId: String) {
+            NativeUploadManager.cancel(uploadId, attemptId)
+        }
+
+        @JavascriptInterface
+        fun getState(uploadId: String): String {
+            return NativeUploadManager.state(uploadId)
+        }
+
+        @JavascriptInterface
+        fun finish(uploadId: String, attemptId: String, succeeded: Boolean) {
+            NativeUploadManager.finishAttempt(uploadId, attemptId, succeeded)
         }
     }
 
@@ -654,6 +808,7 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        finishNativeVoiceRecording(cancel = true)
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
         SomsBridge.webView = null
@@ -665,6 +820,77 @@ class MainActivity : TauriActivity() {
         CallController.setVideoGeometryListener(null)
         CallController.onWebViewGone()
         super.onDestroy()
+    }
+
+    internal fun nativeVoiceRecording(): Boolean = nativeVoiceRecorder != null
+
+    internal fun cancelPendingNativeVoiceStart() {
+        pendingVoiceStart = null
+    }
+
+    internal fun beginNativeVoiceRecording(
+        contextId: Long,
+        threadId: Long,
+        @Suppress("UNUSED_PARAMETER") actionId: Long,
+    ) {
+        if (nativeVoiceRecorder != null || threadId <= 0L) return
+        val start = { startNativeVoiceRecorder(contextId, threadId) }
+        if (
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            start()
+        } else {
+            pendingVoiceStart = start
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_VOICE_PERM)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startNativeVoiceRecorder(contextId: Long, threadId: Long) {
+        val file = File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
+        val recorder = MediaRecorder()
+        try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioEncodingBitRate(64_000)
+            recorder.setAudioSamplingRate(44_100)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.prepare()
+            recorder.start()
+            nativeVoiceRecorder = recorder
+            nativeVoiceFile = file
+            nativeVoiceStartedAt = android.os.SystemClock.elapsedRealtime()
+            nativeVoiceContextId = contextId
+            nativeVoiceThreadId = threadId
+        } catch (error: Throwable) {
+            runCatching { recorder.release() }
+            file.delete()
+            SomsLog.w("Voice", error) { "native recorder start failed" }
+        }
+    }
+
+    internal fun finishNativeVoiceRecording(cancel: Boolean) {
+        val recorder = nativeVoiceRecorder ?: return
+        val file = nativeVoiceFile
+        val duration = android.os.SystemClock.elapsedRealtime() - nativeVoiceStartedAt
+        nativeVoiceRecorder = null
+        nativeVoiceFile = null
+        runCatching { recorder.stop() }
+        runCatching { recorder.release() }
+        if (cancel || duration < 500L || file == null || !file.isFile || file.length() == 0L) {
+            file?.delete()
+            return
+        }
+        RustUploadBridge.uploadVoicePath(
+            file.absolutePath,
+            nativeVoiceContextId,
+            nativeVoiceThreadId,
+            UUID.randomUUID().toString(),
+            duration,
+            file.length(),
+        )
     }
 
     /** Result of the POST_NOTIFICATIONS prompt (Android 13+). We don't branch on grant/deny — the Settings
@@ -679,6 +905,12 @@ class MainActivity : TauriActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_POST_NOTIF) {
             SomsSecureStore.setNotifPermRequested(this, true)
+            return
+        }
+        if (requestCode == REQ_VOICE_PERM) {
+            val start = pendingVoiceStart
+            pendingVoiceStart = null
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) start?.invoke()
             return
         }
         if (requestCode == REQ_CALL_PERMS) {
@@ -975,6 +1207,14 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun getConnState(): String = RealtimeService.connState
 
+        /** Run Android's shared origin race before login. RealtimeService uses the exact same selector for
+         * reconnects, so login/API and SSE cannot disagree because of duplicated selection logic. */
+        @JavascriptInterface
+        fun pickActiveOrigin(): String? {
+            val a = activityRef.get() ?: return null
+            return OriginSelector.select(a)
+        }
+
         /** User tapped the disconnected chip: tell RealtimeService to cancel its pending backoff and
          *  reconnect immediately (parity with the worker's retry-now and Rust's sse_net(online:true)).
          *  Delivered as an Intent action the same way ACTION_FOREGROUND/BACKGROUND are; a no-op if the
@@ -1221,14 +1461,43 @@ class MainActivity : TauriActivity() {
             val current = a?.imeHeightCss ?: 0
             return JSONObject()
                 .put("currentPx", current)
-                .put("visible", current > 0)
+                .put("visible", a?.imeVisible ?: false)
+                .put("requestId", a?.imeRequestId ?: JSONObject.NULL)
                 .toString()
         }
 
         /** Atomic capability only; Angular owns focus, timing, and keyboard-mode policy. */
         @JavascriptInterface
-        fun setImeVisible(visible: Boolean) {
-            activityRef.get()?.setImeVisible(visible)
+        fun setImeVisible(visible: Boolean, requestId: Long) {
+            activityRef.get()?.setImeVisible(visible, requestId)
+        }
+
+        @JavascriptInterface
+        fun showComposer(contextJson: String) {
+            activityRef.get()?.runOnUiThread {
+                activityRef.get()?.nativeComposer?.show(contextJson)
+            }
+        }
+
+        @JavascriptInterface
+        fun updateComposer(patchJson: String) {
+            activityRef.get()?.runOnUiThread {
+                activityRef.get()?.nativeComposer?.update(patchJson)
+            }
+        }
+
+        @JavascriptInterface
+        fun acknowledgeComposerAction(actionId: Long, accepted: Boolean) {
+            activityRef.get()?.runOnUiThread {
+                activityRef.get()?.nativeComposer?.acknowledge(actionId, accepted)
+            }
+        }
+
+        @JavascriptInterface
+        fun hideComposer(contextId: Long) {
+            activityRef.get()?.runOnUiThread {
+                activityRef.get()?.nativeComposer?.hide(contextId)
+            }
         }
 
         /** Clear HTTP memory/disk cache only. Cookies, DOM storage, IndexedDB, and login state survive. */
@@ -1440,6 +1709,7 @@ class MainActivity : TauriActivity() {
         /** Runtime-permission request for a call's mic (+ camera for VIDEO) — see ensureCallPermissions.
          *  Distinct from REQ_POST_NOTIF so onRequestPermissionsResult routes the result to the deferred call. */
         private const val REQ_CALL_PERMS = 1002
+        private const val REQ_VOICE_PERM = 1003
         private const val PIP_REQ_MUTE = 7101
         private const val PIP_REQ_END = 7102
         private const val PIP_ENTER_CONFIRM_MS = 750L

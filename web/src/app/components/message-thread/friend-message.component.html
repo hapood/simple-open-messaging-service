@@ -206,10 +206,12 @@
         {{ 'chat.blockedBanner' | transloco }}
       </button>
     } @else {
-      <app-chat-input
-        [members]="[]"
-        (send)="onSendIntent($event)"
-      ></app-chat-input>
+      @if (!nativeComposer.supported) {
+        <app-chat-input
+          [members]="[]"
+          (send)="onSendIntent($event)"
+        ></app-chat-input>
+      }
     }
   </div>
 </div>

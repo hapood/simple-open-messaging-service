@@ -97,24 +97,28 @@ describe('KeyboardInsetService', () => {
     const svc = TestBed.inject(KeyboardInsetService);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 300, targetPx: null, durationMs: 0, animationId: 0, visible: true,
+      phase: 'change', currentPx: 300, targetPx: 300, durationMs: 0, animationId: 0,
+      requestId: null, visible: true, isFinal: true,
     });
     expect(svc.inset()).toBe(300);
     expect(svc.open()).toBe(true);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 0, targetPx: null, durationMs: 0, animationId: 0, visible: false,
+      phase: 'change', currentPx: 0, targetPx: 0, durationMs: 0, animationId: 0,
+      requestId: null, visible: false, isFinal: true,
     });
     expect(svc.inset()).toBe(0);
     expect(svc.open()).toBe(false);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: -50, targetPx: null, durationMs: 0, animationId: 0, visible: false,
+      phase: 'change', currentPx: -50, targetPx: 0, durationMs: 0, animationId: 0,
+      requestId: null, visible: false, isFinal: true,
     }); // negative → clamped to 0
     expect(svc.inset()).toBe(0);
 
     window.__SOMS_IME_EVENT__!({
-      phase: 'change', currentPx: 123.9, targetPx: null, durationMs: 0, animationId: 0, visible: true,
+      phase: 'change', currentPx: 123.9, targetPx: 123.9, durationMs: 0, animationId: 0,
+      requestId: null, visible: true, isFinal: true,
     }); // fractional → truncated
     expect(svc.inset()).toBe(123);
   });
@@ -129,7 +133,9 @@ describe('KeyboardInsetService', () => {
       targetPx: 321.9,
       durationMs: 249.8,
       animationId: 1,
+      requestId: 7,
       visible: false,
+      isFinal: false,
     });
     expect(svc.animation()).toEqual({ target: 321, durationMs: 249 });
 
@@ -139,9 +145,53 @@ describe('KeyboardInsetService', () => {
       targetPx: null,
       durationMs: 0,
       animationId: 1,
+      requestId: 7,
       visible: true,
+      isFinal: true,
     });
     expect(svc.animation()).toBeNull();
+  });
+
+  it('moves to the Android 11 endpoint once and ignores progress layout churn', () => {
+    installKeyboardInsetBridge();
+    const svc = TestBed.inject(KeyboardInsetService);
+    const settledVisibility = svc.visible();
+
+    window.__SOMS_IME_EVENT__!({
+      phase: 'start', currentPx: 0, targetPx: 320, durationMs: 250,
+      animationId: 2, requestId: 8, visible: false, isFinal: false,
+    });
+    expect(svc.inset()).toBe(320);
+
+    window.__SOMS_IME_EVENT__!({
+      phase: 'progress', currentPx: 91, targetPx: 320, durationMs: 250,
+      animationId: 2, requestId: 8, visible: true, isFinal: false,
+    });
+    expect(svc.inset()).toBe(320);
+    expect(svc.visible()).toBe(settledVisibility);
+
+    window.__SOMS_IME_EVENT__!({
+      phase: 'end', currentPx: 318, targetPx: 318, durationMs: 0,
+      animationId: 2, requestId: 8, visible: true, isFinal: true,
+    });
+    expect(svc.inset()).toBe(318);
+    expect(svc.visible()).toBe(true);
+  });
+
+  it('treats a visible floating IME with zero bottom inset as open', () => {
+    installKeyboardInsetBridge();
+    const svc = TestBed.inject(KeyboardInsetService);
+
+    window.__SOMS_IME_EVENT__!({
+      phase: 'change', currentPx: 0, targetPx: 0, durationMs: 0,
+      animationId: 3, requestId: 9, visible: true, isFinal: true,
+    });
+
+    expect(svc.inset()).toBe(0);
+    expect(svc.visible()).toBe(true);
+    // The browser test environment is not Android-native, so `open` follows browser occlusion here;
+    // native state-machine consumers use `visible()` directly for the floating-IME distinction.
+    expect(svc.open()).toBe(false);
   });
 
   it('visualViewport resize (browser) feeds inset and drives the open event', () => {

@@ -128,6 +128,8 @@ declare global {
        *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
        *  connection-state signal before the next state transition. Android-only. */
       getConnState: () => string;
+      /** Race the configured origins through Android's shared native selector. */
+      pickActiveOrigin: () => string | null;
       /** User tapped the disconnected chip: cancel Kotlin's pending backoff + reconnect now (the JS→native
        *  retry channel — parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered as
        *  an ACTION_RETRY Intent; a no-op if the stream is already open. Android-only. */
@@ -204,10 +206,17 @@ declare global {
     SomsShell?: {
       getSafeInsets: () => string;
       getImeSnapshot?: () => string;
-      setImeVisible?: (visible: boolean) => void;
+      setImeVisible?: (visible: boolean, requestId: number) => void;
+      showComposer?: (contextJson: string) => void;
+      updateComposer?: (patchJson: string) => void;
+      acknowledgeComposerAction?: (actionId: number, accepted: boolean) => void;
+      hideComposer?: (contextId: number) => void;
       /** Clear Android WebView's HTTP memory/disk cache without touching cookies or web storage. */
       clearWebViewCache?: () => void;
     };
+    __SOMS_COMPOSER_EVENT__?: (
+      event: import('./native-composer.service').NativeComposerEvent,
+    ) => void;
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
      *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
      *  (CallController); the Angular layer is the call "chrome" and drives it through these. The EVENT
@@ -260,32 +269,49 @@ declare global {
       swapVideo: () => void;
     };
     SomsUpload?: {
-      pickPhotos: () => void;
-      pickFile: () => void;
+      pickPhotos: (requestId: string) => void;
+      pickFile: (requestId: string) => void;
       upload: (
         uploadId: string,
+        attemptId: string,
         kind: string,
         clientMessageId: string | null,
         fieldsJson: string | null,
       ) => void;
-      cancel: (uploadId: string) => void;
+      cancel: (uploadId: string, attemptId: string) => void;
+      release: (uploadId: string) => void;
       discard: (uploadId: string) => void;
+      getState: (uploadId: string) => string;
+      finish?: (
+        uploadId: string,
+        attemptId: string,
+        succeeded: boolean,
+      ) => void;
     };
     __SOMS_UPLOAD_PICKED__?: (payload: {
+      requestId: string;
       items: import('./native-upload.service').NativeUploadSelection[];
     }) => void;
     __SOMS_UPLOAD_PROGRESS__?: (payload: {
       uploadId: string;
+      attemptId: string;
       loaded: number;
       total: number;
     }) => void;
     __SOMS_UPLOAD_COMPLETED__?: (payload: {
       uploadId: string;
+      attemptId: string;
       response: unknown;
     }) => void;
     __SOMS_UPLOAD_FAILED__?: (payload: {
       uploadId: string;
+      attemptId: string;
+      category: import('./native-upload.service').NativeUploadErrorCategory;
       message: string;
+      retryable: boolean;
+      status?: number;
+      code?: number;
+      retryAfter?: number;
     }) => void;
     /** Kotlin→JS push (CallController.pushSnapshot): the native call FSM's current snapshot
      *  ({phase, callSid, …, mediaState, startedAt, muted}) whenever a transition the native layer owns
@@ -319,7 +345,9 @@ declare global {
       targetPx: number | null;
       durationMs: number;
       animationId: number;
+      requestId: number | null;
       visible: boolean;
+      isFinal: boolean;
     }) => void;
     /** Kotlin→JS push (RealtimeService.forwardToJs): one `/events` frame forwarded from the native-owned
      *  SSE, so the Android WebView consumes realtime without opening its own worker. Installed by the
@@ -382,7 +410,8 @@ export function isAndroidNative(): boolean {
 export function clearNativeMediaCache(): void {
   if (!isAndroidNative()) return;
   const clear = window.SomsShell?.clearWebViewCache;
-  if (!clear) throw new Error('Android clearWebViewCache bridge is unavailable');
+  if (!clear)
+    throw new Error('Android clearWebViewCache bridge is unavailable');
   clear();
 }
 
@@ -661,9 +690,17 @@ export function pickLoginOrigin(force = false): Promise<string> {
   if (!isTauri()) return Promise.resolve(apiOrigin());
   if (force) loginPickPromise = null;
   if (!loginPickPromise) {
-    loginPickPromise = tauriInvoke<string>('init_pick_origin')
+    const pick =
+      isAndroidNative() && window.SomsFcm?.pickActiveOrigin
+        ? Promise.resolve(
+            window.SomsFcm.pickActiveOrigin() ?? apiOrigin(),
+          ).then(async (origin) => {
+            await tauriInvoke('set_active_origin', { url: origin });
+            return origin;
+          })
+        : tauriInvoke<string>('init_pick_origin');
+    loginPickPromise = pick
       .then((origin) => {
-        window.SomsFcm?.useActiveOrigin?.(origin);
         return origin;
       })
       .catch((e) => {
@@ -718,11 +755,8 @@ export function installActiveOriginBridge(): void {
   // Rust owns HTTP failover. When its concurrent race succeeds, make Android's persisted native mode
   // follow the exact winner and force `/events` to reopen on it. Desktop has no SomsFcm bridge; its Rust
   // SSE supervisor is reset directly through origin_notify.
-  void window.__TAURI__?.event?.listen?.(
-    'active-origin-changed',
-    (event) => {
-      const origin = typeof event.payload === 'string' ? event.payload : '';
-      if (origin) window.SomsFcm?.useActiveOrigin?.(origin);
-    },
-  );
+  void window.__TAURI__?.event?.listen?.('active-origin-changed', (event) => {
+    const origin = typeof event.payload === 'string' ? event.payload : '';
+    if (origin) window.SomsFcm?.useActiveOrigin?.(origin);
+  });
 }

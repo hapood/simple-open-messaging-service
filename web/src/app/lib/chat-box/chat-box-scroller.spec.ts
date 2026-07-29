@@ -650,6 +650,27 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.firstElementChild?.classList.contains('cb-ghost-loading')).toBe(true);
   });
 
+  it('init fill: an empty older page reveals the top skeleton as a real row', async () => {
+    // A cache page may not carry an `oldest` boundary yet; the follow-up empty page is then the first
+    // authoritative floor signal. Merely setting noOlder used to leave the skeleton component mounted.
+    const source: CbSource<number> = {
+      init: async () => [{ id: 7, data: 7, boundary: 'newest' }],
+      getOlder: async () => [],
+      getNewer: async () => [],
+      pushLive: () => {},
+      getPending: () => [],
+      destroy: () => {},
+    };
+    const { hooks } = skeletonHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source });
+
+    await scroller.init();
+
+    expect(scroller.getInfo().noOlder).toBe(true);
+    expect(content.querySelectorAll('.cb-ghost-loading').length).toBe(0);
+    expect(content.querySelectorAll('.real').length).toBe(1);
+  });
+
   // Reproduces the production "shows some messages, then flashes to another batch on first init" glitch. Root cause: when
   // the init batch is sub-threshold (production's MAX_PAGE=50 caps a 100-item initBatch), the fill loop awaits getOlder —
   // a macrotask boundary, so the browser paints between the init mount and that resolve. The kernel MUST pin to the bottom
@@ -673,6 +694,32 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller!.getInfo().atBottom).toBe(true);  // still viewing the global newest after the fill completes
     expect(scroller!.getInfo().newestId).toBe(499);
     expect(scroller!.getInfo().mounted).toBe(70);     // 20 init + 50 fill
+  });
+
+  it('deferred init reveals the first page without getOlder, then backfills one anchored page', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(500);
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source: src,
+      config: { initBatch: 20, deferInitFill: true },
+    });
+
+    await scroller.init();
+
+    expect(src.gets()).toBe(0);
+    expect(scroller.getInfo().mounted).toBe(20);
+    expect(scroller.getInfo().newestId).toBe(499);
+    expect(scroller.getInfo().atBottom).toBe(true);
+
+    await scroller.backfillOlder();
+
+    expect(src.gets()).toBe(1);
+    expect(scroller.getInfo().mounted).toBe(70);
+    expect(scroller.getInfo().newestId).toBe(499);
+    expect(scroller.getInfo().atBottom).toBe(true);
   });
 
   it('loadOlder trims the newest end → noNewer resets to false (loadNewer can load it back; fixes downward-scroll / pin-to-bottom stall)', async () => {
@@ -1755,6 +1802,27 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(cap.classList.contains('cb-tail-cap--loading')).toBe(false);
     expect(cap.offsetHeight).toBe(14); // MEASURED: CSS owns the dimension, the kernel reads offsetHeight
     expect(sumChildrenHeight(content)).toBe(100 * 100 + 14); // cap height folded into the content total
+  });
+
+  it('tail cap: async aggregate growth follows bottom through the shared anchor logic', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    let capH = cap.offsetHeight;
+    Object.defineProperty(cap, 'offsetHeight', {
+      configurable: true,
+      get: () => capH,
+    });
+    const before = viewport.scrollTop;
+
+    capH += 120;
+    (
+      scroller as unknown as { onTailCapResize: () => void }
+    ).onTailCapResize();
+
+    expect(viewport.scrollTop).toBe(before + 120);
+    expect(scroller.getInfo().atBottom).toBe(true);
   });
 
   it('tail cap: loading mode (!noNewer) after a mid-history jump — cb-tail-cap--loading spinner', async () => {

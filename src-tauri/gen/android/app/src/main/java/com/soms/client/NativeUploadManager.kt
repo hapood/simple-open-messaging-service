@@ -8,20 +8,11 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Base64
-import okhttp3.Call
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody
-import okhttp3.Response
-import okio.BufferedSink
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
 /**
@@ -47,14 +38,14 @@ object NativeUploadManager {
     )
 
     private val selections = ConcurrentHashMap<String, Selection>()
-    private val calls = ConcurrentHashMap<String, Call>()
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)
-        .writeTimeout(0, TimeUnit.SECONDS)
-        .build()
+    private data class ActiveUpload(
+        val attemptId: String,
+        val clientMessageId: String,
+    )
 
-    fun accept(context: Context, uris: List<Uri>, requestedKind: String) {
+    private val calls = ConcurrentHashMap<String, ActiveUpload>()
+
+    fun accept(context: Context, uris: List<Uri>, requestedKind: String, requestId: String) {
         val items = JSONArray()
         for (uri in uris) {
             inspect(context, uri)?.let { selection ->
@@ -73,117 +64,113 @@ object NativeUploadManager {
                 })
             }
         }
-        emit("__SOMS_UPLOAD_PICKED__", JSONObject().put("items", items))
+        emit(
+            "__SOMS_UPLOAD_PICKED__",
+            JSONObject().put("requestId", requestId).put("items", items),
+        )
     }
 
     fun discard(uploadId: String) {
-        calls.remove(uploadId)?.cancel()
+        calls.remove(uploadId)?.let { RustUploadBridge.cancelUpload(it.clientMessageId) }
         selections.remove(uploadId)
     }
 
-    fun cancel(uploadId: String) {
-        calls.remove(uploadId)?.cancel()
+    fun release(uploadId: String) {
+        selections.remove(uploadId)
+    }
+
+    fun cancel(uploadId: String, attemptId: String) {
+        val active = calls[uploadId] ?: return
+        if (active.attemptId != attemptId) return
+        if (calls.remove(uploadId, active)) {
+            RustUploadBridge.cancelUpload(active.clientMessageId)
+        }
+    }
+
+    fun state(uploadId: String): String = when {
+        calls.containsKey(uploadId) -> "uploading"
+        selections.containsKey(uploadId) -> "selected"
+        else -> "missing"
     }
 
     fun upload(
         context: Context,
         uploadId: String,
+        attemptId: String,
         kind: String,
         clientMessageId: String?,
         fieldsJson: String?,
     ) {
-        val selected = selections[uploadId] ?: return fail(uploadId, "selection expired")
-        val origin = SomsSecureStore.getActiveOrigin(context) ?: return fail(uploadId, "origin missing")
-        val token = SomsSecureStore.getSessionToken(context) ?: return fail(uploadId, "session missing")
+        val selected = selections[uploadId]
+            ?: return fail(uploadId, attemptId, "selection", "selection expired", false)
         val endpoint = when (kind.lowercase()) {
             "image" -> "/upload"
             "video" -> "/upload/video"
             "file" -> "/upload/file"
-            else -> return fail(uploadId, "unsupported upload kind")
+            else -> return fail(
+                uploadId,
+                attemptId,
+                "unsupported",
+                "unsupported upload kind",
+                false,
+            )
         }
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-        val fields = runCatching { JSONObject(fieldsJson ?: "{}") }.getOrElse { JSONObject() }
-        for (key in fields.keys()) body.addFormDataPart(key, fields.optString(key))
-        body.addFormDataPart(
-            "file",
-            selected.name,
-            ContentUriBody(context, selected, uploadId),
+        val cid = clientMessageId.orEmpty()
+        if (cid.isBlank()) {
+            return fail(uploadId, attemptId, "validation", "client message id missing", false)
+        }
+        val descriptor = runCatching {
+            context.contentResolver.openFileDescriptor(selected.uri, "r")
+        }.getOrNull() ?: return fail(
+            uploadId,
+            attemptId,
+            "selection",
+            "selected content is unavailable",
+            false,
         )
-        val request = Request.Builder()
-            .url("$origin${SomsSecureStore.API_PREFIX}$endpoint")
-            .header("Authorization", "Bearer $token")
-            .apply {
-                if (!clientMessageId.isNullOrBlank()) {
-                    header("x-client-message-id", clientMessageId)
-                }
-            }
-            .post(body.build())
-            .build()
-        val call = http.newCall(request)
-        calls[uploadId] = call
-        call.enqueue(object : okhttp3.Callback {
-            override fun onFailure(call: Call, e: java.io.IOException) {
-                calls.remove(uploadId)
-                if (!call.isCanceled()) {
-                    SomsLog.w("Upload", e) { "failed id=$uploadId cid=$clientMessageId" }
-                    fail(uploadId, e.message ?: "upload failed")
-                }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                calls.remove(uploadId)
-                response.use {
-                    val text = it.body?.string().orEmpty()
-                    val json = runCatching { JSONObject(text) }.getOrNull()
-                    val code = json?.optInt("code", -1) ?: -1
-                    if (!it.isSuccessful || code != 0) {
-                        val data = json?.optJSONObject("data")
-                        val category = data?.optString("category").orEmpty()
-                        val retryAfter = data?.optLong("retryAfter", -1) ?: -1
-                        SomsLog.w("Upload") {
-                            "failed id=$uploadId cid=$clientMessageId kind=$kind status=${it.code} " +
-                                "code=$code category=$category retryAfter=$retryAfter"
-                        }
-                    }
-                    if (!it.isSuccessful) {
-                        fail(uploadId, "HTTP ${it.code}: $text")
-                    } else {
-                        selections.remove(uploadId)
-                        emit("__SOMS_UPLOAD_COMPLETED__", JSONObject().apply {
-                            put("uploadId", uploadId)
-                            put("response", json ?: text)
-                        })
-                    }
-                }
-            }
-        })
+        val active = ActiveUpload(attemptId, cid)
+        if (calls.putIfAbsent(uploadId, active) != null) {
+            descriptor.close()
+            return fail(
+                uploadId,
+                attemptId,
+                "busy",
+                "upload already in progress",
+                false,
+            )
+        }
+        val fd = descriptor.detachFd()
+        try {
+            RustUploadBridge.uploadFd(
+                fd,
+                uploadId,
+                attemptId,
+                endpoint,
+                selected.name,
+                selected.mime,
+                selected.size,
+                fieldsJson ?: "{}",
+                cid,
+            )
+        } catch (error: Throwable) {
+            calls.remove(uploadId, active)
+            android.os.ParcelFileDescriptor.adoptFd(fd).close()
+            fail(
+                uploadId,
+                attemptId,
+                "unsupported",
+                error.message ?: "Rust uploader unavailable",
+                false,
+            )
+        }
     }
 
-    private class ContentUriBody(
-        private val context: Context,
-        private val selected: Selection,
-        private val uploadId: String,
-    ) : RequestBody() {
-        override fun contentType() = selected.mime.toMediaTypeOrNull()
-        override fun contentLength() = selected.size
-
-        override fun writeTo(sink: BufferedSink) {
-            context.contentResolver.openInputStream(selected.uri).use { input ->
-                requireNotNull(input) { "selected content is unavailable" }
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var sent = 0L
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    sink.write(buffer, 0, read)
-                    sent += read
-                    emit("__SOMS_UPLOAD_PROGRESS__", JSONObject().apply {
-                        put("uploadId", uploadId)
-                        put("loaded", sent)
-                        put("total", selected.size)
-                    })
-                }
-            }
-        }
+    /** Rust owns completion after descriptor transfer. JS calls release on success; failure/retry keeps
+     * the selection metadata and can open a fresh descriptor for the next attempt. */
+    fun finishAttempt(uploadId: String, attemptId: String, succeeded: Boolean) {
+        val active = calls[uploadId] ?: return
+        if (active.attemptId != attemptId || !calls.remove(uploadId, active)) return
+        if (succeeded) selections.remove(uploadId)
     }
 
     private fun inspect(context: Context, uri: Uri): Selection? = runCatching {
@@ -285,8 +272,29 @@ object NativeUploadManager {
         else -> "file"
     }
 
-    private fun fail(uploadId: String, message: String) {
-        emit("__SOMS_UPLOAD_FAILED__", JSONObject().put("uploadId", uploadId).put("message", message))
+    private fun fail(
+        uploadId: String,
+        attemptId: String,
+        category: String,
+        message: String,
+        retryable: Boolean,
+        status: Int? = null,
+        code: Int? = null,
+        retryAfter: Long? = null,
+    ) {
+        emit(
+            "__SOMS_UPLOAD_FAILED__",
+            JSONObject().apply {
+                put("uploadId", uploadId)
+                put("attemptId", attemptId)
+                put("category", category)
+                put("message", message)
+                put("retryable", retryable)
+                if (status != null) put("status", status)
+                if (code != null) put("code", code)
+                if (retryAfter != null) put("retryAfter", retryAfter)
+            },
+        )
     }
 
     private fun emit(callback: String, payload: JSONObject) {

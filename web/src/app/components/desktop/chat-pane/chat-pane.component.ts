@@ -69,6 +69,7 @@ type SlotKey = 'A' | 'B';
             #threadA
             [threadId]="trd.threadId"
             [userMsgTrd]="trd"
+            [nativeComposerActive]="active() && fgSlot() === 'A'"
             (ready)="onReady('A', $event)"
           />
         }
@@ -79,6 +80,7 @@ type SlotKey = 'A' | 'B';
             #threadB
             [threadId]="trd.threadId"
             [userMsgTrd]="trd"
+            [nativeComposerActive]="active() && fgSlot() === 'B'"
             (ready)="onReady('B', $event)"
           />
         }

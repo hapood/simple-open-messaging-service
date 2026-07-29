@@ -31,7 +31,12 @@ export type { CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats,
 
 
 const DEFAULTS: Required<CbConfig> = {
-  edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
+  edge: 1000,
+  mountItem: 50,
+  thresholdFloor: 6000,
+  vhExtra: 2000,
+  initBatch: 100,
+  deferInitFill: false,
 };
 
 /** Safety timeout backing the enter/leave/move CSS animations (cb-enter/cb-leave/cb-move in _cb.scss). Must exceed the
@@ -123,9 +128,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    *  duplicated, across batches — every append inserts before it, so it is continuously the last child (no accumulation). */
   private tailCapEl: HTMLElement | null = null;
   private tailCapH = 0;
-  private readonly tailCapObs: ResizeObserver = new ResizeObserver(() => {
-    if (this.tailCapEl) this.tailCapH = this.tailCapEl.offsetHeight; // re-measure on async/responsive height change
-  });
+  private readonly tailCapObs: ResizeObserver = new ResizeObserver(() =>
+    this.onTailCapResize(),
+  );
   private inflightOlder = false;
   private inflightNewer = false;
   /** Reset generation: incremented by openAround; compared after the await in loadOlder/loadNewer so stale batches are
@@ -447,6 +452,17 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** Position the viewport at the content bottom — the bottom {@link Anchor}, applied via {@link applyAnchor}. */
   private pinToBottom(): void {
     this.applyAnchor({ mode: 'bottom' });
+  }
+
+  private onTailCapResize(): void {
+    const el = this.tailCapEl;
+    if (!el || this.destroyed) return;
+    const nextH = el.offsetHeight;
+    if (nextH === this.tailCapH) return;
+    const anchor = this.captureAnchor();
+    this.tailCapH = nextH;
+    this.applyAnchor(anchor);
+    this.emit();
   }
 
   /**

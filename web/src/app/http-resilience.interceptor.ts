@@ -51,6 +51,12 @@ function isSurfaceable(err: unknown): boolean {
 
 function localizeHttpError(err: HttpErrorResponse, t: TranslocoService): string {
   if (err.status === 0) return t.translate('errors.networkError');
+  if (
+    err.status === 429 &&
+    err.error?.code === BusinessCode.FEDERATION_QUOTA_EXCEEDED
+  ) {
+    return t.translate('errors.biz.federationQuotaExceeded');
+  }
   if (err.status === 429) return t.translate('errors.biz.rateLimited');
   return t.translate('errors.serverError'); // 5xx
 }

@@ -10,6 +10,7 @@ import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 import { ToastService } from './toast.service';
 import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
+import { ThreadSendOutbox } from './thread-send-outbox.service';
 
 const IS_KEEP_LOGIN = 'is_keep_login',
   // Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
@@ -85,6 +86,7 @@ export class AuthService {
     private userService: UserService,
     private transloco: TranslocoService,
     private toast: ToastService,
+    private sendOutbox: ThreadSendOutbox,
   ) {}
 
   /** Resolve a transloco key to the active-locale string (falls back to the key). Mirrors WebPushService.t. */
@@ -226,6 +228,7 @@ export class AuthService {
     // (open chat, mobile section, dialogs) nor its cached data. The NavStateMachineService session-end effect
     // keys off sessionUserId → null here, same as on an explicit logout.
     this.userService.clearSession()
+    this.sendOutbox.clear()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 
@@ -347,6 +350,7 @@ export class AuthService {
     this.announceSessionEnding()
     void this.clearToken()
     this.userService.clearSession()
+    this.sendOutbox.clear()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 
@@ -402,6 +406,7 @@ export class AuthService {
     this.clearLocalSessionState()
     // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
     this.userService.clearSession()
+    this.sendOutbox.clear()
     // The logout POST carries the Bearer Rust injects from ProxyState.token (still set — the native clear
     // is deferred to `finalize` below). The backend resolves the session from the Bearer (native) / cookie
     // (browser); NO token is placed in the body (JS never holds it). The native token is cleared AFTER the

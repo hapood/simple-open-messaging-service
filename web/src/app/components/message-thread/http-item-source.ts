@@ -240,7 +240,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const pi = this.pending.findIndex(
         (p) => p.clientMessageId === r.clientMessageId,
       );
-      if (pi >= 0) this.pending.splice(pi, 1);
+      if (pi >= 0) {
+        this.pending.splice(pi, 1);
+        this.outbox.releaseResource(r.clientMessageId);
+      }
     }
     this.outbox.releaseIfEmpty(this.conv.threadId);
   }
@@ -317,14 +320,32 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     /* signal-only: no cache */
   }
 
-  /** In-flight optimistic sends (defensive copy) — the kernel (re)mounts them at the global newest edge. */
+  /** In-flight optimistic sends that own a message bubble (defensive copy). Non-audio attachments
+   * stay in the outbox for retry/SSE reconciliation, but their aggregate transfer card is their sole
+   * pending UI, including after a pane remount. */
   getPending(): CbItem<ChatItemData>[] {
-    return this.pending.slice();
+    return this.pending.filter((item) => {
+      if (item.data.type !== 'msg') return true;
+      return !(
+        item.data.contentType === 'IMAGE' ||
+        item.data.contentType === 'VIDEO' ||
+        item.data.contentType === 'FILE'
+      );
+    });
   }
 
   /** Store an in-flight optimistic send (separate from the reloadable sequence). */
   addPending(item: CbItem<ChatItemData>): void {
     this.pending.push(item);
+  }
+
+  /** Look up an outbox entry even when it is intentionally omitted from getPending() presentation. */
+  pendingByClientMessageId(
+    clientMessageId: string,
+  ): CbItem<ChatItemData> | undefined {
+    return this.pending.find(
+      (item) => item.clientMessageId === clientMessageId,
+    );
   }
 
   /**
@@ -377,6 +398,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     );
     if (index < 0) return false;
     this.pending.splice(index, 1);
+    this.outbox.releaseResource(clientMessageId, true);
     this.outbox.releaseIfEmpty(this.conv.threadId);
     return true;
   }

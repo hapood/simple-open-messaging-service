@@ -34,6 +34,7 @@ import type { ConversationItem } from '../../../services/model';
 class StubThreadComponent {
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
+  readonly nativeComposerActive = input(false);
   readonly ready = output<number>();
   readonly reset = jasmine.createSpy('reset');
   readonly teardownKernel = jasmine.createSpy('teardownKernel');

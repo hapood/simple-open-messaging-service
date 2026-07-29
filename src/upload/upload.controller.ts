@@ -50,7 +50,10 @@ export class UploadController {
   /** Tick the local aggregate daily quota for a media upload; throws BusinessException(QUOTA_EXCEEDED)
    *  (after persisting a staged failure) when the budget is exhausted, else returns. Local uploads already
    *  enforce per-item size via the /upload pipeline, so this is the COUNT cap only (no byte 413). */
-  private async tickLocal(req: FastifyRequest, category: 'images' | 'largeFiles'): Promise<void> {
+  private async tickLocal(
+    req: FastifyRequest,
+    category: 'images' | 'largeFiles',
+  ): Promise<void> {
     const q = await this.quota.tryTickLocal(category);
     if (q.exceeded) {
       await this.failUpload(
@@ -72,16 +75,50 @@ export class UploadController {
   @ApiConsumes('multipart/form-data')
   async upload(@Request() req: FastifyRequest) {
     const img = await this.withStageFailure(req, () =>
-      this.uploadService.consumeImage(req),
+      this.uploadService.consumeChatImage(req),
     );
     if (img.kind === 'rejected') {
-      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.imageRejectMessage(img.reason));
-    }
-    // Magic-number second check: reject non-genuine images (defends against forged-mimetype malicious uploads).
-    if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, 'invalid image');
+      return this.failUpload(
+        req,
+        BusinessCode.VALIDATION_FAILED,
+        this.imageRejectMessage(img.reason),
+      );
     }
     await this.tickLocal(req, 'images');
+    // A phone/WebView photo picker can return formats outside the inline-image whitelist (commonly
+    // HEIC/HEIF/AVIF). Preserve those bytes through the generic-file pipeline instead of failing the
+    // send. The staged IMAGE intent is committed as FILE; the authoritative NEW_MESSAGE echo
+    // reconciles the optimistic bubble, so the client needs no retry or response-kind branch.
+    if (img.kind === 'fallback-file') {
+      const data = await this.withStageFailure(req, () =>
+        this.uploadService.saveFile(
+          img.mimetype,
+          img.filename,
+          img.buffer,
+          true,
+        ),
+      );
+      await this.withStageFailure(req, () =>
+        this.maybePromote(req, data, 'FILE'),
+      );
+      return data;
+    }
+    // A claimed PNG/JPEG/GIF/WebP whose bytes do not match is still a valid attachment send. Store it
+    // through the generic-file path, which is forced to download and cannot execute inline.
+    if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
+      const data = await this.withStageFailure(req, () =>
+        this.uploadService.saveFile(
+          img.mimetype,
+          img.filename,
+          img.buffer,
+          true,
+        ),
+      );
+      await this.withStageFailure(req, () =>
+        this.maybePromote(req, data, 'FILE'),
+      );
+      return data;
+    }
     const { url, size } = await this.withStageFailure(req, () =>
       this.uploadService.save(img.mimetype, img.buffer),
     );
@@ -118,17 +155,26 @@ export class UploadController {
   async uploadAvatar(@Request() req: FastifyRequest) {
     const img = await this.uploadService.consumeImage(req);
     if (img.kind === 'rejected') {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, this.imageRejectMessage(img.reason));
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        this.imageRejectMessage(img.reason),
+      );
     }
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid image',
+      );
     }
     try {
       const avatar = await this.uploadService.saveAvatars(img.buffer);
       return { avatar };
     } catch {
       // sharp decode failure (corrupt / pixel-bomb / non-image past the magic-byte check) → invalid.
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid image',
+      );
     }
   }
 
@@ -150,7 +196,11 @@ export class UploadController {
       this.uploadService.consumeFile(req),
     );
     if (f.kind === 'rejected') {
-      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.fileRejectMessage(f.reason));
+      return this.failUpload(
+        req,
+        BusinessCode.VALIDATION_FAILED,
+        this.fileRejectMessage(f.reason),
+      );
     }
     await this.tickLocal(req, 'largeFiles');
     const data = await this.withStageFailure(req, () =>
@@ -181,7 +231,11 @@ export class UploadController {
       this.uploadService.consumeVideo(req),
     );
     if (v.kind === 'rejected') {
-      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.mediaRejectMessage(v.reason, 'video'));
+      return this.failUpload(
+        req,
+        BusinessCode.VALIDATION_FAILED,
+        this.mediaRejectMessage(v.reason, 'video'),
+      );
     }
     await this.tickLocal(req, 'largeFiles');
     const data = await this.withStageFailure(req, () =>
@@ -206,7 +260,11 @@ export class UploadController {
       this.uploadService.consumeAudio(req),
     );
     if (a.kind === 'rejected') {
-      return this.failUpload(req, BusinessCode.VALIDATION_FAILED, this.mediaRejectMessage(a.reason, 'audio'));
+      return this.failUpload(
+        req,
+        BusinessCode.VALIDATION_FAILED,
+        this.mediaRejectMessage(a.reason, 'audio'),
+      );
     }
     await this.tickLocal(req, 'largeFiles');
     const data = await this.withStageFailure(req, () =>
@@ -260,7 +318,11 @@ export class UploadController {
   ): Promise<never> {
     const clientMessageId = this.clientMessageId(req);
     if (clientMessageId) {
-      await this.messageService.failStaged(req.user.userId, clientMessageId, message);
+      await this.messageService.failStaged(
+        req.user.userId,
+        clientMessageId,
+        message,
+      );
     }
     throw new BusinessException(code, message, HttpStatus.OK, data);
   }
@@ -304,6 +366,7 @@ export class UploadController {
   private async maybePromote(
     req: FastifyRequest,
     contentPayload: Record<string, unknown>,
+    contentTypeOverride?: 'FILE',
   ): Promise<boolean> {
     const clientMessageId = this.clientMessageId(req);
     if (!clientMessageId) return false; // plain upload — no staged send to promote
@@ -319,6 +382,7 @@ export class UploadController {
       clientMessageId,
       contentPayload,
       req.user.userId,
+      contentTypeOverride,
     );
     // Fire-and-forget: promoteStaged already committed the Message (the upload response confirms that);
     // the recipient fan-out runs off the request critical path, same as the text send path.

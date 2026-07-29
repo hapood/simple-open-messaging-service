@@ -29,7 +29,14 @@ import { StickyDateOverlayComponent } from '../../components/message-cards/stick
 import { uuid } from '../../lib/uuid';
 
 // Kernel tuning defaults (kept in sync with DEFAULTS in chat-box-scroller.ts / anchor.ts). mountPx was removed (dead param of the array kernel).
-const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
+const CB_DEFAULTS: Required<CbConfig> = {
+  edge: 1000,
+  mountItem: 50,
+  thresholdFloor: 6000,
+  vhExtra: 2000,
+  initBatch: 100,
+  deferInitFill: false,
+};
 
 /**
  * Virtual-scroll playground.

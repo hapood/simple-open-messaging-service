@@ -18,7 +18,6 @@ import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
-import { isAndroidNative } from '../../services/runtime';
 
 /** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
  *  so the production port swaps in GroupService.getMembers() unchanged. */
@@ -130,7 +129,6 @@ export class ChatEditorComponent {
           class: 'cb-editor-prose',
           role: 'textbox',
           'aria-multiline': 'true',
-          ...(isAndroidNative() ? { virtualkeyboardpolicy: 'manual' } : {}),
         },
       },
     });

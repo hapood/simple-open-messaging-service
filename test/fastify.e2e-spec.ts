@@ -97,11 +97,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY',
     );
-    const userA = await seedUserWithSession(app, 'fastify', { name: 'Fastify' });
+    const userA = await seedUserWithSession(app, 'fastify', {
+      name: 'Fastify',
+    });
     token = userA.token;
     userAId = userA.id;
     // Second local user for the per-object media-authz tests (the non-member).
-    token2 = (await seedUserWithSession(app, 'fastify2', { name: 'Fastify2' })).token;
+    token2 = (await seedUserWithSession(app, 'fastify2', { name: 'Fastify2' }))
+      .token;
     // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written
     // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).
     avatarPng = await makePng(200);
@@ -198,7 +201,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     const stage = await request(app.getHttpServer())
       .post('/api/v1/send-media')
       .set('Authorization', `Bearer ${token}`)
-      .send({ threadId: thread.id, contentType: 'IMAGE', clientMessageId: cid });
+      .send({
+        threadId: thread.id,
+        contentType: 'IMAGE',
+        clientMessageId: cid,
+      });
     expect(stage.body.code).toBe(0);
 
     const up = await request(app.getHttpServer())
@@ -212,7 +219,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.code).toBe(0);
     expect(up.body.data.size).toBe(PNG_1X1.length);
 
-    const msg = await prisma.message.findUnique({ where: { clientMessageId: cid } });
+    const msg = await prisma.message.findUnique({
+      where: { clientMessageId: cid },
+    });
     expect(msg).not.toBeNull();
     const content = JSON.parse(msg!.content);
     expect(content.url).toBe(up.body.data.url);
@@ -220,6 +229,93 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(content.h).toBe(2);
     // The regression: size was omitted from the promote payload, so the persisted content lacked it.
     expect(content.size).toBe(PNG_1X1.length);
+  });
+
+  it('promotes an unsupported chat image as FILE without failing the upload', async () => {
+    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+    await prisma.threadParticipant.create({
+      data: { userId: userAId, threadId: thread.id },
+    });
+    const cid = randomUUID();
+    const heic = Buffer.from('unsupported-heic-fixture');
+
+    const stage = await request(app.getHttpServer())
+      .post('/api/v1/send-media')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        threadId: thread.id,
+        contentType: 'IMAGE',
+        clientMessageId: cid,
+      });
+    expect(stage.body.code).toBe(0);
+
+    const up = await request(app.getHttpServer())
+      .post('/api/v1/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-client-message-id', cid)
+      .attach('file', heic, {
+        filename: 'phone.heic',
+        contentType: 'image/heic',
+      })
+      .field('w', '4032')
+      .field('h', '3024');
+    expect(up.status).toBe(200);
+    expect(up.body.code).toBe(0);
+    expect(up.body.data.name).toBe('phone.heic');
+    expect(up.body.data.mimeType).toBe('image/heic');
+    expect(up.body.data.size).toBe(heic.length);
+    expect(up.body.data.url).toMatch(
+      /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.bin$/,
+    );
+
+    const msg = await prisma.message.findUnique({
+      where: { clientMessageId: cid },
+    });
+    expect(msg?.contentType).toBe('FILE');
+    expect(JSON.parse(msg!.content)).toEqual(up.body.data);
+
+    const download = await request(app.getHttpServer())
+      .get(up.body.data.url)
+      .set('Authorization', `Bearer ${token}`);
+    expect(download.status).toBe(200);
+    expect(download.headers['content-disposition']).toBe('attachment');
+    expect(download.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('promotes a corrupt claimed PNG as FILE instead of rejecting the upload', async () => {
+    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+    await prisma.threadParticipant.create({
+      data: { userId: userAId, threadId: thread.id },
+    });
+    const cid = randomUUID();
+    const corrupt = Buffer.from('not-really-a-png');
+
+    await request(app.getHttpServer())
+      .post('/api/v1/send-media')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        threadId: thread.id,
+        contentType: 'IMAGE',
+        clientMessageId: cid,
+      });
+    const up = await request(app.getHttpServer())
+      .post('/api/v1/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-client-message-id', cid)
+      .attach('file', corrupt, {
+        filename: 'broken.png',
+        contentType: 'image/png',
+      });
+
+    expect(up.status).toBe(200);
+    expect(up.body.code).toBe(0);
+    expect(up.body.data.name).toBe('broken.png');
+    expect(up.body.data.mimeType).toBe('image/png');
+    const msg = await prisma.message.findUnique({
+      where: { clientMessageId: cid },
+    });
+    expect(msg?.contentType).toBe('FILE');
+    expect(JSON.parse(msg!.content)).toEqual(up.body.data);
   });
 
   it('accepts a video upload (magic-byte container check) and serves it inline', async () => {

@@ -35,12 +35,20 @@ export interface ImeGeometryEvent {
   targetPx: number | null;
   durationMs: number;
   animationId: number;
+  requestId: number | null;
   visible: boolean;
+  isFinal: boolean;
 }
 const animation = signal<KeyboardInsetAnimation | null>(null);
+const imeVisible = signal(false);
+const geometryEvent = signal<ImeGeometryEvent | null>(null);
 const layoutOverride = signal<number | null>(null);
 let layoutOverrideOwner: object | null = null;
 const viewportReduction = signal(0);
+// Timestamp namespace prevents a page reload from reusing a request id while a native animation from the
+// previous JS context is still completing. Millisecond epoch ×1000 remains below Number.MAX_SAFE_INTEGER.
+let imeRequestSeq = Date.now() * 1000;
+let latestImeRequestId: number | null = null;
 
 /** Clamp + integerize a raw keyboard height (defensive: the native push or `visualViewport` may report
  *  fractional / negative values under edge cases). */
@@ -72,22 +80,54 @@ export function uncompensatedKbdInset(rawInset: number, reducedBy: number): numb
  *  there. Follows the `__SOMS_<NAME>__` bridge-hook convention. */
 export function installKeyboardInsetBridge(): void {
   if (typeof window === 'undefined') return;
-  window.__SOMS_IME_EVENT__ = (event: ImeGeometryEvent): void => {
-    inset.set(clampPx(event.currentPx));
-    if (event.phase === 'start' && event.targetPx !== null) {
+  const accept = (event: ImeGeometryEvent): void => {
+    const normalized: ImeGeometryEvent = {
+      ...event,
+      currentPx: clampPx(event.currentPx),
+      targetPx: event.targetPx === null ? null : clampPx(event.targetPx),
+      durationMs: Math.max(0, Math.trunc(event.durationMs)),
+    };
+    geometryEvent.set(normalized);
+    const staleRequestedAnimation =
+      event.requestId !== null &&
+      latestImeRequestId !== null &&
+      event.requestId !== latestImeRequestId;
+    if (event.phase === 'start' && event.targetPx !== null && !staleRequestedAnimation) {
+      // Endpoint-driven Android 11+ layout: write the destination once and let CSS animate there using
+      // the native duration. Progress events remain observable but never cause Angular layout churn.
+      inset.set(clampPx(event.targetPx));
       animation.set({
         target: clampPx(event.targetPx),
         durationMs: Math.max(0, Math.trunc(event.durationMs)),
       });
-    } else if (event.phase === 'end' || event.phase === 'change') {
+    }
+    if (event.isFinal) {
+      inset.set(clampPx(event.currentPx));
+      imeVisible.set(event.visible);
       animation.set(null);
     }
   };
+  window.__SOMS_IME_EVENT__ = accept;
   const raw = window.SomsShell?.getImeSnapshot?.();
   if (!raw) return;
   try {
-    const snapshot = JSON.parse(raw) as { currentPx?: unknown };
-    if (typeof snapshot.currentPx === 'number') inset.set(clampPx(snapshot.currentPx));
+    const snapshot = JSON.parse(raw) as {
+      currentPx?: unknown;
+      visible?: unknown;
+      requestId?: unknown;
+    };
+    if (typeof snapshot.currentPx === 'number') {
+      accept({
+        phase: 'change',
+        currentPx: snapshot.currentPx,
+        targetPx: snapshot.currentPx,
+        durationMs: 0,
+        animationId: 0,
+        requestId: typeof snapshot.requestId === 'number' ? snapshot.requestId : null,
+        visible: snapshot.visible === true,
+        isFinal: true,
+      });
+    }
   } catch {
     // A malformed optional native snapshot must not block Angular bootstrap.
   }
@@ -101,8 +141,13 @@ export class KeyboardInsetService {
   /** API 30+ animation endpoint. While present, layout surfaces move directly to `target` once instead of
    *  chasing every `inset` frame delivered by the native animation callback. */
   readonly animation = animation.asReadonly();
-  /** Keyboard-open event: true while a soft keyboard occludes the viewport. */
-  readonly open = computed(() => inset() > 0);
+  /** Whether the system IME is active. Independent of bottom occlusion: floating keyboards are visible
+   * while reporting a zero inset. */
+  readonly visible = imeVisible.asReadonly();
+  /** Latest native geometry event, including final/visibility/request correlation metadata. */
+  readonly event = geometryEvent.asReadonly();
+  /** Keyboard-open event. On native Android this follows visibility; browsers derive it from occlusion. */
+  readonly open = computed(() => this.available ? imeVisible() : inset() > 0);
   /** Composer-owned layout override. During an explicit native↔custom keyboard handoff the custom panel
    *  already occupies the keyboard slot, so layout must temporarily ignore native IME animation frames. */
   readonly layoutOverride = layoutOverride.asReadonly();
@@ -115,11 +160,41 @@ export class KeyboardInsetService {
 
   /** Atomic visibility capability. The caller must establish/clear DOM focus; actual geometry is observed
    *  asynchronously through `inset`/`animation`, never inferred from this request succeeding. */
-  setVisible(visible: boolean): boolean {
-    if (typeof window === 'undefined' || !window.SomsShell?.setImeVisible) return false;
+  setVisible(visible: boolean): number | null {
+    if (typeof window === 'undefined' || !window.SomsShell?.setImeVisible) return null;
+    const requestId = ++imeRequestSeq;
+    latestImeRequestId = requestId;
     // Keep the injected object as receiver; extracting @JavascriptInterface methods breaks on Huawei.
-    window.SomsShell.setImeVisible(visible);
-    return true;
+    window.SomsShell.setImeVisible(visible, requestId);
+    return requestId;
+  }
+
+  /** Re-read native truth after a transition watchdog expires. Feeding it through the same bridge gives
+   * every consumer one final event path instead of a second snapshot-specific state machine. */
+  reconcileSnapshot(): boolean {
+    const raw = typeof window !== 'undefined' ? window.SomsShell?.getImeSnapshot?.() : null;
+    if (!raw || !window.__SOMS_IME_EVENT__) return false;
+    try {
+      const snapshot = JSON.parse(raw) as {
+        currentPx?: unknown;
+        visible?: unknown;
+        requestId?: unknown;
+      };
+      if (typeof snapshot.currentPx !== 'number' || typeof snapshot.visible !== 'boolean') return false;
+      window.__SOMS_IME_EVENT__({
+        phase: 'change',
+        currentPx: snapshot.currentPx,
+        targetPx: snapshot.currentPx,
+        durationMs: 0,
+        animationId: 0,
+        requestId: typeof snapshot.requestId === 'number' ? snapshot.requestId : null,
+        visible: snapshot.visible,
+        isFinal: true,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   setLayoutOverride(owner: object, value: number | null): void {
@@ -154,7 +229,11 @@ export class KeyboardInsetService {
     }
     const vv = typeof window !== 'undefined' ? window.visualViewport : null;
     if (!vv) return;
-    const update = (): void => inset.set(browserKbdInset(vv));
+    const update = (): void => {
+      const next = browserKbdInset(vv);
+      inset.set(next);
+      imeVisible.set(next > 0);
+    };
     update();
     vv.addEventListener('resize', update);
     vv.addEventListener('scroll', update);

@@ -113,10 +113,13 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
 
   it('does NOT retry a 429 that is NOT the burst rate-limit (e.g. federation quota 50011)', () => {
     // 50011 is a day-level quota (not transient) carried as HTTP 429; it must surface, not retry.
-    const e429 = err(429, { code: 50011, message: 'federation quota' });
+    const e429 = err(429, {
+      code: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
+      message: 'federation quota',
+    });
     const s = run(nextQueue([throwError(() => e429)]));
     expect(s.err).toBe(e429);
     expect(nextCalls).toBe(1);
-    expect(warnSpy).toHaveBeenCalledWith('errors.biz.rateLimited');
+    expect(warnSpy).toHaveBeenCalledWith('errors.biz.federationQuotaExceeded');
   });
 });

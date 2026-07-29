@@ -118,6 +118,9 @@ export interface CbConfig {
   vhExtra?: number;
   /** init first / fill batch size. Default 100. */
   initBatch?: number;
+  /** Finish init after the first source page instead of awaiting older-page viewport fill. The caller can
+   *  invoke backfillOlder() after revealing the thread, keeping first paint independent of network latency. */
+  deferInitFill?: boolean;
 }
 
 export interface CbOptions<T> {
@@ -195,6 +198,8 @@ export type Anchor =
 export interface ScrollerApi<T = unknown> {
   /** First-screen load; if opts.startMsgId is given, open at that message (re-anchor), otherwise lay out from the global newest. */
   init(opts?: CbInitOpts): Promise<void>;
+  /** Fetch and prepend one older page after a deferred first paint. Preserves the current viewport anchor. */
+  backfillOlder?(): Promise<void>;
   scrollToBottom(): void;
   scrollToTop(): void;
   /** Jump to id: if mounted, position directly; if not, reset the window around the id (re-seed) then position. anchor defaults to 'center'. highlight adds a one-shot flash to the target. */
@@ -250,7 +255,12 @@ export interface ScrollerApi<T = unknown> {
 }
 
 const DEFAULTS: Required<CbConfig> = {
-  edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
+  edge: 1000,
+  mountItem: 50,
+  thresholdFloor: 6000,
+  vhExtra: 2000,
+  initBatch: 100,
+  deferInitFill: false,
 };
 
 /** Safety timeout backing the enter/leave/move CSS animations (cb-enter/cb-leave/cb-move in _cb.scss). Must exceed the
@@ -367,9 +377,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  duplicated, across batches — every append inserts before it, so it is continuously the last child (no accumulation). */
   private tailCapEl: HTMLElement | null = null;
   private tailCapH = 0;
-  private readonly tailCapObs: ResizeObserver = new ResizeObserver(() => {
-    if (this.tailCapEl) this.tailCapH = this.tailCapEl.offsetHeight; // re-measure on async/responsive height change
-  });
+  private readonly tailCapObs: ResizeObserver = new ResizeObserver(() =>
+    this.onTailCapResize(),
+  );
   private inflightOlder = false;
   private inflightNewer = false;
   /** Reset generation: incremented by openAround; compared after the await in loadOlder/loadNewer so stale batches are not mounted (guards against a jump overtaking an in-flight load). */
@@ -525,12 +535,33 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // Sharing the load path — instead of open-coding a second prepend here — is what keeps init fill and scroll-up
     // loadOlder from drifting apart; the prior divergence left a spinner stuck at the batch boundary on multi-batch init
     // fills. The gen guard inside makes a concurrent jump (openAround bumps gen) overtake the in-flight fill cleanly.
-    while (this.totalH() < this.threshold && !this.noOlder && this.mounted.length > 0) {
+    while (
+      !this.cfg.deferInitFill &&
+      this.totalH() < this.threshold &&
+      !this.noOlder &&
+      this.mounted.length > 0
+    ) {
       if (await this.loadOlderIntoFresh(this.gen) === 0) break; // 0 = boundary reached / no data / overtaken by a jump
       this.pinToBottom(); // a prepend grew content above → re-pin to the new bottom before the next async fetch yields to the painter
     }
     this.scrollToBottom();
     this.primeAndReplay();
+  }
+
+  async backfillOlder(): Promise<void> {
+    if (
+      this.destroyed ||
+      !this.steady ||
+      this.noOlder ||
+      this.mounted.length === 0
+    )
+      return;
+    // A deferred production init normally reveals a short, bottom-pinned local page. Preserve that
+    // exact intent while one remote page is prepended; after this page, ordinary scroll checkpoints
+    // own any further pagination.
+    const anchor = this.captureAnchor();
+    const mounted = await this.loadOlderIntoFresh(this.gen);
+    if (mounted > 0 && !this.destroyed) this.applyAnchor(anchor);
   }
 
   appendLive(rawItems: CbItem<T>[]): void {
@@ -772,6 +803,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.applyAnchor({ mode: 'bottom' });
   }
 
+  /** Stabilize every asynchronous tail-cap mutation (upload aggregate, responsive content, fonts).
+   * Capture against the old measured cap height, then apply after reading the new DOM height: a
+   * bottom-pinned viewport follows the growth, while a reader above the bottom keeps their item anchor. */
+  private onTailCapResize(): void {
+    const el = this.tailCapEl;
+    if (!el || this.destroyed) return;
+    const nextH = el.offsetHeight;
+    if (nextH === this.tailCapH) return;
+    const anchor = this.captureAnchor();
+    this.tailCapH = nextH;
+    this.applyAnchor(anchor);
+    this.emit();
+  }
+
   /**
    * Snapshot the current viewport position as an {@link Anchor}, to re-apply after a content mutation. Call BEFORE
    * the mutation (so topOf/totalH reflect the pre-change layout). The anchor encodes "keep the visible content put":
@@ -1005,7 +1050,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const batch = await this.source.getOlder(cursor, this.cfg.mountItem);
     if (this.destroyed || g !== this.gen) return 0;
     const merged = this.mergeBatch(batch);
-    if (merged.length === 0) { this.noOlder = true; return 0; }
+    if (merged.length === 0) {
+      // An empty page can be the first authoritative indication that the cache is already at the
+      // global floor. The current top row was created as a skeleton, so setting noOlder alone would
+      // leave its spinner DOM mounted forever.
+      this.noOlder = true;
+      this.revealOldestGhost();
+      return 0;
+    }
     this.absorbBoundary(merged);
     const oldGhost = this.ghostEntry;
     this.mountBatch(merged, 'older');
@@ -1371,6 +1423,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.ghostEntry = target;
   }
 
+  /** Replace the top skeleton after an empty older-page response proves it is the real oldest row. */
+  private revealOldestGhost(): void {
+    const ghost = this.ghostEntry;
+    if (ghost) {
+      ghost.el.classList.remove('cb-ghost');
+      this.rebuildEntry(ghost);
+      this.measurePending();
+    }
+    this.updateGhost();
+  }
+
   /**
    * Sync the tail cap (class toggle + MEASURED height), mirroring {@link updateGhost} at the newer edge. The cap is a
    * persistent non-message element kept as the last child of content (never in mounted[]), so it never corrupts the newer
@@ -1523,7 +1586,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (this.destroyed || g !== this.gen) return; // jump re-seed overtook → drop the in-flight batch
       if (!this.revalidateTop()) return; // fling reversed during await → do not mount or absorb (phase 0: absorb boundary only after revalidate passes)
       const merged = this.mergeBatch(batch);
-      if (this.destroyed || merged.length === 0) { if (merged.length === 0) this.noOlder = true; return; }
+      if (this.destroyed || merged.length === 0) {
+        if (merged.length === 0) {
+          this.noOlder = true;
+          this.revealOldestGhost();
+        }
+        return;
+      }
       this.absorbBoundary(merged); // phase 0: absorb boundary only after passing
       // Capture the anchor AFTER revalidate (the user's current position — they may have scrolled during the await),
       // BEFORE the prepend. The prepended batch + ghost-reveal push the anchor item down; applyAnchor follows so the

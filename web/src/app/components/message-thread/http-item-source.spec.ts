@@ -196,6 +196,27 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(signals).toHaveBeenCalledOnceWith(12);
   });
 
+  it('allows a post-ready getOlder top-up to backfill a one-row local cache from the backend', async () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: true,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(undefined);
+    await src.getOlder(10, 50);
+
+    expect(queryMessages.calls.mostRecent().args).toEqual([
+      42,
+      { skip: 1, take: 50, lastSeq: 10, orderBy: 'desc' },
+      undefined,
+      false,
+    ]);
+  });
+
   it('init(-1) returns the server echo confirming an optimistic send and drops the pending entry (empty-thread first message)', async () => {
     // The FIRST send into a fresh (empty) friend thread: the optimistic is mounted alone, the kernel's
     // loadNewer falls back to init(-1). The repo cached the echo's body + fired liveSignal$ (no id
@@ -379,21 +400,64 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(src.markPendingSent('no-such-cid')).toBe(false); // echo already dropped it → false (self-heal)
   });
 
+  it('keeps attachment pending entries reconcilable without exposing duplicate per-file bubbles', () => {
+    const { src } = setup({ code: 0, message: 'ok', data: [], hasMore: false });
+    const image = pendingItem('cid-image');
+    (image as unknown as { data: { contentType: string } }).data.contentType =
+      'IMAGE';
+
+    src.addPending(image);
+
+    expect(src.getPending()).toEqual([]);
+    expect(src.markPendingSent('cid-image')).toBe(true);
+  });
+
   it('rawToItems: a real whose cid matches a still-sending pending entry carries status sent (SSE-first → real owns the choreography)', async () => {
     const cid = 'sse-first-cid';
     const echo = row(100, 1, cid);
-    const { src, liveSignal$ } = setup({
+    const { src, liveSignal$, outbox } = setup({
       code: 0,
       message: 'ok',
       data: [echo],
       hasMore: false,
     });
+    const dispose = jasmine.createSpy('dispose');
     src.addPending(pendingItem(cid)); // HTTP 200 has NOT fired yet → still 'sending'
+    outbox.retainResource(cid, {
+      type: 'native-attachment',
+      selection: {} as never,
+      release: dispose,
+      discard: jasmine.createSpy('discard'),
+    });
     liveSignal$.next({ threadId: 42, seq: 100 }); // SSE echo wins the race → signal
 
     const items = await src.init(-1, 50, 0);
     expect(items[0].data.status).toBe('sent'); // SSE-first → the real carries the choreography
     expect(src.getPending().length).toBe(0); // fulfilled pending dropped
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases retained resources on explicit discard, but not on retryable failure', () => {
+    const { src, outbox } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    const dispose = jasmine.createSpy('dispose');
+    src.addPending(pendingItem('cid-discard'));
+    outbox.retainResource('cid-discard', {
+      type: 'native-attachment',
+      selection: {} as never,
+      release: jasmine.createSpy('release'),
+      discard: dispose,
+    });
+
+    expect(src.failPending('cid-discard')).toBe(true);
+    expect(dispose).not.toHaveBeenCalled();
+    expect(src.discardPending('cid-discard')).toBe(true);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(outbox.resource('cid-discard')).toBeUndefined();
   });
 
   it('rawToItems: a real whose cid matches a sent pending entry (HTTP 200 already fired) mounts SILENT → choreography plays once', async () => {
