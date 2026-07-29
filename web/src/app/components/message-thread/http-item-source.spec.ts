@@ -1,18 +1,16 @@
 /**
  * HttpItemSource unit tests — production data layer, signal-only live contract (no DOM, no kernel).
  *
- * The DB-layer {@link MessageRepository} owns the NEW_MESSAGE SSE (caches the body, then emits
- * `liveSignal$`); this source filters that signal to its thread and treats it as "newer data exists, go
- * pull." The kernel pulls the cached body via queryMessages (init(-1) / getNewer) on the next
- * onMessageSignal, and rawToItems registers seqs ONCE — at pull time. This is what keeps a self-send echo
- * / incoming reply on an empty (just-added-friend) thread from being deduped away (the old shape-at-
- * SSE-time pre-registered the id, then init(-1)'s rawToItems dropped it → optimistic bubble stuck
- * "sending", replies never mounted).
+ * The DB-layer {@link MessageRepository} owns the identity-only NEW_MESSAGE SSE and emits `liveSignal$`;
+ * this source filters that signal to its thread and treats it as "newer data exists, go pull." The kernel
+ * pulls the body via queryMessages (IDB cache hit or backend gap-fill) on the next
+ * onMessageSignal, and rawToItems shapes messages only at pull time. This is what keeps a self-send echo /
+ * incoming reply on an empty (just-added-friend) thread mountable.
  *
  * The repository is stubbed (HttpItemSource only calls queryMessages + liveSignal$); UserService is stubbed
  * (ensureProfiles). The cache-first/gap-fill logic lives in MessageRepository and is tested in its own spec
  * — here the repo is a simple canned data source so this spec stays focused on the source's shaping,
- * boundary, dedup, and optimistic-pending reconcile.
+ * boundary, remounting, and optimistic-pending reconcile.
  */
 import { Subject, of } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
@@ -215,6 +213,31 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
       undefined,
       false,
     ]);
+  });
+
+  it('reshapes previously seen messages when a trimmed newer edge is loaded again', async () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(12, 2), row(11, 2)],
+      hasMore: false,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+
+    const initial = await src.init(-1, 50, 0);
+    expect(initial.map((item) => item.id)).toEqual([11, 12]);
+
+    // Model the virtual-list lifecycle: the kernel trims these rows after the user scrolls upward,
+    // then asks the source for them again while scrolling down. IDB legitimately returns ids already
+    // shaped earlier in this source session; they must not be filtered by a lifetime seen-id set.
+    queryMessages.and.resolveTo({
+      data: [row(11, 2), row(12, 2)],
+      hasMore: false,
+    });
+    const remounted = await src.getNewer(10, 50);
+
+    expect(remounted.map((item) => item.id)).toEqual([11, 12]);
+    expect(remounted[1].boundary).toBe('newest');
   });
 
   it('init(-1) returns the server echo confirming an optimistic send and drops the pending entry (empty-thread first message)', async () => {

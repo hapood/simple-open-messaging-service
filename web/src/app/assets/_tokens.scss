@@ -174,10 +174,23 @@ $app-gray-900: #111827;
   --soms-safe-top: env(safe-area-inset-top, 0px);
   --soms-safe-bottom: env(safe-area-inset-bottom, 0px);
 
-  // Android native-chat geometry. The composer height is the native component itself and NEVER includes
-  // safe-area or IME space. NativeComposerService updates these root-scoped values from the global native
-  // geometry + IME event streams. Outside an active native chat they remain zero.
+  // Chat bottom geometry stays split by source: composer layout, keyboard surface, and safe area. The
+  // aggregate is consumption-only so no producer can accidentally fold one source into another.
   --soms-composer-height: 0px;
+  --soms-keyboard-height: 0px;
+  --soms-bottom-occupation: calc(
+    var(--soms-composer-height) + var(--soms-keyboard-height) + var(--soms-safe-bottom)
+  );
+  // Browser chat content is already translated above the IME, so its scroll-tail reserve excludes the
+  // keyboard. NativeComposerService overrides this with the full occupation because native owns the lift.
+  --soms-content-bottom-reserve: calc(
+    var(--soms-composer-height) + var(--soms-safe-bottom)
+  );
+  // CDK anchors browser snackbars to its fixed overlay viewport, which follows the visible bottom when
+  // the mobile keyboard opens. Only the native sibling composer needs to override this with full occupation.
+  --soms-snackbar-bottom-offset: calc(
+    var(--soms-composer-height) + var(--soms-safe-bottom)
+  );
 }
 
 // ---- Chat / IM semantic tokens (WhatsApp-aligned, --im-*) ------------------

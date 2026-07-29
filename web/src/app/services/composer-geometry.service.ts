@@ -33,7 +33,7 @@ export class ComposerGeometryService {
     this.lastHeight = height;
     document.documentElement.style.setProperty(
       '--soms-composer-height',
-      `calc(${height}px + var(--soms-safe-bottom, 0px))`,
+      `${height}px`,
     );
   }
 }

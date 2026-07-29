@@ -1,113 +1,109 @@
 import { Component, computed, input } from '@angular/core';
+import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
+import { DateRowComponent } from '../date-row/date-row.component';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../../user-avatar/user-avatar.component';
 
-/** The CALL message-bubble content (built authoritatively server-side by call-content.ts), stored as JSON in
- *  Message.content (= ChatMsgData.text here, like the LINK card). */
+/** Authoritative terminal call record stored as JSON in Message.content. */
 interface CallContent {
   type: 'CALL';
   callType: 'AUDIO' | 'VIDEO';
-  status: 'completed' | 'cancelled' | 'declined' | 'missed' | 'failed' | 'unreachable';
+  status:
+    | 'completed'
+    | 'cancelled'
+    | 'declined'
+    | 'missed'
+    | 'failed'
+    | 'unreachable';
   callerId: number;
   calleeId: number;
-  /** Present iff the call connected (the real connect marker, NOT accept). */
   startedAt?: number;
   endedAt?: number;
   durationMs?: number;
 }
 
 /**
- * CALL message row — a terminal 1:1-call record rendered as a compact call-info bubble: a phone/video icon,
- * a direction- + status-aware label, and the duration (when the call connected). Direction is derived from
- * `data().isSelf` (creator === me → outgoing).
- *
- * Mirrors {@link LinkRowComponent}'s shape (parses `data().text` JSON via a computed so an in-place update
- * re-parses) but renders a much simpler call pill. The 4 signal inputs satisfy the shared RowComponent
- * interface (createMsgCbElement sets them); the call row ignores the grouping/date flags visually (a call
- * record is a self-contained note, not grouped like text). Hardcoded English labels for Phase 3; bilingual
- * i18n is a follow-up.
+ * Terminal 1:1 call record. It follows the same row/group/avatar contract as the other message cards, while
+ * the inset icon tile and two-level typography make calls easy to scan in a busy conversation.
  */
 @Component({
   selector: 'app-msg-call-row',
   standalone: true,
-  template: `
-    <div class="call-row" [class.self]="data().isSelf">
-      <span class="icon">{{ icon() }}</span>
-      <span class="label">{{ label() }}</span>
-      @if (duration()) {
-        <span class="dur">{{ duration() }}</span>
-      }
-    </div>
-  `,
-  styles: [
-    `
-      .call-row {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 8px 14px;
-        border-radius: 14px;
-        background: rgba(140, 140, 140, 0.16);
-        font-size: 14px;
-        line-height: 20px;
-      }
-      .icon {
-        font-size: 16px;
-        line-height: 20px;
-      }
-      .label {
-        font-weight: 500;
-      }
-      .dur {
-        opacity: 0.7;
-        font-variant-numeric: tabular-nums;
-      }
-    `,
-  ],
+  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
+  templateUrl: './call-row.component.html',
+  styleUrl: './call-row.component.scss',
 })
 export class CallRowComponent {
+  readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
-  /** Whether a date-separator pill should render above this row (first message of its day). */
   readonly showDate = input<boolean>(false);
 
-  /** The parsed call content, derived from `data().text` so an in-place update re-parses. */
+  readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
+  readonly showAvatar = computed(() => this.isShowHead());
+  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
+  readonly showName = computed(
+    () => this.isShowHead() && !this.data().isSelf,
+  );
+
   private readonly content = computed<CallContent | null>(() => {
     try {
-      return JSON.parse(this.data().text) as CallContent;
+      const value = JSON.parse(this.data().text) as Partial<CallContent>;
+      return value.type === 'CALL' ? (value as CallContent) : null;
     } catch {
       return null;
     }
   });
 
-  readonly icon = computed(() => (this.content()?.callType === 'VIDEO' ? '🎥' : '📞'));
+  readonly isVideo = computed(() => this.content()?.callType === 'VIDEO');
+  readonly isAlert = computed(() => {
+    const status = this.content()?.status;
+    return (
+      status === 'missed' ||
+      status === 'failed' ||
+      status === 'unreachable'
+    );
+  });
 
-  /** Direction- + status-aware label (matches the conversation-list rawPreview markers). */
-  readonly label = computed(() => {
-    const c = this.content();
+  readonly titleKey = computed(() =>
+    this.isVideo() ? 'call.videoCall' : 'call.audioCall',
+  );
+
+  /** Direction- and result-aware secondary label. */
+  readonly statusKey = computed(() => {
+    const status = this.content()?.status;
     const self = this.data().isSelf;
-    switch (c?.status) {
+    switch (status) {
       case 'missed':
-        return self ? 'Cancelled' : 'Missed call';
+        return self ? 'call.record.cancelled' : 'call.record.missed';
       case 'failed':
-        return 'Call failed';
+        return 'call.record.failed';
       case 'unreachable':
-        return 'Unreachable';
+        return 'call.record.unreachable';
       case 'declined':
-        return 'Declined';
+        return 'call.record.declined';
       case 'cancelled':
-        return 'Cancelled';
+        return 'call.record.cancelled';
+      case 'completed':
+        return self ? 'call.record.outgoing' : 'call.record.incoming';
       default:
-        return self ? 'Outgoing call' : 'Incoming call';
+        return 'call.record.unknown';
     }
   });
 
-  /** The connected duration as m:ss (empty when the call never connected — missed/declined/cancelled). */
+  /** Connected duration as m:ss or h:mm:ss; absent for calls that never connected. */
   readonly duration = computed(() => {
     const ms = this.content()?.durationMs;
-    if (!ms) return '';
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    return `${m}:${String(s % 60).padStart(2, '0')}`;
+    if (!ms || ms < 1000) return '';
+    const totalSeconds = Math.floor(ms / 1000);
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    if (totalMinutes < 60) return `${totalMinutes}:${seconds}`;
+    const hours = Math.floor(totalMinutes / 60);
+    return `${hours}:${String(totalMinutes % 60).padStart(2, '0')}:${seconds}`;
   });
 }

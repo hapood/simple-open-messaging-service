@@ -247,12 +247,9 @@ class MainActivity : TauriActivity() {
                 val derivedIme = computeImeFromVisibleFrame(content, navBottomDevicePx)
                 imeHeightCss = Math.max(0, Math.round(derivedIme / d))
                 imeVisible = derivedIme > 0
-                SomsLog.i("ImeHandoff") {
-                    "onApplyWindowInsets api=${Build.VERSION.SDK_INT} navCompat=${nav.bottom} " +
-                        "navStable=${insets.stableInsetBottom} navUsed=$navBottomDevicePx " +
-                        "derivedIme=$derivedIme imeCss=$imeHeightCss"
-                }
-                nativeComposer.updateInsets(derivedIme, navBottomDevicePx)
+                // Pre-R cannot predict a trustworthy endpoint. Follow the observed frame visually, but
+                // commit geometry only after the global-layout source has remained stable.
+                nativeComposer.updateImeAnimationProgress(derivedIme, navBottomDevicePx)
             }
             applySafeInsetsToWebView()
             insets
@@ -364,13 +361,9 @@ class MainActivity : TauriActivity() {
                 val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
                 val derivedCss = Math.max(0, Math.round(derived / d))
                 if (derivedCss != imeHeightCss) {
-                    SomsLog.i("ImeHandoff") {
-                        "globalLayout api=${Build.VERSION.SDK_INT} imeCss=$imeHeightCss->$derivedCss " +
-                            "imeDevice=$derived navBottom=$navBottomDevicePx contentHeight=${content.height}"
-                    }
                     imeHeightCss = derivedCss
                     imeVisible = derivedCss > 0
-                    nativeComposer.updateInsets(derived, navBottomDevicePx)
+                    nativeComposer.updateImeAnimationProgress(derived, navBottomDevicePx)
                     pushImeEvent(
                         phase = "progress",
                         targetCss = derivedCss,

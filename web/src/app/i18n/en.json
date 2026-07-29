@@ -33,6 +33,16 @@
     "offer-received": "Offer received",
     "answer-sent": "Answer sent",
     "answer-received": "Answer received",
+    "record": {
+      "incoming": "Incoming call",
+      "outgoing": "Outgoing call",
+      "missed": "Missed call",
+      "cancelled": "Cancelled",
+      "declined": "Declined",
+      "failed": "Call failed",
+      "unreachable": "Couldn't connect",
+      "unknown": "Call record"
+    },
     "microphone-failed": "Microphone unavailable — tap Accept to retry",
     "media-permission-denied": "Microphone or camera access was denied. Check system permissions and try again",
     "media-device-not-found": "No microphone or camera was found",

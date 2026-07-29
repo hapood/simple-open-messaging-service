@@ -16,7 +16,9 @@
     <string name="composer_record">Hold to record</string>
     <string name="composer_send_record">Send; hold to record</string>
     <string name="composer_recording">Recording; slide up to cancel</string>
+    <string name="composer_recording_cancel">Recording; release to cancel</string>
     <string name="composer_recording_format">● %s  ·  Slide up to cancel</string>
+    <string name="composer_recording_cancel_format">● %s  ·  Release to cancel</string>
     <string name="composer_recording_failed">Could not start recording</string>
     <string name="composer_recording_permission_denied">Microphone permission is required</string>
     <string name="composer_backspace">Delete</string>

@@ -148,13 +148,13 @@ $dark-theme: mat.define-theme((
 
 /* === Snackbar: lift the bottom-centered toast clear of the chat's bottom occupation. ===
  * Every MatSnackBar renders in the global CDK overlay (outside any component's view encapsulation), so the
- * lift can't live in component SCSS. Despite its historical name, --soms-composer-height currently carries
- * the complete bottom occupation: browser composer + safe area, or the native aggregate composer + keyboard
- * surface + safe area. Reusing that aggregate avoids counting the IME twice. The +8px preserves Material's
- * default visual gap. The compound selector out-specifies Material's own container margin rule without
- * resorting to !important. */
+ * lift can't live in component SCSS. Browser CDK overlays already follow the visible viewport bottom, so
+ * their offset contains composer + safe area only; NativeComposerService overrides the shared offset with
+ * composer + native keyboard surface + safe area. The +8px preserves Material's default visual gap. */
 .soms-snack-bar.mat-mdc-snack-bar-container {
-  margin-bottom: calc(var(--soms-composer-height, var(--soms-safe-bottom, 0px)) + 8px);
+  margin-bottom: calc(
+    var(--soms-snackbar-bottom-offset, var(--soms-safe-bottom, 0px)) + 8px
+  );
 }
 
 /* Semantic variants used by ToastService while retaining Material's standard snackbar structure. */

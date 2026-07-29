@@ -21,6 +21,9 @@
 .msg-media-grid {
   position: relative;
   width: 100%;
+  // Album gutters must not expose the sender bubble color. A neutral canvas keeps the 2px dividers
+  // visually consistent for self/other messages and across light/dark themes.
+  background: var(--app-surface, #fff);
 }
 
 // Cell: absolute positioning; height locked to px by layoutAlbum before render.
@@ -37,6 +40,16 @@
   // An explicit opaque canvas prevents both gated images and the fractional edge of a decoded image
   // from revealing the chat wallpaper.
   background-color: var(--app-surface, #fff);
+}
+
+// Audio is a real message bubble, not a media placeholder. Match text-message ownership colors instead
+// of inheriting the generic gray image/video loading canvas.
+.msg-media.msg-self .msg-media-cell--audio {
+  background: var(--im-bubble-self);
+}
+
+.msg-media.msg-other .msg-media-cell--audio {
+  background: var(--im-bubble-other);
 }
 
 .msg-media-image {
@@ -181,6 +194,15 @@ app-audio-player {
   color: var(--im-bubble-text);
   font-size: 11px;
   line-height: 14px;
+}
+
+// Keep sender identity in the footer strip while the album gutters remain neutral.
+.msg-media.msg-self .msg-media-meta {
+  background: var(--im-bubble-self);
+}
+
+.msg-media.msg-other .msg-media-meta {
+  background: var(--im-bubble-other);
 }
 
 .msg-media-meta-count {

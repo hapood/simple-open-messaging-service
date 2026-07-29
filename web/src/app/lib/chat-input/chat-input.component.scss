@@ -380,16 +380,17 @@ app-chat-input {
   }
 }
 
-// ── Recording indicator (floats above the bar) ────────────────────────────────────────────────
-// position:absolute bottom:100% off the form (the positioned/transformed containing block) — same anchor
-// as the emoji panel. Integer-px height + length line-height per the project's CSS integer-pixel rule.
+// ── Recording indicator ───────────────────────────────────────────────────────────────────────
+// Keep recording state immediately to the LEFT of the mic, matching the native composer. This is the
+// established voice-message pattern: the finger stays on the right-hand action while elapsed time and the
+// cancel affordance remain visible beside it instead of jumping to an unrelated full-width banner.
 .ci-record {
   position: absolute;
-  left: max(12px, calc((100% - 800px) / 2));
-  right: max(12px, calc((100% - 800px) / 2));
-  bottom: 100%;
-  margin-bottom: 4px;
-  height: 36px;
+  left: auto;
+  right: max(68px, calc((100% - 800px) / 2 + 68px));
+  bottom: 6px;
+  height: 40px;
+  max-width: calc(100% - 132px);
   box-sizing: border-box;
   display: none;
   align-items: center;
@@ -397,7 +398,7 @@ app-chat-input {
   padding: 0 14px;
   background: var(--app-surface);
   border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-pill);
+  border-radius: var(--app-radius-sm);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   z-index: 4;
   &--open {
@@ -421,11 +422,11 @@ app-chat-input {
   color: var(--app-text);
 }
 .ci-record-hint {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   font-size: 13px;
   line-height: 20px;
   color: var(--app-text-muted);
-  text-align: right;
+  white-space: nowrap;
   &--cancel {
     color: #e53935;
     font-weight: 600;

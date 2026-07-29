@@ -14,13 +14,12 @@
  * [Boundary] Reaching the DB floor (hasMore=false) → out[0] (ascending head = oldest) tagged 'oldest';
  *  anchor = latest → out[last] tagged 'newest'. The kernel's absorbBoundary reads these and sets its
  *  noOlder/noNewer.
- * [Dedup] knownMsgIds prevents pagination duplicates (IO layer, kept in the source). Registered ONCE, at
- *  pull time inside rawToItems (init / getNewer) — never at SSE receive time.
+ * [Dedup] incoming pushes are identity-only signals; message bodies have a single authoritative path through
+ *  queryMessages. This source therefore does not suppress queried ids. Cursor paging keeps pages disjoint,
+ *  while the kernel rejects overlap with rows that are currently mounted.
  * [SSE] onSseEvent receives NEW_MESSAGE and fires onSignal — SIGNAL-ONLY (the body is not shaped/cached
  *  here; the conversation-list preview reads the body in its own subscriber). The component's onSignal calls
- *  kernel.onMessageSignal, which pulls from the DB via getNewer / init(-1). rawToItems runs at pull time, so
- *  an id is registered exactly once — a self-send echo / incoming reply on an empty (just-added-friend) thread
- *  reconciles correctly instead of being deduped away.
+ *  kernel.onMessageSignal, which pulls from the DB via getNewer / init(-1).
  */
 import { firstValueFrom, filter, type Subscription } from 'rxjs';
 import dayjs from 'dayjs';
@@ -53,9 +52,8 @@ export interface HttpItemSourceLiveOpts {
    *  Signal-only — the SSE body is NOT shaped/cached here. The conversation-list preview lives in a separate
    *  subscriber (ConversationListService.onNewMessage reads the body); the chatbox treats the frame purely as
    *  "newer data exists, go pull it" and lets the kernel fetch from the DB via getNewer / init(-1) on the next
-   *  onMessageSignal. The body's ids are registered in knownMsgIds ONCE, at pull time inside rawToItems — so a
-   *  self-send echo / incoming reply on an empty (just-added-friend) thread reconciles correctly instead of
-   *  being deduped away. */
+   *  onMessageSignal. Shaping happens only at pull time, so a self-send echo / incoming reply on an empty
+   *  (just-added-friend) thread reconciles correctly. */
   onSignal: (seq: number) => void;
   /** A mediaStatus change landed for this thread (MEDIA_STATUS SSE / scroll probe / retry ack) — the
    *  kernel re-renders that one card in place via updateItemData (height-neutral). */
@@ -76,7 +74,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     number,
     { name: string; isSelf: boolean }
   >();
-  private readonly knownMsgIds = new Set<number>();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
    *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
    *  dropped by reconcilePending inside init/getNewer, and the kernel's reconcileOptimistic removes the mounted
@@ -110,9 +107,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.onSignal = live.onSignal;
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});
-    // The DB-layer MessageRepository owns the NEW_MESSAGE SSE: it caches the body, THEN emits liveSignal$,
-    // so this signal arrives AFTER the body is in IDB — the kernel's subsequent getNewer pull reads it from
-    // the cache (no backend round-trip). Filter to THIS thread (one source per open thread).
+    // The DB-layer MessageRepository owns the identity-only NEW_MESSAGE SSE and emits liveSignal$.
+    // The kernel's subsequent getNewer is the single message-body path (IDB cache hit or backend gap-fill).
+    // Filter to THIS thread (one source per open thread).
     this.sseSub = repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
@@ -443,14 +440,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.onSignal(latestThreadSeq);
   }
 
-  // ---------- rawToItems (shape raw messages: dedup + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
+  // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
 
   private rawToItems(msgs: Message[]): CbItem<ChatItemData>[] {
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = m.seq;
-      if (this.knownMsgIds.has(id)) continue; // IO dedup (guard against SSE/pagination duplicates)
-      this.knownMsgIds.add(id);
       if (id > this.loadedSeq) this.loadedSeq = id;
       let creatorSeqs = this.seqsByCreator.get(m.creator);
       if (!creatorSeqs) {

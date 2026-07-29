@@ -39,7 +39,7 @@
   }
 }
 
-// Centered spinner ring shared by the top ghost (.cb-ghost-loading) and the tail cap (.cb-tail-cap--loading). Factored so
+// Spinner ring shared by the top ghost (.cb-ghost-loading) and the tail cap (.cb-tail-cap--loading). Factored so
 // the two loading edges stay visually identical; emit inside a ::before rule.
 @mixin cb-spin-ring {
   content: '';
@@ -86,7 +86,7 @@
 //  (never in mounted[], so it neither corrupts the newer cursor mounted[last].item.id nor shifts any real item's topOf).
 //  Two modes, switched by the kernel from the newer boundary:
 //   ① noNewer (at the global newest) = gap: a small spacer between the last message and the input bar;
-//   ② !noNewer (more newer to load)  = loading: the same centered spinner as the top ghost (reuses @mixin cb-spin-ring).
+//   ② !noNewer (more newer to load)  = loading: the same spinner as the top ghost (reuses @mixin cb-spin-ring).
 //  The height is MEASURED by the kernel (offsetHeight); CSS owns the dimension, the kernel reads it, so totalH stays
 //  exact even if the gap/spinner size is tuned here. It does NOT reuse .cb-ghost-loading: the playground sticky-date
 //  query targets .cb-ghost-loading (chatbox-playground.component.ts) meaning the TOP ghost — tagging the cap with it
@@ -95,7 +95,7 @@
   box-sizing: border-box;
   // Floating composer reserve. The host publishes one integer border-box height; because this padding is
   // part of the measured cap, its existing ResizeObserver applies the shared bottom/item anchor policy.
-  --cb-composer-reserve: var(--soms-composer-height, 0px);
+  --cb-composer-reserve: var(--soms-content-bottom-reserve, 0px);
   // base = hidden (no height); --gap / --loading modifiers supply the height. Kernel measures the real offsetHeight.
   // An aggregate attachment transfer is Angular-owned but mounted inside this kernel-owned slot. Let its
   // natural height replace the ordinary gap so it participates in scrolling and total-height accounting.
@@ -116,7 +116,9 @@
     48px + var(--cb-composer-reserve)
   ); // spinner row (GHOST_H) + floating composer reserve
   display: flex;
-  align-items: center;
+  // Keep the indicator at the start of the cap's loading row. Centering against the full cap would also
+  // include the (potentially large) composer reserve and push the spinner into the middle of the viewport.
+  align-items: flex-start;
   justify-content: center;
 
   &::before {

@@ -89,6 +89,9 @@ describe('NativeComposerService global geometry', () => {
     delete window.__SOMS_COMPOSER_EVENT__;
     const root = document.documentElement;
     root.style.removeProperty('--soms-composer-height');
+    root.style.removeProperty('--soms-keyboard-height');
+    root.style.removeProperty('--soms-content-bottom-reserve');
+    root.style.removeProperty('--soms-snackbar-bottom-offset');
   });
 
   it('leaves boot geometry untouched until the shell reports native bounds', () => {
@@ -103,7 +106,7 @@ describe('NativeComposerService global geometry', () => {
     expect(css('--soms-composer-height')).toBe('74px');
   });
 
-  it('uses native total occupation without duplicating system IME geometry', () => {
+  it('publishes composer and system IME geometry independently', () => {
     const service = TestBed.inject(NativeComposerService);
     service.show(context);
     inset.set(320);
@@ -113,15 +116,17 @@ describe('NativeComposerService global geometry', () => {
       contextId: context.contextId,
       sequence: 1,
       kind: 'geometry',
+      composerHeightPx: 60.9,
+      keyboardHeightPx: 351,
       occupiedHeightPx: 411.9,
     });
     flush();
 
-    expect(css('--soms-composer-height')).toContain('411px');
-    expect(css('--soms-composer-height')).toContain('--soms-safe-bottom');
+    expect(css('--soms-composer-height')).toBe('60px');
+    expect(css('--soms-keyboard-height')).toBe('351px');
   });
 
-  it('zeros the IME term for an emoji replacement and clears all chat geometry on hide', () => {
+  it('keeps split emoji geometry cached across hide', () => {
     const service = TestBed.inject(NativeComposerService);
     service.show(context);
     inset.set(320);
@@ -130,15 +135,20 @@ describe('NativeComposerService global geometry', () => {
       contextId: context.contextId,
       sequence: 1,
       kind: 'geometry',
+      composerHeightPx: 64,
+      keyboardHeightPx: 288,
       occupiedHeightPx: 352,
     });
     flush();
 
-    expect(css('--soms-composer-height')).toContain('352px');
+    expect(css('--soms-composer-height')).toBe('64px');
+    expect(css('--soms-keyboard-height')).toBe('288px');
 
     service.hide(context.contextId);
     flush();
-    expect(css('--soms-composer-height')).toContain('352px');
-    expect(service.occupiedHeight()).toBe(352);
+    expect(css('--soms-composer-height')).toBe('64px');
+    expect(css('--soms-keyboard-height')).toBe('288px');
+    expect(service.composerHeight()).toBe(64);
+    expect(service.keyboardHeight()).toBe(288);
   });
 });

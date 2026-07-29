@@ -11,7 +11,7 @@ import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
 
 /**
- * Common shape of the three row components (text/media/invite): they all bind the same 4 signal inputs. Used to type
+ * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
  * the dynamically-selected component so createComponent infers one C — the components differ in extra members (invite
  * state, album logic, the text row's retry output), which otherwise breaks union inference at the createComponent call.
  */

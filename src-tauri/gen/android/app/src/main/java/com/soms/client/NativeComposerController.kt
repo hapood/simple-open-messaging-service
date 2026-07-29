@@ -23,6 +23,7 @@ import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.animation.PathInterpolator
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import android.widget.BaseAdapter
@@ -46,6 +47,7 @@ class NativeComposerController(
 ) {
     private val density = activity.resources.displayMetrics.density
     private fun dp(value: Int) = Math.round(value * density)
+    private val enterInterpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val isExpandedWindow =
         activity.resources.configuration.smallestScreenWidthDp >= TABLET_MIN_WIDTH_DP
     private val isDark =
@@ -193,6 +195,9 @@ class NativeComposerController(
     private var visible = false
     private var keyboardSurface = KeyboardSurface.CLOSED
     private var imeBottomPx = 0
+    /** Authoritative endpoint from onApplyWindowInsets. Animation progress updates imeBottomPx instead,
+     *  so Web layout can consume this final value before the native overlay starts moving. */
+    private var committedImeBottomPx = 0
     private var safeBottomPx = 0
     private var replacementHeightPx = 0
     private var lastSystemKeyboardHeightPx = 0
@@ -201,8 +206,10 @@ class NativeComposerController(
     private var boundsBottomPx = 0
     private var hasBounds = false
     private var externalPickerSurface: KeyboardSurface? = null
-    private var lastEmittedOccupiedHeightCss: Int? = null
+    private var lastEmittedComposerHeightCss: Int? = null
+    private var lastEmittedKeyboardHeightCss: Int? = null
     private var imeAnimationRunning = false
+    private var deferredInsetsCommit: Runnable? = null
     private val actionIds = AtomicLong(System.currentTimeMillis() * 1000)
     private var pendingSend: Long? = null
     private var voiceDownY = 0f
@@ -289,17 +296,9 @@ class NativeComposerController(
             override fun afterTextChanged(s: Editable?) = Unit
         })
         input.setOnClickListener {
-            SomsLog.i(IME_LOG_TAG) {
-                "input click surface=$keyboardSurface focus=${input.hasFocus()} " +
-                    "imeBottom=$imeBottomPx safeBottom=$safeBottomPx emoji=${emojiGrid.visibility == View.VISIBLE}"
-            }
             if (keyboardSurface == KeyboardSurface.EMOJI) switchToSystemKeyboard()
         }
         keyboard.setOnClickListener {
-            SomsLog.i(IME_LOG_TAG) {
-                "keyboard click surface=$keyboardSurface focus=${input.hasFocus()} " +
-                    "imeBottom=$imeBottomPx safeBottom=$safeBottomPx emoji=${emojiGrid.visibility == View.VISIBLE}"
-            }
             if (
                 keyboardSurface == KeyboardSurface.EMOJI ||
                 keyboardSurface == KeyboardSurface.TO_SYSTEM
@@ -336,6 +335,7 @@ class NativeComposerController(
                     action.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                 }
                 voiceCancelArmed = next
+                updateVoiceCancelState(next)
                 action.alpha = if (next) 0.45f else 1f
                 true
             } else if (event.actionMasked == android.view.MotionEvent.ACTION_UP && activity.nativeVoiceRecording()) {
@@ -374,7 +374,8 @@ class NativeComposerController(
         sequence = 0
         // A new JS context must receive its own first geometry even if it happens to match the previous
         // chat's cached height.
-        lastEmittedOccupiedHeightCss = null
+        lastEmittedComposerHeightCss = null
+        lastEmittedKeyboardHeightCss = null
         pendingSend = null
         hasBounds = false
         setSending(false)
@@ -391,9 +392,13 @@ class NativeComposerController(
         ensureAttached()
         visible = true
         root.animate().cancel()
-        root.alpha = 0f
-        root.translationY = dp(18).toFloat()
-        root.visibility = View.VISIBLE
+        root.alpha = 0.82f
+        root.translationY = dp(12).toFloat()
+        // Keep the view in layout so its geometry can be measured, but do not draw it before Angular
+        // publishes the chat-pane bounds. Drawing here briefly exposes the decor-wide/default-bottom
+        // position before setBounds() moves it, which looks like a jump to the endpoint followed by the
+        // actual enter animation.
+        root.visibility = View.INVISIBLE
         updateBottom()
         root.post(::emitGeometry)
     }
@@ -411,18 +416,16 @@ class NativeComposerController(
             (bounds.optDouble("top") + bounds.optDouble("height")) * density,
         ).toInt()
         hasBounds = true
-        SomsLog.i(IME_LOG_TAG) {
-            "setBounds left=$boundsLeftPx width=$boundsWidthPx bottom=$boundsBottomPx " +
-                "decorHeight=${activity.window.decorView.height}"
-        }
         applyBounds()
         root.post {
             if (!visible || bounds.optLong("contextId") != contextId) return@post
             root.animate().cancel()
+            root.visibility = View.VISIBLE
             root.animate()
                 .alpha(1f)
                 .translationY(0f)
                 .setDuration(SHOW_DURATION_MS)
+                .setInterpolator(enterInterpolator)
                 .start()
         }
     }
@@ -453,6 +456,7 @@ class NativeComposerController(
 
     fun onVoiceRecordingStarted() {
         recordingStatus.base = android.os.SystemClock.elapsedRealtime()
+        updateVoiceCancelState(false)
         recordingStatus.visibility = View.VISIBLE
         recordingStatus.start()
         keyboard.visibility = View.INVISIBLE
@@ -468,6 +472,24 @@ class NativeComposerController(
         action.background = rounded(PRIMARY, 24)
         action.alpha = 1f
         refreshAction()
+    }
+
+    /** Keep the native recording chip in parity with Web: neutral "slide up" guidance while recording,
+     *  then an explicit red "release to cancel" confirmation once the gesture crosses the threshold. */
+    private fun updateVoiceCancelState(cancel: Boolean) {
+        recordingStatus.format = activity.getString(
+            if (cancel) {
+                R.string.composer_recording_cancel_format
+            } else {
+                R.string.composer_recording_format
+            },
+        )
+        recordingStatus.setTextColor(
+            if (cancel) RECORDING else if (darkTheme) Color.rgb(255, 166, 166) else Color.rgb(177, 38, 38),
+        )
+        recordingStatus.contentDescription = activity.getString(
+            if (cancel) R.string.composer_recording_cancel else R.string.composer_recording,
+        )
     }
 
     fun restoreAfterExternalPicker() {
@@ -514,19 +536,46 @@ class NativeComposerController(
     }
 
     fun updateInsets(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
-        updateInsetsState(imeBottomDevicePx, safeBottomDevicePx)
+        deferredInsetsCommit?.let(root::removeCallbacks)
+        deferredInsetsCommit = null
+        committedImeBottomPx = imeBottomDevicePx.coerceAtLeast(0)
+        // On Android R+ onApplyWindowInsets is dispatched with the destination inset after onPrepare but
+        // before onProgress restarts at the source. Retain that state, but let onProgress own the visual
+        // position; applying it here produces destination -> source -> animated destination.
+        updateInsetsState(
+            imeBottomDevicePx,
+            safeBottomDevicePx,
+            updateVisualPosition = !imeAnimationRunning,
+        )
         root.post(::emitGeometry)
     }
 
     /** Animation progress is native-visual state only. Composer geometry is a final-value protocol and
      *  must never expose these intermediate IME frames to JS. */
     fun updateImeAnimationProgress(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
-        updateInsetsState(imeBottomDevicePx, safeBottomDevicePx)
+        updateInsetsState(
+            imeBottomDevicePx,
+            safeBottomDevicePx,
+            updateVisualPosition = true,
+        )
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            // Pre-R has no trustworthy predicted endpoint. Some OEMs report the new visible-frame height
+            // from onApplyWindowInsets before the global-layout observer sees it, so scheduling only when
+            // globalLayout detects a delta can miss the commit entirely. Debounce every observed visual
+            // frame here; the last one becomes the single committed geometry value.
+            deferredInsetsCommit?.let(root::removeCallbacks)
+            deferredInsetsCommit = Runnable {
+                deferredInsetsCommit = null
+                updateInsets(imeBottomDevicePx, safeBottomDevicePx)
+            }.also { root.postDelayed(it, PRE_R_INSETS_COMMIT_DELAY_MS) }
+        }
     }
 
-    private fun updateInsetsState(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
-        val previousSurface = keyboardSurface
-        val previousImeBottom = imeBottomPx
+    private fun updateInsetsState(
+        imeBottomDevicePx: Int,
+        safeBottomDevicePx: Int,
+        updateVisualPosition: Boolean,
+    ) {
         imeBottomPx = imeBottomDevicePx.coerceAtLeast(0)
         safeBottomPx = safeBottomDevicePx.coerceAtLeast(0)
         val systemKeyboardHeightPx = (imeBottomPx - safeBottomPx).coerceAtLeast(0)
@@ -536,10 +585,6 @@ class NativeComposerController(
             systemKeyboardHeightPx > dp(80)
         ) {
             lastSystemKeyboardHeightPx = systemKeyboardHeightPx
-        }
-        SomsLog.i(IME_LOG_TAG) {
-            "updateInsets surface=$previousSurface ime=$previousImeBottom->$imeBottomPx " +
-                "safe=$safeBottomPx focus=${input.hasFocus()} emoji=${emojiGrid.visibility == View.VISIBLE}"
         }
         when {
             // API 29 and below have no reliable IME animation-end callback. Their global-layout
@@ -556,7 +601,7 @@ class NativeComposerController(
                 input.hasFocus() &&
                 imeBottomPx > safeBottomPx + dp(24) -> keyboardSurface = KeyboardSurface.SYSTEM
         }
-        updateBottom()
+        if (updateVisualPosition) updateBottom()
     }
 
     fun onImeAnimationEnd() {
@@ -567,6 +612,10 @@ class NativeComposerController(
         ) {
             completeSystemHandoff()
         }
+        updateBottom()
+        // Usually deduplicates against the committed endpoint published before animation. It also covers
+        // cancelled animations and OEMs that omit the last progress frame.
+        root.post(::emitGeometry)
     }
 
     fun onImeAnimationPrepare() {
@@ -602,9 +651,6 @@ class NativeComposerController(
 
     private fun showEmojiKeyboard() {
         if (!visible || keyboardSurface == KeyboardSurface.EMOJI) return
-        SomsLog.i(IME_LOG_TAG) {
-            "showEmoji start surface=$keyboardSurface imeBottom=$imeBottomPx safeBottom=$safeBottomPx"
-        }
         val knownSystemHeightPx = maxOf(
             lastSystemKeyboardHeightPx,
             (imeBottomPx - safeBottomPx).coerceAtLeast(0),
@@ -633,10 +679,6 @@ class NativeComposerController(
 
     private fun switchToSystemKeyboard() {
         if (!visible) return
-        SomsLog.i(IME_LOG_TAG) {
-            "switchToSystem start surface=$keyboardSurface focus=${input.hasFocus()} " +
-                "imeBottom=$imeBottomPx safeBottom=$safeBottomPx"
-        }
         if (keyboardSurface != KeyboardSurface.EMOJI) {
             input.requestFocus()
             requestNativeIme(true)
@@ -646,10 +688,6 @@ class NativeComposerController(
         input.requestFocus()
         requestNativeIme(true)
         input.postDelayed({
-            SomsLog.i(IME_LOG_TAG) {
-                "handoff timeout surface=$keyboardSurface imeBottom=$imeBottomPx " +
-                    "safeBottom=$safeBottomPx focus=${input.hasFocus()}"
-            }
             if (NativeComposerGeometry.shouldCompleteHandoffFallback(
                     isToSystem = keyboardSurface == KeyboardSurface.TO_SYSTEM,
                     imeAnimationRunning = imeAnimationRunning,
@@ -674,10 +712,6 @@ class NativeComposerController(
     }
 
     private fun completeSystemHandoff() {
-        SomsLog.i(IME_LOG_TAG) {
-            "completeSystemHandoff surface=$keyboardSurface imeBottom=$imeBottomPx " +
-                "safeBottom=$safeBottomPx focus=${input.hasFocus()}"
-        }
         keyboardSurface = KeyboardSurface.SYSTEM
         emojiGrid.visibility = View.GONE
         keyboard.setImageResource(R.drawable.ic_composer_emoji)
@@ -689,25 +723,15 @@ class NativeComposerController(
     private fun requestNativeIme(show: Boolean) {
         val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         val controller = WindowInsetsControllerCompat(activity.window, input)
-        SomsLog.i(IME_LOG_TAG) {
-            "requestNativeIme show=$show surface=$keyboardSurface focus=${input.hasFocus()} " +
-                "windowFocus=${input.hasWindowFocus()} active=${imm.isActive(input)}"
-        }
         if (show) {
             input.requestFocus()
             input.post {
-                SomsLog.i(IME_LOG_TAG) {
-                    "requestNativeIme execute show=true focus=${input.hasFocus()} " +
-                        "windowFocus=${input.hasWindowFocus()} active=${imm.isActive(input)}"
-                }
                 controller.show(WindowInsetsCompat.Type.ime())
-                val accepted = imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-                SomsLog.i(IME_LOG_TAG) { "showSoftInput accepted=$accepted active=${imm.isActive(input)}" }
+                imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
             }
         } else {
             controller.hide(WindowInsetsCompat.Type.ime())
-            val accepted = imm.hideSoftInputFromWindow(input.windowToken, 0)
-            SomsLog.i(IME_LOG_TAG) { "hideSoftInput accepted=$accepted" }
+            imm.hideSoftInputFromWindow(input.windowToken, 0)
         }
     }
 
@@ -734,15 +758,8 @@ class NativeComposerController(
                 (decor.height - boundsBottomPx).coerceAtLeast(0)
             } else {
                 0
-            }
-        params.bottomMargin = keyboardBottom + boundsGap
-        val visibleFrame = Rect()
-        decor.getWindowVisibleDisplayFrame(visibleFrame)
-        SomsLog.i(IME_LOG_TAG) {
-            "applyBounds surface=$keyboardSurface keyboardBottom=$keyboardBottom boundsGap=$boundsGap " +
-                "margin=${params.bottomMargin} decorHeight=${decor.height} decorBottom=${decor.bottom} " +
-                "visible=${visibleFrame.top}..${visibleFrame.bottom} rootHeight=${root.height}"
         }
+        params.bottomMargin = keyboardBottom + boundsGap
         if (hasBounds) {
             params.leftMargin = boundsLeftPx
             params.width = boundsWidthPx
@@ -824,27 +841,41 @@ class NativeComposerController(
                 KeyboardSurface.TO_SYSTEM ->
                     replacementHeightPx +
                         (emojiGrid.layoutParams as LinearLayout.LayoutParams).topMargin
-                KeyboardSurface.SYSTEM -> (imeBottomPx - safeBottomPx).coerceAtLeast(0)
+                // Tail-cap layout consumes the committed destination before animation. applyBounds()
+                // separately uses imeBottomPx so the native overlay follows onProgress frame-by-frame.
+                KeyboardSurface.SYSTEM ->
+                    (committedImeBottomPx - safeBottomPx).coerceAtLeast(0)
                 KeyboardSurface.CLOSED -> 0
             }
+        val visibleComposerHeightPx =
+            if (visible) composerBasePx.coerceAtLeast(0) else 0
+        val visibleKeyboardHeightPx =
+            if (visible) keyboardHeightPx.coerceAtLeast(0) else 0
+        val composerHeightCss =
+            NativeComposerGeometry.toCssPx(visibleComposerHeightPx, density)
+        val keyboardHeightCss =
+            NativeComposerGeometry.toCssPx(visibleKeyboardHeightPx, density)
         val occupiedDevicePx = NativeComposerGeometry.occupiedDevicePx(
             visible = visible,
             composerBasePx = composerBasePx,
             keyboardHeightPx = keyboardHeightPx,
         )
-        val cssHeight = NativeComposerGeometry.toCssPx(occupiedDevicePx, density)
-        // Keyboard handoffs deliberately preserve the same total occupation. Do not expose redundant
-        // per-surface/layout frames to JS; publish only an actual final geometry change.
-        if (!NativeComposerGeometry.shouldEmit(lastEmittedOccupiedHeightCss, cssHeight)) return
-        lastEmittedOccupiedHeightCss = cssHeight
-        SomsLog.i(IME_LOG_TAG) {
-            "emitGeometry surface=$keyboardSurface base=$composerBasePx " +
-                "replacement=$replacementHeightPx ime=$imeBottomPx safe=$safeBottomPx " +
-                "occupied=$occupiedDevicePx css=$cssHeight measuredRoot=${root.height}"
-        }
+        val occupiedHeightCss = NativeComposerGeometry.toCssPx(occupiedDevicePx, density)
+        // Composer height follows completed Android layout; keyboard height retains the existing final-value
+        // surface policy. Emit when either independent endpoint changes, even when their sum stays constant
+        // during an emoji/system handoff.
+        if (
+            !NativeComposerGeometry.shouldEmit(lastEmittedComposerHeightCss, composerHeightCss) &&
+            !NativeComposerGeometry.shouldEmit(lastEmittedKeyboardHeightCss, keyboardHeightCss)
+        ) return
+        lastEmittedComposerHeightCss = composerHeightCss
+        lastEmittedKeyboardHeightCss = keyboardHeightCss
         emit(JSONObject().apply {
             put("kind", "geometry")
-            put("occupiedHeightPx", cssHeight)
+            put("composerHeightPx", composerHeightCss)
+            put("keyboardHeightPx", keyboardHeightCss)
+            // Backward compatibility for an older cached Web bundle. New clients consume the split fields.
+            put("occupiedHeightPx", occupiedHeightCss)
         })
     }
 
@@ -959,7 +990,6 @@ class NativeComposerController(
     }
 
     companion object {
-        private const val IME_LOG_TAG = "ImeHandoff"
         private const val MAX_COMPOSER_WIDTH_DP = 720
         private const val TABLET_MIN_WIDTH_DP = 600
         private const val PHONE_MAX_LINES = 5
@@ -967,7 +997,8 @@ class NativeComposerController(
         private const val DEFAULT_EMOJI_HEIGHT_DP = 280
         private const val EMOJI_GAP_DP = 8
         private const val IME_HANDOFF_FALLBACK_MS = 420L
-        private const val SHOW_DURATION_MS = 180L
+        private const val PRE_R_INSETS_COMMIT_DELAY_MS = 80L
+        private const val SHOW_DURATION_MS = 140L
         private const val HIDE_DURATION_MS = 90L
         private val PRIMARY = Color.rgb(49, 119, 213)
         private val RECORDING = Color.rgb(198, 52, 52)

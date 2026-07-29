@@ -181,7 +181,7 @@ export class MessageThreadComponent implements OnDestroy {
   readonly nativeComposer = inject(NativeComposerService);
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
-  private nativeComposerBoundsObserver?: ResizeObserver;
+  private nativeComposerBoundsCleanup?: () => void;
   private readonly nativeVoiceItems = new Map<string, CbItem<ChatItemData>>();
 
   private scroller?: ScrollerApi<ChatItemData>;
@@ -421,8 +421,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private hideNativeComposer(): void {
-    this.nativeComposerBoundsObserver?.disconnect();
-    this.nativeComposerBoundsObserver = undefined;
+    this.nativeComposerBoundsCleanup?.();
+    this.nativeComposerBoundsCleanup = undefined;
     const contextId = this.nativeComposerContextId;
     if (contextId !== null) this.nativeComposer.hide(contextId);
     this.nativeComposerContextId = null;
@@ -433,21 +433,31 @@ export class MessageThreadComponent implements OnDestroy {
     // The viewport is translated by the shared --kbd-lift policy; the container is the stable chatbox bounds.
     const chatbox = this.containerRef()?.nativeElement;
     if (!chatbox) return;
-    const publish = (): void => {
-      if (this.nativeComposerContextId !== contextId) return;
-      this.nativeComposer.setBounds(contextId, chatbox.getBoundingClientRect());
-    };
-    publish();
-    let frames = 12;
-    const followTransition = (): void => {
-      publish();
-      if (--frames > 0 && this.nativeComposerContextId === contextId)
-        requestAnimationFrame(followTransition);
-    };
-    requestAnimationFrame(followTransition);
-    this.nativeComposerBoundsObserver = new ResizeObserver(publish);
-    this.nativeComposerBoundsObserver.observe(chatbox);
-    window.addEventListener('resize', publish, { once: true });
+    this.nativeComposerBoundsCleanup = this.nativeComposer.bindBounds(
+      contextId,
+      () => this.measureNativeComposerBounds(chatbox),
+    );
+  }
+
+  /**
+   * Return the chatbox's static layout target, not its current animated screen position. HomeShell's
+   * compact overlay only translates `.chat-slot`; removing that translation yields the same final bounds
+   * on the first, middle, and last animation frames. Medium/expanded use `transform:none`, so their measured
+   * rect passes through unchanged.
+   */
+  private measureNativeComposerBounds(chatbox: HTMLElement): DOMRectReadOnly {
+    const rect = chatbox.getBoundingClientRect();
+    const slot = chatbox.closest<HTMLElement>('.chat-slot');
+    if (!slot) return rect;
+    const transform = getComputedStyle(slot).transform;
+    if (!transform || transform === 'none') return rect;
+    const matrix = new DOMMatrixReadOnly(transform);
+    return new DOMRectReadOnly(
+      rect.left - matrix.m41,
+      rect.top - matrix.m42,
+      rect.width,
+      rect.height,
+    );
   }
 
   private handleNativeComposerEvent(event: NativeComposerEvent): void {

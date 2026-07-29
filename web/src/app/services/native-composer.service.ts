@@ -3,6 +3,15 @@ import { isAndroidNative, listenEvent } from './runtime';
 import { KeyboardInsetService } from './keyboard-inset.service';
 
 const DEFAULT_COMPOSER_HEIGHT_PX = 64;
+let activeBoundsPublisher: (() => void) | undefined;
+let resizeBridgeInstalled = false;
+
+/** Install the app-wide resize bridge once, before Angular bootstrap. The active chat supplies the callback. */
+export function installNativeComposerResizeBridge(): void {
+  if (resizeBridgeInstalled || typeof window === 'undefined') return;
+  resizeBridgeInstalled = true;
+  window.addEventListener('resize', () => activeBoundsPublisher?.());
+}
 
 export interface NativeComposerContext {
   version: 1;
@@ -31,7 +40,10 @@ export type NativeComposerEvent =
       contextId: number;
       sequence: number;
       kind: 'geometry';
-      occupiedHeightPx: number;
+      composerHeightPx?: number;
+      keyboardHeightPx?: number;
+      /** Compatibility field for Web bundles predating the split geometry contract. */
+      occupiedHeightPx?: number;
     }
   | {
       version: 1;
@@ -83,8 +95,10 @@ export interface NativeVoiceUploadEvent {
 @Injectable({ providedIn: 'root' })
 export class NativeComposerService {
   readonly supported = isAndroidNative() && !!window.SomsShell?.showComposer;
-  /** Native component height only. It deliberately excludes both IME and safe-area insets. */
-  readonly occupiedHeight = signal(DEFAULT_COMPOSER_HEIGHT_PX);
+  /** Native composer height after its latest completed layout; excludes keyboard and safe-area insets. */
+  readonly composerHeight = signal(DEFAULT_COMPOSER_HEIGHT_PX);
+  /** Native keyboard surface height (system IME or emoji replacement); excludes the safe-area inset. */
+  readonly keyboardHeight = signal(0);
   readonly event = signal<NativeComposerEvent | null>(null);
   readonly voiceUpload = signal<NativeVoiceUploadEvent | null>(null);
   readonly uploadProgress = signal<{
@@ -108,15 +122,35 @@ export class NativeComposerService {
         return;
       }
       if (raw.kind === 'geometry') {
-        const height = Math.max(0, Math.trunc(raw.occupiedHeightPx));
-        this.occupiedHeight.set(height);
+        const hasSplitGeometry =
+          Number.isFinite(raw.composerHeightPx) &&
+          Number.isFinite(raw.keyboardHeightPx);
+        const composerHeight = hasSplitGeometry
+          ? Math.max(0, Math.trunc(raw.composerHeightPx!))
+          : 0;
+        const keyboardHeight = hasSplitGeometry
+          ? Math.max(0, Math.trunc(raw.keyboardHeightPx!))
+          : Math.max(0, Math.trunc(raw.occupiedHeightPx ?? 0));
+        this.composerHeight.set(composerHeight);
+        this.keyboardHeight.set(keyboardHeight);
         document.documentElement.style.setProperty(
           '--soms-composer-height',
-          `calc(${height}px + var(--soms-safe-bottom, 0px))`,
+          `${composerHeight}px`,
         );
-        // Native geometry is the single bottom-occupation source for every native surface:
-        // composer-only, composer+emoji, and composer+system-IME. Suppress the separate IME transform
-        // while it owns the chat so the system-keyboard path cannot double-compensate.
+        document.documentElement.style.setProperty(
+          '--soms-keyboard-height',
+          `${keyboardHeight}px`,
+        );
+        document.documentElement.style.setProperty(
+          '--soms-content-bottom-reserve',
+          'var(--soms-bottom-occupation)',
+        );
+        document.documentElement.style.setProperty(
+          '--soms-snackbar-bottom-offset',
+          'var(--soms-bottom-occupation)',
+        );
+        // The split geometry still owns the complete native bottom occupation. Suppress the separate
+        // Angular IME transform while the native composer owns the chat so it cannot double-compensate.
         this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
       }
       this.event.set(raw);
@@ -150,6 +184,16 @@ export class NativeComposerService {
         height: rect.height,
       } satisfies NativeComposerBounds),
     );
+  }
+
+  /** Publish once at chat initialization, then reuse the same calculation from the app-wide resize bridge. */
+  bindBounds(contextId: number, measure: () => DOMRectReadOnly): () => void {
+    const publish = (): void => this.setBounds(contextId, measure());
+    activeBoundsPublisher = publish;
+    publish();
+    return () => {
+      if (activeBoundsPublisher === publish) activeBoundsPublisher = undefined;
+    };
   }
 
   update(contextId: number, patch: Record<string, unknown>): void {
