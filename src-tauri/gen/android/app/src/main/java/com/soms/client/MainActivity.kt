@@ -77,18 +77,15 @@ class MainActivity : TauriActivity() {
         val requestId = nativePhotoRequestId.orEmpty()
         nativePhotoRequestId = null
         NativeUploadManager.accept(this, uris, "image", requestId)
+        nativeComposer.restoreAfterExternalPicker()
     }
     private val nativeFilePicker = registerForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri ->
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
         val requestId = nativeFileRequestId.orEmpty()
         nativeFileRequestId = null
-        NativeUploadManager.accept(
-            this,
-            if (uri == null) emptyList() else listOf(uri),
-            "file",
-            requestId,
-        )
+        NativeUploadManager.accept(this, uris, "file", requestId)
+        nativeComposer.restoreAfterExternalPicker()
     }
 
     // System-bar insets (status bar / gesture bar) in CSS px, measured per-device via WindowInsets
@@ -125,11 +122,7 @@ class MainActivity : TauriActivity() {
     @Volatile private var imeVisible = false
     @Volatile private var imeRequestId: Long? = null
     @Volatile private var imeRequestVisible: Boolean? = null
-    private val nativeComposer by lazy {
-        NativeComposerController(this) { visible ->
-            setImeVisible(visible, System.currentTimeMillis() * 1000)
-        }
-    }
+    private val nativeComposer by lazy { NativeComposerController(this) }
     private var nativeVoiceRecorder: MediaRecorder? = null
     private var nativeVoiceFile: File? = null
     private var nativeVoiceStartedAt = 0L
@@ -198,6 +191,11 @@ class MainActivity : TauriActivity() {
         installInsetsListener()
     }
 
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        nativeComposer.handleOutsideTouch(event)
+        return super.dispatchTouchEvent(event)
+    }
+
     /** Install a WindowInsets listener on the content view that measures the status-bar / gesture-bar
      *  insets (device px), converts to integer CSS px (÷ density), stores them for
      *  SomsShell.getSafeInsets(), and pushes live updates to the webview. Per-device — never hardcoded. */
@@ -213,7 +211,19 @@ class MainActivity : TauriActivity() {
             // navigation mode. (systemGestures — the wider back-swipe zone — is intentionally excluded:
             // it would over-pad.)
             val gestures = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
-            navBottomDevicePx = maxOf(nav.bottom, gestures.bottom)
+            // On pre-R EMUI, the compat navigationBars() value expands to the full IME height while the
+            // keyboard is visible (for example 781 px on RVL-AL09). The stable inset remains the actual
+            // system-bar size, so use it on those releases; otherwise the visible-frame IME calculation
+            // subtracts the keyboard from itself and can only ever report zero.
+            navBottomDevicePx =
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    // Gesture insets are also approximated from legacy system-window insets on old
+                    // releases and can therefore contain the IME. The stable bottom is the only value
+                    // here whose contract excludes transient visibility changes.
+                    insets.stableInsetBottom
+                } else {
+                    maxOf(nav.bottom, gestures.bottom)
+                }
             val d = resources.displayMetrics.density
             safeInsetTopCss = Math.round(status.top / d)
             safeInsetBottomCss = Math.round(navBottomDevicePx / d)
@@ -234,7 +244,15 @@ class MainActivity : TauriActivity() {
                 }
                 nativeComposer.updateInsets(ime.bottom, navBottomDevicePx)
             } else {
-                nativeComposer.updateInsets(0, navBottomDevicePx)
+                val derivedIme = computeImeFromVisibleFrame(content, navBottomDevicePx)
+                imeHeightCss = Math.max(0, Math.round(derivedIme / d))
+                imeVisible = derivedIme > 0
+                SomsLog.i("ImeHandoff") {
+                    "onApplyWindowInsets api=${Build.VERSION.SDK_INT} navCompat=${nav.bottom} " +
+                        "navStable=${insets.stableInsetBottom} navUsed=$navBottomDevicePx " +
+                        "derivedIme=$derivedIme imeCss=$imeHeightCss"
+                }
+                nativeComposer.updateInsets(derivedIme, navBottomDevicePx)
             }
             applySafeInsetsToWebView()
             insets
@@ -249,6 +267,7 @@ class MainActivity : TauriActivity() {
                 object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
                     override fun onPrepare(animation: WindowInsetsAnimationCompat) {
                         if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                            nativeComposer.onImeAnimationPrepare()
                             imeAnimationStartCss = imeHeightCss
                             imeAnimationPrepared = true
                             imeAnimationId += 1
@@ -295,7 +314,7 @@ class MainActivity : TauriActivity() {
                         val d = resources.displayMetrics.density
                         imeHeightCss = Math.max(0, Math.round(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom / d))
                         imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
-                        nativeComposer.updateInsets(
+                        nativeComposer.updateImeAnimationProgress(
                             insets.getInsets(WindowInsetsCompat.Type.ime()).bottom,
                             navBottomDevicePx,
                         )
@@ -326,6 +345,7 @@ class MainActivity : TauriActivity() {
                                 isFinal = true,
                                 requestId = imeAnimationRequestId,
                             )
+                            nativeComposer.onImeAnimationEnd()
                             imeAnimationRequestId = null
                         }
                     }
@@ -344,6 +364,10 @@ class MainActivity : TauriActivity() {
                 val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
                 val derivedCss = Math.max(0, Math.round(derived / d))
                 if (derivedCss != imeHeightCss) {
+                    SomsLog.i("ImeHandoff") {
+                        "globalLayout api=${Build.VERSION.SDK_INT} imeCss=$imeHeightCss->$derivedCss " +
+                            "imeDevice=$derived navBottom=$navBottomDevicePx contentHeight=${content.height}"
+                    }
                     imeHeightCss = derivedCss
                     imeVisible = derivedCss > 0
                     nativeComposer.updateInsets(derived, navBottomDevicePx)
@@ -864,10 +888,17 @@ class MainActivity : TauriActivity() {
             nativeVoiceStartedAt = android.os.SystemClock.elapsedRealtime()
             nativeVoiceContextId = contextId
             nativeVoiceThreadId = threadId
+            nativeComposer.onVoiceRecordingStarted()
         } catch (error: Throwable) {
             runCatching { recorder.release() }
             file.delete()
             SomsLog.w("Voice", error) { "native recorder start failed" }
+            nativeComposer.onVoiceRecordingFinished()
+            android.widget.Toast.makeText(
+                this,
+                getString(R.string.composer_recording_failed),
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 
@@ -877,6 +908,7 @@ class MainActivity : TauriActivity() {
         val duration = android.os.SystemClock.elapsedRealtime() - nativeVoiceStartedAt
         nativeVoiceRecorder = null
         nativeVoiceFile = null
+        nativeComposer.onVoiceRecordingFinished()
         runCatching { recorder.stop() }
         runCatching { recorder.release() }
         if (cancel || duration < 500L || file == null || !file.isFile || file.length() == 0L) {
@@ -910,7 +942,15 @@ class MainActivity : TauriActivity() {
         if (requestCode == REQ_VOICE_PERM) {
             val start = pendingVoiceStart
             pendingVoiceStart = null
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) start?.invoke()
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                start?.invoke()
+            } else if (start != null) {
+                android.widget.Toast.makeText(
+                    this,
+                    getString(R.string.composer_recording_permission_denied),
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
             return
         }
         if (requestCode == REQ_CALL_PERMS) {
@@ -1476,6 +1516,13 @@ class MainActivity : TauriActivity() {
         fun showComposer(contextJson: String) {
             activityRef.get()?.runOnUiThread {
                 activityRef.get()?.nativeComposer?.show(contextJson)
+            }
+        }
+
+        @JavascriptInterface
+        fun setComposerBounds(boundsJson: String) {
+            activityRef.get()?.runOnUiThread {
+                activityRef.get()?.nativeComposer?.setBounds(boundsJson)
             }
         }
 

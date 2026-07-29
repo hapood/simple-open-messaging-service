@@ -11,6 +11,18 @@
     <string name="call_channel_ongoing">"通话中"</string>
     <string name="pip_toggle_mute">静音或取消静音</string>
     <string name="pip_hang_up">挂断</string>
+    <string name="composer_emoji">表情</string>
+    <string name="composer_system_keyboard">系统键盘</string>
+    <string name="composer_attach">添加附件</string>
+    <string name="composer_gallery">相册</string>
+    <string name="composer_file">文件</string>
+    <string name="composer_record">长按录音</string>
+    <string name="composer_send_record">发送；长按录音</string>
+    <string name="composer_recording">正在录音；上滑取消</string>
+    <string name="composer_recording_format">● %s  ·  上滑取消</string>
+    <string name="composer_recording_failed">无法开始录音</string>
+    <string name="composer_recording_permission_denied">需要麦克风权限</string>
+    <string name="composer_backspace">删除</string>
     <plurals name="notif_group_summary">
         <item quantity="other">"%d 个新会话"</item>
     </plurals>

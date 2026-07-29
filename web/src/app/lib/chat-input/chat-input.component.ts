@@ -5,7 +5,6 @@ import {
   ElementRef,
   HostListener,
   computed,
-  effect,
   inject,
   input,
   OnDestroy,
@@ -63,14 +62,8 @@ interface EmojiTab {
   readonly icons: readonly string[];
 }
 
-type KeyboardMode = 'closed' | 'toEmoji' | 'emoji' | 'toSystem';
-
 const RECENTS_KEY = 'soms.chat.emojiRecents';
 const RECENTS_MAX = 32;
-// Android edge-to-edge builds can briefly report only the navigation/gesture inset as the IME height.
-// That value is useful for neither the native-keyboard slot nor the emoji grid and would collapse the
-// replacement panel to a thin strip. A real usable keyboard surface needs room for tabs plus several rows.
-const MIN_EMOJI_KEYBOARD_HEIGHT = 240;
 
 /** A single bare http(s) URL with no surrounding whitespace — the trigger for sending a link card rather
  *  than plain text. The server's LinkPreviewService builds the OG preview; the composer only classifies
@@ -153,9 +146,8 @@ function saveRecents(list: string[]): void {
  *    pickers, the send button (paper-plane when there is draft text, camera when empty), auto-grow height
  *    measurement, and `appPreventFocusSteal` on every icon (mobile keyboard avoidance — see the
  *    `input-bar-icon-no-focus-steal` memory).
- *  - Emits {@link ChatSendIntent} on send; the host does the rest. Emits {@link heightChange} so a host that
- *    pins its viewport above the bar (the playground) can track the auto-grown height; a flex-layout host
- *    (production) may ignore it.
+ *  - Emits {@link ChatSendIntent} on send; the host does the rest. Composer geometry is fixed by the global
+ *    width policy, so typing never schedules a layout measurement here.
  *
  * Emoji panel: a WhatsApp/Telegram-style category grid with persisted Recents. Browser/PWA and desktop use
  * a floating panel without controlling the system keyboard. The Android native shell renders the same grid
@@ -193,8 +185,6 @@ export class ChatInputComponent implements OnDestroy {
   readonly sending = input(false);
   /** Structured send intent — the host switches on `kind`. */
   readonly send = output<ChatSendIntent>();
-  /** The input bar's measured height (auto-grows with the editor); the host may bind its viewport bottom to it. */
-  readonly heightChange = output<number>();
 
   private readonly editor = viewChild(ChatEditorComponent);
   private readonly inputBar =
@@ -210,74 +200,8 @@ export class ChatInputComponent implements OnDestroy {
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
   readonly draftHtml = signal('');
-  /** One authoritative keyboard-switch state. Derived view flags below cannot form illegal combinations. */
-  private readonly keyboardMode = signal<KeyboardMode>('closed');
-  readonly emojiOpen = computed(() => this.keyboardMode() === 'emoji');
-  readonly emojiMounted = computed(() => this.keyboardMode() !== 'closed');
-  /** The Web composer is now browser/desktop-only. Android renders no controls from this component and
-   * owns its emoji replacement in NativeComposerController, so the Web panel is always a floating popup. */
-  readonly emojiKeyboard = signal(false);
-  /** Stable keyboard slot height. During a native↔emoji handoff the native inset and custom panel divide
-   *  this height between them, keeping the composer at one constant Y position. */
-  readonly emojiKeyboardHeight = signal(300);
-  readonly keyboardHandoff = computed(() => {
-    const mode = this.keyboardMode();
-    return mode === 'toEmoji' || mode === 'toSystem';
-  });
-  readonly emojiPanelHeight = computed(() => {
-    const stableHeight = this.emojiKeyboardHeight();
-    return this.keyboardHandoff()
-      ? Math.max(0, stableHeight - this.keyboardInset.inset())
-      : stableHeight;
-  });
-  private readonly keyboardLayoutOwner = {};
-  readonly switchingToSystem = computed(
-    () => this.keyboardMode() === 'toSystem',
-  );
-  private keyboardTransitionId = 0;
-  private expectedImeRequestId: number | null = null;
-  private expectedImeVisible: boolean | null = null;
-  private keyboardWatchdog?: ReturnType<typeof setTimeout>;
-  /** `Editor.commands.focus()` is committed by ProseMirror asynchronously on some Android WebViews.
-   *  Requesting the native IME before its real focus event makes Chromium see `isTextEditor=false` and
-   *  immediately hide the keyboard again. */
-  private systemImeRequestPending = false;
-  private readonly trackKeyboardGeometry = effect(() => {
-    const inset = this.keyboardInset.inset();
-    const animationTarget = this.keyboardInset.animation()?.target;
-    const event = this.keyboardInset.event();
-    // When returning to the system keyboard, Android 11+ tells us its final height before the first
-    // visible animation frame. Adopt that as the invariant slot immediately; the shrinking custom
-    // residual can then meet the growing IME at the exact final input-bar position.
-    if (
-      this.keyboardMode() === 'toSystem' &&
-      animationTarget !== undefined &&
-      animationTarget > 0
-    ) {
-      this.emojiKeyboardHeight.set(
-        Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, animationTarget),
-      );
-    }
-    // Capture the stable slot only during ordinary native-keyboard use. Updating it during a handoff
-    // would make both sides of `nativeInset + emojiResidual = stableHeight` shrink together.
-    if (
-      event?.isFinal &&
-      event.visible &&
-      inset > 0 &&
-      this.keyboardMode() === 'closed'
-    ) {
-      this.emojiKeyboardHeight.set(Math.max(MIN_EMOJI_KEYBOARD_HEIGHT, inset));
-    }
-    if (!event?.isFinal || this.expectedImeVisible === null) return;
-    if (
-      event.requestId !== null &&
-      this.expectedImeRequestId !== null &&
-      event.requestId !== this.expectedImeRequestId
-    )
-      return;
-    if (event.visible !== this.expectedImeVisible) return;
-    this.finishKeyboardTransition(event.visible);
-  });
+  /** Browser/desktop emoji remains a simple floating popup. Android uses its native composer instead. */
+  readonly emojiOpen = signal(false);
   /** Live link-card preview when the draft is a single bare URL (WeChat/WhatsApp-style; built
    *  server-side). Null when the draft isn't a bare URL or the fetch hasn't landed yet. The send path
    *  reuses the server's cache so the sent card builds instantly. */
@@ -323,10 +247,9 @@ export class ChatInputComponent implements OnDestroy {
     if (btn) this.insertEmoji(btn.dataset['emoji']!);
   }
 
-  // Editor content changed: track draft (send-button state) + re-measure the bar (auto-grow ⇒ heightChange).
+  // Editor content changed: track draft (send-button state); excess lines scroll inside the fixed editor.
   onHtml(h: string): void {
     this.draftHtml.set(h);
-    this.measureBar();
     this.scheduleLinkPreview();
   }
 
@@ -436,156 +359,29 @@ export class ChatInputComponent implements OnDestroy {
 
   /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
   toggleEmoji(): void {
-    if (this.keyboardMode() !== 'closed') {
-      if (this.emojiKeyboard() && this.keyboardMode() === 'toSystem') {
-        this.cancelKeyboardTransition();
-        this.keyboardMode.set('toEmoji');
-        this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
-        this.beginKeyboardTransition(false);
-      } else if (this.emojiKeyboard()) {
-        this.showSystemKeyboard();
-      } else {
-        this.closeEmoji();
-      }
+    if (this.emojiOpen()) {
+      this.closeEmoji();
       return;
     }
     this.closeAttach();
     if (this.recents().length) this.activeCategory.set('recent');
-    if (this.emojiKeyboard()) {
-      const nativeKeyboardOpen = this.keyboardInset.visible();
-      this.keyboardMode.set(nativeKeyboardOpen ? 'toEmoji' : 'emoji');
-      // Keep Tiptap's real DOM focus, InputConnection, selection and visible caret. The Android bridge
-      // controls IME visibility independently; emoji commands therefore operate on the live caret.
-      // During handoff the custom residual owns only `stableHeight - nativeInset`; layout ignores the
-      // native lift so the two surfaces add to one invariant slot instead of stacking at full height.
-      this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
-      if (nativeKeyboardOpen) this.beginKeyboardTransition(false);
-    } else {
-      this.keyboardMode.set('emoji');
-      this.editor()?.focus();
-    }
-    this.measureBar();
+    this.emojiOpen.set(true);
+    this.editor()?.focus();
   }
   closeEmoji(): void {
-    this.cancelKeyboardTransition();
-    this.systemImeRequestPending = false;
-    this.keyboardMode.set('closed');
-    this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
-    this.measureBar();
+    this.emojiOpen.set(false);
   }
-  /** Switch from the custom emoji keyboard back to the native IME while retaining the live editor caret. */
-  showSystemKeyboard(): void {
-    if (!this.emojiKeyboard()) {
-      this.closeEmoji();
-      return;
-    }
-    if (this.keyboardMode() === 'toSystem') return;
-    this.cancelKeyboardTransition();
-    // Hide custom controls immediately, then let the native inset grow while the blank custom residual
-    // shrinks by the same amount. Geometry overlaps; visible/interactive keyboard controls never do.
-    this.keyboardMode.set('toSystem');
-    this.systemImeRequestPending = true;
-    const editor = this.editor();
-    editor?.focus();
-    if (editor?.isFocused()) this.requestSystemIme();
-    this.measureBar();
-  }
-
-  /** A focused contenteditable does not emit a second focus event when tapped. In emoji mode that tap is
-   * an explicit request to replace the custom surface with the native IME. */
-  onEditorPointerDown(): void {
-    const mode = this.keyboardMode();
-    if (!this.emojiKeyboard() || (mode !== 'emoji' && mode !== 'toEmoji'))
-      return;
-    this.showSystemKeyboard();
-  }
-  onEditorFocusChange(focused: boolean): void {
-    if (
-      focused &&
-      this.systemImeRequestPending &&
-      this.keyboardMode() === 'toSystem'
-    ) {
-      this.requestSystemIme();
-    }
-    if (
-      !focused &&
-      (!this.emojiKeyboard() || this.keyboardMode() === 'closed')
-    ) {
-      this.closeEmoji();
-    }
-  }
-
-  private requestSystemIme(): void {
-    if (!this.systemImeRequestPending) return;
-    this.systemImeRequestPending = false;
-    // Let Chromium finish committing the focused contenteditable/InputConnection before native show().
-    requestAnimationFrame(() => {
-      if (this.keyboardMode() !== 'toSystem') return;
-      this.beginKeyboardTransition(true);
-    });
-  }
-
-  private beginKeyboardTransition(visible: boolean): void {
-    clearTimeout(this.keyboardWatchdog);
-    const transitionId = ++this.keyboardTransitionId;
-    this.expectedImeVisible = visible;
-    this.expectedImeRequestId = this.keyboardInset.setVisible(visible);
-    if (this.expectedImeRequestId === null) {
-      this.closeEmoji();
-      return;
-    }
-    this.keyboardWatchdog = setTimeout(() => {
-      if (transitionId !== this.keyboardTransitionId) return;
-      this.keyboardInset.reconcileSnapshot();
-      queueMicrotask(() => {
-        if (transitionId !== this.keyboardTransitionId) return;
-        if (this.keyboardInset.visible() === visible) {
-          this.finishKeyboardTransition(visible);
-        } else {
-          // Never leave an empty keyboard slot: failed show returns to emoji; failed hide returns to
-          // ordinary system-keyboard mode.
-          this.finishKeyboardTransition(!visible);
-        }
-      });
-    }, 700);
-  }
-
-  private cancelKeyboardTransition(): void {
-    clearTimeout(this.keyboardWatchdog);
-    this.keyboardTransitionId++;
-    this.expectedImeRequestId = null;
-    this.expectedImeVisible = null;
-  }
-
-  private finishKeyboardTransition(visible: boolean): void {
-    clearTimeout(this.keyboardWatchdog);
-    this.keyboardTransitionId++;
-    this.expectedImeRequestId = null;
-    this.expectedImeVisible = null;
-    if (visible) {
-      this.keyboardMode.set('closed');
-      this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
-    } else {
-      this.keyboardMode.set('emoji');
-      this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
-    }
-    this.measureBar();
-  }
-  /** Insert at the live editor selection and record it to Recents. Android keeps the editor focused while
-   * the native bridge independently hides the system IME, so the real caret remains authoritative. */
+  /** Insert at the live editor selection and record it to Recents. */
   insertEmoji(e: string): void {
-    this.editor()?.insertText(e, !this.emojiKeyboard());
+    this.editor()?.insertText(e);
     this.pushRecent(e);
-  }
-  deleteEmojiInput(): void {
-    this.editor()?.deleteBackward(!this.emojiKeyboard());
   }
 
   /** Close the emoji surface when interaction leaves the composer. The form contains the input, emoji
    *  toggle, category buttons and glyphs, so browser emoji interactions remain exempt and keep the IME. */
   @HostListener('document:pointerdown', ['$event'])
   onDocumentPointerDown(event: PointerEvent): void {
-    if (this.keyboardMode() === 'closed') return;
+    if (!this.emojiOpen()) return;
     const target = event.target;
     if (
       !(target instanceof Node) ||
@@ -634,7 +430,6 @@ export class ChatInputComponent implements OnDestroy {
     clearTimeout(this.previewTimer);
     this.closeEmoji();
     this.closeAttach();
-    this.measureBar();
     this.send.emit(
       isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text },
     );
@@ -955,9 +750,6 @@ export class ChatInputComponent implements OnDestroy {
     clearInterval(this.tickTimer);
     clearTimeout(this.errorTimer);
     clearTimeout(this.previewTimer);
-    clearTimeout(this.keyboardWatchdog);
-    this.keyboardTransitionId++;
-    this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */
@@ -968,14 +760,5 @@ export class ChatInputComponent implements OnDestroy {
     );
     this.recents.set(next);
     saveRecents(next);
-  }
-
-  /** Measure the bar's border-box height on the next frame and emit (the editor's auto-grow changes it). The
-   *  playground binds its viewport bottom to this; production's flex layout ignores it. */
-  private measureBar(): void {
-    requestAnimationFrame(() => {
-      const bar = this.inputBar()?.nativeElement;
-      if (bar) this.heightChange.emit(bar.offsetHeight);
-    });
   }
 }

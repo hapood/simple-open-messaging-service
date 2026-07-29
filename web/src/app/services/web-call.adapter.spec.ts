@@ -1,4 +1,4 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { of } from 'rxjs';
 import { IDLE_CALL, type CallSnapshot } from './call-adapter';
 import {
@@ -113,6 +113,9 @@ describe('WebCallAdapter multi-device ownership', () => {
       {
         callSid: 'call-session-exit',
         endReason: 'completed',
+      },
+      {
+        context: jasmine.any(HttpContext),
       },
     );
   });

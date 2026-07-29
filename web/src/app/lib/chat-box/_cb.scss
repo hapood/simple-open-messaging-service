@@ -24,10 +24,15 @@
     content: '';
     position: absolute;
     inset: 0;
-    z-index: 1;            // covers .msg-row / .msg-date (they have no stacking context)
-    pointer-events: none;  // does not block scroll / clicks
+    z-index: 1; // covers .msg-row / .msg-date (they have no stacking context)
+    pointer-events: none; // does not block scroll / clicks
     background-color: var(--app-active);
-    background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.5) 50%, transparent 70%);
+    background-image: linear-gradient(
+      100deg,
+      transparent 30%,
+      rgba(255, 255, 255, 0.5) 50%,
+      transparent 70%
+    );
     background-size: 200% 100%;
     background-repeat: no-repeat;
     animation: cb-shimmer 1.4s ease-in-out infinite;
@@ -42,7 +47,9 @@
   height: 22px;
   border-radius: 50%;
   border: 2.5px solid var(--cb-spin-track);
-  border-top-color: var(--cb-spin-fg); // only the top arc is highlighted → rotates as a spinner
+  border-top-color: var(
+    --cb-spin-fg
+  ); // only the top arc is highlighted → rotates as a spinner
   animation: cb-spin 0.8s linear infinite;
 }
 
@@ -56,7 +63,9 @@
 // the timestamp), track is a light gray.
 .cb-ghost-loading {
   --cb-spin-track: rgba(0, 0, 0, 0.12);
-  --cb-spin-fg: var(--app-text-faint);     // neutral gray (same tier as timestamp / placeholder)
+  --cb-spin-fg: var(
+    --app-text-faint
+  ); // neutral gray (same tier as timestamp / placeholder)
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -69,7 +78,7 @@
 
 // Dark mode ([data-theme="dark"]): the spinner track token flips to a light tint (discernible on the WhatsApp dark base
 // #0b141a; fg via --app-text-faint is already adaptive).
-[data-theme="dark"] .cb-ghost-loading {
+[data-theme='dark'] .cb-ghost-loading {
   --cb-spin-track: rgba(255, 255, 255, 0.14);
 }
 
@@ -84,20 +93,28 @@
 //  would make that query match the bottom and wrongly suppress the date float.
 .cb-tail-cap {
   box-sizing: border-box;
+  // Floating composer reserve. The host publishes one integer border-box height; because this padding is
+  // part of the measured cap, its existing ResizeObserver applies the shared bottom/item anchor policy.
+  --cb-composer-reserve: var(--soms-composer-height, 0px);
   // base = hidden (no height); --gap / --loading modifiers supply the height. Kernel measures the real offsetHeight.
   // An aggregate attachment transfer is Angular-owned but mounted inside this kernel-owned slot. Let its
   // natural height replace the ordinary gap so it participates in scrolling and total-height accounting.
   &:has(.msg-transfer-stack) {
     height: auto;
+    padding-bottom: var(--cb-composer-reserve);
   }
 }
 .cb-tail-cap--gap {
-  height: 14px; // small breathing room between the last message and the input bar (at the global newest)
+  height: calc(
+    14px + var(--cb-composer-reserve)
+  ); // breathing room + floating composer reserve
 }
 .cb-tail-cap--loading {
   --cb-spin-track: rgba(0, 0, 0, 0.12);
   --cb-spin-fg: var(--app-text-faint);
-  height: 48px; // same row height as the top ghost spinner (GHOST_H)
+  height: calc(
+    48px + var(--cb-composer-reserve)
+  ); // spinner row (GHOST_H) + floating composer reserve
   display: flex;
   align-items: center;
   justify-content: center;
@@ -107,17 +124,23 @@
   }
 }
 // Dark mode: spinner track flips to a light tint (fg via --app-text-faint is already adaptive).
-[data-theme="dark"] .cb-tail-cap--loading {
+[data-theme='dark'] .cb-tail-cap--loading {
   --cb-spin-track: rgba(255, 255, 255, 0.14);
 }
 
 @keyframes cb-shimmer {
-  0%   { background-position: 200% 0; }   // highlight band outside on the right
-  100% { background-position: -200% 0; }  // slides to outside on the left (shimmer flows right → left)
+  0% {
+    background-position: 200% 0;
+  } // highlight band outside on the right
+  100% {
+    background-position: -200% 0;
+  } // slides to outside on the left (shimmer flows right → left)
 }
 
 @keyframes cb-spin {
-  to { transform: rotate(360deg); }       // ring spinner rotates at constant speed
+  to {
+    transform: rotate(360deg);
+  } // ring spinner rotates at constant speed
 }
 
 // .cb-jump-highlight: a one-shot highlight added to the target row after jumping to a specific message (triggered by the
@@ -133,9 +156,15 @@
 }
 
 @keyframes cb-jump-flash {
-  0%   { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // semi-transparent accent (not harsh)
-  55%  { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // brief hold for noticeability
-  100% { background-color: transparent; }                                            // fades back to normal
+  0% {
+    background-color: color-mix(in srgb, var(--app-active) 55%, transparent);
+  } // semi-transparent accent (not harsh)
+  55% {
+    background-color: color-mix(in srgb, var(--app-active) 55%, transparent);
+  } // brief hold for noticeability
+  100% {
+    background-color: transparent;
+  } // fades back to normal
 }
 
 // Accessibility: user prefers reduced motion → no flash (a very short fade-in to static is kept so the target is still noticeable).
@@ -144,8 +173,12 @@
     animation: cb-jump-flash-reduced 0.4s ease-out;
   }
   @keyframes cb-jump-flash-reduced {
-    from { background-color: color-mix(in srgb, var(--app-active) 45%, transparent); }
-    to   { background-color: transparent; }
+    from {
+      background-color: color-mix(in srgb, var(--app-active) 45%, transparent);
+    }
+    to {
+      background-color: transparent;
+    }
   }
 }
 
@@ -161,12 +194,22 @@
 // optimistic send pops in without lag (WhatsApp/Telegram-class timing); the kernel's
 // animationend-driven lifecycle is duration-agnostic, and the safety timeout sits well
 // above the CSS duration.
-.cb-enter { animation: cb-enter 0.18s ease-out; }
-.cb-leave { animation: cb-leave 0.2s ease-in forwards; }
+.cb-enter {
+  animation: cb-enter 0.18s ease-out;
+}
+.cb-leave {
+  animation: cb-leave 0.2s ease-in forwards;
+}
 
 @keyframes cb-enter {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
-  to   { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 // .cb-enter-above: the coordinated optimistic-confirm / incoming-at-tail enter. Used when an optimistic tail block is
@@ -174,16 +217,30 @@
 // must slide in FROM ABOVE (translateY(-N) → 0) so it descends into its slot from the newest-real side and never travels
 // DOWN through the pending tail's band (a downward enter would visually cover the pending mid-animation). The pending tail
 // simultaneously shoves via .cb-move; the pair moves apart in the same frame. Same height-model constraint as cb-enter.
-.cb-enter-above { animation: cb-enter-above 0.18s ease-out; }
+.cb-enter-above {
+  animation: cb-enter-above 0.18s ease-out;
+}
 
 @keyframes cb-enter-above {
-  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
-  to   { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @keyframes cb-leave {
-  from { opacity: 1; transform: none; }
-  to   { opacity: 0; transform: scale(0.96); }
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 // .cb-move: FLIP reorder animation (reconcilePending sinking a failed send to the tail, etc.). The kernel sets a per-
@@ -191,14 +248,25 @@
 // its new layout position — starts visually at its OLD position (translateY(var)) and slides to identity (new position).
 // `both` fill applies the `from` immediately so there is no one-frame flash at the un-inverted new position.
 // Height-model safe: transform never affects offsetHeight, so the kernel's measured height is unchanged during the move.
-.cb-move { animation: cb-move 0.22s ease-out both; }
+.cb-move {
+  animation: cb-move 0.22s ease-out both;
+}
 
 @keyframes cb-move {
-  from { transform: translateY(var(--cb-move-dy, 0px)); }
-  to   { transform: none; }
+  from {
+    transform: translateY(var(--cb-move-dy, 0px));
+  }
+  to {
+    transform: none;
+  }
 }
 
 // A11y: reduced motion -> near-instant (still fires animationend so the kernel completes its lifecycle; animating drains).
 @media (prefers-reduced-motion: reduce) {
-  .cb-enter, .cb-enter-above, .cb-leave, .cb-move { animation-duration: 0.01s; }
+  .cb-enter,
+  .cb-enter-above,
+  .cb-leave,
+  .cb-move {
+    animation-duration: 0.01s;
+  }
 }

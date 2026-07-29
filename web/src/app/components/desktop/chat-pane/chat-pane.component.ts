@@ -16,6 +16,7 @@ import { ChatEmptyComponent } from '../../chat-empty/chat-empty.component';
 import { ConversationListService } from '../../../services/conversation-list.service';
 import { NavStateMachineService } from '../../../services/nav-state.service';
 import { LayoutService } from '../../../services/layout.service';
+import { NativeComposerService } from '../../../services/native-composer.service';
 import { prefersReducedMotion } from '../../../lib/motion-utils';
 import type { ConversationItem } from '../../../services/model';
 
@@ -246,6 +247,7 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly convList = inject(ConversationListService);
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
+  private readonly nativeComposer = inject(NativeComposerService);
 
   /** The thread the shell has marked open (URL-driven; sole writer is the home shell). */
   readonly openThreadId = this.convList.openThreadId;
@@ -334,6 +336,7 @@ export class ChatPaneComponent implements OnDestroy {
       const fgTid = fgKey === 'A' ? this.slotA() : this.slotB();
 
       if (target === undefined) {
+        this.nativeComposer.hideActive();
         // CLOSE: cancel any in-flight swap and IDLE the foreground kernel (teardown + reset currentTrdId),
         // keeping the component mounted. The pane-empty overlay (gated on !active()) covers it. On mobile
         // this runs AFTER the leave-slide (onSlideDone → convList.close), so the pane keeps its content
@@ -359,6 +362,10 @@ export class ChatPaneComponent implements OnDestroy {
         }
         return;
       }
+
+      // Navigation has already selected another conversation. Remove the outgoing composer now instead of
+      // keeping it alive until the background pane finishes loading and is promoted.
+      this.nativeComposer.hideActive();
 
       const bgKey: SlotKey = fgKey === 'A' ? 'B' : 'A';
       // Is the target already bound to the BACKGROUND pane? Read UNTRACKED: the fresh-bind `slot.set` below

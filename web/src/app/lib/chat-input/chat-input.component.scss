@@ -238,17 +238,18 @@ app-chat-input {
   text-overflow: ellipsis;
 }
 
-// Capsule input container: attachment + editor + emoji.
+// Native-aligned row: standalone attachment, input capsule (editor + emoji), round action.
 .ci-input-wrap {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: flex-end;
   gap: 2px;
-  padding: 4px;
+  min-height: 48px;
+  padding: 4px 4px 4px 10px;
   background: var(--im-composer-input-bg);
   border: 1px solid transparent;
-  border-radius: var(--app-radius-pill);
+  border-radius: 12px;
   transition:
     background 0.12s,
     box-shadow 0.12s;
@@ -259,7 +260,7 @@ app-chat-input {
   }
 }
 
-// Icon buttons inside the capsule (emoji / file).
+// Emoji icon inside the capsule.
 .ci-input-ico {
   flex: 0 0 auto;
   width: 36px;
@@ -281,13 +282,41 @@ app-chat-input {
   }
 }
 
-// The editor is one line by default and grows to five. Container-wide chat panes opt into a two-line
-// resting height and six-line ceiling below.
+.ci-attach {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--im-composer-input-bg);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 12%, transparent);
+  transition:
+    background 0.12s,
+    color 0.12s,
+    transform 0.1s;
+  &:hover,
+  &.active {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+}
+
+// The composer height is width-deterministic: one line in compact containers, two lines in wide ones.
+// Additional draft content scrolls inside the editor, so tail-cap geometry never changes while typing.
 .ci-input {
   flex: 1 1 auto;
   min-width: 0;
+  height: 36px;
   min-height: 36px;
-  max-height: 119px; // 5 × 21px lines + 14px vertical padding
+  max-height: 36px;
   box-sizing: border-box;
   padding: 7px 6px;
   overflow-y: auto;
@@ -297,25 +326,26 @@ app-chat-input {
   }
 }
 
-// Empty state is neutral (voice is secondary); a sendable draft promotes the same key to brand emphasis.
+// Native parity: the action key keeps the brand surface for both mic and send states.
 .ci-send {
   flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   border-radius: var(--app-radius-pill);
-  background: var(--app-bg-muted);
-  color: var(--app-text-muted);
+  background: var(--app-brand);
+  color: #fff;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--app-brand) 28%, transparent);
   cursor: pointer;
   transition:
     background 0.12s,
     transform 0.1s;
   &:hover {
-    background: var(--app-hover);
-    color: var(--app-text);
+    background: var(--app-brand-hover);
+    color: #fff;
   }
   &:active {
     transform: scale(0.94);
@@ -344,72 +374,10 @@ app-chat-input {
 
 @container (min-width: 720px) {
   .ci-input {
-    min-height: 56px; // 2 × 21px lines + 14px padding
-    max-height: 140px; // 6 × 21px lines + 14px padding
+    height: 56px;
+    min-height: 56px;
+    max-height: 56px;
   }
-}
-
-// Attachment popover trigger — active while the menu is open (mirrors the hover affordance).
-.ci-input-ico.active {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
-
-// Touch: the emoji board becomes an in-flow native-IME replacement. Growing <app-chat-input> shrinks the
-// flex message viewport above it, so the board can never be hidden below the screen. Tiptap remains focused
-// with its real caret; Android owns system-IME visibility independently.
-.ci-input-bar--emoji-keyboard {
-  display: flex;
-  flex-direction: column;
-}
-.ci-input-bar--emoji-keyboard .ci-controls {
-  order: 1;
-}
-.ci-emoji-panel.ci-emoji-panel--keyboard {
-  order: 2;
-  position: relative;
-  left: auto;
-  bottom: auto;
-  width: min(100%, 800px);
-  height: 0;
-  margin: 0 auto;
-  border-width: 0;
-  border-radius: 0;
-  box-shadow: none;
-  overflow: hidden;
-  transition:
-    height 160ms ease,
-    margin-top 160ms ease,
-    border-width 0s 160ms;
-}
-.ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--open {
-  height: max(240px, var(--emoji-kbd-height, 300px));
-  margin-top: 8px;
-  border-top-width: 1px;
-  opacity: 1;
-  transition:
-    height 160ms ease,
-    margin-top 160ms ease;
-}
-.ci-emoji-panel.ci-emoji-panel--keyboard.ci-emoji-panel--handoff {
-  // The handoff residual is allowed to approach zero; the normal 240px usability clamp must not apply.
-  // Native inset + this residual stays equal to the captured stable keyboard height.
-  height: max(0px, var(--emoji-kbd-height, 0px));
-  margin-top: 0;
-  border-top-width: 0;
-  // Android 11+ publishes the final endpoint + native duration at animation start. Move to that endpoint
-  // once instead of chasing progress frames; pre-30 publishes progress too, but Web commits only its
-  // debounced final and uses the short 60ms fallback.
-  transition: height var(--kbd-duration, 60ms) ease-out;
-}
-.ci-emoji-panel--handoff .ci-emoji-tabs,
-.ci-emoji-panel--handoff .ci-emoji-grids,
-.ci-emoji-panel--handoff .ci-emoji-backspace {
-  opacity: 0;
-  pointer-events: none;
-}
-.ci-backdrop--keyboard {
-  display: none;
 }
 
 // ── Recording indicator (floats above the bar) ────────────────────────────────────────────────

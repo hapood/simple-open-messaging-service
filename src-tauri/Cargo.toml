@@ -82,10 +82,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 tauri-plugin-barcode-scanner = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
-# Kotlin hands ContentResolver/recorder file descriptors to the shared Rust uploader directly. `libc`
-# transfers descriptor ownership; `jni` is only the thin command boundary (file bytes never cross JNI).
+# Kotlin hands ContentResolver/recorder file descriptors to the shared Rust uploader directly.
+# `jni` is only the thin command boundary (file bytes never cross JNI).
 jni = "0.21"
-libc = "0.2"
 
 # Lean release binary + lower runtime RSS for BOTH desktop and Android release builds — Cargo applies
 # [profile.release] regardless of target, so the NDK cross-build inherits it too. codegen-units = 1 +

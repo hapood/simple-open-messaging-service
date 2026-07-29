@@ -89,26 +89,21 @@ describe('NativeComposerService global geometry', () => {
     delete window.__SOMS_COMPOSER_EVENT__;
     const root = document.documentElement;
     root.style.removeProperty('--soms-composer-height');
-    root.style.removeProperty('--soms-ime-height');
-    root.style.removeProperty('--soms-chat-bottom-offset');
   });
 
-  it('starts an active chat at the 64px composer default and keeps safe area separate', () => {
+  it('leaves boot geometry untouched until the shell reports native bounds', () => {
     const service = TestBed.inject(NativeComposerService);
+    document.documentElement.style.setProperty(
+      '--soms-composer-height',
+      '74px',
+    );
     service.show(context);
     flush();
 
-    expect(css('--soms-composer-height')).toBe('64px');
-    expect(css('--soms-ime-height')).toBe('0px');
-    expect(css('--soms-chat-bottom-offset')).toContain(
-      'var(--soms-composer-height)',
-    );
-    expect(css('--soms-chat-bottom-offset')).toContain(
-      'var(--soms-safe-bottom)',
-    );
+    expect(css('--soms-composer-height')).toBe('74px');
   });
 
-  it('overwrites component height and combines it with uncompensated IME geometry', () => {
+  it('uses native total occupation without duplicating system IME geometry', () => {
     const service = TestBed.inject(NativeComposerService);
     service.show(context);
     inset.set(320);
@@ -118,13 +113,12 @@ describe('NativeComposerService global geometry', () => {
       contextId: context.contextId,
       sequence: 1,
       kind: 'geometry',
-      occupiedHeightPx: 91.9,
-      replacesIme: false,
+      occupiedHeightPx: 411.9,
     });
     flush();
 
-    expect(css('--soms-composer-height')).toBe('91px');
-    expect(css('--soms-ime-height')).toBe('300px');
+    expect(css('--soms-composer-height')).toContain('411px');
+    expect(css('--soms-composer-height')).toContain('--soms-safe-bottom');
   });
 
   it('zeros the IME term for an emoji replacement and clears all chat geometry on hide', () => {
@@ -137,18 +131,14 @@ describe('NativeComposerService global geometry', () => {
       sequence: 1,
       kind: 'geometry',
       occupiedHeightPx: 352,
-      replacesIme: true,
     });
     flush();
 
-    expect(css('--soms-composer-height')).toBe('352px');
-    expect(css('--soms-ime-height')).toBe('0px');
+    expect(css('--soms-composer-height')).toContain('352px');
 
     service.hide(context.contextId);
     flush();
-    expect(css('--soms-composer-height')).toBe('0px');
-    expect(css('--soms-ime-height')).toBe('0px');
-    expect(css('--soms-chat-bottom-offset')).toBe('0px');
+    expect(css('--soms-composer-height')).toContain('352px');
     expect(service.occupiedHeight()).toBe(352);
   });
 });

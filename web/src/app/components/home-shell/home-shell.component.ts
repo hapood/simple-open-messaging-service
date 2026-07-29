@@ -52,8 +52,8 @@ const overlaySlide = trigger('overlaySlide', [
   state('mobile-closed', style({ transform: 'translate3d(100%, 0, 0)', visibility: 'hidden' })),
   state('mobile-open', style({ transform: 'translate3d(0, 0, 0)', visibility: 'visible' })),
   // Same timing language as root-popup's ENTER/LEAVE so motion is consistent across the app.
-  transition('mobile-closed => mobile-open', animate('230ms cubic-bezier(0.32, 0.72, 0, 1)')),
-  transition('mobile-open => mobile-closed', animate('170ms cubic-bezier(0.4, 0, 1, 1)')),
+  transition('mobile-closed => mobile-open', animate('300ms cubic-bezier(0.32, 0.72, 0, 1)')),
+  transition('mobile-open => mobile-closed', animate('200ms cubic-bezier(0.4, 0, 1, 1)')),
   transition('* => static', animate('0ms')),
   transition('static => *', animate('0ms')),
 ])

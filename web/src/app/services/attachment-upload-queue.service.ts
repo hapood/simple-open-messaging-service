@@ -57,12 +57,12 @@ export class AttachmentUploadQueueService {
       this.activeThreads.add(job.threadId);
       void Promise.resolve()
         .then(job.run)
-        .then(job.resolve, job.reject)
         .finally(() => {
           this.active--;
           this.activeThreads.delete(job.threadId);
           this.pump();
-        });
+        })
+        .then(job.resolve, job.reject);
     }
   }
 

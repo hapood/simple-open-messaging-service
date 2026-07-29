@@ -1,9 +1,6 @@
-import { effect, inject, Injectable, signal } from '@angular/core';
+import { inject, Injectable, signal } from '@angular/core';
 import { isAndroidNative, listenEvent } from './runtime';
-import {
-  KeyboardInsetService,
-  uncompensatedKbdInset,
-} from './keyboard-inset.service';
+import { KeyboardInsetService } from './keyboard-inset.service';
 
 const DEFAULT_COMPOSER_HEIGHT_PX = 64;
 
@@ -19,6 +16,15 @@ export interface NativeComposerContext {
   theme: 'light' | 'dark' | 'system';
 }
 
+export interface NativeComposerBounds {
+  version: 1;
+  contextId: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 export type NativeComposerEvent =
   | {
       version: 1;
@@ -26,7 +32,6 @@ export type NativeComposerEvent =
       sequence: number;
       kind: 'geometry';
       occupiedHeightPx: number;
-      replacesIme?: boolean;
     }
   | {
       version: 1;
@@ -89,43 +94,11 @@ export class NativeComposerService {
   } | null>(null);
 
   private activeContextId: number | null = null;
-  private readonly active = signal(false);
   private readonly keyboardInset = inject(KeyboardInsetService);
   private readonly keyboardLayoutOwner = {};
 
   constructor() {
     if (typeof window === 'undefined') return;
-    effect(() => {
-      const root = document.documentElement;
-      if (!this.active()) {
-        root.style.setProperty('--soms-composer-height', '0px');
-        root.style.setProperty('--soms-ime-height', '0px');
-        root.style.setProperty('--soms-chat-bottom-offset', '0px');
-        return;
-      }
-
-      const override = this.keyboardInset.layoutOverride();
-      const rawIme =
-        override ??
-        this.keyboardInset.animation()?.target ??
-        this.keyboardInset.inset();
-      const imeHeight =
-        override === null
-          ? uncompensatedKbdInset(
-              rawIme,
-              this.keyboardInset.viewportReduction(),
-            )
-          : rawIme;
-      root.style.setProperty(
-        '--soms-composer-height',
-        `${this.occupiedHeight()}px`,
-      );
-      root.style.setProperty('--soms-ime-height', `${imeHeight}px`);
-      root.style.setProperty(
-        '--soms-chat-bottom-offset',
-        'calc(var(--soms-composer-height) + max(var(--soms-ime-height), var(--soms-safe-bottom)))',
-      );
-    });
     window.__SOMS_COMPOSER_EVENT__ = (raw: NativeComposerEvent) => {
       if (
         raw?.version !== 1 ||
@@ -135,11 +108,16 @@ export class NativeComposerService {
         return;
       }
       if (raw.kind === 'geometry') {
-        this.occupiedHeight.set(Math.max(0, Math.trunc(raw.occupiedHeightPx)));
-        this.keyboardInset.setLayoutOverride(
-          this.keyboardLayoutOwner,
-          raw.replacesIme ? 0 : null,
+        const height = Math.max(0, Math.trunc(raw.occupiedHeightPx));
+        this.occupiedHeight.set(height);
+        document.documentElement.style.setProperty(
+          '--soms-composer-height',
+          `calc(${height}px + var(--soms-safe-bottom, 0px))`,
         );
+        // Native geometry is the single bottom-occupation source for every native surface:
+        // composer-only, composer+emoji, and composer+system-IME. Suppress the separate IME transform
+        // while it owns the chat so the system-keyboard path cannot double-compensate.
+        this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
       }
       this.event.set(raw);
     };
@@ -157,8 +135,21 @@ export class NativeComposerService {
   show(context: NativeComposerContext): void {
     if (!this.supported) return;
     this.activeContextId = context.contextId;
-    this.active.set(true);
     window.SomsShell!.showComposer!(JSON.stringify(context));
+  }
+
+  setBounds(contextId: number, rect: DOMRectReadOnly): void {
+    if (!this.supported || this.activeContextId !== contextId) return;
+    window.SomsShell!.setComposerBounds?.(
+      JSON.stringify({
+        version: 1,
+        contextId,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      } satisfies NativeComposerBounds),
+    );
   }
 
   update(contextId: number, patch: Record<string, unknown>): void {
@@ -175,11 +166,17 @@ export class NativeComposerService {
 
   hide(contextId: number): void {
     if (!this.supported || this.activeContextId !== contextId) return;
+    this.hideActive();
+  }
+
+  /** Release the native surface at navigation start, before the outgoing pane finishes its lifecycle. */
+  hideActive(): void {
+    if (!this.supported || this.activeContextId === null) return;
+    const contextId = this.activeContextId;
     // Clear ownership before calling native: hideComposer emits a zero-height geometry event
     // synchronously on some WebViews. Reject that event so the last real measurement remains cached
     // for the next chat and its first frame can use the measured height instead of falling back.
     this.activeContextId = null;
-    this.active.set(false);
     window.SomsShell!.hideComposer?.(contextId);
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
     this.event.set(null);

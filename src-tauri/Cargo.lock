@@ -3557,7 +3557,6 @@ dependencies = [
  "futures-util",
  "jni",
  "keyring",
- "libc",
  "log",
  "reqwest 0.12.28",
  "serde",

@@ -58,6 +58,7 @@ import {
   type ChatSendIntent,
 } from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
+import { ComposerWidthSourceDirective } from '../../directives/composer-width-source.directive';
 import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
 import { MsgService } from '../../services/message.service';
@@ -92,10 +93,8 @@ import {
   type NativeComposerEvent,
   type NativeVoiceUploadEvent,
 } from '../../services/native-composer.service';
-import {
-  BusinessCode,
-  translateBizResult,
-} from '../../services/biz-code';
+import { ThemeService } from '../../services/theme.service';
+import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 
 let nativeComposerContextSequence = Date.now() * 1000;
@@ -126,6 +125,7 @@ let nativeComposerContextSequence = Date.now() * 1000;
     MessageHeaderComponent,
     ChatInputComponent,
     KbdOffsetDirective,
+    ComposerWidthSourceDirective,
     StickyDateOverlayComponent,
     EmptyStateComponent,
     UserAvatarComponent,
@@ -148,6 +148,8 @@ export class MessageThreadComponent implements OnDestroy {
 
   private readonly viewportRef =
     viewChild<ElementRef<HTMLDivElement>>('viewport');
+  private readonly containerRef =
+    viewChild<ElementRef<HTMLDivElement>>('container');
   private readonly contentRef =
     viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly transferStackRef =
@@ -174,14 +176,13 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly debugTools = inject(DebugToolsService);
   private readonly transloco = inject(TranslocoService);
+  private readonly theme = inject(ThemeService);
   private readonly toast = inject(ToastService);
   readonly nativeComposer = inject(NativeComposerService);
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
-  private readonly nativeVoiceItems = new Map<
-    string,
-    CbItem<ChatItemData>
-  >();
+  private nativeComposerBoundsObserver?: ResizeObserver;
+  private readonly nativeVoiceItems = new Map<string, CbItem<ChatItemData>>();
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -368,12 +369,18 @@ export class MessageThreadComponent implements OnDestroy {
         this.nativeComposer.supported &&
         this.nativeComposerActive() &&
         threadId !== undefined &&
+        !this.initialLoading() &&
         !this.blockedPeer();
       if (!shouldShow) {
         this.hideNativeComposer();
         return;
       }
-      if (this.nativeComposerThreadId === threadId) return;
+      const theme = this.theme.effective();
+      if (this.nativeComposerThreadId === threadId) {
+        if (this.nativeComposerContextId !== null)
+          this.nativeComposer.update(this.nativeComposerContextId, { theme });
+        return;
+      }
       this.hideNativeComposer();
       const contextId = ++nativeComposerContextSequence;
       this.nativeComposerContextId = contextId;
@@ -387,8 +394,9 @@ export class MessageThreadComponent implements OnDestroy {
         sending: false,
         canRecord: true,
         canUpload: true,
-        theme: 'system',
+        theme,
       });
+      this.observeNativeComposerBounds(contextId);
     });
     effect(() => {
       const event = this.nativeComposer.event();
@@ -413,10 +421,33 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private hideNativeComposer(): void {
+    this.nativeComposerBoundsObserver?.disconnect();
+    this.nativeComposerBoundsObserver = undefined;
     const contextId = this.nativeComposerContextId;
     if (contextId !== null) this.nativeComposer.hide(contextId);
     this.nativeComposerContextId = null;
     this.nativeComposerThreadId = null;
+  }
+
+  private observeNativeComposerBounds(contextId: number): void {
+    // The viewport is translated by the shared --kbd-lift policy; the container is the stable chatbox bounds.
+    const chatbox = this.containerRef()?.nativeElement;
+    if (!chatbox) return;
+    const publish = (): void => {
+      if (this.nativeComposerContextId !== contextId) return;
+      this.nativeComposer.setBounds(contextId, chatbox.getBoundingClientRect());
+    };
+    publish();
+    let frames = 12;
+    const followTransition = (): void => {
+      publish();
+      if (--frames > 0 && this.nativeComposerContextId === contextId)
+        requestAnimationFrame(followTransition);
+    };
+    requestAnimationFrame(followTransition);
+    this.nativeComposerBoundsObserver = new ResizeObserver(publish);
+    this.nativeComposerBoundsObserver.observe(chatbox);
+    window.addEventListener('resize', publish, { once: true });
   }
 
   private handleNativeComposerEvent(event: NativeComposerEvent): void {
@@ -1056,8 +1087,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (res.code !== 0) {
           this.surfaceSendQuota(res);
           void this.failPending(item);
-        }
-        else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
+        } else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
       })
       .catch(() => void this.failPending(item));
   }
@@ -1080,8 +1110,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (res.code !== 0) {
           this.surfaceSendQuota(res);
           void this.failPending(item);
-        }
-        else void this.markSent(item);
+        } else void this.markSent(item);
       })
       .catch(() => void this.failPending(item));
   }

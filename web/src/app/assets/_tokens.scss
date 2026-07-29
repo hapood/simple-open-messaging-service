@@ -178,8 +178,6 @@ $app-gray-900: #111827;
   // safe-area or IME space. NativeComposerService updates these root-scoped values from the global native
   // geometry + IME event streams. Outside an active native chat they remain zero.
   --soms-composer-height: 0px;
-  --soms-ime-height: 0px;
-  --soms-chat-bottom-offset: 0px;
 }
 
 // ---- Chat / IM semantic tokens (WhatsApp-aligned, --im-*) ------------------

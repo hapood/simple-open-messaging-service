@@ -208,6 +208,7 @@ declare global {
       getImeSnapshot?: () => string;
       setImeVisible?: (visible: boolean, requestId: number) => void;
       showComposer?: (contextJson: string) => void;
+      setComposerBounds?: (boundsJson: string) => void;
       updateComposer?: (patchJson: string) => void;
       acknowledgeComposerAction?: (actionId: number, accepted: boolean) => void;
       hideComposer?: (contextId: number) => void;

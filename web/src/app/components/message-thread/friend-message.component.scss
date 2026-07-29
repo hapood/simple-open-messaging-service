@@ -40,13 +40,8 @@
   // Effective keyboard lift (safe-area-corrected) — shared with the playground stage via
   // assets/utils.scss#kbd-lift-effective so the two can't drift. Consumed by the input bar + scroller lift.
   @include kbd-lift-effective;
-  // Browser/Web composer uses the existing keyboard lift. Android's native composer publishes the complete
-  // chat obstruction (component + max(IME, safe area)) globally. max() selects exactly one layout model and
-  // prevents the Android IME from being counted twice.
-  --msg-bottom-offset: max(
-    var(--kbd-lift-effective, 0px),
-    var(--soms-chat-bottom-offset, 0px)
-  );
+  // Composer height is real scrollable space owned exclusively by the kernel tail cap. Web/PC publishes
+  // it locally on this container; Android publishes the same variable globally for the native component.
   // Wallpaper: bg color + tiled doodle layered on the same element (an element's
   // own background always paints behind its content, so no pseudo-element / z-index
   // is needed). The parent container does not scroll with the viewport → the pattern
@@ -70,7 +65,7 @@
   // translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
   // absolute skeleton, which rides the transform) and below the header (z-index:2) so lifted content slides
   // UNDER the header.
-  transform: translateY(calc(-1 * var(--msg-bottom-offset)));
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
   transition: transform var(--kbd-duration, 60ms) ease-out;
   overflow-x: hidden;
   overflow-y: auto;
@@ -101,10 +96,19 @@
   }
 }
 
-// Chat input (the reusable ChatInputComponent) sits at the bottom of the column. It takes its natural
-// auto-grown height and never grows/shrinks — the viewport above flexes to fill the rest.
+// Browser/desktop composer uses the same floating geometry as the Android native composer. Its host no
+// longer consumes flex height; the measured tail cap reserves the real scroll range below the newest row.
 app-chat-input {
-  flex: 0 0 auto;
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 4;
+}
+
+// Only the controls are surfaces; the floating full-width bar lets messages remain visible around them.
+.msg-container .ci-input-bar {
+  background: transparent;
+  border-top: 0;
 }
 
 // One stable transport row per state. Angular creates it beside the viewport, then the component moves it
@@ -300,7 +304,7 @@ app-chat-input {
   z-index: 3;
   flex: 0 0 0;
   height: 0;
-  transform: translateY(calc(-1 * var(--msg-bottom-offset, 0px)));
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
   transition: transform 60ms linear;
 }
 
@@ -424,7 +428,7 @@ app-chat-input {
   pointer-events: none;
   // The viewport is lifted with the composer when the on-screen keyboard opens. Keep the empty-state hero
   // visually anchored to the chat pane by cancelling that parent transform; message rows still lift normally.
-  transform: translateY(var(--msg-bottom-offset, 0px));
+  transform: translateY(var(--kbd-lift-effective, 0px));
   transition: transform var(--kbd-duration, 60ms) ease-out;
   // Gentle reveal so the card doesn't pop in once loading clears. Opacity-only (exempt from the integer-px
   // height rule; the overlay is outside the kernel's measured model regardless). Honors reduced-motion.

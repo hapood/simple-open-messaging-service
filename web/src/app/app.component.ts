@@ -19,95 +19,104 @@ import { CallEventService } from './services/call-event.service';
 import { CallOverlayService } from './services/call-overlay.service';
 import { ChatAppearanceService } from './services/chat-appearance.service';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
+import { ComposerGeometryService } from './services/composer-geometry.service';
 @Component({
-    selector: 'app-root',
-    imports: [RouterOutlet, NotifPopupComponent, DebugLogFabComponent, UpdateBannerComponent],
-    templateUrl: './app.component.html',
-    styleUrl: './app.component.scss'
+  selector: 'app-root',
+  imports: [
+    RouterOutlet,
+    NotifPopupComponent,
+    DebugLogFabComponent,
+    UpdateBannerComponent,
+  ],
+  templateUrl: './app.component.html',
+  styleUrl: './app.component.scss',
 })
 export class AppComponent {
-    // Eagerly instantiate so their effects + listeners are live for the whole session.
-    private readonly theme = inject(ThemeService);
-    private readonly language = inject(LanguageService);
-    // Reflect device-local chat display preferences for the virtual-scroll kernel's detached rows.
-    private readonly chatAppearance = inject(ChatAppearanceService);
-    // UpdateService subscribes to SwUpdate.versionUpdates (a hot stream) — eagerly constructed so a
-    // VERSION_READY emitted before the home shell mounts is not missed.
-    private readonly updates = inject(UpdateService);
-    // PushService.init() registers the FCM token-handoff hooks + recovers any cold-start deep link. Runs
-    // once at boot; a no-op outside the Tauri shell (the hooks are never triggered by the browser).
-    private readonly push = inject(PushService);
-    // WebPushService.init() subscribes the browser/PWA to Web Push (VAPID). Self-guards to a no-op in
-    // the Tauri shell and on unsupported browsers; surfaces a toast on permission/subscribe failures.
-    private readonly webPush = inject(WebPushService);
-    // SseLifecycleService listens to visibilitychange — disconnects SSE on Android background (graceful
-    // close), reconnects on resume. PC/browser keep SSE alive. Eagerly constructed so the listener is
-    // live for the whole session.
-    private readonly sseLifecycle = inject(SseLifecycleService);
-    // MissedSyncService pages POST /notifications/missed on app-open (DB-ready) + reconnect, hydrating the
-    // message store for threads that grew while the app was closed (the SSE stream does not replay offline).
-    // Eagerly constructed so its DB-ready effect + reconnect subscription are live for the whole session.
-    private readonly missedSync = inject(MissedSyncService);
-    // UnreadAttentionService prefixes the window/tab title with "(N)" + posts a system notification
-    // when a NEW_MESSAGE arrives while the window is unfocused. Covers PC desktop + browser. Eagerly
-    // constructed so the focus listener + SSE subscription are live for the whole session.
-    private readonly attention = inject(UnreadAttentionService);
-    // BackgroundSyncService owns the Android 6-hour keep-alive poller preference. Eagerly constructed
-    // so the stored preference (read from Kotlin SomsSecureStore via the bridge) is reflected into the
-    // signal + re-applied to the WorkManager schedule at every boot. A no-op off-Android.
-    private readonly bgSync = inject(BackgroundSyncService);
-    // NavStateMachineService: eagerly constructed so its URL-mirror effect is live, and so initFromUrl()
-    // runs here (synchronously, before the effect's first async tick) to seed the chat from a cold URL
-    // like `/chat/2` before the mirror's first replaceState.
-    private readonly nav = inject(NavStateMachineService);
-    // ShellUpdateService: the Tauri-shell dynamic web-update probe (background download + reload prompt).
-    // Eagerly constructed; its check() is fired after the first paint below.
-    private readonly shellUpdate = inject(ShellUpdateService);
-    // RouteService: opens the once-per-launch shell-incompatibility dialog when the probe finds the
-    // backend is too new for this shell.
-    private readonly route = inject(RouteService);
-    // CallEventService: routes CALL_EVENT SSE frames + the native __SOMS_CALL_EVENT__ snapshot push into the
-    // callState signal. Eagerly constructed so an incoming ring (which can arrive at any time) is never
-    // missed — it subscribes in its constructor + installs the native snapshot hook.
-    private readonly callEvents = inject(CallEventService);
-    // CallOverlayService mounts CallScreenComponent as a body-level CDK overlay (sibling of <app-root>) +
-    // toggles the html.in-video-call transparency treatment on video calls, so the native remote video shows
-    // through the transparent chrome. Eagerly constructed so its callState effect is live for the whole
-    // session (an incoming ring can arrive at any time) — cf. the qr-scanning overlay architecture.
-    private readonly callOverlay = inject(CallOverlayService);
-    // Guards the incompatibility prompt to once per app session (re-armed only by a fresh app launch).
-    private incompatiblePromptShown = false;
-    constructor() {
-        this.nav.initFromUrl();
-        // Android hardware-back: Kotlin's OnBackPressedCallback evals window.__SOMS_BACK__(); peel one
-        // nav layer, and if nothing's left (at home) call SomsBack.exit() (a Kotlin @JavascriptInterface)
-        // to finish the activity. Desktop/browser have no native back — history is flat, so browser-back
-        // exits there. Dormant until the Kotlin side wires the callback (the Phase 3 Kotlin half).
-        if (isTauri() && isAndroid()) {
-            window.__SOMS_BACK__ = () => {
-                if (!this.nav.back()) window.SomsBack?.exit();
-            };
-        }
-        this.push.init();
-        void this.webPush.init();
-        // afterNextRender: the SPA has painted — probe for a background web-bundle update and surface an
-        // incompatibility prompt if this shell is too old for the backend. The `spa-ready` emit is a
-        // historical leftover from the old two-window shell (single-window now → no Rust listener); kept
-        // harmless. Everything here no-ops outside the Tauri shell.
-        afterNextRender(() => {
-            emitTauriEvent('spa-ready');
-            void this.shellUpdate.check().then(() => this.maybePromptIncompatible());
-        });
+  // Eagerly instantiate so their effects + listeners are live for the whole session.
+  private readonly composerGeometry = inject(ComposerGeometryService);
+  private readonly theme = inject(ThemeService);
+  private readonly language = inject(LanguageService);
+  // Reflect device-local chat display preferences for the virtual-scroll kernel's detached rows.
+  private readonly chatAppearance = inject(ChatAppearanceService);
+  // UpdateService subscribes to SwUpdate.versionUpdates (a hot stream) — eagerly constructed so a
+  // VERSION_READY emitted before the home shell mounts is not missed.
+  private readonly updates = inject(UpdateService);
+  // PushService.init() registers the FCM token-handoff hooks + recovers any cold-start deep link. Runs
+  // once at boot; a no-op outside the Tauri shell (the hooks are never triggered by the browser).
+  private readonly push = inject(PushService);
+  // WebPushService.init() subscribes the browser/PWA to Web Push (VAPID). Self-guards to a no-op in
+  // the Tauri shell and on unsupported browsers; surfaces a toast on permission/subscribe failures.
+  private readonly webPush = inject(WebPushService);
+  // SseLifecycleService listens to visibilitychange — disconnects SSE on Android background (graceful
+  // close), reconnects on resume. PC/browser keep SSE alive. Eagerly constructed so the listener is
+  // live for the whole session.
+  private readonly sseLifecycle = inject(SseLifecycleService);
+  // MissedSyncService pages POST /notifications/missed on app-open (DB-ready) + reconnect, hydrating the
+  // message store for threads that grew while the app was closed (the SSE stream does not replay offline).
+  // Eagerly constructed so its DB-ready effect + reconnect subscription are live for the whole session.
+  private readonly missedSync = inject(MissedSyncService);
+  // UnreadAttentionService prefixes the window/tab title with "(N)" + posts a system notification
+  // when a NEW_MESSAGE arrives while the window is unfocused. Covers PC desktop + browser. Eagerly
+  // constructed so the focus listener + SSE subscription are live for the whole session.
+  private readonly attention = inject(UnreadAttentionService);
+  // BackgroundSyncService owns the Android 6-hour keep-alive poller preference. Eagerly constructed
+  // so the stored preference (read from Kotlin SomsSecureStore via the bridge) is reflected into the
+  // signal + re-applied to the WorkManager schedule at every boot. A no-op off-Android.
+  private readonly bgSync = inject(BackgroundSyncService);
+  // NavStateMachineService: eagerly constructed so its URL-mirror effect is live, and so initFromUrl()
+  // runs here (synchronously, before the effect's first async tick) to seed the chat from a cold URL
+  // like `/chat/2` before the mirror's first replaceState.
+  private readonly nav = inject(NavStateMachineService);
+  // ShellUpdateService: the Tauri-shell dynamic web-update probe (background download + reload prompt).
+  // Eagerly constructed; its check() is fired after the first paint below.
+  private readonly shellUpdate = inject(ShellUpdateService);
+  // RouteService: opens the once-per-launch shell-incompatibility dialog when the probe finds the
+  // backend is too new for this shell.
+  private readonly route = inject(RouteService);
+  // CallEventService: routes CALL_EVENT SSE frames + the native __SOMS_CALL_EVENT__ snapshot push into the
+  // callState signal. Eagerly constructed so an incoming ring (which can arrive at any time) is never
+  // missed — it subscribes in its constructor + installs the native snapshot hook.
+  private readonly callEvents = inject(CallEventService);
+  // CallOverlayService mounts CallScreenComponent as a body-level CDK overlay (sibling of <app-root>) +
+  // toggles the html.in-video-call transparency treatment on video calls, so the native remote video shows
+  // through the transparent chrome. Eagerly constructed so its callState effect is live for the whole
+  // session (an incoming ring can arrive at any time) — cf. the qr-scanning overlay architecture.
+  private readonly callOverlay = inject(CallOverlayService);
+  // Guards the incompatibility prompt to once per app session (re-armed only by a fresh app launch).
+  private incompatiblePromptShown = false;
+  constructor() {
+    this.nav.initFromUrl();
+    // Android hardware-back: Kotlin's OnBackPressedCallback evals window.__SOMS_BACK__(); peel one
+    // nav layer, and if nothing's left (at home) call SomsBack.exit() (a Kotlin @JavascriptInterface)
+    // to finish the activity. Desktop/browser have no native back — history is flat, so browser-back
+    // exits there. Dormant until the Kotlin side wires the callback (the Phase 3 Kotlin half).
+    if (isTauri() && isAndroid()) {
+      window.__SOMS_BACK__ = () => {
+        if (!this.nav.back()) window.SomsBack?.exit();
+      };
     }
+    this.push.init();
+    void this.webPush.init();
+    // afterNextRender: the SPA has painted — probe for a background web-bundle update and surface an
+    // incompatibility prompt if this shell is too old for the backend. The `spa-ready` emit is a
+    // historical leftover from the old two-window shell (single-window now → no Rust listener); kept
+    // harmless. Everything here no-ops outside the Tauri shell.
+    afterNextRender(() => {
+      emitTauriEvent('spa-ready');
+      void this.shellUpdate.check().then(() => this.maybePromptIncompatible());
+    });
+  }
 
-    /** Surface a once-per-launch dialog when the probe found this shell is incompatible with the backend.
-     *  Non-blocking: the user dismisses it and keeps using the cached bundle (the wizard hard-blocked this
-     *  at server-setup; this is the soft reminder for an already-logged-in session). */
-    private maybePromptIncompatible(): void {
-        if (this.incompatiblePromptShown) return;
-        const status = this.shellUpdate.updateStatus();
-        if (!status?.incompatible) return;
-        this.incompatiblePromptShown = true;
-        this.route.popupDlg(PopupType.SHELL_INCOMPATIBLE, { serverVersion: status.serverVersion });
-    }
+  /** Surface a once-per-launch dialog when the probe found this shell is incompatible with the backend.
+   *  Non-blocking: the user dismisses it and keeps using the cached bundle (the wizard hard-blocked this
+   *  at server-setup; this is the soft reminder for an already-logged-in session). */
+  private maybePromptIncompatible(): void {
+    if (this.incompatiblePromptShown) return;
+    const status = this.shellUpdate.updateStatus();
+    if (!status?.incompatible) return;
+    this.incompatiblePromptShown = true;
+    this.route.popupDlg(PopupType.SHELL_INCOMPATIBLE, {
+      serverVersion: status.serverVersion,
+    });
+  }
 }

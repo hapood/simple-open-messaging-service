@@ -27,10 +27,12 @@ use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
+#[cfg(target_os = "android")]
+use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
@@ -1241,15 +1243,6 @@ async fn upload_stream_path_core(
     fields: std::collections::HashMap<String, String>,
     client_message_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    if !matches!(
-        endpoint.as_str(),
-        "/upload" | "/upload/file" | "/upload/video" | "/upload/audio" | "/upload/avatar"
-    ) {
-        return Err("unsupported upload endpoint".to_string());
-    }
-    let origin = proxy.api_origin.lock().expect("origin lock").clone();
-    let url = format!("{}/api/v1{}", origin, endpoint);
-    let client = proxy.api_client(&origin);
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| format!("open file: {e}"))?;
@@ -1264,6 +1257,46 @@ async fn upload_stream_path_core(
         ));
     }
     let size = if size > 0 { size } else { actual_size };
+    upload_stream_open_file_core(
+        app,
+        proxy,
+        file,
+        endpoint,
+        filename,
+        mime,
+        size,
+        fields,
+        client_message_id,
+    )
+    .await
+}
+
+/// Upload an already-open file descriptor without reopening it through a filesystem path.
+///
+/// Android document providers commonly return `content://` descriptors whose `/proc/self/fd/<n>`
+/// symlink cannot be opened again (and pipe-backed providers may not have a reusable path at all).
+/// Taking a `tokio::fs::File` here keeps the original picker grant alive for the whole request and
+/// makes normal Rust ownership close the descriptor on success, error, or cancellation.
+async fn upload_stream_open_file_core(
+    app: tauri::AppHandle,
+    proxy: ProxyState,
+    file: tokio::fs::File,
+    endpoint: String,
+    filename: String,
+    mime: String,
+    size: u64,
+    fields: std::collections::HashMap<String, String>,
+    client_message_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if !matches!(
+        endpoint.as_str(),
+        "/upload" | "/upload/file" | "/upload/video" | "/upload/audio" | "/upload/avatar"
+    ) {
+        return Err("unsupported upload endpoint".to_string());
+    }
+    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let url = format!("{}/api/v1{}", origin, endpoint);
+    let client = proxy.api_client(&origin);
     let progress_id = client_message_id.clone();
     let mut loaded = 0_u64;
     let mut last_reported = 0_u64;
@@ -1358,8 +1391,9 @@ async fn upload_stream_path_core(
 }
 
 /// Android's source adapter transfers ownership of a readable descriptor (system-picker content URI or
-/// app-private recorder file) to Rust. Only metadata crosses JNI; Rust opens `/proc/self/fd/<n>` and then
-/// uses the exact same path uploader, cancellation table, origin failover, and progress event as desktop.
+/// app-private recorder file) to Rust. Only metadata crosses JNI; Rust adopts the descriptor itself
+/// instead of reopening `/proc/self/fd/<n>`, which Android document providers may reject with EACCES.
+/// The resulting `File` owns the descriptor and closes it on every completion/cancellation/error path.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
@@ -1375,6 +1409,13 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
     fields_json: jni::objects::JString,
     client_message_id: jni::objects::JString,
 ) {
+    if fd < 0 {
+        return;
+    }
+    // SAFETY: Kotlin calls ParcelFileDescriptor.detachFd() immediately before this JNI method and
+    // transfers sole ownership to Rust. Construct the owner before spawning so every later return or
+    // panic drops the descriptor exactly once.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
     let read = |env: &mut jni::JNIEnv, value: jni::objects::JString| {
         env.get_string(&value)
             .map(|s| s.to_string_lossy().into_owned())
@@ -1390,15 +1431,14 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
     let fields = serde_json::from_str::<std::collections::HashMap<String, String>>(&fields_json)
         .unwrap_or_default();
     let Some(app) = ANDROID_APP.get().cloned() else {
-        unsafe { libc::close(fd) };
         return;
     };
     let proxy = app.state::<ProxyState>().inner().clone();
     tauri::async_runtime::spawn(async move {
-        let result = upload_stream_path_core(
+        let result = upload_stream_open_file_core(
             app.clone(),
             proxy,
-            format!("/proc/self/fd/{fd}"),
+            tokio::fs::File::from_std(file),
             endpoint,
             filename,
             mime,
@@ -1407,7 +1447,6 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
             Some(client_message_id),
         )
         .await;
-        unsafe { libc::close(fd) };
         let payload = match result {
             Ok(response) => serde_json::json!({
                 "uploadId": upload_id,

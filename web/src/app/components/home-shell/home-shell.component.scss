@@ -186,8 +186,8 @@
     transform: translate3d(0, 0, 0);
     opacity: 1;
     transition:
-      transform 230ms cubic-bezier(0.32, 0.72, 0, 1),
-      opacity 230ms cubic-bezier(0.32, 0.72, 0, 1);
+      transform 200ms cubic-bezier(0.4, 0, 1, 1),
+      opacity 200ms cubic-bezier(0.4, 0, 1, 1);
     will-change: transform, opacity;
   }
   .chat-slot {
@@ -218,6 +218,10 @@
 .mode-compact.chat-open .drawer-body {
   transform: translate3d(-12%, 0, 0);
   opacity: .96;
+  // Enter tracks the foreground chat exactly. On close the base rule's shorter accelerating transition
+  // takes over, matching overlaySlide's 200ms leave instead of letting the list drift after chat is gone.
+  transition-duration: 300ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
