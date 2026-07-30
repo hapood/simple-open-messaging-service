@@ -1,0 +1,153 @@
+@if (scope()) {
+  <div class="ud-backdrop" role="presentation" (click)="close()">
+    <section
+      class="ud-panel"
+      role="dialog"
+      aria-modal="true"
+      [attr.aria-label]="'transfer.detailsTitle' | transloco"
+      (click)="$event.stopPropagation()"
+      (keydown.escape)="close()"
+    >
+      <header class="ud-header">
+        <div class="ud-heading">
+          <span class="ud-heading-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 18V5M7 10l5-5 5 5" />
+              <path d="M5 19h14" />
+            </svg>
+          </span>
+          <div>
+            <h2>{{ 'transfer.detailsTitle' | transloco }}</h2>
+            <p>
+              {{
+                (isGlobal()
+                  ? 'transfer.detailsGlobalSummary'
+                  : 'transfer.detailsThreadSummary'
+                ) | transloco: { count: taskCount() }
+              }}
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="ud-close"
+          (click)="close()"
+          [attr.aria-label]="'common.close' | transloco"
+        >
+          ×
+        </button>
+      </header>
+
+      <div class="ud-body">
+        @if (groups().length) {
+          @for (group of groups(); track group.threadId) {
+            <section class="ud-group">
+              @if (isGlobal()) {
+                <header class="ud-group-header">
+                  <span>{{
+                    'transfer.sendingTo' | transloco: { name: group.title }
+                  }}</span>
+                  <span>{{ group.tasks.length }}</span>
+                </header>
+              }
+              <div class="ud-grid">
+                @for (task of group.tasks; track task.clientMessageId) {
+                  <article
+                    class="ud-item"
+                    [class.ud-item--failed]="task.status === 'failed'"
+                    [class.ud-item--completed]="task.status === 'completed'"
+                  >
+                    <div class="ud-preview">
+                      @if (task.previewUrl) {
+                        <img [src]="task.previewUrl" alt="" />
+                      } @else {
+                        <span
+                          class="ud-file-icon ud-file-icon--{{
+                            category(task.name)
+                          }}"
+                          aria-hidden="true"
+                        >
+                          <svg viewBox="0 0 24 24">
+                            <path
+                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                            />
+                            <path d="M14 3v5h5" />
+                          </svg>
+                          <span>{{ ext(task.name) }}</span>
+                        </span>
+                      }
+                      @if (task.status === 'completed') {
+                        <span class="ud-complete" aria-hidden="true">
+                          <svg viewBox="0 0 24 24">
+                            <path d="M6.5 12.5l3.5 3.5 7.5-8" />
+                          </svg>
+                        </span>
+                      }
+                    </div>
+                    <div class="ud-copy">
+                      <strong [title]="task.name">{{ task.name }}</strong>
+                      <span
+                        class="ud-state"
+                        [class.ud-state--failed]="task.status === 'failed'"
+                      >
+                        @if (task.status === 'failed') {
+                          {{
+                            task.errorReason ||
+                              ('transfer.uploadFailed' | transloco)
+                          }}
+                        } @else if (task.status === 'completed') {
+                          {{ 'transfer.completed' | transloco }}
+                        } @else {
+                          {{ progressText(task) }}
+                        }
+                      </span>
+                      <span
+                        class="ud-progress"
+                        role="progressbar"
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                        [attr.aria-valuenow]="progress(task)"
+                      >
+                        <span [style.width.%]="progress(task)"></span>
+                      </span>
+                    </div>
+                    <div class="ud-actions">
+                      @if (task.status === 'failed') {
+                        <button
+                          type="button"
+                          class="ud-action ud-action--retry"
+                          (click)="retry(task)"
+                          [attr.aria-label]="'transfer.retry' | transloco"
+                        >
+                          <svg viewBox="0 0 24 24">
+                            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+                          </svg>
+                        </button>
+                      } @else if (task.status === 'uploading') {
+                        <button
+                          type="button"
+                          class="ud-action"
+                          (click)="cancel(task)"
+                          [attr.aria-label]="'transfer.cancel' | transloco"
+                        >
+                          <svg viewBox="0 0 24 24">
+                            <path d="M6 6l12 12M18 6L6 18" />
+                          </svg>
+                        </button>
+                      }
+                    </div>
+                  </article>
+                }
+              </div>
+            </section>
+          }
+        } @else {
+          <div class="ud-empty">
+            <span aria-hidden="true">✓</span>
+            <strong>{{ 'transfer.noActiveUploads' | transloco }}</strong>
+          </div>
+        }
+      </div>
+    </section>
+  </div>
+}

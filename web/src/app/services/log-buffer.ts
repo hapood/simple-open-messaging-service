@@ -28,6 +28,14 @@ type Level = (typeof LEVELS)[number];
 
 const buffer: ConsoleEntry[] = [];
 let installed = false;
+/** Release builds retain only failures until the hidden debug gesture is enabled. This keeps the normal
+ * hot path cheap while preserving a small post-mortem signal. Dev builds and DebugToolsService switch
+ * this on during bootstrap; switching is immediate and does not require a reload. */
+let fullLogging = false;
+
+export function setFullConsoleLogging(enabled: boolean): void {
+  fullLogging = enabled;
+}
 
 // --- durable mirror (Rust app_log_dir/webview-console.log via the `log_js` IPC) -----------------
 // Rendered lines not yet flushed to Rust. Flushed on a throttle (count OR interval), on `pagehide`, on
@@ -134,6 +142,10 @@ export function installConsoleBuffer(): void {
     // function and provide its real receiver at call time instead.
     const capture = (...args: unknown[]): void => {
       try {
+        if (!fullLogging && level !== 'error') {
+          Reflect.apply(orig, console, args);
+          return;
+        }
         const entry: ConsoleEntry = {
           ts: new Date().toISOString(),
           level,

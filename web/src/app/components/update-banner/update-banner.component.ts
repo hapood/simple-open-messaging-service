@@ -46,7 +46,15 @@ export class UpdateBannerComponent implements OnDestroy {
       const ref = this.snackBar.open(
         this.transloco.translate('update.banner'),
         this.transloco.translate('update.reload'),
-        { duration: 60000, panelClass: ['soms-snack-bar', 'soms-update-snack-bar'] },
+        {
+          // An available update remains actionable until the user applies or dismisses it.
+          duration: 0,
+          panelClass: [
+            'soms-snack-bar',
+            'soms-snack-bar--interactive',
+            'soms-update-snack-bar',
+          ],
+        },
       );
       this.ref = ref;
 

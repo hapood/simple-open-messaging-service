@@ -49,6 +49,9 @@ export interface PaneEntry {
   readonly presentation?: DialogPresentation;
   /** Dialog-only desktop card width. Compact layout is controlled solely by `presentation`. */
   readonly desktopSize?: DialogDesktopSize;
+  /** This dialog owns the mobile Settings drill-down stack. While it is topmost, back peels a category
+   * before closing the dialog itself; dialogs pushed above it still close first as usual. */
+  readonly settingsDrilldown?: boolean;
 }
 
 let nextPaneId = 0;
@@ -200,6 +203,11 @@ export class NavStateMachineService {
     this.settingsCategoryStack.update((s) => [...s, categoryId]);
   }
 
+  /** Reset the mobile Settings drill-down when its dialog opens/closes. */
+  clearSettingsCategories(): void {
+    this.settingsCategoryStack.set([]);
+  }
+
   /** Switch the active mobile section. Clears the aside + settings drill-down so each section starts
    *  clean. */
   setTopSection(section: TopSection): void {
@@ -268,6 +276,10 @@ export class NavStateMachineService {
     const stack = this.paneStack();
     if (stack.length > 0) {
       const removed = stack[stack.length - 1];
+      if (removed.settingsDrilldown && this.settingsCategoryStack().length > 0) {
+        this.settingsCategoryStack.update((s) => s.slice(0, -1));
+        return true;
+      }
       this.paneStack.set(stack.slice(0, -1));
       removed.onResult?.(undefined);
       return true;

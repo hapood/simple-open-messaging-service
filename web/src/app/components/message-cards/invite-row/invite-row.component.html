@@ -3,15 +3,26 @@
 }
 
 <div
-  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
-    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
+    <div class="msg-avatar">
+      <app-user-avatar
+        [type]="UserAvatarType.OTHER"
+        [name]="data().name"
+        [identityId]="data().avatarIdentityId"
+        [src]="data().avatar"
+      />
+    </div>
   }
 
   <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
-      <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
+      <div class="msg-name msg-{{ side() }}">
+        {{ data().name || ('common.unknown' | transloco) }}
+      </div>
     }
     <button
       type="button"
@@ -22,7 +33,12 @@
       <div class="invite-card">
         <div class="invite-title">{{ 'chat.groupInvitation' | transloco }}</div>
         <div class="invite-group">
-          <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName" [identityId]="invite().group" [src]="invite().groupAvatar"></app-user-avatar>
+          <app-user-avatar
+            [type]="UserAvatarType.GROUP"
+            [name]="invite().groupName"
+            [identityId]="invite().group"
+            [src]="invite().groupAvatar"
+          ></app-user-avatar>
           <span class="invite-name">{{ invite().groupName }}</span>
         </div>
       </div>
@@ -40,6 +56,13 @@
   </div>
 
   @if (showAvatar() && side() === 'self') {
-    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
+    <div class="msg-avatar">
+      <app-user-avatar
+        [type]="UserAvatarType.SELF"
+        [name]="data().name"
+        [identityId]="data().avatarIdentityId"
+        [src]="data().avatar"
+      />
+    </div>
   }
 </div>

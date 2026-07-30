@@ -13,7 +13,7 @@ export interface ShellUpdateStatus {
   /** The backend (server) version this shell is talking to (root package.json, same as /health). The
    *  shell checks compatibility against this (a hard-coded `COMPAT_BACKEND_MAX` upper bound in Cargo). */
   serverVersion: string;
-  /** The currently-installed web SPA bundle version (`web/active`). Display only — not compared. */
+  /** The currently-installed web SPA bundle version (`web/active.json`). Display only — not compared. */
   installedWebVersion: string;
   /** The web SPA version the server's current manifest advertises. Display only — not compared. */
   serverWebVersion: string;

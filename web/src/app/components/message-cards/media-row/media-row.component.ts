@@ -19,10 +19,11 @@ import {
 } from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
 import { AudioPlayerComponent } from '../audio-player/audio-player.component';
-import { assetUrl } from '../../../services/runtime';
+import { assetUrl, isAndroid, isTauri } from '../../../services/runtime';
 import { formatBytes, formatDuration } from '../file-meta.util';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { ImageDownloadService } from '../../../services/image-download.service';
+import { NativeVideoService } from '../../../services/native-video.service';
 
 /**
  * Unified media message row (IMAGE / VIDEO / AUDIO).
@@ -54,6 +55,8 @@ import { ImageDownloadService } from '../../../services/image-download.service';
 export class MediaRowComponent {
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly downloads = inject(ImageDownloadService);
+  private readonly nativeVideo = inject(NativeVideoService);
+  readonly useNativeVideo = isTauri() && isAndroid();
   readonly UserAvatarType = UserAvatarType;
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
@@ -86,6 +89,7 @@ export class MediaRowComponent {
     // explicitly so progress painted in the gallery/global header also repaints this detached row.
     effect(() => {
       this.downloads.tasks();
+      this.downloads.thumbnailVersion();
       queueMicrotask(() => this.render());
     });
   }
@@ -112,6 +116,8 @@ export class MediaRowComponent {
       const size = m?.size ?? 0;
       const mediaKey = this.mediaKey(m, i);
       const task = m ? this.downloads.task(m) : undefined;
+      const thumbnail =
+        kind === 'video' && m ? this.nativeVideo.thumbnailUrl(m.src) : '';
       const gated =
         kind === 'image' &&
         thr > 0 &&
@@ -121,7 +127,13 @@ export class MediaRowComponent {
       return {
         rect,
         kind,
-        src: m ? this.downloads.displayUrl(m) : assetUrl(''),
+        src:
+          m && kind === 'image'
+            ? this.downloads.thumbnailUrl(m)
+            : m
+              ? this.downloads.displayUrl(m)
+              : assetUrl(''),
+        thumbnail,
         duration: m?.duration,
         isMore: i === moreIdx,
         unplayable: kind === 'video' && failed.has(i),
@@ -182,6 +194,24 @@ export class MediaRowComponent {
 
   /** Indices of video cells whose <video> failed to decode (unsupported codec) → gray placeholder. */
   readonly unplayableVideos = signal<Set<number>>(new Set());
+  readonly loadedVideoFrames = signal<Set<number>>(new Set());
+  onVideoLoaded(i: number): void {
+    this.loadedVideoFrames.update((current) => {
+      if (current.has(i)) return current;
+      const next = new Set(current);
+      next.add(i);
+      return next;
+    });
+    this.render();
+  }
+
+  onThumbnailLoad(event: Event): void {
+    (event.currentTarget as HTMLImageElement).hidden = false;
+  }
+
+  onThumbnailError(event: Event): void {
+    (event.currentTarget as HTMLImageElement).hidden = true;
+  }
   onVideoError(i: number): void {
     this.unplayableVideos.update((s) => {
       if (s.has(i)) return s;
@@ -197,11 +227,18 @@ export class MediaRowComponent {
   readonly threshold = computed(() => this.thresholdSvc.threshold());
   /** Cell click: images and videos open the singleton mixed-media viewer (after the optional image
    *  size gate). Audio owns its interaction inside AudioPlayerComponent. */
-  onCellClick(i: number): void {
+  async onCellClick(i: number): Promise<void> {
     const cell = this.cells()[i];
     if (cell.kind === 'video') {
       // Even a card whose first-frame probe failed must remain openable: the detail viewer gives the
       // user a precise playback error plus retry/download actions.
+      const media = this.data().images?.[i];
+      if (
+        cell.status === MEDIA_STATUS.READY &&
+        media &&
+        await this.nativeVideo.open(media.src)
+      )
+        return;
       if (cell.status === MEDIA_STATUS.READY)
         this.openImage.emit({ images: this.data().images ?? [], index: i });
       return;

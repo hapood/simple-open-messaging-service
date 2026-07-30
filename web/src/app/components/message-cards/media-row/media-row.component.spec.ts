@@ -79,6 +79,31 @@ describe('MediaRowComponent — deferred image loading', () => {
     ).toBeNull();
   });
 
+  it('updates the mounted image message when a shared download reports progress', async () => {
+    const media = image(1, 4096);
+    const fixture = await render([media]);
+
+    expect(
+      fixture.nativeElement.querySelector('.msg-media-download-progress'),
+    ).toBeNull();
+
+    downloads.set(task(media, 'downloading', 400, 1000));
+    await fixture.whenStable();
+
+    const progress = fixture.nativeElement.querySelector(
+      '.msg-media-download-progress',
+    ) as HTMLElement;
+    expect(progress).not.toBeNull();
+    expect(progress.textContent?.trim()).toBe('40%');
+    expect(
+      (
+        fixture.nativeElement.querySelector(
+          '.msg-media-progress > span',
+        ) as HTMLElement
+      ).style.width,
+    ).toBe('40%');
+  });
+
   it('aggregates the +N tile by equal file count rather than byte size', async () => {
     const images = Array.from({ length: 8 }, (_, index) =>
       image(index + 1, index === 5 ? 50_000_000 : 1000),
@@ -124,6 +149,7 @@ describe('MediaRowComponent — deferred image loading', () => {
 
 class FakeImageDownloads {
   readonly tasks = signal<ImageDownloadTask[]>([]);
+  readonly thumbnailVersion = signal(0);
   private readonly byKey = new Map<string, ImageDownloadTask>();
 
   key(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
@@ -136,6 +162,10 @@ class FakeImageDownloads {
 
   displayUrl(media: AlbumImage): string {
     return this.task(media)?.blobUrl ?? media.src;
+  }
+
+  thumbnailUrl(media: AlbumImage): string {
+    return media.src;
   }
 
   set(value: ImageDownloadTask): void {

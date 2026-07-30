@@ -253,7 +253,6 @@
 }
 // Each section (chat-list-pane / settings / profile-section) fills the section area and owns its scroll.
 .section-content > * { flex: 1 1 auto; min-height: 0; }
-
 // Dark theme: keep the grip dots at --app-text-faint. Light uses the darker --app-text-muted (set in the
 // .resizer ::after above) so the dots read against the --app-border bar; in dark, faint is already
 // legible on the bar, so no need to darken (matches the auth-brand dark-override pattern).

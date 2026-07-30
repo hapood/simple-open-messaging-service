@@ -38,13 +38,17 @@
         (click)="goTo($index)"
       >
         @if (media.kind === 'video') {
-          <video
-            muted
-            playsinline
-            preload="metadata"
-            [src]="mediaUrl(media)"
-            aria-hidden="true"
-          ></video>
+          @if (useNativeVideo) {
+            <img [src]="mediaUrl(media)" alt="" />
+          } @else {
+            <video
+              muted
+              playsinline
+              preload="metadata"
+              [src]="mediaUrl(media)"
+              aria-hidden="true"
+            ></video>
+          }
           <span class="gv-thumb-play" aria-hidden="true"></span>
         } @else if (!isMediaGated(media)) {
           <img [src]="mediaUrl(media)" alt="" />
@@ -131,21 +135,6 @@
     [attr.aria-label]="'chat.mediaDownloading' | transloco"
   >
     <mat-progress-spinner mode="indeterminate" [diameter]="32" />
-  </div>
-} @else if (currentVideoError(); as videoError) {
-  <div class="gv-retry" role="alert">
-    <span class="gv-retry-icon">!</span>
-    <span class="gv-retry-text">
-      {{
-        (videoError === 'network'
-          ? 'gallery.videoNetworkFailed'
-          : 'gallery.videoUnsupported'
-        ) | transloco
-      }}
-    </span>
-    <button type="button" class="gv-error-retry" (click)="retryVideo()">
-      {{ 'common.retry' | transloco }}
-    </button>
   </div>
 } @else if (currentLoadFailed()) {
   <button

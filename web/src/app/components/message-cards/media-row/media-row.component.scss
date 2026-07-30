@@ -96,8 +96,11 @@ app-audio-player {
   pointer-events: none;
 
   svg {
-    width: 36px;
-    height: 36px;
+    width: clamp(24px, 16%, 40px);
+    height: auto;
+    aspect-ratio: 1;
+    color: var(--app-text-faint);
+    opacity: 0.8;
     fill: none;
     stroke: currentColor;
     stroke-width: 1.7;
@@ -109,6 +112,30 @@ app-audio-player {
 .msg-media-tap-spinner {
   stroke-dasharray: 42 18;
   animation: media-tap-spin 0.85s linear infinite;
+}
+
+.msg-media-download-progress {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border: 3px solid color-mix(in srgb, var(--app-brand) 28%, transparent);
+  border-top-color: var(--app-brand);
+  border-radius: 50%;
+  color: var(--app-text);
+  animation: media-tap-spin 0.85s linear infinite;
+
+  strong {
+    font-size: 12px;
+    font-weight: 600;
+    animation: media-tap-spin 0.85s linear infinite reverse;
+  }
+}
+
+.msg-media-download-progress--indeterminate {
+  border-color: color-mix(in srgb, var(--app-brand) 28%, transparent);
+  border-top-color: var(--app-brand);
 }
 
 @keyframes media-tap-spin {

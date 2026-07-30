@@ -27,15 +27,14 @@ const pageSlide = trigger('pageSlide', [
 ]);
 
 /**
- * The MOBILE Settings surface — a two-tier Material settings UI opened from the account menu and rendered
- * inline (`topSection === 'settings'`): a category list (root) → drill into a category sub-page that slides
- * over the root.
+ * The MOBILE Settings surface — a two-tier Material page dialog opened from the account menu: a category
+ * list (root) → drill into a category sub-page that slides over the root.
  *
  * The ROOT view is a category list (leading icon + title + current-value summary + chevron). Tapping a
  * category calls {@link NavStateMachineService.openSettingsCategory} (the state machine's settings drill-down
  * signal — NOT the aside stack, which is reserved for chat-scoped overlays); the SUB-PAGE view then slides
  * over the root (`[@pageSlide]`) and renders the category's body-only component via `*ngComponentOutlet`. The
- * single back button → `nav.back()` peels the sub-page back to root (or, at root, leaves the section).
+ * single back button → `nav.back()` peels the sub-page back to root (or closes the dialog at root).
  * Hardware-back follows the same path (it also calls `back()`).
  *
  * Desktop does NOT use this component — there settings opens as a wide two-column DIALOG instead (see
@@ -90,9 +89,8 @@ export class SettingsComponent {
     this.nav.openSettingsCategory(c.id);
   }
 
-  /** Back: pops one Settings drill level (→ its parent, or root if at a top-level category), or at root
-   *  depth leaves the section (→ Chats). Same path hardware-back takes (both call
-   *  {@link NavStateMachineService.back}, which pops the `settingsCategoryStack` then `topSection`). */
+  /** Back: pops one Settings drill level, or closes the page dialog at its root. Hardware-back follows
+   * the same path through {@link NavStateMachineService.back}. */
   goBack(): void {
     this.nav.back();
   }

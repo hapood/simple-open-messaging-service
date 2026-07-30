@@ -27,6 +27,7 @@ import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
+import { ProfileRepository } from '../../services/profile-store.service';
 import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
@@ -60,7 +61,15 @@ export interface HttpItemSourceLiveOpts {
   onMediaStatus?: (seq: number, status: MediaStatus) => void;
   /** Background profile enrichment landed for a message already shaped from the local cache. The component
    *  patches mounted rows in place; unmounted rows pick the profile up from this source on their next shape. */
-  onProfile?: (seq: number, profile: { name: string; isSelf: boolean }) => void;
+  onProfile?: (
+    seq: number,
+    profile: {
+      name: string;
+      avatar: string;
+      avatarIdentityId: number;
+      isSelf: boolean;
+    },
+  ) => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -72,7 +81,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private readonly profiles = new Map<
     number,
-    { name: string; isSelf: boolean }
+    { name: string; avatar: string; isSelf: boolean }
   >();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
    *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
@@ -86,7 +95,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly onMediaStatus: (seq: number, status: MediaStatus) => void;
   private readonly onProfile: (
     seq: number,
-    profile: { name: string; isSelf: boolean },
+    profile: {
+      name: string;
+      avatar: string;
+      avatarIdentityId: number;
+      isSelf: boolean;
+    },
   ) => void;
   private readonly onSignal: (seq: number) => void;
   private readonly seqsByCreator = new Map<number, Set<number>>();
@@ -102,7 +116,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     wsService: WebsocketService,
     private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
+    private readonly profileRepo?: ProfileRepository,
   ) {
+    const self = userService.sessionProfile?.();
+    if (self)
+      this.profiles.set(self.id, {
+        name: self.name,
+        avatar: self.avatar,
+        isSelf: true,
+      });
+    if (conv.type === 'P2P' && conv.peerUser)
+      this.profiles.set(conv.peerUser.id, {
+        name: conv.peerUser.name,
+        avatar: conv.peerUser.avatar,
+        isSelf: conv.peerUser.id === this.selfUserId,
+      });
     this.pending = outbox.forThread(conv.threadId);
     this.onSignal = live.onSignal;
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
@@ -453,12 +481,24 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.reconnectSub = undefined;
   }
 
-  /** Leave the DB-only phase after the scroller has initialized, then reconcile the session HWM once. */
-  finishLocalInit(latestThreadSeq: number | undefined): void {
+  /**
+   * Leave the DB-only phase after the scroller has initialized, then reconcile the durable conversation
+   * metadata and the live-session HWM against the newest message actually loaded from the local DB.
+   *
+   * `persistedLatestSeq` is the server-authored `ConversationItem.lastMessageSeq` stored with the thread
+   * row. It is deliberately independent from the messages cache: after a fresh install, storage migration,
+   * or cache eviction the thread can truthfully say "latest = 258" while the local messages table is empty.
+   * `liveLatestSeq` covers a newer NEW_MESSAGE observed after that thread snapshot. Whichever is greater is
+   * the remote target; if it leads `loadedSeq`, signal the kernel to perform its forced newest-page pull.
+   */
+  finishLocalInit(
+    liveLatestSeq: number | undefined,
+    persistedLatestSeq?: number | null,
+  ): void {
     this.initializingDb = false;
     this.hydrateProfiles(this.profileBacklog.splice(0));
-    if (latestThreadSeq !== undefined && latestThreadSeq > this.loadedSeq)
-      this.onSignal(latestThreadSeq);
+    const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
+    if (targetSeq > this.loadedSeq) this.onSignal(targetSeq);
   }
 
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
@@ -555,6 +595,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       creator: m.creator,
       isSelf: p?.isSelf ?? m.creator === this.selfUserId,
       name: p?.name ?? '',
+      avatar: p?.avatar ?? '',
+      avatarIdentityId: m.creator,
       text: m.content,
       time: dayjs(m.createdAt).format('HH:mm'),
       contentType: m.contentType,
@@ -576,12 +618,30 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       )
         missing.add(m.creator);
     if (missing.size === 0) return;
-    // Avoid a doomed request while explicitly offline. A later page/re-init retries because no ids were
-    // marked in flight.
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     for (const id of missing) this.profilesInFlight.add(id);
     void (async () => {
       try {
+        if (this.profileRepo) {
+          for (const id of [...missing]) {
+            const cached = await this.profileRepo.getProfile(`u${id}`);
+            if (!cached) continue;
+            const profile = {
+              name: cached.name,
+              avatar: cached.avatar,
+              avatarIdentityId: id,
+              isSelf: id === this.selfUserId,
+            };
+            this.profiles.set(id, profile);
+            missing.delete(id);
+            for (const seq of this.seqsByCreator.get(id) ?? [])
+              this.onProfile(seq, profile);
+          }
+        }
+        if (
+          missing.size === 0 ||
+          (typeof navigator !== 'undefined' && !navigator.onLine)
+        )
+          return;
         const res = await firstValueFrom(
           this.userService.queryUserInfo({ userIds: [...missing] }),
         );
@@ -589,9 +649,19 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           for (const u of res.data) {
             const profile = {
               name: u.name,
+              avatar: u.avatar ?? '',
+              avatarIdentityId: u.id,
               isSelf: u.id === this.selfUserId,
             };
             this.profiles.set(u.id, profile);
+            void this.profileRepo?.putProfile(`u${u.id}`, 'user', {
+              id: u.id,
+              name: u.name,
+              avatar: u.avatar ?? '',
+              bio: u.bio,
+              domain: u.domain,
+              profileRev: u.profileRev ?? 0,
+            });
             for (const seq of this.seqsByCreator.get(u.id) ?? [])
               this.onProfile(seq, profile);
           }

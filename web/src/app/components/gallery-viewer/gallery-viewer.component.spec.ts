@@ -103,6 +103,37 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
+  it('renders video errors inside the player with an error-specific action', () => {
+    const component = create();
+    const internals = component as unknown as {
+      videoErrorLayers: Map<number, HTMLElement>;
+      createVideoErrorLayer(index: number): HTMLElement;
+      setVideoError(index: number, error: 'network' | 'unsupported'): void;
+      retryVideoAt(index: number): void;
+      saveVideo(index: number): Promise<void>;
+    };
+    const layer = internals.createVideoErrorLayer(0);
+    internals.videoErrorLayers.set(0, layer);
+    const retry = spyOn(internals, 'retryVideoAt');
+    const save = spyOn(internals, 'saveVideo').and.resolveTo();
+    const action = layer.querySelector<HTMLButtonElement>(
+      '.gv-video-error__action',
+    )!;
+
+    internals.setVideoError(0, 'network');
+    expect(layer.hidden).toBe(false);
+    expect(layer.textContent).toContain('gallery.videoNetworkFailed');
+    expect(action.textContent).toBe('common.retry');
+    action.click();
+    expect(retry).toHaveBeenCalledWith(0);
+
+    internals.setVideoError(0, 'unsupported');
+    expect(layer.textContent).toContain('gallery.videoUnsupported');
+    expect(action.textContent).toBe('gallery.downloadVideo');
+    action.click();
+    expect(save).toHaveBeenCalledWith(0);
+  });
+
   function create(): GalleryViewerComponent {
     const fixture = TestBed.createComponent(GalleryViewerComponent);
     fixture.componentRef.setInput('images', [media]);

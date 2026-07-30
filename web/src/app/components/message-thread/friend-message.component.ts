@@ -97,6 +97,9 @@ import {
 import { ThemeService } from '../../services/theme.service';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
+import { ProfileRepository } from '../../services/profile-store.service';
+import { fileExt, type FileCategory } from '../message-cards/file-meta.util';
+import { UploadDetailDialogService } from '../../services/upload-detail-dialog.service';
 
 let nativeComposerContextSequence = Date.now() * 1000;
 
@@ -166,6 +169,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly msgService = inject(MsgService);
   private readonly msgRepo = inject(MessageRepository);
   private readonly userService = inject(UserService);
+  private readonly profileRepo = inject(ProfileRepository);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
   private readonly galleryViewer = inject(GalleryViewerService);
@@ -175,6 +179,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly transfers = inject(MediaTransferService);
   private readonly nativeUploads = inject(NativeUploadService);
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
+  private readonly uploadDetails = inject(UploadDetailDialogService);
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly debugTools = inject(DebugToolsService);
   private readonly transloco = inject(TranslocoService);
@@ -266,7 +271,7 @@ export class MessageThreadComponent implements OnDestroy {
         (task) =>
           task.threadId === threadId &&
           task.kind !== 'audio' &&
-          task.status === 'uploading',
+          (task.status === 'uploading' || task.status === 'completed'),
       );
   });
   readonly failedTransfers = computed(() => {
@@ -280,6 +285,41 @@ export class MessageThreadComponent implements OnDestroy {
           task.status === 'failed',
       );
   });
+  /** The per-thread queue uploads attachments serially. Highlight only the task currently moving bytes;
+   * before its first progress event, the first queued task is the active one. */
+  readonly currentUploadingTransferId = computed(() => {
+    const tasks = this.sendingTransfers().filter(
+      (task) => task.status === 'uploading',
+    );
+    const active = tasks.find(
+      (task) => task.loaded > 0 && task.loaded < task.size,
+    );
+    return active?.clientMessageId ?? tasks[0]?.clientMessageId ?? null;
+  });
+  readonly displayedSendingTransfers = computed(() => {
+    const tasks = this.sendingTransfers();
+    const currentId = this.currentUploadingTransferId();
+    if (!currentId) return tasks;
+    const current = tasks.find((task) => task.clientMessageId === currentId);
+    return current
+      ? [current, ...tasks.filter((task) => task.clientMessageId !== currentId)]
+      : tasks;
+  });
+  readonly transferExt = (name: string): string => fileExt(name);
+  readonly transferCategory = (name: string): FileCategory => {
+    const ext = fileExt(name).toLowerCase();
+    if (ext === 'pdf') return 'pdf';
+    if (['doc', 'docx', 'rtf'].includes(ext)) return 'doc';
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return 'sheet';
+    if (['ppt', 'pptx'].includes(ext)) return 'slides';
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+    if (['txt', 'md', 'json', 'xml', 'log'].includes(ext)) return 'text';
+    return 'file';
+  };
+  readonly transferProgress = (loaded: number, size: number): number =>
+    size > 0
+      ? Math.min(100, Math.max(0, Math.round((loaded / size) * 100)))
+      : 0;
   /** The global attachment card is one logical mounted tail item regardless of the number of files it
    * aggregates. Include it in empty-state accounting even though the kernel stores it in its measured tail
    * slot rather than in the message cursor array. */
@@ -289,16 +329,6 @@ export class MessageThreadComponent implements OnDestroy {
       this.sendingTransfers().length === 0 &&
       this.failedTransfers().length === 0,
   );
-  readonly uploadProgress = computed(() => {
-    const tasks = this.sendingTransfers();
-    if (tasks.length === 0) return null;
-    const loaded = tasks.reduce(
-      (sum, task) => sum + Math.min(Math.max(0, task.loaded), task.size),
-      0,
-    );
-    const total = tasks.reduce((sum, task) => sum + Math.max(0, task.size), 0);
-    return total > 0 ? Math.round((loaded / total) * 100) : null;
-  });
   readonly uploadCountLabel = computed(() => {
     return String(this.sendingTransfers().length);
   });
@@ -588,7 +618,11 @@ export class MessageThreadComponent implements OnDestroy {
       void this.markSent(item);
       this.nativeVoiceItems.delete(cid);
     } else {
-      this.transfers.fail(cid);
+      const reason =
+        event.error ||
+        String(this.transloco.translate('transfer.uploadFailed'));
+      this.transfers.fail(cid, reason);
+      this.toast.warn(reason, { duration: 6000 });
       void this.failPending(item);
     }
   }
@@ -643,11 +677,17 @@ export class MessageThreadComponent implements OnDestroy {
         // once it arrives; album member ids resolve to their merged mounted entry in the kernel.
         onProfile: (
           seq: number,
-          profile: { name: string; isSelf: boolean },
+          profile: {
+            name: string;
+            avatar: string;
+            avatarIdentityId: number;
+            isSelf: boolean;
+          },
         ) => {
           this.scroller?.updateItemData(seq, profile);
         },
       },
+      this.profileRepo,
     );
     this.scroller = new ChatBoxScroller<ChatItemData>({
       viewport,
@@ -689,9 +729,14 @@ export class MessageThreadComponent implements OnDestroy {
         });
       }
       this.ready.emit(trd.threadId);
-      // Only after the DB/scroller phase is complete may the source react to the session's remote HWM and
-      // fall through to HTTP. Empty local data is still a successful ready state.
-      this.source?.finishLocalInit(this.convList.latestSeq(trd.threadId));
+      // Only after the DB/scroller phase is complete may the source compare the locally-loaded tail with
+      // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
+      // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
+      // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
+      this.source?.finishLocalInit(
+        this.convList.latestSeq(trd.threadId),
+        trd.lastMessageSeq,
+      );
       // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
       // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
       void this.scroller
@@ -780,6 +825,10 @@ export class MessageThreadComponent implements OnDestroy {
 
   scrollToLatest(): void {
     this.scroller?.scrollToBottom();
+  }
+
+  openUploadDetails(): void {
+    this.uploadDetails.open(this.threadId());
   }
 
   cancelUploadingTransfers(): void {
@@ -1095,7 +1144,12 @@ export class MessageThreadComponent implements OnDestroy {
           }),
         );
       }
-      this.transfers.fail(cid);
+      const reason =
+        error instanceof Error && error.message
+          ? error.message
+          : this.transloco.translate('transfer.uploadFailed');
+      this.transfers.fail(cid, reason);
+      this.toast.warn(reason, { duration: 6000 });
       await this.failPending(item);
     }
   }
@@ -1289,7 +1343,7 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (staged.code !== 0) {
         this.surfaceSendQuota(staged);
-        this.transfers.fail(cid);
+        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
         await this.failPending(item);
         return;
       }
@@ -1302,14 +1356,14 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (up.code !== 0) {
         this.surfaceSendQuota(up);
-        this.transfers.fail(cid);
+        this.transfers.fail(cid, translateBizResult(up, this.transloco));
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
         await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
       }
-    } catch {
-      this.transfers.fail(cid);
+    } catch (error) {
+      this.transfers.fail(cid, this.uploadFailureReason(error));
       await this.failPending(item);
     }
   }
@@ -1340,20 +1394,23 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (staged.code !== 0) {
         this.surfaceSendQuota(staged);
-        this.transfers.fail(cid);
+        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
         await this.failPending(item);
         return;
       }
       const ok = await this.uploadFileResult(f, cid);
       if (!ok) {
-        this.transfers.fail(cid);
+        this.transfers.fail(
+          cid,
+          this.transloco.translate('transfer.uploadFailed'),
+        );
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
         await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
       }
-    } catch {
-      this.transfers.fail(cid);
+    } catch (error) {
+      this.transfers.fail(cid, this.uploadFailureReason(error));
       await this.failPending(item);
     }
   }
@@ -1386,7 +1443,7 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (staged.code !== 0) {
         this.surfaceSendQuota(staged);
-        this.transfers.fail(cid);
+        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
         await this.failPending(item);
         return;
       }
@@ -1399,14 +1456,14 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (up.code !== 0) {
         this.surfaceSendQuota(up);
-        this.transfers.fail(cid);
+        this.transfers.fail(cid, translateBizResult(up, this.transloco));
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
         await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
       }
-    } catch {
-      this.transfers.fail(cid);
+    } catch (error) {
+      this.transfers.fail(cid, this.uploadFailureReason(error));
       await this.failPending(item);
     }
   }
@@ -1437,7 +1494,7 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (staged.code !== 0) {
         this.surfaceSendQuota(staged);
-        this.transfers.fail(cid);
+        this.transfers.fail(cid, translateBizResult(staged, this.transloco));
         await this.failPending(item);
         return;
       }
@@ -1450,14 +1507,19 @@ export class MessageThreadComponent implements OnDestroy {
       );
       if (up.code !== 0 || up.data?.promoted !== true) {
         if (up.code !== 0) this.surfaceSendQuota(up);
-        this.transfers.fail(cid);
+        this.transfers.fail(
+          cid,
+          up.code !== 0
+            ? translateBizResult(up, this.transloco)
+            : this.transloco.translate('transfer.uploadFailed'),
+        );
         await this.failPending(item);
       } else {
         this.transfers.complete(cid);
         await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
       }
-    } catch {
-      this.transfers.fail(cid);
+    } catch (error) {
+      this.transfers.fail(cid, this.uploadFailureReason(error));
       await this.failPending(item);
     }
   }
@@ -1473,6 +1535,12 @@ export class MessageThreadComponent implements OnDestroy {
     this.transfers.registerRetry(clientMessageId, () => {
       void retry();
     });
+  }
+
+  private uploadFailureReason(error: unknown): string {
+    return error instanceof Error && error.message
+      ? error.message
+      : this.transloco.translate('transfer.uploadFailed');
   }
 
   /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on

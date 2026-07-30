@@ -15,6 +15,8 @@ export interface MediaTransferTask {
   status: MediaTransferStatus;
   startedAt: number;
   previewUrl: string | null;
+  errorReason?: string;
+  completedAt?: number;
 }
 
 export interface ThreadTransferSummary {
@@ -133,6 +135,8 @@ export class MediaTransferService {
         (params.file && params.kind === 'image' && typeof URL !== 'undefined'
           ? URL.createObjectURL(params.file)
           : null),
+      errorReason: undefined,
+      completedAt: undefined,
     });
     this.cancelSignals.get(params.clientMessageId)?.complete();
     this.cancelSignals.set(params.clientMessageId, new ReplaySubject<void>(1));
@@ -145,14 +149,20 @@ export class MediaTransferService {
       ...current,
       loaded: current.size,
       status: 'completed',
+      completedAt: Date.now(),
     });
     this.scheduleCompletedCleanup(current.threadId);
   }
 
-  fail(clientMessageId: string): void {
+  fail(clientMessageId: string, errorReason?: string): void {
     const current = this.taskMap().get(clientMessageId);
     if (!current) return;
-    this.patch(clientMessageId, { ...current, status: 'failed' });
+    this.patch(clientMessageId, {
+      ...current,
+      status: 'failed',
+      errorReason,
+      completedAt: undefined,
+    });
   }
 
   cancelled(clientMessageId: string): Observable<void> {
@@ -269,7 +279,7 @@ export class MediaTransferService {
           }
         }
         this.taskMap.set(next);
-      }, 800),
+      }, 1800),
     );
   }
 

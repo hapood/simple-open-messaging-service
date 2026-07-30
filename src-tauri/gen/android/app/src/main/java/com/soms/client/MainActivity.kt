@@ -98,6 +98,7 @@ class MainActivity : TauriActivity() {
     ) { uri ->
         val pending = pendingMediaSave
         pendingMediaSave = null
+        val cancelled = uri == null
         val success = if (uri == null || pending == null) {
             false
         } else {
@@ -114,7 +115,7 @@ class MainActivity : TauriActivity() {
         pending?.first?.let { requestId ->
             val script =
                 "window.__SOMS_MEDIA_SAVE_RESULT__?.({" +
-                    "requestId:${JSONObject.quote(requestId)},success:$success})"
+                    "requestId:${JSONObject.quote(requestId)},success:$success,cancelled:$cancelled})"
             SomsBridge.webView?.post {
                 SomsBridge.webView?.evaluateJavascript(script, null)
             }
@@ -177,8 +178,8 @@ class MainActivity : TauriActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         installLaunchOverlay()
-        // Seed SomsLog's file sink (filesDir/soms-native.log, DEBUG-only) before any subsystem logs. No-op in
-        // release (every SomsLog method compiles out).
+        // Seed SomsLog's file sink path before any subsystem logs. Release keeps writes disabled until the
+        // persisted/hidden runtime debug gate is enabled by the web layer.
         SomsLog.init(this)
         // Hardware-back → the web nav state machine (window.__SOMS_BACK__), which peels one layer (pane →
         // aside → chat → home) and calls SomsBack.exit() when nothing's left. TauriActivity sets
@@ -252,13 +253,17 @@ class MainActivity : TauriActivity() {
             elevation = dp(16).toFloat()
         }
         val logo = ImageView(this).apply {
-            setImageResource(R.mipmap.ic_launcher_foreground)
+            // VectorDrawable: unlike the 108dp adaptive-launcher PNG, this remains sharp on the
+            // platform-standard 288dp transparent splash canvas at every display density.
+            setImageResource(R.drawable.splash_logo)
             scaleType = ImageView.ScaleType.FIT_CENTER
             contentDescription = null
         }
         overlay.addView(
             logo,
-            FrameLayout.LayoutParams(dp(132), dp(132), Gravity.CENTER),
+            // Match Android 12+'s transparent splash-icon canvas. The mark deliberately occupies
+            // about half of this canvas, yielding a ~144dp visible bubble inside the 192dp safe zone.
+            FrameLayout.LayoutParams(dp(288), dp(288), Gravity.CENTER),
         )
 
         val status = TextView(this).apply {
@@ -693,6 +698,9 @@ class MainActivity : TauriActivity() {
         // Rust downloads authenticated media into the app-private shared cache. This bridge performs
         // only the Android-specific final copy into MediaStore; file bytes never pass through JS.
         webView.addJavascriptInterface(SomsMediaInterface(this), "SomsMedia")
+        // Android chat-video playback is native Media3. Rust creates capability-scoped loopback endpoints
+        // backed by its authenticated Range cache; the bridge accepts only those endpoints + the CAS digest.
+        webView.addJavascriptInterface(SomsVideoInterface(this), "SomsVideo")
         // Pin the renderer at IMPORTANT priority even while the app is backgrounded (app-wide, on every
         // WebView (re)creation — see applyCallRendererPolicy).
         applyCallRendererPolicy()
@@ -774,6 +782,29 @@ class MainActivity : TauriActivity() {
                 resolver.delete(uri, null, null)
                 Log.e("SOMS", "MediaStore save failed", e)
                 ""
+            }
+        }
+    }
+
+    private class SomsVideoInterface(activity: MainActivity) {
+        private val activityRef = java.lang.ref.WeakReference(activity)
+
+        @JavascriptInterface
+        fun open(
+            streamUrl: String,
+            thumbnailUploadUrl: String,
+            digest: String,
+            hasThumbnail: Boolean,
+        ) {
+            val activity = activityRef.get() ?: return
+            activity.runOnUiThread {
+                activity.startActivity(
+                    Intent(activity, VideoPlayerActivity::class.java)
+                        .putExtra(VideoPlayerActivity.EXTRA_STREAM_URL, streamUrl)
+                        .putExtra(VideoPlayerActivity.EXTRA_THUMBNAIL_UPLOAD_URL, thumbnailUploadUrl)
+                        .putExtra(VideoPlayerActivity.EXTRA_HAS_THUMBNAIL, hasThumbnail)
+                        .putExtra(VideoPlayerActivity.EXTRA_DIGEST, digest),
+                )
             }
         }
     }
@@ -1759,6 +1790,12 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread { a.applySystemBarTheme(dark) }
         }
 
+        /** Keep Kotlin/native diagnostics aligned with the web and Rust runtime debug gates. */
+        @JavascriptInterface
+        fun setDebugLogging(enabled: Boolean) {
+            SomsLog.setEnabled(enabled)
+        }
+
         /** Atomic boot/reload snapshot; runtime changes arrive through __SOMS_IME_EVENT__. */
         @JavascriptInterface
         fun getImeSnapshot(): String {
@@ -1897,16 +1934,17 @@ class MainActivity : TauriActivity() {
     private class SomsCallInterface(activity: MainActivity) {
         private val activityRef = java.lang.ref.WeakReference(activity)
 
-        /** Caller begins a call: start the call FGS (anchor + audio), then POST /calls/initiate →
-         *  createOffer → trickle ICE (CallController.initiate). `callType` ∈ {"AUDIO","VIDEO"} (Phase 2 is
-         *  AUDIO-only; VIDEO wiring arrives in Phase 4 but the bridge accepts both). */
+        /** Caller begins a call: synchronously seed the native `starting` snapshot, then start the call FGS
+         *  (anchor + audio) while the queued POST /calls/initiate → createOffer → trickle ICE proceeds.
+         *  `callType` ∈ {"AUDIO","VIDEO"}. */
         @JavascriptInterface
         fun initiate(calleeUserId: Int, callSid: String, callType: String, peerName: String, peerAvatar: String, peerAvatarDataUrl: String) {
             val a = activityRef.get() ?: return
             a.runOnUiThread {
                 a.ensureCallPermissions(callType) {
-                    a.startCallService()
-                    CallController.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl)
+                    if (CallController.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl)) {
+                        a.startCallService()
+                    }
                 }
             }
         }

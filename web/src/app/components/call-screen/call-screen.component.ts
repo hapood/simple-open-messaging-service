@@ -947,6 +947,8 @@ export class CallScreenComponent implements OnDestroy {
     const step = this.snap().step;
     if (step) return this.transloco.translate(`call.${step}`);
     switch (this.snap().phase) {
+      case 'starting':
+        return this.transloco.translate('call.starting');
       case 'incoming':
         return this.transloco.translate('call.incoming');
       case 'calling':
@@ -1008,7 +1010,11 @@ export class CallScreenComponent implements OnDestroy {
     // Pre-accept (the caller is still 'calling'/'ringing'): the server's /calls/end REJECTS a ringing call
     // (CALL_NOT_FOUND), which would leave it live server-side → busy lockout + the peer's incoming UI never
     // dismissed. /calls/cancel is the ringing-state terminal (releases both parties). Post-accept → end.
-    if (s.phase === 'calling' || s.phase === 'ringing') {
+    if (
+      s.phase === 'starting' ||
+      s.phase === 'calling' ||
+      s.phase === 'ringing'
+    ) {
       this.adapter.cancel(sid);
     } else {
       this.adapter.end(sid, 'completed');

@@ -9,10 +9,10 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Debug-gated logcat shim + a rotating `native.log` file sink. Every call site compiles out at runtime in
- * release: each method is `inline`, so the lambda body is inlined into the caller and the
- * `if (BuildConfig.DEBUG)` guard skips BOTH the `Log.*` call AND the `msg()` string-build (the lambda only
- * runs inside the guard). Use for diagnostic/telemetry logs that must never fire in shipped builds; the
+ * Runtime debug-gated logcat shim + a rotating `native.log` file sink. Every call site stays cheap while
+ * disabled: each method is `inline`, so the lambda body is inlined into the caller and the runtime guard
+ * skips BOTH the `Log.*` call AND the `msg()` string-build (the lambda only runs inside the guard). Use
+ * for diagnostic/telemetry logs enabled through the hidden About gesture; the
  * always-on `Log.i/Log.w` calls already in [RealtimeService] stay as-is (those are the headless service's
  * by-design surface).
  *
@@ -27,13 +27,12 @@ import java.util.TimeZone
  *
  * The file sink writes `filesDir/soms-native.log` (rotated to `.1` past 2 MiB) in the SAME format the JS
  * ring buffer uses (`${ISO_UTC} [${level}] [${sub}] ${msg}`), so the debug log panel can interleave the
- * Kotlin timeline with the JS one by timestamp. DEBUG builds only — release has no native.log, so the
- * diagnostic bundle's `native/kotlin.log` entry is absent there by design (the layer is reachable later by
- * relaxing this gate, with no bundle-path change).
+ * Kotlin timeline with the JS one by timestamp. Debug builds enable it immediately; release creates and
+ * writes it only after the runtime debug gesture is unlocked.
  *
- * Why inline + lazy lambda rather than a plain `if (BuildConfig.DEBUG) Log.d(...)` at each site: it removes
- * the boilerplate guard from every call site AND guarantees the interpolated string is never built when DEBUG
- * is false (the lambda isn't invoked), so a debug log with an expensive `.map { }` is free in release. The
+ * Why inline + lazy lambda rather than a plain log call at each site: it removes the boilerplate guard
+ * from every call site AND guarantees the interpolated string is never built while runtime logging is
+ * disabled (the lambda isn't invoked), so a debug log with an expensive `.map { }` stays cheap. The
  * tag string is inlined as a literal (NOT a `private const`) because a `public inline fun` cannot reference a
  * private member — it would be inlined out of this object. [append] is `@PublishedApi internal` (not plain
  * `internal`, and not `private`) because a public inline function cannot reference an `internal` member
@@ -53,17 +52,20 @@ object SomsLog {
         }
 
     @Volatile private var appContext: Context? = null
+    @PublishedApi @Volatile internal var logEnabled: Boolean = BuildConfig.DEBUG
 
     /** Stash the application context so the file sink can resolve `filesDir`. Call once from
-     *  [MainActivity.onCreate] before any SomsLog call. No-op in release (every method compiles out, so the
-     *  context would never be read). */
+     *  [MainActivity.onCreate] before any SomsLog call. */
     fun init(ctx: Context) {
-        if (!BuildConfig.DEBUG) return
         appContext = ctx.applicationContext
     }
 
+    fun setEnabled(value: Boolean) {
+        logEnabled = value || BuildConfig.DEBUG
+    }
+
     inline fun d(sub: String, msg: () -> String) {
-        if (BuildConfig.DEBUG) {
+        if (logEnabled) {
             val m = msg()
             Log.d("Soms/$sub", m)
             append("debug", sub, m)
@@ -71,7 +73,7 @@ object SomsLog {
     }
 
     inline fun i(sub: String, msg: () -> String) {
-        if (BuildConfig.DEBUG) {
+        if (logEnabled) {
             val m = msg()
             Log.i("Soms/$sub", m)
             append("info", sub, m)
@@ -79,7 +81,7 @@ object SomsLog {
     }
 
     inline fun w(sub: String, t: Throwable? = null, msg: () -> String) {
-        if (BuildConfig.DEBUG) {
+        if (logEnabled) {
             val m = msg()
             if (t != null) Log.w("Soms/$sub", m, t) else Log.w("Soms/$sub", m)
             val withCause = if (t != null) "$m ${t.javaClass.simpleName}: ${t.message}" else m
@@ -87,7 +89,8 @@ object SomsLog {
         }
     }
 
-    /** Append one line to the rotating native log (DEBUG only). `@Synchronized` so concurrent writers
+    /** Append one line to the rotating native log while runtime debug logging is enabled. `@Synchronized`
+     *  so concurrent writers
      *  ([RealtimeService] runs off-main) don't interleave or race the rotation. Best-effort: any IO failure
      *  is swallowed — logging must never crash a call site.
      *

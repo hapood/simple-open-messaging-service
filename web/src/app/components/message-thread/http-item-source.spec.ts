@@ -194,6 +194,48 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(signals).toHaveBeenCalledOnceWith(12);
   });
 
+  it('signals a backend fill when durable thread metadata leads an empty local messages cache', async () => {
+    const { src, signals } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(undefined, 258);
+
+    expect(signals).toHaveBeenCalledOnceWith(258);
+  });
+
+  it('reconciles against the greater of the durable thread seq and live-session HWM', async () => {
+    const { src, signals } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: false,
+    });
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(12, 11);
+
+    expect(signals).toHaveBeenCalledOnceWith(12);
+  });
+
+  it('does not signal when the local DB tail already reaches both remote ceilings', async () => {
+    const { src, signals } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(12, 2)],
+      hasMore: false,
+    });
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(12, 11);
+
+    expect(signals).not.toHaveBeenCalled();
+  });
+
   it('allows a post-ready getOlder top-up to backfill a one-row local cache from the backend', async () => {
     const { src, repo } = setup({
       code: 0,
@@ -338,6 +380,8 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
 
     expect(profiles).toHaveBeenCalledOnceWith(100, {
       name: 'Alice',
+      avatar: '',
+      avatarIdentityId: 2,
       isSelf: false,
     });
   });

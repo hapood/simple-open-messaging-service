@@ -68,6 +68,9 @@ export interface ChatMsgData {
   isSelf: boolean;
   /** Sender display name (profile.account; filled for self too — template decides via showName). */
   name: string;
+  /** Cached sender profile data used by message-card avatars, including offline opens. */
+  avatar?: string;
+  avatarIdentityId?: number;
   /** PURE_TEXT body / INVITE JSON source / fallback text for unsupported types. */
   text: string;
   /** Whether the PURE_TEXT body is rich-text HTML (from the Tiptap editor: <strong>/<em>/<code>/@mention chip).
@@ -77,7 +80,15 @@ export interface ChatMsgData {
   rich?: boolean;
   /** HH:mm (the date context is handled by the date separator row). */
   time: string;
-  contentType: 'PURE_TEXT' | 'INVITE' | 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'LINK' | 'CALL';
+  contentType:
+    | 'PURE_TEXT'
+    | 'INVITE'
+    | 'IMAGE'
+    | 'VIDEO'
+    | 'FILE'
+    | 'AUDIO'
+    | 'LINK'
+    | 'CALL';
   /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
   images: AlbumMedia[] | null;
   /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */

@@ -32,4 +32,27 @@ describe('LogoutService', () => {
     pending.error(new Error('old server unreachable'));
     expect(route.redirect).toHaveBeenCalledTimes(1);
   });
+
+  it('still redirects when offline/native cleanup throws before returning an observable', () => {
+    const auth = {
+      logout: jasmine.createSpy('logout').and.throwError('native bridge unavailable'),
+    };
+    const ws = {
+      disconnect: jasmine.createSpy('disconnect').and.throwError('transport unavailable'),
+    };
+    const route = { redirect: jasmine.createSpy('redirect') };
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        LogoutService,
+        { provide: AuthService, useValue: auth },
+        { provide: WebsocketService, useValue: ws },
+        { provide: RouteService, useValue: route },
+      ],
+    });
+
+    expect(() => TestBed.inject(LogoutService).logout()).not.toThrow();
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(route.redirect).toHaveBeenCalledOnceWith(RoutePage.AUTH_LOGIN);
+  });
 });

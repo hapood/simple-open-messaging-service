@@ -12,10 +12,21 @@
     "downloadFailed": "Download failed",
     "loaded": "Loaded",
     "saved": "Saved",
-    "cancelDownload": "Cancel download"
+    "cancelDownload": "Cancel download",
+    "detailsTitle": "Upload details",
+    "detailsGlobalSummary": "{{count}} files grouped by conversation",
+    "detailsThreadSummary": "{{count}} files in this conversation",
+    "sendingTo": "Sending to {{name}}",
+    "uploadFailed": "Upload failed",
+    "noActiveUploads": "No active uploads",
+    "headerUploading": "{{count}} files uploading",
+    "headerUploadingFailed": "{{uploading}} uploading · {{failed}} failed",
+    "headerCompleted": "Upload complete",
+    "openDetails": "View upload details"
   },
   "call": {
     "incoming": "Incoming call",
+    "starting": "Connecting…",
     "calling": "Calling…",
     "ringing": "Ringing…",
     "connecting": "Connecting…",
@@ -463,6 +474,7 @@
     "saveFailed": "Couldn't save media. Try again.",
     "videoNetworkFailed": "Video couldn't be loaded. Check your connection and try again.",
     "videoUnsupported": "This video format or codec isn't supported on this device.",
+    "downloadVideo": "Download video",
     "mediaRailAria": "Media thumbnails",
     "openMediaAria": "Open media {{index}}"
   },

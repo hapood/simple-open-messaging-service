@@ -7,7 +7,10 @@ import {
   type ImageDownloadEvent,
 } from './image-download.adapter';
 import { ImageDownloadService } from './image-download.service';
-import { MediaSaveService } from './media-save.service';
+import {
+  MediaSaveCancelledError,
+  MediaSaveService,
+} from './media-save.service';
 
 describe('ImageDownloadService', () => {
   const media: AlbumImage = {
@@ -107,6 +110,31 @@ describe('ImageDownloadService', () => {
     await Promise.resolve();
     expect(save).toHaveBeenCalledWith(
       jasmine.objectContaining({ path: 'blob:test' }),
+    );
+  });
+
+  it('keeps a downloaded image loaded when the platform save picker is cancelled', async () => {
+    save.and.rejectWith(new MediaSaveCancelledError());
+    service.start(media, 7, true);
+    events.next({
+      type: 'completed',
+      artifact: {
+        displayUrl: 'blob:test',
+        savePath: 'blob:test',
+        size: 2_000,
+        release: jasmine.createSpy('release'),
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(service.task(media)).toEqual(
+      jasmine.objectContaining({
+        status: 'loaded',
+        saveAfterLoad: false,
+        blobUrl: 'blob:test',
+      }),
     );
   });
 });

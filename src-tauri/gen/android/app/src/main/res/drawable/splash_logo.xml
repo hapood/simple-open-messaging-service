@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Resolution-independent launch mark.
+
+  Keep this separate from ic_launcher_foreground: launcher icons need density-specific
+  adaptive-icon PNGs, while the 288dp splash canvas must never upscale those 108dp bitmaps.
+  Geometry mirrors icons/android-ic-launcher-foreground.svg.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.82"
+        android:scaleY="0.82">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M32,29 H76 A11,11 0,0 1,87 40 V68 A11,11 0,0 1,76 79 H52 L46,84 41,79 H32 A11,11 0,0 1,21 68 V40 A11,11 0,0 1,32 29 Z" />
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M35,65 L35,42 54,57 73,42 73,65"
+            android:strokeColor="#FF2196F3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="8" />
+        <path
+            android:fillColor="#FF2196F3"
+            android:pathData="M28.5,65 A6.5,6.5 0,1 0,41.5 65 A6.5,6.5 0,1 0,28.5 65
+                              M28.5,42 A6.5,6.5 0,1 0,41.5 42 A6.5,6.5 0,1 0,28.5 42
+                              M47.5,57 A6.5,6.5 0,1 0,60.5 57 A6.5,6.5 0,1 0,47.5 57
+                              M66.5,42 A6.5,6.5 0,1 0,79.5 42 A6.5,6.5 0,1 0,66.5 42
+                              M66.5,65 A6.5,6.5 0,1 0,79.5 65 A6.5,6.5 0,1 0,66.5 65" />
+    </group>
+</vector>

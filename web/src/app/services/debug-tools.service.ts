@@ -1,8 +1,10 @@
 import { Injectable, isDevMode, signal } from '@angular/core';
+import { setFullConsoleLogging } from './log-buffer';
+import { isTauri, tauriInvoke } from './runtime';
 
 const STORAGE_KEY = 'soms-debug';
 /** Number of quick taps on the app-version label that toggles the debug tools in production. */
-const GESTURE_TAPS = 7;
+const GESTURE_TAPS = 10;
 /** Taps must land within this window to count as one gesture (resets otherwise). */
 const GESTURE_WINDOW_MS = 2000;
 
@@ -39,6 +41,7 @@ export class DebugToolsService {
     } catch {
       // Non-browser / no `location` (e.g. a worker) — nothing to do.
     }
+    this.applyLogging(this.enabled());
   }
 
   /** Flip the persisted flag. Dev builds stay enabled regardless (the flag only governs production). */
@@ -68,6 +71,16 @@ export class DebugToolsService {
       // Private mode / storage disabled — the in-memory signal still flips for this session.
     }
     this.enabled.set(this.isDevBuild() || on);
+    this.applyLogging(this.enabled());
+  }
+
+  /** Keep the web console sink and Tauri's native log facade on the same runtime tier. */
+  private applyLogging(enabled: boolean): void {
+    setFullConsoleLogging(enabled);
+    window.SomsShell?.setDebugLogging?.(enabled);
+    if (isTauri()) {
+      void tauriInvoke('set_debug_logging', { enabled }).catch(() => undefined);
+    }
   }
 
   private readPersisted(): boolean {

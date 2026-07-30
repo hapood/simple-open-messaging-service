@@ -9,6 +9,7 @@ import { EditProfileComponent } from '../components/edit-profile/edit-profile.co
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
 import { ShellIncompatibleDialogComponent } from '../components/shell-incompatible-dialog/shell-incompatible-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
+import { SettingsComponent } from '../components/settings/settings.component';
 import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/friend-invite-dialog.component';
 import type { User } from './user.service';
 import type { SettingsCategoryId } from '../components/settings/settings-categories';
@@ -214,42 +215,36 @@ export class RouteService {
     return { id }
   }
 
-  /**
-   * Open the current user's profile editor using the layout-appropriate surface. Compact keeps the
-   * full-screen inline section and its layered back behavior; medium/expanded use the shared profile
-   * dialog so the conversation list remains in place behind it.
-   */
+  /** Open the current user's profile editor as a shared page dialog on every layout. */
   openProfile(): void {
-    if (this.layout.mode() === 'compact') {
-      this.nav.setTopSection('profile');
-    } else {
-      this.popupDlg(PopupType.EDIT_PROFILE);
-    }
+    this.popupDlg(PopupType.EDIT_PROFILE);
   }
 
   /**
-   * Open Settings, optionally deep-linking straight to a category — e.g. the Profile section → "Manage
-   * sessions" lands on the Devices page. Medium/expanded open the wide two-column dialog; compact switches to
-   * the inline Settings section ({@link NavStateMachineService.setTopSection}) and, for a deep-link, drills
-   * into the category ({@link NavStateMachineService.openSettingsCategory} — HW-back peels it: sub-page →
-   * root → chats). Callers opening Settings from inside a dialog (e.g. Edit Profile) should close themselves
-   * first so the Settings section isn't stacked beneath the dialog (the section sits below panes).
+   * Open Settings, optionally deep-linking straight to a category. Medium/expanded use the wide
+   * two-column dialog; compact uses the drill-in Settings component as a full-screen page dialog over the
+   * still-mounted Chats surface.
    */
   openSettings(category?: SettingsCategoryId): void {
     if (this.layout.mode() !== 'compact') {
       this.openSettingsDialog(category);
     } else {
-      // compact: Settings is an inline secondary section, not a dialog. Switch to it and (for a deep-link)
-      // drill straight into the category (HW-back peels it: sub-page → root → chats).
-      this.nav.setTopSection('settings');
+      this.nav.clearSettingsCategories();
+      this.nav.pushPane({
+        kind: 'dialog',
+        component: SettingsComponent,
+        presentation: 'page',
+        desktopSize: 'standard',
+        settingsDrilldown: true,
+        onResult: () => this.nav.clearSettingsCategories(),
+      });
       if (category) this.nav.openSettingsCategory(category);
     }
   }
 
   /**
-   * Open Settings as a wide two-column dialog — medium/expanded only. Compact switches to the inline
-   * Settings section ({@link NavStateMachineService.setTopSection}); the mode branch lives in
-   * {@link openSettings}. Pushed with the `page` policy and a wide desktop size, so RootPopup renders a
+   * Open Settings as a wide two-column dialog — medium/expanded only. Pushed with the `page` policy and
+   * a wide desktop size, so RootPopup renders a
    * wider centered card on desktop (the default 480px is too narrow for two columns).
    * `initialCategoryId` selects the right-hand category on open (deep-link); omit it for the default
    * (first visible) selection. Back / hardware-back peels it in one step (flat mode).

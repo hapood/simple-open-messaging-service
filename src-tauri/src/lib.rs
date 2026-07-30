@@ -21,6 +21,7 @@
 
 mod navigation;
 mod media_cache;
+mod native_video;
 mod native_db;
 #[cfg(desktop)]
 mod secure_storage;
@@ -113,14 +114,26 @@ const CONFIG_FILENAME: &str = "api_origin";
 /// no fallback configured (the shell behaves exactly as before). Written by `persist_origin_secondary`.
 const CONFIG_SECONDARY_FILENAME: &str = "api_origin_secondary";
 
-/// Web-bundle layout under app_data_dir: `web/active` holds the active version string;
-/// `web/<version>/` the extracted SPA; `web/.staging-<version>/` an in-flight install.
+/// Web-bundle layout under app_data_dir: `web/active.json` atomically holds the active version + its
+/// verified bundle SHA-256; `web/<version>/` is the extracted SPA; `web/.staging-<version>/` an
+/// in-flight install.
 const WEB_DIRNAME: &str = "web";
-const ACTIVE_FILENAME: &str = "active";
-/// Sibling of `active`: the verified SHA-256 (hex) of the installed bundle. Written by
-/// `init_download_web` after the sha256 gate; read by `init_update_status` for hash-based update
-/// detection (`installedHash != serverHash`). Absent on legacy installs predating hash persistence.
-const ACTIVE_HASH_FILENAME: &str = "active.hash";
+const ACTIVE_STATE_FILENAME: &str = "active.json";
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ActiveWebState {
+    version: String,
+    sha256: String,
+}
+
+fn read_active_web_state(web_root: &Path) -> Option<ActiveWebState> {
+    let raw = fs::read_to_string(web_root.join(ACTIVE_STATE_FILENAME)).ok()?;
+    let state: ActiveWebState = serde_json::from_str(&raw).ok()?;
+    if state.version.trim().is_empty() || state.sha256.trim().is_empty() {
+        return None;
+    }
+    Some(state)
+}
 
 /// Which origin `api_origin` currently holds, for the native fallback state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -354,7 +367,8 @@ fn semver_gte(a: &str, b: &str) -> bool {
 // wrapping the embedded baseline as a fallback and holding a shared `active: Arc<Mutex<Option<PathBuf>>>`
 // that `init_download_web` updates. The next request after a swap serves the new bundle; the running page
 // reloads (Settings→About → `location.reload()`) to pick it up. At boot `setup()` seeds `active` from
-// `app_data/web/active`, so a bundle installed on a prior run is served immediately — not lost on restart.
+// `app_data/web/active.json`, so a bundle installed on a prior run is served immediately — not lost on
+// restart.
 
 /// A custom `Assets` resolver: serve from the active OTA bundle dir when one is set AND the requested key
 /// exists there, otherwise fall back to the embedded baseline. The fallback is the build-time
@@ -408,7 +422,8 @@ fn is_spa_route_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod ota_asset_tests {
-    use super::is_spa_route_key;
+    use super::{is_spa_route_key, read_active_web_state, ACTIVE_STATE_FILENAME};
+    use std::fs;
 
     #[test]
     fn angular_history_routes_use_the_active_entry_document() {
@@ -423,6 +438,56 @@ mod ota_asset_tests {
         assert!(!is_spa_route_key("index.html"));
         assert!(!is_spa_route_key("/main-ABC123.js"));
         assert!(!is_spa_route_key("assets/icons/app.svg"));
+    }
+
+    #[test]
+    fn active_web_state_reads_version_and_hash_together() {
+        let root = std::env::temp_dir().join(format!(
+            "soms-active-web-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).expect("create temp web root");
+        fs::write(
+            root.join(ACTIVE_STATE_FILENAME),
+            r#"{"version":"0.2.0","sha256":"ABCDEF"}"#,
+        )
+        .expect("write active state");
+
+        let state = read_active_web_state(&root).expect("read active state");
+        assert_eq!(state.version, "0.2.0");
+        assert_eq!(state.sha256, "ABCDEF");
+
+        fs::remove_dir_all(&root).expect("remove temp web root");
+    }
+
+    #[test]
+    fn active_web_state_rejects_partial_or_invalid_state() {
+        let root = std::env::temp_dir().join(format!(
+            "soms-invalid-active-web-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).expect("create temp web root");
+
+        fs::write(root.join(ACTIVE_STATE_FILENAME), r#"{"version":"0.2.0"}"#)
+            .expect("write partial active state");
+        assert!(read_active_web_state(&root).is_none());
+
+        fs::write(
+            root.join(ACTIVE_STATE_FILENAME),
+            r#"{"version":"","sha256":"abc"}"#,
+        )
+        .expect("write empty-version active state");
+        assert!(read_active_web_state(&root).is_none());
+
+        fs::remove_dir_all(&root).expect("remove temp web root");
     }
 }
 
@@ -482,8 +547,8 @@ pub fn run() {
     // the desktop SSE supervisor. Sinks: Webview (emit every Rust log on the `log://log` event — the debug
     // log panel subscribes to it while open; it is no longer re-emitted into the JS console), Stdout
     // (terminal / docker logs; routed to logcat on Android), LogDir (a rotating file under the OS log dir
-    // for post-mortem + the bundle's `rust/*`). Info level — the instrumentation emits warn/error for
-    // failures; raise to Debug to trace connectivity in detail.
+    // for post-mortem + the bundle's `rust/*`). The sink accepts Debug, while release starts with the
+    // global facade capped at Error below; the hidden About gesture raises that cap at runtime.
     let builder = builder.plugin(
         tauri_plugin_log::Builder::new()
             .targets([
@@ -499,7 +564,7 @@ pub fn run() {
             // without bound. Affects only the LogDir file (Webview/Stdout aren't files).
             .max_file_size(1024 * 1024)
             .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
-            .level(log::LevelFilter::Info)
+            .level(log::LevelFilter::Debug)
             // Silence the HTTP stack at info (hyper logs connection-lifecycle events) so the webview
             // console stays focused on OUR failures and the rotating file's effective history stretches
             // further. Our own sites emit warn/error, all of which still pass.
@@ -590,6 +655,7 @@ pub fn run() {
                     upload_stream_file,
                     cancel_upload,
                     report_diagnostics,
+                    set_debug_logging,
                     log_js,
                     read_native_log,
                     api_request,
@@ -601,6 +667,7 @@ pub fn run() {
                     media_cache::get_media_cache_info,
                     media_cache::save_media_desktop,
                     media_cache::set_media_cache_limit,
+                    native_video::create_native_video_stream,
                     native_db::native_db_threads,
                     native_db::native_db_put_thread,
                     native_db::native_db_replace_threads,
@@ -645,6 +712,7 @@ pub fn run() {
                     upload_stream_file,
                     cancel_upload,
                     report_diagnostics,
+                    set_debug_logging,
                     log_js,
                     read_native_log,
                     api_request,
@@ -655,6 +723,7 @@ pub fn run() {
                     media_cache::clear_media_cache,
                     media_cache::get_media_cache_info,
                     media_cache::set_media_cache_limit,
+                    native_video::create_native_video_stream,
                     native_db::native_db_threads,
                     native_db::native_db_put_thread,
                     native_db::native_db_replace_threads,
@@ -678,6 +747,14 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // Release stays on the cheapest useful diagnostic tier until the user explicitly unlocks
+            // debug tools. Debug builds remain verbose. The web app re-enables Debug after every launch
+            // when its persisted debug flag is set.
+            #[cfg(not(debug_assertions))]
+            log::set_max_level(log::LevelFilter::Error);
+            #[cfg(debug_assertions)]
+            log::set_max_level(log::LevelFilter::Debug);
+
             #[cfg(target_os = "android")]
             {
                 let _ = ANDROID_APP.set(app.handle().clone());
@@ -712,18 +789,14 @@ pub fn run() {
             }
             *proxy_state.config_path.lock().expect("config_path lock") = config_path;
 
-            // Seed the OTA asset resolver from a previously-installed bundle: if `web/active` names a
+            // Seed the OTA asset resolver from a previously-installed bundle: if `web/active.json` names a
             // version whose extracted dir exists, serve it on this boot. The `OtaAssets` resolver (installed
             // at `.run`) reads this Arc, so a bundle installed on a prior run is picked up immediately and
-            // is never lost on restart. Best-effort: a missing/empty `active` or a deleted dir just leaves
-            // the embedded baseline served (the normal cold-start state).
+            // is never lost on restart. Best-effort: a missing/invalid state file or a deleted dir just
+            // leaves the embedded baseline served (the normal cold-start state).
             let web_root = data_dir.join(WEB_DIRNAME);
-            if let Some(ver) = fs::read_to_string(web_root.join(ACTIVE_FILENAME))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-            {
-                let dir = web_root.join(&ver);
+            if let Some(active) = read_active_web_state(&web_root) {
+                let dir = web_root.join(&active.version);
                 if dir.is_dir() {
                     *proxy_state.ota_active.lock().expect("ota_active lock") = Some(dir);
                 }
@@ -779,6 +852,81 @@ async fn proxy_media(
         Some(pq) => pq.as_str().to_string(),
         None => "/".to_string(),
     };
+    // First-frame thumbnails live inside the authenticated Rust media-cache namespace and therefore share
+    // its quota, eviction, clear-cache and account isolation. The URL contains the canonical source path;
+    // no digest-only global namespace can leak a prior account's frame.
+    if let Some(source_path) = request.uri().path().strip_prefix("/video-thumbnails") {
+        if !source_path.starts_with("/uploads/") {
+            responder.respond(empty(StatusCode::NOT_FOUND));
+            return;
+        }
+        match media_cache::get_video_thumbnail(&app, &st, source_path).await {
+            Ok(bytes) => {
+                responder.respond(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "image/webp")
+                        .header("content-length", bytes.len().to_string())
+                        .header("cache-control", "no-store")
+                        .header("x-content-type-options", "nosniff")
+                        .body(Cow::Owned(bytes))
+                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
+                );
+            }
+            Err(_) => responder.respond(empty(StatusCode::NOT_FOUND)),
+        }
+        return;
+    }
+    // Alternate chat-card path: the suffix is the canonical authenticated `/uploads/*` path. Rust
+    // reuses the original cache/download, creates a bounded WebP once, and falls back to original bytes
+    // for unsupported/corrupt image formats. The canonical `/uploads/*` branch below always stays original.
+    if let Some(source_path) = request.uri().path().strip_prefix("/chat-thumbnails") {
+        if !source_path.starts_with("/uploads/") {
+            responder.respond(empty(StatusCode::NOT_FOUND));
+            return;
+        }
+        if let Some(bytes) = media_cache::read_chat_thumbnail(&app, &st, source_path).await {
+            responder.respond(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "image/webp")
+                    .header("content-length", bytes.len().to_string())
+                    .header("cache-control", "no-store")
+                    .header("x-content-type-options", "nosniff")
+                    .body(Cow::Owned(bytes))
+                    .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
+            );
+            return;
+        }
+        match media_cache::get_or_fetch(&app, &st, source_path).await {
+            Ok(media) => {
+                // Do not put WebP encoding on the first-paint path. The original displays now; completion
+                // emits chat-thumbnail-ready and the mounted card reloads this same alternate URL.
+                media_cache::warm_chat_thumbnail(
+                    app.clone(),
+                    st.clone(),
+                    source_path.to_string(),
+                );
+                let mut builder = Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-length", media.bytes.len().to_string())
+                    .header("cache-control", "no-store");
+                if let Some(content_type) = media.content_type {
+                    builder = builder.header("content-type", content_type);
+                }
+                responder.respond(
+                    builder
+                        .body(Cow::Owned(media.bytes))
+                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
+                );
+            }
+            Err(error) => {
+                warn!("chat thumbnail source failed for {source_path}: {error}");
+                responder.respond(empty(StatusCode::BAD_GATEWAY));
+            }
+        }
+        return;
+    }
     if !path_and_query.starts_with("/uploads/") {
         responder.respond(empty(StatusCode::NOT_FOUND));
         return;
@@ -790,8 +938,7 @@ async fn proxy_media(
     {
         match media_cache::get_or_fetch_range(&app, &st, &path_and_query, range).await {
             Ok(media) => {
-                let status =
-                    StatusCode::from_u16(media.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                let status = StatusCode::from_u16(media.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 let mut builder = Response::builder()
                     .status(status)
                     .header("content-length", media.bytes.len().to_string())
@@ -823,6 +970,17 @@ async fn proxy_media(
     // first-frame delay versus passthrough and prevents a later duplicate download.
     match media_cache::get_or_fetch(&app, &st, &path_and_query).await {
         Ok(media) => {
+            let should_warm_thumbnail = media
+                .content_type
+                .as_deref()
+                .is_some_and(|value| value.starts_with("image/"));
+            if should_warm_thumbnail {
+                media_cache::warm_chat_thumbnail(
+                    app.clone(),
+                    st.clone(),
+                    path_and_query.clone(),
+                );
+            }
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("content-length", media.bytes.len().to_string())
@@ -1779,9 +1937,9 @@ fn build_diagnostics_bundle(
         let mut builder = tar::Builder::new(&mut tar_buf);
         tar_add_file(&mut builder, "manifest.json", &manifest_json)?;
         tar_add_file(&mut builder, "webview-console.log", console)?;
-        // The Kotlin `native.log` (Android DEBUG builds only — `SomsLog` is BuildConfig.DEBUG-gated and
-        // writes to filesDir/soms-native.log). Absent on desktop + release; skipped silently so the bundle
-        // stays layered without forcing every platform to produce one.
+        // The Kotlin `native.log` (Android only; debug builds enable it immediately, release enables it
+        // through the runtime debug gate). Absent on desktop or before first enable; skipped silently so
+        // the bundle stays layered without forcing every platform to produce one.
         if let Some(bytes) = native_log {
             if !bytes.is_empty() {
                 tar_add_file(&mut builder, "native/kotlin.log", bytes)?;
@@ -2004,6 +2162,18 @@ mod webview_console_trim_tests {
     }
 }
 
+/// Raise/lower the process-wide native log cap alongside the web debug-tools gate. The plugin's sink is
+/// configured for Debug, so this cheap facade-level filter prevents message formatting and file I/O in
+/// normal release operation. Error remains available when debug tools are disabled.
+#[tauri::command]
+fn set_debug_logging(enabled: bool) {
+    log::set_max_level(if enabled {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Error
+    });
+}
+
 /// Append the JS console's batched flush to the durable `webview-console.log` (or truncate it when `clear`
 /// is set — the debug panel's "clear" wipes both the live ring and the durable record together).
 /// Throttled/batched from `log-buffer.ts`; a missing/unwritable log dir is a silent no-op. Registered on
@@ -2082,8 +2252,9 @@ async fn report_diagnostics(
     .await
     .unwrap_or_default();
     // The Kotlin native log is Android `Context.getFilesDir()/soms-native.log` (Tauri's `app_data_dir()` is
-    // the data ROOT, so it lives under `files/`). Absent on desktop + release → None → the bundle omits the
-    // native/ entry. Best-effort: a missing/unreadable file is not a diagnostics failure.
+    // the data ROOT, so it lives under `files/`). Absent on desktop or before runtime debug is first
+    // enabled → None → the bundle omits the native/ entry. Best-effort: a missing/unreadable file is not a
+    // diagnostics failure.
     let native_log: Option<Vec<u8>> = kotlin_native_log_path(&app).and_then(|p| fs::read(p).ok());
     let bundle = build_diagnostics_bundle(&log_dir, &console, &manifest, native_log.as_deref())
         .map_err(|e| format!("build bundle: {e}"))?;
@@ -2110,7 +2281,7 @@ async fn report_diagnostics(
 // --- native log tail (debug panel) ---------------------------------------------------------
 
 /// Which native log the debug panel tails. `Rust` = the tauri-plugin-log file under `app_log_dir`;
-/// `Kotlin` = the Android `filesDir/soms-native.log` written by `SomsLog` (DEBUG builds only).
+/// `Kotlin` = the Android `filesDir/soms-native.log` written by `SomsLog` while runtime debug is enabled.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum NativeLogSource {
@@ -2153,7 +2324,7 @@ fn newest_file(dir: &Path) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
-/// Tail a native log for the debug panel (Settings→About 7-tap gesture → FAB → overlay). Reads ONLY the
+/// Tail a native log for the debug panel (Settings→About 10-tap gesture → FAB → overlay). Reads ONLY the
 /// active `tauri-plugin-log` file in `app_log_dir` (rust) or `app_data_dir/soms-native.log` (kotlin) — BY
 /// NAME, never a caller-supplied path — so this cannot be used as a generic file-read surface. A
 /// missing/unreadable file returns `{ path: "", content: "" }`; the panel renders the source as "n/a".
@@ -2183,7 +2354,7 @@ fn read_native_log(
 /// data root is also probed as a fallback — a future Tauri path-resolver change that shifted the base would
 /// otherwise silently empty the debug panel's Kotlin tab again (the original bug: the panel read
 /// `app_data_dir/soms-native.log` while Kotlin wrote `…/files/soms-native.log`). Returns None if neither path
-/// exists (desktop + release).
+/// exists (desktop + release before runtime debug has ever been enabled).
 fn kotlin_native_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     let root = app.path().app_data_dir().ok()?;
     [root.join("files").join("soms-native.log"), root.join("soms-native.log")]
@@ -3518,15 +3689,22 @@ async fn init_download_web(
         let _ = fs::remove_dir_all(&final_dir);
     }
     fs::rename(&staging, &final_dir).map_err(|e| format!("activate rename: {e}"))?;
-    let active_tmp = web_root.join(format!("{ACTIVE_FILENAME}.tmp"));
-    fs::write(&active_tmp, &manifest.web_version).map_err(|e| format!("active write: {e}"))?;
-    fs::rename(&active_tmp, web_root.join(ACTIVE_FILENAME)).map_err(|e| format!("active rename: {e}"))?;
-    // Persist the verified bundle hash so later launch probes detect updates by hash equality
-    // (`installedHash != serverHash`) without re-downloading. Atomic tmp+rename, mirroring `active`.
-    let hash_tmp = web_root.join(format!("{ACTIVE_HASH_FILENAME}.tmp"));
-    fs::write(&hash_tmp, manifest.sha256.as_bytes()).map_err(|e| format!("active hash write: {e}"))?;
-    fs::rename(&hash_tmp, web_root.join(ACTIVE_HASH_FILENAME))
-        .map_err(|e| format!("active hash rename: {e}"))?;
+    // Commit the selected version and its verified hash as ONE atomic state change. A crash can now expose
+    // either the complete old state or the complete new state, never a new version paired with an old hash.
+    let active_state = ActiveWebState {
+        version: manifest.web_version.clone(),
+        sha256: manifest.sha256.to_lowercase(),
+    };
+    let active_bytes =
+        serde_json::to_vec(&active_state).map_err(|e| format!("active state serialize: {e}"))?;
+    let active_tmp = web_root.join(".active.json.tmp");
+    fs::write(&active_tmp, active_bytes).map_err(|e| format!("active state write: {e}"))?;
+    fs::rename(&active_tmp, web_root.join(ACTIVE_STATE_FILENAME))
+        .map_err(|e| format!("active state rename: {e}"))?;
+    // The old split format is intentionally unsupported. Remove its metadata after the first successful
+    // active.json commit; before that point boot/update checks simply ignore it and use the embedded SPA.
+    let _ = fs::remove_file(web_root.join("active"));
+    let _ = fs::remove_file(web_root.join("active.hash"));
     gc_web_versions(&web_root, &manifest.web_version);
 
     // 3f2. swap the served assets to the freshly-installed bundle. The `OtaAssets` resolver (installed at
@@ -3560,8 +3738,11 @@ fn gc_web_versions(web_root: &Path, active: &str) {
     if let Ok(entries) = fs::read_dir(web_root) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
-                if name == ACTIVE_FILENAME
-                    || name == ACTIVE_HASH_FILENAME
+                if name == ACTIVE_STATE_FILENAME
+                    // Obsolete pre-active.json files are deliberately unsupported, but are metadata files,
+                    // not extracted version directories; leave them alone instead of recursing into them.
+                    || name == "active"
+                    || name == "active.hash"
                     || name.starts_with('.')
                     || name == active
                 {
@@ -3616,25 +3797,20 @@ async fn init_update_status(origin: String, app: tauri::AppHandle) -> Result<ser
     let origin = origin.trim_end_matches('/').to_string();
     let client = http_client_for(&origin);
 
-    // Local shell version (compile-time) + installed web version + the persisted verified hash.
+    // Local shell version (compile-time) + the atomically-persisted active web version/hash.
     let shell_version = SHELL_VERSION.to_string();
     let web_root = app
         .path()
         .app_data_dir()
         .ok()
         .map(|d| d.join(WEB_DIRNAME));
-    let installed_web = web_root
-        .as_deref()
-        .and_then(|p| fs::read_to_string(p.join(ACTIVE_FILENAME)).ok())
-        .map(|s| s.trim().to_string())
+    let active_state = web_root.as_deref().and_then(read_active_web_state);
+    let installed_web = active_state
+        .as_ref()
+        .map(|s| s.version.clone())
         .unwrap_or_default();
-    // The verified hash of the installed bundle, written by `init_download_web`. Absent on legacy
-    // installs that predate hash persistence → empty (a one-time "update available" nudge once the server
-    // advertises any hash; self-heals after the next install writes the file).
-    let installed_hash = web_root
-        .as_deref()
-        .and_then(|p| fs::read_to_string(p.join(ACTIVE_HASH_FILENAME)).ok())
-        .map(|s| s.trim().to_lowercase())
+    let installed_hash = active_state
+        .map(|s| s.sha256.to_lowercase())
         .unwrap_or_default();
 
     // Best-effort server probe (graceful on failure — empty fields, no false flags).

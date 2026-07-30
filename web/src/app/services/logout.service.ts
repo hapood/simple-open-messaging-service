@@ -22,11 +22,21 @@ export class LogoutService {
   logout(): void {
     // Disconnect explicitly and immediately (defence-in-depth — AuthService.logout flips loggedIn false,
     // whose effect also tears the socket down, but don't rely on that timing during the logout POST window).
-    this.ws.disconnect();
+    try {
+      this.ws.disconnect();
+    } catch {
+      // Logout is a local escape hatch. A broken/stale realtime bridge must never strand the user in the
+      // authenticated shell (or surface as an uncaught exception in a native WebView).
+    }
     // AuthService drops every local session surface synchronously before returning the best-effort remote
     // revoke. Navigation must NOT wait for that old server: it may be offline, and a late callback must not
     // pull the user back from /config (or from a newly-established session) to the login page.
-    this.auth.logout().subscribe({ error: () => {} });
+    try {
+      this.auth.logout().subscribe({ error: () => {} });
+    } catch {
+      // `subscribe({ error })` only handles errors emitted after an Observable is returned. Native bridge
+      // calls and local cleanup inside AuthService.logout can throw synchronously before that point.
+    }
     this.routeService.redirect(RoutePage.AUTH_LOGIN);
   }
 }

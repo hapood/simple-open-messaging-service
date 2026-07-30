@@ -63,7 +63,10 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
     expect(snackBar.open).toHaveBeenCalledWith(
       jasmine.any(String),
       jasmine.any(String),
-      jasmine.objectContaining({ duration: 60000 }),
+      jasmine.objectContaining({
+        duration: 0,
+        panelClass: jasmine.arrayContaining(['soms-snack-bar--interactive']),
+      }),
     );
   });
 

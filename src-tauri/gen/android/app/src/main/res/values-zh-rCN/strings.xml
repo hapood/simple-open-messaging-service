@@ -13,6 +13,10 @@
     <string name="notif_fgs_running">"正在后台运行"</string>
     <string name="call_channel_incoming">"来电"</string>
     <string name="call_channel_ongoing">"通话中"</string>
+    <string name="call_status_starting">"正在连接…"</string>
+    <string name="call_status_calling">"正在呼叫…"</string>
+    <string name="call_status_connecting">"正在接通…"</string>
+    <string name="call_status_connected">"正在通话"</string>
     <string name="pip_toggle_mute">静音或取消静音</string>
     <string name="pip_hang_up">挂断</string>
     <string name="composer_emoji">表情</string>
@@ -35,4 +39,10 @@
     <plurals name="notif_group_summary">
         <item quantity="other">"%d 个新会话"</item>
     </plurals>
+    <string name="video_playback_failed">无法播放此视频</string>
+    <string name="video_network_failed">网络不可用，请检查网络后重试</string>
+    <string name="video_forbidden">当前账号已无法访问这个视频</string>
+    <string name="video_unsupported">当前设备不支持这个视频格式</string>
+    <string name="video_retry">重试</string>
+    <string name="video_back">返回</string>
 </resources>

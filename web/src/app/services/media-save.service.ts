@@ -12,6 +12,14 @@ export interface SaveMediaRequest {
   mimeType?: string;
 }
 
+/** The user closed the platform save picker without choosing a destination. */
+export class MediaSaveCancelledError extends Error {
+  constructor() {
+    super('Media save was cancelled');
+    this.name = 'MediaSaveCancelledError';
+  }
+}
+
 /**
  * One business-level media save API with deliberately separate platform transports:
  * browser/PWA keeps native HTTP download semantics; Tauri reuses the Rust media cache, then exposes
@@ -25,11 +33,16 @@ export class MediaSaveService {
   >();
 
   constructor() {
-    window.__SOMS_MEDIA_SAVE_RESULT__ = ({ requestId, success }) => {
+    window.__SOMS_MEDIA_SAVE_RESULT__ = ({
+      requestId,
+      success,
+      cancelled,
+    }) => {
       const pending = this.pendingAndroidSaves.get(requestId);
       if (!pending) return;
       this.pendingAndroidSaves.delete(requestId);
       if (success) pending.resolve();
+      else if (cancelled) pending.reject(new MediaSaveCancelledError());
       else pending.reject(new Error('Android document save was cancelled or failed'));
     };
   }

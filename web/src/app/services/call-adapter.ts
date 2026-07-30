@@ -9,6 +9,7 @@ import { ToastService } from './toast.service';
  *  + the reconnecting/weak UX). `idle` = no live call. */
 export type CallPhase =
   | 'idle'
+  | 'starting'
   | 'calling'
   | 'ringing'
   | 'incoming'

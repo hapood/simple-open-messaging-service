@@ -3,11 +3,18 @@
 }
 
 <div
-  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
     <div class="msg-avatar">
-      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" />
+      <app-user-avatar
+        [type]="UserAvatarType.OTHER"
+        [name]="data().name"
+        [identityId]="data().avatarIdentityId"
+        [src]="data().avatar"
+      />
     </div>
   }
 
@@ -26,11 +33,15 @@
         @if (isVideo()) {
           <svg viewBox="0 0 24 24">
             <rect x="3.5" y="6.5" width="11.5" height="11" rx="2.5" />
-            <path d="m15 10 4.2-2.3c.6-.3 1.3.1 1.3.8v7c0 .7-.7 1.1-1.3.8L15 14" />
+            <path
+              d="m15 10 4.2-2.3c.6-.3 1.3.1 1.3.8v7c0 .7-.7 1.1-1.3.8L15 14"
+            />
           </svg>
         } @else {
           <svg viewBox="0 0 24 24">
-            <path d="M7.2 3.8 9.7 7c.4.6.4 1.4-.1 1.9l-1.4 1.4a14.6 14.6 0 0 0 5.5 5.5l1.4-1.4c.5-.5 1.3-.5 1.9-.1l3.2 2.5c.6.5.8 1.3.4 2l-.8 1.3c-.5.8-1.4 1.2-2.3 1C9.9 19.8 4.2 14.1 2.9 6.5c-.2-.9.2-1.8 1-2.3l1.3-.8c.7-.4 1.5-.2 2 .4Z" />
+            <path
+              d="M7.2 3.8 9.7 7c.4.6.4 1.4-.1 1.9l-1.4 1.4a14.6 14.6 0 0 0 5.5 5.5l1.4-1.4c.5-.5 1.3-.5 1.9-.1l3.2 2.5c.6.5.8 1.3.4 2l-.8 1.3c-.5.8-1.4 1.2-2.3 1C9.9 19.8 4.2 14.1 2.9 6.5c-.2-.9.2-1.8 1-2.3l1.3-.8c.7-.4 1.5-.2 2 .4Z"
+            />
           </svg>
         }
       </div>
@@ -52,7 +63,12 @@
 
   @if (showAvatar() && side() === 'self') {
     <div class="msg-avatar">
-      <app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" />
+      <app-user-avatar
+        [type]="UserAvatarType.SELF"
+        [name]="data().name"
+        [identityId]="data().avatarIdentityId"
+        [src]="data().avatar"
+      />
     </div>
   }
 </div>

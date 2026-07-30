@@ -28,6 +28,8 @@ import { ToastService } from '../../services/toast.service';
 import { ImageDownloadService } from '../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { formatBytes } from '../message-cards/file-meta.util';
+import { NativeVideoService } from '../../services/native-video.service';
+import { isAndroid, isTauri } from '../../services/runtime';
 
 /** Business metadata kept alongside PhotoSwipe's image data. */
 interface GallerySlideData extends SlideData {
@@ -75,9 +77,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly currentLoadFailed = computed(() =>
     this.loadErrors().has(this.index()),
   );
-  readonly currentVideoError = computed(
-    () => this.videoErrors().get(this.index()) ?? null,
-  );
   readonly currentUrl = computed(() =>
     this.current() ? this.downloads.displayUrl(this.current()!) : '',
   );
@@ -112,6 +111,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly retryKeys = new Map<number, number>();
   private readonly slides: GallerySlideData[] = [];
   private readonly videoPlayers = new Map<number, Artplayer>();
+  private readonly videoErrorLayers = new Map<number, HTMLElement>();
   private pswp: PhotoSwipe | null = null;
   private destroying = false;
   private readonly saveToastKeys = new Set<string>();
@@ -123,6 +123,8 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly mediaSave = inject(MediaSaveService);
   private readonly toast = inject(ToastService);
   readonly downloads = inject(ImageDownloadService);
+  private readonly nativeVideo = inject(NativeVideoService);
+  readonly useNativeVideo = isTauri() && isAndroid();
   private readonly threshold = inject(MediaSizeThresholdService);
   readonly formatBytes = formatBytes;
 
@@ -232,6 +234,8 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   mediaUrl(media: AlbumImage): string {
+    if (media.kind === 'video' && this.useNativeVideo)
+      return this.nativeVideo.thumbnailUrl(media.src);
     return this.downloads.displayUrl(media);
   }
 
@@ -245,23 +249,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       this.downloads.start(media, this.threadId(), true);
       return;
     }
-    try {
-      await this.mediaSave.save({
-        path: media.src,
-        filename: media.name || this.defaultFilename(media),
-        mimeType:
-          media.kind === 'video'
-            ? 'video/mp4'
-            : media.kind === 'audio'
-              ? 'audio/mpeg'
-              : 'image/jpeg',
-      });
-      this.toast.info(this.i18n.translate('gallery.saved'));
-    } catch (error) {
-      console.error('[gallery] save failed:', error);
-      this.toast.warn(this.i18n.translate('gallery.saveFailed'));
-    } finally {
-    }
+    await this.saveMedia(media, this.index());
   }
 
   loadCurrent(): void {
@@ -296,7 +284,10 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   retryVideo(): void {
-    const i = this.index();
+    this.retryVideoAt(this.index());
+  }
+
+  private retryVideoAt(i: number): void {
     const media = this.images()[i];
     if (!media || media.kind !== 'video') return;
     this.retryKeys.set(i, (this.retryKeys.get(i) ?? 0) + 1);
@@ -367,8 +358,8 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     return `${base}${base.includes('?') ? '&' : '?'}_r=${retryKey}`;
   }
 
-  private defaultFilename(media: AlbumImage): string {
-    return `media-${media.msgId ?? this.index() + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
+  private defaultFilename(media: AlbumImage, index = this.index()): string {
+    return `media-${media.msgId ?? index + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
   }
 
   isMediaGated(media: AlbumImage): boolean {
@@ -420,9 +411,40 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       else next.delete(index);
       return next;
     });
+
+    const layer = this.videoErrorLayers.get(index);
+    if (!layer) return;
+    layer.hidden = error === null;
+    if (!error) return;
+
+    const message = layer.querySelector<HTMLElement>(
+      '.gv-video-error__message',
+    );
+    const action = layer.querySelector<HTMLButtonElement>(
+      '.gv-video-error__action',
+    );
+    if (message) {
+      message.textContent = this.i18n.translate(
+        error === 'network'
+          ? 'gallery.videoNetworkFailed'
+          : 'gallery.videoUnsupported',
+      );
+    }
+    if (action) {
+      action.textContent = this.i18n.translate(
+        error === 'network' ? 'common.retry' : 'gallery.downloadVideo',
+      );
+    }
   }
 
   private videoSlideHtml(index: number): string {
+    if (this.useNativeVideo) {
+      return `<div class="gv-slide-video gv-native-video-poster" data-gallery-index="${index}">
+        <button type="button" class="gv-native-video-open" aria-label="${this.i18n.translate('gallery.openVideoAria')}">
+          <span aria-hidden="true"></span>
+        </button>
+      </div>`;
+    }
     return `<div class="gv-slide-video" data-gallery-index="${index}"></div>`;
   }
 
@@ -437,6 +459,15 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (!container || media?.kind !== 'video') return;
 
     this.destroyVideoPlayer(index);
+    if (this.useNativeVideo) {
+      container
+        .querySelector<HTMLButtonElement>('.gv-native-video-open')
+        ?.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void this.nativeVideo.open(media.src);
+        });
+      return;
+    }
     const { default: ArtplayerPlayer } = await import('artplayer');
     if (!container.isConnected) return;
 
@@ -465,6 +496,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         : 'en',
     });
     this.videoPlayers.set(index, player);
+    const errorLayer = this.createVideoErrorLayer(index);
+    container.append(errorLayer);
+    this.videoErrorLayers.set(index, errorLayer);
 
     player.on('video:loadeddata', () => this.setVideoError(index, null));
     player.on('video:error', () => {
@@ -483,6 +517,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private activateVideo(activeIndex: number): void {
+    if (this.useNativeVideo) return;
     this.videoPlayers.forEach((player, index) => {
       if (index !== activeIndex) {
         player.pause();
@@ -495,10 +530,65 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private destroyVideoPlayer(index: number): void {
+    this.videoErrorLayers.delete(index);
     const player = this.videoPlayers.get(index);
     if (!player) return;
     this.videoPlayers.delete(index);
     player.destroy(false);
+  }
+
+  private createVideoErrorLayer(index: number): HTMLElement {
+    const layer = document.createElement('div');
+    layer.className = 'gv-video-error';
+    layer.hidden = true;
+    layer.setAttribute('role', 'alert');
+
+    const icon = document.createElement('span');
+    icon.className = 'gv-video-error__icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '!';
+
+    const message = document.createElement('p');
+    message.className = 'gv-video-error__message';
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'gv-video-error__action';
+    action.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (this.videoErrors().get(index) === 'network') {
+        this.retryVideoAt(index);
+      } else {
+        void this.saveVideo(index);
+      }
+    });
+
+    layer.append(icon, message, action);
+    return layer;
+  }
+
+  private async saveVideo(index: number): Promise<void> {
+    const media = this.images()[index];
+    if (media?.kind === 'video') await this.saveMedia(media, index);
+  }
+
+  private async saveMedia(media: AlbumImage, index: number): Promise<void> {
+    try {
+      await this.mediaSave.save({
+        path: media.src,
+        filename: media.name || this.defaultFilename(media, index),
+        mimeType:
+          media.kind === 'video'
+            ? 'video/mp4'
+            : media.kind === 'audio'
+              ? 'audio/mpeg'
+              : 'image/jpeg',
+      });
+      this.toast.info(this.i18n.translate('gallery.saved'));
+    } catch (error) {
+      console.error('[gallery] save failed:', error);
+      this.toast.warn(this.i18n.translate('gallery.saveFailed'));
+    }
   }
 
   private destroyVideoPlayers(): void {

@@ -92,7 +92,9 @@ object CallController {
     @Volatile var peerAvatar: String = ""
         private set
     /** UI phase, the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels):
-     *  idle | calling | ringing | incoming | connecting | connected | reconnecting | ended. */
+     *  idle | starting | calling | ringing | incoming | connecting | connected | reconnecting | ended.
+     *  `starting` is the local, pre-server-confirmation phase: it opens the call chrome and supplies the
+     *  Android foreground-service notification before /calls/initiate can complete. */
     @Volatile var phase: String = "idle"
         private set
     /** The last advisory media state from the PC (new/ gathering / connecting / connected / disconnected /
@@ -545,7 +547,10 @@ object CallController {
     private fun handleEventFrame(obj: JSONObject) {
         val type = obj.optString("type")
         val sid = obj.optString("callSid")
-        if (sid.isNotEmpty() && callSid != null && sid != callSid) return // not our call (stray frame)
+        // `starting` is only a local presentation state; the server has not reserved the outgoing call yet.
+        // Allow a server-authoritative incoming call to replace it. Every other mismatched sid is stray.
+        if (sid.isNotEmpty() && callSid != null && sid != callSid &&
+            !(type == "incoming" && phase == "starting")) return
         when (type) {
             "incoming" -> {
                 // We are the CALLEE. Seed the incoming snapshot (shared with the FCM/HELLO paths via
@@ -720,10 +725,30 @@ object CallController {
 
     // ── public API (the SomsCallInterface bridge calls these) ─────────────────────
 
-    /** Caller starts a call. POST /calls/initiate → create the PC + offer + trickle ICE. The [CallService]
-     *  FGS must already be running (started by the bridge before this) so the process is anchored + audio
-     *  routing is in comms mode. */
-    fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String, avatarDataUrl: String) {
+    /** Caller starts a call. Seeds the local `starting` snapshot synchronously, then POST /calls/initiate →
+     *  create the PC + offer + trickle ICE. The bridge starts [CallService] after this returns true, so its
+     *  first mandatory foreground notification is built from the same snapshot as the WebView call chrome. */
+    fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String, avatarDataUrl: String): Boolean {
+        // Seed the presentation state synchronously, before the bridge starts CallService. Both the WebView
+        // call screen and the mandatory FGS notification therefore observe the SAME `starting` snapshot.
+        // The server busy-line is still authoritative: `starting` is only a local presentation phase and the
+        // response below must still confirm that this sid owns the state before promoting it to `calling`.
+        if (phase != "idle") return false
+        callSid = sid
+        threadId = 0
+        peerUserId = calleeUserId
+        callType = type
+        cameraEnabled = false
+        remoteCameraEnabled = type == "VIDEO"
+        videoUpgradeState = "idle"
+        isCaller = true
+        phase = "starting"
+        startedAt = 0L
+        step = ""
+        peerName = name
+        peerAvatar = avatar
+        pushSnapshot()
+
         callExecutor.execute {
             var registeredOnServer = false
             var origin: String? = null
@@ -732,17 +757,23 @@ object CallController {
                 origin = activeOrigin()
                 if (origin == null) {
                     SomsLog.w(TAG) { "initiate: no origin" }
-                    teardown()
+                    if (callSid == sid && phase == "starting") teardown()
                     return@execute
                 }
                 val r = post("$origin${SomsSecureStore.API_PREFIX}/calls/initiate",
                     JSONObject().put("callSid", sid).put("calleeUserId", calleeUserId).put("callType", type))
                 if (!r.ok) {
                     SomsLog.w(TAG) { "initiate: POST /calls/initiate failed" }
-                    teardown()
+                    if (callSid == sid && phase == "starting") teardown()
                     return@execute
                 }
                 registeredOnServer = true
+                // A concurrent incoming call may have replaced the local-only `starting` state while the POST
+                // was in flight. Do not overwrite it; release the now-registered outgoing call instead.
+                if (callSid != sid || phase != "starting" || !isCaller) {
+                    post("$origin${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
+                    return@execute
+                }
                 callSid = sid
                 threadId = r.data?.optInt("threadId") ?: 0
                 peerUserId = calleeUserId
@@ -751,20 +782,11 @@ object CallController {
                 remoteCameraEnabled = type == "VIDEO"
                 videoUpgradeState = "idle"
                 isCaller = true
-                // INVARIANT: phase = "calling" (→ the outgoing UI shows) is set ONLY after /calls/initiate
-                // succeeds — NOT optimistically before the POST. This gates the outgoing UI on the server's
-                // confirmation: the server's busy-line means this user is in ≤1 call, so once the POST
-                // succeeds (this user is now busy server-side), no second incoming can ring them. If phase
-                // were set before the POST, the outgoing UI would show while the POST is in flight → an
-                // incoming arriving in that window would overwrite + leak the outgoing state (a race). The
-                // post-before-phase ordering + the server busy-line make outgoing + incoming mutually
-                // exclusive. DO NOT make this optimistic.
+                // `calling` still means server-confirmed. The preceding `starting` phase is presentation-only.
                 phase = "calling"
                 startedAt = 0L
                 iceRestartTried = false
                 answerApplied = false
-                peerName = name
-                peerAvatar = avatar
                 // Prefer the IDB-cached bytes (data URL); fall back to the /uploads path on an IDB miss (fetch),
                 // so an uncached peer still gets an avatar instead of the app-logo fallback.
                 CallService.instance?.loadAvatar(if (avatarDataUrl.isNotEmpty()) avatarDataUrl else avatar, peerName)
@@ -781,12 +803,15 @@ object CallController {
                     origin?.let {
                         post("$it${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
                     }
-                    phase = "ended"
-                    pushSnapshot()
+                    if (callSid == sid && isCaller) {
+                        phase = "ended"
+                        pushSnapshot()
+                    }
                 }
-                teardown()
+                if (callSid == sid && isCaller) teardown()
             }
         }
+        return true
     }
 
     /** An asynchronous offer callback failed after /calls/initiate succeeded. Serialize cleanup with every
@@ -1104,7 +1129,7 @@ object CallController {
      *  backgrounded paths with no live SSE): guard (idempotent — a no-op if this call is already incoming;
      *  ignored if a different call is live), then [seedIncomingState] + start the ring. */
     fun seedIncoming(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
-        if (phase != "idle") {
+        if (phase != "idle" && phase != "starting") {
             if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
             return                      // a different call is live (busy) — ignore the stray push
         }
@@ -1287,6 +1312,7 @@ object CallController {
     private fun pushSnapshot() {
         val p = phase
         SomsBridge.eval("window.__SOMS_CALL_EVENT__ && window.__SOMS_CALL_EVENT__(${snapshotJson()});")
+        CallService.instance?.refreshForPhase()
         if (p != lastNotifiedPhase) { lastNotifiedPhase = p; phaseListener?.invoke(p) }
     }
 }

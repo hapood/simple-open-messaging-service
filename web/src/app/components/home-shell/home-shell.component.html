@@ -1,29 +1,39 @@
-<div class="shell"
-     [class.mode-expanded]="mode() === 'expanded'"
-     [class.mode-medium]="mode() === 'medium'"
-     [class.mode-compact]="mode() === 'compact'"
-     [class.chat-open]="chatActive()"
-     [class.aside-open]="asideActive()">
+<div
+  class="shell"
+  [class.mode-expanded]="mode() === 'expanded'"
+  [class.mode-medium]="mode() === 'medium'"
+  [class.mode-compact]="mode() === 'compact'"
+  [class.chat-open]="chatActive()"
+  [class.aside-open]="asideActive()"
+>
   @if (mode() === 'expanded') {
     <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
-    <app-chat-list-pane class="list" [style.width.px]="listWidth()" (selectThread)="openChat($event)" />
-    <div class="resizer" role="separator" tabindex="0" aria-orientation="vertical"
-         aria-valuemin="280" aria-valuemax="480" [attr.aria-valuenow]="listWidth()"
-         (mousedown)="startResize($event)" (keydown)="onResizerKeydown($event)" (dblclick)="resetWidth()"
-         [title]="'home.resizerTitle' | transloco" [attr.aria-label]="'home.resizerAria' | transloco"></div>
+    <app-chat-list-pane
+      class="list"
+      [style.width.px]="listWidth()"
+      (selectThread)="openChat($event)"
+    />
+    <div
+      class="resizer"
+      role="separator"
+      tabindex="0"
+      aria-orientation="vertical"
+      aria-valuemin="280"
+      aria-valuemax="480"
+      [attr.aria-valuenow]="listWidth()"
+      (mousedown)="startResize($event)"
+      (keydown)="onResizerKeydown($event)"
+      (dblclick)="resetWidth()"
+      [title]="'home.resizerTitle' | transloco"
+      [attr.aria-label]="'home.resizerAria' | transloco"
+    ></div>
   } @else {
     <div class="drawer-body">
-      @if (topSection() === 'chats') {
-        <!-- Secondary sections own their own headers; the account avatar menu is scoped to Chats and
-             opens Profile / Settings alongside the chat-list actions. -->
-        <app-home-header class="header" [onThreadListChanged]="refresh" />
-      }
+      <!-- Account surfaces are page dialogs over this always-mounted Chats base. Keeping the list alive
+           preserves avatar blob URLs and scroll/search state while Settings/Profile is open. -->
+      <app-home-header class="header" [onThreadListChanged]="refresh" />
       <div class="section-content">
-        @switch (topSection()) {
-          @case ('chats') { <app-chat-list-pane class="list" (selectThread)="openChat($event)" /> }
-          @case ('settings') { <app-settings /> }
-          @case ('profile') { <app-profile-section /> }
-        }
+        <app-chat-list-pane class="list" (selectThread)="openChat($event)" />
       </div>
     </div>
   }
@@ -31,21 +41,31 @@
   <!-- primary chat surface: ChatPane is always-mounted (NO router-outlet — the NavStateMachineService
        drives which thread it shows via ConversationListService.openThreadId). On mobile [@overlaySlide]
        glides this overlay in/out from the right; on desktop/tablet it stays `static` (inline flex column). -->
-  <div class="chat-slot"
-       [@overlaySlide]="chatSlotState()"
-       (@overlaySlide.start)="onSlideStart($event)"
-       (@overlaySlide.done)="onSlideDone($event, 'chat')"><app-chat-pane /></div>
+  <div
+    class="chat-slot"
+    [@overlaySlide]="chatSlotState()"
+    (@overlaySlide.start)="onSlideStart($event)"
+    (@overlaySlide.done)="onSlideDone($event, 'chat')"
+  >
+    <app-chat-pane />
+  </div>
   <!-- aside panel (peer-profile / group-info / settings): rendered by @switch on the topmost aside
        entry's panel (asideTop().panel — the aside is a stack, so drilling into a sub-page keeps the same
        panel and only changes the entry's params). NO named router-outlet. Slides in from the right on
        mobile (over the chat); desktop side panel and tablet absolute overlay stay `static`. -->
-  <div class="aside-slot"
-       [@overlaySlide]="asideSlotState()"
-       (@overlaySlide.start)="onSlideStart($event)"
-       (@overlaySlide.done)="onSlideDone($event, 'aside')">
+  <div
+    class="aside-slot"
+    [@overlaySlide]="asideSlotState()"
+    (@overlaySlide.start)="onSlideStart($event)"
+    (@overlaySlide.done)="onSlideDone($event, 'aside')"
+  >
     @switch (asidePanel()) {
-      @case ('profile') { <app-peer-profile /> }
-      @case ('group-info') { <app-group-info /> }
+      @case ('profile') {
+        <app-peer-profile />
+      }
+      @case ('group-info') {
+        <app-group-info />
+      }
       <!-- 'settings' is rendered as an inline mobile/tablet section selected from the account menu,
            not as a chat-scoped aside overlay. -->
     }
@@ -56,4 +76,5 @@
   @if (mode() !== 'compact' && asideActive()) {
     <div class="drawer-mask" (click)="closeAside()" aria-hidden="true"></div>
   }
+  <app-upload-detail-dialog />
 </div>

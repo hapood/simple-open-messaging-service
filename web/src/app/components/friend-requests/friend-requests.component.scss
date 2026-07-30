@@ -76,6 +76,8 @@ $danger: var(--app-danger);
     }
 
     .tab-badge {
+      display: grid;
+      place-items: center;
       position: absolute;
       top: 50%;
       left: calc(100% + 5px);
@@ -88,7 +90,7 @@ $danger: var(--app-danger);
       color: #fff;
       font-size: 10px;
       font-weight: 600;
-      line-height: 16px;
+      line-height: 1;
       text-align: center;
       box-sizing: border-box;
     }

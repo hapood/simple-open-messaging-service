@@ -1,8 +1,16 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type { Subscription } from 'rxjs';
 import type { AlbumImage } from '../components/message-cards/chat-item';
-import { MediaSaveService } from './media-save.service';
-import { assetUrl } from './runtime';
+import {
+  MediaSaveCancelledError,
+  MediaSaveService,
+} from './media-save.service';
+import {
+  assetUrl,
+  chatThumbnailUrl,
+  isTauri,
+  listenEvent,
+} from './runtime';
 import {
   IMAGE_DOWNLOAD_ADAPTER,
   type ImageDownloadArtifact,
@@ -44,6 +52,10 @@ export class ImageDownloadService {
   );
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly artifacts = new Map<string, ImageDownloadArtifact>();
+  private readonly thumbnailRevisions = signal<ReadonlyMap<string, number>>(
+    new Map(),
+  );
+  readonly thumbnailVersion = signal(0);
 
   readonly tasks = computed(() =>
     [...this.taskMap().values()].sort((a, b) => a.startedAt - b.startedAt),
@@ -54,6 +66,21 @@ export class ImageDownloadService {
         (task) => task.status === 'downloading' || task.status === 'saving',
       ).length,
   );
+
+  constructor() {
+    if (!isTauri()) return;
+    void listenEvent<{ sourcePath?: string }>(
+      'chat-thumbnail-ready',
+      ({ payload }) => {
+        const sourcePath = payload?.sourcePath;
+        if (!sourcePath?.startsWith('/uploads/')) return;
+        const next = new Map(this.thumbnailRevisions());
+        next.set(sourcePath, (next.get(sourcePath) ?? 0) + 1);
+        this.thumbnailRevisions.set(next);
+        this.thumbnailVersion.update((value) => value + 1);
+      },
+    );
+  }
 
   key(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
     return `${media.msgId ?? 0}:${media.src}`;
@@ -67,6 +94,15 @@ export class ImageDownloadService {
 
   displayUrl(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
     return this.task(media)?.blobUrl ?? assetUrl(media.src);
+  }
+
+  /** Lightweight list-card representation. Detail/gallery/save callers deliberately keep displayUrl(),
+   * whose contract is the original media. Optimistic blob/data URLs pass through unchanged. */
+  thumbnailUrl(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+    const base = chatThumbnailUrl(media.src);
+    const revision = this.thumbnailRevisions().get(media.src) ?? 0;
+    if (revision === 0 || !base.includes('/chat-thumbnails/')) return base;
+    return `${base}${base.includes('?') ? '&' : '?'}v=${revision}`;
   }
 
   isLoaded(media: Pick<AlbumImage, 'msgId' | 'src'>): boolean {
@@ -171,7 +207,13 @@ export class ImageDownloadService {
       if (live) this.patch(key, { ...live, status: 'saved' });
     } catch (error) {
       const live = this.taskMap().get(key);
-      if (live) this.patch(key, { ...live, status: 'failed' });
+      if (!live) return;
+      this.patch(
+        key,
+        error instanceof MediaSaveCancelledError
+          ? { ...live, status: 'loaded', saveAfterLoad: false }
+          : { ...live, status: 'failed' },
+      );
     }
   }
 

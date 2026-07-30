@@ -19,90 +19,79 @@
       <button
         type="button"
         class="transfer-status"
+        [class.transfer-status--uploads]="transferTasks().length > 0"
         [class.failed]="transferFailedCount() + downloadFailedCount() > 0"
         [style.--transfer-progress]="(globalProgress() ?? 0) + '%'"
         (click)="toggleTransferMenu()"
         [attr.aria-expanded]="transferMenuOpen()"
-        aria-haspopup="menu"
+        [attr.aria-haspopup]="transferTasks().length > 0 ? 'dialog' : 'menu'"
       >
-        <span class="transfer-thumbs" aria-hidden="true">
-          @for (
-            task of transferTasks().slice(0, 3);
-            track task.clientMessageId
-          ) {
-            <span
-              class="transfer-thumb"
-              [class.failed]="task.status === 'failed'"
-            >
-              @if (task.previewUrl) {
-                <img [src]="task.previewUrl" alt="" />
+        @if (transferTasks().length > 0) {
+          <span class="transfer-upload-motion" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path class="transfer-upload-line" d="M12 17V5M7 10l5-5 5 5" />
+              <path class="transfer-upload-floor" d="M5 19h14" />
+            </svg>
+            <span></span>
+            <span></span>
+          </span>
+          <span class="transfer-upload-copy">
+            <strong>
+              @if (transferCount() > 0 && transferFailedCount() > 0) {
+                {{
+                  'transfer.headerUploadingFailed'
+                    | transloco
+                      : {
+                          uploading: transferCount(),
+                          failed: transferFailedCount(),
+                        }
+                }}
+              } @else if (transferCount() > 0) {
+                {{
+                  'transfer.headerUploading'
+                    | transloco: { count: transferCount() }
+                }}
+              } @else if (transferFailedCount() > 0) {
+                {{
+                  'transfer.anyFailedCount'
+                    | transloco: { count: transferFailedCount() }
+                }}
               } @else {
-                <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span>
+                {{ 'transfer.headerCompleted' | transloco }}
               }
-            </span>
-          }
-          @for (
-            task of downloadTasks().slice(0, transferTasks().length ? 1 : 3);
-            track task.key
-          ) {
-            <span
-              class="transfer-thumb"
-              [class.failed]="task.status === 'failed'"
-            >
-              @if (task.blobUrl) {
-                <img [src]="task.blobUrl" alt="" />
-              } @else {
-                <span>↓</span>
-              }
-            </span>
-          }
-          @if (transferTasks().length > 3) {
-            <span class="transfer-more">+{{ transferTasks().length - 3 }}</span>
-          }
-        </span>
-        @if (transferFailedCount() + downloadFailedCount() > 0) {
-          <span class="transfer-mark" aria-hidden="true">!</span>
-          <span>{{
-            'transfer.anyFailedCount'
-              | transloco
-                : { count: transferFailedCount() + downloadFailedCount() }
-          }}</span>
-        } @else if (downloadActiveCount() > 0) {
-          <span class="transfer-spinner" aria-hidden="true"></span>
-          <span>{{
-            'transfer.downloadingProgress'
-              | transloco
-                : {
-                    count: downloadActiveCount(),
-                    progress: downloadProgress() ?? 0,
-                  }
-          }}</span>
+            </strong>
+            <small>{{ 'transfer.openDetails' | transloco }}</small>
+          </span>
+          <span class="transfer-upload-chevron" aria-hidden="true">›</span>
         } @else {
-          @if (transferCount() === 0) {
-            <span class="transfer-mark transfer-mark--done" aria-hidden="true"
-              >✓</span
-            >
-            <span>{{ 'transfer.completed' | transloco }}</span>
+          <span class="transfer-thumbs" aria-hidden="true">
+            @for (task of downloadTasks().slice(0, 3); track task.key) {
+              <span
+                class="transfer-thumb"
+                [class.failed]="task.status === 'failed'"
+              >
+                @if (task.blobUrl) {
+                  <img [src]="task.blobUrl" alt="" />
+                } @else {
+                  <span>↓</span>
+                }
+              </span>
+            }
+          </span>
+          @if (downloadFailedCount() > 0) {
+            <span class="transfer-mark" aria-hidden="true">!</span>
+            <span>{{
+              'transfer.anyFailedCount'
+                | transloco: { count: downloadFailedCount() }
+            }}</span>
           } @else {
             <span class="transfer-spinner" aria-hidden="true"></span>
-          }
-          @if (transferCount() > 0 && transferProgress() !== null) {
             <span>{{
-              'transfer.sendingProgress'
+              'transfer.downloadingProgress'
                 | transloco
                   : {
-                      completed: transferCompleted(),
-                      total: transferTotal(),
-                      progress: transferProgress(),
-                    }
-            }}</span>
-          } @else if (transferCount() > 0) {
-            <span>{{
-              'transfer.sendingOf'
-                | transloco
-                  : {
-                      completed: transferCompleted(),
-                      total: transferTotal(),
+                      count: downloadActiveCount(),
+                      progress: downloadProgress() ?? 0,
                     }
             }}</span>
           }

@@ -9,7 +9,7 @@ import { LogoutService } from '../../services/logout.service';
  * {@link ProfileEditorComponent} body, wiring its outputs to the dialog + navigation lifecycle. The editor is
  * purely presentational for navigation; this host owns the side effects: back / navigate-away → `closeDlg()`,
  * save → `closeDlg(true)`, manage-sessions → close + deep-link Settings→Devices, logout → close + the shared
- * {@link LogoutService} choreography. Mobile/tablet reach profile via the inline Profile section instead.
+ * {@link LogoutService} choreography. Used on every layout; compact renders it as a full-screen page.
  */
 @Component({
   selector: 'app-edit-profile',

@@ -11,8 +11,8 @@ describe('RouteService adaptive account surfaces', () => {
     dialogs: ReturnType<typeof signal<any[]>>;
     paneStack: ReturnType<typeof signal<any[]>>;
     pushPane: jasmine.Spy;
-    setTopSection: jasmine.Spy;
     openSettingsCategory: jasmine.Spy;
+    clearSettingsCategories: jasmine.Spy;
   };
   let service: RouteService;
 
@@ -22,8 +22,8 @@ describe('RouteService adaptive account surfaces', () => {
       dialogs: signal([]),
       paneStack: signal([]),
       pushPane: jasmine.createSpy('pushPane').and.returnValue(42),
-      setTopSection: jasmine.createSpy('setTopSection'),
       openSettingsCategory: jasmine.createSpy('openSettingsCategory'),
+      clearSettingsCategories: jasmine.createSpy('clearSettingsCategories'),
     };
 
     TestBed.configureTestingModule({
@@ -38,11 +38,11 @@ describe('RouteService adaptive account surfaces', () => {
     service = TestBed.inject(RouteService);
   });
 
-  it('opens Profile inline in compact mode', () => {
+  it('opens Profile as a page dialog in compact mode', () => {
+    const popupDlg = spyOn(service, 'popupDlg').and.returnValue({ id: 42 });
     service.openProfile();
 
-    expect(nav.setTopSection).toHaveBeenCalledOnceWith('profile');
-    expect(nav.pushPane).not.toHaveBeenCalled();
+    expect(popupDlg).toHaveBeenCalledOnceWith(PopupType.EDIT_PROFILE);
   });
 
   for (const layoutMode of ['medium', 'expanded'] as const) {
@@ -53,16 +53,22 @@ describe('RouteService adaptive account surfaces', () => {
       service.openProfile();
 
       expect(popupDlg).toHaveBeenCalledOnceWith(PopupType.EDIT_PROFILE);
-      expect(nav.setTopSection).not.toHaveBeenCalled();
     });
   }
 
-  it('opens Settings inline and preserves a category deep-link in compact mode', () => {
+  it('opens Settings as a drill-down page dialog and preserves a category deep-link in compact mode', () => {
     service.openSettings('devices');
 
-    expect(nav.setTopSection).toHaveBeenCalledOnceWith('settings');
+    expect(nav.clearSettingsCategories).toHaveBeenCalledTimes(1);
+    expect(nav.pushPane).toHaveBeenCalledOnceWith(jasmine.objectContaining({
+      kind: 'dialog',
+      component: jasmine.any(Function),
+      presentation: 'page',
+      desktopSize: 'standard',
+      settingsDrilldown: true,
+      onResult: jasmine.any(Function),
+    }));
     expect(nav.openSettingsCategory).toHaveBeenCalledOnceWith('devices');
-    expect(nav.pushPane).not.toHaveBeenCalled();
   });
 
   for (const layoutMode of ['medium', 'expanded'] as const) {
@@ -78,7 +84,6 @@ describe('RouteService adaptive account surfaces', () => {
         desktopSize: 'wide',
         inputs: { initialCategoryId: 'devices' },
       });
-      expect(nav.setTopSection).not.toHaveBeenCalled();
     });
   }
 

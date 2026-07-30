@@ -35,6 +35,25 @@ describe('NavStateMachineService', () => {
     expect(svc.chatThreadId()).toBe(1); // the chat was not reached yet
   });
 
+  it('back() peels a mobile Settings category before its owning page dialog', () => {
+    svc.pushPane({ kind: 'dialog', settingsDrilldown: true });
+    svc.openSettingsCategory('devices');
+    expect(svc.back()).toBe(true);
+    expect(svc.settingsCategoryTop()).toBeUndefined();
+    expect(svc.paneStack().length).toBe(1);
+    expect(svc.back()).toBe(true);
+    expect(svc.paneStack().length).toBe(0);
+  });
+
+  it('back() closes a nested dialog above mobile Settings before its category', () => {
+    svc.pushPane({ kind: 'dialog', settingsDrilldown: true });
+    svc.openSettingsCategory('devices');
+    svc.pushPane({ kind: 'dialog' });
+    expect(svc.back()).toBe(true);
+    expect(svc.settingsCategoryTop()).toBe('devices');
+    expect(svc.paneStack().length).toBe(1);
+  });
+
   it('back() closes the chat-scoped aside overlay (single-depth)', () => {
     svc.openAside('profile');
     expect(svc.back()).toBe(true);

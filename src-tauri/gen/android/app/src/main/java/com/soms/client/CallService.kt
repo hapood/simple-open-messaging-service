@@ -155,6 +155,12 @@ class CallService : Service() {
      *  on the notification itself (the user hangs up via the in-app CallScreen / PiP) → hangUpIntent = null. */
     private fun buildOngoingNotification(): Notification {
         ensureChannels()
+        val status = when (CallController.phase) {
+            "starting" -> getString(R.string.call_status_starting)
+            "calling", "ringing" -> getString(R.string.call_status_calling)
+            "connecting" -> getString(R.string.call_status_connecting)
+            else -> getString(R.string.call_status_connected)
+        }
         val person = Person.Builder()
             .setName(CallController.peerName.ifEmpty { getString(R.string.app_name) })
             .apply { avatarBitmap?.let { setIcon(IconCompat.createWithBitmap(it)) } }
@@ -171,6 +177,8 @@ class CallService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(CallController.peerName.ifEmpty { getString(R.string.app_name) })
+            .setContentText(status)
             .setStyle(
                 NotificationCompat.CallStyle.forOngoingCall(person, hangUpPi)
                     .setIsVideo(CallController.callType == "VIDEO"),
@@ -346,13 +354,16 @@ class CallService : Service() {
     }
 
     /** Re-post the current notification (incoming-ring or ongoing) so the now-loaded avatar icon shows. */
-    private fun refreshNotification() {
+    fun refreshForPhase() {
         when (CallController.phase) {
             "incoming" -> CallController.callSid?.let { startIncomingForeground(it) }
-            "connecting", "connected", "reconnecting" -> startCallForeground()
+            "starting", "calling", "ringing", "connecting", "connected", "reconnecting" -> startCallForeground()
             else -> {}
         }
     }
+
+    /** Avatar completion uses the same phase-driven notification refresh as lifecycle transitions. */
+    private fun refreshNotification() = refreshForPhase()
 
     private fun ensureChannels() {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

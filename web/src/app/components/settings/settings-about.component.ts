@@ -38,7 +38,7 @@ interface DownloadProgress {
           </mat-list-item>
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.version' | transloco }}</span>
-            <!-- Hidden debug-tools entry: 7 quick taps toggle the log panel's runtime gate (no-op in dev
+            <!-- Hidden debug-tools entry: 10 quick taps toggle the log panel's runtime gate (no-op in dev
                  builds, where it is already on). No visual affordance by design. -->
             <span matListItemMeta class="meta" (click)="debug.bumpGesture()">{{ appVersion }}</span>
           </mat-list-item>
@@ -92,7 +92,7 @@ export class SettingsAboutComponent {
   private readonly snackBar = inject(MatSnackBar);
   private readonly transloco = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
-  /** Hidden debug-tools gesture target (7-tap toggle of the log panel gate). Public for the template. */
+  /** Hidden debug-tools gesture target (10-tap toggle of the log panel gate). Public for the template. */
   readonly debug = inject(DebugToolsService);
 
   readonly appVersion = appVersion;

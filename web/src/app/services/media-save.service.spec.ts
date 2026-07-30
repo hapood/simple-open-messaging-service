@@ -1,6 +1,9 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { MediaSaveService } from './media-save.service';
+import {
+  MediaSaveCancelledError,
+  MediaSaveService,
+} from './media-save.service';
 
 describe('MediaSaveService', () => {
   type MockWindow = {
@@ -119,5 +122,35 @@ describe('MediaSaveService', () => {
     window.__SOMS_MEDIA_SAVE_RESULT__?.({ requestId, success: true });
     await saving;
     expect(completed).toBeTrue();
+  });
+
+  it('reports closing the legacy Android document picker as cancellation', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Linux; Android 9)',
+      configurable: true,
+    });
+    const save = jasmine.createSpy('save').and.returnValue('pending');
+    const windowMock = window as unknown as MockWindow;
+    windowMock.__TAURI_INTERNALS__ = {};
+    windowMock.__TAURI__ = { core: { invoke } };
+    windowMock.SomsMedia = { save };
+    invoke.and.resolveTo({ path: '/private/cache/media/hash.bin' });
+
+    const saving = service.save({
+      path: '/uploads/photo.jpg',
+      filename: 'photo.jpg',
+      mimeType: 'image/jpeg',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const requestId = save.calls.mostRecent().args[0] as string;
+    window.__SOMS_MEDIA_SAVE_RESULT__?.({
+      requestId,
+      success: false,
+      cancelled: true,
+    });
+
+    await expectAsync(saving).toBeRejectedWithError(MediaSaveCancelledError);
   });
 });

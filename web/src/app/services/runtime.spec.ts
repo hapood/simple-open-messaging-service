@@ -1,4 +1,10 @@
-import { assetUrl, canonicalOrigin } from './runtime';
+import {
+  assetUrl,
+  canonicalOrigin,
+  chatThumbnailUrl,
+  nativeVideoThumbnailUrl,
+  videoCasDigest,
+} from './runtime';
 
 /**
  * canonicalOrigin unit tests — the //api/v1 prevention.
@@ -94,5 +100,36 @@ describe('assetUrl', () => {
   it('keeps relative paths unchanged in the browser', () => {
     setRuntime(false, 'Mozilla/5.0 (Linux; Android 15)');
     expect(assetUrl('/uploads/shards/a.png')).toBe('/uploads/shards/a.png');
+  });
+
+  it('maps a native chat image onto the thumbnail protocol path', () => {
+    setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
+    expect(chatThumbnailUrl('/uploads/shards/aa/bb/photo.jpg')).toBe(
+      'http://media.localhost/chat-thumbnails/uploads/shards/aa/bb/photo.jpg',
+    );
+  });
+
+  it('keeps browser and optimistic image URLs unchanged', () => {
+    setRuntime(false, 'Mozilla/5.0 (Linux; Android 15)');
+    expect(chatThumbnailUrl('/uploads/shards/aa/bb/photo.jpg')).toBe(
+      '/uploads/shards/aa/bb/photo.jpg',
+    );
+    expect(chatThumbnailUrl('blob:test')).toBe('blob:test');
+  });
+
+  it('extracts only a canonical CAS digest and builds the Android local-thumbnail URL', () => {
+    setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
+    const digest = 'ab'.repeat(32);
+    const path = `/uploads/shards/ab/cd/${digest}.mp4`;
+    expect(videoCasDigest(path)).toBe(digest);
+    expect(nativeVideoThumbnailUrl(path, 2)).toBe(
+      `http://media.localhost/video-thumbnails${path}?v=2`,
+    );
+  });
+
+  it('does not invent an identity for a non-CAS video URL', () => {
+    setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
+    expect(videoCasDigest('https://cdn.example/video.mp4')).toBeNull();
+    expect(nativeVideoThumbnailUrl('https://cdn.example/video.mp4')).toBe('');
   });
 });

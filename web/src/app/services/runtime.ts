@@ -211,6 +211,8 @@ declare global {
       finishSplash?: () => void;
       /** Match transparent Android system-bar icon contrast to the resolved web theme. */
       setSystemBarTheme?: (dark: boolean) => void;
+      /** Raise/lower the Android Kotlin diagnostic sink with the shared runtime debug gate. */
+      setDebugLogging?: (enabled: boolean) => void;
       getImeSnapshot?: () => string;
       setImeVisible?: (visible: boolean, requestId: number) => void;
       showComposer?: (contextJson: string) => void;
@@ -305,9 +307,21 @@ declare global {
         mimeType: string,
       ) => string;
     };
+    /** Android Media3 chat-video bridge. Only canonical CAS paths are accepted natively. */
+    SomsVideo?: {
+      open: (
+        streamUrl: string,
+        thumbnailUploadUrl: string,
+        digest: string,
+        hasThumbnail: boolean,
+      ) => void;
+    };
+    /** Emitted after the native player has persisted the first rendered frame as a local WebP. */
+    __SOMS_VIDEO_THUMBNAIL__?: (digest: string) => void;
     __SOMS_MEDIA_SAVE_RESULT__?: (payload: {
       requestId: string;
       success: boolean;
+      cancelled?: boolean;
     }) => void;
     __SOMS_UPLOAD_PICKED__?: (payload: {
       requestId: string;
@@ -601,6 +615,55 @@ export function assetUrl(path: string | null | undefined): string {
     return `http://${MEDIA_SCHEME}.${MEDIA_HOST}${path}`;
   }
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
+}
+
+/** Native chat-card image URL. The original `/uploads/*` URL remains the canonical detail/download
+ * path; this alternate media-protocol path asks Rust for a 960px cached WebP and falls back to the
+ * original bytes when the source cannot be decoded. Browser builds keep using the server URL unchanged. */
+export function chatThumbnailUrl(path: string | null | undefined): string {
+  if (!path) return '';
+  if (!isTauri() || !path.startsWith('/uploads/')) return assetUrl(path);
+  return assetUrl(`/chat-thumbnails${path}`);
+}
+
+const VIDEO_CAS_PATH =
+  /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.[A-Za-z0-9]+$/;
+
+/** The server-side content digest is the only identity accepted for a native video or thumbnail. */
+export function videoCasDigest(path: string | null | undefined): string | null {
+  return path?.match(VIDEO_CAS_PATH)?.[1] ?? null;
+}
+
+/** Local thumbnail URL served by the existing Tauri media protocol. It legitimately returns 404 until
+ * Android Media3 has rendered and captured this video's first frame. */
+export function nativeVideoThumbnailUrl(
+  path: string | null | undefined,
+  revision = 0,
+): string {
+  const digest = videoCasDigest(path);
+  if (!digest || !isTauri() || !isAndroid()) return '';
+  return assetUrl(
+    `/video-thumbnails${path}${revision > 0 ? `?v=${revision}` : ''}`,
+  );
+}
+
+/** Open an authenticated chat video in Android's native Media3 player. */
+export async function openNativeVideo(path: string): Promise<boolean> {
+  if (!isTauri() || !isAndroid() || !window.SomsVideo) return false;
+  const digest = videoCasDigest(path);
+  if (!digest) return false;
+  const stream = await tauriInvoke<{
+    streamUrl: string;
+    thumbnailUploadUrl: string;
+    hasThumbnail: boolean;
+  }>('create_native_video_stream', { path });
+  window.SomsVideo.open(
+    stream.streamUrl,
+    stream.thumbnailUploadUrl,
+    digest,
+    stream.hasThumbnail,
+  );
+  return true;
 }
 
 /**
