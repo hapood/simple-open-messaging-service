@@ -226,6 +226,8 @@ declare global {
     __SOMS_COMPOSER_EVENT__?: (
       event: import('./native-composer.service').NativeComposerEvent,
     ) => void;
+    /** Native call command rejection (for example, the previous call is still being released). */
+    __SOMS_CALL_REJECTED__?: (reason: 'busy') => void;
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
      *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
      *  (CallController); the Angular layer is the call "chrome" and drives it through these. The EVENT
@@ -647,16 +649,36 @@ export function nativeVideoThumbnailUrl(
   );
 }
 
-/** Open an authenticated chat video in Android's native Media3 player. */
+/** Kept as a rollback switch while Android uses the WebView player over the Rust loopback stream. */
+export const ANDROID_MEDIA3_ENABLED = false;
+
+export interface LocalVideoStream {
+  streamUrl: string;
+  thumbnailUploadUrl: string;
+  hasThumbnail: boolean;
+}
+
+/** Allocate a capability route on the process-wide Rust loopback video server. */
+export async function createLocalVideoStream(
+  path: string,
+): Promise<LocalVideoStream | null> {
+  if (!isTauri() || !isAndroid() || !videoCasDigest(path)) return null;
+  return tauriInvoke<LocalVideoStream>('create_native_video_stream', { path });
+}
+
+/** Open an authenticated chat video in Android's native Media3 player when enabled. */
 export async function openNativeVideo(path: string): Promise<boolean> {
-  if (!isTauri() || !isAndroid() || !window.SomsVideo) return false;
+  if (
+    !ANDROID_MEDIA3_ENABLED ||
+    !isTauri() ||
+    !isAndroid() ||
+    !window.SomsVideo
+  )
+    return false;
   const digest = videoCasDigest(path);
   if (!digest) return false;
-  const stream = await tauriInvoke<{
-    streamUrl: string;
-    thumbnailUploadUrl: string;
-    hasThumbnail: boolean;
-  }>('create_native_video_stream', { path });
+  const stream = await createLocalVideoStream(path);
+  if (!stream) return false;
   window.SomsVideo.open(
     stream.streamUrl,
     stream.thumbnailUploadUrl,

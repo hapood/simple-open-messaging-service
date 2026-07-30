@@ -106,28 +106,14 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
  */
 export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<ChatItemData>): CbItem<ChatItemData> | null {
   const t = target.data, ic = incoming.data;
-  const debug = {
-    targetId: target.id,
-    incomingId: incoming.id,
-    targetType: t.contentType,
-    incomingType: ic.contentType,
-    targetCreator: t.creator,
-    incomingCreator: ic.creator,
-    targetImages: t.images?.length ?? 0,
-    incomingImages: ic.images?.length ?? 0,
-    incomingClientMessageId: incoming.clientMessageId,
-  };
   if (!isAlbumMedia(t.contentType) || !isAlbumMedia(ic.contentType)) {
-    console.info('[album-debug] absorb:reject-content-type', debug);
     return null;
   }
   if (t.creator !== ic.creator) {
-    console.info('[album-debug] absorb:reject-creator', debug);
     return null;
   }
   const tImgs = t.images ?? [], icImgs = ic.images ?? [];
   if (tImgs.length + icImgs.length > ALBUM_MAX) {
-    console.info('[album-debug] absorb:reject-limit', debug);
     return null;
   }
   // Spread target so id / clientMessageId / boundary survive (same rationale as mergeAlbumItems). Union clientMessageIds
@@ -135,17 +121,10 @@ export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<C
   // image joins the album (no new bubble), and its cid on the merged item lets reconcileOptimistic remove the matching
   // optimistic bubble. Without this, an absorbed self-sent image's optimistic would orphan (the album fulfills it but
   // the kernel cannot see its cid). albumCids is undefined for a pure incoming absorb (no cids on either side).
-  const merged = {
+  return {
     ...target,
     data: { ...t, images: [...tImgs, ...icImgs] },
     ids: albumMemberIds([...tImgs, ...icImgs]),
     clientMessageIds: albumCids([target, incoming]),
   };
-  console.info('[album-debug] absorb:success', {
-    ...debug,
-    mergedImages: merged.data.images.length,
-    mergedIds: merged.ids,
-    clientMessageIds: merged.clientMessageIds,
-  });
-  return merged;
 }

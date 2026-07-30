@@ -37,6 +37,11 @@ export function setFullConsoleLogging(enabled: boolean): void {
   fullLogging = enabled;
 }
 
+/** Runtime gate shared by chatty diagnostics that should also follow the hidden production toggle. */
+export function isFullConsoleLoggingEnabled(): boolean {
+  return fullLogging;
+}
+
 // --- durable mirror (Rust app_log_dir/webview-console.log via the `log_js` IPC) -----------------
 // Rendered lines not yet flushed to Rust. Flushed on a throttle (count OR interval), on `pagehide`, on
 // `clearConsoleBuffer` (as a truncate), and on explicit `flushConsoleBuffer()` (awaited before a report).

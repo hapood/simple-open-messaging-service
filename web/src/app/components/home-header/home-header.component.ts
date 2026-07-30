@@ -22,7 +22,6 @@ import {
 import { displayThreadName } from '../../services/model';
 import { ImageDownloadService } from '../../services/image-download.service';
 import { formatBytes } from '../message-cards/file-meta.util';
-import { UploadDetailDialogService } from '../../services/upload-detail-dialog.service';
 
 /**
  * Compact/medium chat-list top bar: profile avatar on the left; friend requests and overflow actions
@@ -52,7 +51,6 @@ export class HomeHeaderComponent {
   private readonly convList = inject(ConversationListService);
   private readonly nav = inject(NavStateMachineService);
   private readonly transfers = inject(MediaTransferService);
-  private readonly uploadDetails = inject(UploadDetailDialogService);
   readonly imageDownloads = inject(ImageDownloadService);
 
   readonly friendReqBadge = this.userService.friendReqBadge;
@@ -199,7 +197,7 @@ export class HomeHeaderComponent {
   toggleTransferMenu() {
     if (this.transferTasks().length > 0) {
       this.closeTransferMenu();
-      this.uploadDetails.open();
+      this.routeService.popupDlg(PopupType.UPLOAD_DETAIL, {});
       return;
     }
     const summaries = this.transferSummaries();

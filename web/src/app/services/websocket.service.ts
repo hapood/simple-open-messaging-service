@@ -11,6 +11,7 @@ import {
 import { WorkerSseTransport } from './worker-sse.transport';
 import { NativeEventTransport } from './native-event.transport';
 import { RustChannelSseTransport } from './rust-channel-sse.transport';
+import { isFullConsoleLoggingEnabled } from './log-buffer';
 
 // Re-exported for downstream consumers (HttpItemSource, GroupEventService, ConnectionBanner, …) that
 // already import these from here — the canonical home is now realtime-transport.ts.
@@ -83,10 +84,8 @@ export class WebsocketService implements OnDestroy {
         this.eventSubject.next(m);
       },
       onState: (s) => {
-        // Unconditional (NOT isDevMode()-gated): realtime connection-state transitions are low-frequency
-        // and the single most important trail for "messages stopped arriving" field reports — the bundle's
-        // JS slice must carry them in production. Feeds the durable mirror like every other console.* call.
-        console.info('[sse] realtime state →', s);
+        if (isFullConsoleLoggingEnabled())
+          console.info('[sse] realtime state →', s);
         this.state.set(s);
         // Leaving the backoff state — drop any live countdown. (Entering `reconnecting` does NOT set a
         // countdown; the transport emits the deadline separately via onReconnectIn.)

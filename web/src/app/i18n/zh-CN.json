@@ -31,6 +31,7 @@
     "ringing": "响铃中…",
     "connecting": "正在接通…",
     "reconnecting": "正在重新连接…",
+    "busyEnding": "上一通电话正在结束，请稍后重试",
     "audioCall": "语音通话",
     "videoCall": "视频通话",
     "accept": "接听",

@@ -49,6 +49,17 @@ interface UploadCallbacks {
   progress?: (loaded: number, total: number) => void;
 }
 
+/** Rust's `ok` means the HTTP exchange completed, while the API envelope can still describe a business
+ * failure. Release the native selection only for an actual successful upload so failure remains retryable. */
+export function isSuccessfulUploadResponse(response: unknown): boolean {
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    'code' in response &&
+    (response as { code?: unknown }).code === 0
+  );
+}
+
 @Injectable({ providedIn: 'root' })
 export class NativeUploadService {
   private pendingPick?: {
@@ -124,7 +135,7 @@ export class NativeUploadService {
       window.SomsUpload?.finish?.(
         payload.uploadId,
         payload.attemptId,
-        payload.ok,
+        payload.ok && isSuccessfulUploadResponse(payload.response),
       );
       if (payload.ok) callbacks.resolve(payload.response);
       else {
@@ -224,6 +235,8 @@ export class NativeUploadService {
     const attemptId = this.attemptByUpload.get(uploadId);
     if (!attemptId) return;
     const callbacks = this.takeAttempt(uploadId, attemptId);
-    callbacks?.reject(new NativeUploadError(message, category, category === 'cancelled'));
+    callbacks?.reject(
+      new NativeUploadError(message, category, category === 'cancelled'),
+    );
   }
 }

@@ -60,14 +60,16 @@ describe('RouteService adaptive account surfaces', () => {
     service.openSettings('devices');
 
     expect(nav.clearSettingsCategories).toHaveBeenCalledTimes(1);
-    expect(nav.pushPane).toHaveBeenCalledOnceWith(jasmine.objectContaining({
-      kind: 'dialog',
-      component: jasmine.any(Function),
-      presentation: 'page',
-      desktopSize: 'standard',
-      settingsDrilldown: true,
-      onResult: jasmine.any(Function),
-    }));
+    expect(nav.pushPane).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({
+        kind: 'dialog',
+        component: jasmine.any(Function),
+        presentation: 'page',
+        desktopSize: 'standard',
+        settingsDrilldown: true,
+        onResult: jasmine.any(Function),
+      }),
+    );
     expect(nav.openSettingsCategory).toHaveBeenCalledOnceWith('devices');
   });
 
@@ -89,21 +91,42 @@ describe('RouteService adaptive account surfaces', () => {
 
   it('classifies workflow, confirmation, and viewer dialogs explicitly', () => {
     service.popupDlg(PopupType.FRIEND_REQUESTS, { initialTab: 'add' });
-    expect(nav.pushPane).toHaveBeenCalledWith(jasmine.objectContaining({
-      presentation: 'page',
-      desktopSize: 'standard',
-    }));
+    expect(nav.pushPane).toHaveBeenCalledWith(
+      jasmine.objectContaining({
+        presentation: 'page',
+        desktopSize: 'standard',
+      }),
+    );
 
     service.popupDlg(PopupType.CONFIRM, { messageKey: 'common.confirm' });
-    expect(nav.pushPane).toHaveBeenCalledWith(jasmine.objectContaining({
-      presentation: 'modal',
-      desktopSize: 'standard',
-    }));
+    expect(nav.pushPane).toHaveBeenCalledWith(
+      jasmine.objectContaining({
+        presentation: 'modal',
+        desktopSize: 'standard',
+      }),
+    );
 
-    service.popupDlg(PopupType.AVATAR_EDITOR, { file: new File([], 'avatar.png') });
-    expect(nav.pushPane).toHaveBeenCalledWith(jasmine.objectContaining({
-      presentation: 'viewer',
-      desktopSize: 'standard',
-    }));
+    service.popupDlg(PopupType.AVATAR_EDITOR, {
+      file: new File([], 'avatar.png'),
+    });
+    expect(nav.pushPane).toHaveBeenCalledWith(
+      jasmine.objectContaining({
+        presentation: 'viewer',
+        desktopSize: 'standard',
+      }),
+    );
+  });
+
+  it('opens upload details as a page dialog and preserves its thread scope', () => {
+    service.popupDlg(PopupType.UPLOAD_DETAIL, { threadId: 17 });
+
+    expect(nav.pushPane).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({
+        kind: 'dialog',
+        presentation: 'page',
+        desktopSize: 'standard',
+        inputs: { threadId: 17 },
+      }),
+    );
   });
 });

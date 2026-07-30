@@ -875,31 +875,49 @@ object CallController {
     }
 
     fun decline(sid: String) {
-        ringer.stopRing() // stop the incoming ring at once — before the POST (teardown runs only after the network round-trip)
+        ringer.stopRing()
         callExecutor.execute {
-            val origin = activeOrigin() ?: return@execute
-            post("$origin${SomsSecureStore.API_PREFIX}/calls/decline", JSONObject().put("callSid", sid))
-            phase = "ended"; pushSnapshot(); teardown()
+            // End locally before doing network I/O. Notification actions can run while connectivity is poor;
+            // keeping the FSM non-idle until the POST returns makes the next initiate() silently fail its
+            // busy guard for up to the HTTP timeout (and an absent origin used to skip teardown entirely).
+            CallFsm.runTerminalSequence(
+                publishEnded = { phase = "ended"; pushSnapshot() },
+                teardown = { teardown() },
+                report = {
+                    val origin = activeOrigin() ?: return@runTerminalSequence
+                    post("$origin${SomsSecureStore.API_PREFIX}/calls/decline", JSONObject().put("callSid", sid))
+                },
+            )
         }
     }
 
     fun cancel(sid: String) {
         ringer.stopRing()
         callExecutor.execute {
-            val origin = activeOrigin() ?: return@execute
-            post("$origin${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
-            phase = "ended"; pushSnapshot(); teardown()
+            CallFsm.runTerminalSequence(
+                publishEnded = { phase = "ended"; pushSnapshot() },
+                teardown = { teardown() },
+                report = {
+                    val origin = activeOrigin() ?: return@runTerminalSequence
+                    post("$origin${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
+                },
+            )
         }
     }
 
     fun end(sid: String, reason: String?) {
         ringer.stopRing()
         callExecutor.execute {
-            val origin = activeOrigin() ?: return@execute
-            val body = JSONObject().put("callSid", sid)
-            if (!reason.isNullOrBlank()) body.put("endReason", reason)
-            post("$origin${SomsSecureStore.API_PREFIX}/calls/end", body)
-            phase = "ended"; pushSnapshot(); teardown()
+            CallFsm.runTerminalSequence(
+                publishEnded = { phase = "ended"; pushSnapshot() },
+                teardown = { teardown() },
+                report = {
+                    val origin = activeOrigin() ?: return@runTerminalSequence
+                    val body = JSONObject().put("callSid", sid)
+                    if (!reason.isNullOrBlank()) body.put("endReason", reason)
+                    post("$origin${SomsSecureStore.API_PREFIX}/calls/end", body)
+                },
+            )
         }
     }
 

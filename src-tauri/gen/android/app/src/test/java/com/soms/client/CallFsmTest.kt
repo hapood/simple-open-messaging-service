@@ -19,6 +19,24 @@ class CallFsmTest {
         assertFalse(CallFsm.acceptedOnSiblingDevice(isCaller = true, acceptingLocally = false))
     }
 
+    @Test
+    fun notification_hangup_returns_to_idle_before_network_report() {
+        val events = mutableListOf<String>()
+        var phase = "connected"
+
+        CallFsm.runTerminalSequence(
+            publishEnded = { phase = "ended"; events += phase },
+            teardown = { phase = "idle"; events += phase },
+            report = {
+                // A new initiate must no longer hit the native busy guard when reporting starts.
+                assertEquals("idle", phase)
+                events += "report"
+            },
+        )
+
+        assertEquals(listOf("ended", "idle", "report"), events)
+    }
+
 
     // ── reconnect backstop ──────────────────────────────────────────────────────
 

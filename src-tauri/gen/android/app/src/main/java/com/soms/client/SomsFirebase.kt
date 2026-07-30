@@ -44,7 +44,7 @@ object SomsFirebase {
         val options = optionsFromString(SomsSecureStore.getFirebaseConfig(ctx) ?: return null) ?: return null
         val app = FirebaseApp.initializeApp(ctx, options)
         FirebaseMessaging.getInstance().isAutoInitEnabled = true
-        Log.i(TAG, "FirebaseApp initialized for project ${options.projectId}")
+        SomsLog.i("Firebase") { "FirebaseApp initialized for project ${options.projectId}" }
         return app
     }
 

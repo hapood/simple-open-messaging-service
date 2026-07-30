@@ -19,7 +19,12 @@ import {
 } from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
 import { AudioPlayerComponent } from '../audio-player/audio-player.component';
-import { assetUrl, isAndroid, isTauri } from '../../../services/runtime';
+import {
+  ANDROID_MEDIA3_ENABLED,
+  assetUrl,
+  isAndroid,
+  isTauri,
+} from '../../../services/runtime';
 import { formatBytes, formatDuration } from '../file-meta.util';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { ImageDownloadService } from '../../../services/image-download.service';
@@ -56,7 +61,8 @@ export class MediaRowComponent {
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly downloads = inject(ImageDownloadService);
   private readonly nativeVideo = inject(NativeVideoService);
-  readonly useNativeVideo = isTauri() && isAndroid();
+  readonly isAndroidApp = isTauri() && isAndroid();
+  readonly useNativeVideo = this.isAndroidApp && ANDROID_MEDIA3_ENABLED;
   readonly UserAvatarType = UserAvatarType;
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
@@ -206,11 +212,14 @@ export class MediaRowComponent {
   }
 
   onThumbnailLoad(event: Event): void {
-    (event.currentTarget as HTMLImageElement).hidden = false;
+    const image = event.currentTarget as HTMLImageElement;
+    image.hidden = false;
   }
 
   onThumbnailError(event: Event): void {
-    (event.currentTarget as HTMLImageElement).hidden = true;
+    const image = event.currentTarget as HTMLImageElement;
+    image.hidden = true;
+    console.warn('[video-thumbnail] message card load failed');
   }
   onVideoError(i: number): void {
     this.unplayableVideos.update((s) => {

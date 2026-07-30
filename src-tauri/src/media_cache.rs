@@ -320,18 +320,12 @@ pub(crate) async fn read_chat_thumbnail(
 ) -> Option<Vec<u8>> {
     validate_path(source_path).ok()?;
     let (_, _, key) = request_identity(proxy, source_path);
-    tokio::fs::read(thumbnail_path(app, &key).ok()?)
-        .await
-        .ok()
+    tokio::fs::read(thumbnail_path(app, &key).ok()?).await.ok()
 }
 
 /** Best-effort post-original warm-up. The URI response must not wait for this: a later thumbnail request
  * either hits the completed file or joins the same per-thumbnail lock in ensure_chat_thumbnail. */
-pub(crate) fn warm_chat_thumbnail(
-    app: tauri::AppHandle,
-    proxy: ProxyState,
-    source_path: String,
-) {
+pub(crate) fn warm_chat_thumbnail(app: tauri::AppHandle, proxy: ProxyState, source_path: String) {
     tauri::async_runtime::spawn(async move {
         match get_or_create_chat_thumbnail(&app, &proxy, &source_path).await {
             Ok(_) => {

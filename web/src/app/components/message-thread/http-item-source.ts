@@ -311,11 +311,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     cursorId: number,
     count: number,
   ): Promise<CbItem<ChatItemData>[]> {
-    console.info('[album-debug] getNewer:start', {
-      threadId: this.conv.threadId,
-      cursorId,
-      count,
-    });
     const take = Math.min(count, MAX_PAGE);
     const { data, hasMore } = await this.repo.queryMessages(
       this.conv.threadId,
@@ -324,10 +319,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.initializingDb,
     );
     if (!data || data.length === 0) {
-      console.info('[album-debug] getNewer:empty', {
-        threadId: this.conv.threadId,
-        cursorId,
-      });
       this.noNewer = true;
       return [];
     }
@@ -335,18 +326,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (!hasMore) this.noNewer = true; // hasMore is authoritative (backend take+1 method, or the cache reached maxSeenSeq)
     this.profileBacklog.push(...list);
     const items = this.rawToItems(list);
-    console.info('[album-debug] getNewer:result', {
-      threadId: this.conv.threadId,
-      cursorId,
-      hasMore,
-      items: items.map((item) => ({
-        id: item.id,
-        contentType: item.data.contentType,
-        creator: item.data.creator,
-        clientMessageId: item.clientMessageId,
-        images: item.data.images?.length ?? 0,
-      })),
-    });
     if (items.length === 0) return [];
     if (this.noNewer)
       items[items.length - 1] = {
@@ -553,16 +532,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         );
         if (pending && pending.data.status === 'sending')
           item.data = { ...item.data, status: 'sent' };
-      }
-      if (m.contentType === 'IMAGE' || m.contentType === 'VIDEO') {
-        console.info('[album-debug] rawToItems:media', {
-          threadId: this.conv.threadId,
-          id,
-          contentType: m.contentType,
-          creator: m.creator,
-          clientMessageId: m.clientMessageId,
-          images: images?.length ?? 0,
-        });
       }
       out.push(item);
     }

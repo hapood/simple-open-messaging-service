@@ -1,29 +1,53 @@
 <div #mount class="gv-mount"></div>
 
-@if (currentStatus() === MEDIA_STATUS.READY && currentUrl()) {
+<header
+  class="gv-topbar"
+  [class.gv-chrome--hidden]="!chromeVisible()"
+  [attr.aria-hidden]="!chromeVisible()"
+>
   <button
     type="button"
-    class="gv-download"
-    [class.gv-download--above-thumbs]="images().length > 1"
-    [disabled]="saving()"
-    (click)="saveCurrent($event)"
-    [attr.aria-label]="'gallery.downloadAria' | transloco"
+    class="gv-action gv-close"
+    (click)="dismiss($event)"
+    [attr.aria-label]="'gallery.closeAria' | transloco"
   >
-    @if (saving()) {
-      <mat-progress-spinner mode="indeterminate" [diameter]="23" />
-    } @else {
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
-      </svg>
-    }
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
   </button>
-}
 
-@if (images().length > 1) {
+  @if (images().length > 1) {
+    <span class="gv-counter" aria-live="polite">
+      {{ index() + 1 }} / {{ images().length }}
+    </span>
+  }
+
+  @if (currentStatus() === MEDIA_STATUS.READY && currentUrl()) {
+    <button
+      type="button"
+      class="gv-action gv-download"
+      [disabled]="saving()"
+      (click)="saveCurrent($event)"
+      [attr.aria-label]="'gallery.downloadAria' | transloco"
+    >
+      @if (saving()) {
+        <mat-progress-spinner mode="indeterminate" [diameter]="22" />
+      } @else {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+        </svg>
+      }
+    </button>
+  }
+</header>
+
+@if (showThumbs()) {
   <nav
     #thumbRail
     class="gv-thumbs"
+    [class.gv-chrome--hidden]="!chromeVisible()"
     [attr.aria-label]="'gallery.mediaRailAria' | transloco"
+    [attr.aria-hidden]="!chromeVisible()"
   >
     @for (media of images(); track media.msgId ?? $index) {
       <button
@@ -105,10 +129,14 @@
       <path d="M4 17l5-4 3 2 3-3 5 5"></path>
     </svg>
     <button type="button" class="gv-load-button" (click)="loadCurrent()">
-      <span>{{ 'gallery.loadImage' | transloco }}</span>
+      <span class="gv-load-button__label">
+        {{ 'gallery.loadImage' | transloco }}
+      </span>
       @if (current(); as media) {
         @if (media.size) {
-          <small>{{ formatBytes(media.size) }}</small>
+          <small class="gv-load-button__size">{{
+            formatBytes(media.size)
+          }}</small>
         }
       }
     </button>

@@ -19,10 +19,10 @@
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
 // headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict so it can't cross origins).
 
-mod navigation;
 mod media_cache;
-mod native_video;
 mod native_db;
+mod native_video;
+mod navigation;
 #[cfg(desktop)]
 mod secure_storage;
 
@@ -48,7 +48,9 @@ use log::{error, warn};
 use sha2::{Digest, Sha256};
 use tauri::http::{Response, StatusCode};
 use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
-use tauri::{Assets, Emitter, Manager, Runtime, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    Assets, Emitter, Manager, Runtime, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder,
+};
 use tokio::sync::Notify;
 
 // Desktop SSE supervisor (the Rust-owned /events stream) uses these. Gated so the mobile build (which
@@ -193,12 +195,10 @@ struct ProxyState {
     ota_active: Arc<Mutex<Option<PathBuf>>>,
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
-    upload_cancels:
-        Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    upload_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
-    media_download_cancels:
-        Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
 }
 
 impl ProxyState {
@@ -292,7 +292,8 @@ fn http_client_for(origin: &str) -> reqwest::Client {
 /// Factored so `set_api_origin` (Server page, legacy) and `init_download_web` (new) share one writer —
 /// the two persistence surfaces (this file + the web's `SomsSecureStore`) stay consistent.
 fn persist_origin(state: &ProxyState, url: &str) -> Result<String, String> {
-    let normalized = validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
+    let normalized =
+        validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
     let path = state.config_path.lock().expect("config_path lock").clone();
     fs::write(&path, &normalized).map_err(|e| format!("failed to write config: {e}"))?;
     // This is the "user explicitly chose the primary" path (set_api_origin / init_download_web): record it
@@ -307,7 +308,10 @@ fn persist_origin(state: &ProxyState, url: &str) -> Result<String, String> {
 /// Persist + set the LAN (secondary) origin (field-2). `None`/empty clears it (deletes the file + sets the
 /// Arc to None → no fallback). Validates via the same `validate_origin` so a malformed URL is never stored.
 /// Does NOT touch the active origin or mode — `select_origin` decides which is active.
-fn persist_origin_secondary(state: &ProxyState, url: Option<&str>) -> Result<Option<String>, String> {
+fn persist_origin_secondary(
+    state: &ProxyState,
+    url: Option<&str>,
+) -> Result<Option<String>, String> {
     let dir = state
         .config_path
         .lock()
@@ -323,7 +327,8 @@ fn persist_origin_secondary(state: &ProxyState, url: Option<&str>) -> Result<Opt
             None
         }
         Some(raw) => {
-            let n = validate_origin(raw).ok_or_else(|| format!("not a valid http(s) URL: {raw}"))?;
+            let n =
+                validate_origin(raw).ok_or_else(|| format!("not a valid http(s) URL: {raw}"))?;
             if let Some(dir) = &dir {
                 fs::write(dir.join(CONFIG_SECONDARY_FILENAME), &n)
                     .map_err(|e| format!("failed to write secondary config: {e}"))?;
@@ -339,12 +344,26 @@ fn persist_origin_secondary(state: &ProxyState, url: Option<&str>) -> Result<Opt
 fn semver_gte(a: &str, b: &str) -> bool {
     let pa: Vec<u64> = a
         .split('.')
-        .map(|s| s.split('-').next().unwrap_or(s).split('+').next().unwrap_or(s))
+        .map(|s| {
+            s.split('-')
+                .next()
+                .unwrap_or(s)
+                .split('+')
+                .next()
+                .unwrap_or(s)
+        })
         .map(|s| s.parse::<u64>().unwrap_or(0))
         .collect();
     let pb: Vec<u64> = b
         .split('.')
-        .map(|s| s.split('-').next().unwrap_or(s).split('+').next().unwrap_or(s))
+        .map(|s| {
+            s.split('-')
+                .next()
+                .unwrap_or(s)
+                .split('+')
+                .next()
+                .unwrap_or(s)
+        })
         .map(|s| s.parse::<u64>().unwrap_or(0))
         .collect();
     for i in 0..pa.len().max(pb.len()) {
@@ -534,7 +553,10 @@ pub fn run() {
         config_path: Arc::new(Mutex::new(PathBuf::new())),
         token_notify: Arc::new(Notify::new()),
         // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
-        api_http: Arc::new(Mutex::new((initial_origin.clone(), http_client_for(&initial_origin)))),
+        api_http: Arc::new(Mutex::new((
+            initial_origin.clone(),
+            http_client_for(&initial_origin),
+        ))),
         ota_active: ota_active.clone(),
         upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
         media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -554,7 +576,9 @@ pub fn run() {
             .targets([
                 tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
                 tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                    file_name: None,
+                }),
             ])
             // Client-app rotation: a SIZE-BOUNDED rotating set (the desktop/mobile norm) — NOT time-based
             // "keep N days" (a server logrotate pattern this plugin doesn't offer, and the wrong model for
@@ -607,13 +631,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // media://localhost — proxy /uploads/* to ${api_origin} with the Bearer token (bare <img src>
         // can't set headers; the SameSite=Strict media_token cookie can't cross origins).
-        .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |context, request, responder| {
-            let st = proxy_for_media.clone();
-            let app = context.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                proxy_media(app, st, request, responder).await;
-            });
-        })
+        .register_asynchronous_uri_scheme_protocol(
+            MEDIA_SCHEME,
+            move |context, request, responder| {
+                let st = proxy_for_media.clone();
+                let app = context.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    proxy_media(app, st, request, responder).await;
+                });
+            },
+        )
         .manage(proxy_state.clone());
     // SseSupervisor is #[cfg(desktop)] (the desktop-only reqwest/tokio SSE supervisor — mobile owns the
     // /events stream natively via Kotlin RealtimeService, so there is no Rust supervisor to manage), so
@@ -785,7 +812,10 @@ pub fn run() {
                 .ok()
                 .and_then(|s| validate_origin(&s))
             {
-                *proxy_state.api_origin_secondary.lock().expect("secondary lock") = Some(sec);
+                *proxy_state
+                    .api_origin_secondary
+                    .lock()
+                    .expect("secondary lock") = Some(sec);
             }
             *proxy_state.config_path.lock().expect("config_path lock") = config_path;
 
@@ -834,7 +864,10 @@ pub fn run() {
             // asset request with no `&mut Context` needed at runtime.
             let mut context = tauri::generate_context!();
             let embedded = context.assets;
-            context.assets = Box::new(OtaAssets { active: ota_active.clone(), fallback: embedded });
+            context.assets = Box::new(OtaAssets {
+                active: ota_active.clone(),
+                fallback: embedded,
+            });
             context
         })
         .expect("error while running tauri application");
@@ -902,11 +935,7 @@ async fn proxy_media(
             Ok(media) => {
                 // Do not put WebP encoding on the first-paint path. The original displays now; completion
                 // emits chat-thumbnail-ready and the mounted card reloads this same alternate URL.
-                media_cache::warm_chat_thumbnail(
-                    app.clone(),
-                    st.clone(),
-                    source_path.to_string(),
-                );
+                media_cache::warm_chat_thumbnail(app.clone(), st.clone(), source_path.to_string());
                 let mut builder = Response::builder()
                     .status(StatusCode::OK)
                     .header("content-length", media.bytes.len().to_string())
@@ -975,11 +1004,7 @@ async fn proxy_media(
                 .as_deref()
                 .is_some_and(|value| value.starts_with("image/"));
             if should_warm_thumbnail {
-                media_cache::warm_chat_thumbnail(
-                    app.clone(),
-                    st.clone(),
-                    path_and_query.clone(),
-                );
+                media_cache::warm_chat_thumbnail(app.clone(), st.clone(), path_and_query.clone());
             }
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
@@ -1197,7 +1222,12 @@ enum SwitchOutcome {
 /// the desktop transports + the SSE supervisor on a single-point failure. Android Rust is passive (Kotlin
 /// decides + signals via `set_active_origin`).
 async fn maybe_switch(state: &ProxyState) -> SwitchOutcome {
-    let Some(secondary) = state.api_origin_secondary.lock().expect("secondary lock").clone() else {
+    let Some(secondary) = state
+        .api_origin_secondary
+        .lock()
+        .expect("secondary lock")
+        .clone()
+    else {
         return SwitchOutcome::NoFallback; // no fallback → nothing to switch
     };
     let active = state.api_origin.lock().expect("origin lock").clone();
@@ -1207,7 +1237,14 @@ async fn maybe_switch(state: &ProxyState) -> SwitchOutcome {
     // Current is down → the OTHER origin + its mode (primary↔secondary).
     let on_secondary = *state.origin_mode.lock().expect("mode lock") == OriginMode::Secondary;
     let (other, mode) = if on_secondary {
-        (state.api_origin_primary.lock().expect("primary lock").clone(), OriginMode::Primary)
+        (
+            state
+                .api_origin_primary
+                .lock()
+                .expect("primary lock")
+                .clone(),
+            OriginMode::Primary,
+        )
     } else {
         (secondary, OriginMode::Secondary)
     };
@@ -1288,7 +1325,9 @@ async fn api_request(
                     HeadersError::Timeout => true,
                 };
                 if !is_reachability_failure {
-                    let HeadersError::SendFailed(e) = failure else { unreachable!() };
+                    let HeadersError::SendFailed(e) = failure else {
+                        unreachable!()
+                    };
                     return Err(format!("api_request send: {e}"));
                 }
 
@@ -1331,7 +1370,11 @@ async fn api_request(
         // acceptable for /api/v1 JSON responses (no repeated headers in practice).
         if matches!(
             name.as_str(),
-            "transfer-encoding" | "connection" | "keep-alive" | "content-encoding" | "content-length"
+            "transfer-encoding"
+                | "connection"
+                | "keep-alive"
+                | "content-encoding"
+                | "content-length"
         ) {
             continue;
         }
@@ -1339,7 +1382,10 @@ async fn api_request(
             out_headers.insert(name.as_str().to_string(), vs.to_string());
         }
     }
-    let bytes = upstream.bytes().await.map_err(|e| format!("api_request read: {e}"))?;
+    let bytes = upstream
+        .bytes()
+        .await
+        .map_err(|e| format!("api_request read: {e}"))?;
     Ok(ApiRequestResult {
         status,
         headers: out_headers,
@@ -1376,7 +1422,9 @@ async fn media_request(
     // Only /uploads/* is ever proxied as media (parity with `proxy_media`'s gate); reject anything else so
     // the command can't be turned into an arbitrary-origin GET by a compromised renderer.
     if !path.starts_with("/uploads/") {
-        return Err(format!("media_request: only /uploads/* allowed (got {path})"));
+        return Err(format!(
+            "media_request: only /uploads/* allowed (got {path})"
+        ));
     }
     let mut attempt = 0u8;
     let upstream = loop {
@@ -1781,7 +1829,10 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         let stage_result = async {
             let response = stage.send().await.map_err(|e| format!("stage send: {e}"))?;
             let status = response.status();
-            let text = response.text().await.map_err(|e| format!("stage read: {e}"))?;
+            let text = response
+                .text()
+                .await
+                .map_err(|e| format!("stage read: {e}"))?;
             if !status.is_success() {
                 return Err(format!("stage HTTP {}: {text}", status.as_u16()));
             }
@@ -1824,10 +1875,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
 /// Cancel one shell streaming upload. Idempotent: a task that already completed or has not reached the
 /// streaming phase simply has no token. Browser cancellation remains owned by HttpClient unsubscribe.
 #[tauri::command]
-fn cancel_upload(
-    proxy: tauri::State<'_, ProxyState>,
-    client_message_id: String,
-) {
+fn cancel_upload(proxy: tauri::State<'_, ProxyState>, client_message_id: String) {
     if let Some(token) = proxy
         .upload_cancels
         .lock()
@@ -1878,12 +1926,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Current time as ISO-8601 UTC `YYYY-MM-DDTHH:MM:SS.mmmZ`, dependency-free (chrono/time are only
 /// transitive deps). Used by the log formatter — see the `.format(...)` note on the log Builder.
 fn iso_utc_now() -> String {
-    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = dur.as_secs();
     let ms = dur.subsec_millis();
     let sod = secs.rem_euclid(86_400); // seconds-of-day
     let days = (secs / 86_400) as i64; // days since 1970-01-01
-    // Howard Hinnant's civil_from_days — days since Unix epoch → (year, month, day).
+                                       // Howard Hinnant's civil_from_days — days since Unix epoch → (year, month, day).
     let z = days + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097;
@@ -2003,7 +2053,10 @@ async fn post_diagnostics_bundle(
         }
     };
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("diagnostics read: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("diagnostics read: {e}"))?;
     if !status.is_success() {
         return Err(format!("diagnostics HTTP {}: {}", status.as_u16(), text));
     }
@@ -2046,7 +2099,8 @@ async fn retry_pending_diagnostics(app: tauri::AppHandle, proxy: ProxyState) {
                 continue;
             }
             let digest = &name[DIAG_PENDING_PREFIX.len()..name.len() - ".tar.gz".len()];
-            let manifest_path = cache_dir.join(format!("{DIAG_PENDING_PREFIX}{digest}.manifest.json"));
+            let manifest_path =
+                cache_dir.join(format!("{DIAG_PENDING_PREFIX}{digest}.manifest.json"));
             let manifest = fs::read_to_string(&manifest_path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -2078,7 +2132,10 @@ static WEBVIEW_CONSOLE_LOCK: Mutex<()> = Mutex::new(());
 /// builds it from the same durable store as the Rust logs (and survives a crash/relaunch with the
 /// pre-crash JS trail intact — the in-memory ring buffer alone is lost on restart).
 fn webview_console_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path().app_log_dir().ok().map(|d| d.join("webview-console.log"))
+    app.path()
+        .app_log_dir()
+        .ok()
+        .map(|d| d.join("webview-console.log"))
 }
 
 /// Front-trim `path` to its newest `keep` bytes on a line boundary (a ring-on-disk). Called only when the
@@ -2189,7 +2246,9 @@ fn log_js(app: tauri::AppHandle, lines: Vec<String>, clear: Option<bool>) -> Res
         Some(p) => p,
         None => return Ok(()),
     };
-    let _guard = WEBVIEW_CONSOLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = WEBVIEW_CONSOLE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if clear.unwrap_or(false) {
         // Truncate to empty — the durable counterpart of clearConsoleBuffer.
         let _ = fs::write(&path, b"");
@@ -2227,7 +2286,10 @@ async fn report_diagnostics(
     proxy: tauri::State<'_, ProxyState>,
     manifest: serde_json::Value,
 ) -> Result<i64, String> {
-    let log_dir = app.path().app_log_dir().map_err(|e| format!("log dir: {e}"))?;
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("log dir: {e}"))?;
     let cache_dir = app
         .path()
         .app_cache_dir()
@@ -2244,7 +2306,9 @@ async fn report_diagnostics(
     // → empty slice (treat as no JS trail rather than fail the whole report).
     let app_for_read = app.clone();
     let console: Vec<u8> = tokio::task::spawn_blocking(move || {
-        let _guard = WEBVIEW_CONSOLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = WEBVIEW_CONSOLE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         webview_console_path(&app_for_read)
             .and_then(|p| fs::read(p).ok())
             .unwrap_or_default()
@@ -2339,7 +2403,10 @@ fn read_native_log(
         NativeLogSource::Kotlin => kotlin_native_log_path(&app),
     };
     let Some(path) = path else {
-        return Ok(NativeLogTail { path: String::new(), content: String::new() });
+        return Ok(NativeLogTail {
+            path: String::new(),
+            content: String::new(),
+        });
     };
     let bytes = fs::read(&path).unwrap_or_default();
     let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -2357,9 +2424,12 @@ fn read_native_log(
 /// exists (desktop + release before runtime debug has ever been enabled).
 fn kotlin_native_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     let root = app.path().app_data_dir().ok()?;
-    [root.join("files").join("soms-native.log"), root.join("soms-native.log")]
-        .into_iter()
-        .find(|p| p.exists())
+    [
+        root.join("files").join("soms-native.log"),
+        root.join("soms-native.log"),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
 }
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -2371,7 +2441,11 @@ fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
     // JS never needs the active for URL building, and seeding the JS signal from the stable primary keeps
     // the origin-change SSE effect from firing on a fallback switch. The active MODE is exposed via
     // get_origin_mode (for the "正在使用内网服务器" indicator).
-    state.api_origin_primary.lock().expect("primary lock").clone()
+    state
+        .api_origin_primary
+        .lock()
+        .expect("primary lock")
+        .clone()
 }
 
 /// The exact endpoint every Rust-owned HTTP transport uses right now. Unlike `get_api_origin` this is
@@ -2405,7 +2479,11 @@ fn set_api_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<St
 /// SOMS_LAN_DOMAIN). The shell uses this to populate the second server-config field + persist it.
 #[tauri::command]
 fn get_api_origin_secondary(state: tauri::State<'_, ProxyState>) -> Option<String> {
-    state.api_origin_secondary.lock().expect("secondary lock").clone()
+    state
+        .api_origin_secondary
+        .lock()
+        .expect("secondary lock")
+        .clone()
 }
 
 /// Persist the LAN (secondary) origin (field-2). Empty/null clears it (disables fallback). Returns the
@@ -2443,8 +2521,13 @@ async fn init_pick_origin(state: tauri::State<'_, ProxyState>) -> Result<String,
 /// Sets the ACTIVE origin only (the primary/secondary config is owned by set_api_origin[_secondary]).
 #[tauri::command]
 fn set_active_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<String, String> {
-    let normalized = validate_origin(&url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
-    let secondary = state.api_origin_secondary.lock().expect("secondary lock").clone();
+    let normalized =
+        validate_origin(&url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
+    let secondary = state
+        .api_origin_secondary
+        .lock()
+        .expect("secondary lock")
+        .clone();
     let mode = if Some(&normalized) == secondary.as_ref() {
         OriginMode::Secondary
     } else {
@@ -2566,11 +2649,11 @@ struct ParsedFrame {
 /// stop (force-logout / cancelled).
 #[cfg(desktop)]
 enum StreamOutcome {
-    StreamClosed,            // server ended the stream cleanly → reconnect
-    Stale,                   // watchdog: no frame for 60s → reconnect
-    Cancelled,               // sse_stop / logout → exit the loop
+    StreamClosed,                // server ended the stream cleanly → reconnect
+    Stale,                       // watchdog: no frame for 60s → reconnect
+    Cancelled,                   // sse_stop / logout → exit the loop
     ForceLogout(Option<String>), // 401 or a `FORCE_LOGOUT` frame → exit (no retry, no 401-loop)
-    Err,                     // network / non-2xx → reconnect
+    Err,                         // network / non-2xx → reconnect
 }
 
 /// Supervisor state: the spawned connect-loop task + its cancellation token, a synchronous state mirror
@@ -2703,7 +2786,10 @@ fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), Str
 /// fresh one). Mirrors Android's `SomsFcm.replayHello`.
 #[cfg(desktop)]
 #[tauri::command]
-fn sse_replay_hello(app: tauri::AppHandle, sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
+fn sse_replay_hello(
+    app: tauri::AppHandle,
+    sse: tauri::State<'_, SseSupervisor>,
+) -> Result<(), String> {
     if let Some(data) = sse.cached_hello.lock().expect("cached_hello lock").clone() {
         let _ = app.emit(
             "soms-sse-event",
@@ -2756,8 +2842,17 @@ async fn sse_supervisor_loop(
         if cancel.is_cancelled() {
             break;
         }
-        let outcome =
-            open_one_stream(&app, &proxy, &cancel, &state, &wake, &offline, &cached_hello, &mut opened_once).await;
+        let outcome = open_one_stream(
+            &app,
+            &proxy,
+            &cancel,
+            &state,
+            &wake,
+            &offline,
+            &cached_hello,
+            &mut opened_once,
+        )
+        .await;
         if cancel.is_cancelled() {
             break;
         }
@@ -2867,9 +2962,11 @@ fn merge_cached_hello(
         // latestMessage = {threadId, seq, ts} — last-signal-wins (a valid upper bound for the missed walk,
         // mirroring the client's onNewMessage `_to` advancement).
         "NEW_MESSAGE" => {
-            if let (Some(tid), Some(seq), Some(ts)) =
-                (data.get("threadId").cloned(), data.get("seq").cloned(), data.get("ts").cloned())
-            {
+            if let (Some(tid), Some(seq), Some(ts)) = (
+                data.get("threadId").cloned(),
+                data.get("seq").cloned(),
+                data.get("ts").cloned(),
+            ) {
                 obj.insert(
                     "latestMessage".to_string(),
                     serde_json::json!({ "threadId": tid, "seq": seq, "ts": ts }),
@@ -2904,10 +3001,18 @@ mod cached_hello_merge_tests {
         assert_eq!(get(&c)["userId"], 1);
         assert_eq!(get(&c)["threadRevision"], 5);
 
-        merge_cached_hello(&c, "THREAD_REVISION_UPDATED", &serde_json::json!({"threadRevision":6}));
+        merge_cached_hello(
+            &c,
+            "THREAD_REVISION_UPDATED",
+            &serde_json::json!({"threadRevision":6}),
+        );
         assert_eq!(get(&c)["threadRevision"], 6);
 
-        merge_cached_hello(&c, "PROFILE_REV_UPDATED", &serde_json::json!({"profileRev":3}));
+        merge_cached_hello(
+            &c,
+            "PROFILE_REV_UPDATED",
+            &serde_json::json!({"profileRev":3}),
+        );
         assert_eq!(get(&c)["profileRev"], 3);
 
         // A newer state pair advances both friendReqRev + friendReqAckRev.
@@ -2919,7 +3024,11 @@ mod cached_hello_merge_tests {
         assert_eq!(get(&c)["friendReqRev"], 2000);
         assert_eq!(get(&c)["friendReqAckRev"], 1500);
 
-        merge_cached_hello(&c, "NEW_MESSAGE", &serde_json::json!({"threadId":7,"seq":9,"ts":123}));
+        merge_cached_hello(
+            &c,
+            "NEW_MESSAGE",
+            &serde_json::json!({"threadId":7,"seq":9,"ts":123}),
+        );
         assert_eq!(get(&c)["latestMessage"]["threadId"], 7);
         assert_eq!(get(&c)["latestMessage"]["seq"], 9);
     }
@@ -2927,7 +3036,11 @@ mod cached_hello_merge_tests {
     #[test]
     fn friendreq_revisions_are_monotonic_out_of_order_dropped() {
         let c = cache();
-        merge_cached_hello(&c, "HELLO", &serde_json::json!({"userId":1,"friendReqRev":2000,"friendReqAckRev":1500}));
+        merge_cached_hello(
+            &c,
+            "HELLO",
+            &serde_json::json!({"userId":1,"friendReqRev":2000,"friendReqAckRev":1500}),
+        );
         // An OLDER pair (stale/out-of-order) must not regress either cursor.
         merge_cached_hello(
             &c,
@@ -2941,7 +3054,11 @@ mod cached_hello_merge_tests {
     #[test]
     fn incremental_before_hello_is_dropped_no_partial_cache() {
         let c = cache();
-        merge_cached_hello(&c, "THREAD_REVISION_UPDATED", &serde_json::json!({"threadRevision":6}));
+        merge_cached_hello(
+            &c,
+            "THREAD_REVISION_UPDATED",
+            &serde_json::json!({"threadRevision":6}),
+        );
         assert!(c.lock().unwrap().is_none());
     }
 }
@@ -3215,7 +3332,10 @@ mod sse_parser_tests {
     fn take_frame_returns_none_and_leaves_buf_when_incomplete() {
         let mut buf = b"event: ping\ndata: {}".to_vec(); // no blank-line terminator yet
         assert!(take_sse_frame(&mut buf).is_none());
-        assert_eq!(buf, b"event: ping\ndata: {}", "incomplete buffer must be untouched"); // chunk-split safe
+        assert_eq!(
+            buf, b"event: ping\ndata: {}",
+            "incomplete buffer must be untouched"
+        ); // chunk-split safe
     }
 
     #[test]
@@ -3285,7 +3405,8 @@ mod sse_parser_tests {
     #[test]
     fn parse_force_logout_carries_message_for_extraction() {
         // parse_sse_frame returns the structure; open_one_stream extracts data.message into the reason.
-        let f = parse_sse_frame(b"event: FORCE_LOGOUT\ndata: {\"message\":\"device_revoke\"}").unwrap();
+        let f =
+            parse_sse_frame(b"event: FORCE_LOGOUT\ndata: {\"message\":\"device_revoke\"}").unwrap();
         assert_eq!(f.event, "FORCE_LOGOUT");
         let reason = f.data.get("message").and_then(|v| v.as_str());
         assert_eq!(reason, Some("device_revoke"));
@@ -3302,22 +3423,37 @@ mod origin_tests {
     #[test]
     fn tls_posture_https_dns_host_is_strict() {
         assert_eq!(tls_posture_for("https://example.com"), TlsPosture::Strict);
-        assert_eq!(tls_posture_for("https://soms.example.com:8443/api"), TlsPosture::Strict);
+        assert_eq!(
+            tls_posture_for("https://soms.example.com:8443/api"),
+            TlsPosture::Strict
+        );
     }
 
     #[test]
     fn tls_posture_http_scheme_is_permissive_regardless_of_host() {
         // Cleartext http → never strict, even for a DNS host that would be strict over https.
-        assert_eq!(tls_posture_for("http://example.com"), TlsPosture::Permissive);
-        assert_eq!(tls_posture_for("http://10.0.0.5:3000"), TlsPosture::Permissive);
+        assert_eq!(
+            tls_posture_for("http://example.com"),
+            TlsPosture::Permissive
+        );
+        assert_eq!(
+            tls_posture_for("http://10.0.0.5:3000"),
+            TlsPosture::Permissive
+        );
     }
 
     #[test]
     fn tls_posture_ip_host_is_permissive_even_over_https() {
         // LAN self-hosted over HTTPS+IP → permissive (no valid cert expected for a bare-IP host).
         assert_eq!(tls_posture_for("https://10.0.0.5"), TlsPosture::Permissive);
-        assert_eq!(tls_posture_for("https://192.168.88.8:8443"), TlsPosture::Permissive);
-        assert_eq!(tls_posture_for("https://[::1]:3000"), TlsPosture::Permissive);
+        assert_eq!(
+            tls_posture_for("https://192.168.88.8:8443"),
+            TlsPosture::Permissive
+        );
+        assert_eq!(
+            tls_posture_for("https://[::1]:3000"),
+            TlsPosture::Permissive
+        );
     }
 
     #[test]
@@ -3330,10 +3466,19 @@ mod origin_tests {
 
     #[test]
     fn validate_origin_accepts_http_https_and_strips_trailing_slash() {
-        assert_eq!(validate_origin("https://example.com/"), Some("https://example.com".to_string()));
-        assert_eq!(validate_origin("http://10.0.0.5:3000"), Some("http://10.0.0.5:3000".to_string()));
+        assert_eq!(
+            validate_origin("https://example.com/"),
+            Some("https://example.com".to_string())
+        );
+        assert_eq!(
+            validate_origin("http://10.0.0.5:3000"),
+            Some("http://10.0.0.5:3000".to_string())
+        );
         // Surrounding whitespace tolerated (real input from a settings field).
-        assert_eq!(validate_origin("  https://example.com  "), Some("https://example.com".to_string()));
+        assert_eq!(
+            validate_origin("  https://example.com  "),
+            Some("https://example.com".to_string())
+        );
     }
 
     #[test]
@@ -3382,7 +3527,10 @@ mod headers_deadline_tests {
                     let _ = std::io::copy(&mut stream, &mut std::io::sink());
                 }
             });
-            Self { _addr: addr, _thread: thread }
+            Self {
+                _addr: addr,
+                _thread: thread,
+            }
         }
     }
 
@@ -3391,7 +3539,8 @@ mod headers_deadline_tests {
         let peer = SilentPeer::spawn();
         let client = reqwest::Client::new();
         let url = format!("http://{}/", peer._addr);
-        let outcome = send_with_headers_deadline(client.get(&url), Duration::from_millis(200)).await;
+        let outcome =
+            send_with_headers_deadline(client.get(&url), Duration::from_millis(200)).await;
         assert!(
             matches!(outcome, Err(HeadersError::Timeout)),
             "a silent upstream past the deadline must be Timeout (→504), got {outcome:?}"
@@ -3403,7 +3552,10 @@ mod headers_deadline_tests {
         // A port with no listener on the loopback → ECONNREFUSED at connect (a SendFailed, NOT a Timeout)
         // — this is the case that must stay an `Err` (→ JS "network"), proving the 504 path is gated to
         // connected-but-silent only. Bind+drop to claim a free port, then connect to the now-closed port.
-        let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
         // (listener dropped here — port closed)
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/");
@@ -3425,7 +3577,10 @@ mod select_origin_tests {
     /// fallback never triggers on a reachable server. Bind+drop to claim a free port, then connect to it.
     #[tokio::test]
     async fn is_network_failure_classifies_a_connect_failure_as_switchable() {
-        let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
         // listener dropped here — port is closed → ECONNREFUSED at connect
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(2))
@@ -3436,9 +3591,15 @@ mod select_origin_tests {
             .send()
             .await
             .expect_err("connecting to a closed port must error");
-        assert!(is_network_failure(&err), "a connect failure must be a network failure: {err}");
+        assert!(
+            is_network_failure(&err),
+            "a connect failure must be a network failure: {err}"
+        );
         // Sanity: the closed-port case is a CONNECT failure specifically (the boundary is is_connect || is_timeout).
-        assert!(err.is_connect(), "expected is_connect for ECONNREFUSED: {err}");
+        assert!(
+            err.is_connect(),
+            "expected is_connect for ECONNREFUSED: {err}"
+        );
     }
 }
 
@@ -3487,7 +3648,8 @@ async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<
         .await
         .map_err(|e| format!("address: could not reach server: {e}"))?;
     let env: ApiEnvelope<CompatData> = serde_json::from_str(
-        &resp.text()
+        &resp
+            .text()
             .await
             .map_err(|e| format!("address: could not read server response: {e}"))?,
     )
@@ -3498,7 +3660,10 @@ async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<
             env.code
         ));
     }
-    Ok(env.data.map(|d| d.server_version.trim().to_string()).unwrap_or_default())
+    Ok(env
+        .data
+        .map(|d| d.server_version.trim().to_string())
+        .unwrap_or_default())
 }
 
 /// Fetch the FULL `/shell/compat` body (version + the advertised client origins), for `init_check_compat`
@@ -3513,7 +3678,8 @@ async fn fetch_compat(client: &reqwest::Client, origin: &str) -> Result<CompatDa
         .await
         .map_err(|e| format!("address: could not reach server: {e}"))?;
     let env: ApiEnvelope<CompatData> = serde_json::from_str(
-        &resp.text()
+        &resp
+            .text()
             .await
             .map_err(|e| format!("address: could not read server response: {e}"))?,
     )
@@ -3524,7 +3690,8 @@ async fn fetch_compat(client: &reqwest::Client, origin: &str) -> Result<CompatDa
             env.code
         ));
     }
-    env.data.ok_or_else(|| "address: server did not report a version".to_string())
+    env.data
+        .ok_or_else(|| "address: server did not report a version".to_string())
 }
 
 /// Step 1: `GET /api/v1/shell/compat` — the server reports its version; THIS shell decides compatibility
@@ -3562,14 +3729,23 @@ async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> 
 #[tauri::command]
 async fn init_validate_cert(origin: String) -> Result<serde_json::Value, String> {
     if tls_posture_for(&origin) == TlsPosture::Permissive {
-        return Ok(serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; not guaranteed secure by policy" }));
+        return Ok(
+            serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; not guaranteed secure by policy" }),
+        );
     }
     let client = http_client_for(&origin);
     let url = format!("{}/api/v1/health", origin.trim_end_matches('/'));
     match client.get(&url).send().await {
-        Ok(r) if r.status().is_success() => Ok(serde_json::json!({ "valid": true, "summary": "https" })),
-        Ok(r) => Err(format!("certificate/host check failed: server returned HTTP {}", r.status())),
-        Err(e) => Err(format!("certificate/host check failed (self-signed / expired / unreachable?): {e}")),
+        Ok(r) if r.status().is_success() => {
+            Ok(serde_json::json!({ "valid": true, "summary": "https" }))
+        }
+        Ok(r) => Err(format!(
+            "certificate/host check failed: server returned HTTP {}",
+            r.status()
+        )),
+        Err(e) => Err(format!(
+            "certificate/host check failed (self-signed / expired / unreachable?): {e}"
+        )),
     }
 }
 
@@ -3609,12 +3785,22 @@ async fn init_download_web(
         .send()
         .await
         .map_err(|e| format!("manifest request failed: {e}"))?;
-    let menv: ApiEnvelope<ManifestData> = serde_json::from_str(&mresp.text().await.map_err(|e| format!("manifest read: {e}"))?)
-        .map_err(|e| format!("manifest parse: {e}"))?;
+    let menv: ApiEnvelope<ManifestData> = serde_json::from_str(
+        &mresp
+            .text()
+            .await
+            .map_err(|e| format!("manifest read: {e}"))?,
+    )
+    .map_err(|e| format!("manifest parse: {e}"))?;
     if menv.code != 0 {
-        return Err(format!("server returned code {} at web-manifest", menv.code));
+        return Err(format!(
+            "server returned code {} at web-manifest",
+            menv.code
+        ));
     }
-    let manifest = menv.data.ok_or_else(|| "manifest: empty data".to_string())?;
+    let manifest = menv
+        .data
+        .ok_or_else(|| "manifest: empty data".to_string())?;
     // Defense-in-depth compat re-check (the wizard gated compat in `init_check_compat` moments before;
     // this also guards the post-login About→update path). Refuse to fetch a bundle from a backend this
     // shell has flagged incompatible.
@@ -3650,11 +3836,17 @@ async fn init_download_web(
         buf.extend_from_slice(&chunk);
         if received - last_emitted_at >= EMIT_STEP {
             last_emitted_at = received;
-            let _ = app.emit("web-download-progress", DownloadProgress { received, total });
+            let _ = app.emit(
+                "web-download-progress",
+                DownloadProgress { received, total },
+            );
         }
     }
     // Final emit so a known-total bar reaches 100% even if the tail chunk was under EMIT_STEP.
-    let _ = app.emit("web-download-progress", DownloadProgress { received, total });
+    let _ = app.emit(
+        "web-download-progress",
+        DownloadProgress { received, total },
+    );
 
     // 3c. sha256
     let mut hasher = Sha256::new();
@@ -3662,11 +3854,17 @@ async fn init_download_web(
     let got = hasher.finalize();
     let got_hex = got.iter().map(|b| format!("{:02x}", b)).collect::<String>();
     if got_hex != manifest.sha256.to_lowercase() {
-        return Err(format!("bundle sha256 mismatch (expected {}, got {})", manifest.sha256, got_hex));
+        return Err(format!(
+            "bundle sha256 mismatch (expected {}, got {})",
+            manifest.sha256, got_hex
+        ));
     }
 
     // 3d. extract atomically. Tar extraction is blocking → spawn_blocking off the async runtime.
-    let data_dir = app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?;
     let web_root = data_dir.join(WEB_DIRNAME);
     fs::create_dir_all(&web_root).map_err(|e| format!("web dir create: {e}"))?;
     let staging = web_root.join(format!(".staging-{}", manifest.web_version));
@@ -3678,7 +3876,9 @@ async fn init_download_web(
         let decoder = flate2::read::GzDecoder::new(&buf[..]);
         let mut archive = tar::Archive::new(decoder);
         archive.set_overwrite(true);
-        archive.unpack(&staging_clone).map_err(|e| format!("extract: {e}"))
+        archive
+            .unpack(&staging_clone)
+            .map_err(|e| format!("extract: {e}"))
     })
     .await
     .map_err(|e| format!("extract task: {e}"))??;
@@ -3748,13 +3948,16 @@ fn gc_web_versions(web_root: &Path, active: &str) {
                 {
                     continue;
                 }
-                let mtime = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+                let mtime = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(UNIX_EPOCH);
                 others.push((name.to_string(), mtime));
             }
         }
     }
     others.sort_by(|a, b| b.1.cmp(&a.1)); // newest first (by mtime, index 1)
-    // Keep one previous (the newest non-active); delete the rest. The tuple is (versionString, mtime).
+                                          // Keep one previous (the newest non-active); delete the rest. The tuple is (versionString, mtime).
     for (name, _) in others.into_iter().skip(1) {
         let _ = fs::remove_dir_all(web_root.join(name));
     }
@@ -3775,9 +3978,13 @@ async fn fetch_compat_and_manifest(
         .send()
         .await
         .map_err(|e| format!("manifest: {e}"))?;
-    let menv: ApiEnvelope<ManifestData> =
-        serde_json::from_str(&mresp.text().await.map_err(|e| format!("manifest read: {e}"))?)
-            .map_err(|e| format!("manifest parse: {e}"))?;
+    let menv: ApiEnvelope<ManifestData> = serde_json::from_str(
+        &mresp
+            .text()
+            .await
+            .map_err(|e| format!("manifest read: {e}"))?,
+    )
+    .map_err(|e| format!("manifest parse: {e}"))?;
     let (server_hash, server_web) = menv
         .data
         .map(|d| (d.sha256, d.web_version))
@@ -3793,17 +4000,16 @@ async fn fetch_compat_and_manifest(
 /// installed one — prompt "update"). Network failures resolve to empty server fields + false flags so the
 /// cached bundle keeps the app usable.
 #[tauri::command]
-async fn init_update_status(origin: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn init_update_status(
+    origin: String,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
     let origin = origin.trim_end_matches('/').to_string();
     let client = http_client_for(&origin);
 
     // Local shell version (compile-time) + the atomically-persisted active web version/hash.
     let shell_version = SHELL_VERSION.to_string();
-    let web_root = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|d| d.join(WEB_DIRNAME));
+    let web_root = app.path().app_data_dir().ok().map(|d| d.join(WEB_DIRNAME));
     let active_state = web_root.as_deref().and_then(read_active_web_state);
     let installed_web = active_state
         .as_ref()

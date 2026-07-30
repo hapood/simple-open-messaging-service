@@ -3,7 +3,7 @@
     class="msg-container"
     [class.msg-container--has-floating-composer]="
       !blockedPeer() &&
-      !mediaViewerOpen() &&
+      !nativeComposerOccluded() &&
       (!nativeComposer.supported || nativeComposerActive())
     "
     #container
@@ -292,9 +292,9 @@
       </div>
     }
 
-    @if (mediaViewerOpen()) {
-      <!-- The fullscreen player owns the interaction surface. Keep no composer DOM behind it, and let
-           the matching component effect hide the native sibling composer as well. -->
+    @if (nativeComposerOccluded()) {
+      <!-- A routed pane owns the interaction surface. Keep no web composer DOM behind it; the matching
+           component effect also hides the native sibling composer. -->
     } @else if (blockedPeer()) {
       <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
         {{ 'chat.blockedBanner' | transloco }}

@@ -147,7 +147,7 @@
             }
             @if (
               c.kind === 'video' &&
-              !useNativeVideo &&
+              !isAndroidApp &&
               !c.unplayable
             ) {
               <video
@@ -221,7 +221,7 @@
                 'chat.mediaCount.image' | transloco: { count: metaBar().images }
               }}</span>
             }
-            @if (metaBar().videos) {
+            @if (metaBar().videos > 1) {
               <span>{{
                 'chat.mediaCount.video' | transloco: { count: metaBar().videos }
               }}</span>

@@ -278,6 +278,13 @@ export class CallAdapterService {
             toast.warn(transloco.translate(`call.${step}`)),
           )
         : new UnsupportedCallAdapter();
+    if (isAndroidNative()) {
+      window.__SOMS_CALL_REJECTED__ = (reason) => {
+        if (reason === 'busy') {
+          toast.warn(transloco.translate('call.busyEnding'));
+        }
+      };
+    }
     this.supported = isAndroidNative() || webRtcSupported;
     this.videoSupported = this.supported;
     this.rendererOwnsVideo = !isAndroidNative() && webRtcSupported;

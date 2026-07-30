@@ -1,11 +1,18 @@
 use crate::{media_cache, ProxyState};
 use serde::Serialize;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OnceCell, RwLock};
 
 const MAX_HEADERS: usize = 16 * 1024;
 const MAX_THUMBNAIL: usize = 512 * 1024;
+static VIDEO_HUB: OnceCell<Arc<VideoHub>> = OnceCell::const_new();
+
+struct VideoHub {
+    port: u16,
+    routes: Arc<RwLock<HashMap<String, String>>>,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,9 +22,9 @@ pub(crate) struct NativeVideoStream {
     has_thumbnail: bool,
 }
 
-/** Create a capability-scoped loopback Range endpoint backed by the one authoritative Rust media cache.
- * It is intentionally ephemeral and bound only to 127.0.0.1. The random path prevents another local
- * process from reading authenticated media by guessing the port. */
+/** Register a capability on the process-wide loopback Range server backed by the authoritative Rust
+ * media cache. The OS chooses one port once per app process; all videos and concurrent Range requests
+ * share that listener. The unguessable route, rather than the port, is the security boundary. */
 #[tauri::command]
 pub(crate) async fn create_native_video_stream(
     app: tauri::AppHandle,
@@ -27,13 +34,11 @@ pub(crate) async fn create_native_video_stream(
     if !valid_source_path(&path) {
         return Err("native video requires a safe /uploads/* path".into());
     }
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .map_err(|error| format!("bind native video loopback: {error}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| format!("read native video loopback address: {error}"))?
-        .port();
+    let app_for_hub = app.clone();
+    let proxy_for_hub = proxy.inner().clone();
+    let hub = VIDEO_HUB
+        .get_or_try_init(|| async move { start_hub(app_for_hub, proxy_for_hub).await })
+        .await?;
     let mut capability = [0u8; 32];
     getrandom::getrandom(&mut capability)
         .map_err(|error| format!("create native video capability: {error}"))?;
@@ -43,33 +48,42 @@ pub(crate) async fn create_native_video_stream(
         .collect::<String>();
     let video_route = format!("/video/{capability}");
     let thumbnail_route = format!("/thumbnail/{capability}");
+    hub.routes.write().await.insert(capability, path.clone());
     let proxy = proxy.inner().clone();
-    let app_for_server = app.clone();
-    let path_for_server = path.clone();
-    let video_route_for_server = video_route.clone();
-    let thumbnail_route_for_server = thumbnail_route.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let accepted = tokio::time::timeout(Duration::from_secs(2 * 60 * 60), listener.accept()).await;
-            let Ok(Ok((socket, _))) = accepted else { break };
-            let app = app_for_server.clone();
-            let proxy = proxy.clone();
-            let path = path_for_server.clone();
-            let video_route = video_route_for_server.clone();
-            let thumbnail_route = thumbnail_route_for_server.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = serve(socket, app, proxy, path, video_route, thumbnail_route).await;
-            });
-        }
-    });
-    let has_thumbnail = media_cache::get_video_thumbnail(&app, proxy.inner(), &path)
+    let has_thumbnail = media_cache::get_video_thumbnail(&app, &proxy, &path)
         .await
         .is_ok();
     Ok(NativeVideoStream {
-        stream_url: format!("http://localhost:{port}{video_route}"),
-        thumbnail_upload_url: format!("http://localhost:{port}{thumbnail_route}"),
+        stream_url: format!("http://localhost:{}{video_route}", hub.port),
+        thumbnail_upload_url: format!("http://localhost:{}{thumbnail_route}", hub.port),
         has_thumbnail,
     })
+}
+
+async fn start_hub(app: tauri::AppHandle, proxy: ProxyState) -> Result<Arc<VideoHub>, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|error| format!("bind video loopback: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("read video loopback address: {error}"))?
+        .port();
+    let routes = Arc::new(RwLock::new(HashMap::new()));
+    let hub = Arc::new(VideoHub {
+        port,
+        routes: routes.clone(),
+    });
+    tauri::async_runtime::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let app = app.clone();
+            let proxy = proxy.clone();
+            let routes = routes.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = serve(socket, app, proxy, routes).await;
+            });
+        }
+    });
+    Ok(hub)
 }
 
 fn valid_source_path(path: &str) -> bool {
@@ -107,9 +121,7 @@ async fn serve(
     mut socket: TcpStream,
     app: tauri::AppHandle,
     proxy: ProxyState,
-    source_path: String,
-    video_route: String,
-    thumbnail_route: String,
+    routes: Arc<RwLock<HashMap<String, String>>>,
 ) -> Result<(), String> {
     let mut request = Vec::new();
     let header_end = loop {
@@ -135,10 +147,22 @@ async fn serve(
     let mut request_line = lines.next().unwrap_or("").split_whitespace();
     let method = request_line.next().unwrap_or("");
     let route = request_line.next().unwrap_or("");
+    let route_parts = route.split('/').collect::<Vec<_>>();
+    let capability = route_parts.get(2).copied().unwrap_or("");
+    let source_path = routes.read().await.get(capability).cloned();
 
-    if method == "GET" && route == video_route {
-        let range = lines
-            .find_map(|line| line.strip_prefix("Range: ").or_else(|| line.strip_prefix("range: ")));
+    if method == "OPTIONS" && route_parts.len() == 3 && source_path.is_some() {
+        return respond(&mut socket, 204, "text/plain", &[], &[]).await;
+    }
+
+    if method == "GET" && route_parts.get(1) == Some(&"video") {
+        let Some(source_path) = source_path else {
+            return respond(&mut socket, 404, "text/plain", &[], &[]).await;
+        };
+        let range = lines.find_map(|line| {
+            line.strip_prefix("Range: ")
+                .or_else(|| line.strip_prefix("range: "))
+        });
         if let Some(range) = range {
             let media = media_cache::get_or_fetch_range(&app, &proxy, &source_path, range)
                 .await
@@ -172,7 +196,10 @@ async fn serve(
         .await;
     }
 
-    if method == "POST" && route == thumbnail_route {
+    if method == "POST" && route_parts.get(1) == Some(&"thumbnail") {
+        let Some(source_path) = source_path else {
+            return respond(&mut socket, 404, "text/plain", &[], &[]).await;
+        };
         let length = headers
             .lines()
             .find_map(|line| {
@@ -228,7 +255,7 @@ async fn respond(
         _ => "Error",
     };
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n{extra}\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Range\r\nAccess-Control-Expose-Headers: Accept-Ranges, Content-Length, Content-Range\r\nConnection: close\r\n{extra}\r\n",
         body.len(),
     );
     socket

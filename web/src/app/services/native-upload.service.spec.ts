@@ -2,6 +2,7 @@ import {
   NativeUploadError,
   NativeUploadSelection,
   NativeUploadService,
+  isSuccessfulUploadResponse,
 } from './native-upload.service';
 
 describe('NativeUploadService attempt routing', () => {
@@ -29,6 +30,7 @@ describe('NativeUploadService attempt routing', () => {
       release: jasmine.createSpy('release'),
       discard: jasmine.createSpy('discard'),
       getState: jasmine.createSpy('getState').and.returnValue('selected'),
+      finish: jasmine.createSpy('finish'),
     };
     window.SomsUpload = bridge;
     service = new NativeUploadService();
@@ -130,5 +132,11 @@ describe('NativeUploadService attempt routing', () => {
     // Metadata is advisory: after a terminal failed event, another attempt is still allowed.
     service.upload(selection, 'cid-1', {}).catch(() => undefined);
     expect(bridge.upload).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the selected file when HTTP succeeds with a failed API envelope', () => {
+    expect(isSuccessfulUploadResponse({ code: 10008 })).toBe(false);
+    expect(isSuccessfulUploadResponse({ code: 0 })).toBe(true);
+    expect(isSuccessfulUploadResponse(undefined)).toBe(false);
   });
 });

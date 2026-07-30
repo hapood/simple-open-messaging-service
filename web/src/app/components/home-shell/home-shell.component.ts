@@ -28,7 +28,6 @@ import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { UploadDetailDialogComponent } from '../upload-detail-dialog/upload-detail-dialog.component';
 
 const LIST_WIDTH_KEY = 'soms.client.listWidth';
 const MIN_LIST = 280,
@@ -114,7 +113,6 @@ const overlaySlide = trigger('overlaySlide', [
     PeerProfileComponent,
     GroupInfoComponent,
     HomeHeaderComponent,
-    UploadDetailDialogComponent,
     TranslocoPipe,
   ],
   templateUrl: './home-shell.component.html',

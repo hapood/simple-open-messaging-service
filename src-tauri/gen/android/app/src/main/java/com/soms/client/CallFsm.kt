@@ -43,6 +43,21 @@ object CallFsm {
     fun acceptedOnSiblingDevice(isCaller: Boolean, acceptingLocally: Boolean): Boolean =
         !isCaller && !acceptingLocally
 
+    /**
+     * Run a user-requested terminal transition in the only safe order: publish the terminal state, release
+     * the local call (which returns the controller to idle), then perform the potentially slow network report.
+     * Keeping this ordering here makes the notification-hang-up regression testable without Android/WebRTC.
+     */
+    fun runTerminalSequence(
+        publishEnded: () -> Unit,
+        teardown: () -> Unit,
+        report: () -> Unit,
+    ) {
+        publishEnded()
+        teardown()
+        report()
+    }
+
     // ── phase-transition table ───────────────────────────────────────────────────
     /** The next phase for a CALL_EVENT lifecycle type, or null if the event does not transition THIS side
      *  (a stale frame, or an event that belongs to the other side). Covers the symmetric lifecycle events;

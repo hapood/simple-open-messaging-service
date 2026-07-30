@@ -653,10 +653,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
 
     const n = await this.loadNewer(true);                   // forced: the signal means new data is available; returns mounted + absorbed count (0 = nothing new this pass — mirrors the `n` used in followToNewest; an absorbed-only batch counts > 0 so its optimistic still gets reconciled)
-    console.info('[album-debug] signal:loadNewer-complete', {
-      progress: n,
-      mounted: this.mounted.length,
-    });
     if (this.destroyed) return;
     if (n === 0) return;                                    // nothing new mounted or absorbed → no shove to play, no new bottom to follow. Common for the tail-coalesced follow-up pass: by the time it runs, the in-flight pass already drained the live cache, so this one has nothing to do (also covers a genuine source-empty result). Safe to skip reconcileOptimistic/flip/trim/pin: mountNewerReals did not run (nothing was mounted AND nothing absorbed), so there is nothing to reconcile.
     await this.reconcileOptimistic();                       // remove optimistic duplicates (synchronous) so the bottom is final
@@ -1763,24 +1759,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // No clientMessageId → a plain incoming message (no optimistic bubble to settle). An already-mounted real (dup,
       // by id — an incoming that raced with a load) is skipped.
       const confirm = this.itemFulfilledCids(item).some(c => this.indexOfClientMsgId(c) >= 0);
-      console.info('[album-debug] mountNewer:item', {
-        id: item.id,
-        contentType: (item.data as { contentType?: unknown }).contentType,
-        clientMessageId: item.clientMessageId,
-        clientMessageIds: item.clientMessageIds,
-        confirm,
-        insertIdx,
-        target: insertIdx > 0
-          ? {
-              id: this.mounted[insertIdx - 1]?.item.id,
-              contentType: (this.mounted[insertIdx - 1]?.item.data as { contentType?: unknown })?.contentType,
-              optimistic: this.mounted[insertIdx - 1]?.optimistic,
-              transient: this.mounted[insertIdx - 1]?.transient,
-              leaving: this.mounted[insertIdx - 1]?.leaving,
-              resortTarget: this.mounted[insertIdx - 1]?.resortTarget,
-            }
-          : null,
-      });
       if (!confirm && this.indexOfId(item.id) >= 0) continue; // already-mounted real (dup) → skip
 
       // Cross-batch album absorb: an item the hook folds into the running newest real — `target` = mounted[insertIdx-1]
@@ -1803,11 +1781,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             target.item = merged;
             const tp = insertIdx > 1 ? this.mounted[insertIdx - 2].item : null;
             target.vs.update(merged, tp);
-            console.info('[album-debug] mountNewer:absorbed-and-updated', {
-              targetId: target.item.id,
-              incomingId: item.id,
-              images: (target.item.data as { images?: unknown[] }).images?.length ?? 0,
-            });
             const h = target.el.offsetHeight; // real height after the album grew (integer — layout.ts Math.rounds every row)
             if (h !== target.height) { target.height = h; this.dirtyPrefix = true; }
             this.measuring = false;

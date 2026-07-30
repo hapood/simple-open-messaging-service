@@ -149,13 +149,14 @@ class CallService : Service() {
         }
     }
 
-    /** The ongoing-call notification. NotificationCompat.CallStyle renders the system's native ongoing-call
-     *  template on API 31+ (a proper "in call" surface) and degrades to a standard ongoing notification on
-     *  older versions. The peer's name (CallController.peerName) is the displayed Person. No hang-up button
-     *  on the notification itself (the user hangs up via the in-app CallScreen / PiP) → hangUpIntent = null. */
+    /** The foreground-call notification. Before the media connection is established, use a standard
+     *  notification so Android does not label a merely dialing/connecting call as "in progress".
+     *  Once connected (including a temporary reconnect), CallStyle renders the system's native in-call
+     *  surface on API 31+ and degrades to a standard ongoing notification on older versions. */
     private fun buildOngoingNotification(): Notification {
         ensureChannels()
-        val status = when (CallController.phase) {
+        val phase = CallController.phase
+        val status = when (phase) {
             "starting" -> getString(R.string.call_status_starting)
             "calling", "ringing" -> getString(R.string.call_status_calling)
             "connecting" -> getString(R.string.call_status_connecting)
@@ -175,17 +176,28 @@ class CallService : Service() {
             this, REQ_HANGUP, hangUpIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ONGOING)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(CallController.peerName.ifEmpty { getString(R.string.app_name) })
             .setContentText(status)
-            .setStyle(
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setOngoing(true)
+
+        return if (phase == "connected" || phase == "reconnecting") {
+            builder.setStyle(
                 NotificationCompat.CallStyle.forOngoingCall(person, hangUpPi)
                     .setIsVideo(CallController.callType == "VIDEO"),
             )
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setOngoing(true)
-            .build()
+                .build()
+        } else {
+            builder
+                .addAction(
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    getString(R.string.pip_hang_up),
+                    hangUpPi,
+                )
+                .build()
+        }
     }
 
     /** The incoming-ring notification: MAX priority + CATEGORY_CALL + a full-screen intent (launches the app

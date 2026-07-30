@@ -11,6 +11,7 @@ import { ShellIncompatibleDialogComponent } from '../components/shell-incompatib
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
 import { SettingsComponent } from '../components/settings/settings.component';
 import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/friend-invite-dialog.component';
+import { UploadDetailDialogComponent } from '../components/upload-detail-dialog/upload-detail-dialog.component';
 import type { User } from './user.service';
 import type { SettingsCategoryId } from '../components/settings/settings-categories';
 import { AppIconType } from '../components/icon/model';
@@ -22,7 +23,13 @@ import {
 import { LayoutService } from './layout.service';
 
 export enum RoutePage {
-  HOME, AUTH_LOGIN, AUTH_REGISTER, AUTH_OTP, AUTH_QR, AUTH_SET_PASSWORD, CONFIG
+  HOME,
+  AUTH_LOGIN,
+  AUTH_REGISTER,
+  AUTH_OTP,
+  AUTH_QR,
+  AUTH_SET_PASSWORD,
+  CONFIG,
 }
 
 /**
@@ -31,7 +38,17 @@ export enum RoutePage {
  * the {@link DlgRef} handle). `dlgList` is a computed view of the dialog entries that RootPopup renders.
  * The auth-page `navigate`/`redirect` helpers stay (those are page-level router routes, not app-nav).
  */
-export enum PopupType { FRIEND_REQUESTS, FRIEND_INVITE, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, AVATAR_EDITOR, CONFIRM, SHELL_INCOMPATIBLE }
+export enum PopupType {
+  FRIEND_REQUESTS,
+  FRIEND_INVITE,
+  NEW_GROUP,
+  FOLDER_EDITOR,
+  EDIT_PROFILE,
+  AVATAR_EDITOR,
+  CONFIRM,
+  SHELL_INCOMPATIBLE,
+  UPLOAD_DETAIL,
+}
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
@@ -42,7 +59,8 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
   [PopupType.CONFIRM]: ConfirmDialogComponent,
   [PopupType.SHELL_INCOMPATIBLE]: ShellIncompatibleDialogComponent,
-}
+  [PopupType.UPLOAD_DETAIL]: UploadDetailDialogComponent,
+};
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FRIEND_REQUESTS]: 'page',
@@ -53,54 +71,62 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.AVATAR_EDITOR]: 'viewer',
   [PopupType.CONFIRM]: 'modal',
   [PopupType.SHELL_INCOMPATIBLE]: 'modal',
+  [PopupType.UPLOAD_DETAIL]: 'page',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
 export interface PopupInput {
-  [PopupType.FRIEND_REQUESTS]: { subject?: Subject<any>, initialTab?: 'add' | 'pending' }
-  [PopupType.FRIEND_INVITE]: { user: User }
-  [PopupType.NEW_GROUP]: undefined
-  [PopupType.FOLDER_EDITOR]: { folderId?: string }
-  [PopupType.EDIT_PROFILE]: undefined
-  [PopupType.AVATAR_EDITOR]: { file: File },
+  [PopupType.FRIEND_REQUESTS]: {
+    subject?: Subject<any>;
+    initialTab?: 'add' | 'pending';
+  };
+  [PopupType.FRIEND_INVITE]: { user: User };
+  [PopupType.NEW_GROUP]: undefined;
+  [PopupType.FOLDER_EDITOR]: { folderId?: string };
+  [PopupType.EDIT_PROFILE]: undefined;
+  [PopupType.AVATAR_EDITOR]: { file: File };
   /** Generic confirm dialog. `messageKey` is required; the rest are optional presentation knobs. */
   [PopupType.CONFIRM]: {
-    titleKey?: string
-    messageKey: string
-    messageParams?: Record<string, unknown>
-    confirmKey?: string
-    cancelKey?: string
-    danger?: boolean
-    icon?: AppIconType
-  },
+    titleKey?: string;
+    messageKey: string;
+    messageParams?: Record<string, unknown>;
+    confirmKey?: string;
+    cancelKey?: string;
+    danger?: boolean;
+    icon?: AppIconType;
+  };
   /** Once-per-launch shell↔backend incompatibility notice. `serverVersion` is interpolated into the copy. */
-  [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string },
+  [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string };
+  [PopupType.UPLOAD_DETAIL]: { threadId?: number };
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
 export interface PopupResult {
-  [PopupType.FRIEND_REQUESTS]: undefined
-  [PopupType.FRIEND_INVITE]: {
-    userId: number
-    status: 'OUTGOING_PENDING' | 'FRIEND'
-  } | undefined
-  [PopupType.NEW_GROUP]: { groupId: number }
-  [PopupType.FOLDER_EDITOR]: boolean
-  [PopupType.EDIT_PROFILE]: boolean
+  [PopupType.FRIEND_REQUESTS]: undefined;
+  [PopupType.FRIEND_INVITE]:
+    | {
+        userId: number;
+        status: 'OUTGOING_PENDING' | 'FRIEND';
+      }
+    | undefined;
+  [PopupType.NEW_GROUP]: { groupId: number };
+  [PopupType.FOLDER_EDITOR]: boolean;
+  [PopupType.EDIT_PROFILE]: boolean;
   // cropped File on Save; undefined on Cancel/back.
-  [PopupType.AVATAR_EDITOR]: { file: File } | undefined,
+  [PopupType.AVATAR_EDITOR]: { file: File } | undefined;
   // true on confirm; undefined on cancel / system-back (treated identically by the caller).
-  [PopupType.CONFIRM]: boolean | undefined,
+  [PopupType.CONFIRM]: boolean | undefined;
   // acknowledge-only — no meaningful result (undefined on dismiss).
-  [PopupType.SHELL_INCOMPATIBLE]: undefined,
+  [PopupType.SHELL_INCOMPATIBLE]: undefined;
+  [PopupType.UPLOAD_DETAIL]: undefined;
 }
 
 export interface DlgInfo {
-  id: number
-  component: Type<unknown>,
-  inputs?: Record<string, unknown>
-  presentation: DialogPresentation
-  desktopSize: DialogDesktopSize
+  id: number;
+  component: Type<unknown>;
+  inputs?: Record<string, unknown>;
+  presentation: DialogPresentation;
+  desktopSize: DialogDesktopSize;
 }
 
 /**
@@ -110,7 +136,7 @@ export interface DlgInfo {
  */
 export interface DlgRef {
   /** Matches the nav state machine pane entry id. */
-  readonly id: number
+  readonly id: number;
 }
 
 @Injectable({
@@ -135,49 +161,49 @@ export class RouteService {
   );
 
   getPageRoute(page: RoutePage, params?: any) {
-    let commands: string[] | undefined
+    let commands: string[] | undefined;
     switch (page) {
       case RoutePage.HOME:
-        commands = ['']
+        commands = [''];
         break;
       case RoutePage.AUTH_LOGIN:
-        commands = ['auth/login']
+        commands = ['auth/login'];
         break;
       case RoutePage.AUTH_REGISTER:
-        commands = ['auth/register']
+        commands = ['auth/register'];
         break;
       case RoutePage.AUTH_OTP:
-        commands = ['auth/otp']
+        commands = ['auth/otp'];
         break;
       case RoutePage.AUTH_QR:
-        commands = ['auth/qr']
+        commands = ['auth/qr'];
         break;
       case RoutePage.AUTH_SET_PASSWORD:
-        commands = ['auth/set-password']
+        commands = ['auth/set-password'];
         break;
       case RoutePage.CONFIG:
-        commands = ['config']
+        commands = ['config'];
         break;
       default:
     }
-    return commands
+    return commands;
   }
 
   navigate(page: RoutePage, params?: any) {
-    const commands = this.getPageRoute(page, params)
+    const commands = this.getPageRoute(page, params);
     if (commands) {
-      this.router.navigate(commands)
+      this.router.navigate(commands);
     } else {
-      console.error(`no page to navigate [${page}]`)
+      console.error(`no page to navigate [${page}]`);
     }
   }
 
   redirect(page: RoutePage, params?: any) {
-    const commands = this.getPageRoute(page, params)
+    const commands = this.getPageRoute(page, params);
     if (commands) {
-      this.router.navigate(commands, { replaceUrl: true })
+      this.router.navigate(commands, { replaceUrl: true });
     } else {
-      console.error(`no page to redirect [${page}]`)
+      console.error(`no page to redirect [${page}]`);
     }
   }
 
@@ -188,13 +214,13 @@ export class RouteService {
    *  {@link redirect}'s `replaceUrl`). `location.replace` to a different path is a hard navigation, so the
    *  freshly-swapped bundle is served on the reload. */
   reloadTo(page: RoutePage): void {
-    const commands = this.getPageRoute(page)
+    const commands = this.getPageRoute(page);
     if (!commands) {
-      console.error(`no page to reload-to [${page}]`)
-      return
+      console.error(`no page to reload-to [${page}]`);
+      return;
     }
-    const url = this.router.serializeUrl(this.router.createUrlTree(commands))
-    location.replace(url)
+    const url = this.router.serializeUrl(this.router.createUrlTree(commands));
+    location.replace(url);
   }
 
   /** Push a dialog onto the nav pane stack; returns a {@link DlgRef} for targeted close. The dialog's
@@ -202,7 +228,7 @@ export class RouteService {
   popupDlg<K extends PopupType>(
     popupType: K,
     inputs?: PopupInput[K],
-    onResult?: (result: PopupResult[K]) => void
+    onResult?: (result: PopupResult[K]) => void,
   ): DlgRef {
     const id = this.nav.pushPane({
       kind: 'dialog',
@@ -211,8 +237,8 @@ export class RouteService {
       onResult: onResult as ((result: unknown) => void) | undefined,
       presentation: presentationDict[popupType],
       desktopSize: 'standard',
-    })
-    return { id }
+    });
+    return { id };
   }
 
   /** Open the current user's profile editor as a shared page dialog on every layout. */
@@ -265,11 +291,11 @@ export class RouteService {
    * entry on the pane stack (search/overlay panes, if any, sit above dialogs and are left alone).
    */
   closeDlg(result?: unknown): void {
-    const stack = this.nav.paneStack()
+    const stack = this.nav.paneStack();
     for (let i = stack.length - 1; i >= 0; i--) {
       if (stack[i].kind === 'dialog') {
-        this.nav.closePane(stack[i].id, result)
-        return
+        this.nav.closePane(stack[i].id, result);
+        return;
       }
     }
   }
@@ -282,6 +308,6 @@ export class RouteService {
    *  undefined.
    */
   closeDialogAndAbove(ref: DlgRef, result?: unknown): void {
-    this.nav.closePane(ref.id, result)
+    this.nav.closePane(ref.id, result);
   }
 }

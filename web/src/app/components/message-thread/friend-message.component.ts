@@ -99,7 +99,7 @@ import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { fileExt, type FileCategory } from '../message-cards/file-meta.util';
-import { UploadDetailDialogService } from '../../services/upload-detail-dialog.service';
+import { PopupType, RouteService } from '../../services/route.service';
 
 let nativeComposerContextSequence = Date.now() * 1000;
 
@@ -179,7 +179,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly transfers = inject(MediaTransferService);
   private readonly nativeUploads = inject(NativeUploadService);
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
-  private readonly uploadDetails = inject(UploadDetailDialogService);
+  private readonly route = inject(RouteService);
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly debugTools = inject(DebugToolsService);
   private readonly transloco = inject(TranslocoService);
@@ -652,11 +652,6 @@ export class MessageThreadComponent implements OnDestroy {
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
       {
         onSignal: (seq: number) => {
-          console.info('[album-debug] SSE signal', {
-            threadId: trd.threadId,
-            seq,
-            atBottom: this.atBottom(),
-          });
           if (!this.atBottom())
             this.newMessageCount.update((count) => count + 1);
           // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
@@ -828,7 +823,9 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   openUploadDetails(): void {
-    this.uploadDetails.open(this.threadId());
+    this.route.popupDlg(PopupType.UPLOAD_DETAIL, {
+      threadId: this.threadId(),
+    });
   }
 
   cancelUploadingTransfers(): void {

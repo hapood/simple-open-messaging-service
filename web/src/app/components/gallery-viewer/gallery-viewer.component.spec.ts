@@ -103,6 +103,34 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the thumbnail rail for image pages but removes it from video pages', () => {
+    const component = create([
+      media,
+      {
+        kind: 'video',
+        src: '/uploads/clip.mp4',
+        w: 1280,
+        h: 720,
+        msgId: 43,
+      },
+    ]);
+
+    expect(component.showThumbs()).toBe(true);
+    component.index.set(1);
+    expect(component.currentIsVideo()).toBe(true);
+    expect(component.showThumbs()).toBe(false);
+  });
+
+  it('uses one shared visibility state for the viewer chrome', () => {
+    const component = create();
+
+    expect(component.chromeVisible()).toBe(true);
+    component.toggleChrome();
+    expect(component.chromeVisible()).toBe(false);
+    component.toggleChrome();
+    expect(component.chromeVisible()).toBe(true);
+  });
+
   it('renders video errors inside the player with an error-specific action', () => {
     const component = create();
     const internals = component as unknown as {
@@ -134,9 +162,9 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(save).toHaveBeenCalledWith(0);
   });
 
-  function create(): GalleryViewerComponent {
+  function create(images: AlbumImage[] = [media]): GalleryViewerComponent {
     const fixture = TestBed.createComponent(GalleryViewerComponent);
-    fixture.componentRef.setInput('images', [media]);
+    fixture.componentRef.setInput('images', images);
     fixture.componentRef.setInput('startIndex', 0);
     fixture.componentRef.setInput('threadId', 7);
     return fixture.componentInstance;

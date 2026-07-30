@@ -29,7 +29,12 @@ import { ImageDownloadService } from '../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { formatBytes } from '../message-cards/file-meta.util';
 import { NativeVideoService } from '../../services/native-video.service';
-import { isAndroid, isTauri } from '../../services/runtime';
+import {
+  ANDROID_MEDIA3_ENABLED,
+  type LocalVideoStream,
+  isAndroid,
+  isTauri,
+} from '../../services/runtime';
 
 /** Business metadata kept alongside PhotoSwipe's image data. */
 interface GallerySlideData extends SlideData {
@@ -67,7 +72,12 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly statusOverrides = signal<Map<number, MediaStatus>>(new Map());
   readonly loadErrors = signal<Set<number>>(new Set());
   readonly videoErrors = signal<Map<number, VideoPlaybackError>>(new Map());
+  readonly chromeVisible = signal(true);
   readonly current = computed(() => this.images()[this.index()] ?? null);
+  readonly currentIsVideo = computed(() => this.current()?.kind === 'video');
+  readonly showThumbs = computed(
+    () => this.images().length > 1 && !this.currentIsVideo(),
+  );
   readonly currentStatus = computed<MediaStatus>(
     () =>
       this.statusOverrides().get(this.index()) ??
@@ -124,7 +134,8 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly toast = inject(ToastService);
   readonly downloads = inject(ImageDownloadService);
   private readonly nativeVideo = inject(NativeVideoService);
-  readonly useNativeVideo = isTauri() && isAndroid();
+  readonly isAndroidApp = isTauri() && isAndroid();
+  readonly useNativeVideo = this.isAndroidApp && ANDROID_MEDIA3_ENABLED;
   private readonly threshold = inject(MediaSizeThresholdService);
   readonly formatBytes = formatBytes;
 
@@ -178,7 +189,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       wheelToZoom: true,
       imageClickAction: false,
       bgClickAction: 'close',
-      tapAction: 'toggle-controls',
+      // Artplayer owns taps while a video is active; letting both gesture engines toggle chrome would
+      // immediately undo one another. Photo pages use the shared viewer chrome directly.
+      tapAction: () => {
+        if (!this.currentIsVideo()) this.toggleChrome();
+      },
       doubleTapAction: 'zoom',
       showHideAnimationType: 'fade',
       showAnimationDuration: 180,
@@ -194,6 +209,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
     pswp.on('change', () => {
       this.index.set(pswp.currIndex);
+      this.chromeVisible.set(true);
       this.activateVideo(pswp.currIndex);
       queueMicrotask(() => this.scrollCurrentThumbIntoView());
     });
@@ -231,6 +247,15 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   goTo(index: number): void {
     this.pswp?.goTo(index);
+  }
+
+  dismiss(event: MouseEvent): void {
+    event.stopPropagation();
+    this.pswp?.close();
+  }
+
+  toggleChrome(): void {
+    this.chromeVisible.update((visible) => !visible);
   }
 
   mediaUrl(media: AlbumImage): string {
@@ -438,11 +463,18 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private videoSlideHtml(index: number): string {
-    if (this.useNativeVideo) {
-      return `<div class="gv-slide-video gv-native-video-poster" data-gallery-index="${index}">
-        <button type="button" class="gv-native-video-open" aria-label="${this.i18n.translate('gallery.openVideoAria')}">
-          <span aria-hidden="true"></span>
-        </button>
+    if (this.isAndroidApp) {
+      const media = this.images()[index];
+      const width = Math.max(1, media?.w ?? 1);
+      const height = Math.max(1, media?.h ?? 1);
+      const thumbnail = media ? this.nativeVideo.thumbnailUrl(media.src) : '';
+      return `<div class="gv-native-video-shell" style="--gv-video-ratio:${width}/${height}">
+        <div class="gv-slide-video gv-native-video-poster" data-gallery-index="${index}">
+          ${thumbnail ? `<img class="gv-native-video-thumbnail" src="${thumbnail}" alt="">` : ''}
+          <button type="button" class="gv-native-video-open" aria-label="${this.i18n.translate('gallery.openVideoAria')}">
+            <span aria-hidden="true"></span>
+          </button>
+        </div>
       </div>`;
     }
     return `<div class="gv-slide-video" data-gallery-index="${index}"></div>`;
@@ -459,21 +491,51 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (!container || media?.kind !== 'video') return;
 
     this.destroyVideoPlayer(index);
-    if (this.useNativeVideo) {
+    if (this.isAndroidApp) {
       container
         .querySelector<HTMLButtonElement>('.gv-native-video-open')
         ?.addEventListener('click', (event) => {
           event.stopPropagation();
-          void this.nativeVideo.open(media.src);
+          if (this.useNativeVideo) {
+            void this.nativeVideo.open(media.src);
+            return;
+          }
+          void this.nativeVideo.stream(media.src).then((stream) => {
+            if (!stream || !container.isConnected) {
+              this.setVideoError(index, 'network');
+              return;
+            }
+            container.replaceChildren();
+            void this.createVideoPlayer(container, media, index, stream);
+          });
         });
       return;
     }
+    await this.createVideoPlayer(container, media, index, null);
+  }
+
+  private async createVideoPlayer(
+    container: HTMLDivElement,
+    media: AlbumImage,
+    index: number,
+    localStream: LocalVideoStream | null,
+  ): Promise<void> {
     const { default: ArtplayerPlayer } = await import('artplayer');
     if (!container.isConnected) return;
 
     const player = new ArtplayerPlayer({
       container,
-      url: this.imageUrl(media, index),
+      url: localStream?.streamUrl ?? this.imageUrl(media, index),
+      // Old Android WebView otherwise injects an `android-webview-video-poster:` resource. Once the
+      // video is CORS-enabled for canvas capture that private scheme fails CORS and emits a spurious
+      // media error before the real localhost stream starts. An explicit inert poster avoids the probe.
+      moreVideoAttr: localStream
+        ? {
+            crossOrigin: 'anonymous',
+            poster:
+              'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=',
+          }
+        : {},
       autoplay: index === this.index(),
       muted: false,
       playsInline: true,
@@ -495,19 +557,50 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         ? 'zh-cn'
         : 'en',
     });
+    player.on('control', (visible: boolean) => {
+      if (index === this.index()) this.chromeVisible.set(visible);
+    });
     this.videoPlayers.set(index, player);
     const errorLayer = this.createVideoErrorLayer(index);
     container.append(errorLayer);
     this.videoErrorLayers.set(index, errorLayer);
 
+    let thumbnailRequested = false;
+    const onPlayable = () => {
+      this.setVideoError(index, null);
+      if (!localStream || thumbnailRequested) return;
+      thumbnailRequested = true;
+      const capture = () =>
+        void this.nativeVideo.captureThumbnail(
+          player.video,
+          localStream,
+          media.src,
+        );
+      if ('requestVideoFrameCallback' in player.video) {
+        player.video.requestVideoFrameCallback(() => capture());
+      } else {
+        setTimeout(capture, 100);
+      }
+    };
     player.on('video:loadeddata', () => this.setVideoError(index, null));
+    player.on('video:playing', onPlayable);
+    player.on('video:canplay', () => this.setVideoError(index, null));
     player.on('video:error', () => {
       const code = player.video.error?.code;
-      if (code === MediaError.MEDIA_ERR_ABORTED) return;
-      this.setVideoError(
-        index,
-        code === MediaError.MEDIA_ERR_NETWORK ? 'network' : 'unsupported',
+      console.warn(
+        '[video-playback] media error',
+        JSON.stringify({
+          code: code ?? null,
+          message: player.video.error?.message ?? '',
+          readyState: player.video.readyState,
+          networkState: player.video.networkState,
+        }),
       );
+      if (code === MediaError.MEDIA_ERR_ABORTED) return;
+      if (code === MediaError.MEDIA_ERR_NETWORK)
+        this.setVideoError(index, 'network');
+      else if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED)
+        this.setVideoError(index, 'unsupported');
     });
     if (index === this.index()) {
       void player.play().catch(() => {
@@ -517,7 +610,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private activateVideo(activeIndex: number): void {
-    if (this.useNativeVideo) return;
+    if (this.isAndroidApp) return;
     this.videoPlayers.forEach((player, index) => {
       if (index !== activeIndex) {
         player.pause();

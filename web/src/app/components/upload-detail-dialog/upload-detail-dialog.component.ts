@@ -1,12 +1,14 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, input } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import {
   MediaTransferService,
   type MediaTransferTask,
 } from '../../services/media-transfer.service';
-import { UploadDetailDialogService } from '../../services/upload-detail-dialog.service';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { RouteService } from '../../services/route.service';
+import { LayoutService } from '../../services/layout.service';
 import { displayThreadName } from '../../services/model';
+import { AppIconType, IconComponent } from '../icon/icon.component';
 import {
   fileExt,
   formatBytes,
@@ -22,23 +24,23 @@ interface UploadGroup {
 @Component({
   selector: 'app-upload-detail-dialog',
   standalone: true,
-  imports: [TranslocoPipe],
+  imports: [IconComponent, TranslocoPipe],
   templateUrl: './upload-detail-dialog.component.html',
   styleUrl: './upload-detail-dialog.component.scss',
 })
 export class UploadDetailDialogComponent {
-  private readonly dialog = inject(UploadDetailDialogService);
+  readonly AppIconType = AppIconType;
+  readonly threadId = input<number>();
+  readonly isCard = inject(LayoutService).isAtLeastMedium;
+  private readonly route = inject(RouteService);
   private readonly transfers = inject(MediaTransferService);
   private readonly conversations = inject(ConversationListService);
 
-  readonly scope = this.dialog.scope;
   readonly groups = computed<UploadGroup[]>(() => {
-    const scope = this.scope();
-    if (!scope) return [];
+    const threadId = this.threadId();
     const grouped = new Map<number, MediaTransferTask[]>();
     for (const task of this.transfers.tasks()) {
-      if (scope.threadId !== undefined && task.threadId !== scope.threadId)
-        continue;
+      if (threadId !== undefined && task.threadId !== threadId) continue;
       const tasks = grouped.get(task.threadId) ?? [];
       tasks.push(task);
       grouped.set(task.threadId, tasks);
@@ -52,10 +54,10 @@ export class UploadDetailDialogComponent {
   readonly taskCount = computed(() =>
     this.groups().reduce((total, group) => total + group.tasks.length, 0),
   );
-  readonly isGlobal = computed(() => this.scope()?.threadId === undefined);
+  readonly isGlobal = computed(() => this.threadId() === undefined);
 
   close(): void {
-    this.dialog.close();
+    this.route.closeDlg();
   }
 
   cancel(task: MediaTransferTask): void {

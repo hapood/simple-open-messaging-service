@@ -148,7 +148,7 @@ class RealtimeService : Service() {
                 // App visible: the process has foreground priority, so the connection survives without FGS
                 // status — cancel any background NEW_MESSAGE debounce, drop the persistent notification
                 // (annoying while in use), but keep the stream.
-                Log.i(TAG, "onStartCommand foreground (cancel away debounce + drop persistent notification)")
+                SomsLog.i("Rt") { "onStartCommand foreground (cancel away debounce + drop persistent notification)" }
                 handler.removeCallbacks(awayCoalesceTask)
                 dropForegroundNotification()
             }
@@ -157,7 +157,7 @@ class RealtimeService : Service() {
                 // backoff + reset the attempt counter so the immediate retry starts fresh, then let the
                 // openStream() below reconnect at once. openStream() is a no-op if a stream is already open,
                 // so a retry while healthy is harmless. Parity with the worker's retry-now / Rust's sse_net.
-                Log.i(TAG, "onStartCommand retry-now (cancel backoff + reconnect)")
+                SomsLog.i("Rt") { "onStartCommand retry-now (cancel backoff + reconnect)" }
                 handler.removeCallbacks(reopenTask)
                 attempt = 0
             }
@@ -168,7 +168,7 @@ class RealtimeService : Service() {
                 // dead-open socket first. JS cannot close the native socket, so the WebView asks Kotlin. The
                 // listener's identity check ensures the canceled socket's late onClosed/onFailure can't
                 // clobber the fresh socket establishConnection() opens below.
-                Log.i(TAG, "onStartCommand force-reconnect (cancel open stream + reopen)")
+                SomsLog.i("Rt") { "onStartCommand force-reconnect (cancel open stream + reopen)" }
                 handler.removeCallbacks(reopenTask)
                 attempt = 0
                 if (eventSource != null) {
@@ -184,7 +184,7 @@ class RealtimeService : Service() {
             else -> {
                 // ACTION_BACKGROUND (app backgrounded + toggle on) OR a START_STICKY system restart:
                 // promote to a dataSync foreground service so the system keeps the connection alive.
-                Log.i(TAG, "onStartCommand background/sticky (promote to foreground service)")
+                SomsLog.i("Rt") { "onStartCommand background/sticky (promote to foreground service)" }
                 startForegroundCompat()
             }
         }
@@ -293,7 +293,7 @@ class RealtimeService : Service() {
             .addHeader("Accept", "text/event-stream")
             .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
             .build()
-        Log.i(TAG, "openStreamOn url=${request.url} attempt=$attempt")
+        SomsLog.i("Rt") { "openStreamOn url=${request.url} attempt=$attempt" }
         eventSource = sseFactory.newEventSource(request, listener)
     }
 
@@ -308,7 +308,7 @@ class RealtimeService : Service() {
 
     private val listener = object : EventSourceListener() {
         override fun onOpen(eventSource: EventSource, response: Response) {
-            Log.i(TAG, "onOpen connected code=${response.code}")
+            SomsLog.i("Rt") { "onOpen connected code=${response.code}" }
             this@RealtimeService.pushConnState("open")
         }
 
@@ -378,7 +378,7 @@ class RealtimeService : Service() {
             // Stale callback (a FORCE_RECONNECT-canceled socket's late close): ignore ENTIRELY — the fresh
             // socket is already open, so no nulling, no "reconnecting" push (no banner flicker), no reopen.
             if (this@RealtimeService.eventSource !== eventSource) return
-            Log.i(TAG, "onClosed → scheduleReopen")
+            SomsLog.i("Rt") { "onClosed → scheduleReopen" }
             this@RealtimeService.eventSource = null
             this@RealtimeService.pushConnState("reconnecting")
             scheduleReopen()

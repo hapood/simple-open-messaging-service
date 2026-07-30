@@ -31,6 +31,7 @@
     "ringing": "Ringing…",
     "connecting": "Connecting…",
     "reconnecting": "Reconnecting…",
+    "busyEnding": "The previous call is ending. Please try again shortly",
     "audioCall": "Audio call",
     "videoCall": "Video call",
     "accept": "Accept",

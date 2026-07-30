@@ -180,6 +180,11 @@ commands.allow = [
 ]
 
 [[permission]]
+identifier = "allow-create-native-video-stream"
+description = "Enables capability-scoped loopback video URLs backed by the authenticated Rust media cache. Used by the Android WebView player; the dormant Media3 player shares the same command."
+commands.allow = ["create_native_video_stream"]
+
+[[permission]]
 identifier = "allow-open-external-url"
 description = "Enables open_external_url — open a LINK message card's target URL in the system browser (the webview's nav guard blocks in-app external navigation)."
 commands.allow = ["open_external_url"]
@@ -242,6 +247,7 @@ permissions = [
   "allow-api-request",
   "allow-media-request",
   "allow-media-download",
+  "allow-create-native-video-stream",
   "allow-open-external-url",
   "allow-native-db",
 ]

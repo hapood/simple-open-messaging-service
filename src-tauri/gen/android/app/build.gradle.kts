@@ -37,6 +37,9 @@ val debugKeystore = rootProject.file("debug.keystore")
 android {
     compileSdk = 36
     namespace = "com.soms.client"
+    // The dormant Media3 implementation remains in src/main/dormant-native-video/, outside Android's
+    // compiled java/ and res/ source roots. Restore those files plus the dependencies and entries marked
+    // "Dormant native video player" to re-enable it.
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "com.soms.client"
@@ -134,11 +137,12 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // Native chat-video playback. Media3 ExoPlayer is Android's current first-party playback stack;
-    // the OkHttp data source reuses the app's existing network stack and attaches the native session token.
-    implementation("androidx.media3:media3-exoplayer:1.10.1")
-    implementation("androidx.media3:media3-ui:1.10.1")
-    implementation("androidx.media3:media3-datasource-okhttp:1.10.1")
+    // Dormant native video player (kept for a possible future switch back from WebView playback).
+    // Leaving these out of the dependency graph is what prevents Media3 and its transitive artifacts from
+    // increasing the APK/install size. See the dormant source directory note above.
+    // implementation("androidx.media3:media3-exoplayer:1.10.1")
+    // implementation("androidx.media3:media3-ui:1.10.1")
+    // implementation("androidx.media3:media3-datasource-okhttp:1.10.1")
     // SSE EventSource client for RealtimeService (the service that holds a live /events stream).
     // Same version as okhttp; okhttp-sse is a separate artifact.
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")

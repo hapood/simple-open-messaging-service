@@ -185,20 +185,7 @@ $dark-theme: mat.define-theme((
 }
 
 .soms-gallery-pswp .pswp__top-bar {
-  height: calc(var(--soms-safe-top, 0px) + 60px);
-  padding-top: var(--soms-safe-top, 0px);
-  box-sizing: border-box;
-}
-
-.soms-gallery-pswp .pswp__button--close {
-  width: 48px;
-  height: 48px;
-  margin-right: max(6px, var(--soms-safe-right, 0px));
-}
-
-.soms-gallery-pswp .pswp__counter {
-  margin-top: 15px;
-  margin-inline-start: max(20px, var(--soms-safe-left, 0px));
+  display: none;
 }
 
 /* === QR scanner overlay: make the app transparent so the native camera shows through. ===

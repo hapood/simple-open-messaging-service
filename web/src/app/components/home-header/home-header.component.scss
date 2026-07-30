@@ -26,158 +26,90 @@
 
 .transfer-status {
   position: relative;
-  overflow: hidden;
   @include styless-button;
-  height: 32px;
-  width: 100%;
-  max-width: none;
-  padding: 0 9px;
-  display: grid;
-  grid-template-columns: 62px 16px minmax(0, 1fr);
+  width: max-content;
+  min-width: 44px;
+  height: 34px;
+  margin: 0 auto;
+  padding: 0 10px;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 10px;
   border-radius: var(--app-radius-pill);
   color: var(--app-brand);
-  background: color-mix(in srgb, var(--app-brand) 10%, transparent);
-  font-size: 12px;
-  font-weight: 600;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: color-mix(in srgb, var(--app-brand) 7%, var(--app-surface));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
   white-space: nowrap;
   cursor: pointer;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease;
   &.failed {
     color: var(--app-danger);
-    background: color-mix(in srgb, var(--app-danger) 10%, transparent);
+    background: color-mix(in srgb, var(--app-danger) 7%, var(--app-surface));
+  }
+  &:hover {
+    border-color: color-mix(in srgb, currentColor 38%, transparent);
+    background: color-mix(in srgb, currentColor 11%, var(--app-surface));
   }
   &:focus-visible {
     outline: 2px solid var(--app-focus-ring);
     outline-offset: 2px;
   }
-  &::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    width: var(--transfer-progress, 0%);
-    height: 2px;
-    background: currentColor;
-    opacity: 0.7;
-    transition: width 0.16s linear;
-  }
-  &--uploads {
-    grid-template-columns: 34px minmax(0, 1fr) 18px;
-    gap: 8px;
-    height: 38px;
-    padding: 0 10px 0 8px;
-    border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-    background: linear-gradient(
-      100deg,
-      color-mix(in srgb, var(--app-brand) 14%, var(--app-surface)),
-      color-mix(in srgb, var(--app-brand) 7%, var(--app-surface))
-    );
-    box-shadow: 0 3px 12px color-mix(in srgb, var(--app-brand) 12%, transparent);
-    &:hover {
-      border-color: color-mix(in srgb, currentColor 34%, transparent);
-      box-shadow: 0 5px 16px
-        color-mix(in srgb, var(--app-brand) 18%, transparent);
-      transform: translateY(-1px);
-    }
-    &::after {
-      display: none;
-    }
-  }
 }
 
-.transfer-upload-motion {
-  position: relative;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 10px;
-  color: #fff;
-  background: var(--app-brand);
+.transfer-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-brand);
+  svg,
+  > span {
+    width: 16px;
+    height: 16px;
+  }
   svg {
-    position: relative;
-    z-index: 2;
-    width: 21px;
-    height: 21px;
     fill: none;
     stroke: currentColor;
-    stroke-width: 1.9;
+    stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
   > span {
-    position: absolute;
-    left: -5px;
-    right: -5px;
-    bottom: -8px;
-    height: 15px;
+    display: grid;
+    place-items: center;
+    border: 1.5px solid currentColor;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
-    animation: transfer-wave 1.5s ease-in-out infinite alternate;
-    &:last-child {
-      bottom: -11px;
-      background: rgba(255, 255, 255, 0.14);
-      animation-delay: -0.7s;
-    }
+    box-sizing: border-box;
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 750;
   }
-}
-
-.transfer-upload-line {
-  animation: transfer-arrow-rise 1.25s ease-in-out infinite;
-}
-
-.transfer-upload-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1;
   strong {
-    max-width: 100%;
-    overflow: hidden;
-    font-size: 12px;
-    line-height: 15px;
-    text-overflow: ellipsis;
+    min-width: 8px;
+    color: var(--app-text);
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
   }
-  small {
-    margin-top: 1px;
-    color: var(--app-text-muted);
-    font-size: 9px;
-    line-height: 11px;
-    font-weight: 500;
+  &--failed,
+  &--failed strong {
+    color: var(--app-danger);
   }
 }
 
-.transfer-upload-chevron {
+.transfer-status.failed .transfer-metric:not(.transfer-metric--failed) {
   color: var(--app-text-muted);
-  font-size: 22px;
-  line-height: 20px;
-  transition: transform 140ms ease;
 }
 
-.transfer-status--uploads:hover .transfer-upload-chevron {
-  transform: translateX(2px);
-}
-
-.transfer-status > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-align: left;
-}
-
-.transfer-thumbs,
 .transfer-thread-thumbs {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-}
-
-.transfer-status > .transfer-thumbs {
-  width: 62px;
-  justify-content: flex-start;
 }
 
 .transfer-thumb,
@@ -206,30 +138,8 @@
   }
 }
 
-.transfer-thumbs > :first-child,
 .transfer-thread-thumbs > :first-child {
   margin-left: 0;
-}
-
-.transfer-spinner {
-  width: 12px;
-  height: 12px;
-  box-sizing: border-box;
-  border: 2px solid color-mix(in srgb, currentColor 26%, transparent);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  animation: transfer-spin 0.8s linear infinite;
-}
-
-.transfer-mark {
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  line-height: 14px;
 }
 
 .transfer-menu {
@@ -320,38 +230,9 @@
   }
 }
 
-@keyframes transfer-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes transfer-arrow-rise {
-  0%,
-  100% {
-    transform: translateY(1px);
-  }
-  50% {
-    transform: translateY(-2px);
-  }
-}
-
-@keyframes transfer-wave {
-  from {
-    transform: translateX(-3px) rotate(-3deg);
-  }
-  to {
-    transform: translateX(3px) rotate(3deg);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .transfer-spinner {
-    animation-duration: 1.8s;
-  }
-  .transfer-upload-line,
-  .transfer-upload-motion > span {
-    animation: none;
+  .transfer-ring-value {
+    transition: none;
   }
 }
 
@@ -360,15 +241,7 @@
     left: 52px;
     right: 92px;
   }
-  .transfer-status {
-    grid-template-columns: 42px 14px minmax(0, 1fr);
-    gap: 4px;
-    padding: 0 7px;
-  }
-  .transfer-status > .transfer-thumbs {
-    width: 42px;
-  }
-  .transfer-status > .transfer-thumbs .transfer-thumb:nth-child(n + 3) {
+  .transfer-count {
     display: none;
   }
 }
