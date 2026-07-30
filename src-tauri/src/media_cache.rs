@@ -5,9 +5,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 const CACHE_DIR: &str = "media";
 const DEFAULT_CACHE_LIMIT_MB: u64 = 512;
@@ -77,6 +78,30 @@ pub(crate) struct CachedMediaFile {
     size: u64,
 }
 
+#[derive(Clone)]
+struct MediaDownloadObserver {
+    app: tauri::AppHandle,
+    task_id: String,
+    cancel: CancellationToken,
+}
+
+impl MediaDownloadObserver {
+    fn progress(&self, loaded: u64, total: u64) {
+        let _ = self.app.emit(
+            "media-download-progress",
+            serde_json::json!({
+                "taskId": self.task_id,
+                "loaded": loaded,
+                "total": total,
+            }),
+        );
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaCacheInfo {
@@ -93,6 +118,14 @@ fn validate_path(path: &str) -> Result<(), String> {
         return Err("only safe /uploads/* media paths are allowed".into());
     }
     Ok(())
+}
+
+fn valid_download_task_id(task_id: &str) -> bool {
+    !task_id.is_empty()
+        && task_id.len() <= 128
+        && task_id
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_'))
 }
 
 fn cache_key(origin: &str, credential: Option<&str>, path: &str) -> String {
@@ -490,6 +523,8 @@ async fn stream_response_range(
     path: &Path,
     range: CachedRange,
     total: u64,
+    observer: Option<&MediaDownloadObserver>,
+    already_cached: u64,
 ) -> Result<(), String> {
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -504,13 +539,30 @@ async fn stream_response_range(
         .await
         .map_err(|e| format!("seek sparse media cache: {e}"))?;
     let mut received = 0u64;
+    let mut last_reported = already_cached;
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = if let Some(observer) = observer {
+            tokio::select! {
+                value = stream.next() => value,
+                _ = observer.cancel.cancelled() => return Err("media download cancelled".into()),
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| format!("read missing media range: {e}"))?;
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("write missing media range: {e}"))?;
         received = received.saturating_add(chunk.len() as u64);
+        if let Some(observer) = observer {
+            let loaded = already_cached.saturating_add(received).min(total);
+            if loaded.saturating_sub(last_reported) >= 64 * 1024 || loaded >= total {
+                observer.progress(loaded, total);
+                last_reported = loaded;
+            }
+        }
     }
     if received != range.end - range.start {
         return Err(format!(
@@ -587,10 +639,15 @@ pub(crate) async fn get_or_fetch_range(
                     if let Some(token) = token.as_ref() {
                         request = request.header("authorization", format!("Bearer {token}"));
                     }
-                    let response = request
-                        .send()
-                        .await
-                        .map_err(|e| format!("fill playback media range: {e}"))?;
+                    let response = match request.send().await {
+                        Ok(response) => response,
+                        Err(error) => {
+                            if crate::is_network_failure(&error) {
+                                crate::runtime_switch(proxy).await;
+                            }
+                            return Err(format!("fill playback media range: {error}"));
+                        }
+                    };
                     let returned = response
                         .headers()
                         .get(reqwest::header::CONTENT_RANGE)
@@ -602,7 +659,8 @@ pub(crate) async fn get_or_fetch_range(
                         filled = false;
                         break;
                     }
-                    stream_response_range(response, &data_path, missing, meta.size).await?;
+                    stream_response_range(response, &data_path, missing, meta.size, None, 0)
+                        .await?;
                     merge_range(&mut meta.ranges, missing);
                     refresh_block_hashes(&data_path, &mut meta, missing).await?;
                     write_meta(&meta_path, &meta).await?;
@@ -764,7 +822,7 @@ pub(crate) async fn get_or_fetch(
     proxy: &ProxyState,
     path: &str,
 ) -> Result<CachedMedia, String> {
-    get_or_fetch_inner(app, proxy, path, true).await
+    get_or_fetch_inner(app, proxy, path, true, None).await
 }
 
 async fn ensure_cached_file(
@@ -772,7 +830,7 @@ async fn ensure_cached_file(
     proxy: &ProxyState,
     path: &str,
 ) -> Result<CachedMedia, String> {
-    get_or_fetch_inner(app, proxy, path, false).await
+    get_or_fetch_inner(app, proxy, path, false, None).await
 }
 
 async fn get_or_fetch_inner(
@@ -780,6 +838,7 @@ async fn get_or_fetch_inner(
     proxy: &ProxyState,
     path: &str,
     load_bytes: bool,
+    observer: Option<&MediaDownloadObserver>,
 ) -> Result<CachedMedia, String> {
     let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
     let _maintenance_guard = maintenance.read().await;
@@ -792,6 +851,13 @@ async fn get_or_fetch_inner(
     if let Some(cached) =
         read_cached(&data_path, &meta_path, expected_digest(path), load_bytes).await
     {
+        if let Some(observer) = observer {
+            let size = tokio::fs::metadata(&data_path)
+                .await
+                .map(|value| value.len())
+                .unwrap_or(0);
+            observer.progress(size, size);
+        }
         return Ok(cached);
     }
     if let Some(mut meta) = read_meta(&meta_path)
@@ -801,7 +867,15 @@ async fn get_or_fetch_inner(
         // Playback already populated some sparse ranges. Fetch only the holes, so "watch half, then
         // save" transfers approximately one complete file in total instead of half + a second full GET.
         let mut restart_full = false;
+        let mut cached_bytes: u64 = meta
+            .ranges
+            .iter()
+            .map(|range| range.end.saturating_sub(range.start))
+            .sum();
         for missing in missing_ranges(&meta) {
+            if observer.is_some_and(MediaDownloadObserver::cancelled) {
+                return Err("media download cancelled".into());
+            }
             let target = format!("{origin}{path}");
             let mut request = proxy.api_client(&origin).get(target).header(
                 reqwest::header::RANGE,
@@ -813,7 +887,15 @@ async fn get_or_fetch_inner(
             if let Some(token) = token.as_ref() {
                 request = request.header("authorization", format!("Bearer {token}"));
             }
-            let response = match request.send().await {
+            let response_result = if let Some(observer) = observer {
+                tokio::select! {
+                    value = request.send() => value,
+                    _ = observer.cancel.cancelled() => return Err("media download cancelled".into()),
+                }
+            } else {
+                request.send().await
+            };
+            let response = match response_result {
                 Ok(response) => response,
                 Err(error) => {
                     if crate::is_network_failure(&error) {
@@ -837,7 +919,16 @@ async fn get_or_fetch_inner(
                 restart_full = true;
                 break;
             }
-            stream_response_range(response, &data_path, missing, meta.size).await?;
+            stream_response_range(
+                response,
+                &data_path,
+                missing,
+                meta.size,
+                observer,
+                cached_bytes,
+            )
+            .await?;
+            cached_bytes = cached_bytes.saturating_add(missing.end - missing.start);
             merge_range(&mut meta.ranges, missing);
             refresh_block_hashes(&data_path, &mut meta, missing).await?;
             write_meta(&meta_path, &meta).await?;
@@ -878,7 +969,15 @@ async fn get_or_fetch_inner(
     if let Some(token) = token {
         request = request.header("authorization", format!("Bearer {token}"));
     }
-    let response = match request.send().await {
+    let response_result = if let Some(observer) = observer {
+        tokio::select! {
+            value = request.send() => value,
+            _ = observer.cancel.cancelled() => return Err("media download cancelled".into()),
+        }
+    } else {
+        request.send().await
+    };
+    let response = match response_result {
         Ok(response) => response,
         Err(error) => {
             if crate::is_network_failure(&error) {
@@ -901,6 +1000,7 @@ async fn get_or_fetch_inner(
         .or_else(|| response.headers().get(reqwest::header::LAST_MODIFIED))
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let total = response.content_length().unwrap_or(0);
 
     let part_path = data_path.with_extension("part");
     let mut file = tokio::fs::File::create(&part_path)
@@ -908,16 +1008,43 @@ async fn get_or_fetch_inner(
         .map_err(|e| format!("create cache part: {e}"))?;
     let mut bytes = Vec::new();
     let mut digest = Sha256::new();
+    let mut received = 0u64;
+    let mut last_reported = 0u64;
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = if let Some(observer) = observer {
+            tokio::select! {
+                value = stream.next() => value,
+                _ = observer.cancel.cancelled() => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    return Err("media download cancelled".into());
+                },
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| format!("read media body: {e}"))?;
         digest.update(&chunk);
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("write media cache: {e}"))?;
+        received = received.saturating_add(chunk.len() as u64);
         if load_bytes {
             bytes.extend_from_slice(&chunk);
         }
+        if let Some(observer) = observer {
+            if received.saturating_sub(last_reported) >= 64 * 1024
+                || (total > 0 && received >= total)
+            {
+                observer.progress(received, total);
+                last_reported = received;
+            }
+        }
+    }
+    if let Some(observer) = observer {
+        observer.progress(received, if total > 0 { total } else { received });
     }
     file.flush()
         .await
@@ -1041,7 +1168,7 @@ async fn cache_used_bytes(app: &tauri::AppHandle) -> u64 {
     let Ok(root) = app.path().app_cache_dir().map(|path| path.join(CACHE_DIR)) else {
         return 0;
     };
-    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+    let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
         return 0;
     };
     let mut total = 0u64;
@@ -1136,7 +1263,8 @@ mod tests {
     use super::sanitize_filename;
     use super::{
         cache_key, expected_digest, intersecting_missing_ranges, merge_range, missing_ranges,
-        remove_range, requested_range, validate_path, CacheMeta, CachedRange,
+        remove_range, requested_range, valid_download_task_id, validate_path, CacheMeta,
+        CachedRange,
     };
 
     #[test]
@@ -1145,6 +1273,14 @@ mod tests {
         assert!(validate_path("/api/v1/users").is_err());
         assert!(validate_path("/uploads/../secret").is_err());
         assert!(validate_path("/uploads\\secret").is_err());
+    }
+
+    #[test]
+    fn native_download_task_ids_are_bounded_and_event_safe() {
+        assert!(valid_download_task_id("media-0123_ab"));
+        assert!(!valid_download_task_id(""));
+        assert!(!valid_download_task_id("space is not allowed"));
+        assert!(!valid_download_task_id(&"x".repeat(129)));
     }
 
     #[test]
@@ -1260,8 +1396,72 @@ pub(crate) async fn cache_media(
     path: String,
 ) -> Result<CachedMediaFile, String> {
     let media = ensure_cached_file(&app, &proxy, &path).await?;
-    let (_, _, key) = request_identity(&proxy, &path);
-    let (data_path, _) = cache_paths(&app, &key)?;
+    cached_media_file(&app, &proxy, &path, media).await
+}
+
+/// Renderer-owned native download task. It reuses the exact media cache pipeline used by media:// and
+/// save_media_desktop, but adds a task-scoped progress event + cancellation token. The returned path is
+/// the private cache file; the renderer continues to display the canonical media:// URL so no file://
+/// permission is exposed to the WebView.
+#[tauri::command]
+pub(crate) async fn download_media(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ProxyState>,
+    path: String,
+    task_id: String,
+) -> Result<CachedMediaFile, String> {
+    if !valid_download_task_id(&task_id) {
+        return Err("invalid media download task id".into());
+    }
+    validate_path(&path)?;
+    let cancel = CancellationToken::new();
+    {
+        let mut tasks = proxy
+            .media_download_cancels
+            .lock()
+            .expect("media_download_cancels lock");
+        if let Some(previous) = tasks.insert(task_id.clone(), cancel.clone()) {
+            previous.cancel();
+        }
+    }
+    let observer = MediaDownloadObserver {
+        app: app.clone(),
+        task_id: task_id.clone(),
+        cancel: cancel.clone(),
+    };
+    let result = get_or_fetch_inner(&app, &proxy, &path, false, Some(&observer)).await;
+    proxy
+        .media_download_cancels
+        .lock()
+        .expect("media_download_cancels lock")
+        .remove(&task_id);
+    let media = result?;
+    cached_media_file(&app, &proxy, &path, media).await
+}
+
+#[tauri::command]
+pub(crate) fn cancel_media_download(proxy: tauri::State<'_, ProxyState>, task_id: String) -> bool {
+    let token = proxy
+        .media_download_cancels
+        .lock()
+        .expect("media_download_cancels lock")
+        .remove(&task_id);
+    if let Some(token) = token {
+        token.cancel();
+        true
+    } else {
+        false
+    }
+}
+
+async fn cached_media_file(
+    app: &tauri::AppHandle,
+    proxy: &ProxyState,
+    path: &str,
+    media: CachedMedia,
+) -> Result<CachedMediaFile, String> {
+    let (_, _, key) = request_identity(proxy, path);
+    let (data_path, _) = cache_paths(app, &key)?;
     Ok(CachedMediaFile {
         path: data_path.to_string_lossy().into_owned(),
         content_type: media.content_type,

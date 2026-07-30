@@ -10,19 +10,33 @@
     <button class="tab-item" type="button" role="tab" id="friend-tab-add"
       aria-controls="friend-panel-add" [attr.aria-selected]="activeTab()===0"
       [class.active]="activeTab()===0" (click)="setTab(0)">
-      <span class="tab-text">{{ 'friend.tab.add' | transloco }}</span>
+      <span class="tab-label">
+        <span class="tab-text">{{ 'friend.tab.add' | transloco }}</span>
+      </span>
     </button>
     <button class="tab-item" type="button" role="tab" id="friend-tab-pending"
       aria-controls="friend-panel-pending" [attr.aria-selected]="activeTab()===1"
       [class.active]="activeTab()===1" (click)="setTab(1)">
-      <span class="tab-text">{{ 'friend.tab.pending' | transloco }}</span>
-      @if(pendingReqList().length > 0){<span class="tab-badge">{{pendingReqList().length}}</span>}
+      <span class="tab-label">
+        <span class="tab-text">{{ 'friend.tab.pending' | transloco }}</span>
+        @if(pendingReqList().length > 0){
+          <span class="tab-badge" [attr.title]="pendingReqList().length">
+            {{pendingReqList().length > 9 ? '9+' : pendingReqList().length}}
+          </span>
+        }
+      </span>
     </button>
     <button class="tab-item" type="button" role="tab" id="friend-tab-sent"
       aria-controls="friend-panel-sent" [attr.aria-selected]="activeTab()===2"
       [class.active]="activeTab()===2" (click)="setTab(2)">
-      <span class="tab-text">{{ 'friend.tab.sent' | transloco }}</span>
-      @if(sentReqList().length > 0){<span class="tab-badge">{{sentReqList().length}}</span>}
+      <span class="tab-label">
+        <span class="tab-text">{{ 'friend.tab.sent' | transloco }}</span>
+        @if(sentReqList().length > 0){
+          <span class="tab-badge" [attr.title]="sentReqList().length">
+            {{sentReqList().length > 9 ? '9+' : sentReqList().length}}
+          </span>
+        }
+      </span>
     </button>
   </div>
 

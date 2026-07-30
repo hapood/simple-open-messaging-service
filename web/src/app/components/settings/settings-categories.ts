@@ -18,6 +18,7 @@ import { SettingsConnectionComponent } from './settings-connection.component';
 import { SettingsDiagnosticsComponent } from './settings-diagnostics.component';
 import { SettingsAboutComponent } from './settings-about.component';
 import { SettingsDevicesComponent } from './settings-devices.component';
+import { SettingsDataComponent } from './settings-data.component';
 
 /** Identifiers for the Settings categories (drives the aside-stack `params.category` on mobile, and the
  *  local selection signal in the desktop/tablet dialog). */
@@ -30,6 +31,7 @@ export type SettingsCategoryId =
   | 'push'
   | 'notifications'
   | 'diagnostics'
+  | 'data'
   | 'about';
 
 /**
@@ -200,13 +202,25 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
       order: 4,
     },
     {
+      id: 'data',
+      icon: AppIconType.TRASH,
+      titleKey: 'settings.data',
+      summary: () => {
+        void d.language.lang();
+        return d.transloco.translate('settings.dataHint');
+      },
+      component: SettingsDataComponent,
+      visible: () => true,
+      order: 5,
+    },
+    {
       id: 'about',
       icon: AppIconType.INFO,
       titleKey: 'settings.about',
       summary: () => appVersion,
       component: SettingsAboutComponent,
       visible: () => true,
-      order: 5,
+      order: 6,
     },
   ];
 }

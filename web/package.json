@@ -32,6 +32,7 @@
     "@tiptap/extension-placeholder": "^3.27.1",
     "@tiptap/pm": "^3.27.1",
     "@tiptap/starter-kit": "^3.27.1",
+    "artplayer": "^5.4.0",
     "dayjs": "^1.11.13",
     "idb": "^8.0.3",
     "motion": "^12.42.2",

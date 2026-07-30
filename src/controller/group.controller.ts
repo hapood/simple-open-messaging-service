@@ -286,6 +286,7 @@ export class GroupController {
       name: gu.name,
       ownerId: gu.group?.ownerId ?? 0,
       avatar: gu.avatar,
+      profileRev: gu.profileRev,
       description: gu.bio,
       // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group so the
       // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).

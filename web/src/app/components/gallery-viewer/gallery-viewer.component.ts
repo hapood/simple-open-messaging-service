@@ -5,6 +5,7 @@ import {
   OnDestroy,
   ViewChild,
   computed,
+  effect,
   inject,
   input,
   output,
@@ -13,17 +14,20 @@ import {
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { firstValueFrom } from 'rxjs';
+import type Artplayer from 'artplayer';
 import PhotoSwipe, { type SlideData } from 'photoswipe';
 import {
   MEDIA_STATUS,
   type AlbumImage,
   type MediaStatus,
 } from '../message-cards/chat-item';
-import { assetUrl } from '../../services/runtime';
 import { MsgService } from '../../services/message.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import { MediaSaveService } from '../../services/media-save.service';
 import { ToastService } from '../../services/toast.service';
+import { ImageDownloadService } from '../../services/image-download.service';
+import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
+import { formatBytes } from '../message-cards/file-meta.util';
 
 /** Business metadata kept alongside PhotoSwipe's image data. */
 interface GallerySlideData extends SlideData {
@@ -71,24 +75,73 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly currentLoadFailed = computed(() =>
     this.loadErrors().has(this.index()),
   );
-  readonly currentVideoError = computed(() =>
-    this.videoErrors().get(this.index()) ?? null,
+  readonly currentVideoError = computed(
+    () => this.videoErrors().get(this.index()) ?? null,
   );
   readonly currentUrl = computed(() =>
-    assetUrl(this.current()?.src ?? ''),
+    this.current() ? this.downloads.displayUrl(this.current()!) : '',
   );
-  readonly saving = signal(false);
+  readonly currentTask = computed(() => {
+    this.downloads.tasks();
+    const media = this.current();
+    return media ? this.downloads.task(media) : undefined;
+  });
+  readonly currentNeedsLoad = computed(() => {
+    const media = this.current();
+    return Boolean(media?.kind === 'image' && this.shouldGate(media));
+  });
+  readonly currentProgress = computed(() => {
+    const task = this.currentTask();
+    return task && task.total > 0
+      ? Math.min(100, Math.round((task.loaded / task.total) * 100))
+      : null;
+  });
+  readonly currentProgressText = computed(() => {
+    const task = this.currentTask();
+    if (!task) return '';
+    const loaded = formatBytes(task.loaded);
+    const total = formatBytes(task.total || task.expectedSize);
+    return total
+      ? `${loaded || '0 B'} / ${total}`
+      : loaded
+        ? this.i18n.translate('gallery.downloadedBytes', { size: loaded })
+        : '';
+  });
+  readonly saving = computed(() => this.currentTask()?.status === 'saving');
 
   private readonly retryKeys = new Map<number, number>();
   private readonly slides: GallerySlideData[] = [];
+  private readonly videoPlayers = new Map<number, Artplayer>();
   private pswp: PhotoSwipe | null = null;
   private destroying = false;
+  private readonly saveToastKeys = new Set<string>();
+  private readonly renderedBlobUrls = new Map<number, string>();
 
   private readonly msg = inject(MsgService);
   private readonly repo = inject(MessageRepository);
   private readonly i18n = inject(TranslocoService);
   private readonly mediaSave = inject(MediaSaveService);
   private readonly toast = inject(ToastService);
+  readonly downloads = inject(ImageDownloadService);
+  private readonly threshold = inject(MediaSizeThresholdService);
+  readonly formatBytes = formatBytes;
+
+  constructor() {
+    effect(() => {
+      const tasks = this.downloads.tasks();
+      for (const task of tasks) {
+        if (task.status === 'saved' && this.saveToastKeys.delete(task.key)) {
+          this.toast.info(this.i18n.translate('gallery.saved'));
+        } else if (
+          task.status === 'failed' &&
+          this.saveToastKeys.delete(task.key)
+        ) {
+          this.toast.warn(this.i18n.translate('gallery.saveFailed'));
+        }
+      }
+      queueMicrotask(() => this.refreshDownloadedSlides());
+    });
+  }
 
   ngAfterViewInit(): void {
     const images = this.images();
@@ -99,9 +152,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     this.slides.push(
-      ...images.map((image, galleryIndex) =>
-        this.toSlide(image, galleryIndex),
-      ),
+      ...images.map((image, galleryIndex) => this.toSlide(image, galleryIndex)),
     );
     const initialIndex = Math.max(
       0,
@@ -141,7 +192,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
     pswp.on('change', () => {
       this.index.set(pswp.currIndex);
-      this.pauseInactiveVideos(pswp.currIndex);
+      this.activateVideo(pswp.currIndex);
       queueMicrotask(() => this.scrollCurrentThumbIntoView());
     });
     pswp.on('loadComplete', ({ content, isError }) => {
@@ -153,18 +204,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     pswp.on('contentAppend', ({ content }) => {
       const slide = content.data as GallerySlideData;
       if (slide.kind !== 'video') return;
-      const video = content.element?.querySelector<HTMLVideoElement>('.gv-slide-video');
-      if (!video || video.dataset['errorBound'] === 'true') return;
-      video.dataset['errorBound'] = 'true';
-      video.addEventListener('loadeddata', () => this.setVideoError(slide.galleryIndex, null));
-      video.addEventListener('error', () => {
-        const code = video.error?.code;
-        if (code === MediaError.MEDIA_ERR_ABORTED) return;
-        this.setVideoError(
-          slide.galleryIndex,
-          code === MediaError.MEDIA_ERR_NETWORK ? 'network' : 'unsupported',
-        );
-      });
+      void this.mountVideoPlayer(content.element, slide.galleryIndex);
+    });
+    pswp.on('contentDestroy', ({ content }) => {
+      const slide = content.data as GallerySlideData;
+      if (slide.kind === 'video') this.destroyVideoPlayer(slide.galleryIndex);
     });
     pswp.on('destroy', () => {
       this.pswp = null;
@@ -173,11 +217,12 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
     this.pswp = pswp;
     pswp.init();
+    this.activateVideo(initialIndex);
   }
 
   ngOnDestroy(): void {
     this.destroying = true;
-    this.pauseInactiveVideos(-1);
+    this.destroyVideoPlayers();
     this.pswp?.destroy();
     this.pswp = null;
   }
@@ -187,14 +232,19 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   mediaUrl(media: AlbumImage): string {
-    return assetUrl(media.src);
+    return this.downloads.displayUrl(media);
   }
 
   async saveCurrent(event: MouseEvent): Promise<void> {
     event.stopPropagation();
     const media = this.current();
     if (!media || this.saving()) return;
-    this.saving.set(true);
+    if (media.kind === 'image') {
+      const key = this.downloads.key(media);
+      this.saveToastKeys.add(key);
+      this.downloads.start(media, this.threadId(), true);
+      return;
+    }
     try {
       await this.mediaSave.save({
         path: media.src,
@@ -211,8 +261,27 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       console.error('[gallery] save failed:', error);
       this.toast.warn(this.i18n.translate('gallery.saveFailed'));
     } finally {
-      this.saving.set(false);
     }
+  }
+
+  loadCurrent(): void {
+    const media = this.current();
+    if (!media || media.kind !== 'image') return;
+    this.downloads.start(media, this.threadId());
+  }
+
+  cancelCurrent(): void {
+    const media = this.current();
+    if (!media) return;
+    // Cancellation is a neutral outcome. Drop the queued save notification before aborting so an
+    // adapter's abort signal can never surface as either "save failed" or a later stale success toast.
+    this.saveToastKeys.delete(this.downloads.key(media));
+    this.downloads.cancel(media);
+  }
+
+  retryCurrentDownload(): void {
+    const media = this.current();
+    if (media) this.downloads.retry(media, this.threadId());
   }
 
   /** Retry a transient image fetch with a cache-busted URL. */
@@ -231,18 +300,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     const media = this.images()[i];
     if (!media || media.kind !== 'video') return;
     this.retryKeys.set(i, (this.retryKeys.get(i) ?? 0) + 1);
-    const src = this.imageUrl(media, i);
-    const escaped = this.escapeAttribute(src);
-    this.slides[i].html =
-      `<video class="gv-slide-video" controls playsinline preload="metadata" ` +
-      `data-gallery-index="${i}" src="${escaped}"></video>`;
+    this.destroyVideoPlayer(i);
+    this.slides[i].html = this.videoSlideHtml(i);
     this.setVideoError(i, null);
-    this.mount?.nativeElement
-      .querySelectorAll<HTMLVideoElement>(`.gv-slide-video[data-gallery-index="${i}"]`)
-      .forEach((video) => {
-        video.src = src;
-        video.load();
-      });
     this.pswp?.refreshSlideContent(i);
   }
 
@@ -279,19 +339,19 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   private toSlide(image: AlbumImage, galleryIndex: number): GallerySlideData {
     if (image.kind === 'video') {
-      const src = this.escapeAttribute(this.imageUrl(image, galleryIndex));
       return {
-        html:
-          `<video class="gv-slide-video" controls playsinline preload="metadata" ` +
-          `data-gallery-index="${galleryIndex}" src="${src}"></video>`,
+        html: this.videoSlideHtml(galleryIndex),
         width: Math.max(1, image.w),
         height: Math.max(1, image.h),
         galleryIndex,
         kind: image.kind,
       };
     }
+    const gated = this.shouldGate(image);
     return {
-      src: this.imageUrl(image, galleryIndex),
+      ...(gated
+        ? { html: '<div class="gv-unloaded-slide" aria-hidden="true"></div>' }
+        : { src: this.imageUrl(image, galleryIndex) }),
       width: Math.max(1, image.w),
       height: Math.max(1, image.h),
       alt: '',
@@ -301,7 +361,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private imageUrl(image: AlbumImage, index: number): string {
-    const base = assetUrl(image.src);
+    const base = this.downloads.displayUrl(image);
     const retryKey = this.retryKeys.get(index) ?? 0;
     if (retryKey === 0 || /^(blob:|data:)/.test(base)) return base;
     return `${base}${base.includes('?') ? '&' : '?'}_r=${retryKey}`;
@@ -309,6 +369,31 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   private defaultFilename(media: AlbumImage): string {
     return `media-${media.msgId ?? this.index() + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
+  }
+
+  isMediaGated(media: AlbumImage): boolean {
+    return media.kind === 'image' && this.shouldGate(media);
+  }
+
+  private shouldGate(media: AlbumImage): boolean {
+    const limit = this.threshold.threshold();
+    return (
+      limit > 0 && (media.size ?? 0) > limit && !this.downloads.isLoaded(media)
+    );
+  }
+
+  private refreshDownloadedSlides(): void {
+    if (!this.pswp) return;
+    this.images().forEach((media, i) => {
+      if (media.kind !== 'image' || !this.downloads.isLoaded(media)) return;
+      const url = this.downloads.displayUrl(media);
+      if (this.renderedBlobUrls.get(i) === url) return;
+      this.renderedBlobUrls.set(i, url);
+      const slide = this.slides[i];
+      delete slide.html;
+      slide.src = url;
+      this.pswp?.refreshSlideContent(i);
+    });
   }
 
   private setStatus(index: number, status: MediaStatus): void {
@@ -337,27 +422,99 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  private pauseInactiveVideos(activeIndex: number): void {
-    const root = this.mount?.nativeElement;
-    if (!root) return;
-    // PhotoSwipe recycles three slide holders and does not expose their logical indices on the DOM.
-    // Pause every video at a page boundary; the visible video keeps its position and can be resumed.
-    void activeIndex;
-    root.querySelectorAll<HTMLVideoElement>('.gv-slide-video').forEach((video) => video.pause());
+  private videoSlideHtml(index: number): string {
+    return `<div class="gv-slide-video" data-gallery-index="${index}"></div>`;
+  }
+
+  private async mountVideoPlayer(
+    contentElement: HTMLElement | undefined,
+    index: number,
+  ): Promise<void> {
+    const container = contentElement?.matches('.gv-slide-video')
+      ? (contentElement as HTMLDivElement)
+      : contentElement?.querySelector<HTMLDivElement>('.gv-slide-video');
+    const media = this.images()[index];
+    if (!container || media?.kind !== 'video') return;
+
+    this.destroyVideoPlayer(index);
+    const { default: ArtplayerPlayer } = await import('artplayer');
+    if (!container.isConnected) return;
+
+    const player = new ArtplayerPlayer({
+      container,
+      url: this.imageUrl(media, index),
+      autoplay: index === this.index(),
+      muted: false,
+      playsInline: true,
+      gesture: true,
+      fastForward: true,
+      lock: true,
+      setting: true,
+      playbackRate: true,
+      pip:
+        typeof document !== 'undefined' &&
+        document.pictureInPictureEnabled === true,
+      fullscreen: true,
+      fullscreenWeb: true,
+      autoOrientation: true,
+      mutex: true,
+      backdrop: false,
+      theme: '#5b8cff',
+      lang: this.i18n.getActiveLang().toLowerCase().startsWith('zh')
+        ? 'zh-cn'
+        : 'en',
+    });
+    this.videoPlayers.set(index, player);
+
+    player.on('video:loadeddata', () => this.setVideoError(index, null));
+    player.on('video:error', () => {
+      const code = player.video.error?.code;
+      if (code === MediaError.MEDIA_ERR_ABORTED) return;
+      this.setVideoError(
+        index,
+        code === MediaError.MEDIA_ERR_NETWORK ? 'network' : 'unsupported',
+      );
+    });
+    if (index === this.index()) {
+      void player.play().catch(() => {
+        // Browsers may require one tap for audible autoplay; the play affordance stays visible.
+      });
+    }
+  }
+
+  private activateVideo(activeIndex: number): void {
+    this.videoPlayers.forEach((player, index) => {
+      if (index !== activeIndex) {
+        player.pause();
+        return;
+      }
+      void player.play().catch(() => {
+        // Expected in browser engines that disallow audible autoplay.
+      });
+    });
+  }
+
+  private destroyVideoPlayer(index: number): void {
+    const player = this.videoPlayers.get(index);
+    if (!player) return;
+    this.videoPlayers.delete(index);
+    player.destroy(false);
+  }
+
+  private destroyVideoPlayers(): void {
+    for (const index of [...this.videoPlayers.keys()]) {
+      this.destroyVideoPlayer(index);
+    }
   }
 
   private scrollCurrentThumbIntoView(): void {
     const current = this.thumbRail?.nativeElement.querySelector<HTMLElement>(
       `[data-index="${this.index()}"]`,
     );
-    current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-  }
-
-  private escapeAttribute(value: string): string {
-    return value
-      .replaceAll('&', '&amp;')
-      .replaceAll('"', '&quot;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;');
+    current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+      inline: 'center',
+    });
   }
 }

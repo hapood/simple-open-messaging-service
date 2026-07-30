@@ -1,15 +1,28 @@
-import { ChangeDetectorRef, Component, computed, inject, input, output, signal } from '@angular/core';
+import {
+  ChangeDetectorRef,
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
 import { MEDIA_STATUS, type AlbumImage, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
-import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
 import { AudioPlayerComponent } from '../audio-player/audio-player.component';
 import { assetUrl } from '../../../services/runtime';
 import { formatBytes, formatDuration } from '../file-meta.util';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
+import { ImageDownloadService } from '../../../services/image-download.service';
 
 /**
  * Unified media message row (IMAGE / VIDEO / AUDIO).
@@ -27,12 +40,20 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
 @Component({
   selector: 'app-msg-media-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe, MatProgressSpinnerModule, MatIconModule, AudioPlayerComponent],
+  imports: [
+    DateRowComponent,
+    UserAvatarComponent,
+    TranslocoPipe,
+    MatProgressSpinnerModule,
+    MatIconModule,
+    AudioPlayerComponent,
+  ],
   templateUrl: './media-row.component.html',
   styleUrl: './media-row.component.scss',
 })
 export class MediaRowComponent {
   private readonly cdr = inject(ChangeDetectorRef);
+  private readonly downloads = inject(ImageDownloadService);
   readonly UserAvatarType = UserAvatarType;
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
@@ -47,16 +68,31 @@ export class MediaRowComponent {
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
-  readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
-  readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
-  readonly isFailed = computed(() => this.data().isSelf && this.data().status === 'failed');
+  readonly statusTick = computed(
+    () => this.data().isSelf && !!this.data().status,
+  );
+  readonly isSending = computed(
+    () => this.data().isSelf && this.data().status === 'sending',
+  );
+  readonly isFailed = computed(
+    () => this.data().isSelf && this.data().status === 'failed',
+  );
   readonly retry = output<number>();
   readonly cancel = output<number>();
   readonly openImage = output<{ images: AlbumImage[]; index: number }>();
 
-  constructor(private readonly thresholdSvc: MediaSizeThresholdService) {}
+  constructor(private readonly thresholdSvc: MediaSizeThresholdService) {
+    // Message rows are imperatively mounted outside ApplicationRef. Observe the app-scoped task store
+    // explicitly so progress painted in the gallery/global header also repaints this detached row.
+    effect(() => {
+      this.downloads.tasks();
+      queueMicrotask(() => this.render());
+    });
+  }
 
-  private readonly layout = computed(() => layoutAlbum(this.data().images ?? []));
+  private readonly layout = computed(() =>
+    layoutAlbum(this.data().images ?? []),
+  );
   readonly totalH = computed(() => this.layout().totalH);
   readonly containerW = computed(() => this.layout().containerW);
   readonly moreCount = computed(() => this.layout().moreCount);
@@ -64,21 +100,28 @@ export class MediaRowComponent {
   /** Per-cell render data. `kind` drives the inner content branch (background-image / <video> / placeholder). */
   readonly cells = computed(() => {
     const imgs = this.data().images ?? [];
-    const moreIdx = this.layout().moreCount > 0 ? this.layout().rects.length - 1 : -1;
+    const moreIdx =
+      this.layout().moreCount > 0 ? this.layout().rects.length - 1 : -1;
     const failed = this.unplayableVideos();
     const thr = this.threshold();
-    const loading = this.loadingImages();
-    const loadFailed = this.failedImages();
+    this.downloads.tasks();
     // Read the service signal through isLoaded below. It is intentionally shared across row remounts.
     return this.layout().rects.map((rect, i) => {
       const m = imgs[i];
       const kind = m?.kind ?? 'image';
       const size = m?.size ?? 0;
       const mediaKey = this.mediaKey(m, i);
+      const task = m ? this.downloads.task(m) : undefined;
+      const gated =
+        kind === 'image' &&
+        thr > 0 &&
+        size > thr &&
+        !this.thresholdSvc.isLoaded(mediaKey) &&
+        !task?.blobUrl;
       return {
         rect,
         kind,
-        src: assetUrl(m?.src ?? ''),
+        src: m ? this.downloads.displayUrl(m) : assetUrl(''),
         duration: m?.duration,
         isMore: i === moreIdx,
         unplayable: kind === 'video' && failed.has(i),
@@ -86,21 +129,55 @@ export class MediaRowComponent {
         status: this.data().mediaStatus ?? MEDIA_STATUS.READY,
         // Size-tiered placeholder: only IMAGE over threshold, not yet tapped-to-load. VIDEO/AUDIO are
         // unaffected (they are a gray cell / first-frame already).
-        placeholder:
-          kind === 'image' &&
-          thr > 0 &&
-          size > thr &&
-          !this.thresholdSvc.isLoaded(mediaKey),
-        loading: loading.has(mediaKey),
-        loadFailed: loadFailed.has(mediaKey),
-        showGate:
-          kind === 'image' &&
-          (loading.has(mediaKey) ||
-            loadFailed.has(mediaKey) ||
-            (thr > 0 && size > thr && !this.thresholdSvc.isLoaded(mediaKey))),
+        placeholder: gated,
+        showGate: gated,
+        transferStatus: task?.status,
+        transferProgress:
+          task && task.total > 0
+            ? Math.min(100, (task.loaded / task.total) * 100)
+            : null,
         sizeText: formatBytes(size),
       };
     });
+  });
+
+  /** The +N tile replaces the last visible thumbnail, so aggregate every represented media item from
+   * that cell onward. Each file has equal weight; byte sizes deliberately do not skew the album rail. */
+  readonly moreTransfer = computed(() => {
+    this.downloads.tasks();
+    const images = this.data().images ?? [];
+    const shown = this.layout().rects.length;
+    if (this.layout().moreCount === 0 || shown === 0)
+      return { active: false, progress: 0, completed: 0, total: 0, failed: 0 };
+    const hidden = images.slice(shown - 1);
+    let completed = 0;
+    let partial = 0;
+    let failed = 0;
+    let active = false;
+    for (const media of hidden) {
+      const task = this.downloads.task(media);
+      if (!task) continue;
+      if (
+        task.status === 'loaded' ||
+        task.status === 'saving' ||
+        task.status === 'saved'
+      ) {
+        completed++;
+        partial++;
+      } else if (task.status === 'downloading') {
+        active = true;
+        partial += task.total > 0 ? Math.min(1, task.loaded / task.total) : 0;
+      } else if (task.status === 'failed') {
+        failed++;
+      }
+    }
+    return {
+      active: active || completed > 0 || failed > 0,
+      progress: hidden.length > 0 ? (partial / hidden.length) * 100 : 0,
+      completed,
+      total: hidden.length,
+      failed,
+    };
   });
 
   /** Indices of video cells whose <video> failed to decode (unsupported codec) → gray placeholder. */
@@ -115,11 +192,9 @@ export class MediaRowComponent {
     this.render();
   }
 
-  /** Size-tiered lazy load: IMAGE cells over the user threshold start as a "Tap to load" placeholder;
-   *  the first click loads them (tracked here). Below threshold or already loaded → load immediately. */
+  /** Size-tiered lazy load: large images remain an inert card placeholder. Clicking always opens the
+   * gallery; only that surface starts/cancels the shared download task. */
   readonly threshold = computed(() => this.thresholdSvc.threshold());
-  private readonly loadingImages = signal<ReadonlySet<string>>(new Set());
-  private readonly failedImages = signal<ReadonlySet<string>>(new Set());
   /** Cell click: images and videos open the singleton mixed-media viewer (after the optional image
    *  size gate). Audio owns its interaction inside AudioPlayerComponent. */
   onCellClick(i: number): void {
@@ -132,35 +207,13 @@ export class MediaRowComponent {
       return;
     }
     if (cell.kind !== 'image') return;
-    if (cell.placeholder || cell.loadFailed) {
-      this.loadImage(i);
-      return;
-    }
     this.openImage.emit({ images: this.data().images ?? [], index: i });
-  }
-
-  private loadImage(index: number): void {
-    const media = this.data().images?.[index];
-    if (!media) return;
-    const key = this.mediaKey(media, index);
-    if (this.loadingImages().has(key)) return;
-    this.updateKeySet(this.failedImages, key, false);
-    this.updateKeySet(this.loadingImages, key, true);
-    // Grant rendering immediately so the real card <img> mounts underneath the loading gate. Its own
-    // load/error events are the single source of truth; a detached `new Image()` can finish without the
-    // dynamically-created row being refreshed, leaving the chat card gated even though the viewer works.
-    this.thresholdSvc.markLoaded(key);
-    // Message rows are imperatively created and not attached to ApplicationRef. Signal writes alone do
-    // not repaint this detached view, so refresh now to mount the real <img> under the loading gate.
-    this.render();
   }
 
   onImageLoad(index: number): void {
     const media = this.data().images?.[index];
     if (!media) return;
     const key = this.mediaKey(media, index);
-    this.updateKeySet(this.loadingImages, key, false);
-    this.updateKeySet(this.failedImages, key, false);
     this.thresholdSvc.markLoaded(key);
     this.render();
   }
@@ -169,8 +222,6 @@ export class MediaRowComponent {
     const media = this.data().images?.[index];
     if (!media) return;
     const key = this.mediaKey(media, index);
-    this.updateKeySet(this.loadingImages, key, false);
-    this.updateKeySet(this.failedImages, key, true);
     this.render();
   }
 
@@ -178,26 +229,14 @@ export class MediaRowComponent {
     this.cdr.detectChanges();
   }
 
-  private updateKeySet(
-    target: { update(fn: (value: ReadonlySet<string>) => ReadonlySet<string>): void },
-    key: string,
-    present: boolean,
-  ): void {
-    target.update((current) => {
-      if (current.has(key) === present) return current;
-      const next = new Set(current);
-      if (present) next.add(key);
-      else next.delete(key);
-      return next;
-    });
-  }
-
   private mediaKey(media: AlbumImage | undefined, index: number): string {
     return `${media?.msgId ?? this.data().msgId}:${media?.src ?? ''}:${index}`;
   }
 
   readonly isAudioOnly = computed(
-    () => this.data().images?.length === 1 && this.data().images?.[0]?.kind === 'audio',
+    () =>
+      this.data().images?.length === 1 &&
+      this.data().images?.[0]?.kind === 'audio',
   );
 
   /** Media meta bar (EVERY media row — single OR album): media counts (images / videos / audios) on
@@ -205,7 +244,9 @@ export class MediaRowComponent {
    *  cell-overlay timestamp (the time now lives here, not on the image). */
   readonly metaBar = computed(() => {
     const imgs = this.data().images ?? [];
-    let images = 0, videos = 0, audios = 0;
+    let images = 0,
+      videos = 0,
+      audios = 0;
     for (const m of imgs) {
       if (m.kind === 'image') images++;
       else if (m.kind === 'video') videos++;

@@ -274,6 +274,7 @@ export class UserController {
               threadId: p.threadId,
               name: gu.name,
               avatar: gu.avatar,
+              profileRev: gu.profileRev,
               description: gu.bio,
               domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,

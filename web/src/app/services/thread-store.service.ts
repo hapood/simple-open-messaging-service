@@ -714,7 +714,12 @@ export class ThreadRepository {
     // 3. Delta-replay the thread list: full `(0, rev]` on first connect (cursor unseeded → seed 0),
     //    incremental `(cursor, rev]` on reconnect. The server plans (last-op-wins) + hydrates.
     if (typeof d.threadRevision === 'number') {
-      if (this.userService.threadRevCursor() === undefined) this.userService.seedThreadRevCursor(0);
+      if (this.userService.threadRevCursor() === undefined) {
+        const persisted = await this.webdb.getMeta('threadRevision');
+        this.userService.seedThreadRevCursor(
+          typeof persisted === 'number' && persisted >= 0 ? persisted : 0,
+        );
+      }
       this.onThreadRevisionUpdated(d.threadRevision);
     }
     // 4. Missed-summary walk toward HELLO's newest message (debounced).
@@ -829,6 +834,10 @@ export class ThreadRepository {
         this.userService.queryThreadDelta({ fromRevision: cursor, toRevision: toRev }),
       );
       if (res.code === 0) {
+        const delta = res.data ?? [];
+        // The rows and cursor are one durable unit. If this fails, leave both memory and cursor untouched;
+        // the next HELLO retries the same idempotent range.
+        await this.webdb.applyThreadDelta(delta, toRev);
         // One hydrated response — ADD entries carry the item inline, DELETE entries carry the threadId only.
         // The server planned (last-op-wins) + hydrated; the client just applies (no second round-trip).
         // A cold-start full replay (cursor === 0 — the only path that pulls `(0, rev]`) is bulk HYDRATION, not a
@@ -838,7 +847,7 @@ export class ThreadRepository {
         // list. (If threadRevCursor is ever persisted across boots, move this gate to an explicit boot flag —
         // reload would then carry cursor > 0 too.)
         const bulkHydrate = cursor === 0;
-        for (const op of res.data ?? []) {
+        for (const op of delta) {
           if (op.direction === 'DELETE') this.removeThread(op.threadId);
           else {
             if (!bulkHydrate) this.markTopOnNextUpdate(op.threadId); // FLIP only on an incremental ADD
@@ -909,7 +918,7 @@ export class ThreadRepository {
   /** Read all cached threads from IDB, ordered by pin rank (for instant boot paint). */
   private async readCachedThreads(): Promise<ConversationItem[]> {
     try {
-      const all = await (await this.webdb.db()).getAll('threads');
+      const all = await this.webdb.getThreads();
       return all.sort(byPinRank);
     } catch {
       return [];
@@ -919,11 +928,7 @@ export class ThreadRepository {
   /** Rewrite the whole `threads` store from a snapshot (clear + put all, in one transaction). */
   private async persistThreads(items: ConversationItem[]): Promise<void> {
     try {
-      const db = await this.webdb.db();
-      const tx = db.transaction('threads', 'readwrite');
-      await tx.store.clear();
-      for (const it of items) await tx.store.put(it);
-      await tx.done;
+      await this.webdb.replaceThreads(items);
     } catch {
       /* IDB unavailable / closed — cache is best-effort */
     }
@@ -932,7 +937,7 @@ export class ThreadRepository {
   /** Write-through a single changed thread (idempotent put by threadId). */
   private async persistThread(item: ConversationItem): Promise<void> {
     try {
-      await (await this.webdb.db()).put('threads', item);
+      await this.webdb.putThread(item);
     } catch {
       /* best-effort */
     }
@@ -940,7 +945,7 @@ export class ThreadRepository {
 
   private async deleteThreadFromDb(threadId: number): Promise<void> {
     try {
-      await (await this.webdb.db()).delete('threads', threadId);
+      await this.webdb.deleteThread(threadId);
     } catch {
       /* best-effort */
     }
@@ -950,10 +955,16 @@ export class ThreadRepository {
   private writePeerProfile(u: User): void {
     void this.profileRepo.putProfile(`u${u.id}`, 'user', {
       id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
+      profileRev: u.profileRev,
     });
   }
-  private writeGroupProfile(g: { id: number; name: string; avatar: string }): void {
-    void this.profileRepo.putProfile(`g${g.id}`, 'group', { id: g.id, name: g.name, avatar: g.avatar });
+  private writeGroupProfile(g: { id: number; name: string; avatar: string; profileRev: number }): void {
+    void this.profileRepo.putProfile(`g${g.id}`, 'group', {
+      id: g.id,
+      name: g.name,
+      avatar: g.avatar,
+      profileRev: g.profileRev,
+    });
   }
 }
 

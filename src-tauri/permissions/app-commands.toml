@@ -167,9 +167,46 @@ description = "Enables media_request — the webview→backend MEDIA transport u
 commands.allow = ["media_request"]
 
 [[permission]]
+identifier = "allow-media-download"
+description = "Enables the task-scoped native media download commands (stream into the shared cache, report progress, and cancel)."
+commands.allow = [
+  "cache_media",
+  "download_media",
+  "cancel_media_download",
+  "clear_media_cache",
+  "get_media_cache_info",
+  "set_media_cache_limit",
+  "save_media_desktop",
+]
+
+[[permission]]
 identifier = "allow-open-external-url"
 description = "Enables open_external_url — open a LINK message card's target URL in the system browser (the webview's nav guard blocks in-app external navigation)."
 commands.allow = ["open_external_url"]
+
+[[permission]]
+identifier = "allow-native-db"
+description = "Enables the typed native SQLite cache commands used by the bundled SPA."
+commands.allow = [
+  "native_db_threads",
+  "native_db_put_thread",
+  "native_db_replace_threads",
+  "native_db_delete_thread",
+  "native_db_apply_thread_delta",
+  "native_db_get_profile",
+  "native_db_put_profile",
+  "native_db_get_meta",
+  "native_db_put_meta",
+  "native_db_clear_user",
+  "native_db_clear_all",
+  "native_db_get_avatar",
+  "native_db_put_avatar",
+  "native_db_query_messages",
+  "native_db_put_messages",
+  "native_db_get_message",
+  "native_db_newest_messages",
+  "native_db_delete_messages_by_thread",
+]
 
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
@@ -204,5 +241,7 @@ permissions = [
   "allow-read-native-log",
   "allow-api-request",
   "allow-media-request",
+  "allow-media-download",
   "allow-open-external-url",
+  "allow-native-db",
 ]

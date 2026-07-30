@@ -4,9 +4,15 @@
     "sendingOf": "Sending {{completed}}/{{total}}",
     "sendingProgress": "Sending {{completed}}/{{total}} · {{progress}}%",
     "failedCount": "{{count}} failed",
+    "anyFailedCount": "{{count}} transfers failed",
     "completed": "Sent",
     "cancel": "Cancel sending",
-    "retry": "Retry sending"
+    "retry": "Retry sending",
+    "downloadingProgress": "Downloading {{count}} · {{progress}}%",
+    "downloadFailed": "Download failed",
+    "loaded": "Loaded",
+    "saved": "Saved",
+    "cancelDownload": "Cancel download"
   },
   "call": {
     "incoming": "Incoming call",
@@ -442,6 +448,9 @@
     "aliasPlaceholder": "Enter a remark (e.g. Alice (work))"
   },
   "gallery": {
+    "loadImage": "Load image",
+    "loadingImage": "Loading image",
+    "downloadedBytes": "Downloaded {{size}}",
     "failed": "Image failed to load",
     "tapRetry": "Tap to retry",
     "retryAria": "Retry image load",
@@ -588,6 +597,14 @@
     "clearMediaCacheAction": "Clear",
     "clearingMediaCache": "Clearing…",
     "mediaCacheCleared": "Media cache cleared.",
+    "data": "Local data",
+    "dataHint": "Manage data stored on this device",
+    "deleteAllData": "Delete all local data",
+    "deleteAllDataDesc": "Deletes chat caches, avatars, media, and sign-in data. Server messages are not deleted.",
+    "deleteAllDataAction": "Delete and sign out",
+    "deletingAllData": "Deleting…",
+    "deleteAllDataConfirm": "Deleting all local data on this device will sign you out. This cannot be undone, but server messages are not deleted.",
+    "deleteAllDataFailed": "Some local data could not be deleted. Please try again.",
     "mediaCacheClearFailed": "Could not clear the media cache.",
     "push": "Push",
     "notifications": "Notifications",

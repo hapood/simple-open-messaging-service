@@ -82,18 +82,18 @@ export class GroupService implements OnModuleInit {
    *  or malformed) are omitted. Returns Map<threadId, {id,name,avatar,bio}>. */
   async resolveGroupUsersByThreadIds(
     threadIds: number[],
-  ): Promise<Map<number, { id: number; name: string; avatar: string; bio: string; domain: string; group: { ownerId: number; createdAt: Date; updatedAt: Date } | null }>> {
+  ): Promise<Map<number, { id: number; name: string; avatar: string; bio: string; domain: string; profileRev: number; group: { ownerId: number; createdAt: Date; updatedAt: Date } | null }>> {
     if (threadIds.length === 0) return new Map();
     const threads = await this.prisma.messageThread.findMany({
       where: { id: { in: threadIds } },
       select: {
         id: true,
         groupUser: {
-          select: { id: true, name: true, avatar: true, bio: true, domain: true, group: { select: { ownerId: true, createdAt: true, updatedAt: true } } },
+          select: { id: true, name: true, avatar: true, bio: true, domain: true, profileRev: true, group: { select: { ownerId: true, createdAt: true, updatedAt: true } } },
         },
       },
     });
-    const m = new Map<number, { id: number; name: string; avatar: string; bio: string; domain: string; group: { ownerId: number; createdAt: Date; updatedAt: Date } | null }>();
+    const m = new Map<number, { id: number; name: string; avatar: string; bio: string; domain: string; profileRev: number; group: { ownerId: number; createdAt: Date; updatedAt: Date } | null }>();
     for (const t of threads) {
       if (t.groupUser) m.set(t.id, t.groupUser);
     }

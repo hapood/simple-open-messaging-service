@@ -3,27 +3,47 @@
 }
 
 <div
-  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
-    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
+    <div class="msg-avatar">
+      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" />
+    </div>
   }
 
   @if (isFailed() || isSending()) {
     <div class="msg-failed-actions">
       @if (isFailed()) {
-        <button type="button" class="msg-action--retry" (click)="retry.emit(data().msgId)" [attr.aria-label]="'transfer.retry' | transloco">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7"/></svg>
+        <button
+          type="button"
+          class="msg-action--retry"
+          (click)="retry.emit(data().msgId)"
+          [attr.aria-label]="'transfer.retry' | transloco"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+          </svg>
         </button>
       }
-      <button type="button" class="msg-action--cancel" (click)="cancel.emit(data().msgId)" [attr.aria-label]="'transfer.cancel' | transloco">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      <button
+        type="button"
+        class="msg-action--cancel"
+        (click)="cancel.emit(data().msgId)"
+        [attr.aria-label]="'transfer.cancel' | transloco"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
       </button>
     </div>
   }
   <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
-      <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
+      <div class="msg-name msg-{{ side() }}">
+        {{ data().name || ('common.unknown' | transloco) }}
+      </div>
     }
     <div
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media"
@@ -34,26 +54,41 @@
       <div class="msg-media-grid" [style.height.px]="totalH()">
         @for (c of cells(); track $index) {
           <div
-            class="msg-media-cell msg-media-cell--{{ c.kind }}{{ c.unplayable ? ' msg-media-cell--placeholder' : '' }}{{ c.isMore ? ' msg-cell-more' : '' }}"
+            class="msg-media-cell msg-media-cell--{{ c.kind }}{{
+              c.unplayable ? ' msg-media-cell--placeholder' : ''
+            }}{{ c.isMore ? ' msg-cell-more' : '' }}"
             [style.left.%]="c.rect.xPct"
             [style.top.px]="c.rect.yPx"
             [style.width.%]="c.rect.wPct"
             [style.height.px]="c.rect.hPx"
-            [attr.role]="c.kind === 'image' || c.kind === 'video' ? 'button' : null"
-            [attr.tabindex]="c.kind === 'image' || c.kind === 'video' ? 0 : null"
-            [attr.aria-label]="c.kind === 'image'
-              ? ('chat.openImageAria' | transloco)
-              : c.kind === 'video'
-                ? ('gallery.openVideoAria' | transloco)
-                : null"
+            [attr.role]="
+              c.kind === 'image' || c.kind === 'video' ? 'button' : null
+            "
+            [attr.tabindex]="
+              c.kind === 'image' || c.kind === 'video' ? 0 : null
+            "
+            [attr.aria-label]="
+              c.kind === 'image'
+                ? ('chat.openImageAria' | transloco)
+                : c.kind === 'video'
+                  ? ('gallery.openVideoAria' | transloco)
+                  : null
+            "
             (click)="onCellClick($index)"
             (keydown.enter)="onCellClick($index)"
           >
             <!-- Audio owns its transfer state inside the player. Keeping the generic media overlay on
                  top of it hides the player's download progress rail (overlay z-index:2, player z-index:1). -->
             @if (c.kind !== 'audio' && c.status !== MEDIA_STATUS.READY) {
-              <div class="msg-media-overlay" role="status"
-                   [attr.aria-label]="c.status === MEDIA_STATUS.DOWNLOADING ? ('chat.mediaDownloading' | transloco) : ('chat.mediaFailed' | transloco)">
+              <div
+                class="msg-media-overlay"
+                role="status"
+                [attr.aria-label]="
+                  c.status === MEDIA_STATUS.DOWNLOADING
+                    ? ('chat.mediaDownloading' | transloco)
+                    : ('chat.mediaFailed' | transloco)
+                "
+              >
                 @if (c.status === MEDIA_STATUS.DOWNLOADING) {
                   <mat-progress-spinner mode="indeterminate" [diameter]="24" />
                 } @else {
@@ -72,25 +107,11 @@
             }
             @if (c.showGate) {
               <span class="msg-media-tap">
-                @if (c.loading) {
-                  <svg class="msg-media-tap-spinner" viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9"></circle>
-                  </svg>
-                  <span>{{ 'chat.imageLoading' | transloco }}</span>
-                } @else if (c.loadFailed) {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M20 7v5h-5M4 17v-5h5M18.4 9A7 7 0 006.7 6.7L4 9m16 6-2.7 2.3A7 7 0 015.6 15"></path>
-                  </svg>
-                  <span>{{ 'chat.imageLoadRetry' | transloco }}</span>
-                } @else {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="16" rx="3"></rect>
-                    <circle cx="9" cy="10" r="2"></circle>
-                    <path d="M4 17l5-4 3 2 3-3 5 5"></path>
-                  </svg>
-                  <span>{{ 'chat.tapToLoad' | transloco }}</span>
-                  <small>{{ c.sizeText || ('chat.unknownSize' | transloco) }}</small>
-                }
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+                  <circle cx="9" cy="10" r="2"></circle>
+                  <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+                </svg>
               </span>
             }
             @if (c.kind === 'video' && !c.unplayable) {
@@ -105,7 +126,9 @@
             @if (c.kind === 'video') {
               <span class="msg-media-play" aria-hidden="true"></span>
               @if (c.duration) {
-                <span class="msg-media-dur">{{ formatDuration(c.duration) }}</span>
+                <span class="msg-media-dur">{{
+                  formatDuration(c.duration)
+                }}</span>
               }
             }
             @if (c.kind === 'audio') {
@@ -121,45 +144,94 @@
               />
             }
             @if (c.kind !== 'audio') {
-              <span class="msg-media-size">{{ c.sizeText || ('chat.unknownSize' | transloco) }}</span>
+              <span class="msg-media-size">{{
+                c.sizeText || ('chat.unknownSize' | transloco)
+              }}</span>
             }
             @if (c.isMore) {
               <span class="msg-media-more">+{{ moreCount() }}</span>
+              @if (moreTransfer().active) {
+                <span class="msg-media-more-count">
+                  {{ moreTransfer().completed }}/{{ moreTransfer().total }}
+                </span>
+                <span class="msg-media-progress msg-media-progress--aggregate">
+                  <span [style.width.%]="moreTransfer().progress"></span>
+                </span>
+              }
+            } @else if (c.transferStatus === 'downloading') {
+              <span
+                class="msg-media-progress"
+                [class.msg-media-progress--indeterminate]="
+                  c.transferProgress === null
+                "
+              >
+                <span [style.width.%]="c.transferProgress ?? 36"></span>
+              </span>
+            } @else if (c.transferStatus === 'failed') {
+              <span class="msg-media-progress msg-media-progress--failed">
+                <span></span>
+              </span>
             }
           </div>
         }
       </div>
 
       @if (!isAudioOnly()) {
-      <div class="msg-media-meta">
-        <span class="msg-media-meta-count">
-          @if (metaBar().images > 1) { <span>{{ 'chat.mediaCount.image' | transloco: { count: metaBar().images } }}</span> }
-          @if (metaBar().videos) { <span>{{ 'chat.mediaCount.video' | transloco: { count: metaBar().videos } }}</span> }
-          @if (metaBar().audios > 1) { <span>{{ 'chat.mediaCount.audio' | transloco: { count: metaBar().audios } }}</span> }
-        </span>
-        @if (data().mediaStatus !== MEDIA_STATUS.READY) {
-          <span class="msg-media-status msg-media-status--{{ data().mediaStatus }}">
-            @if (data().mediaStatus === MEDIA_STATUS.DOWNLOADING) {
-              <mat-progress-spinner mode="indeterminate" [diameter]="12" />
-            } @else {
-              <mat-icon>error_outline</mat-icon>
+        <div class="msg-media-meta">
+          <span class="msg-media-meta-count">
+            @if (metaBar().images > 1) {
+              <span>{{
+                'chat.mediaCount.image' | transloco: { count: metaBar().images }
+              }}</span>
             }
-            {{ (data().mediaStatus === MEDIA_STATUS.DOWNLOADING ? 'chat.mediaDownloading' : 'chat.mediaFailed') | transloco }}
+            @if (metaBar().videos) {
+              <span>{{
+                'chat.mediaCount.video' | transloco: { count: metaBar().videos }
+              }}</span>
+            }
+            @if (metaBar().audios > 1) {
+              <span>{{
+                'chat.mediaCount.audio' | transloco: { count: metaBar().audios }
+              }}</span>
+            }
           </span>
-        }
-        <span class="msg-media-meta-time">{{ metaBar().time }}</span>
-      </div>
+          @if (data().mediaStatus !== MEDIA_STATUS.READY) {
+            <span
+              class="msg-media-status msg-media-status--{{
+                data().mediaStatus
+              }}"
+            >
+              @if (data().mediaStatus === MEDIA_STATUS.DOWNLOADING) {
+                <mat-progress-spinner mode="indeterminate" [diameter]="12" />
+              } @else {
+                <mat-icon>error_outline</mat-icon>
+              }
+              {{
+                (data().mediaStatus === MEDIA_STATUS.DOWNLOADING
+                  ? 'chat.mediaDownloading'
+                  : 'chat.mediaFailed'
+                ) | transloco
+              }}
+            </span>
+          }
+          <span class="msg-media-meta-time">{{ metaBar().time }}</span>
+        </div>
       }
 
       @if (statusTick()) {
         @if (!isFailed()) {
-          <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
+          <span
+            class="msg-status msg-status--{{ data().status }}"
+            aria-hidden="true"
+          ></span>
         }
       }
     </div>
   </div>
 
   @if (showAvatar() && side() === 'self') {
-    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
+    <div class="msg-avatar">
+      <app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" />
+    </div>
   }
 </div>

@@ -1,6 +1,8 @@
 import { Injectable, OnDestroy, signal } from '@angular/core';
 import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { ConversationItem, Message } from './model';
+import type { HydratedThreadDeltaOp } from './user.service';
+import { isTauri, tauriInvoke } from './runtime';
 
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
@@ -41,7 +43,7 @@ export interface ProfileRecord {
   avatar: string;
   bio: string;
   domain: string;
-  fetchedAt: number;
+  profileRev: number;
 }
 
 /** A value persisted in the `meta` store (keyPath `'key'`). The sole key today is `'missedCursor'` — the
@@ -66,7 +68,7 @@ export interface WebdbSchema extends DBSchema {
 }
 
 const DB_PREFIX = 'soms-webdb-u';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function dbName(userId: string): string {
   return `${DB_PREFIX}${userId}`;
@@ -100,7 +102,13 @@ export class WebdbService implements OnDestroy {
     }
     this.currentUserId = userId;
     this.dbPromise = openDB<WebdbSchema>(dbName(userId), DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion, _newVersion, transaction) {
+        // v2 is deliberately destructive for the rebuildable thread/profile/sync caches.
+        if (oldVersion > 0 && oldVersion < 2) {
+          if (db.objectStoreNames.contains('profiles')) db.deleteObjectStore('profiles');
+          if (db.objectStoreNames.contains('threads')) transaction.objectStore('threads').clear();
+          if (db.objectStoreNames.contains('meta')) transaction.objectStore('meta').clear();
+        }
         if (!db.objectStoreNames.contains('avatars')) {
           db.createObjectStore('avatars', { keyPath: 'identity' });
         }
@@ -148,6 +156,24 @@ export class WebdbService implements OnDestroy {
       }
     }
     if (idbAvailable()) await deleteDB(dbName(userId));
+    if (isTauri()) {
+      await tauriInvoke('native_db_clear_user', { userId: Number(userId) });
+    }
+  }
+
+  /** Close the live WebView handle without deleting durable data (normal app/page teardown). */
+  async close(): Promise<void> {
+    const closing = this.dbPromise;
+    this.dbPromise = null;
+    this.currentUserId = null;
+    this.ready.set(false);
+    if (closing) {
+      try {
+        (await closing).close();
+      } catch {
+        /* already closed */
+      }
+    }
   }
 
   /**
@@ -171,6 +197,16 @@ export class WebdbService implements OnDestroy {
    *  is `'missedCursor'` (the `{threadId, seq}` forward cursor for the missed-summary pull). The value is
    *  opaque to the store — the caller owns its shape + narrowing. */
   async getMeta(key: string): Promise<unknown> {
+    if (isTauri() && this.currentUserId != null) {
+      try {
+        return (await tauriInvoke('native_db_get_meta', {
+          userId: Number(this.currentUserId),
+          key,
+        })) ?? undefined;
+      } catch {
+        return undefined;
+      }
+    }
     try {
       const rec = await (await this.db()).get('meta', key);
       return rec?.value;
@@ -183,6 +219,18 @@ export class WebdbService implements OnDestroy {
    *  graceful no-op (the value is also held in memory by its writer; a missed persist just re-fetches one
    *  idempotent page on the next catch-up). */
   async putMeta(key: string, value: unknown): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      try {
+        await tauriInvoke('native_db_put_meta', {
+          userId: Number(this.currentUserId),
+          key,
+          value,
+        });
+      } catch {
+        /* best-effort */
+      }
+      return;
+    }
     try {
       await (await this.db()).put('meta', { key, value });
     } catch {
@@ -194,6 +242,25 @@ export class WebdbService implements OnDestroy {
 
   /** Read an avatar blob by identity and refresh its last-render metadata. */
   async getAvatar(identity: string): Promise<AvatarRecord | undefined> {
+    if (isTauri() && this.currentUserId != null) {
+      const record = await tauriInvoke<{
+        identity: string;
+        path: string;
+        mime: string;
+        data: number[];
+        lastRender: number;
+      } | null>('native_db_get_avatar', {
+        userId: Number(this.currentUserId),
+        identity,
+      });
+      if (!record) return undefined;
+      return {
+        identity: record.identity,
+        path: record.path,
+        blob: new Blob([new Uint8Array(record.data)], { type: record.mime }),
+        lastRender: record.lastRender,
+      };
+    }
     const db = await this.db();
     const rec = await db.get('avatars', identity);
     if (!rec) return undefined;
@@ -207,8 +274,215 @@ export class WebdbService implements OnDestroy {
 
   /** Store/overwrite an avatar blob under its stable identity. */
   async putAvatar(record: AvatarRecord): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_put_avatar', {
+        userId: Number(this.currentUserId),
+        identity: record.identity,
+        path: record.path,
+        mime: record.blob.type || 'application/octet-stream',
+        data: Array.from(new Uint8Array(await record.blob.arrayBuffer())),
+        lastRender: record.lastRender,
+      });
+      return;
+    }
     const db = await this.db();
     await db.put('avatars', record);
+  }
+
+  async getThreads(): Promise<ConversationItem[]> {
+    if (isTauri() && this.currentUserId != null) {
+      return tauriInvoke<ConversationItem[]>('native_db_threads', {
+        userId: Number(this.currentUserId),
+      });
+    }
+    return (await this.db()).getAll('threads');
+  }
+
+  async replaceThreads(items: ConversationItem[]): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_replace_threads', {
+        userId: Number(this.currentUserId),
+        items,
+      });
+      return;
+    }
+    const tx = (await this.db()).transaction('threads', 'readwrite');
+    await tx.store.clear();
+    for (const item of items) await tx.store.put(item);
+    await tx.done;
+  }
+
+  async putThread(item: ConversationItem): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_put_thread', {
+        userId: Number(this.currentUserId),
+        threadId: item.threadId,
+        item,
+      });
+      return;
+    }
+    await (await this.db()).put('threads', item);
+  }
+
+  async deleteThread(threadId: number): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_delete_thread', {
+        userId: Number(this.currentUserId),
+        threadId,
+      });
+      return;
+    }
+    await (await this.db()).delete('threads', threadId);
+  }
+
+  /** Apply one server-planned thread delta and its revision in the same durable transaction. */
+  async applyThreadDelta(delta: HydratedThreadDeltaOp[], revision: number): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_apply_thread_delta', {
+        userId: Number(this.currentUserId),
+        revision,
+        delta,
+      });
+      return;
+    }
+    const db = await this.db();
+    const tx = db.transaction(['threads', 'meta'], 'readwrite');
+    for (const op of delta) {
+      if (op.direction === 'DELETE') await tx.objectStore('threads').delete(op.threadId);
+      else await tx.objectStore('threads').put(op.item);
+    }
+    await tx.objectStore('meta').put({ key: 'threadRevision', value: revision });
+    await tx.done;
+  }
+
+  async getProfile(identity: string): Promise<ProfileRecord | undefined> {
+    if (isTauri() && this.currentUserId != null) {
+      return (
+        (await tauriInvoke<ProfileRecord | null>('native_db_get_profile', {
+          userId: Number(this.currentUserId),
+          identity,
+        })) ?? undefined
+      );
+    }
+    return (await this.db()).get('profiles', identity);
+  }
+
+  async putProfile(record: ProfileRecord): Promise<boolean> {
+    if (isTauri() && this.currentUserId != null) {
+      return tauriInvoke<boolean>('native_db_put_profile', {
+        userId: Number(this.currentUserId),
+        identity: record.identity,
+        profileRev: record.profileRev,
+        profile: record,
+      });
+    }
+    const db = await this.db();
+    const previous = await db.get('profiles', record.identity);
+    if (previous && previous.profileRev > record.profileRev) return false;
+    await db.put('profiles', record);
+    return true;
+  }
+
+  // ---- message store -----------------------------------------------------------------------
+
+  /** Query one cached message window. An absent anchor means the newest/oldest edge. */
+  async queryCachedMessages(
+    threadId: number,
+    orderBy: 'desc' | 'asc',
+    take: number,
+    anchor?: number,
+  ): Promise<Message[]> {
+    if (isTauri() && this.currentUserId != null) {
+      return tauriInvoke<Message[]>('native_db_query_messages', {
+        userId: Number(this.currentUserId),
+        threadId,
+        anchor: anchor ?? null,
+        orderBy,
+        take,
+      });
+    }
+    const db = await this.db();
+    const lower = anchor === undefined || orderBy === 'desc' ? -Infinity : anchor;
+    const upper = anchor === undefined || orderBy === 'asc' ? Infinity : anchor;
+    const range = IDBKeyRange.bound(
+      [threadId, lower],
+      [threadId, upper],
+      orderBy === 'asc' && anchor !== undefined,
+      orderBy === 'desc' && anchor !== undefined,
+    );
+    const out: Message[] = [];
+    let cursor = await db
+      .transaction('messages')
+      .store.openCursor(range, orderBy === 'desc' ? 'prev' : 'next');
+    while (cursor && out.length < take) {
+      out.push(cursor.value);
+      cursor = await cursor.continue();
+    }
+    return out;
+  }
+
+  /** Idempotently store a batch by the `(threadId, seq)` key. */
+  async putMessages(messages: Message[]): Promise<void> {
+    if (messages.length === 0) return;
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_put_messages', {
+        userId: Number(this.currentUserId),
+        messages,
+      });
+      return;
+    }
+    const tx = (await this.db()).transaction('messages', 'readwrite');
+    for (const message of messages) await tx.store.put(message);
+    await tx.done;
+  }
+
+  async getMessage(threadId: number, seq: number): Promise<Message | undefined> {
+    if (isTauri() && this.currentUserId != null) {
+      return (
+        (await tauriInvoke<Message | null>('native_db_get_message', {
+          userId: Number(this.currentUserId),
+          threadId,
+          seq,
+        })) ?? undefined
+      );
+    }
+    return (await this.db()).get('messages', [threadId, seq]);
+  }
+
+  async getNewestMessages(threadIds: number[]): Promise<Message[]> {
+    if (threadIds.length === 0) return [];
+    if (isTauri() && this.currentUserId != null) {
+      return tauriInvoke<Message[]>('native_db_newest_messages', {
+        userId: Number(this.currentUserId),
+        threadIds,
+      });
+    }
+    const tx = (await this.db()).transaction('messages', 'readonly');
+    const messages = await Promise.all(
+      threadIds.map(async (threadId) => {
+        const cursor = await tx.store.openCursor(
+          IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+          'prev',
+        );
+        return cursor?.value;
+      }),
+    );
+    return messages.filter((message): message is Message => message !== undefined);
+  }
+
+  async deleteMessagesByThread(threadId: number): Promise<void> {
+    if (isTauri() && this.currentUserId != null) {
+      await tauriInvoke('native_db_delete_messages_by_thread', {
+        userId: Number(this.currentUserId),
+        threadId,
+      });
+      return;
+    }
+    const tx = (await this.db()).transaction('messages', 'readwrite');
+    await tx.store.delete(
+      IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+    );
+    await tx.done;
   }
 
   /** Request persistent storage so the browser doesn't evict the origin under disk pressure. */
@@ -225,7 +499,6 @@ export class WebdbService implements OnDestroy {
   }
 
   ngOnDestroy(): void {
-    if (this.currentUserId != null)
-      void this.closeAndDelete(this.currentUserId);
+    void this.close();
   }
 }

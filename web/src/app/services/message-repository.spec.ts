@@ -46,7 +46,13 @@ describe('MessageRepository.applyMediaStatus', () => {
       providers: [
         provideZonelessChangeDetection(),
         MessageRepository,
-        { provide: WebdbService, useValue: { db: async () => ({ get: dbGet, put: dbPut }) } },
+        {
+          provide: WebdbService,
+          useValue: {
+            getMessage: async (...args: unknown[]) => dbGet(...args),
+            putMessages: async (messages: unknown[]) => dbPut('messages', messages[0]),
+          },
+        },
         { provide: WebsocketService, useValue: { eventSubject: new Subject(), reconnect$: new Subject() } },
         { provide: MsgService, useValue: {} },
         { provide: UserService, useValue: { sessionProfile: () => null } },

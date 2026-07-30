@@ -10,6 +10,7 @@ export interface ProfileData {
   avatar: string;
   bio?: string;
   domain?: string;
+  profileRev: number;
 }
 
 /**
@@ -35,8 +36,8 @@ export class ProfileRepository {
    */
   async putProfile(identity: string, kind: 'user' | 'group', data: ProfileData): Promise<void> {
     try {
-      const db = await this.webdb.db();
-      const prev = await db.get('profiles', identity);
+      const prev = await this.webdb.getProfile(identity);
+      if (prev && data.profileRev < prev.profileRev) return;
       const record: ProfileRecord = {
         identity,
         id: data.id,
@@ -45,10 +46,10 @@ export class ProfileRepository {
         avatar: data.avatar,
         bio: data.bio ?? prev?.bio ?? '',
         domain: data.domain ?? prev?.domain ?? '',
-        fetchedAt: Date.now(),
+        profileRev: data.profileRev,
       };
-      await db.put('profiles', record);
-      if (record.avatar && record.avatar !== prev?.avatar) {
+      const written = await this.webdb.putProfile(record);
+      if (written && record.avatar && record.avatar !== prev?.avatar) {
         void this.avatarRepo.refresh(identity, record.avatar).catch(() => {});
       }
     } catch {
@@ -59,7 +60,7 @@ export class ProfileRepository {
   /** Read a cached profile by identity (undefined when absent / IDB unavailable). */
   async getProfile(identity: string): Promise<ProfileRecord | undefined> {
     try {
-      return await (await this.webdb.db()).get('profiles', identity);
+      return await this.webdb.getProfile(identity);
     } catch {
       return undefined;
     }

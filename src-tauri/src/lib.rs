@@ -21,6 +21,7 @@
 
 mod navigation;
 mod media_cache;
+mod native_db;
 #[cfg(desktop)]
 mod secure_storage;
 
@@ -180,6 +181,10 @@ struct ProxyState {
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
     upload_cancels:
+        Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
+    /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
+    media_download_cancels:
         Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
 }
 
@@ -467,6 +472,7 @@ pub fn run() {
         api_http: Arc::new(Mutex::new((initial_origin.clone(), http_client_for(&initial_origin)))),
         ota_active: ota_active.clone(),
         upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
     };
     let proxy_for_media = proxy_state.clone();
 
@@ -589,10 +595,30 @@ pub fn run() {
                     api_request,
                     media_request,
                     media_cache::cache_media,
+                    media_cache::download_media,
+                    media_cache::cancel_media_download,
                     media_cache::clear_media_cache,
                     media_cache::get_media_cache_info,
                     media_cache::save_media_desktop,
                     media_cache::set_media_cache_limit,
+                    native_db::native_db_threads,
+                    native_db::native_db_put_thread,
+                    native_db::native_db_replace_threads,
+                    native_db::native_db_delete_thread,
+                    native_db::native_db_apply_thread_delta,
+                    native_db::native_db_get_profile,
+                    native_db::native_db_put_profile,
+                    native_db::native_db_get_meta,
+                    native_db::native_db_put_meta,
+                    native_db::native_db_clear_user,
+                    native_db::native_db_clear_all,
+                    native_db::native_db_get_avatar,
+                    native_db::native_db_put_avatar,
+                    native_db::native_db_query_messages,
+                    native_db::native_db_put_messages,
+                    native_db::native_db_get_message,
+                    native_db::native_db_newest_messages,
+                    native_db::native_db_delete_messages_by_thread,
                     navigation::open_external_url,
                 ]
             }
@@ -624,9 +650,29 @@ pub fn run() {
                     api_request,
                     media_request,
                     media_cache::cache_media,
+                    media_cache::download_media,
+                    media_cache::cancel_media_download,
                     media_cache::clear_media_cache,
                     media_cache::get_media_cache_info,
                     media_cache::set_media_cache_limit,
+                    native_db::native_db_threads,
+                    native_db::native_db_put_thread,
+                    native_db::native_db_replace_threads,
+                    native_db::native_db_delete_thread,
+                    native_db::native_db_apply_thread_delta,
+                    native_db::native_db_get_profile,
+                    native_db::native_db_put_profile,
+                    native_db::native_db_get_meta,
+                    native_db::native_db_put_meta,
+                    native_db::native_db_clear_user,
+                    native_db::native_db_clear_all,
+                    native_db::native_db_get_avatar,
+                    native_db::native_db_put_avatar,
+                    native_db::native_db_query_messages,
+                    native_db::native_db_put_messages,
+                    native_db::native_db_get_message,
+                    native_db::native_db_newest_messages,
+                    native_db::native_db_delete_messages_by_thread,
                     navigation::open_external_url,
                 ]
             }

@@ -116,5 +116,23 @@ describe('WebdbService', () => {
       await expectAsync(webdb.db()).toBeRejected();
       expect(webdb.ready()).toBe(false);
     });
+
+    it('commits a thread delta and its revision together', async () => {
+      await webdb.openForUser('1');
+      const item = { threadId: 7, type: 'P2P' } as never;
+      await webdb.applyThreadDelta(
+        [{ threadId: 7, direction: 'ADD', item }],
+        12,
+      );
+      expect((await webdb.getThreads()).map((thread) => thread.threadId)).toEqual([7]);
+      expect(await webdb.getMeta('threadRevision')).toBe(12);
+
+      await webdb.applyThreadDelta(
+        [{ threadId: 7, direction: 'DELETE' }],
+        13,
+      );
+      expect(await webdb.getThreads()).toEqual([]);
+      expect(await webdb.getMeta('threadRevision')).toBe(13);
+    });
   });
 });

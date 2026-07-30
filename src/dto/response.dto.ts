@@ -148,6 +148,12 @@ export class GroupResponseDto {
   avatar!: string;
 
   @ApiProperty({
+    example: 7,
+    description: 'Monotonic group identity revision (name/avatar/description).',
+  })
+  profileRev!: number;
+
+  @ApiProperty({
     example: 'Frontend team sync',
     description: 'Group description / intro',
   })

@@ -31,7 +31,7 @@ export type Message = S['MessageResponseDto'] & {
   /** Monotonic status version — the anti-regression key for the client's reduceMediaStatus. */
   sv?: number
 }
-export type Group = S['GroupResponseDto']
+export type Group = S['GroupResponseDto'] & { profileRev: number }
 
 // peerUser/group are optional on the generated DTO (mutually exclusive by type), but templates branch on
 // `type` first so the accessed one is always present — override to required to keep template accessors simple.
@@ -40,7 +40,7 @@ export type ConversationItem = Omit<
   'peerUser' | 'group'
 > & {
   peerUser: S['UserResponseDto']
-  group: S['GroupResponseDto']
+  group: Group
   // Latest-message preview state — sourced from the missed-summary pull (the snapshot carries unread +
   // lastMessageAt only; the body/preview is pulled). Populated by ThreadRepository.pullMissed (on boot +
   // reconnect); a live identity-only NEW_MESSAGE reorders (advances lastMessageAt) but does NOT bump unread

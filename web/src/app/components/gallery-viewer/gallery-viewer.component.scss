@@ -78,7 +78,9 @@
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.5);
 
-  &::-webkit-scrollbar { display: none; }
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .gv-thumb {
@@ -134,6 +136,141 @@
   }
 }
 
+.gv-thumb-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.48);
+
+  svg {
+    width: 25px;
+    height: 25px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+  }
+}
+
+:host ::ng-deep .gv-unloaded-slide {
+  width: 100%;
+  height: 100%;
+}
+
+.gv-load,
+.gv-transfer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.gv-load {
+  gap: 18px;
+  pointer-events: none;
+}
+
+.gv-load-icon {
+  width: 54px;
+  height: 54px;
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.72);
+  stroke-width: 1.45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gv-load-button {
+  min-width: 150px;
+  min-height: 48px;
+  padding: 7px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 18px;
+  backdrop-filter: blur(12px);
+
+  small {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 11px;
+    line-height: 14px;
+  }
+}
+
+.gv-transfer {
+  gap: 11px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.gv-transfer-ring {
+  --gv-progress: 0%;
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(
+    #fff var(--gv-progress),
+    rgba(255, 255, 255, 0.2) 0
+  );
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 4px;
+    border-radius: inherit;
+    background: #111;
+  }
+
+  strong {
+    position: relative;
+    z-index: 1;
+    font-size: 14px;
+    font-weight: 600;
+  }
+}
+
+.gv-transfer-ring--indeterminate {
+  background: conic-gradient(transparent 0 58%, #fff 72%, transparent 86%);
+  animation: gv-transfer-spin 0.9s linear infinite;
+}
+
+.gv-transfer-size {
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.gv-transfer-cancel {
+  min-width: 88px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+@keyframes gv-transfer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .gv-status,
 .gv-retry {
   position: absolute;
@@ -164,12 +301,24 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   width: 52px;
   height: 52px;
   margin-bottom: 6px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.12);
   font-size: 30px;
+}
+
+.gv-retry-icon svg {
+  display: block;
+  width: 28px;
+  height: 28px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .gv-retry-text {

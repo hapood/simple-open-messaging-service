@@ -4,9 +4,15 @@
     "sendingOf": "正在发送 {{completed}}/{{total}}",
     "sendingProgress": "正在发送 {{completed}}/{{total}} · {{progress}}%",
     "failedCount": "{{count}} 项发送失败",
+    "anyFailedCount": "{{count}} 项传输失败",
     "completed": "发送完成",
     "cancel": "取消发送",
-    "retry": "重试发送"
+    "retry": "重试发送",
+    "downloadingProgress": "正在下载 {{count}} 项 · {{progress}}%",
+    "downloadFailed": "下载失败",
+    "loaded": "已加载",
+    "saved": "已保存",
+    "cancelDownload": "取消下载"
   },
   "call": {
     "incoming": "来电",
@@ -442,6 +448,9 @@
     "aliasPlaceholder": "输入备注（如：Alice（工作））"
   },
   "gallery": {
+    "loadImage": "加载图片",
+    "loadingImage": "正在加载图片",
+    "downloadedBytes": "已下载 {{size}}",
     "failed": "图片加载失败",
     "tapRetry": "点击重试",
     "retryAria": "重试加载图片",
@@ -588,6 +597,14 @@
     "clearMediaCacheAction": "清除",
     "clearingMediaCache": "正在清除…",
     "mediaCacheCleared": "媒体缓存已清除。",
+    "data": "本地数据",
+    "dataHint": "管理此设备保存的数据",
+    "deleteAllData": "删除所有本地数据",
+    "deleteAllDataDesc": "删除聊天缓存、头像、媒体和登录信息；服务器上的消息不会被删除。",
+    "deleteAllDataAction": "删除并退出",
+    "deletingAllData": "正在删除…",
+    "deleteAllDataConfirm": "删除此设备上的所有本地数据后将退出登录。此操作无法撤销，但不会删除服务器上的消息。",
+    "deleteAllDataFailed": "未能完整删除本地数据，请重试。",
     "mediaCacheClearFailed": "无法清除媒体缓存。",
     "push": "推送",
     "notifications": "通知",

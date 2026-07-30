@@ -30,7 +30,12 @@
 .msg-media-cell {
   position: absolute;
   overflow: hidden;
-  background: rgba(127, 127, 127, 0.18); // placeholder gray (image pre-load; video error; audio cell)
+  background: rgba(
+    127,
+    127,
+    127,
+    0.18
+  ); // placeholder gray (image pre-load; video error; audio cell)
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -78,31 +83,26 @@ app-audio-player {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 5px;
   text-align: center;
-  padding: 0 12px;
   color: var(--app-text-muted);
-  background:
-    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--app-brand) 9%, transparent), transparent 38%),
+  background: radial-gradient(
+      circle at 50% 42%,
+      color-mix(in srgb, var(--app-brand) 9%, transparent),
+      transparent 38%
+    ),
     color-mix(in srgb, var(--app-surface, #fff) 92%, var(--app-brand) 8%);
   font-size: 12px;
   line-height: 16px;
   pointer-events: none;
 
   svg {
-    width: 28px;
-    height: 28px;
+    width: 36px;
+    height: 36px;
     fill: none;
     stroke: currentColor;
     stroke-width: 1.7;
     stroke-linecap: round;
     stroke-linejoin: round;
-  }
-
-  small {
-    font-size: 10px;
-    line-height: 12px;
-    opacity: 0.75;
   }
 }
 
@@ -112,7 +112,9 @@ app-audio-player {
 }
 
 @keyframes media-tap-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 // <video> fills its cell — the browser renders the first frame (preload=metadata). object-fit:cover so
@@ -259,8 +261,15 @@ app-audio-player {
   font-size: 11px;
   line-height: 14px;
   color: var(--im-bubble-text);
-  .mat-icon { font-size: 13px; width: 13px; height: 13px; line-height: 13px; }
-  &.msg-media-status--failed { color: var(--app-danger, #ff5252); }
+  .mat-icon {
+    font-size: 13px;
+    width: 13px;
+    height: 13px;
+    line-height: 13px;
+  }
+  &.msg-media-status--failed {
+    color: var(--app-danger, #ff5252);
+  }
 }
 
 // "+N" more badge (album >6: last cell covered with a translucent black overlay + a centered number).
@@ -280,4 +289,64 @@ app-audio-player {
   color: #fff;
   font-size: 22px;
   font-weight: 600;
+}
+
+.msg-media-more-count {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: calc(50% + 22px);
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+// Passive download progress: message cards never own cancellation. The same task remains actionable in
+// the fullscreen viewer/global transfer surface; the row only paints its current state.
+.msg-media-progress {
+  position: absolute;
+  z-index: 4;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.24);
+  pointer-events: none;
+
+  > span {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: var(--app-brand);
+    transition: width 120ms linear;
+  }
+}
+
+.msg-media-progress--aggregate {
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  border-radius: 3px;
+}
+
+.msg-media-progress--indeterminate > span {
+  animation: media-download-indeterminate 1.1s ease-in-out infinite;
+}
+
+.msg-media-progress--failed > span {
+  width: 100%;
+  background: var(--app-danger, #ff5252);
+}
+
+@keyframes media-download-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(300%);
+  }
 }

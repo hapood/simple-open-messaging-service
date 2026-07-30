@@ -128,6 +128,7 @@ export class UserService {
         // Write-through the partial profile too → avatar-refresh signal on a path change.
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
+          profileRev: u.profileRev,
         });
       }
     } catch {
@@ -227,6 +228,7 @@ export class UserService {
         // Write-through the partial profile → IDB + trigger avatar refresh when the path changed.
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
+          profileRev: u.profileRev,
         })
         return u
       }),

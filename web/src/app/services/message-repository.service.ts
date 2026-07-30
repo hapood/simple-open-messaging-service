@@ -195,14 +195,9 @@ export class MessageRepository {
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);
     try {
-      const db = await this.webdb.db();
-      const tx = db.transaction('messages', 'readwrite');
-      // Composite-key range delete: every [threadId, *] row in one atomic op (seq is a non-negative int, so
-      // the -Infinity..Infinity span is the same idiom the range reads use).
-      await tx.store.delete(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]));
-      await tx.done;
+      await this.webdb.deleteMessagesByThread(threadId);
     } catch {
-      /* IDB unavailable / closed — cache is best-effort */
+      /* local store unavailable / closed — cache is best-effort */
     }
   }
 
@@ -289,13 +284,8 @@ export class MessageRepository {
     const out = new Map<number, Message>();
     if (threadIds.length === 0) return out;
     try {
-      const tx = (await this.webdb.db()).transaction('messages', 'readonly');
-      await Promise.all(
-        threadIds.map(async (tid) => {
-          const cursor = await tx.store.openCursor(IDBKeyRange.bound([tid, -Infinity], [tid, Infinity]), 'prev');
-          if (cursor?.value) out.set(tid, cursor.value);
-        }),
-      );
+      const messages = await this.webdb.getNewestMessages(threadIds);
+      for (const message of messages) out.set(message.threadId, message);
       return out;
     } catch {
       return out;
@@ -337,9 +327,7 @@ export class MessageRepository {
    *  are valid and must never be interpreted as cache corruption. */
   private async latestPage(threadId: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
     try {
-      const db = await this.webdb.db();
-      const range = IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]);
-      return (await this.collect(db, range, 'prev', take)).filter(
+      return (await this.webdb.queryCachedMessages(threadId, 'desc', take)).filter(
         (m) => clearedAfter == null || m.createdAt > clearedAfter,
       );
     } catch {
@@ -350,9 +338,9 @@ export class MessageRepository {
   /** The `take` messages with seq < `belowSeq`, highest-first (desc). */
   private async rangeDesc(threadId: number, belowSeq: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
     try {
-      const db = await this.webdb.db();
-      const range = IDBKeyRange.bound([threadId, -Infinity], [threadId, belowSeq], false, true);
-      return (await this.collect(db, range, 'prev', take)).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
+      return (
+        await this.webdb.queryCachedMessages(threadId, 'desc', take, belowSeq)
+      ).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
     } catch {
       return [];
     }
@@ -361,28 +349,18 @@ export class MessageRepository {
   /** The `take` messages with seq > `aboveSeq`, lowest-first (asc). */
   private async rangeAsc(threadId: number, aboveSeq: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
     try {
-      const db = await this.webdb.db();
-      const range = IDBKeyRange.bound([threadId, aboveSeq], [threadId, Infinity], true, false);
-      return (await this.collect(db, range, 'next', take)).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
+      return (
+        await this.webdb.queryCachedMessages(threadId, 'asc', take, aboveSeq)
+      ).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
     } catch {
       return [];
     }
   }
 
-  private async collect(db: Awaited<ReturnType<WebdbService['db']>>, range: IDBKeyRange, direction: 'next' | 'prev', take: number): Promise<Message[]> {
-    const out: Message[] = [];
-    let cursor = await db.transaction('messages').store.openCursor(range, direction);
-    while (cursor && out.length < take) {
-      out.push(cursor.value);
-      cursor = await cursor.continue();
-    }
-    return out;
-  }
-
   /** Idempotent put by `[threadId, seq]` (the keyPath) — writing the same key twice just overwrites. */
   private async put(m: Message): Promise<void> {
     try {
-      await (await this.webdb.db()).put('messages', m);
+      await this.webdb.putMessages([m]);
     } catch {
       /* IDB unavailable / closed — cache is best-effort */
     }
@@ -390,10 +368,7 @@ export class MessageRepository {
 
   private async putMany(msgs: Message[]): Promise<void> {
     try {
-      const db = await this.webdb.db();
-      const tx = db.transaction('messages', 'readwrite');
-      for (const m of msgs) await tx.store.put(m);
-      await tx.done;
+      await this.webdb.putMessages(msgs);
     } catch {
       /* best-effort */
     }
@@ -403,7 +378,7 @@ export class MessageRepository {
    *  unavailable or the message was never cached). */
   private async getOne(threadId: number, seq: number): Promise<Message | undefined> {
     try {
-      return await (await this.webdb.db()).get('messages', [threadId, seq]);
+      return await this.webdb.getMessage(threadId, seq);
     } catch {
       return undefined;
     }
