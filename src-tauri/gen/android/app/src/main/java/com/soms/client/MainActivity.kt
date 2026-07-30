@@ -5,15 +5,24 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.Context
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.media.MediaRecorder
 import android.provider.Settings
+import android.provider.MediaStore
+import android.graphics.Color
+import android.graphics.Typeface
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.TextView
+import android.util.TypedValue
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
 import android.graphics.drawable.Icon
@@ -68,9 +77,14 @@ import java.util.concurrent.TimeUnit
  * than fishing it out of the view tree, so this stays stable across Tauri versions.
  */
 class MainActivity : TauriActivity() {
+    private var launchOverlay: View? = null
+    private var launchStatus: TextView? = null
+    private var pendingSystemBarDark: Boolean? = null
+    private val launchTimeout = Runnable { dismissLaunchOverlay() }
     private var currentPipParams: PictureInPictureParams? = null
     private var nativePhotoRequestId: String? = null
     private var nativeFileRequestId: String? = null
+    private var pendingMediaSave: Pair<String, File>? = null
     private val nativePhotoPicker = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(20),
     ) { uris ->
@@ -78,6 +92,33 @@ class MainActivity : TauriActivity() {
         nativePhotoRequestId = null
         NativeUploadManager.accept(this, uris, "image", requestId)
         nativeComposer.restoreAfterExternalPicker()
+    }
+    private val legacyMediaSaver = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*"),
+    ) { uri ->
+        val pending = pendingMediaSave
+        pendingMediaSave = null
+        val success = if (uri == null || pending == null) {
+            false
+        } else {
+            try {
+                contentResolver.openOutputStream(uri, "w")!!.use { output ->
+                    pending.second.inputStream().use { input -> input.copyTo(output) }
+                }
+                true
+            } catch (e: Exception) {
+                Log.e("SOMS", "Legacy document save failed", e)
+                false
+            }
+        }
+        pending?.first?.let { requestId ->
+            val script =
+                "window.__SOMS_MEDIA_SAVE_RESULT__?.({" +
+                    "requestId:${JSONObject.quote(requestId)},success:$success})"
+            SomsBridge.webView?.post {
+                SomsBridge.webView?.evaluateJavascript(script, null)
+            }
+        }
     }
     private val nativeFilePicker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -126,6 +167,8 @@ class MainActivity : TauriActivity() {
     private var nativeVoiceRecorder: MediaRecorder? = null
     private var nativeVoiceFile: File? = null
     private var nativeVoiceStartedAt = 0L
+    private var nativeVoiceDurationMs = 0L
+    private var nativeVoiceCapTask: Runnable? = null
     private var nativeVoiceContextId = 0L
     private var nativeVoiceThreadId = 0L
     private var pendingVoiceStart: (() -> Unit)? = null
@@ -133,6 +176,7 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        installLaunchOverlay()
         // Seed SomsLog's file sink (filesDir/soms-native.log, DEBUG-only) before any subsystem logs. No-op in
         // release (every SomsLog method compiles out).
         SomsLog.init(this)
@@ -191,9 +235,110 @@ class MainActivity : TauriActivity() {
         installInsetsListener()
     }
 
+    /**
+     * Native continuation of Android's system splash. It uses the same solid brand background and logo,
+     * but can remain above the WebView while Angular restores the session, resolves its first route, and
+     * paints stable content. The small lower-left label is deliberately secondary to the centered mark.
+     */
+    private fun installLaunchOverlay() {
+        val decor = window.decorView as? ViewGroup ?: return
+        val density = resources.displayMetrics.density
+        fun dp(value: Int) = Math.round(value * density)
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(33, 150, 243))
+            isClickable = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            elevation = dp(16).toFloat()
+        }
+        val logo = ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher_foreground)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = null
+        }
+        overlay.addView(
+            logo,
+            FrameLayout.LayoutParams(dp(132), dp(132), Gravity.CENTER),
+        )
+
+        val status = TextView(this).apply {
+            setText(R.string.splash_preparing)
+            setTextColor(Color.argb(150, 255, 255, 255))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTypeface(typeface, Typeface.NORMAL)
+            letterSpacing = 0.04f
+            maxLines = 1
+            includeFontPadding = false
+        }
+        overlay.addView(
+            status,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.START or Gravity.BOTTOM,
+            ).apply {
+                marginStart = dp(24)
+                bottomMargin = dp(28)
+            },
+        )
+
+        decor.addView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        launchOverlay = overlay
+        launchStatus = status
+        overlay.postDelayed(launchTimeout, LAUNCH_TIMEOUT_MS)
+    }
+
+    private fun updateLaunchStage(stage: String) {
+        val label = when (stage) {
+            "session" -> R.string.splash_restoring_session
+            "config" -> R.string.splash_loading_config
+            "interface" -> R.string.splash_preparing_interface
+            else -> return
+        }
+        launchStatus?.setText(label)
+    }
+
+    private fun applySystemBarTheme(dark: Boolean) {
+        if (launchOverlay != null) {
+            pendingSystemBarDark = dark
+            return
+        }
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.isAppearanceLightStatusBars = !dark
+        controller.isAppearanceLightNavigationBars = !dark
+    }
+
+    private fun dismissLaunchOverlay() {
+        val overlay = launchOverlay ?: return
+        launchOverlay = null
+        launchStatus = null
+        overlay.removeCallbacks(launchTimeout)
+        overlay.animate()
+            .alpha(0f)
+            .setDuration(LAUNCH_FADE_MS)
+            .withEndAction {
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+                pendingSystemBarDark?.let {
+                    pendingSystemBarDark = null
+                    applySystemBarTheme(it)
+                }
+            }
+            .start()
+    }
+
     override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        // Let the WebView resolve ACTION_DOWN against the current (keyboard-open) layout before an
+        // outside touch dismisses the native composer keyboard and changes the WebView geometry.
+        // The same event is dispatched exactly once; no delayed or synthetic click is needed.
+        val handled = super.dispatchTouchEvent(event)
         nativeComposer.handleOutsideTouch(event)
-        return super.dispatchTouchEvent(event)
+        return handled
     }
 
     /** Install a WindowInsets listener on the content view that measures the status-bar / gesture-bar
@@ -545,6 +690,9 @@ class MainActivity : TauriActivity() {
         // Privacy-scoped system picker + native streaming uploads. File bytes never cross into the
         // webview; JS receives metadata, a bounded preview, progress, and the final API envelope.
         webView.addJavascriptInterface(SomsUploadInterface(this), "SomsUpload")
+        // Rust downloads authenticated media into the app-private shared cache. This bridge performs
+        // only the Android-specific final copy into MediaStore; file bytes never pass through JS.
+        webView.addJavascriptInterface(SomsMediaInterface(this), "SomsMedia")
         // Pin the renderer at IMPORTANT priority even while the app is backgrounded (app-wide, on every
         // WebView (re)creation — see applyCallRendererPolicy).
         applyCallRendererPolicy()
@@ -557,6 +705,77 @@ class MainActivity : TauriActivity() {
         // This (re)created WebView replaces any prior one — release its orphaned video surfaces so the next
         // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
         CallController.onWebViewGone()
+    }
+
+    /**
+     * Public-media save boundary. Rust owns network access, authentication, cache deduplication and
+     * integrity; this bridge accepts only a canonical file below this app's cache/media directory.
+     * Android 10+ copies into MediaStore; Android 7–9 uses the system document picker without broad
+     * external-storage permission.
+     */
+    private class SomsMediaInterface(activity: MainActivity) {
+        private val activityRef = java.lang.ref.WeakReference(activity)
+
+        @JavascriptInterface
+        fun save(requestId: String, cachePath: String, filename: String, mimeType: String): String {
+            val activity = activityRef.get() ?: return ""
+            val context = activity.applicationContext
+
+            val mediaRoot = File(context.cacheDir, "media").canonicalFile
+            val source = try {
+                File(cachePath).canonicalFile
+            } catch (e: Exception) {
+                Log.e("SOMS", "Invalid media cache path", e)
+                return ""
+            }
+            if (!source.isFile || source.parentFile != mediaRoot) {
+                Log.w("SOMS", "Rejected media save outside cache root")
+                return ""
+            }
+
+            val safeName = filename
+                .substringAfterLast('/')
+                .substringAfterLast('\\')
+                .trim()
+                .ifEmpty { "download" }
+            val type = mimeType.ifBlank { "application/octet-stream" }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                activity.runOnUiThread {
+                    activity.pendingMediaSave = requestId to source
+                    activity.legacyMediaSaver.launch(safeName)
+                }
+                return "pending"
+            }
+            val (collection, relativePath) = when {
+                type.startsWith("image/") ->
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI to "Pictures/SOMS"
+                type.startsWith("video/") ->
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI to "Movies/SOMS"
+                else ->
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI to "Download/SOMS"
+            }
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                put(MediaStore.MediaColumns.MIME_TYPE, type)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(collection, values) ?: return ""
+            return try {
+                resolver.openOutputStream(uri, "w")!!.use { output ->
+                    source.inputStream().use { input -> input.copyTo(output) }
+                }
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                uri.toString()
+            } catch (e: Exception) {
+                resolver.delete(uri, null, null)
+                Log.e("SOMS", "MediaStore save failed", e)
+                ""
+            }
+        }
     }
 
     private class SomsUploadInterface(activity: MainActivity) {
@@ -825,6 +1044,9 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        launchOverlay?.removeCallbacks(launchTimeout)
+        launchOverlay = null
+        launchStatus = null
         finishNativeVoiceRecording(cancel = true)
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
@@ -839,7 +1061,7 @@ class MainActivity : TauriActivity() {
         super.onDestroy()
     }
 
-    internal fun nativeVoiceRecording(): Boolean = nativeVoiceRecorder != null
+    internal fun nativeVoiceRecording(): Boolean = nativeVoiceFile != null
 
     internal fun cancelPendingNativeVoiceStart() {
         pendingVoiceStart = null
@@ -850,7 +1072,7 @@ class MainActivity : TauriActivity() {
         threadId: Long,
         @Suppress("UNUSED_PARAMETER") actionId: Long,
     ) {
-        if (nativeVoiceRecorder != null || threadId <= 0L) return
+        if (nativeVoiceFile != null || threadId <= 0L) return
         val start = { startNativeVoiceRecorder(contextId, threadId) }
         if (
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -879,9 +1101,21 @@ class MainActivity : TauriActivity() {
             nativeVoiceRecorder = recorder
             nativeVoiceFile = file
             nativeVoiceStartedAt = android.os.SystemClock.elapsedRealtime()
+            nativeVoiceDurationMs = 0L
             nativeVoiceContextId = contextId
             nativeVoiceThreadId = threadId
             nativeComposer.onVoiceRecordingStarted()
+            nativeVoiceCapTask = Runnable {
+                val active = nativeVoiceRecorder ?: return@Runnable
+                nativeVoiceDurationMs = VoiceRecordingGesture.MAX_DURATION_MS
+                nativeVoiceRecorder = null
+                runCatching { active.stop() }
+                runCatching { active.release() }
+                nativeComposer.onVoiceRecordingCapped()
+                // Keep nativeVoiceFile and the composer gesture alive. ACTION_UP still chooses send/cancel.
+            }.also {
+                window.decorView.postDelayed(it, VoiceRecordingGesture.MAX_DURATION_MS)
+            }
         } catch (error: Throwable) {
             runCatching { recorder.release() }
             file.delete()
@@ -896,14 +1130,24 @@ class MainActivity : TauriActivity() {
     }
 
     internal fun finishNativeVoiceRecording(cancel: Boolean) {
-        val recorder = nativeVoiceRecorder ?: return
+        val recorder = nativeVoiceRecorder
         val file = nativeVoiceFile
-        val duration = android.os.SystemClock.elapsedRealtime() - nativeVoiceStartedAt
+        if (recorder == null && file == null) return
+        nativeVoiceCapTask?.let { window.decorView.removeCallbacks(it) }
+        nativeVoiceCapTask = null
+        val duration = if (nativeVoiceDurationMs > 0L) {
+            nativeVoiceDurationMs
+        } else {
+            android.os.SystemClock.elapsedRealtime() - nativeVoiceStartedAt
+        }
         nativeVoiceRecorder = null
         nativeVoiceFile = null
+        nativeVoiceDurationMs = 0L
         nativeComposer.onVoiceRecordingFinished()
-        runCatching { recorder.stop() }
-        runCatching { recorder.release() }
+        if (recorder != null) {
+            runCatching { recorder.stop() }
+            runCatching { recorder.release() }
+        }
         if (cancel || VoiceRecordingGesture.isTooShort(duration) || file == null || !file.isFile || file.length() == 0L) {
             file?.delete()
             if (!cancel && VoiceRecordingGesture.isTooShort(duration)) {
@@ -1494,6 +1738,27 @@ class MainActivity : TauriActivity() {
                 .toString()
         }
 
+        /** Update the restrained, native-localized launch label. Unknown stages are ignored. */
+        @JavascriptInterface
+        fun setSplashStage(stage: String) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread { a.updateLaunchStage(stage) }
+        }
+
+        /** Angular calls this only after its initial route has settled and stable content has painted. */
+        @JavascriptInterface
+        fun finishSplash() {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread { a.dismissLaunchOverlay() }
+        }
+
+        /** Keep transparent edge-to-edge system-bar icons legible when the web theme overrides the OS. */
+        @JavascriptInterface
+        fun setSystemBarTheme(dark: Boolean) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread { a.applySystemBarTheme(dark) }
+        }
+
         /** Atomic boot/reload snapshot; runtime changes arrive through __SOMS_IME_EVENT__. */
         @JavascriptInterface
         fun getImeSnapshot(): String {
@@ -1760,6 +2025,8 @@ class MainActivity : TauriActivity() {
         private const val PIP_REQ_MUTE = 7101
         private const val PIP_REQ_END = 7102
         private const val PIP_ENTER_CONFIRM_MS = 750L
+        private const val LAUNCH_FADE_MS = 180L
+        private const val LAUNCH_TIMEOUT_MS = 8_000L
         private const val NOTIF_SYNC_WORK = "soms-notif-sync"
         /** FCM availability auto-check cadence (the user's "once/day" requirement). */
         private const val FCM_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000

@@ -23,10 +23,9 @@ import { REPLAY_SAFE } from './request-context';
  *    the webview fetch entirely. Routing through Rust ALSO lets Rust own the session token — `api_request`
  *    injects `Authorization: Bearer` from its held `ProxyState.token`, so JS never touches the token (the
  *    JS `AuthInterceptor` no longer sets a Bearer).
- *  - `media://localhost/...` (the avatar blob cache's `http.get(assetUrl(path), { responseType: 'blob' })`)
- *    is routed through the Rust `media_request` IPC command for the same reason — Android WebView cannot
- *    `fetch()` a custom scheme. (`media://` consumed by a bare `<img src>` still works: the resource loader
- *    consults `shouldInterceptRequest` → the `media` scheme handler, so it does NOT come through here.)
+ *  - The media proxy URL (`media://localhost/...` on desktop, `http://media.localhost/...` on
+ *    Android/Windows) is routed through the Rust `media_request` IPC command. The platform-specific URL is
+ *    only a WebView representation detail; Angular HTTP treats both forms as the same media transport.
  *
  * This backend is the unambiguous terminus of the interceptor chain (runs after correlationId /
  * AuthInterceptor / httpTrace), so those interceptors still see the request + the response/error this
@@ -46,6 +45,24 @@ interface MediaRequestResult {
   body: number[];
 }
 
+const MEDIA_PROXY_PREFIXES = [
+  'media://localhost',
+  'http://media.localhost',
+] as const;
+
+function mediaProxyPath(url: string): string | null {
+  const prefix = MEDIA_PROXY_PREFIXES.find(
+    (candidate) =>
+      url === candidate ||
+      url.startsWith(`${candidate}/`) ||
+      url.startsWith(`${candidate}?`),
+  );
+  if (!prefix) return null;
+  const suffix = url.slice(prefix.length);
+  if (!suffix || suffix.startsWith('?')) return `/${suffix}`;
+  return suffix;
+}
+
 @Injectable()
 export class TauriHttpBackend implements HttpBackend {
   /** Stock fetch backend for the browser path + non-`/api/v1` requests under Tauri (e.g. `media://`). */
@@ -59,10 +76,10 @@ export class TauriHttpBackend implements HttpBackend {
         catchError((err) => throwError(() => this.toError(err, req))),
       );
     }
-    if (url.startsWith('media://')) {
-      // The avatar blob cache (`AvatarRepository.fetchBlob`) fetches `media://localhost/...` as a Blob;
-      // Android WebView rejects a custom-scheme fetch, so route it through the Rust `media_request` IPC.
-      return from(this.invokeMedia(req)).pipe(
+    const mediaPath = mediaProxyPath(url);
+    if (mediaPath !== null) {
+      // Keep both WebView URL representations behind the same authenticated Rust media transport.
+      return from(this.invokeMedia(req, mediaPath)).pipe(
         catchError((err) => throwError(() => this.toError(err, req))),
       );
     }
@@ -99,14 +116,9 @@ export class TauriHttpBackend implements HttpBackend {
     });
   }
 
-  /** The media blob path: recover the `/uploads/...` path from `media://localhost/...`, call the Rust
-   *  `media_request` command (which re-prepends the live api_origin + injects the Bearer), and wrap the
-   *  returned bytes per the request's `responseType` (the avatar cache requests `'blob'`). */
-  private async invokeMedia(req: HttpRequest<any>): Promise<HttpEvent<any>> {
-    const url = req.urlWithParams;
-    // Find the first '/' after `media://host` — everything from there is the `/uploads/...` path (+ query).
-    const slash = url.indexOf('/', 'media://'.length);
-    const path = slash >= 0 ? url.slice(slash) : '/';
+  /** Call the Rust `media_request` command with a normalized `/uploads/...` path (it re-prepends the live
+   *  api_origin + injects the Bearer), and wrap the returned bytes per the request's `responseType`. */
+  private async invokeMedia(req: HttpRequest<any>, path: string): Promise<HttpEvent<any>> {
     const r = await tauriInvoke<MediaRequestResult>('media_request', { path });
     const bytes = new Uint8Array(r.body);
     const headers = new HttpHeaders(r.contentType ? { 'content-type': r.contentType } : {});

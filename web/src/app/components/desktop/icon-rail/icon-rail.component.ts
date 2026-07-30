@@ -126,7 +126,9 @@ export class IconRailComponent {
   cycleTheme(): void { this.themeService.cycleMode(); }
 
   friendRequests() {
-    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)
+    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS, {
+      initialTab: this.friendReqBadge() ? 'pending' : 'add',
+    })
   }
 
   editProfile() {

@@ -35,7 +35,8 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
 
       <div class="body">
         <div class="identity">
-          <app-user-avatar [type]="UserAvatarType.OTHER" [name]="peer()?.name ?? ''" />
+          <app-user-avatar [type]="UserAvatarType.OTHER" [name]="peer()?.name ?? ''"
+            [identityId]="peer()?.id" [src]="peer()?.avatar" />
           <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
           <div class="name">{{ peerDisplayName() }}</div>
         </div>
@@ -109,23 +110,16 @@ export class PeerProfileComponent {
   private readonly convList = inject(ConversationListService)
 
   constructor() {
-    // Federated catch-up at view time: when the panel opens over a FOREIGN friend, silently refresh the
-    // stub in the background — probe the peer /revision and re-localize avatar/name/bio only if newer
-    // (all the heavy work is server-side). Fire-and-forget; the returned User flows back through
-    // updatePeerUser and this panel's computed `peer` refreshes. Local peers are already kept fresh by
-    // the chat-open probe + the PEER_PROFILE_UPDATED push, so this probe is federated-only. The server's
-    // sinceUpdatedAt short-circuit keeps it from re-rendering: the in-flight refresh updates peer(), the
-    // effect re-runs once, the next probe returns data:null, and it settles.
+    // Revision catch-up at view time for every peer. The server compares this cached profileRev with its
+    // authoritative row; when stale it pushes PEER_PROFILE_UPDATED and the normal repository pull writes
+    // the new profile/avatar into IDB, whose refresh signal updates every mounted avatar. Federated peers
+    // additionally run the server-side remote revision probe/re-localization through the same endpoint.
     effect(() => {
       const p = this.peer()
-      const tid = this.threadId()
-      if (!p || !p.isForeigner || tid === undefined) return
+      if (!p) return
       this.userService
-        .syncPeerProfile({ userId: p.id, sinceUpdatedAt: p.updatedAt })
+        .syncPeerProfile({ userId: p.id, sinceProfileRev: p.profileRev })
         .subscribe({
-          next: (res) => {
-            if (res.code === 0 && res.data) this.convList.updatePeerUser(tid, res.data)
-          },
           error: () => {
             /* best-effort — keep the cached profile on a transient peer outage */
           },

@@ -176,7 +176,7 @@ export class ThreadListComponent implements OnInit {
 
   /** True-empty-state CTA: open the friend-requests popup (same path as the icon rail). */
   openFriendRequests() {
-    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)
+    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS, { initialTab: 'add' })
   }
 
   onUsrTrdClick(userMsgTrd: ConversationItem) {

@@ -143,7 +143,7 @@ describe('ThreadListComponent', () => {
 
   it('openFriendRequests opens the friend-requests popup', () => {
     comp.openFriendRequests();
-    expect(popupSpy).toHaveBeenCalledWith(PopupType.FRIEND_REQUESTS);
+    expect(popupSpy).toHaveBeenCalledWith(PopupType.FRIEND_REQUESTS, { initialTab: 'add' });
   });
 
   it('renders each conversation as a native button with current and accessible state', async () => {

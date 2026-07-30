@@ -205,6 +205,12 @@ declare global {
      *  one command requests visibility, and runtime geometry arrives through {@link __SOMS_IME_EVENT__}. */
     SomsShell?: {
       getSafeInsets: () => string;
+      /** Update the native-localized launch label using a small, allow-listed stage key. */
+      setSplashStage?: (stage: 'session' | 'config' | 'interface') => void;
+      /** Fade the native launch overlay after the initial route and stable content have painted. */
+      finishSplash?: () => void;
+      /** Match transparent Android system-bar icon contrast to the resolved web theme. */
+      setSystemBarTheme?: (dark: boolean) => void;
       getImeSnapshot?: () => string;
       setImeVisible?: (visible: boolean, requestId: number) => void;
       showComposer?: (contextJson: string) => void;
@@ -289,6 +295,20 @@ declare global {
         succeeded: boolean,
       ) => void;
     };
+    /** Android public-file bridge. Rust owns authenticated download + private cache; Kotlin only copies
+     *  that verified app-cache file into MediaStore so it becomes visible in Gallery/Downloads. */
+    SomsMedia?: {
+      save: (
+        requestId: string,
+        cachePath: string,
+        filename: string,
+        mimeType: string,
+      ) => string;
+    };
+    __SOMS_MEDIA_SAVE_RESULT__?: (payload: {
+      requestId: string;
+      success: boolean;
+    }) => void;
     __SOMS_UPLOAD_PICKED__?: (payload: {
       requestId: string;
       items: import('./native-upload.service').NativeUploadSelection[];

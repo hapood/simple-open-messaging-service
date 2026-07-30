@@ -240,6 +240,13 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+// Shared CDK surface policy for transient modal overlays (file detail / invite detail). The overlay
+// service owns backdrop dismissal and focus lifecycle; hosted components render only their card/content.
+.cdk-overlay-backdrop.soms-overlay-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+
 body {
   margin: 0;
   // Theme-aware defaults so unlabeled text and `currentColor` icons inherit a legible color

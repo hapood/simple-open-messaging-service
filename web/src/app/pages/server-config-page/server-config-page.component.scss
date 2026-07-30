@@ -229,30 +229,32 @@
   }
 }
 
-// --- Auto-fill confirmation modal. Srim covers the page; the dialog is centered. z-index 1000 (the modal
-// tier) sits above the progress overlays (45) and the toast (50).
-.cfg-modal-scrim {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
+// The shared MaterialDialog owns the fixed backdrop and modal z-tier. This route-local frame only centers
+// the card inside both native safe areas; server configuration remains independent of the authenticated
+// app's paneStack.
+.cfg-modal-frame {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding:
+    calc(24px + var(--soms-safe-top, 0px))
+    24px
+    calc(24px + var(--soms-safe-bottom, 0px));
   box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 1000;
+  overflow: auto;
 }
 
 .cfg-modal {
+  box-sizing: border-box;
   width: 100%;
   max-width: 360px;
   padding: 24px;
-  border-radius: 16px;
+  border-radius: var(--app-radius-lg);
+  outline: none;
   background: var(--app-surface);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
 
   &__title {
     margin: 0 0 8px;

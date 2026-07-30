@@ -23,7 +23,10 @@ import {
   InviteIdDto,
   InviteDto,
   InviteDetailDto,
+  FriendRelationshipStateDto,
+  FriendRelationshipStatusDto,
 } from '../dto/invite.dto.js';
+import { mintUlid } from '../common/account.js';
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns
@@ -85,11 +88,13 @@ export class InviteController {
     }
 
     // Mutual auto-accept is LOCAL-only (a federated target needs an S2S round-trip on accept).
+    const federatedOriginId = target.isForeigner ? mintUlid() : undefined;
     const res = await this.inviteService.createFriendInvite(
       me,
       target.id,
       dto.note ?? '',
       !target.isForeigner,
+      federatedOriginId,
     );
 
     if (res.status === 'auto-accepted') {
@@ -113,6 +118,7 @@ export class InviteController {
           fromLocalUserId: me,
           to: { account: target.account, domain: target.domain },
           note: dto.note ?? '',
+          opId: federatedOriginId,
         });
       } catch (e) {
         throw new BusinessException(
@@ -226,8 +232,24 @@ export class InviteController {
   @Post('invite/revoke')
   @ApiOperation({ summary: 'Revoke my own outgoing invite' })
   async revokeInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<void> {
-    // revokeInvite throws BusinessException → the global filter renders it.
-    await this.inviteService.revokeInvite(dto.inviteId, req.user.userId);
+    const me = req.user.userId;
+    const context = await this.inviteService.getOutgoingRevokeContext(dto.inviteId, me);
+    if (context.toUser.isForeigner) {
+      try {
+        await this.federationService.sendInviteRevoke({
+          fromLocalUserId: me,
+          to: { account: context.toUser.account, domain: context.toUser.domain },
+          inviteOriginId: context.originId,
+        });
+      } catch (e) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_DELIVERY_FAILED,
+          `could not reach ${context.toUser.domain}: ${(e as Error).message}`,
+        );
+      }
+    }
+    // Federated peer acknowledged first; only now hide the local outgoing row.
+    await this.inviteService.revokeInvite(dto.inviteId, me);
   }
 
   @ApiBearerAuth()
@@ -259,6 +281,15 @@ export class InviteController {
     ]);
     const friends = new Set(friendIds);
     return rows.filter((r) => !friends.has(r.toUserId));
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('invite/friend-status')
+  @ApiOperation({ summary: 'Get authoritative friend/invite status for up to 50 users' })
+  @ApiResultResponse(FriendRelationshipStateDto, true)
+  friendStatus(@Request() req: FastifyRequest, @Body() dto: FriendRelationshipStatusDto) {
+    return this.inviteService.friendRelationshipStatuses(req.user.userId, dto.userIds);
   }
 
   @ApiBearerAuth()

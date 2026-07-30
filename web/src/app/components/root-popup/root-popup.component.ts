@@ -1,4 +1,4 @@
-import { Component, HostListener, Signal, inject } from '@angular/core';
+import { Component, HostListener, Signal, effect, inject, signal } from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import { trigger, transition, state, style, animate } from '@angular/animations';
 import { A11yModule } from '@angular/cdk/a11y';
@@ -8,35 +8,37 @@ import { MaterialDialogComponent } from '../material-dialog/material-dialog.comp
 import { LayoutService } from '../../services/layout.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 
-// Enter/leave motion for routed popups. Medium/expanded render a centered card
-// with a scale+fade; compact renders a slide-up sheet.
-// (iOS feel). This is a pure rendering layer over the dlgList signal — the
-// :leave transitions keep the node mounted until the exit animation finishes,
-// so the back-button close contract in RouteService (system-back === button
-// back, funneled through history.back()) is not touched.
+// Shared motion policy for routed popups. Medium/expanded always render a centered card; compact page
+// surfaces mount immediately, modal cards scale+fade, and immersive viewers fade. This rendering layer
+// does not own navigation: :leave merely retains animated nodes while NavStateMachineService remains the
+// source of truth for close/back.
 const ENTER = '300ms cubic-bezier(0.32, 0.72, 0, 1)';
 const LEAVE = '200ms cubic-bezier(0.4, 0, 1, 1)';
 
 const dialogAnim = trigger('dialogAnim', [
-  // Rest states. The desktop card is centered via translate(-50%, -50%), so its
-  // scale must preserve that offset; the mobile sheet rests at the origin.
+  // Rest states. Desktop cards and compact modals are centered via translate(-50%, -50%), so scale must
+  // preserve that offset. Page and viewer surfaces fill the compact viewport and rest at the origin.
   state('desktop', style({ opacity: 1, transform: 'translate(-50%, -50%) scale(1)' })),
-  state('mobile', style({ opacity: 1, transform: 'translateY(0)' })),
+  state('page', style({ opacity: 1, transform: 'none' })),
+  state('modal', style({ opacity: 1, transform: 'translate(-50%, -50%) scale(1)' })),
+  state('viewer', style({ opacity: 1, transform: 'none' })),
 
   transition('void => desktop', [
     style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.96)' }),
     animate(ENTER),
   ]),
-  transition('void => mobile', [
-    style({ opacity: 0, transform: 'translateY(100%)' }),
+  transition('void => modal', [
+    style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.96)' }),
     animate(ENTER),
   ]),
+  transition('void => viewer', [style({ opacity: 0 }), animate('180ms ease-out')]),
   transition('desktop => void', [
     animate(LEAVE, style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.98)' })),
   ]),
-  transition('mobile => void', [
-    animate(LEAVE, style({ opacity: 0, transform: 'translateY(100%)' })),
+  transition('modal => void', [
+    animate(LEAVE, style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.98)' })),
   ]),
+  transition('viewer => void', [animate('140ms ease-in', style({ opacity: 0 }))]),
 ]);
 
 @Component({
@@ -48,12 +50,23 @@ const dialogAnim = trigger('dialogAnim', [
 })
 export class RootPopupComponent {
   dlgList: Signal<DlgInfo[]>
+  /** Retains the closing dialog's mode after dlgList becomes empty, so MaterialDialog can choose the
+   * correct backdrop exit behavior during that same render pass. */
+  protected readonly instantBackdropHide = signal(false)
   // Medium/expanded render popups as centered cards; compact uses a full-screen overlay.
   protected readonly isCard = inject(LayoutService).isAtLeastMedium
   private readonly nav = inject(NavStateMachineService)
 
   constructor(private routeService: RouteService) {
     this.dlgList = this.routeService.dlgList
+    effect(() => {
+      const top = this.dlgList().at(-1)
+      if (top) this.instantBackdropHide.set(!this.isCard() && top.presentation === 'page')
+    })
+  }
+
+  protected dialogState(info: DlgInfo): 'desktop' | 'page' | 'modal' | 'viewer' {
+    return this.isCard() ? 'desktop' : info.presentation
   }
 
   @HostListener('document:keydown.escape', ['$event'])

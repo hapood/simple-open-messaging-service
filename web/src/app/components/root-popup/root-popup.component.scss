@@ -3,13 +3,12 @@
   width: 100%;
   height: 100%;
   position: absolute;
-  /* Mobile/tablet sheets are full-screen (height:100% of the 100vh backdrop), so their header AND footer
-     would sit under the Android system bars (status bar top, gesture/nav bar bottom). Reserve BOTH insets
-     here once — every dialog's internal flex column (header + scroll body + footer) fills the wrapper's
-     content box, so the header clears the status bar and the footer clears the gesture bar, while the
-     --app-surface background extends seamlessly under both (no tonal strip). border-box keeps height:100%
-     inclusive of the padding (no overflow past the 100vh backdrop). The desktop centered card overrides
-     height to auto with max-height:80vh, and both insets are 0 there, so this is a no-op on desktop. */
+  // Auto-capture focuses the surface rather than its first form field. In particular this keeps Android
+  // from opening the IME as a compact page mounts, avoiding an unsolicited viewport resize.
+  outline: none;
+  /* Fullscreen compact page/viewer surfaces sit edge-to-edge, so reserve both Android system-bar insets
+     once at the shared shell. Each component fills this content box; its header and footer therefore clear
+     the bars while the surface background continues underneath. */
   box-sizing: border-box;
   padding-top: var(--soms-safe-top, 0px);
   padding-bottom: var(--soms-safe-bottom, 0px);
@@ -30,9 +29,31 @@
   overflow: auto;
 }
 
-// Wide variant: a two-column dialog (e.g. Settings) needs more room than the default 480px single-column
-// card. Only widens the desktop centered card; tablet/mobile are full-screen sheets (no .desktop class).
+// A two-column surface such as Settings needs more room than the standard desktop card.
 .popup-com-wrapper.desktop.wide {
   width: 720px;
   max-width: 94vw;
+}
+
+// Compact page surfaces mirror the mobile Settings navigation model: full-screen and immediate. The
+// common wrapper owns both safe areas, so page components only size their content to 100%.
+.popup-com-wrapper.presentation-page:not(.desktop),
+.popup-com-wrapper.presentation-viewer:not(.desktop) {
+  inset: 0;
+}
+
+// Compact confirmations/notices remain dialogs rather than pretending to be full pages. Their content
+// determines the height, capped inside both system bars; the surface itself supplies the modal card.
+.popup-com-wrapper.presentation-modal:not(.desktop) {
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 32px));
+  height: auto;
+  max-height: calc(
+    100dvh - var(--soms-safe-top, 0px) - var(--soms-safe-bottom, 0px) - 32px
+  );
+  padding: 0;
+  border-radius: var(--app-radius-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  overflow: auto;
 }

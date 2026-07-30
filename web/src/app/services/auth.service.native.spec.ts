@@ -314,6 +314,20 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(false);
     });
 
+    it('logout detaches the native token with begin_logout and does not issue a JS HTTP revoke', async () => {
+      desktopGlobals();
+      await passwordLogin('st-logout', true);
+
+      svc.logout().subscribe();
+      await drain();
+
+      expect(svc.loggedIn()).toBe(false);
+      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
+        origin: '',
+      });
+      httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
+    });
+
     it('a trusted login whose keyring write FAILS revokes the permanent token (no orphan) + notices + bounces', async () => {
       desktopGlobals({ secureSetOk: false }); // secure_set_token rejects
       await passwordLogin('st-orphan', /* trustDevice */ true); // trusted → permanent token; set_session_token awaited
@@ -441,6 +455,20 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(await svc.clearToken()).toBe(true); // Android clear (SomsFcm sync JNI + clear_session_token) succeeds
       expect(set).toHaveBeenCalledWith(null);
       expect(invokeSpy).toHaveBeenCalledWith('clear_session_token', undefined);
+      expect(svc.loggedIn()).toBe(false);
+    });
+
+    it('logout clears the Android secure token before beginning the captured native revoke', async () => {
+      const { set } = androidGlobals('st-logout');
+      await passwordLogin('st-logout', true);
+
+      svc.logout().subscribe();
+      await drain();
+
+      expect(set).toHaveBeenCalledWith(null);
+      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
+        origin: '',
+      });
       expect(svc.loggedIn()).toBe(false);
     });
   });

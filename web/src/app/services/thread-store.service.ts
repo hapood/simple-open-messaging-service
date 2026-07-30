@@ -322,7 +322,7 @@ export class ThreadRepository {
     const item = this._items().find((t) => t.threadId === threadId);
     if (!item || item.type !== 'P2P' || !item.peerUser) return;
     this.userService
-      .syncPeerProfile({ userId: item.peerUser.id, sinceUpdatedAt: item.peerUser.updatedAt })
+      .syncPeerProfile({ userId: item.peerUser.id, sinceProfileRev: item.peerUser.profileRev })
       .subscribe({
         next: (res) => {
           if (res.code === 0 && res.data) this.updatePeerUser(threadId, res.data);

@@ -42,6 +42,7 @@ import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
   SyncPeerProfileDto,
+  SyncSelfProfileDto,
   ThreadIdDto,
   UserResolveDto,
   UserSearchDto,
@@ -89,6 +90,20 @@ export class UserController {
     // findSelfProfile omits hashPwd. The friend-request badge is no longer a self-profile field — it is
     // derived client-side from the HELLO/push-carried `friendReqRev` vs friendReqAckRev (server-state).
     return this.userService.findSelfProfile(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/sync-self-profile')
+  @ApiOperation({
+    summary:
+      'ACK-only self-profile revision probe. Pushes PROFILE_REV_UPDATED when the caller cache is stale.',
+  })
+  async syncSelfProfile(@Request() req: FastifyRequest, @Body() dto: SyncSelfProfileDto): Promise<void> {
+    const data = await this.userService.findUniqueUser({ id: req.user.userId });
+    if (data && data.profileRev > dto.sinceProfileRev) {
+      this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: data.profileRev });
+    }
   }
 
   @ApiBearerAuth()

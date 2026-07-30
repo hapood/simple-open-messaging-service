@@ -22,7 +22,7 @@ type ViewState = 'loading' | 'valid' | 'joined' | 'expired' | 'invalid';
  * /invite/detail (spinner while loading), and renders valid → Join (→ /invite/accept), already-joined →
  * Open group, expired, or invalid. The card carries inline display identity + the group's home domain (a
  * "Local server" label, or a globe + domain badge for a federated group). Mounted as a transient overlay
- * by {@link InviteDetailService}; backdrop/X/close.
+ * by {@link InviteDetailService}; its shared modal policy owns the backdrop/Escape lifecycle.
  *
  * Join flow: /invite/accept → nav.openChat(threadId). The nav state machine clears the pane stack, so
  * this dialog's entry is removed and the TransientOverlayService effect disposes the CDK overlay.
@@ -37,7 +37,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   readonly UserAvatarType = UserAvatarType;
   /** Raw JSON body of the GROUP_INVITE message (set by InviteDetailService.open). */
   readonly raw = input<string>('');
-  /** Emitted on X / backdrop / Cancel — the overlay base wires it to its close(). */
+  /** Emitted on X / Cancel — the overlay base also handles backdrop and Escape dismissal. */
   @Output() close = new EventEmitter<void>();
 
   private readonly userService = inject(UserService);

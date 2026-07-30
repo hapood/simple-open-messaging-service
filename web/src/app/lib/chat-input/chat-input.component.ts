@@ -575,6 +575,10 @@ export class ChatInputComponent implements OnDestroy {
   private suppressNextMicClick = false;
   private recordStartedAt = 0;
   private pendingCancel = false;
+  /** The 60s cap stops MediaRecorder, but the gesture stays live until pointerup decides send vs discard. */
+  private captureStoppedAtCap = false;
+  private recorderStopSettled = false;
+  private finishRequested = false;
   /** Generation counter for the in-flight press — bumped on every pointerdown/up/cancel/destroy. beginRecording
    *  is async (blocked on the getUserMedia permission prompt, which can take seconds); it captures the session
    *  at start and re-checks it after every await, so a press that ended (or a component that died) while the
@@ -657,9 +661,15 @@ export class ChatInputComponent implements OnDestroy {
     rec.ondataavailable = (ev) => {
       if (ev.data.size > 0) this.chunks.push(ev.data);
     };
-    rec.onstop = () => this.finalizeRecording();
+    rec.onstop = () => {
+      this.recorderStopSettled = true;
+      if (this.finishRequested) this.finalizeRecording();
+    };
     this.recorder = rec;
     this.recordStartedAt = Date.now();
+    this.captureStoppedAtCap = false;
+    this.recorderStopSettled = false;
+    this.finishRequested = false;
     this.recordSecs.set(0);
     this.recording.set(true);
     try {
@@ -687,9 +697,22 @@ export class ChatInputComponent implements OnDestroy {
       );
     }, 250);
     this.capTimer = setTimeout(
-      () => this.stopRecording(false),
+      () => this.stopCaptureAtCap(),
       MAX_RECORD_SECS * 1000,
     );
+  }
+
+  /** Stop collecting bytes at 60s without deciding the gesture. The held finger can still slide between
+   *  send and cancel; pointerup makes the final decision. */
+  private stopCaptureAtCap(): void {
+    const rec = this.recorder;
+    if (!rec || !this.recording()) return;
+    clearInterval(this.tickTimer);
+    this.recordSecs.set(MAX_RECORD_SECS);
+    this.captureStoppedAtCap = true;
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    if (rec.state !== 'inactive') rec.stop();
   }
 
   /** Track the slide-up gesture (pointer capture keeps these arriving on the mic element). */
@@ -730,18 +753,28 @@ export class ChatInputComponent implements OnDestroy {
     clearTimeout(this.capTimer);
     clearInterval(this.tickTimer);
     this.pendingCancel = cancel;
-    this.recorder = null;
+    this.finishRequested = true;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    if (rec.state !== 'inactive') rec.stop(); // fires onstop → finalizeRecording
     this.recording.set(false);
+    if (rec.state !== 'inactive') {
+      rec.stop(); // fires onstop → finalizeRecording
+    } else if (this.recorderStopSettled) {
+      this.finalizeRecording();
+    }
   }
 
   /** MediaRecorder.stop() resolved → build the Blob and emit (or discard on cancel / too-short). */
   private finalizeRecording(): void {
+    if (!this.recorder) return;
+    this.recorder = null;
+    this.finishRequested = false;
     const cancel = this.pendingCancel;
     this.pendingCancel = false;
-    const durationMs = Date.now() - this.recordStartedAt;
+    const durationMs = this.captureStoppedAtCap
+      ? MAX_RECORD_SECS * 1000
+      : Date.now() - this.recordStartedAt;
+    this.captureStoppedAtCap = false;
     const chunks = this.chunks;
     this.chunks = [];
     const mime = this.mimeForRecording;

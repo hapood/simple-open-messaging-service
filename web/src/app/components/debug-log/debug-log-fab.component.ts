@@ -15,16 +15,16 @@ import { DebugLogOverlayComponent } from './debug-log-overlay.component';
  * true (dev builds, or production after the hidden entry flipped it). Mounts the overlay on demand via
  * `@if`, so the (heavier) overlay + its refresh interval only exist while open.
  *
- * Fixed bottom-right at z-index 1200 — above every production overlay (lightbox 1100) so it stays reachable
+ * Fixed at the viewport center initially, at z-index 1200 — above every production overlay (lightbox 1100)
+ * so it stays reachable
  * while debugging a modal/lightbox state. The button is a small fixed element (not a full-screen layer), so
  * it never intercepts content clicks; the overlay (its sibling) is a separate fixed layer that does.
  *
  * **Drag-to-move:** the FAB is also draggable so it can be parked out of the way. This reuses the
  * compositor-only translate pattern from {@link DebugLogOverlayComponent} — `transform` only, never
  * `left`/`top`/`position`, geometry read once at pointerdown, moves coalesced through one rAF. A 5 px
- * activation threshold disambiguates a drag from a tap: below it on release the FAB toggles the panel as
- * usual; above it the move is committed and the synthesized click is swallowed, so a drag never opens the
- * panel. The position persists in-memory for the session (the FAB stays mounted in the app shell).
+ * activation threshold disambiguates a drag from a tap for positioning. The position persists in-memory
+ * for the session (the FAB stays mounted in the app shell).
  */
 @Component({
   selector: 'app-debug-log-fab',
@@ -57,9 +57,8 @@ import { DebugLogOverlayComponent } from './debug-log-overlay.component';
           <path d="M7 9l3 3-3 3M13 15h4" />
         </svg>
       </button>
-      <!-- @defer splits DebugLogOverlayComponent into its own lazy chunk (loaded on first open, not in the
-           initial production bundle). The inner @if toggles mount/unmount; @defer (when open()) loads the
-           chunk once and keeps the wrapper, so open→close→open never re-fetches. -->
+      <!-- Keep the heavier viewer in a lazy chunk. Once loaded, Angular retains the defer block so later
+           open/close cycles do not fetch it again. -->
       @defer (when open()) {
         @if (open()) {
           <app-debug-log-overlay (close)="open.set(false)" />
@@ -71,8 +70,8 @@ import { DebugLogOverlayComponent } from './debug-log-overlay.component';
     `
       .dbg-fab {
         position: fixed;
-        right: 16px;
-        bottom: calc(16px + var(--soms-safe-bottom, 0px));
+        left: calc(50% - 22px);
+        top: calc(50% - 22px);
         z-index: 1200;
         width: 44px;
         height: 44px;
@@ -115,8 +114,7 @@ export class DebugLogFabComponent implements OnDestroy {
 
   // ---------- Drag-to-move (compositor-only — zero reflow) ----------
   // Mirrors DebugLogOverlayComponent's grip drag: transform-only repositioning, one layout read at
-  // pointerdown, rAF-coalesced moves. The FAB doubles as the click target, so a movement threshold splits
-  // tap (toggle) from drag (move + swallow the synthesized click).
+  // pointerdown, rAF-coalesced moves. The movement threshold prevents tap jitter from moving the FAB.
   private dragging = false;
   private moved = false;
   private startX = 0;
@@ -138,9 +136,6 @@ export class DebugLogFabComponent implements OnDestroy {
   private rafId = 0;
   /** The pointerId captured on the FAB; -1 between gestures. */
   private pointerId = -1;
-  /** Swallow the one click a drag synthesizes on release, so moving the FAB never toggles the panel. */
-  private suppressClick = false;
-
   onDown(e: PointerEvent): void {
     if (e.pointerType === 'mouse' && e.button !== 0) return; // left-button only for mouse
     const fab = this.fabEl()?.nativeElement;
@@ -152,7 +147,7 @@ export class DebugLogFabComponent implements OnDestroy {
     fab.setPointerCapture(e.pointerId);
     this.pointerId = e.pointerId;
     e.preventDefault();
-    // The single layout read of the drag: visual rect = bottom-right layout + the current (tx, ty) translate.
+    // The single layout read of the drag: visual rect = centered layout + the current (tx, ty) translate.
     const rect = fab.getBoundingClientRect();
     this.baseLeft = rect.left - this.tx;
     this.baseTop = rect.top - this.ty;
@@ -200,14 +195,12 @@ export class DebugLogFabComponent implements OnDestroy {
   };
 
   private onUp = (): void => {
-    const moved = this.moved;
     this.endDrag();
-    if (moved) this.suppressClick = true; // a drag synthesizes a click on release — swallow it once
     this.moved = false;
   };
 
   /** pointercancel (a system interrupt — OS notification, gesture theft) ends the gesture cleanly so the
-   *  FAB is never left mid-drag; no click is synthesized, so no swallow is needed. */
+   *  FAB is never left mid-drag. */
   private onCancel = (): void => {
     this.endDrag();
     this.moved = false;
@@ -236,13 +229,8 @@ export class DebugLogFabComponent implements OnDestroy {
     this.dragging = false;
   }
 
-  /** Click toggle — unless the preceding gesture was a drag (then swallow once). Keyboard activation
-   *  (Enter/Space) routes here with no pointer gesture, so accessibility is unaffected. */
+  /** Click toggle. Keyboard activation (Enter/Space) routes here as well. */
   onClick(): void {
-    if (this.suppressClick) {
-      this.suppressClick = false;
-      return;
-    }
     this.toggle();
   }
 

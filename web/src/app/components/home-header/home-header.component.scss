@@ -258,13 +258,14 @@
 }
 .avatar {
   display: block;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
+  width: 36px;
+  height: 36px;
+  border-radius: 7px;
   overflow: hidden;
 }
 .avatar-btn {
   flex: 0 0 40px;
+  padding: 2px;
 }
 .header-actions {
   margin-left: auto;

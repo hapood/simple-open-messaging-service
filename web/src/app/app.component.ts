@@ -1,4 +1,4 @@
-import { afterNextRender, Component, inject } from '@angular/core';
+import { afterNextRender, ApplicationRef, Component, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
 import { LanguageService } from './services/language.service';
@@ -19,6 +19,8 @@ import { CallOverlayService } from './services/call-overlay.service';
 import { ChatAppearanceService } from './services/chat-appearance.service';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
 import { ComposerGeometryService } from './services/composer-geometry.service';
+import { AuthService } from './services/auth.service';
+import { ConfigService } from './services/config.service';
 @Component({
   selector: 'app-root',
   imports: [
@@ -71,6 +73,9 @@ export class AppComponent {
   // RouteService: opens the once-per-launch shell-incompatibility dialog when the probe finds the
   // backend is too new for this shell.
   private readonly route = inject(RouteService);
+  private readonly applicationRef = inject(ApplicationRef);
+  private readonly auth = inject(AuthService);
+  private readonly config = inject(ConfigService);
   // CallEventService: routes CALL_EVENT SSE frames + the native __SOMS_CALL_EVENT__ snapshot push into the
   // callState signal. Eagerly constructed so an incoming ring (which can arrive at any time) is never
   // missed — it subscribes in its constructor + installs the native snapshot hook.
@@ -102,7 +107,28 @@ export class AppComponent {
     afterNextRender(() => {
       emitTauriEvent('spa-ready');
       void this.shellUpdate.check().then(() => this.maybePromptIncompatible());
+      void this.finishNativeSplashWhenReady();
     });
+  }
+
+  /**
+   * Keep Android's native overlay above intermediate auth frames. Logged-out launches wait for the
+   * public config (which may redirect password → OTP/QR); returning sessions can go straight to their
+   * already-resolved shell. Two animation frames ensure the final DOM has actually reached the WebView.
+   */
+  private async finishNativeSplashWhenReady(): Promise<void> {
+    const shell = window.SomsShell;
+    if (!isTauri() || !isAndroid() || !shell?.finishSplash) return;
+    if (!this.auth.isLoggedIn()) {
+      shell.setSplashStage?.('config');
+      await this.config.ensureLoaded();
+    }
+    shell.setSplashStage?.('interface');
+    await this.applicationRef.whenStable();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    shell.finishSplash();
   }
 
   /** Surface a once-per-launch dialog when the probe found this shell is incompatible with the backend.

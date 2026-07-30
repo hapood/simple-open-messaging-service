@@ -164,13 +164,11 @@ export class UserService {
     });
   }
 
-  /** Boot-time webdb open on the persisted {@link LAST_USER_ID_KEY} — opens the per-user IDB so the
-   *  threadlist can eager-paint the cached list BEFORE the SSE/HELLO round-trip (instant list for returning
-   *  users). Called from AuthService.restoreSession (an APP_INITIALIZER, pre-router) + awaited there so the
-   *  DB is open before the router resolves and the list mounts. Does NOT set sessionUserId — the session
-   *  tracker stays HELLO-driven; {@link establishSession} reconciles on HELLO (idempotent `openForUser`
-   *  reuse for the same user, close+reopen on a switch). No-op when no userId was ever persisted (first-ever
-   *  launch) — the list then awaits HELLO's delta as before. */
+  /** Boot-time webdb restore on the persisted {@link LAST_USER_ID_KEY} — opens the per-user IDB and restores
+   *  its cached self profile so the threadlist plus self name/avatar can eager-paint BEFORE the SSE/HELLO
+   *  round-trip (including an offline cold start). Does NOT set sessionUserId — the session tracker stays
+   *  HELLO-driven; {@link establishSession} reconciles on HELLO (idempotent `openForUser` reuse for the same
+   *  user, close+reopen on a switch). No-op when no userId was ever persisted (first-ever launch). */
   async restoreWebdb(): Promise<void> {
     const userId = this.readLastUserId();
     if (userId === null) return;
@@ -178,6 +176,9 @@ export class UserService {
     // a token-swap (close+reopen when HELLO's userId differs from the optimistic lastUserId).
     this.webdbUserKey = String(userId);
     await this.webdb.openForUser(String(userId));
+    const cached = (await this.webdb.getMeta('selfProfile')) as User | null | undefined;
+    // Validate the partition owner defensively before exposing cached identity data to the UI.
+    if (cached?.id === userId) this.sessionProfile.set(cached);
   }
 
   /** Read the persisted last-logged-in userId, or null when absent / unparseable / storage unavailable. */
@@ -327,12 +328,29 @@ export class UserService {
     return this.http.post<StandardResponse<{ inviteId?: string; threadId?: number }>>(`${apiPrefix()}/invite/friend`, params)
   }
 
+  /** Authoritative relationship/invite state for discovery rows. Server-backed so refreshes and other
+   *  devices see the same state; accepts a batch to avoid one request per search result. */
+  friendRelationshipStatuses(params: { userIds: number[] }) {
+    return this.http.post<StandardResponse<Array<{
+      userId: number
+      status: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND'
+      inviteId?: string
+    }>>>(`${apiPrefix()}/invite/friend-status`, params)
+  }
+
   /** Refresh a peer's avatar/name/bio if stale (chat-open + profile-panel-open hook). Federated: cheap
    *  server-side /revision probe, re-pull + re-localize only when newer; local: authoritative in-DB. Pass
-   *  the caller's last-seen peer updatedAt as `sinceUpdatedAt` for a lightweight data:null short-circuit
-   *  when unchanged — no payload, no re-render. */
-  syncPeerProfile(params: { userId: number; sinceUpdatedAt?: number }) {
+   *  the caller's last-seen `profileRev` for a lightweight ACK-only short-circuit when unchanged. */
+  syncPeerProfile(params: { userId: number; sinceProfileRev?: number }) {
     return this.http.post<StandardResponse<User>>(`${apiPrefix()}/user/sync-peer-profile`, params)
+  }
+
+  /** ACK-only self-profile revision probe used when the profile surface opens. A stale revision causes
+   *  PROFILE_REV_UPDATED; the existing SSE handler then pulls /user/my-profile and writes it through IDB. */
+  syncSelfProfile(sinceProfileRev: number): void {
+    this.http
+      .post<StandardResponse<never>>(`${apiPrefix()}/user/sync-self-profile`, { sinceProfileRev })
+      .subscribe({ error: () => { /* best-effort — HELLO/reconnect remains the backstop */ } })
   }
 
   /** Incoming pending friend invites (no params — backend hardcodes last-7-days, ≤200, friends filtered

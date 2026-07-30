@@ -183,7 +183,16 @@ export class MessageThreadComponent implements OnDestroy {
   readonly nativeComposer = inject(NativeComposerService);
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
-  private nativeComposerBoundsCleanup?: () => void;
+  private nativeComposerBoundsObserver?: ResizeObserver;
+  private nativeComposerBoundsFrame = 0;
+  private nativeComposerBoundsDirty = false;
+  private nativeComposerBoundsTarget?: HTMLElement;
+  private nativeComposerLastBounds?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
   private readonly nativeVoiceItems = new Map<string, CbItem<ChatItemData>>();
 
   private scroller?: ScrollerApi<ChatItemData>;
@@ -229,6 +238,12 @@ export class MessageThreadComponent implements OnDestroy {
    *  WebView DOM and can remain visible above a CDK overlay. The browser composer uses the same flag. */
   readonly mediaViewerOpen = computed(() =>
     this.nav.paneStack().some((pane) => pane.kind === 'gallery'),
+  );
+  /** Native composer is a sibling of the WebView, so CSS stacking cannot place a web overlay above it.
+   *  Treat every chat aside/transient pane as a higher semantic layer and unmount the native surface
+   *  while that layer is active. This covers peer profile/group info as well as dialogs and viewers. */
+  readonly nativeComposerOccluded = computed(
+    () => this.nav.aside().length > 0 || this.nav.paneStack().length > 0,
   );
   readonly uploadingTransfers = computed(() => {
     const threadId = this.threadId();
@@ -369,6 +384,7 @@ export class MessageThreadComponent implements OnDestroy {
     effect(() => {
       if (this.layout.reflowFrozen()) return; // act only on the unfrozen edge
       this.scroller?.flushViewportResize();
+      if (this.nativeComposerBoundsDirty) this.scheduleNativeComposerBounds();
     });
     effect(() => {
       const threadId = this.threadId();
@@ -378,7 +394,7 @@ export class MessageThreadComponent implements OnDestroy {
         threadId !== undefined &&
         !this.initialLoading() &&
         !this.blockedPeer() &&
-        !this.mediaViewerOpen();
+        !this.nativeComposerOccluded();
       if (!shouldShow) {
         this.hideNativeComposer();
         return;
@@ -429,8 +445,14 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private hideNativeComposer(): void {
-    this.nativeComposerBoundsCleanup?.();
-    this.nativeComposerBoundsCleanup = undefined;
+    this.nativeComposerBoundsObserver?.disconnect();
+    this.nativeComposerBoundsObserver = undefined;
+    if (this.nativeComposerBoundsFrame)
+      cancelAnimationFrame(this.nativeComposerBoundsFrame);
+    this.nativeComposerBoundsFrame = 0;
+    this.nativeComposerBoundsDirty = false;
+    this.nativeComposerBoundsTarget = undefined;
+    this.nativeComposerLastBounds = undefined;
     const contextId = this.nativeComposerContextId;
     if (contextId !== null) this.nativeComposer.hide(contextId);
     this.nativeComposerContextId = null;
@@ -438,34 +460,55 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private observeNativeComposerBounds(contextId: number): void {
-    // The viewport is translated by the shared --kbd-lift policy; the container is the stable chatbox bounds.
+    // Observe the shell-owned pane rather than the chatbox: message/composer/keyboard layout changes inside
+    // the chat must not feed back into the native overlay's horizontal bounds.
     const chatbox = this.containerRef()?.nativeElement;
     if (!chatbox) return;
-    this.nativeComposerBoundsCleanup = this.nativeComposer.bindBounds(
-      contextId,
-      () => this.measureNativeComposerBounds(chatbox),
-    );
+    const target = chatbox.closest<HTMLElement>('.chat-slot');
+    if (!target) return;
+    this.nativeComposerBoundsTarget = target;
+    this.nativeComposerBoundsObserver = new ResizeObserver(() => {
+      if (contextId !== this.nativeComposerContextId) return;
+      this.scheduleNativeComposerBounds();
+    });
+    this.nativeComposerBoundsObserver.observe(target);
+    this.scheduleNativeComposerBounds();
   }
 
-  /**
-   * Return the chatbox's static layout target, not its current animated screen position. HomeShell's
-   * compact overlay only translates `.chat-slot`; removing that translation yields the same final bounds
-   * on the first, middle, and last animation frames. Medium/expanded use `transform:none`, so their measured
-   * rect passes through unchanged.
-   */
-  private measureNativeComposerBounds(chatbox: HTMLElement): DOMRectReadOnly {
-    const rect = chatbox.getBoundingClientRect();
-    const slot = chatbox.closest<HTMLElement>('.chat-slot');
-    if (!slot) return rect;
-    const transform = getComputedStyle(slot).transform;
-    if (!transform || transform === 'none') return rect;
-    const matrix = new DOMMatrixReadOnly(transform);
-    return new DOMRectReadOnly(
-      rect.left - matrix.m41,
-      rect.top - matrix.m42,
-      rect.width,
-      rect.height,
-    );
+  /** Coalesce wrapper changes and publish only a settled, post-animation layout rectangle. */
+  private scheduleNativeComposerBounds(): void {
+    this.nativeComposerBoundsDirty = true;
+    if (this.layout.reflowFrozen() || this.nativeComposerBoundsFrame) return;
+    this.nativeComposerBoundsFrame = requestAnimationFrame(() => {
+      this.nativeComposerBoundsFrame = 0;
+      if (this.layout.reflowFrozen()) return;
+      const target = this.nativeComposerBoundsTarget;
+      const contextId = this.nativeComposerContextId;
+      if (!target || contextId === null) return;
+      const rect = target.getBoundingClientRect();
+      const next = {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+      const previous = this.nativeComposerLastBounds;
+      this.nativeComposerBoundsDirty = false;
+      if (
+        previous &&
+        Math.abs(previous.left - next.left) < 0.5 &&
+        Math.abs(previous.top - next.top) < 0.5 &&
+        Math.abs(previous.width - next.width) < 0.5 &&
+        Math.abs(previous.height - next.height) < 0.5
+      ) {
+        return;
+      }
+      this.nativeComposerLastBounds = next;
+      this.nativeComposer.setBounds(
+        contextId,
+        new DOMRectReadOnly(next.left, next.top, next.width, next.height),
+      );
+    });
   }
 
   private handleNativeComposerEvent(event: NativeComposerEvent): void {

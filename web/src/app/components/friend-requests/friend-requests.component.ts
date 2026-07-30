@@ -1,15 +1,15 @@
 import { Component, input, signal, OnDestroy } from '@angular/core';
 import { Subject, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { RouteService } from '../../services/route.service';
+import { PopupType, RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
 import { displayUserName, Invite } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
-import { MsgService } from '../../services/message.service'
 import { translateBizResult } from '../../services/biz-code'
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import dayjs from 'dayjs';
@@ -31,9 +31,10 @@ type PendingReq = {
   domain?: string
   reqMessage?: string
   status: number  // 0 pending, 1 accepted (optimistic "added"), -1 invalid
-  date: string
+  date: number
   errText: string
 }
+type RelationshipState = 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND'
 
 @Component({
     selector: 'app-friend-requests',
@@ -45,7 +46,6 @@ type PendingReq = {
 export class FriendRequestsComponent implements OnDestroy {
   readonly fitOpts = { minHeight: 420 } as const
   readonly searchText = signal('')
-  readonly friendReqMessage = signal('')
   /** When set, the in-flight federated resolve is a FIRST-CONTACT handshake with this peer domain. The
    *  server's peer-trust-status pre-check reported the domain untrusted (no FederatedPeer 'trusted'
    *  row), so the resolve WILL run the init handshake (up to the S2S call timeout) — show a small
@@ -55,14 +55,12 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly connectingDomain = signal<string | null>(null)
   private trustSub: Subscription | undefined
   private searchSub: Subscription | undefined
-  readonly userData = signal<User | undefined>(undefined)
   /** Local fuzzy discovery results (Add tab). When non-empty, the Add tab renders this list instead of
    *  the single resolved-user card. Cleared when a result is picked (→ single card) or on a new search. */
   readonly localResults = signal<User[]>([])
   readonly errMsg = signal('')
-  readonly reqRspTxt = signal('')
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT)
-  readonly canAdd = signal(false)
+  readonly relationshipStates = signal<ReadonlyMap<number, RelationshipState>>(new Map())
   readonly curSearchText = signal('')
   readonly pendingReqList = signal([] as PendingReq[])
   readonly toPendingErrTxt = signal('')
@@ -72,6 +70,7 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly sentLoading = signal(true)
 
   subject = input<Subject<any> | undefined>(undefined)
+  initialTab = input<'add' | 'pending'>('add')
   activeTab = signal(0)
   isShowBackBtn = signal(true)
 
@@ -80,7 +79,12 @@ export class FriendRequestsComponent implements OnDestroy {
   AppIconType = AppIconType
   displayUserName = displayUserName
 
-  constructor(private routeService: RouteService, private userService: UserService, private msgService: MsgService, private transloco: TranslocoService) {
+  constructor(
+    private routeService: RouteService,
+    private userService: UserService,
+    private transloco: TranslocoService,
+    private snackBar: MatSnackBar,
+  ) {
   }
   setTab(tab: number) {
     this.activeTab.set(tab)
@@ -94,7 +98,6 @@ export class FriendRequestsComponent implements OnDestroy {
     const curSearchText = this.searchText().trim()
     if (!curSearchText) return
     this.addTabStatus.set(AddTabStatus.SEARCHING)
-    this.reqRspTxt.set('')
     this.cancelInFlight()
     this.localResults.set([])
 
@@ -136,8 +139,7 @@ export class FriendRequestsComponent implements OnDestroy {
             const myId = this.userService.sessionProfile()!.id
             const list = res.data.list.filter((u) => u.id !== myId)
             if (list.length > 0) {
-              this.localResults.set(list)
-              this.addTabStatus.set(AddTabStatus.SUCCESS)
+              this.showResults(list)
             } else {
               this.curSearchText.set(curSearchText)
               this.addTabStatus.set(AddTabStatus.EMPTY)
@@ -182,32 +184,56 @@ export class FriendRequestsComponent implements OnDestroy {
    *  the single-user card. Shared by both search paths so the post-select UX is identical. */
   private applySelectedUser(user: User) {
     if (user.id === this.userService.sessionProfile()!.id) {
-      this.userData.set(user)
-      this.addTabStatus.set(AddTabStatus.SUCCESS)
-      this.canAdd.set(false)
-      this.reqRspTxt.set(this.transloco.translate('friend.error.canNotAddSelf'))
+      this.curSearchText.set(this.searchText().trim())
+      this.addTabStatus.set(AddTabStatus.EMPTY)
       return
     }
-    // A friend relationship == a shared P2P thread. getThreadByUserId returns it (code 0) when friends,
-    // THREAD_NOT_FOUND (30003) otherwise. The pending-direction hints are gone (the invite model
-    // overwrites a re-invite, so re-sending is idempotent) — friends → already-friends; else → can invite.
-    this.msgService.getThreadByUserId({ userId: user.id }).subscribe(res2 => {
-      this.userData.set(user)
-      this.addTabStatus.set(AddTabStatus.SUCCESS)
-      if (res2.code === 0) {
-        this.canAdd.set(false)
-        this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
-      } else {
-        this.canAdd.set(true)
-        this.reqRspTxt.set('')
-      }
+    this.showResults([user])
+  }
+
+  private showResults(users: User[]) {
+    this.userService.friendRelationshipStatuses({ userIds: users.map((user) => user.id) }).subscribe({
+      next: (res) => {
+        if (res.code !== 0 || !res.data) {
+          this.errMsg.set(translateBizResult(res, this.transloco))
+          this.addTabStatus.set(AddTabStatus.ERROR)
+          return
+        }
+        this.relationshipStates.set(new Map(res.data.map((item) => [item.userId, item.status])))
+        this.localResults.set(users)
+        this.addTabStatus.set(AddTabStatus.SUCCESS)
+      },
+      error: () => {
+        this.errMsg.set(this.transloco.translate('friend.error.unknownError'))
+        this.addTabStatus.set(AddTabStatus.ERROR)
+      },
     })
   }
 
   /** A local discovery result was clicked: drop the list and show that user's single card. */
   pickLocalUser(user: User) {
-    this.localResults.set([])
-    this.applySelectedUser(user)
+    const status = this.relationshipStates().get(user.id) ?? 'NONE'
+    if (status === 'INCOMING_PENDING') {
+      this.setTab(1)
+      return
+    }
+    if (status === 'NONE') this.openInviteDialog(user)
+  }
+
+  openInviteDialog(user: User) {
+    this.routeService.popupDlg(PopupType.FRIEND_INVITE, { user }, (result) => {
+      if (!result) return
+      this.relationshipStates.update((states) => new Map(states).set(result.userId, result.status))
+    })
+  }
+
+  relationshipLabel(userId: number): string {
+    switch (this.relationshipStates().get(userId)) {
+      case 'OUTGOING_PENDING': return 'friend.sentStatus'
+      case 'INCOMING_PENDING': return 'friend.reviewRequest'
+      case 'FRIEND': return 'friend.friendStatus'
+      default: return 'friend.addAction'
+    }
   }
 
   /** Abort any in-flight trust pre-check or resolve and drop the connecting banner. The init handshake
@@ -232,22 +258,6 @@ export class FriendRequestsComponent implements OnDestroy {
     this.cancelInFlight()
   }
 
-  sendRequest() {
-    this.reqRspTxt.set('')
-    const note = this.friendReqMessage().trim().slice(0, 255)
-    this.userService.sendFriendInvite({ toUserId: this.userData()!.id, note }).subscribe({
-      next: res => {
-        // Echo the backend message directly: the backend already returns status-keyed copy
-        // ("friend request sent" / "you are already friends" / "you are now friends"), so the
-        // client does not hardcode a "sent successfully" string.
-        this.reqRspTxt.set(translateBizResult(res, this.transloco))
-        this.friendReqMessage.set('')
-      }, error: () => {
-        this.reqRspTxt.set(this.transloco.translate('friend.error.unknownError'))
-      }
-    })
-  }
-
   approve(index: number) {
     const req = this.pendingReqList()[index]
     this.userService.acceptInvite({ inviteId: req.id }).subscribe(res => {
@@ -269,6 +279,7 @@ export class FriendRequestsComponent implements OnDestroy {
       if (res.code === 0) {
         // Rejected: remove from the pending list (filter by id to avoid index drift).
         this.pendingReqList.set(this.pendingReqList().filter(r => r.id !== req.id))
+        this.snackBar.open(this.transloco.translate('friend.declinedToast'), undefined, { duration: 3000 })
       } else {
         // Failed: keep it and tag the error copy (errText always renders in the template).
         this.pendingReqList.set(this.pendingReqList().map(r => r.id === req.id ? { ...r, errText: translateBizResult(res, this.transloco) } : r))
@@ -282,6 +293,7 @@ export class FriendRequestsComponent implements OnDestroy {
       if (res.code === 0) {
         // Revoked: remove from the sent list (filter by id to avoid index drift).
         this.sentReqList.set(this.sentReqList().filter(r => r.id !== req.id))
+        this.snackBar.open(this.transloco.translate('friend.revokedToast'), undefined, { duration: 3000 })
       } else {
         // Failed: keep it and tag the error copy.
         this.sentReqList.set(this.sentReqList().map(r => r.id === req.id ? { ...r, errText: translateBizResult(res, this.transloco) } : r))
@@ -310,12 +322,29 @@ export class FriendRequestsComponent implements OnDestroy {
       domain: peer.domain,
       reqMessage: inv.note,
       status: 0,
-      date: dayjs(inv.createdAt).format('YYYY-MM-DD HH:mm:ss'),
+      date: inv.createdAt,
       errText: '',
     }
   }
 
+  relativeDate(timestamp: number): string {
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+    if (seconds < 60) return this.transloco.translate('friend.time.justNow')
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return this.transloco.translate('friend.time.minutes', { count: minutes })
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return this.transloco.translate('friend.time.hours', { count: hours })
+    const days = Math.floor(hours / 24)
+    if (days < 7) return this.transloco.translate('friend.time.days', { count: days })
+    return dayjs(timestamp).format('YYYY-MM-DD')
+  }
+
+  absoluteDate(timestamp: number): string {
+    return dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')
+  }
+
   ngOnInit() {
+    this.activeTab.set(this.initialTab() === 'pending' ? 1 : 0)
     // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
     // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
     this.userService.listIncomingInvites().subscribe({

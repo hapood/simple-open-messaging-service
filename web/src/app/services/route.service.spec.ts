@@ -74,10 +74,31 @@ describe('RouteService adaptive account surfaces', () => {
       expect(nav.pushPane).toHaveBeenCalledOnceWith({
         kind: 'dialog',
         component: jasmine.any(Function),
-        wide: true,
+        presentation: 'page',
+        desktopSize: 'wide',
         inputs: { initialCategoryId: 'devices' },
       });
       expect(nav.setTopSection).not.toHaveBeenCalled();
     });
   }
+
+  it('classifies workflow, confirmation, and viewer dialogs explicitly', () => {
+    service.popupDlg(PopupType.FRIEND_REQUESTS, { initialTab: 'add' });
+    expect(nav.pushPane).toHaveBeenCalledWith(jasmine.objectContaining({
+      presentation: 'page',
+      desktopSize: 'standard',
+    }));
+
+    service.popupDlg(PopupType.CONFIRM, { messageKey: 'common.confirm' });
+    expect(nav.pushPane).toHaveBeenCalledWith(jasmine.objectContaining({
+      presentation: 'modal',
+      desktopSize: 'standard',
+    }));
+
+    service.popupDlg(PopupType.AVATAR_EDITOR, { file: new File([], 'avatar.png') });
+    expect(nav.pushPane).toHaveBeenCalledWith(jasmine.objectContaining({
+      presentation: 'viewer',
+      desktopSize: 'standard',
+    }));
+  });
 });

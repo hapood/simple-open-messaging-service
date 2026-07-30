@@ -8,17 +8,13 @@
   // [style]="{zIndex:$index}" (0,1,2…) scoped WITHIN this element's own stacking context (position:fixed +
   // z-index), so they order correctly regardless of this base value.
   z-index: 1000;
-  left: 0;
-  top: 0;
-  width: 100vw;
-  height: 100vh;
-  // The backdrop is a fixed full-screen layer that must NEVER scroll: real scrolling lives one layer
-  // down — the desktop card's own max-height:80vh + overflow:auto, and the mobile sheet's inner .body.
-  // overflow:auto here made .material-modal a scroll container, and since Blink/WebKit count a child's
-  // transform toward the parent's scrollable overflow, the mobile enter animation (translateY(100%) → 0)
-  // pushed the off-screen sheet to ~200vh and flickered a vertical scrollbar on PC for the duration of
-  // the slide. overflow:hidden clips that transient overflow so no scrollbar appears (mobile browsers
-  // hide the gutter anyway; desktop/PC resized to pad-width was where it showed).
+  // Pin to the fixed-position containing block instead of sizing with 100vw/100vh. Android WebView can
+  // expose a stale `vh` during its first edge-to-edge/system-bar layout pass; a dialog opened in that
+  // window inherited the short height through its `height:100%` wrapper and sometimes stayed short.
+  // Four fixed offsets always follow the actual viewport rectangle and need no viewport-unit recompute.
+  inset: 0;
+  // The backdrop never scrolls; page/viewer bodies and modal cards own their respective scrolling.
+  // Clipping also prevents scale/fade transforms from contributing transient scrollable overflow.
   overflow: hidden;
   background-color: rgba(0, 0, 0, 0.25);
   // The overlay element stays mounted (isShow only toggles a class), so the
@@ -31,4 +27,10 @@
 .modal-hide {
   opacity: 0;
   pointer-events: none;
+}
+
+// A static full-screen surface is removed in the same render pass that hides this backdrop. Letting the
+// otherwise-empty gray layer fade for 220ms after the opaque surface is gone produces a visible flash.
+.modal-hide.instant-hide {
+  transition-duration: 0ms;
 }

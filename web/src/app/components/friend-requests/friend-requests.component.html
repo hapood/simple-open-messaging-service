@@ -67,45 +67,29 @@
         </div>
         }
         @case(AddTabStatus.ERROR){
-        <div class="state-hint"><div class="state-title state-error">{{errMsg()}}</div></div>
+        <div class="state-hint">
+          <div class="state-title state-error">{{errMsg()}}</div>
+          <button mat-button type="button" (click)="searchUser()">{{ 'friend.retry' | transloco }}</button>
+        </div>
         }
         @case(AddTabStatus.SUCCESS){
-          @if (localResults().length > 0) {
-            <div class="search-results">
-              @for (u of localResults(); track u.id) {
-                <button class="result-row" type="button" (click)="pickLocalUser(u)">
-                  <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="u.name"
-                      [identityId]="u.id" [src]="u.avatar"></app-user-avatar></div>
-                  <div class="result-meta">
-                    <div class="user-name">{{displayUserName(u)}}</div>
-                    @if(u.isForeigner){<app-federated-badge class="card-fed" [domain]="u.domain"></app-federated-badge>}
-                  </div>
-                </button>
-              }
-            </div>
-          } @else {
-            <div class="user-card">
-              <div class="user-main">
-                <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="userData()!.name"
-                    [identityId]="userData()!.id" [src]="userData()!.avatar"></app-user-avatar></div>
-                <div class="user-meta">
-                  <div class="user-name">{{displayUserName(userData()!)}}</div>
-                  @if(userData()!.isForeigner){<app-federated-badge class="card-fed" [domain]="userData()!.domain"></app-federated-badge>}
+          <div class="search-results">
+            @for (u of localResults(); track u.id) {
+              <button class="result-row" type="button" (click)="pickLocalUser(u)"
+                [disabled]="relationshipStates().get(u.id)==='FRIEND' || relationshipStates().get(u.id)==='OUTGOING_PENDING'">
+                <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="u.name"
+                    [identityId]="u.id" [src]="u.avatar"></app-user-avatar></div>
+                <div class="result-meta">
+                  <div class="user-name">{{displayUserName(u)}}</div>
+                  <div class="user-account">&#64;{{u.account}}</div>
+                  @if(u.isForeigner){<app-federated-badge class="card-fed" [domain]="u.domain"></app-federated-badge>}
                 </div>
-              </div>
-              <div class="user-actions">
-                @if(canAdd()){
-                <button mat-flat-button color="primary" (click)="sendRequest()"
-                  [disabled]="addTabStatus()===AddTabStatus.SEARCHING">{{ 'friend.sendRequest' | transloco }}</button>
-                }
-              </div>
-              @if(canAdd()){
-              <textarea class="reason-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="friendReqMessage"
-                maxlength="255" rows="2" [placeholder]="'friend.reasonPh' | transloco"></textarea>
-              }
-              @if(reqRspTxt().length>0){<div class="response-text" [class.is-info]="!canAdd()">{{reqRspTxt()}}</div>}
-            </div>
-          }
+                <span class="result-action" [class.sent]="relationshipStates().get(u.id)!=='NONE'">
+                  {{ relationshipLabel(u.id) | transloco }}
+                </span>
+              </button>
+            }
+          </div>
         }
       }
     </div>
@@ -132,8 +116,8 @@
           <div class="pending-meta">
             <div class="user-name">{{displayUserName(req)}}</div>
             @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
-            @if(req.reqMessage){<div class="pending-reason">{{req.reqMessage}}</div>}
-            <div class="pending-date">{{req.date}}</div>
+            @if(req.reqMessage){<blockquote class="pending-reason">{{req.reqMessage}}</blockquote>}
+            <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
           </div>
           <div class="pending-actions">
             @if(req.status===0){
@@ -171,10 +155,10 @@
           <div class="pending-meta">
             <div class="user-name">{{displayUserName(req)}}</div>
             @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
-            <div class="pending-date">{{req.date}}</div>
+            <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
           </div>
           <div class="pending-actions">
-            <button mat-button class="decline-btn" (click)="cancelSent($index)">{{ 'common.cancel' | transloco }}</button>
+            <button mat-button class="decline-btn" (click)="cancelSent($index)">{{ 'friend.revoke' | transloco }}</button>
           </div>
         </div>
         @if(req.errText){<div class="row-err">{{req.errText}}</div>}

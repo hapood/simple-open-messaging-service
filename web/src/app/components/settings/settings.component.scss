@@ -44,12 +44,15 @@
 }
 
 .msg-header {
-  height: 56px;
+  // Settings is an inline top-level section on compact layouts, so unlike routed dialogs it has no
+  // safe-area-aware popup wrapper around it. Keep a 56px content row below the native status bar while
+  // allowing the surface background to continue edge-to-edge behind that bar.
+  height: calc(56px + var(--soms-safe-top, 0px));
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px;
+  padding: var(--soms-safe-top, 0px) 8px 0;
   border-bottom: 1px solid var(--app-border);
   box-sizing: border-box;
 }

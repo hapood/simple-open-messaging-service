@@ -14,7 +14,11 @@ const OUR = 'soms.io'; // == SOMS_DOMAIN (config.domain)
  *  debounce logic under test; the rest are inert stubs. */
 function makeStubs() {
   const markDirty = vi.fn();
-  const flushBatch = vi.fn(() => ({ entries: [], keys: [] as string[], hasMore: false }));
+  const flushBatch = vi.fn(() => ({
+    entries: [],
+    keys: [] as string[],
+    hasMore: false,
+  }));
   const buffer = {
     markDirty,
     flushBatch,
@@ -123,12 +127,20 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
     prisma.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'origin.com' },
     });
-    prisma.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
+    prisma.threadParticipant.findMany.mockResolvedValue([
+      localUser(1, 'alice'),
+    ]);
 
     // A mirror's sole destination is the origin (the hub it pulls from).
     await svc.signalOutbound(10, 1, 7, undefined);
     expect(markDirty).toHaveBeenCalledTimes(1);
-    expect(markDirty).toHaveBeenCalledWith('origin.com', 'alice', OUR, '!grp', 7);
+    expect(markDirty).toHaveBeenCalledWith(
+      'origin.com',
+      'alice',
+      OUR,
+      '!grp',
+      7,
+    );
 
     // ...which is exactly the domain it just pulled from → excluded → signals nothing (loop closed).
     markDirty.mockClear();
@@ -147,7 +159,9 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
     prisma.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    prisma.threadParticipant.findMany.mockResolvedValue([foreignUser(99, 'x', 'b.com')]);
+    prisma.threadParticipant.findMany.mockResolvedValue([
+      foreignUser(99, 'x', 'b.com'),
+    ]);
     await svc.signalOutbound(10, 1, 5, undefined); // author 1 is not in the roster
     expect(markDirty).not.toHaveBeenCalled();
   });
@@ -161,7 +175,9 @@ describe('FederationService sender debounce (scheduleFlush / flushDomain)', () =
       prisma.messageThread.findUnique.mockResolvedValue({
         groupUser: { account: '!grp', domain: 'origin.com' },
       });
-      prisma.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
+      prisma.threadParticipant.findMany.mockResolvedValue([
+        localUser(1, 'alice'),
+      ]);
 
       // A burst of three sends to the same dest domain (origin.com).
       await svc.signalOutbound(10, 1, 1, undefined);
@@ -197,15 +213,27 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
     const markDirty = vi.fn();
     const buffer = {
       markDirty,
-      flushBatch: vi.fn(() => ({ entries: [], keys: [] as string[], hasMore: false })),
+      flushBatch: vi.fn(() => ({
+        entries: [],
+        keys: [] as string[],
+        hasMore: false,
+      })),
       deleteKeys: vi.fn(),
       dropDomainIfEmpty: vi.fn(),
     } as unknown as FederationBufferService;
     const prisma = {
       messageThread: { findUnique: vi.fn(async () => opts.thread) },
       user: { findUnique: vi.fn(async () => opts.leaver) },
-      message: { aggregate: vi.fn(async () => ({ _max: { originSeq: opts.maxMsg ?? null } })) },
-      pendingMedia: { aggregate: vi.fn(async () => ({ _max: { originSeq: opts.maxPending ?? null } })) },
+      message: {
+        aggregate: vi.fn(async () => ({
+          _max: { originSeq: opts.maxMsg ?? null },
+        })),
+      },
+      pendingMedia: {
+        aggregate: vi.fn(async () => ({
+          _max: { originSeq: opts.maxPending ?? null },
+        })),
+      },
     };
     const svc = new FederationService(
       prisma as never,
@@ -220,7 +248,10 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
       buffer,
       {} as never, // quota
       {} as never, // linkPreview
-      { emitAsync: vi.fn().mockResolvedValue(undefined), emit: vi.fn() } as never, // eventEmitter
+      {
+        emitAsync: vi.fn().mockResolvedValue(undefined),
+        emit: vi.fn(),
+      } as never, // eventEmitter
     );
     return { svc, markDirty };
   }
@@ -275,5 +306,81 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
     });
     await svc.notifyGroupLeave(10, 42);
     expect(markDirty).not.toHaveBeenCalled();
+  });
+});
+
+describe('FederationService federated friend-invite revoke', () => {
+  it('sends the required shared invite id to the recipient server', async () => {
+    const { svc } = makeStubs();
+    vi.spyOn(svc as never, 'requireLocalUser' as never).mockResolvedValue({
+      account: 'alice',
+    } as never);
+    const postSigned = vi
+      .spyOn(svc as never, 'postSigned' as never)
+      .mockResolvedValue(undefined as never);
+
+    await svc.sendInviteRevoke({
+      fromLocalUserId: 1,
+      to: { account: 'bob', domain: 'peer.test' },
+      inviteOriginId: 'shared-op-id',
+    });
+
+    expect(postSigned).toHaveBeenCalledOnce();
+    const [path, rawBody, domain] = postSigned.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+    ];
+    expect(path).toBe('/api/v1/s2s/invite-revoke');
+    expect(domain).toBe('peer.test');
+    expect(JSON.parse(rawBody)).toMatchObject({
+      origin: OUR,
+      kind: 'FRIEND',
+      from: { account: 'alice', domain: OUR },
+      to: { account: 'bob', domain: 'peer.test' },
+      inviteOriginId: 'shared-op-id',
+    });
+  });
+
+  it('applies an inbound signed revoke once and ignores an operation replay', async () => {
+    const { svc } = makeStubs();
+    const peek = vi.fn().mockResolvedValue(undefined);
+    const revokeInboundFriendInvite = vi.fn().mockResolvedValue(undefined);
+    (svc as unknown as { quota: unknown }).quota = { peek };
+    (svc as unknown as { invite: unknown }).invite = {
+      revokeInboundFriendInvite,
+    };
+    vi.spyOn(svc as never, 'ensureForeignUser' as never).mockResolvedValue(
+      2 as never,
+    );
+    vi.spyOn(
+      svc as never,
+      'findLocalUserIdByAddress' as never,
+    ).mockResolvedValue(1 as never);
+    const seen = vi.spyOn(svc as never, 'isOpSeen' as never);
+    seen
+      .mockResolvedValueOnce(false as never)
+      .mockResolvedValueOnce(true as never);
+    const body = {
+      id: 'revoke-op',
+      origin: 'peer.test',
+      ts: Date.now(),
+      kind: 'FRIEND' as const,
+      from: { account: 'bob', domain: 'peer.test' },
+      to: { account: 'alice', domain: OUR },
+      inviteOriginId: 'shared-op-id',
+    };
+
+    await svc.handleInviteRevoke(body);
+    await svc.handleInviteRevoke(body);
+
+    expect(peek).toHaveBeenCalledTimes(2);
+    expect(revokeInboundFriendInvite).toHaveBeenCalledOnce();
+    expect(revokeInboundFriendInvite).toHaveBeenCalledWith({
+      fromUserId: 2,
+      toUserId: 1,
+      origin: 'peer.test',
+      originId: 'shared-op-id',
+    });
   });
 });

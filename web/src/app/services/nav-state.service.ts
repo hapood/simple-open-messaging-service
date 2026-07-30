@@ -27,6 +27,11 @@ export interface AsideEntry {
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
 export type PaneKind = 'dialog' | 'gallery' | 'file-detail' | 'invite-detail';
 
+/** Rendering policy for a dialog pane. The root popup owns layout, motion, backdrop, focus, and safe-area
+ * behavior for each policy, so individual dialog components only render their content. */
+export type DialogPresentation = 'page' | 'modal' | 'viewer';
+export type DialogDesktopSize = 'standard' | 'wide';
+
 /**
  * One entry on the transient pane stack. `component`/`inputs`/`onResult` are dialog-specific (RootPopup
  * renders dialogs via `*ngComponentOutlet`); gallery/file-detail/invite-detail carry their payload
@@ -40,9 +45,10 @@ export interface PaneEntry {
   readonly payload?: Record<string, unknown>;
   /** Delivered the close result (dialog) or `undefined` (back/cancel). */
   readonly onResult?: (result: unknown) => void;
-  /** Dialog-only: render the desktop centered card wider than the default 480px (e.g. a two-column
-   *  Settings dialog). Ignored on mobile (full-screen sheet). */
-  readonly wide?: boolean;
+  /** Dialog-only rendering policy. Defaults to `page` at the typed RouteService façade. */
+  readonly presentation?: DialogPresentation;
+  /** Dialog-only desktop card width. Compact layout is controlled solely by `presentation`. */
+  readonly desktopSize?: DialogDesktopSize;
 }
 
 let nextPaneId = 0;

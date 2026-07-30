@@ -102,9 +102,14 @@ export class LinkRowComponent {
   readonly imgFailed = signal(false);
 
   /** Open the shared page in the system browser (Tauri) / a new tab (web). */
-  openUrl(): void {
+  async openUrl(): Promise<void> {
     const url = this.link().url;
-    if (url) void openExternalUrl(url);
+    if (!url) return;
+    try {
+      await openExternalUrl(url);
+    } catch (error) {
+      console.error('[link-row] Failed to open external URL', error);
+    }
   }
 
   onImgError(): void {

@@ -1,3 +1,6 @@
-<div class="material-modal" [ngClass]="[isShow()?'modal-show':'modal-hide']">
+<div
+  class="material-modal"
+  [ngClass]="[isShow() ? 'modal-show' : 'modal-hide', instantHide() ? 'instant-hide' : '']"
+>
   <ng-content></ng-content>
 </div>

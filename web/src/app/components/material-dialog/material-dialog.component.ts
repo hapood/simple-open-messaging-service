@@ -8,6 +8,7 @@ import { NgClass } from '@angular/common';
     styleUrl: './material-dialog.component.scss'
 })
 export class MaterialDialogComponent {
-  
   isShow = input(false)
+  /** Skip the backdrop's close fade for surfaces that themselves close without a leave animation. */
+  instantHide = input(false)
 }

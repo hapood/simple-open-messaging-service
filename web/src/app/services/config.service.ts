@@ -44,6 +44,9 @@ export class ConfigService {
   readonly loaded = signal(false);
 
   private loadPromise: Promise<void> | null = null;
+  /** Monotonic request generation. A response from the previously configured server may arrive after
+   *  reconfigure/reload; only the newest generation is allowed to publish signals. */
+  private loadGeneration = 0;
 
   /** Methods available on THIS platform under the current `loginMode`. Empty until config is loaded.
    *  Drives which login UI the shell renders (and whether the method switcher shows >1 option).
@@ -66,9 +69,10 @@ export class ConfigService {
    *  the signals stay `null` and `loaded` flips true so consumers can react (e.g. backend unreachable). */
   ensureLoaded(): Promise<void> {
     if (this.loadPromise) return this.loadPromise;
+    const generation = ++this.loadGeneration;
     this.loadPromise = firstValueFrom(this.http.get<ConfigRes>(`${apiPrefix()}/config`))
       .then((res) => {
-        if (res.code === 0 && res.data) {
+        if (generation === this.loadGeneration && res.code === 0 && res.data) {
           this.registrationOpen.set(res.data.registrationOpen);
           this.loginMode.set(res.data.loginMode);
         }
@@ -76,7 +80,9 @@ export class ConfigService {
       .catch(() => {
         /* leave signals null; backend unreachable / not-yet-configured */
       })
-      .finally(() => this.loaded.set(true));
+      .finally(() => {
+        if (generation === this.loadGeneration) this.loaded.set(true);
+      });
     return this.loadPromise;
   }
 
@@ -86,6 +92,9 @@ export class ConfigService {
    *  the signals so consumers re-enter the loading state (the login page swaps its error card / form for a
    *  spinner) until the new request settles. Concurrent callers share the new in-flight promise. */
   reload(): Promise<void> {
+    // Invalidate the old generation before resetting its cached promise. Even though Fetch/IPC work may
+    // continue underneath an unsubscribed consumer, its late result can no longer overwrite the new server.
+    this.loadGeneration++;
     this.loadPromise = null;
     this.loaded.set(false);
     this.registrationOpen.set(null);

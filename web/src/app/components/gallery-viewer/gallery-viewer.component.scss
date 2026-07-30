@@ -24,15 +24,27 @@
 .gv-download {
   position: absolute;
   z-index: 3;
-  top: max(14px, env(safe-area-inset-top));
+  bottom: max(14px, env(safe-area-inset-bottom));
   left: max(14px, env(safe-area-inset-left));
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
   color: #fff;
   background: rgba(0, 0, 0, 0.48);
+  cursor: pointer;
+
+  &.gv-download--above-thumbs {
+    bottom: calc(max(14px, env(safe-area-inset-bottom)) + 76px);
+  }
+
+  &:disabled {
+    cursor: wait;
+    opacity: 0.72;
+  }
 
   svg {
     width: 23px;

@@ -35,6 +35,12 @@ export type AcceptInviteResult =
       originDomain: string | null; // the group's home domain (origin-propagation target)
     };
 
+export type FriendRelationshipState =
+  | 'NONE'
+  | 'OUTGOING_PENDING'
+  | 'INCOMING_PENDING'
+  | 'FRIEND';
+
 /** Fields selected for the embedded inviter/recipient profile on list queries (never hashPwd — it is
  *  sensitive). */
 const USER_SELECT = {
@@ -71,6 +77,55 @@ export class InviteService {
   ) {}
 
   /**
+   * Authoritative relationship state for discovery UI. FRIEND takes precedence over stale pending
+   * rows; only unexpired PENDING invites count. The result contains every requested id so clients do
+   * not need to infer missing rows.
+   */
+  async friendRelationshipStatuses(
+    me: number,
+    requestedUserIds: number[],
+  ): Promise<Array<{ userId: number; status: FriendRelationshipState; inviteId?: string }>> {
+    const userIds = [...new Set(requestedUserIds)].filter((id) => id !== me);
+    if (userIds.length === 0) return [];
+
+    const [friendIds, invites] = await Promise.all([
+      this.participantService.getActiveP2PPeerUserIds(me),
+      this.prisma.invite.findMany({
+        where: {
+          kind: InviteKind.FRIEND,
+          status: InviteStatus.PENDING,
+          expiresAt: { gt: new Date() },
+          OR: [
+            { fromUserId: me, toUserId: { in: userIds } },
+            { toUserId: me, fromUserId: { in: userIds } },
+          ],
+        },
+        select: { id: true, fromUserId: true, toUserId: true },
+      }),
+    ]);
+    const friends = new Set(friendIds);
+    const outgoing = new Map(
+      invites
+        .filter((invite) => invite.fromUserId === me)
+        .map((invite) => [invite.toUserId, invite.id.toString()]),
+    );
+    const incoming = new Map(
+      invites
+        .filter((invite) => invite.toUserId === me)
+        .map((invite) => [invite.fromUserId, invite.id.toString()]),
+    );
+
+    return userIds.map((userId) => {
+      if (friends.has(userId)) return { userId, status: 'FRIEND' };
+      const outgoingId = outgoing.get(userId);
+      if (outgoingId) return { userId, status: 'OUTGOING_PENDING', inviteId: outgoingId };
+      const incomingId = incoming.get(userId);
+      if (incomingId) return { userId, status: 'INCOMING_PENDING', inviteId: incomingId };
+      return { userId, status: 'NONE' };
+    });
+  }
+
+  /**
    * Create (or refresh) a friend invite from→to. Local-only mutual auto-accept: when allowed and the
    * target already has a PENDING friend invite back to the caller, skip creating and form the
    * friendship immediately. Federated targets pass allowAutoAccept=false (cross-server accept needs
@@ -81,6 +136,7 @@ export class InviteService {
     toUserId: number,
     note: string,
     allowAutoAccept: boolean,
+    originIdOverride?: string,
   ): Promise<CreateFriendInviteResult> {
     const trimmed = (note ?? '').slice(0, 255);
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
@@ -109,7 +165,7 @@ export class InviteService {
         }
       }
 
-      const originId = mintUlid();
+      const originId = originIdOverride ?? mintUlid();
       try {
         const invite = await tx.invite.create({
           data: {
@@ -420,6 +476,61 @@ export class InviteService {
         );
       }
       await tx.invite.update({ where: { id }, data: { status: InviteStatus.REVOKED } });
+    });
+  }
+
+  /** Resolve a pending outgoing invite before a consumer revoke. The controller uses the embedded
+   * recipient address to synchronously notify a federated peer before committing the local terminal. */
+  async getOutgoingRevokeContext(inviteId: string, byUserId: number) {
+    const id = this.parseInviteId(inviteId);
+    const invite = await this.prisma.invite.findUnique({
+      where: { id },
+      include: { toUser: { select: USER_SELECT } },
+    });
+    if (invite === null || invite.status !== InviteStatus.PENDING) {
+      throw new BusinessException(
+        invite === null
+          ? BusinessCode.INVITE_NOT_FOUND
+          : BusinessCode.INVITE_ALREADY_HANDLED,
+        invite === null ? 'invite not found' : 'invite already handled',
+      );
+    }
+    if (invite.fromUserId !== byUserId) {
+      throw new BusinessException(
+        BusinessCode.INVITE_NOT_YOURS,
+        'this invite is not yours to revoke',
+      );
+    }
+    return {
+      originId: invite.originId,
+      toUser: invite.toUser,
+    };
+  }
+
+  /** Apply a signed peer withdrawal to our mirrored incoming invite using the correlation id shared
+   * when the federated invite was created. */
+  async revokeInboundFriendInvite(params: {
+    fromUserId: number;
+    toUserId: number;
+    origin: string;
+    originId: string;
+  }): Promise<void> {
+    const invite = await this.prisma.invite.findUnique({
+      where: { origin_originId: { origin: params.origin, originId: params.originId } },
+      select: { id: true, kind: true, status: true, fromUserId: true, toUserId: true },
+    });
+    if (
+      invite === null ||
+      invite.kind !== InviteKind.FRIEND ||
+      invite.fromUserId !== params.fromUserId ||
+      invite.toUserId !== params.toUserId ||
+      invite.status !== InviteStatus.PENDING
+    ) {
+      return;
+    }
+    await this.prisma.invite.update({
+      where: { id: invite.id },
+      data: { status: InviteStatus.REVOKED },
     });
   }
 

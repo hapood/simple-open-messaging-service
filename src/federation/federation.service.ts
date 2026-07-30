@@ -130,6 +130,15 @@ export interface S2SInviteAccept extends S2SOpsBase {
   group?: string; // the group's `!account` (== fedGroupAccount)
 }
 
+/** POST /api/v1/s2s/invite-revoke — the original sender withdrew a still-pending FRIEND invite.
+ * `inviteOriginId` is the shared correlation id stored on both servers. */
+export interface S2SInviteRevoke extends S2SOpsBase {
+  kind: 'FRIEND';
+  from: S2SAddress;
+  to: S2SAddress;
+  inviteOriginId: string;
+}
+
 /** POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame. Carries the EPHEMERAL realtime call
  *  signaling + lifecycle between two servers. The persisted CALL record is an ordinary Message that
  *  rides the existing pull-based sync — it needs NO frame. `op` discriminates:
@@ -994,10 +1003,12 @@ export class FederationService implements OnModuleDestroy {
     groupAvatarUrl?: string; // LOCAL avatar path (/uploads/...) → converted to inline S2SAvatar here
     groupRevision?: number;
     owner?: S2SAddress;
+    /** FRIEND correlation id shared with the sender's local Invite row. */
+    opId?: string;
   }): Promise<void> {
     const from = await this.requireLocalUser(params.fromLocalUserId);
     const payload: S2SInvite = {
-      id: mintUlid(),
+      id: params.opId ?? mintUlid(),
       origin: this.config.domain,
       kind: params.kind,
       from: this.localAddress(from.account),
@@ -1060,6 +1071,30 @@ export class FederationService implements OnModuleDestroy {
       '/api/v1/s2s/invite-accept',
       JSON.stringify(payload),
       params.targetDomain,
+    );
+  }
+
+  /** Withdraw a federated FRIEND invite. Awaited by the consumer endpoint: local state is changed only
+   * after the peer acknowledges, so an unreachable peer cannot leave the two visible lists divergent. */
+  async sendInviteRevoke(params: {
+    fromLocalUserId: number;
+    to: S2SAddress;
+    inviteOriginId: string;
+  }): Promise<void> {
+    const from = await this.requireLocalUser(params.fromLocalUserId);
+    const payload: S2SInviteRevoke = {
+      id: mintUlid(),
+      origin: this.config.domain,
+      kind: 'FRIEND',
+      from: this.localAddress(from.account),
+      to: { account: params.to.account, domain: params.to.domain },
+      inviteOriginId: params.inviteOriginId,
+      ts: Date.now(),
+    };
+    await this.postSigned(
+      '/api/v1/s2s/invite-revoke',
+      JSON.stringify(payload),
+      params.to.domain,
     );
   }
 
@@ -1303,6 +1338,29 @@ export class FederationService implements OnModuleDestroy {
     await this.quota.tick(body.origin, 'requests');
     if (body.kind === 'GROUP') return this.handleGroupAccept(body);
     return this.handleFriendAccept(body);
+  }
+
+  /** Inbound federated withdrawal. Replays and already-terminal rows are successful no-ops: revoke is
+   * idempotent, while ACCEPTED remains accepted (accept-wins for a cross-server race). */
+  async handleInviteRevoke(body: S2SInviteRevoke): Promise<void> {
+    await this.quota.peek(body.origin, 'requests');
+    if (await this.isOpSeen(body.origin, body.id)) return;
+    const from = this.requireS2SAddress(body.from);
+    const to = this.requireS2SAddress(body.to);
+    const foreignId = await this.ensureForeignUser(from.account, from.domain);
+    const localId = await this.findLocalUserIdByAddress(to);
+    if (localId === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `local user ${to.account} not found`,
+      );
+    }
+    await this.invite.revokeInboundFriendInvite({
+      fromUserId: foreignId,
+      toUserId: localId,
+      origin: body.origin,
+      originId: body.inviteOriginId,
+    });
   }
 
   /** Inbound POST /api/v1/s2s/call — receive ONE federated call frame. Resolves the wire identities to

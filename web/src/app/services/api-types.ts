@@ -327,6 +327,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/sync-self-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** ACK-only self-profile revision probe. Pushes PROFILE_REV_UPDATED when the caller cache is stale. */
+        post: operations["UserController_syncSelfProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/update-avatar": {
         parameters: {
             query?: never;
@@ -2664,6 +2681,13 @@ export interface components {
              */
             take?: number;
         };
+        SyncSelfProfileDto: {
+            /**
+             * @description Caller's cached self profileRev. When older than the live row, the server pushes PROFILE_REV_UPDATED.
+             * @example 3
+             */
+            sinceProfileRev: number;
+        };
         SyncPeerProfileDto: {
             /**
              * @description User id
@@ -3638,6 +3662,27 @@ export interface operations {
                         data?: components["schemas"]["UserResponseDto"];
                     };
                 };
+            };
+        };
+    };
+    UserController_syncSelfProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncSelfProfileDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

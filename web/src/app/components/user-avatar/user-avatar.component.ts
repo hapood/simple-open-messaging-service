@@ -2,6 +2,7 @@ import { Component, computed, input, signal, effect, inject, DestroyRef } from '
 import { UserAvatarType } from './model'
 import { assetUrl } from '../../services/runtime'
 import { AvatarRepository } from '../../services/avatar-cache.service'
+import { UserService } from '../../services/user.service'
 
 /**
  * Initial-letter avatar (industry best-practice palette).
@@ -37,6 +38,7 @@ const PALETTE = [
 
 export class UserAvatarComponent {
   private readonly avatarRepo = inject(AvatarRepository);
+  private readonly userService = inject(UserService);
 
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER)
   readonly name = input<string | undefined | null>('')
@@ -54,6 +56,20 @@ export class UserAvatarComponent {
   readonly loading = input(false)
   readonly UserAvatarType = UserAvatarType
 
+  /** Message cards deliberately carry only render-ready message data, so their SELF avatar call sites do
+   *  not repeat the session profile on every row. Resolve omitted SELF inputs from the cached session
+   *  profile here; explicit inputs still win for profile editors/previews. This also gives every message
+   *  card the same `u<selfId>` IndexedDB lookup while offline. */
+  private readonly effectiveIdentityId = computed(() =>
+    this.identityId() ?? (this.type() === UserAvatarType.SELF ? this.userService.sessionProfile()?.id : undefined)
+  )
+  private readonly effectiveSrc = computed(() =>
+    this.src() ?? (this.type() === UserAvatarType.SELF ? this.userService.sessionProfile()?.avatar : undefined)
+  )
+  private readonly effectiveName = computed(() =>
+    this.name() || (this.type() === UserAvatarType.SELF ? this.userService.sessionProfile()?.name : undefined)
+  )
+
   /** Image load failure (corrupt/404) → fall back to the initial letter. Reset on src/identity change to retry the new image. */
   readonly imgFailed = signal(false)
 
@@ -68,7 +84,7 @@ export class UserAvatarComponent {
    * fallback). This is the single chokepoint — every [src] caller routes here.
    */
   readonly imgSrc = computed(() => {
-    const s = this.src()
+    const s = this.effectiveSrc()
     if (s && !s.startsWith('/')) return assetUrl(s) // local preview pass-through
     return this.objectUrl() // DB blob URL, or '' → initial-letter fallback
   })
@@ -76,8 +92,8 @@ export class UserAvatarComponent {
   constructor() {
     // Reset the failure flag whenever the avatar source changes (retry the new image).
     effect(() => {
-      this.src()
-      this.identityId()
+      this.effectiveSrc()
+      this.effectiveIdentityId()
       this.imgFailed.set(false)
     })
 
@@ -85,7 +101,7 @@ export class UserAvatarComponent {
     // async (IDB); a hit paints within a microtask. A stale resolution (identity/src moved on) is dropped.
     effect(() => {
       const identity = this.identityKey()
-      const src = this.src()
+      const src = this.effectiveSrc()
       // Track refreshes so a refreshed blob (overwritten by ProfileRepository→refresh) re-resolves —
       // signal-driven freshness; the component never compares URLs.
       const tick = identity ? this.avatarRepo.refreshTick(identity) : 0
@@ -96,7 +112,7 @@ export class UserAvatarComponent {
       void this.avatarRepo.getBlob(identity, src)
         .then((blob) => {
           // Drop if the avatar moved on OR was refreshed since this read started.
-          if (this.identityKey() !== identity || this.src() !== src || this.avatarRepo.refreshTick(identity) !== tick) return
+          if (this.identityKey() !== identity || this.effectiveSrc() !== src || this.avatarRepo.refreshTick(identity) !== tick) return
           if (blob) this.setObjectUrl(URL.createObjectURL(blob))
           else this.clearObjectUrl()
         })
@@ -110,7 +126,7 @@ export class UserAvatarComponent {
 
   /** The DB cache key derived from {@link type} + {@link identityId} (GROUP → `g<id>`, else `u<id>`). */
   private identityKey = computed(() => {
-    const id = this.identityId()
+    const id = this.effectiveIdentityId()
     if (id == null) return undefined
     return this.type() === UserAvatarType.GROUP ? `g${id}` : `u${id}`
   })
@@ -120,14 +136,14 @@ export class UserAvatarComponent {
 
   /** First character (Chinese: first character; English: first letter uppercased); empty-name fallback '?'. */
   readonly initial = computed(() => {
-    const n = (this.name() ?? '').trim()
+    const n = (this.effectiveName() ?? '').trim()
     return n.length > 0 ? n.charAt(0).toUpperCase() : '?'
   })
 
   /** Deterministic 31× name hash (abs) — shared by bg + groupFill so a given name always maps to the
    *  same color(s). Reads the name signal, so callers inside computed() stay reactive. */
   private hashName(): number {
-    const n = (this.name() ?? '').trim() || '?'
+    const n = (this.effectiveName() ?? '').trim() || '?'
     let h = 0
     for (let i = 0; i < n.length; i++) h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0
     return Math.abs(h)

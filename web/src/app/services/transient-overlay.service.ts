@@ -2,7 +2,11 @@ import { ComponentRef, effect, inject, Injectable, OnDestroy, Type } from '@angu
 import { FocusTrap, FocusTrapFactory } from '@angular/cdk/a11y';
 import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
-import { NavStateMachineService, type PaneKind } from './nav-state.service';
+import {
+  NavStateMachineService,
+  type DialogPresentation,
+  type PaneKind,
+} from './nav-state.service';
 
 /**
  * Base class for "transient overlay" services — fullscreen overlays mounted imperatively via the CDK Overlay
@@ -27,6 +31,7 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
   private closeSub?: { unsubscribe(): void };
   private detachSub?: { unsubscribe(): void };
   private keydownSub?: { unsubscribe(): void };
+  private backdropSub?: { unsubscribe(): void };
   private focusTrap: FocusTrap | null = null;
   private previouslyFocused: HTMLElement | null = null;
   /** The pane entry id currently rendered (null = no overlay). Guards the effect so an unrelated pane-stack
@@ -37,6 +42,8 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
   protected abstract readonly kind: PaneKind;
   /** The standalone component to mount inside the overlay. */
   protected abstract readonly component: Type<unknown>;
+  /** Shared surface policy. Transient overlays use modal or viewer; page belongs to RootPopup. */
+  protected abstract readonly presentation: Extract<DialogPresentation, 'modal' | 'viewer'>;
 
   protected constructor() {
     // Drive the CDK overlay from the pane stack: present when an entry of `kind` appears, dispose when it's
@@ -58,7 +65,11 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
 
   /** Push an entry onto the pane stack; the effect above mounts the CDK overlay. */
   protected pushEntry(inputs: TInputs): void {
-    this.nav.pushPane({ kind: this.kind, payload: inputs as Record<string, unknown> });
+    this.nav.pushPane({
+      kind: this.kind,
+      payload: inputs as Record<string, unknown>,
+      presentation: this.presentation,
+    });
   }
 
   /** Dismiss — removes this kind's entry from the pane stack (the effect disposes the overlay). Wired to the
@@ -75,6 +86,12 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
       positionStrategy: this.overlay.position().global().top('0').left('0'),
       scrollStrategy: this.overlay.scrollStrategies.block(),
       disposeOnNavigation: true,
+      hasBackdrop: this.presentation === 'modal',
+      backdropClass: this.presentation === 'modal' ? 'soms-overlay-backdrop' : undefined,
+      panelClass: [
+        'soms-transient-overlay',
+        `soms-transient-overlay--${this.presentation}`,
+      ],
     });
     const cmp = ref.attach(new ComponentPortal(this.component));
     this.applyInputs(cmp, inputs);
@@ -86,6 +103,7 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
       event.preventDefault();
       this.close();
     });
+    this.backdropSub = ref.backdropClick().subscribe(() => this.close());
     cmp.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually
     this.ref = ref;
     this.focusTrap = this.focusTrapFactory.create(ref.overlayElement);
@@ -107,6 +125,7 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
     this.closeSub?.unsubscribe(); this.closeSub = undefined;
     this.detachSub?.unsubscribe(); this.detachSub = undefined;
     this.keydownSub?.unsubscribe(); this.keydownSub = undefined;
+    this.backdropSub?.unsubscribe(); this.backdropSub = undefined;
     this.destroyFocusTrapAndRestoreFocus();
     this.ref = null;
   }
@@ -115,6 +134,7 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
     this.closeSub?.unsubscribe(); this.closeSub = undefined;
     this.detachSub?.unsubscribe(); this.detachSub = undefined;
     this.keydownSub?.unsubscribe(); this.keydownSub = undefined;
+    this.backdropSub?.unsubscribe(); this.backdropSub = undefined;
     this.destroyFocusTrapAndRestoreFocus();
     this.ref?.dispose();
     this.ref = null;
@@ -125,6 +145,6 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
     this.focusTrap = null;
     const target = this.previouslyFocused;
     this.previouslyFocused = null;
-    if (target?.isConnected) target.focus();
+    if (target?.isConnected) target.focus({ preventScroll: true });
   }
 }

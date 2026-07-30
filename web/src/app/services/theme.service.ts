@@ -60,6 +60,7 @@ export class ThemeService implements OnDestroy {
       document.documentElement.setAttribute('data-theme', t);
       const meta = document.querySelector('meta[name="theme-color"]');
       meta?.setAttribute('content', META_THEME_COLOR[t]);
+      window.SomsShell?.setSystemBarTheme?.(t === 'dark');
     });
   }
 

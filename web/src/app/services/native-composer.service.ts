@@ -3,15 +3,6 @@ import { isAndroidNative, listenEvent } from './runtime';
 import { KeyboardInsetService } from './keyboard-inset.service';
 
 const DEFAULT_COMPOSER_HEIGHT_PX = 64;
-let activeBoundsPublisher: (() => void) | undefined;
-let resizeBridgeInstalled = false;
-
-/** Install the app-wide resize bridge once, before Angular bootstrap. The active chat supplies the callback. */
-export function installNativeComposerResizeBridge(): void {
-  if (resizeBridgeInstalled || typeof window === 'undefined') return;
-  resizeBridgeInstalled = true;
-  window.addEventListener('resize', () => activeBoundsPublisher?.());
-}
 
 export interface NativeComposerContext {
   version: 1;
@@ -184,16 +175,6 @@ export class NativeComposerService {
         height: rect.height,
       } satisfies NativeComposerBounds),
     );
-  }
-
-  /** Publish once at chat initialization, then reuse the same calculation from the app-wide resize bridge. */
-  bindBounds(contextId: number, measure: () => DOMRectReadOnly): () => void {
-    const publish = (): void => this.setBounds(contextId, measure());
-    activeBoundsPublisher = publish;
-    publish();
-    return () => {
-      if (activeBoundsPublisher === publish) activeBoundsPublisher = undefined;
-    };
   }
 
   update(contextId: number, patch: Record<string, unknown>): void {

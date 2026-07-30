@@ -1,6 +1,4 @@
-<!-- Dimmed backdrop (click to close). The card stops propagation so taps on the card itself don't close. -->
-<div class="fd-backdrop" (click)="onBackdropClick($event)">
-  <div class="fd-card" role="dialog" aria-modal="true" [attr.aria-label]="'fileDetail.title' | transloco">
+<div class="fd-card" role="dialog" aria-modal="true" [attr.aria-label]="'fileDetail.title' | transloco">
     <button type="button" class="fd-close" (click)="close.emit()" [attr.aria-label]="'fileDetail.closeAria' | transloco">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -77,5 +75,4 @@
         {{ 'fileDetail.notAvailable' | transloco }}
       </div>
     }
-  </div>
 </div>

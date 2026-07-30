@@ -23,11 +23,10 @@ export class LogoutService {
     // Disconnect explicitly and immediately (defence-in-depth — AuthService.logout flips loggedIn false,
     // whose effect also tears the socket down, but don't rely on that timing during the logout POST window).
     this.ws.disconnect();
-    this.auth.logout().subscribe({
-      // Redirect whether or not the server revoke answers — clearToken() (finalize in AuthService.logout)
-      // has already dropped the local credential, so staying on the authenticated shell is impossible.
-      complete: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
-      error: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
-    });
+    // AuthService drops every local session surface synchronously before returning the best-effort remote
+    // revoke. Navigation must NOT wait for that old server: it may be offline, and a late callback must not
+    // pull the user back from /config (or from a newly-established session) to the login page.
+    this.auth.logout().subscribe({ error: () => {} });
+    this.routeService.redirect(RoutePage.AUTH_LOGIN);
   }
 }

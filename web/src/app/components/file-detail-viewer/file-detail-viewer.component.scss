@@ -1,28 +1,20 @@
-// File-detail overlay: a dimmed fullscreen backdrop (CDK Overlay positions the host; this fills it) + a centered
-// themed card. Self-contained — the backdrop is the dismiss layer (tap to close); the card stops that. Theme tokens
-// (--app-*) give it a dark-mode override for free (see the theme-system-dark-token-contract memory).
+// File-detail modal content. TransientOverlayService/CDK owns the shared backdrop and dismissal; this host
+// fills the overlay pane and centers the themed card inside the safe areas.
 
 :host {
-  display: block;
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  animation: fd-enter 0.18s ease-out;
-  z-index: 1100; // above the app shell; below nothing (top-most overlay)
-}
-
-// Dimmed backdrop: tap-on-it closes (a tap on the card is stopped by the card being a separate click target).
-.fd-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
   box-sizing: border-box;
+  position: fixed;
+  inset: 0;
+  padding:
+    calc(24px + var(--soms-safe-top, 0px))
+    24px
+    calc(24px + var(--soms-safe-bottom, 0px));
   overflow: auto;
+  animation: fd-enter 0.18s ease-out;
+  z-index: 1100; // above the app shell; below nothing (top-most overlay)
 }
 
 .fd-card {

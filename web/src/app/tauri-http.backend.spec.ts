@@ -159,3 +159,73 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
     expect((err as HttpErrorResponse).status).toBe(415);
   });
 });
+
+describe('TauriHttpBackend media proxy routing under Tauri', () => {
+  type TauriWindow = {
+    __TAURI_INTERNALS__?: unknown;
+    __TAURI__?: {
+      core: {
+        invoke: (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ) => Promise<unknown>;
+      };
+    };
+  };
+  const tauriWindow = (): TauriWindow => window as unknown as TauriWindow;
+  let calls: Array<{ cmd: string; args?: Record<string, unknown> }>;
+
+  beforeEach(() => {
+    calls = [];
+    tauriWindow().__TAURI_INTERNALS__ = {};
+    tauriWindow().__TAURI__ = {
+      core: {
+        invoke: async (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ): Promise<unknown> => {
+          calls.push({ cmd, args });
+          return {
+            status: 200,
+            contentType: 'image/webp',
+            body: [1, 2, 3],
+          };
+        },
+      },
+    };
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideHttpClient(withFetch()),
+        { provide: HttpBackend, useClass: TauriHttpBackend },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    tauriWindow().__TAURI_INTERNALS__ = undefined;
+    tauriWindow().__TAURI__ = undefined;
+  });
+
+  for (const url of [
+    'media://localhost/uploads/avatars/a-512.webp?rev=1',
+    'http://media.localhost/uploads/avatars/a-512.webp?rev=1',
+  ]) {
+    it(`routes ${url} through media_request`, async () => {
+      const backend = TestBed.inject(HttpBackend);
+      const response = await firstValueFrom(
+        backend.handle(
+          new HttpRequest('GET', url, null, { responseType: 'blob' }),
+        ),
+      );
+
+      expect(calls).toEqual([
+        {
+          cmd: 'media_request',
+          args: { path: '/uploads/avatars/a-512.webp?rev=1' },
+        },
+      ]);
+      expect((response as { body: Blob }).body.type).toBe('image/webp');
+    });
+  }
+});

@@ -1,0 +1,57 @@
+<div class="invite-dialog" [appFitDialog]="fitOpts">
+  <div class="dialog-header">
+    <h2>{{ 'friend.inviteDialogTitle' | transloco }}</h2>
+  </div>
+
+  <div class="dialog-body">
+    <div class="user-summary">
+      <div class="avatar">
+        <app-user-avatar
+          [type]="UserAvatarType.OTHER"
+          [name]="user().name"
+          [identityId]="user().id"
+          [src]="user().avatar"
+        ></app-user-avatar>
+      </div>
+      <div class="user-meta">
+        <div class="user-name">{{ displayUserName(user()) }}</div>
+        <div class="user-account">&#64;{{ user().account }}</div>
+        @if (user().isForeigner) {
+          <app-federated-badge [domain]="user().domain"></app-federated-badge>
+        }
+      </div>
+    </div>
+
+    <label class="note-field">
+      <span>{{ 'friend.reasonLabel' | transloco }}</span>
+      <textarea
+        [ngModel]="note()"
+        (ngModelChange)="note.set($event)"
+        maxlength="255"
+        rows="4"
+        [placeholder]="'friend.reasonPh' | transloco"
+        [disabled]="sending()"
+      ></textarea>
+      <span class="counter">{{ note().length }}/255</span>
+    </label>
+
+    @if (errorText()) {
+      <div class="error-text" role="alert">{{ errorText() }}</div>
+    }
+  </div>
+
+  <div class="dialog-actions">
+    <button mat-button type="button" (click)="cancel()" [disabled]="sending()">
+      {{ 'common.cancel' | transloco }}
+    </button>
+    <button
+      mat-flat-button
+      color="primary"
+      type="button"
+      (click)="send()"
+      [disabled]="sending()"
+    >
+      {{ (sending() ? 'friend.sending' : 'friend.sendRequest') | transloco }}
+    </button>
+  </div>
+</div>

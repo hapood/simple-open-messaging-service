@@ -1,6 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -8,6 +10,27 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+export class FriendRelationshipStatusDto {
+  @ApiProperty({
+    type: Number,
+    isArray: true,
+    example: [2, 3],
+    description: 'Target user ids (≤50)',
+  })
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsInt({ each: true })
+  userIds!: number[];
+}
+
+export class FriendRelationshipStateDto {
+  @ApiProperty() userId!: number;
+  @ApiProperty({ enum: ['NONE', 'OUTGOING_PENDING', 'INCOMING_PENDING', 'FRIEND'] })
+  status!: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
+  @ApiProperty({ required: false, description: 'Pending invite id, when applicable' })
+  inviteId?: string;
+}
 
 /** Send a friend invite (optionally with a ≤255-char note). The target is addressed by userId — a
  *  local user OR a federated stub id (minted by /user/resolve). Federated delivery is automatic.

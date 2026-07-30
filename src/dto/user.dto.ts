@@ -45,6 +45,20 @@ export class SyncPeerProfileDto extends UserIdDto {
   sinceProfileRev?: number;
 }
 
+/** Body for /user/sync-self-profile. The authenticated identity is taken from the session; the client
+ *  sends only its cached revision. The endpoint is ACK-only and emits PROFILE_REV_UPDATED when stale. */
+export class SyncSelfProfileDto {
+  @ApiProperty({
+    example: 3,
+    description:
+      "Caller's cached self profileRev. When older than the live row, the server pushes PROFILE_REV_UPDATED.",
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sinceProfileRev!: number;
+}
+
 /** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
  *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
  *  query-messages so the blocker never sees the blocked user's messages. */
@@ -178,4 +192,3 @@ export class ThreadDeltaDto {
   @Min(0)
   toRevision!: number;
 }
-

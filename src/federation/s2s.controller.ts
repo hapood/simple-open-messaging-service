@@ -19,6 +19,7 @@ import {
   FederationService,
   type S2SInvite,
   type S2SInviteAccept,
+  type S2SInviteRevoke,
   type S2SCallFrame,
   type S2SAddress,
 } from './federation.service.js';
@@ -66,6 +67,12 @@ export class S2sController {
   @HttpCode(HttpStatus.ACCEPTED)
   async postInviteAccept(@Req() req: FastifyRequest): Promise<void> {
     await this.federation.handleInviteAccept(req.body as S2SInviteAccept);
+  }
+
+  @Post('invite-revoke')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postInviteRevoke(@Req() req: FastifyRequest): Promise<void> {
+    await this.federation.handleInviteRevoke(req.body as S2SInviteRevoke);
   }
 
   @Post('call')

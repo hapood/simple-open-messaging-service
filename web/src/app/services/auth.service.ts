@@ -1,10 +1,10 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { EMPTY, Observable, defer, firstValueFrom, finalize, mergeMap, tap } from 'rxjs';
+import { EMPTY, Observable, defer, firstValueFrom, from, mergeMap, tap } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
-import { isTauri, isAndroidNative, tauriInvoke, sessionClient, pickLoginOrigin } from './runtime';
+import { apiOrigin, isTauri, isAndroidNative, tauriInvoke, sessionClient, pickLoginOrigin } from './runtime';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -407,17 +407,29 @@ export class AuthService {
     // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
     this.userService.clearSession()
     this.sendOutbox.clear()
-    // The logout POST carries the Bearer Rust injects from ProxyState.token (still set — the native clear
-    // is deferred to `finalize` below). The backend resolves the session from the Bearer (native) / cookie
-    // (browser); NO token is placed in the body (JS never holds it). The native token is cleared AFTER the
-    // POST dispatches (finalize runs on complete/error/unsubscribe) so the POST stays authenticated.
-    return this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}).pipe(
-      finalize(() => {
-        this.clearNativeToken().then((nativeOk) => {
-          if (!nativeOk) this.toast.warn(this.t('auth.notice.logoutClearFailed'), IMPORTANT_NOTICE_MS)
-        })
-      }),
-    )
+    if (isTauri()) {
+      // Atomically detach the current Rust token and start a captured-token revoke against the OLD origin.
+      // The command returns immediately after spawning that best-effort request, so an offline server never
+      // blocks navigation. Crucially, no late finalize callback can clear a token established afterwards.
+      if (isAndroidNative()) {
+        try { window.SomsFcm!.setSessionToken(null) } catch {
+          this.toast.warn(this.t('auth.notice.logoutClearFailed'), IMPORTANT_NOTICE_MS)
+        }
+      }
+      return from(tauriInvoke('begin_logout', { origin: apiOrigin() })).pipe(
+        tap({
+          error: () => this.toast.warn(
+            this.t('auth.notice.logoutClearFailed'),
+            IMPORTANT_NOTICE_MS,
+          ),
+        }),
+      )
+    }
+
+    // Browser: clear the JS-readable presence flag immediately, then revoke the httpOnly cookie session in
+    // the background. LogoutService navigates immediately and deliberately ignores this request's timing.
+    this.clearPresenceCookie()
+    return this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {})
   }
 
   private announceSessionEnding(): void {

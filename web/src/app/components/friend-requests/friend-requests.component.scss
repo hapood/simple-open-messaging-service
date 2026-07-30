@@ -238,49 +238,26 @@ $danger: var(--app-danger);
     }
   }
 
-  .reason-input {
-    width: 100%;
-    margin-top: 8px;
-    padding: 8px 12px;
-    border: 1px solid $border;
-    border-radius: var(--app-radius-md);
-    background: var(--app-surface);
-    color: var(--app-text);
-    font-size: 14px;
-    line-height: 20px;
-    font-family: inherit;
-    box-sizing: border-box;
-    resize: vertical;
+}
 
-    &::placeholder {
-      color: var(--app-text-faint);
-    }
+.connecting-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--app-radius-md);
+  background: var(--app-surface-elevated);
+  color: var(--app-text);
 
-    &:focus {
-      outline: none;
-      border-color: $primary;
-    }
+  .connecting-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 18px;
   }
 
-  .connecting-banner {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    border-radius: var(--app-radius-md);
-    background: var(--app-surface-elevated);
-    color: var(--app-text);
-
-    .connecting-text {
-      flex: 1;
-      min-width: 0;
-      font-size: 13px;
-      line-height: 18px;
-    }
-
-    .connecting-cancel {
-      flex: none;
-    }
+  .connecting-cancel {
+    flex: none;
   }
 }
 
@@ -331,6 +308,23 @@ $danger: var(--app-danger);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      .user-account {
+        margin-top: 2px;
+        color: $muted;
+        font-size: 12px;
+      }
+    }
+
+    .result-action {
+      flex: none;
+      color: $primary;
+      font-size: 14px;
+      font-weight: 600;
+
+      &.sent {
+        color: $muted;
       }
     }
   }
@@ -383,10 +377,14 @@ $danger: var(--app-danger);
       }
 
       .pending-reason {
+        margin: 5px 0 0;
+        padding: 5px 8px;
+        border-left: 2px solid var(--app-border-strong);
+        border-radius: 0 var(--app-radius-sm) var(--app-radius-sm) 0;
+        background: var(--app-bg-muted);
         font-size: 13px;
         line-height: 18px;
         color: $muted;
-        margin-top: 2px;
         white-space: pre-wrap;
         word-break: break-word;
       }

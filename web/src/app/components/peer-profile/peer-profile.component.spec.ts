@@ -16,8 +16,7 @@ import { ConversationItem, User } from '../../services/model';
  * exclusivity with the Unfriend confirm (at most one confirm-row visible), the service call shape
  * (userService.setBlock → convList.applyThreadMeta in-place patch), and that a server-side failure keeps
  * the panel + confirm visible so the error is observable. Drives component signals directly (no template
- * render) like user-avatar.spec — zoneless CD is provided for the constructor's syncPeerProfile effect,
- * which short-circuits on a local (non-federated) peer.
+ * render) like user-avatar.spec — zoneless CD is provided for the constructor's revision probe effect.
  */
 function makeItem(over: { blocked?: boolean; threadId?: number; userId?: number } = {}): { item: ConversationItem; peer: User } {
   const peer = {
@@ -26,6 +25,7 @@ function makeItem(over: { blocked?: boolean; threadId?: number; userId?: number 
     isForeigner: false,
     domain: null,
     updatedAt: 1,
+    profileRev: 7,
   } as unknown as User;
   const item = {
     threadId: over.threadId ?? 5,
@@ -85,7 +85,9 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
       // template so the view's transitive deps (<app-user-avatar> → AvatarRepository → HttpClient, IDB, …)
       // are never instantiated — the unit under test stays isolated from its view's rendering concerns.
       .overrideComponent(PeerProfileComponent, { set: { template: '' } });
-    comp = TestBed.createComponent(PeerProfileComponent).componentInstance;
+    const fixture = TestBed.createComponent(PeerProfileComponent);
+    comp = fixture.componentInstance;
+    fixture.detectChanges();
   });
   afterEach(() => TestBed.resetTestingModule());
 
@@ -95,6 +97,10 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
     const { peer } = makeItem({ blocked: true });
     items.set([{ threadId: 5, peerUser: peer, blocked: true } as unknown as ConversationItem]);
     expect(comp.blocked()).toBe(true);
+  });
+
+  it('probes the cached profile revision when the profile panel opens', () => {
+    expect(syncPeerProfile).toHaveBeenCalledWith({ userId: 42, sinceProfileRev: 7 });
   });
 
   it('askBlock enters the block confirm and cancels an open unfriend confirm (mutually exclusive)', () => {

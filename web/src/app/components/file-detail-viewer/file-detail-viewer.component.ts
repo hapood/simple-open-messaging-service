@@ -1,4 +1,4 @@
-import { Component, computed, HostListener, inject, input, output, signal } from '@angular/core';
+import { Component, computed, inject, input, output, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -11,13 +11,11 @@ import { MessageRepository } from '../../services/message-repository.service';
 
 /**
  * Fullscreen inspector for a single FILE message. Mounted by {@link FileDetailService} inside a CDK Overlay (global
- * position, scroll-block, dispose-on-navigation), decoupled from any host template. Self-contained: a dimmed backdrop
- * (tap to close) + a centered card showing the type-tinted icon, the FULL filename (wraps, never truncates — the row
- * ellipses; this view exists to show the whole name), size / type / sender / time rows, and a Download button. Emits
- * `close` (the service disposes the overlay).
+ * position, scroll-block, dispose-on-navigation), decoupled from any host template. The shared transient-overlay
+ * `modal` policy owns the dimmed backdrop and dismissal; this component renders the centered card showing the
+ * type-tinted icon, full filename, metadata, and Download button.
  *
- * Close gestures: × button, Escape, or a tap on the dimmed backdrop. A tap ON the card does not close (so the
- * Download button and text selection work).
+ * Close gestures are × plus the service-owned Escape/backdrop handling.
  *
  * Under Tauri the download href is rewritten to the media:// proxy by {@link assetUrl} (a bare <a href> can't carry
  * the cross-origin Authorization header; the browser path keeps the same-origin relative URL authenticated by the
@@ -54,16 +52,6 @@ export class FileDetailViewerComponent {
   /** A URL exists for confirmed files; an optimistic send before its upload resolves may have none yet. */
   readonly hasUrl = computed(() => !!this.file()?.url);
   readonly downloadHref = computed(() => assetUrl(this.file()?.url ?? ''));
-
-  @HostListener('window:keydown', ['$event'])
-  onKey(e: KeyboardEvent): void {
-    if (e.key === 'Escape') this.close.emit();
-  }
-
-  /** Close when the dimmed backdrop itself (not the card) is the click target. */
-  onBackdropClick(e: MouseEvent): void {
-    if (e.target === e.currentTarget) this.close.emit();
-  }
 
   /** Backend relocalize retry — the federated file never finished localizing (status 'failed'). Optimistic
    *  'downloading', call the endpoint, then flip to the returned status (mirrored to the repo so the chat

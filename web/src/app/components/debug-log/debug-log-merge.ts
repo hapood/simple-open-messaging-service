@@ -29,33 +29,69 @@ export interface MergedLine {
   readonly raw: string;
 }
 
+export type IdentifiedLine = MergedLine & { readonly id: number };
+
+/** Result of reconciling a freshly-read tail snapshot with the currently rendered window. */
+export interface ReconciledSnapshot {
+  readonly lines: IdentifiedLine[];
+  readonly nextId: number;
+  readonly added: number;
+}
+
+export interface LogSearchMatcher {
+  readonly regex: RegExp | null;
+  readonly error: string;
+}
+
+export interface HighlightPart {
+  readonly text: string;
+  readonly matched: boolean;
+}
+
 const LEVEL_WORDS: Record<string, LogLevel> = {
-  error: 'error', err: 'error',
-  warn: 'warn', warning: 'warn',
+  error: 'error',
+  err: 'error',
+  warn: 'warn',
+  warning: 'warn',
   info: 'info',
   log: 'log',
-  debug: 'debug', trace: 'debug', verbose: 'debug',
+  debug: 'debug',
+  trace: 'debug',
+  verbose: 'debug',
 };
 
 /** ISO-8601 with optional fractional seconds + optional zone, OR a leading bracketed `[date][time]`
  *  (the `tauri-plugin-log` file format). Captures group 1 = the timestamp token(s). */
-const ISO_RE = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/;
+const ISO_RE =
+  /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/;
 const BRACKET_RE = /^\[(\d{4}-\d{2}-\d{2})\]\[(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]/;
 
 /** Try to peel a leading timestamp off `line`. Bracketed times carry no zone — assume UTC so they line up
  *  with the UTC ISO stamps JS + Kotlin emit (see the module note on the Rust-local-time caveat). */
-function extractTs(line: string): { ms: number | null; raw: string; rest: string } {
+function extractTs(line: string): {
+  ms: number | null;
+  raw: string;
+  rest: string;
+} {
   let m = ISO_RE.exec(line);
   if (m) {
     const raw = m[1];
     const withZone = /[Zz]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`;
     const ms = Date.parse(withZone);
-    return { ms: Number.isNaN(ms) ? null : ms, raw, rest: line.slice(raw.length) };
+    return {
+      ms: Number.isNaN(ms) ? null : ms,
+      raw,
+      rest: line.slice(raw.length),
+    };
   }
   m = BRACKET_RE.exec(line);
   if (m) {
     const ms = Date.parse(`${m[1]}T${m[2]}Z`);
-    return { ms: Number.isNaN(ms) ? null : ms, raw: `${m[1]} ${m[2]}`, rest: line.slice(m[0].length) };
+    return {
+      ms: Number.isNaN(ms) ? null : ms,
+      raw: `${m[1]} ${m[2]}`,
+      rest: line.slice(m[0].length),
+    };
   }
   return { ms: null, raw: '', rest: line };
 }
@@ -67,9 +103,15 @@ function extractLevel(rest: string): { level: LogLevel; text: string } {
   const lead = /^\[?([A-Za-z]+)\]?[\s:\]]+/.exec(trimmed);
   if (lead) {
     const lvl = LEVEL_WORDS[lead[1].toLowerCase()];
-    if (lvl) return { level: lvl, text: trimmed.slice(lead[0].length).replace(/^[\s:]+/, '') };
+    if (lvl)
+      return {
+        level: lvl,
+        text: trimmed.slice(lead[0].length).replace(/^[\s:]+/, ''),
+      };
   }
-  const bracket = /\[(ERROR|WARNING|WARN|INFO|DEBUG|TRACE|LOG)\]/i.exec(trimmed.slice(0, 80));
+  const bracket = /\[(ERROR|WARNING|WARN|INFO|DEBUG|TRACE|LOG)\]/i.exec(
+    trimmed.slice(0, 80),
+  );
   if (bracket) {
     const lvl = LEVEL_WORDS[bracket[1].toLowerCase()];
     if (lvl) return { level: lvl, text: trimmed };
@@ -80,16 +122,41 @@ function extractLevel(rest: string): { level: LogLevel; text: string } {
 /** Adapt a structured JS ring-buffer entry (already typed — no text parsing). */
 export function fromJsEntry(e: ConsoleEntry): MergedLine {
   const ms = Date.parse(e.ts);
-  return { ts: Number.isNaN(ms) ? null : ms, rawTs: e.ts, level: e.level, source: 'js', text: e.text, raw: `${e.ts} [${e.level}] ${e.text}` };
+  return {
+    ts: Number.isNaN(ms) ? null : ms,
+    rawTs: e.ts,
+    level: e.level,
+    source: 'js',
+    text: e.text,
+    raw: `${e.ts} [${e.level}] ${e.text}`,
+  };
 }
 
 /** Parse one native (Rust or Kotlin) text line into a {@link MergedLine}. */
-export function parseNativeLine(line: string, source: 'rust' | 'kotlin'): MergedLine {
+export function parseNativeLine(
+  line: string,
+  source: 'rust' | 'kotlin',
+): MergedLine {
   const lineTrim = line.replace(/\r$/, '');
-  if (lineTrim === '') return { ts: null, rawTs: '', level: 'info', source, text: '', raw: lineTrim };
+  if (lineTrim === '')
+    return {
+      ts: null,
+      rawTs: '',
+      level: 'info',
+      source,
+      text: '',
+      raw: lineTrim,
+    };
   const { ms, raw, rest } = extractTs(lineTrim);
   const { level, text } = extractLevel(rest);
-  return { ts: ms, rawTs: raw, level, source, text: text || lineTrim, raw: lineTrim };
+  return {
+    ts: ms,
+    rawTs: raw,
+    level,
+    source,
+    text: text || lineTrim,
+    raw: lineTrim,
+  };
 }
 
 /**
@@ -104,6 +171,94 @@ export function mergeByTs(lines: readonly MergedLine[]): MergedLine[] {
     if (b.ts === null) return -1;
     return a.ts - b.ts;
   });
+}
+
+/**
+ * Reconcile a complete merged tail snapshot with the current view.
+ *
+ * Native tails are snapshots rather than event streams. Using the last rendered line as an append cursor
+ * loses delayed/out-of-order records (and breaks completely when an unparseable line sorts last). Instead
+ * we rebuild the bounded view from every fresh snapshot and reuse ids by occurrence. Occurrence queues are
+ * important: two byte-identical log calls are still two rows and must not collapse into one.
+ */
+export function reconcileSnapshot(
+  current: readonly IdentifiedLine[],
+  snapshot: readonly MergedLine[],
+  nextId: number,
+  limit: number,
+): ReconciledSnapshot {
+  const previous = new Map<string, number[]>();
+  for (const line of current) {
+    const key = lineKey(line);
+    const ids = previous.get(key);
+    if (ids) ids.push(line.id);
+    else previous.set(key, [line.id]);
+  }
+
+  let added = 0;
+  const lines = snapshot.slice(-limit).map((line) => {
+    const ids = previous.get(lineKey(line));
+    const reused = ids?.shift();
+    if (reused !== undefined) return { ...line, id: reused };
+    added++;
+    return { ...line, id: nextId++ };
+  });
+  return { lines, nextId, added };
+}
+
+function lineKey(line: MergedLine): string {
+  return `${line.source}\u0000${line.ts ?? ''}\u0000${line.level}\u0000${line.raw}`;
+}
+
+/** Compile the panel's search query without throwing into Angular computed state. */
+export function compileLogSearch(
+  query: string,
+  regexMode: boolean,
+  caseSensitive: boolean,
+): LogSearchMatcher {
+  if (!query) return { regex: null, error: '' };
+  try {
+    const source = regexMode ? query : escapeRegExp(query);
+    return {
+      regex: new RegExp(source, caseSensitive ? '' : 'i'),
+      error: '',
+    };
+  } catch {
+    return { regex: null, error: 'Invalid regular expression' };
+  }
+}
+
+/** Split display text into safe interpolation segments; no HTML is generated or trusted. */
+export function splitSearchHighlights(
+  text: string,
+  matcher: RegExp | null,
+): HighlightPart[] {
+  if (!matcher || !text) return [{ text, matched: false }];
+  const flags = matcher.flags.includes('g')
+    ? matcher.flags
+    : `${matcher.flags}g`;
+  const regex = new RegExp(matcher.source, flags);
+  const parts: HighlightPart[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > cursor)
+      parts.push({ text: text.slice(cursor, match.index), matched: false });
+    if (match[0]) {
+      parts.push({ text: match[0], matched: true });
+      cursor = match.index + match[0].length;
+    } else {
+      // Zero-width expressions are valid search filters, but there is no visible range to highlight.
+      regex.lastIndex = match.index + 1;
+    }
+  }
+  if (cursor < text.length)
+    parts.push({ text: text.slice(cursor), matched: false });
+  return parts.length ? parts : [{ text, matched: false }];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Split a tail blob into individual lines (trimming a single trailing newline so it doesn't yield an empty

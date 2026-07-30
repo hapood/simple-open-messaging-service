@@ -11,7 +11,10 @@ import {
   AttachmentUploadQueueService,
   UPLOAD_CONCURRENCY_OPTIONS,
 } from '../../services/attachment-upload-queue.service';
-import { clearNativeMediaCache, isAndroidNative } from '../../services/runtime';
+import {
+  MEDIA_CACHE_LIMIT_OPTIONS_MB,
+  NativeMediaCacheService,
+} from '../../services/native-media-cache.service';
 
 /**
  * Settings → Media sub-page. The image size-threshold picker as an M3 radio list (the old dropdown was
@@ -72,6 +75,35 @@ import { clearNativeMediaCache, isAndroidNative } from '../../services/runtime';
         <h3>{{ 'settings.mediaCache' | transloco }}</h3>
         <div class="settings-card">
           <mat-list>
+            @for (mb of cacheLimitOptions; track mb) {
+              <mat-list-item (click)="selectCacheLimit(mb)">
+                <span matListItemTitle>{{
+                  'settings.mediaCacheLimitValue'
+                    | transloco: { size: cacheSizeLabel(mb) }
+                }}</span>
+                <mat-radio-button
+                  matListItemMeta
+                  name="media-cache-limit"
+                  [checked]="nativeCache.info().limitMb === mb"
+                  [disabled]="updatingCache()"
+                  [attr.aria-label]="cacheSizeLabel(mb)"
+                />
+              </mat-list-item>
+            }
+          </mat-list>
+        </div>
+        <span class="hint">{{
+          'settings.mediaCacheUsage'
+            | transloco
+              : {
+                  used: formatCacheBytes(nativeCache.info().usedBytes),
+                  limit: cacheSizeLabel(nativeCache.info().limitMb),
+                }
+        }}</span>
+      </section>
+      <section class="settings-group">
+        <div class="settings-card">
+          <mat-list>
             <mat-list-item>
               <span matListItemTitle>{{
                 'settings.clearMediaCache' | transloco
@@ -114,6 +146,7 @@ export class SettingsMediaComponent {
   private readonly media = inject(MediaSizeThresholdService);
   private readonly uploadQueue = inject(AttachmentUploadQueueService);
   private readonly transloco = inject(TranslocoService);
+  readonly nativeCache = inject(NativeMediaCacheService);
 
   /** Current threshold in KB (0 = unlimited). */
   readonly current = this.media.kb;
@@ -121,8 +154,10 @@ export class SettingsMediaComponent {
   readonly options: readonly number[] = MEDIA_THRESHOLD_OPTIONS_KB;
   readonly uploadConcurrency = this.uploadQueue.maxConcurrent;
   readonly uploadOptions: readonly number[] = UPLOAD_CONCURRENCY_OPTIONS;
-  readonly showClearCache = isAndroidNative();
+  readonly showClearCache = this.nativeCache.available;
+  readonly cacheLimitOptions = MEDIA_CACHE_LIMIT_OPTIONS_MB;
   readonly clearingCache = signal(false);
+  readonly updatingCache = signal(false);
   readonly cacheCleared = signal(false);
   readonly cacheClearFailed = signal(false);
 
@@ -141,13 +176,37 @@ export class SettingsMediaComponent {
     this.uploadQueue.setMaxConcurrent(count);
   }
 
-  clearCache(): void {
+  cacheSizeLabel(mb: number): string {
+    return mb >= 1024 ? `${mb / 1024} GB` : `${mb} MB`;
+  }
+
+  formatCacheBytes(bytes: number): string {
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    if (bytes < 1024 * 1024 * 1024)
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  async selectCacheLimit(mb: number): Promise<void> {
+    if (this.updatingCache()) return;
+    this.updatingCache.set(true);
+    this.cacheClearFailed.set(false);
+    try {
+      await this.nativeCache.setLimit(mb);
+    } catch {
+      this.cacheClearFailed.set(true);
+    } finally {
+      this.updatingCache.set(false);
+    }
+  }
+
+  async clearCache(): Promise<void> {
     if (this.clearingCache()) return;
     this.clearingCache.set(true);
     this.cacheCleared.set(false);
     this.cacheClearFailed.set(false);
     try {
-      clearNativeMediaCache();
+      await this.nativeCache.clear();
       this.cacheCleared.set(true);
     } catch {
       this.cacheClearFailed.set(true);

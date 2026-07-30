@@ -22,6 +22,8 @@ import {
 import { assetUrl } from '../../services/runtime';
 import { MsgService } from '../../services/message.service';
 import { MessageRepository } from '../../services/message-repository.service';
+import { MediaSaveService } from '../../services/media-save.service';
+import { ToastService } from '../../services/toast.service';
 
 /** Business metadata kept alongside PhotoSwipe's image data. */
 interface GallerySlideData extends SlideData {
@@ -75,6 +77,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly currentUrl = computed(() =>
     assetUrl(this.current()?.src ?? ''),
   );
+  readonly saving = signal(false);
 
   private readonly retryKeys = new Map<number, number>();
   private readonly slides: GallerySlideData[] = [];
@@ -84,6 +87,8 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly msg = inject(MsgService);
   private readonly repo = inject(MessageRepository);
   private readonly i18n = inject(TranslocoService);
+  private readonly mediaSave = inject(MediaSaveService);
+  private readonly toast = inject(ToastService);
 
   ngAfterViewInit(): void {
     const images = this.images();
@@ -185,6 +190,31 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     return assetUrl(media.src);
   }
 
+  async saveCurrent(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    const media = this.current();
+    if (!media || this.saving()) return;
+    this.saving.set(true);
+    try {
+      await this.mediaSave.save({
+        path: media.src,
+        filename: media.name || this.defaultFilename(media),
+        mimeType:
+          media.kind === 'video'
+            ? 'video/mp4'
+            : media.kind === 'audio'
+              ? 'audio/mpeg'
+              : 'image/jpeg',
+      });
+      this.toast.info(this.i18n.translate('gallery.saved'));
+    } catch (error) {
+      console.error('[gallery] save failed:', error);
+      this.toast.warn(this.i18n.translate('gallery.saveFailed'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
   /** Retry a transient image fetch with a cache-busted URL. */
   retryLoad(): void {
     const i = this.index();
@@ -275,6 +305,10 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     const retryKey = this.retryKeys.get(index) ?? 0;
     if (retryKey === 0 || /^(blob:|data:)/.test(base)) return base;
     return `${base}${base.includes('?') ? '&' : '?'}_r=${retryKey}`;
+  }
+
+  private defaultFilename(media: AlbumImage): string {
+    return `media-${media.msgId ?? this.index() + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
   }
 
   private setStatus(index: number, status: MediaStatus): void {

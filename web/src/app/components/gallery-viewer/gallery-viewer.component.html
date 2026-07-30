@@ -1,18 +1,22 @@
 <div #mount class="gv-mount"></div>
 
 @if (currentStatus() === MEDIA_STATUS.READY && currentUrl()) {
-  <a
+  <button
+    type="button"
     class="gv-download"
-    [href]="currentUrl()"
-    [download]="current().name || null"
-    target="_blank"
-    rel="noopener"
+    [class.gv-download--above-thumbs]="images().length > 1"
+    [disabled]="saving()"
+    (click)="saveCurrent($event)"
     [attr.aria-label]="'gallery.downloadAria' | transloco"
   >
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
-    </svg>
-  </a>
+    @if (saving()) {
+      <mat-progress-spinner mode="indeterminate" [diameter]="23" />
+    } @else {
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+      </svg>
+    }
+  </button>
 }
 
 @if (images().length > 1) {

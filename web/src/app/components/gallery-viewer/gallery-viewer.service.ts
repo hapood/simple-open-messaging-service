@@ -17,6 +17,7 @@ import type { AlbumImage } from '../message-cards/chat-item';
 export class GalleryViewerService extends TransientOverlayService<{ images: AlbumImage[]; startIndex: number; threadId: number }> {
   protected readonly kind = 'gallery';
   protected readonly component = GalleryViewerComponent;
+  protected readonly presentation = 'viewer';
 
   /** Open the gallery at `startIndex` within `images`, scoped to `threadId` (so the viewer can call the
    *  backend relocalize retry for the currently-shown image). No-op on an empty album. Replaces any open viewer. */

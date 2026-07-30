@@ -6,6 +6,10 @@
 <resources>
     <string name="app_name">"SOMS"</string>
     <string name="main_activity_title">"SOMS"</string>
+    <string name="splash_preparing">准备中</string>
+    <string name="splash_restoring_session">恢复会话</string>
+    <string name="splash_loading_config">加载配置</string>
+    <string name="splash_preparing_interface">整理界面</string>
     <string name="notif_fgs_running">"正在后台运行"</string>
     <string name="call_channel_incoming">"来电"</string>
     <string name="call_channel_ongoing">"通话中"</string>
@@ -22,6 +26,8 @@
     <string name="composer_recording_cancel">正在录音；松开取消</string>
     <string name="composer_recording_format">● %s  ·  上滑取消</string>
     <string name="composer_recording_cancel_format">● %s  ·  松开取消</string>
+    <string name="composer_record_slide_cancel">上滑取消</string>
+    <string name="composer_record_release_cancel">松开取消</string>
     <string name="composer_recording_failed">无法开始录音</string>
     <string name="composer_recording_permission_denied">需要麦克风权限</string>
     <string name="composer_recording_too_short">录音时间太短</string>

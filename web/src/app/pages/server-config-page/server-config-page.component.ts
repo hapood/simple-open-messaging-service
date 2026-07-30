@@ -3,6 +3,7 @@ import {
   Component,
   computed,
   ElementRef,
+  HostListener,
   inject,
   signal,
   DestroyRef,
@@ -14,8 +15,10 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { A11yModule } from '@angular/cdk/a11y';
 import { TranslocoModule } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
+import { MaterialDialogComponent } from '../../components/material-dialog/material-dialog.component';
 import { ConfigService } from '../../services/config.service';
 import { PushService, type FirebaseClientConfigPayload } from '../../services/push.service';
 import {
@@ -89,8 +92,10 @@ export function resolveOriginSelection(
     MatFormFieldModule,
     MatInputModule,
     MatProgressBarModule,
+    A11yModule,
     TranslocoModule,
     BrandLogoComponent,
+    MaterialDialogComponent,
     AuthViewportDirective,
   ],
   templateUrl: './server-config-page.component.html',
@@ -374,6 +379,16 @@ export class ServerConfigPageComponent {
     await this.finalize(af.primary, null);
   }
 
+  /** Match the shared modal dismissal contract on browser/desktop; Android hardware-back is handled
+   * through the route-owned __SOMS_BACK__ callback below. */
+  @HostListener('document:keydown.escape', ['$event'])
+  onEscape(event: KeyboardEvent): void {
+    if (!this.autoFill()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void this.cancelAutoFill();
+  }
+
   /** Surface a connect/OTA failure as a categorized toast + reset to the form for an edit-and-retry. */
   private fail(e: unknown): void {
     const msg = e instanceof Error ? e.message : String(e);
@@ -422,6 +437,10 @@ export class ServerConfigPageComponent {
    *     hint; a second back within it exits the app via window.SomsBack.exit(). */
   private installBackHandler(): void {
     window.__SOMS_BACK__ = () => {
+      if (this.autoFill()) {
+        void this.cancelAutoFill();
+        return;
+      }
       if (this.canGoBack()) {
         this.route.redirect(RoutePage.AUTH_LOGIN);
         return;

@@ -1,24 +1,14 @@
-// Material-styled fullscreen invite-detail dialog. The CDK overlay pane sits at 0,0; this host goes
-// fixed inset:0 to cover the viewport with a dimming backdrop, while .ivd-frame is pinned to the
-// .chat-slot pane rect at runtime so the card centers on the chat pane — where the invite row lives —
-// instead of the whole viewport. Integer-px line-heights / vertical paddings per the project CSS rule.
+// Material-styled invite-detail modal. CDK owns the shared full-viewport backdrop; .ivd-frame is pinned
+// to the .chat-slot rect at runtime so the card centers where the invite row lives.
 :host {
   position: fixed;
   inset: 0;
   display: block;
 }
 
-// Full-viewport dim layer. No longer the flex centering container — that moved to .ivd-frame.
-.ivd-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(2px);
-}
-
 // Positioning frame: top/left/width/height are set from .chat-slot's rect at runtime (see component), so
 // the card centers inside the chat pane — the same region the invite was opened from. pointer-events:none
-// lets empty-pane clicks fall through to the backdrop (tap-outside-to-close); the card re-enables its own.
+// lets empty-pane clicks reach the CDK backdrop (tap-outside-to-close); the card re-enables its own.
 // box-sizing:border-box keeps the 16px padding inside the slot's measured width.
 .ivd-frame {
   position: absolute;

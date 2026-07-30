@@ -43,7 +43,7 @@ serde_json = "1"
 # `upload_stream_file` file stream;
 # "gzip" lets `proxy_api` auto-decompress gzipped JSON responses; "multipart" builds the streaming
 # upload form in `upload_stream_file`.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "multipart", "json"] }
 # CancellationToken for the desktop SSE supervisor's teardown (cancel a blocked reqwest future on
 # sse_stop / origin swap) and shell upload cancellation; ReaderStream ("io") for
 # `upload_stream_file`'s streaming file body. Already
@@ -53,7 +53,7 @@ tokio-util = { version = "0.7", features = ["rt", "io"] }
 # and `tokio::sync::Notify` (sync); the shell-wide `upload_stream_file` uses `tokio::fs` (fs) to
 # stream the file off disk. These features may or may not be enabled by the
 # transitive tokio tauri/reqwest pull in; declaring tokio direct guarantees them.
-tokio = { version = "1", features = ["macros", "time", "sync", "rt", "fs"] }
+tokio = { version = "1", features = ["macros", "time", "sync", "rt", "fs", "io-util"] }
 # Web-bundle integrity for the dynamic-update flow: the shell downloads the main SPA from the
 # user-configured server and SHA-256-verifies it against the manifest before extracting/executing a
 # byte (transport integrity + authenticity come from TLS on https origins; IP/http are not guaranteed

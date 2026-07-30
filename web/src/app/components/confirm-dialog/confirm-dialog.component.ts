@@ -7,7 +7,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 /**
  * Generic app-level "are you sure?" dialog — the unmissable confirm for destructive / consequential
  * actions. Opened via {@link PopupType.CONFIRM} on the shared root popup layer, so it inherits the
- * backdrop, the centered desktop card / full-screen mobile sheet, the enter/leave motion, the
+ * backdrop, the centered responsive modal card, the enter/leave motion, the
  * history-back-to-cancel contract, and the z-1000 modal tier (above every shell/pane layer, below only
  * the lightbox viewers) — all without per-call wiring.
  *
@@ -45,8 +45,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
   `,
   styles: [`
     .confirm {
-      /* Center the content both inside the desktop card (auto height, screen-centered by the wrapper's
-         translate) and the full-screen mobile sheet (100% height → vertical centering kicks in). */
+      /* Center content inside the responsive modal card. */
       display: flex;
       flex-direction: column;
       align-items: center;

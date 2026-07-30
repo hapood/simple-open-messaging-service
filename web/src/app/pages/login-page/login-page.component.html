@@ -14,6 +14,14 @@
       <div class="auth-loading" role="status" aria-live="polite">
         <app-brand-logo class="form-brand" [size]="48" />
         <mat-progress-spinner mode="indeterminate" [diameter]="40" />
+        @if (isTauri()) {
+          <!-- Reconfiguration is an escape hatch, not server-derived content. Keep it usable while the old
+            server's public /config request is still pending or timed out. -->
+          <button mat-button class="server-link" type="button" (click)="reopenServerConfig()">
+            <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+            {{ 'serverConfig.entry' | transloco }}
+          </button>
+        }
       </div>
     } @else {
       <!-- Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split

@@ -134,16 +134,44 @@ class NativeComposerController(
         applySoftShadow(24, 3.5f)
         setColorFilter(Color.WHITE)
     }
-    private val recordingStatus = Chronometer(activity).apply {
+    private val recordingDot = TextView(activity).apply {
+        text = "●"
+        textSize = 14f
+        setTextColor(RECORDING)
+        includeFontPadding = false
+    }
+    private val recordingClock = Chronometer(activity).apply {
+        textSize = 14f
+        setTextColor(onSurface)
+        includeFontPadding = false
+    }
+    private val recordingHint = TextView(activity).apply {
+        text = activity.getString(R.string.composer_record_slide_cancel)
+        textSize = 13f
+        setTextColor(hintColor)
+        includeFontPadding = false
+        setSingleLine(true)
+    }
+    private val recordingStatus = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
         visibility = View.GONE
         gravity = Gravity.CENTER_VERTICAL
-        textSize = 14f
-        setTextColor(if (isDark) Color.rgb(255, 166, 166) else Color.rgb(177, 38, 38))
         setPadding(dp(10), 0, dp(10), 0)
         background = rounded(surface, 10)
         elevation = dp(6).toFloat()
-        format = activity.getString(R.string.composer_recording_format)
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        addView(recordingDot, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        addView(recordingClock, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { leftMargin = dp(8) })
+        addView(recordingHint, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { leftMargin = dp(8) })
     }
     private val emojiGrid = GridView(activity).apply {
         numColumns = GridView.AUTO_FIT
@@ -248,8 +276,8 @@ class NativeComposerController(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(40),
             ).apply {
-                gravity = Gravity.START or Gravity.BOTTOM
-                leftMargin = dp(6)
+                gravity = Gravity.END or Gravity.BOTTOM
+                rightMargin = dp(6)
                 bottomMargin = dp(4)
             },
         )
@@ -459,10 +487,10 @@ class NativeComposerController(
     }
 
     fun onVoiceRecordingStarted() {
-        recordingStatus.base = android.os.SystemClock.elapsedRealtime()
+        recordingClock.base = android.os.SystemClock.elapsedRealtime()
         updateVoiceCancelState(false)
         recordingStatus.visibility = View.VISIBLE
-        recordingStatus.start()
+        recordingClock.start()
         keyboard.visibility = View.INVISIBLE
         action.background = rounded(RECORDING, 24)
         action.setImageResource(R.drawable.ic_composer_mic)
@@ -470,7 +498,7 @@ class NativeComposerController(
     }
 
     fun onVoiceRecordingFinished() {
-        recordingStatus.stop()
+        recordingClock.stop()
         recordingStatus.visibility = View.GONE
         keyboard.visibility = View.VISIBLE
         action.background = rounded(PRIMARY, 24)
@@ -478,19 +506,20 @@ class NativeComposerController(
         refreshAction()
     }
 
+    /** The recorder reached its byte/time cap, but the press gesture remains active until ACTION_UP. */
+    fun onVoiceRecordingCapped() {
+        recordingClock.stop()
+    }
+
     /** Keep the native recording chip in parity with Web: neutral "slide up" guidance while recording,
      *  then an explicit red "release to cancel" confirmation once the gesture crosses the threshold. */
     private fun updateVoiceCancelState(cancel: Boolean) {
-        recordingStatus.format = activity.getString(
-            if (cancel) {
-                R.string.composer_recording_cancel_format
-            } else {
-                R.string.composer_recording_format
-            },
+        recordingClock.setTextColor(onSurface)
+        recordingHint.text = activity.getString(
+            if (cancel) R.string.composer_record_release_cancel
+            else R.string.composer_record_slide_cancel,
         )
-        recordingStatus.setTextColor(
-            if (cancel) RECORDING else if (darkTheme) Color.rgb(255, 166, 166) else Color.rgb(177, 38, 38),
-        )
+        recordingHint.setTextColor(if (cancel) RECORDING else hintColor)
         action.background = rounded(if (cancel) secondary else RECORDING, 24)
         recordingStatus.contentDescription = activity.getString(
             if (cancel) R.string.composer_recording_cancel else R.string.composer_recording,
@@ -910,6 +939,8 @@ class NativeComposerController(
         keyboard.setColorFilter(secondary)
         emojiGrid.background = rounded(surface, 14)
         recordingStatus.background = rounded(surface, 10)
+        recordingClock.setTextColor(onSurface)
+        if (!voiceCancelArmed) recordingHint.setTextColor(hintColor)
     }
 
     private fun emit(payload: JSONObject) {

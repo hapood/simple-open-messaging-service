@@ -20,6 +20,7 @@
 // headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict so it can't cross origins).
 
 mod navigation;
+mod media_cache;
 #[cfg(desktop)]
 mod secure_storage;
 
@@ -535,10 +536,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // media://localhost — proxy /uploads/* to ${api_origin} with the Bearer token (bare <img src>
         // can't set headers; the SameSite=Strict media_token cookie can't cross origins).
-        .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
+        .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |context, request, responder| {
             let st = proxy_for_media.clone();
+            let app = context.app_handle().clone();
             tauri::async_runtime::spawn(async move {
-                proxy_media(st, request, responder).await;
+                proxy_media(app, st, request, responder).await;
             });
         })
         .manage(proxy_state.clone());
@@ -565,6 +567,7 @@ pub fn run() {
                     set_active_origin,
                     set_session_token,
                     clear_session_token,
+                    begin_logout,
                     secure_storage::secure_get_token,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
@@ -585,6 +588,11 @@ pub fn run() {
                     read_native_log,
                     api_request,
                     media_request,
+                    media_cache::cache_media,
+                    media_cache::clear_media_cache,
+                    media_cache::get_media_cache_info,
+                    media_cache::save_media_desktop,
+                    media_cache::set_media_cache_limit,
                     navigation::open_external_url,
                 ]
             }
@@ -602,6 +610,7 @@ pub fn run() {
                     set_active_origin,
                     set_session_token,
                     clear_session_token,
+                    begin_logout,
                     get_shell_version,
                     init_check_compat,
                     init_validate_cert,
@@ -614,6 +623,10 @@ pub fn run() {
                     read_native_log,
                     api_request,
                     media_request,
+                    media_cache::cache_media,
+                    media_cache::clear_media_cache,
+                    media_cache::get_media_cache_info,
+                    media_cache::set_media_cache_limit,
                     navigation::open_external_url,
                 ]
             }
@@ -711,6 +724,7 @@ pub fn run() {
 // --- media:// proxy (unchanged) -----------------------------------------------------------
 
 async fn proxy_media(
+    app: tauri::AppHandle,
     st: ProxyState,
     request: tauri::http::Request<Vec<u8>>,
     responder: UriSchemeResponder,
@@ -723,43 +737,63 @@ async fn proxy_media(
         responder.respond(empty(StatusCode::NOT_FOUND));
         return;
     }
-    let api_origin = st.api_origin.lock().expect("origin lock").clone();
-    let target = format!("{}{}", api_origin, path_and_query);
-    let token = st.token.lock().ok().and_then(|g| g.clone());
-    // Use the cached per-origin client (the IP/http permissive-TLS posture + a warm pool) — the same client
-    // `api_request` / `media_request` use — so a media load and an API call resolve identically regardless
-    // of whether the origin is a self-signed LAN IP.
-    let mut req = st.api_client(&api_origin).get(&target);
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {}", t));
-    }
-    if let Some(range) = request.headers().get("range") {
-        req = req.header("range", range.clone());
-    }
-    // Forward the correlation id when present so any media load routed through the HttpClient chain
-    // (and thus stamped by correlationIdInterceptor) correlates with pino req.id.
-    if let Some(rid) = request.headers().get("x-request-id") {
-        req = req.header("x-request-id", rid.clone());
-    }
-    match req.send().await {
-        Ok(upstream) => {
-            let status = upstream.status();
-            let mut builder = Response::builder().status(status);
-            for (name, value) in upstream.headers().iter() {
-                if matches!(name.as_str(), "transfer-encoding" | "connection" | "keep-alive") {
-                    continue;
+    if let Some(range) = request
+        .headers()
+        .get("range")
+        .and_then(|value| value.to_str().ok())
+    {
+        match media_cache::get_or_fetch_range(&app, &st, &path_and_query, range).await {
+            Ok(media) => {
+                let status =
+                    StatusCode::from_u16(media.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                let mut builder = Response::builder()
+                    .status(status)
+                    .header("content-length", media.bytes.len().to_string())
+                    .header("cache-control", "no-store");
+                if let Some(value) = media.content_type {
+                    builder = builder.header("content-type", value);
                 }
-                builder = builder.header(name.clone(), value.clone());
+                if let Some(value) = media.content_range {
+                    builder = builder.header("content-range", value);
+                }
+                if let Some(value) = media.accept_ranges {
+                    builder = builder.header("accept-ranges", value);
+                }
+                responder.respond(
+                    builder
+                        .body(Cow::Owned(media.bytes))
+                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
+                );
             }
-            let bytes = upstream.bytes().await.unwrap_or_default();
-            responder.respond(builder.body(Cow::Owned(bytes.to_vec())).unwrap_or_else(|_| empty(status)));
+            Err(error) => {
+                warn!("media range cache failed for {path_and_query}: {error}");
+                responder.respond(empty(StatusCode::BAD_GATEWAY));
+            }
+        }
+        return;
+    }
+    // Every non-Range object shares the complete-file cache with Save. Tauri's URI responder requires
+    // a complete body before responding anyway, so caching an unusual non-Range video request adds no
+    // first-frame delay versus passthrough and prevents a later duplicate download.
+    match media_cache::get_or_fetch(&app, &st, &path_and_query).await {
+        Ok(media) => {
+            let mut builder = Response::builder()
+                .status(StatusCode::OK)
+                .header("content-length", media.bytes.len().to_string())
+                // Rust owns the authoritative complete/sparse cache. Never keep an opaque second copy
+                // in Chromium; Range responses above carry the same directive.
+                .header("cache-control", "no-store");
+            if let Some(content_type) = media.content_type {
+                builder = builder.header("content-type", content_type);
+            }
+            responder.respond(
+                builder
+                    .body(Cow::Owned(media.bytes))
+                    .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
+            );
         }
         Err(e) => {
-            // Network-level failure on a media load — re-race select_origin (the bare <img> just shows a
-            // broken image; a subsequent load hits the new active origin). Non-network errors don't switch.
-            if is_network_failure(&e) {
-                runtime_switch(&st).await;
-            }
+            warn!("media cache fetch failed for {path_and_query}: {e}");
             responder.respond(empty(StatusCode::BAD_GATEWAY));
         }
     }
@@ -2219,6 +2253,52 @@ fn clear_session_token(state: tauri::State<'_, ProxyState>) {
     if let Ok(mut g) = state.token.lock() {
         *g = None;
     }
+}
+
+/// End the currently attached native session without tying UI progress to the old backend.
+///
+/// The token is TAKEN from the global proxy state before this command returns, so requests aimed at a
+/// subsequently configured server can never inherit it. The remote revoke owns the captured token + origin
+/// and runs in the background; it cannot later clear or redirect a newer session. Desktop keyring deletion
+/// is performed synchronously before spawning so a fast account/server switch cannot race a stale delete.
+#[tauri::command]
+fn begin_logout(origin: String, state: tauri::State<'_, ProxyState>) -> Result<(), String> {
+    let token = state.token.lock().ok().and_then(|mut token| token.take());
+
+    #[cfg(desktop)]
+    secure_storage::secure_clear_token()?;
+
+    // The frontend snapshots the old configured origin before navigating. Never re-read the mutable active
+    // origin here: a delayed IPC dispatch after reconfiguration must not send the old token to the new host.
+    // An empty/invalid origin can occur only in a drifted/first-run shell; local logout still succeeds.
+    let Some(origin) = validate_origin(&origin) else {
+        return Ok(());
+    };
+    let client = state.api_client(&origin);
+
+    if let Some(token) = token {
+        tauri::async_runtime::spawn(async move {
+            let target = format!("{origin}/api/v1/auth/logout");
+            let request = client
+                .post(&target)
+                .header("authorization", format!("Bearer {token}"))
+                .json(&serde_json::json!({}));
+            match send_with_headers_deadline(request, API_HEADERS_TIMEOUT).await {
+                Ok(response) if response.status().is_success() => {}
+                Ok(response) => warn!(
+                    "background logout {target} returned HTTP {}",
+                    response.status()
+                ),
+                Err(HeadersError::SendFailed(error)) => {
+                    warn!("background logout {target} failed: {error}")
+                }
+                Err(HeadersError::Timeout) => {
+                    warn!("background logout {target} timed out")
+                }
+            }
+        });
+    }
+    Ok(())
 }
 
 // --- desktop SSE supervisor (Rust-owned /events stream) ------------------------------------

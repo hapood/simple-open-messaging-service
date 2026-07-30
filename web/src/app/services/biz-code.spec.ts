@@ -41,6 +41,12 @@ describe('translateBizResult', () => {
     expect(translateBizResult(res(BusinessCode.THREAD_NOT_APPROVED), transloco)).toBe('errors.biz.threadNotApproved');
   });
 
+  it('localizes a stale row after its federated friend request was withdrawn', () => {
+    expect(translateBizResult(res(BusinessCode.INVITE_ALREADY_HANDLED), transloco)).toBe(
+      'errors.biz.inviteAlreadyHandled',
+    );
+  });
+
   it('maps the generic codes (VALIDATION / UNAUTHENTICATED / FORBIDDEN / RATE_LIMITED / INTERNAL)', () => {
     expect(translateBizResult(res(BusinessCode.VALIDATION_FAILED), transloco)).toBe('errors.biz.validation');
     expect(translateBizResult(res(BusinessCode.UNAUTHENTICATED), transloco)).toBe('errors.biz.unauthenticated');

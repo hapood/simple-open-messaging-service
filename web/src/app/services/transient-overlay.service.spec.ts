@@ -12,6 +12,7 @@ class TestOverlayComponent {}
 class TestOverlayService extends TransientOverlayService<Record<string, never>> {
   protected readonly kind = 'gallery' as const;
   protected readonly component = TestOverlayComponent;
+  protected readonly presentation = 'viewer' as const;
 
   constructor() {
     super();
@@ -26,6 +27,7 @@ describe('TransientOverlayService accessibility lifecycle', () => {
   const paneStack = signal<readonly PaneEntry[]>([]);
   const keydowns = new Subject<KeyboardEvent>();
   const detachments = new Subject<void>();
+  const backdropClicks = new Subject<MouseEvent>();
   const overlayElement = document.createElement('div');
   const focusInitialElementWhenReady = jasmine.createSpy().and.resolveTo(true);
   const destroyFocusTrap = jasmine.createSpy();
@@ -57,6 +59,7 @@ describe('TransientOverlayService accessibility lifecycle', () => {
     }),
     detachments: () => detachments,
     keydownEvents: () => keydowns,
+    backdropClick: () => backdropClicks,
     dispose: disposeOverlay,
   };
 
@@ -109,5 +112,16 @@ describe('TransientOverlayService accessibility lifecycle', () => {
     expect(destroyFocusTrap).toHaveBeenCalled();
     expect(document.activeElement).toBe(trigger);
     trigger.remove();
+  });
+
+  it('records the shared presentation policy on the pane entry', () => {
+    const service = TestBed.runInInjectionContext(() => new TestOverlayService());
+
+    service.open();
+
+    expect(paneStack()[0]).toEqual(jasmine.objectContaining({
+      kind: 'gallery',
+      presentation: 'viewer',
+    }));
   });
 });

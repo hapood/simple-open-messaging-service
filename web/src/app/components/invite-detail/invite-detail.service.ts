@@ -14,6 +14,7 @@ import { InviteDetailComponent } from './invite-detail.component';
 export class InviteDetailService extends TransientOverlayService<{ raw: string }> {
   protected readonly kind = 'invite-detail';
   protected readonly component = InviteDetailComponent;
+  protected readonly presentation = 'modal';
 
   /** Show the detail view for an invite message whose raw JSON body is `raw`. */
   open(raw: string): void {

@@ -1,5 +1,4 @@
-<div class="ivd-backdrop" (click)="onClose()">
-  <div class="ivd-frame" #frame>
+<div class="ivd-frame" #frame>
     <div class="ivd-card" role="dialog" aria-modal="true" (click)="$event.stopPropagation()">
       <button mat-icon-button class="ivd-close" (click)="onClose()" [attr.aria-label]="'common.close' | transloco">
         <span class="ivd-x" aria-hidden="true">×</span>
@@ -52,5 +51,4 @@
         }
       </div>
     </div>
-  </div>
 </div>

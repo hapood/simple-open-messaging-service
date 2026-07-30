@@ -13,6 +13,7 @@ import type { ChatMsgData } from '../message-cards/chat-item';
 export class FileDetailService extends TransientOverlayService<{ data: ChatMsgData; threadId: number }> {
   protected readonly kind = 'file-detail';
   protected readonly component = FileDetailViewerComponent;
+  protected readonly presentation = 'modal';
 
   /** Open the detail overlay for a FILE message (scoped to `threadId` so the backend retry can be called).
    *  No-op if the message has no file attachment. */

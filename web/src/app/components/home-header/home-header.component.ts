@@ -78,7 +78,11 @@ export class HomeHeaderComponent {
   ])
 
   openProfile() { this.routeService.openProfile() }
-  openFriendRequests() { this.routeService.popupDlg(PopupType.FRIEND_REQUESTS) }
+  openFriendRequests() {
+    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS, {
+      initialTab: this.friendReqBadge() ? 'pending' : 'add',
+    })
+  }
   toggleMoreMenu() { this.moreMenuOpen.update((open) => !open) }
   closeMoreMenu() { this.moreMenuOpen.set(false) }
 

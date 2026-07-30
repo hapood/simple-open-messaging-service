@@ -2,11 +2,8 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { ShellUpdateService } from '../../services/shell-update.service';
 import { LanguageService } from '../../services/language.service';
-import { apiOrigin, isAndroid, isTauri, tauriInvoke } from '../../services/runtime';
-import { flushConsoleBuffer } from '../../services/log-buffer';
-import { appVersion } from '../../version';
+import { DiagnosticsReportService } from '../../services/diagnostics-report.service';
 
 type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
 
@@ -30,12 +27,19 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
       <div class="settings-card">
         <mat-list>
           <mat-list-item>
-            <span matListItemTitle>{{ 'settings.diagnostics' | transloco }}</span>
+            <span matListItemTitle>{{
+              'settings.diagnostics' | transloco
+            }}</span>
             <span matListItemLine class="hint">{{ lineHint() }}</span>
             <div matListItemMeta class="row-actions">
               @switch (state()) {
                 @case ('idle') {
-                  <button mat-button type="button" class="check-btn" (click)="begin()">
+                  <button
+                    mat-button
+                    type="button"
+                    class="check-btn"
+                    (click)="begin()"
+                  >
                     {{ 'settings.diagnosticsReport' | transloco }}
                   </button>
                 }
@@ -43,7 +47,12 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
                   <button mat-button type="button" (click)="cancel()">
                     {{ 'settings.diagnosticsCancel' | transloco }}
                   </button>
-                  <button mat-button type="button" class="check-btn" (click)="send()">
+                  <button
+                    mat-button
+                    type="button"
+                    class="check-btn"
+                    (click)="send()"
+                  >
                     {{ 'settings.diagnosticsSend' | transloco }}
                   </button>
                 }
@@ -53,10 +62,17 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
                   </button>
                 }
                 @case ('done') {
-                  <span class="status-pill active">{{ 'settings.diagnosticsDone' | transloco }}</span>
+                  <span class="status-pill active">{{
+                    'settings.diagnosticsDone' | transloco
+                  }}</span>
                 }
                 @case ('failed') {
-                  <button mat-button type="button" class="check-btn" (click)="begin()">
+                  <button
+                    mat-button
+                    type="button"
+                    class="check-btn"
+                    (click)="begin()"
+                  >
                     {{ 'settings.diagnosticsRetry' | transloco }}
                   </button>
                 }
@@ -72,7 +88,7 @@ type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
 export class SettingsDiagnosticsComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-  private readonly shellUpdate = inject(ShellUpdateService);
+  private readonly reports = inject(DiagnosticsReportService);
 
   readonly state = signal<ReportState>('idle');
   /** The backend report id once a report has been delivered (shown in the "done" hint). */
@@ -109,20 +125,8 @@ export class SettingsDiagnosticsComponent {
   async send(): Promise<void> {
     if (this.state() === 'sending') return;
     this.state.set('sending');
-    const manifest = {
-      app: appVersion,
-      web: this.shellUpdate.updateStatus()?.installedWebVersion ?? appVersion,
-      shell: this.shellUpdate.updateStatus()?.shellVersion ?? '',
-      server: this.shellUpdate.updateStatus()?.serverVersion ?? '',
-      platform: isTauri() ? (isAndroid() ? 'android' : 'desktop') : 'web',
-      origin: apiOrigin(),
-      at: new Date().toISOString(),
-    };
     try {
-      // Force every captured JS console line to the durable file BEFORE the build, so the bundle (which
-      // Rust assembles from that file, not from a string here) carries everything up to the click.
-      await flushConsoleBuffer();
-      const id = await tauriInvoke<number>('report_diagnostics', { manifest });
+      const id = await this.reports.upload();
       this.reportId.set(id);
       this.state.set('done');
     } catch {

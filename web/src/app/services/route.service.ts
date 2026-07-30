@@ -9,9 +9,15 @@ import { EditProfileComponent } from '../components/edit-profile/edit-profile.co
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
 import { ShellIncompatibleDialogComponent } from '../components/shell-incompatible-dialog/shell-incompatible-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
+import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/friend-invite-dialog.component';
+import type { User } from './user.service';
 import type { SettingsCategoryId } from '../components/settings/settings-categories';
 import { AppIconType } from '../components/icon/model';
-import { NavStateMachineService } from './nav-state.service';
+import {
+  DialogDesktopSize,
+  DialogPresentation,
+  NavStateMachineService,
+} from './nav-state.service';
 import { LayoutService } from './layout.service';
 
 export enum RoutePage {
@@ -24,10 +30,11 @@ export enum RoutePage {
  * the {@link DlgRef} handle). `dlgList` is a computed view of the dialog entries that RootPopup renders.
  * The auth-page `navigate`/`redirect` helpers stay (those are page-level router routes, not app-nav).
  */
-export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, AVATAR_EDITOR, CONFIRM, SHELL_INCOMPATIBLE }
+export enum PopupType { FRIEND_REQUESTS, FRIEND_INVITE, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, AVATAR_EDITOR, CONFIRM, SHELL_INCOMPATIBLE }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
+  [PopupType.FRIEND_INVITE]: FriendInviteDialogComponent,
   [PopupType.NEW_GROUP]: NewGroupComponent,
   [PopupType.FOLDER_EDITOR]: FolderEditorComponent,
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
@@ -36,9 +43,21 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.SHELL_INCOMPATIBLE]: ShellIncompatibleDialogComponent,
 }
 
+const presentationDict: Record<PopupType, DialogPresentation> = {
+  [PopupType.FRIEND_REQUESTS]: 'page',
+  [PopupType.FRIEND_INVITE]: 'page',
+  [PopupType.NEW_GROUP]: 'page',
+  [PopupType.FOLDER_EDITOR]: 'page',
+  [PopupType.EDIT_PROFILE]: 'page',
+  [PopupType.AVATAR_EDITOR]: 'viewer',
+  [PopupType.CONFIRM]: 'modal',
+  [PopupType.SHELL_INCOMPATIBLE]: 'modal',
+};
+
 // per-popup input contracts — what each dialog's input() fields accept
 export interface PopupInput {
-  [PopupType.FRIEND_REQUESTS]: { subject?: Subject<any> }
+  [PopupType.FRIEND_REQUESTS]: { subject?: Subject<any>, initialTab?: 'add' | 'pending' }
+  [PopupType.FRIEND_INVITE]: { user: User }
   [PopupType.NEW_GROUP]: undefined
   [PopupType.FOLDER_EDITOR]: { folderId?: string }
   [PopupType.EDIT_PROFILE]: undefined
@@ -60,6 +79,10 @@ export interface PopupInput {
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
 export interface PopupResult {
   [PopupType.FRIEND_REQUESTS]: undefined
+  [PopupType.FRIEND_INVITE]: {
+    userId: number
+    status: 'OUTGOING_PENDING' | 'FRIEND'
+  } | undefined
   [PopupType.NEW_GROUP]: { groupId: number }
   [PopupType.FOLDER_EDITOR]: boolean
   [PopupType.EDIT_PROFILE]: boolean
@@ -72,10 +95,11 @@ export interface PopupResult {
 }
 
 export interface DlgInfo {
+  id: number
   component: Type<unknown>,
   inputs?: Record<string, unknown>
-  /** Render the desktop centered card wider than 480px (two-column Settings dialog). */
-  wide?: boolean
+  presentation: DialogPresentation
+  desktopSize: DialogDesktopSize
 }
 
 /**
@@ -101,9 +125,11 @@ export class RouteService {
    *  from the nav state machine's dialog pane entries. */
   readonly dlgList = computed<DlgInfo[]>(() =>
     this.nav.dialogs().map((p) => ({
+      id: p.id,
       component: p.component as Type<unknown>,
       inputs: p.inputs,
-      wide: p.wide,
+      presentation: p.presentation ?? 'page',
+      desktopSize: p.desktopSize ?? 'standard',
     })),
   );
 
@@ -182,6 +208,8 @@ export class RouteService {
       component: componentDict[popupType],
       inputs: inputs as Record<string, unknown> | undefined,
       onResult: onResult as ((result: unknown) => void) | undefined,
+      presentation: presentationDict[popupType],
+      desktopSize: 'standard',
     })
     return { id }
   }
@@ -221,16 +249,17 @@ export class RouteService {
   /**
    * Open Settings as a wide two-column dialog — medium/expanded only. Compact switches to the inline
    * Settings section ({@link NavStateMachineService.setTopSection}); the mode branch lives in
-   * {@link openSettings}. Pushed as a `wide` dialog pane so RootPopup renders a wider centered card on
-   * desktop (the default 480px is too narrow for two columns). `initialCategoryId` selects the right-hand
-   * category on open (deep-link); omit it for the default (first visible) selection. Back / hardware-back
-   * peels it in one step (flat mode).
+   * {@link openSettings}. Pushed with the `page` policy and a wide desktop size, so RootPopup renders a
+   * wider centered card on desktop (the default 480px is too narrow for two columns).
+   * `initialCategoryId` selects the right-hand category on open (deep-link); omit it for the default
+   * (first visible) selection. Back / hardware-back peels it in one step (flat mode).
    */
   openSettingsDialog(initialCategoryId?: SettingsCategoryId): DlgRef {
     const id = this.nav.pushPane({
       kind: 'dialog',
       component: SettingsDialogComponent,
-      wide: true,
+      presentation: 'page',
+      desktopSize: 'wide',
       inputs: initialCategoryId ? { initialCategoryId } : undefined,
     });
     return { id };

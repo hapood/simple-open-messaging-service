@@ -59,6 +59,27 @@ export class ProfileEditorComponent {
     const p = this.sessionProfile()
     this.name.set(p?.name ?? '')
     this.bio.set(p?.bio ?? '')
+    let renderedName = p?.name ?? ''
+    let renderedBio = p?.bio ?? ''
+
+    // Both hosts create this component only when the self-profile surface opens. Send an ACK-only revision
+    // probe; when stale the server emits PROFILE_REV_UPDATED and the existing SSE path pulls the full
+    // profile through sessionProfile → ProfileRepository → IndexedDB/avatar notification.
+    if (p) this.userService.syncSelfProfile(p.profileRev)
+
+    // Apply the refreshed profile to fields that are still pristine. If the user starts typing before the
+    // request returns, preserve that draft instead of replacing it with the server response.
+    effect(() => {
+      const fresh = this.sessionProfile()
+      if (!fresh) return
+      const pristine = this.name() === renderedName && this.bio() === renderedBio
+      renderedName = fresh.name ?? ''
+      renderedBio = fresh.bio ?? ''
+      if (pristine) {
+        this.name.set(renderedName)
+        this.bio.set(renderedBio)
+      }
+    })
 
     // Name validation: non-empty (trimmed) and ≤30. Mirrors register.component.ts's effect-based validation.
     effect(() => {

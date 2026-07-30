@@ -154,6 +154,7 @@ Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP
 
 - **Body**: `{ inviteId }`.
 - `accept`: FRIEND → mints the `MessageThread(P2P)` + both `ThreadParticipant` rows; GROUP → adds the invitee to the group thread. `20010/20011/20013` not-found / expired / already-handled · `20012` not yours.
+- `revoke`: local invites are terminated directly; federated FRIEND invites synchronously call the peer's signed `/s2s/invite-revoke` first. If the peer is unreachable, the local invite remains pending so both servers stay consistent.
 
 ### POST `/invite/incoming` · `/invite/outgoing`
 

@@ -19,6 +19,8 @@ function flush(ms = 0): Promise<void> {
  *  the browser, absolute under Tauri). */
 const isMyProfile = (req: HttpRequest<unknown>): boolean =>
   req.method === 'POST' && req.url.endsWith('/user/my-profile');
+const isSyncSelfProfile = (req: HttpRequest<unknown>): boolean =>
+  req.method === 'POST' && req.url.endsWith('/user/sync-self-profile');
 
 /** A minimal my-profile response body; `over` overrides fields under test. */
 const profile = (over: Partial<User>): { code: number; data: User } => ({
@@ -104,6 +106,13 @@ describe('UserService profile refresh', () => {
     svc.ensureProfile().subscribe((u) => (emitted = u));
     expect(emitted?.name).toBe('A'); // served from cache, not the network
     httpMock.expectNone(isMyProfile);
+  });
+
+  it('syncSelfProfile sends the cached revision and treats the response as ACK-only', () => {
+    svc.syncSelfProfile(7);
+    const req = httpMock.expectOne(isSyncSelfProfile);
+    expect(req.request.body).toEqual({ sinceProfileRev: 7 });
+    req.flush({ code: 0 });
   });
 
   // Regression guard for the account-switch bug: clearSession() (logout) must wipe the user-scoped
@@ -237,12 +246,23 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(localStorage.getItem('soms.lastUserId')).toBeNull(); // cleared with the user-scoped keys
   });
 
-  it('restoreWebdb opens the DB on the persisted lastUserId (the pre-HELLO eager-paint path)', async () => {
+  it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
     localStorage.setItem('soms.lastUserId', '7');
+    const cached = profile({ id: 7, name: 'Cached Alice', avatar: '/cached.webp' }).data;
+    webdb.getMeta.and.resolveTo(cached);
     await svc.restoreWebdb();
     expect(webdb.openForUser).toHaveBeenCalledWith('7');
+    expect(webdb.getMeta).toHaveBeenCalledWith('selfProfile');
+    expect(svc.sessionProfile()).toEqual(cached);
     // sessionUserId is NOT set by restoreWebdb — it stays HELLO-driven (establishSession owns it on HELLO).
     expect(svc.sessionUserId()).toBeNull();
+  });
+
+  it('restoreWebdb ignores a self profile belonging to a different IDB partition owner', async () => {
+    localStorage.setItem('soms.lastUserId', '7');
+    webdb.getMeta.and.resolveTo(profile({ id: 8 }).data);
+    await svc.restoreWebdb();
+    expect(svc.sessionProfile()).toBeUndefined();
   });
 
   it('restoreWebdb is a no-op when no userId was persisted (first-ever launch)', async () => {

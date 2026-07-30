@@ -30,6 +30,10 @@ export const BusinessCode = {
   INTERNAL: 10999,
   FRIEND_SELF: 20001,
   FRIEND_NOT_FOUND: 20002,
+  INVITE_NOT_FOUND: 20010,
+  INVITE_EXPIRED: 20011,
+  INVITE_NOT_YOURS: 20012,
+  INVITE_ALREADY_HANDLED: 20013,
   MESSAGE_EMPTY: 30001,
   THREAD_NOT_APPROVED: 30002,
   THREAD_NOT_FOUND: 30003,
@@ -38,6 +42,7 @@ export const BusinessCode = {
   GROUP_OWNER_MUST_TRANSFER: 40004,
   GROUP_FORBIDDEN: 40005,
   GROUP_TARGET_NOT_MEMBER: 40006,
+  FEDERATION_DELIVERY_FAILED: 50008,
   FEDERATION_QUOTA_EXCEEDED: 50011,
 } as const;
 
@@ -70,6 +75,10 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.INTERNAL]: 'errors.biz.internal',
   [BusinessCode.FRIEND_SELF]: 'friend.error.canNotAddSelf',
   [BusinessCode.FRIEND_NOT_FOUND]: 'errors.biz.notFriends',
+  [BusinessCode.INVITE_NOT_FOUND]: 'errors.biz.inviteNotFound',
+  [BusinessCode.INVITE_EXPIRED]: 'errors.biz.inviteExpired',
+  [BusinessCode.INVITE_NOT_YOURS]: 'errors.biz.inviteNotYours',
+  [BusinessCode.INVITE_ALREADY_HANDLED]: 'errors.biz.inviteAlreadyHandled',
   [BusinessCode.MESSAGE_EMPTY]: 'errors.biz.messageEmpty',
   [BusinessCode.THREAD_NOT_APPROVED]: 'errors.biz.threadNotApproved',
   [BusinessCode.THREAD_NOT_FOUND]: 'errors.biz.threadNotFound',
@@ -78,6 +87,7 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.GROUP_OWNER_MUST_TRANSFER]: 'group.leaveOwnerNote',
   [BusinessCode.GROUP_FORBIDDEN]: 'errors.biz.groupForbidden',
   [BusinessCode.GROUP_TARGET_NOT_MEMBER]: 'errors.biz.groupTargetNotMember',
+  [BusinessCode.FEDERATION_DELIVERY_FAILED]: 'errors.biz.federationDeliveryFailed',
   [BusinessCode.FEDERATION_QUOTA_EXCEEDED]: 'errors.biz.federationQuotaExceeded',
 };
 

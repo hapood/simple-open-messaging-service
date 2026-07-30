@@ -10,7 +10,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
  * cannot self-update its binary (Tauri can't replace its own APK/desktop binary), so the only remedy is a
  * newer build from the administrator — hence a single "acknowledge" button, not a confirm/cancel pair.
  * Opened via {@link PopupType.SHELL_INCOMPATIBLE} on the shared root popup layer, so it inherits the
- * backdrop, the centered desktop card / full-screen mobile sheet, the enter/leave motion, the
+ * backdrop, the centered responsive modal card, the enter/leave motion, the
  * system-back-to-dismiss contract, and the z-1000 modal tier — all without per-call wiring.
  *
  * Heights follow the project integer-pixel rule (integer line-heights + paddings) so the dialog card's
@@ -36,8 +36,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
   `,
   styles: [`
     .dialog {
-      /* Center the content both inside the desktop card (auto height, screen-centered by the wrapper's
-         translate) and the full-screen mobile sheet (100% height → vertical centering kicks in). */
+      /* Center content inside the responsive modal card. */
       display: flex;
       flex-direction: column;
       align-items: center;

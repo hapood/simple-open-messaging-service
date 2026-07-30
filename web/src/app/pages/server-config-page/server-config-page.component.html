@@ -88,8 +88,17 @@
 <!-- Auto-fill confirmation modal: shown when /shell/compat supplied the field the user didn't enter. The
   field already displays the filled value; the user confirms before it's trusted as a connection target. -->
 @if (autoFill()) {
-  <div class="cfg-modal-scrim" role="dialog" aria-modal="true">
-    <div class="cfg-modal">
+  <app-material-dialog [isShow]="true">
+    <div class="cfg-modal-frame">
+    <div
+      class="cfg-modal"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      cdkFocusInitial
+      cdkTrapFocus
+      [cdkTrapFocusAutoCapture]="true"
+    >
       <h2 class="cfg-modal__title">{{ 'serverConfig.secondDetectedTitle' | transloco }}</h2>
       <p class="cfg-modal__body">{{ 'serverConfig.secondDetectedBody' | transloco }}</p>
       <dl class="cfg-modal__addresses">
@@ -111,6 +120,7 @@
         </button>
       </div>
     </div>
-  </div>
+    </div>
+  </app-material-dialog>
 }
 </div>
