@@ -1,0 +1,70 @@
+import { describe, expect, it, vi } from 'vitest';
+import { ThreadParticipantService } from './thread-participant.service.js';
+
+describe('ThreadParticipantService.endP2P transaction boundary', () => {
+  it('writes relationship, clear boundary and both revisions before publishing SSE', async () => {
+    const tx = {
+      threadParticipant: {
+        updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+    };
+    let committed = false;
+    const prisma = {
+      $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => {
+        const result = await fn(tx);
+        committed = true;
+        return result;
+      }),
+    };
+    const revisions = {
+      isThreadHiddenInTx: vi.fn().mockResolvedValue(false),
+      recordThreadDeleteInTx: vi.fn().mockResolvedValue(11),
+      recordThreadAddInTx: vi.fn().mockResolvedValue(7),
+      notifyThreadRevision: vi.fn(() => expect(committed).toBe(true)),
+    };
+    const service = new ThreadParticipantService(
+      prisma as never,
+      revisions as never,
+    );
+
+    await expect(service.endP2P(10, 1, true, 2)).resolves.toEqual({
+      transitioned: true,
+    });
+    expect(tx.threadParticipant.update).toHaveBeenCalledWith({
+      where: { userId_threadId: { userId: 1, threadId: 10 } },
+      data: { clearedAt: expect.any(Date), pinned: false, pinnedAt: null },
+    });
+    expect(revisions.recordThreadDeleteInTx).toHaveBeenCalledWith(tx, 1, 10);
+    expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
+    expect(revisions.notifyThreadRevision).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes no SSE if either revision write aborts the transaction', async () => {
+    const tx = {
+      threadParticipant: {
+        updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+        update: vi.fn(),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+    };
+    const rollback = new Error('peer revision failed');
+    const revisions = {
+      isThreadHiddenInTx: vi.fn().mockResolvedValue(false),
+      recordThreadAddInTx: vi
+        .fn()
+        .mockResolvedValueOnce(11)
+        .mockRejectedValueOnce(rollback),
+      notifyThreadRevision: vi.fn(),
+    };
+    const service = new ThreadParticipantService(
+      prisma as never,
+      revisions as never,
+    );
+
+    await expect(service.endP2P(10, 1, false, 2)).rejects.toBe(rollback);
+    expect(revisions.notifyThreadRevision).not.toHaveBeenCalled();
+  });
+});

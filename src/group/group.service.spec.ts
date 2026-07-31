@@ -59,9 +59,9 @@ describe('GroupService membership lifecycle', () => {
     };
     const service = new GroupService(prisma as never, revisions as never);
 
-    await expect(
-      service.dissolveGroup({ threadId: 10 }),
-    ).resolves.toEqual({ transitioned: true });
+    await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
+      transitioned: true,
+    });
     expect(tx.group.updateMany).toHaveBeenCalledWith({
       where: { groupUserId: 99, dissolvedAt: null },
       data: { dissolvedAt: expect.any(Date), rosterRev: { increment: 1 } },
@@ -92,9 +92,9 @@ describe('GroupService membership lifecycle', () => {
     };
     const service = new GroupService(prisma as never, {} as never);
 
-    await expect(
-      service.dissolveGroup({ threadId: 10 }),
-    ).resolves.toEqual({ transitioned: false });
+    await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
+      transitioned: false,
+    });
     expect(tx.group.updateMany).toHaveBeenCalledWith({
       where: { groupUserId: 99, dissolvedAt: null },
       data: { dissolvedAt: expect.any(Date), rosterRev: { increment: 1 } },
@@ -108,9 +108,15 @@ describe('GroupService membership lifecycle', () => {
       role: GroupRole.MEMBER,
       leftAt: null as Date | null,
     };
-    const prisma = {
+    const tx = {
       threadParticipant: {
-        findUnique: vi.fn().mockImplementation(async () => ({ ...target })),
+        findUnique: vi
+          .fn()
+          .mockImplementation(async (args) =>
+            args.where.userId_threadId.userId === 1
+              ? { id: 7, role: GroupRole.OWNER, leftAt: null }
+              : { ...target },
+          ),
         updateMany: vi.fn().mockResolvedValueOnce({ count: 1 }),
       },
       messageThread: {
@@ -118,29 +124,75 @@ describe('GroupService membership lifecycle', () => {
       },
       group: { update: vi.fn().mockResolvedValue({}) },
     };
+    const prisma = {
+      $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+    };
     const revisions = {
-      isThreadHidden: vi.fn().mockResolvedValue(false),
-      recordThreadAdd: vi.fn().mockResolvedValue(undefined),
+      isThreadHiddenInTx: vi.fn().mockResolvedValue(false),
+      recordThreadAddInTx: vi.fn().mockResolvedValue(5),
+      notifyThreadRevision: vi.fn(),
     };
     const service = new GroupService(prisma as never, revisions as never);
 
     await expect(
       service.kickMember({
         threadId: 10,
-        operatorRole: GroupRole.OWNER,
+        operatorUserId: 1,
         targetUserId: 2,
       }),
     ).resolves.toEqual({ transitioned: true });
-    expect(revisions.recordThreadAdd).toHaveBeenCalledWith(2, 10);
+    expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
+    expect(revisions.notifyThreadRevision).toHaveBeenCalledWith({
+      userId: 2,
+      revision: 5,
+    });
 
     target.leftAt = new Date();
     await expect(
       service.kickMember({
         threadId: 10,
-        operatorRole: GroupRole.OWNER,
+        operatorUserId: 1,
         targetUserId: 2,
       }),
     ).resolves.toEqual({ transitioned: false });
-    expect(prisma.threadParticipant.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.threadParticipant.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish SSE when a kick transaction rejects after writing its revision', async () => {
+    const tx = {
+      threadParticipant: {
+        findUnique: vi
+          .fn()
+          .mockImplementation(async (args) =>
+            args.where.userId_threadId.userId === 1
+              ? { id: 7, role: GroupRole.OWNER, leftAt: null }
+              : { id: 8, role: GroupRole.MEMBER, leftAt: null },
+          ),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      messageThread: {
+        findUnique: vi.fn().mockResolvedValue({ groupUserId: 99 }),
+      },
+      group: { update: vi.fn().mockResolvedValue({}) },
+    };
+    const rollback = new Error('revision write failed');
+    const prisma = {
+      $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+    };
+    const revisions = {
+      isThreadHiddenInTx: vi.fn().mockResolvedValue(false),
+      recordThreadAddInTx: vi.fn().mockRejectedValue(rollback),
+      notifyThreadRevision: vi.fn(),
+    };
+    const service = new GroupService(prisma as never, revisions as never);
+
+    await expect(
+      service.kickMember({
+        threadId: 10,
+        operatorUserId: 1,
+        targetUserId: 2,
+      }),
+    ).rejects.toBe(rollback);
+    expect(revisions.notifyThreadRevision).not.toHaveBeenCalled();
   });
 });

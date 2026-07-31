@@ -68,6 +68,23 @@ describe('RootPopupComponent presentation policy', () => {
     expect((component as any).instantBackdropHide()).toBeFalse();
   });
 
+  it('clears browser text selection when the top dialog changes', () => {
+    const removeAllRanges = jasmine.createSpy('removeAllRanges');
+    spyOn(document, 'getSelection').and.returnValue({ removeAllRanges } as unknown as Selection);
+
+    dialogs.set([info('page')]);
+    TestBed.inject(ApplicationRef).tick();
+    expect(removeAllRanges).not.toHaveBeenCalled();
+
+    dialogs.set([{ ...info('page'), id: 2 }]);
+    TestBed.inject(ApplicationRef).tick();
+    expect(removeAllRanges).toHaveBeenCalledTimes(1);
+
+    dialogs.set([]);
+    TestBed.inject(ApplicationRef).tick();
+    expect(removeAllRanges).toHaveBeenCalledTimes(2);
+  });
+
   it('routes Escape through the nav stack only when a dialog is topmost', () => {
     const event = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
     nav.paneStack.set([{ kind: 'dialog' }]);

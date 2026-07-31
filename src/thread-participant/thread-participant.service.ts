@@ -5,6 +5,10 @@ import {
   MessageThreadType,
   Prisma,
 } from '../prisma/generated/client.js';
+import {
+  PendingThreadRevision,
+  ThreadRevisionService,
+} from '../thread-revision/thread-revision.service.js';
 
 /**
  * ThreadParticipant data layer.
@@ -18,7 +22,10 @@ import {
  */
 @Injectable()
 export class ThreadParticipantService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly threadRevisionService: ThreadRevisionService,
+  ) {}
 
   /** The caller's participant row, regardless of leftAt. */
   findParticipant(userId: number, threadId: number) {
@@ -243,21 +250,71 @@ export class ThreadParticipantService {
     threadId: number,
     callerUserId: number,
     deleteData: boolean,
+    localPeerUserId?: number,
   ): Promise<{ transitioned: boolean }> {
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const callerHidden = await this.threadRevisionService.isThreadHiddenInTx(
+        tx,
+        callerUserId,
+        threadId,
+      );
+      const peerHidden =
+        localPeerUserId === undefined
+          ? true
+          : await this.threadRevisionService.isThreadHiddenInTx(
+              tx,
+              localPeerUserId,
+              threadId,
+            );
       const ended = await tx.threadParticipant.updateMany({
         where: { threadId, leftAt: null },
         data: { leftAt: now },
       });
-      if (deleteData) {
+      const shouldDelete = deleteData && !callerHidden;
+      if (shouldDelete) {
         await tx.threadParticipant.update({
           where: { userId_threadId: { userId: callerUserId, threadId } },
           data: { clearedAt: now, pinned: false, pinnedAt: null },
         });
       }
-      return { transitioned: ended.count > 0 };
+      const transitioned = ended.count > 0;
+      const revisions: PendingThreadRevision[] = [];
+      if (shouldDelete) {
+        revisions.push({
+          userId: callerUserId,
+          revision: await this.threadRevisionService.recordThreadDeleteInTx(
+            tx,
+            callerUserId,
+            threadId,
+          ),
+        });
+      } else if (transitioned && !callerHidden) {
+        revisions.push({
+          userId: callerUserId,
+          revision: await this.threadRevisionService.recordThreadAddInTx(
+            tx,
+            callerUserId,
+            threadId,
+          ),
+        });
+      }
+      if (transitioned && localPeerUserId !== undefined && !peerHidden) {
+        revisions.push({
+          userId: localPeerUserId,
+          revision: await this.threadRevisionService.recordThreadAddInTx(
+            tx,
+            localPeerUserId,
+            threadId,
+          ),
+        });
+      }
+      return { transitioned, revisions };
     });
+    result.revisions.forEach((revision) =>
+      this.threadRevisionService.notifyThreadRevision(revision),
+    );
+    return { transitioned: result.transitioned };
   }
 
   // ─── raw roster mutators (federation inbound) ─────────────────────────────────

@@ -147,6 +147,9 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     content: HTMLElement,
     bundle: ForwardWireBundle,
   ): void {
+    // Nested forwarded records swap content inside the same routed dialog, so RootPopup sees no dialog
+    // change. Release document-owned text selection here as well before replacing the selected nodes.
+    document.getSelection()?.removeAllRanges();
     this.scroller?.destroy();
     content.replaceChildren();
     const source = new ForwardSnapshotSource(this.toItems(bundle));

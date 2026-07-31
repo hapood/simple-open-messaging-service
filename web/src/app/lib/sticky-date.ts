@@ -25,7 +25,9 @@ export interface StickyDateInterval {
  * shadow. Keep this collision band in sync with `sticky-date-overlay.component.scss`.
  */
 export const STICKY_DATE_COLLISION_TOP_PX = 6;
-export const STICKY_DATE_COLLISION_BOTTOM_PX = 32;
+export const STICKY_DATE_COLLISION_BOTTOM_PX = 25;
+/** The inline-to-floating handoff happens exactly where the floating pill starts. */
+export const STICKY_DATE_PICK_FUZZ_PX = STICKY_DATE_COLLISION_TOP_PX;
 
 /**
  * Whether the unread divider intersects the floating date pill's vertical band.

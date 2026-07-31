@@ -297,9 +297,7 @@ export class UserController {
       if (p.thread.type === 'P2P') {
         item.friendshipActive =
           p.leftAt === null && peerActiveByThread.get(p.threadId) === true;
-        item.conversationState = item.friendshipActive
-          ? 'ACTIVE'
-          : 'READ_ONLY';
+        item.conversationState = item.friendshipActive ? 'ACTIVE' : 'READ_ONLY';
         const peerId = peerByThread.get(p.threadId);
         if (peerId !== undefined) {
           item.peerUser = userDict[peerId];
@@ -407,36 +405,23 @@ export class UserController {
     );
     const threadId =
       activeThreadId ??
-      (await this.participantService.findLatestP2PThreadBetween(me, dto.userId));
+      (await this.participantService.findLatestP2PThreadBetween(
+        me,
+        dto.userId,
+      ));
     if (threadId === null) {
       throw new BusinessException(
         BusinessCode.FRIEND_NOT_FOUND,
         `not friends with [${dto.userId}]`,
       );
     }
-    const wasHidden = await this.threadRevisionService.isThreadHidden(
-      me,
-      threadId,
-    );
-    const peerWasHidden = !peer?.isForeigner
-      ? await this.threadRevisionService.isThreadHidden(dto.userId, threadId)
-      : false;
-    const shouldDelete = (dto.deleteData ?? false) && !wasHidden;
     // End the friendship but retain both participant rows + the thread as a readable history item.
-    const { transitioned } = await this.participantService.endP2P(
+    await this.participantService.endP2P(
       threadId,
       me,
-      shouldDelete,
+      dto.deleteData ?? false,
+      peer?.isForeigner ? undefined : dto.userId,
     );
-    // Reuse the existing thread revision stream to make other devices re-hydrate this same row with
-    // friendshipActive=false. It is deliberately ADD (upsert), not DELETE: history stays in the list.
-    if (shouldDelete)
-      await this.threadRevisionService.recordThreadDelete(me, threadId);
-    else if (transitioned && !wasHidden)
-      await this.threadRevisionService.recordThreadAdd(me, threadId);
-    if (transitioned && !peer?.isForeigner && !peerWasHidden) {
-      await this.threadRevisionService.recordThreadAdd(dto.userId, threadId);
-    }
     return envelope(undefined, { message: 'friend removed' });
   }
 

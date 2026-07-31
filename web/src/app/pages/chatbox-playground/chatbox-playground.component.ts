@@ -26,6 +26,9 @@ import {
   pickStickyDateLabel,
   stickyDateRowOpacity,
   isViewportTransformEnd,
+  STICKY_DATE_COLLISION_BOTTOM_PX,
+  STICKY_DATE_COLLISION_TOP_PX,
+  STICKY_DATE_PICK_FUZZ_PX,
 } from '../../lib/sticky-date';
 import { ActivatedRoute } from '@angular/router';
 import { LayoutService } from '../../services/layout.service';
@@ -584,9 +587,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     // calc(var(--sd-top) + 6px), so it sits ~6px below this visible top. The inline date pill fades out
     // exactly as it passes behind the float: lo = fully transparent, hi = fade start. The overlay's +6px gap
     // is baked into both offsets; move them together or a gap opens between the two pills.
-    const STICKY_DATE_FADE_PX = { lo: 20, hi: 66 };
-    const fadeLo = visibleTop + STICKY_DATE_FADE_PX.lo;
-    const fadeHi = visibleTop + STICKY_DATE_FADE_PX.hi;
+    const fadeLo = visibleTop + STICKY_DATE_COLLISION_TOP_PX;
+    const fadeHi = visibleTop + STICKY_DATE_COLLISION_BOTTOM_PX;
     const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
       (d) => ({
         d,
@@ -594,7 +596,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
         label: d.textContent?.trim() ?? null,
       }),
     );
-    let current = pickStickyDateLabel(rows, visibleTop, STICKY_DATE_FADE_PX.lo);
+    let current = pickStickyDateLabel(
+      rows,
+      visibleTop,
+      STICKY_DATE_PICK_FUZZ_PX,
+    );
     // When the top ghost loading spinner (.cb-ghost-loading, centered) is visible it overlaps the centered date overlay →
     // hide the overlay while the spinner sits at the visible top (its bottom crosses it); it restores
     // naturally once the spinner is gone (the inline date row is still there).

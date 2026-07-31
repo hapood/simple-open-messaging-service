@@ -2,6 +2,7 @@ import {
   pickStickyDateLabel,
   stickyDateRowOpacity,
   isViewportTransformEnd,
+  STICKY_DATE_PICK_FUZZ_PX,
   unreadDividerOverlapsStickyDate,
   type StickyDateRow,
 } from './sticky-date';
@@ -49,7 +50,17 @@ describe('pickStickyDateLabel', () => {
     entries.map(([top, label]) => ({ top, label }));
 
   it('returns the last date row at/above the visible top', () => {
-    expect(pickStickyDateLabel(rows([[10, 'Mon'], [200, 'Tue'], [400, 'Wed']]), 300, 14)).toBe('Tue');
+    expect(
+      pickStickyDateLabel(
+        rows([
+          [10, 'Mon'],
+          [200, 'Tue'],
+          [400, 'Wed'],
+        ]),
+        300,
+        14,
+      ),
+    ).toBe('Tue');
   });
 
   it('returns null when no date row is at/above the visible top', () => {
@@ -58,13 +69,51 @@ describe('pickStickyDateLabel', () => {
 
   it('counts a row within `fuzz` below the visible top, but not beyond', () => {
     expect(pickStickyDateLabel(rows([[314, 'Mon']]), 300, 14)).toBe('Mon'); // 314 <= 300 + 14
-    expect(pickStickyDateLabel(rows([[315, 'Mon']]), 300, 14)).toBeNull();  // 315 > 314
+    expect(pickStickyDateLabel(rows([[315, 'Mon']]), 300, 14)).toBeNull(); // 315 > 314
+  });
+
+  it('uses the floating pill top as the production handoff threshold', () => {
+    expect(STICKY_DATE_PICK_FUZZ_PX).toBe(6);
+    expect(
+      pickStickyDateLabel(rows([[306, 'Mon']]), 300, STICKY_DATE_PICK_FUZZ_PX),
+    ).toBe('Mon');
+    expect(
+      pickStickyDateLabel(rows([[307, 'Mon']]), 300, STICKY_DATE_PICK_FUZZ_PX),
+    ).toBeNull();
   });
 
   it('skips null-label rows — a malformed empty row never clears the pill (last real date wins)', () => {
-    expect(pickStickyDateLabel(rows([[10, null], [200, 'Tue']]), 300, 14)).toBe('Tue');
-    expect(pickStickyDateLabel(rows([[10, 'Mon'], [200, null], [300, 'Wed']]), 500, 14)).toBe('Wed');
-    expect(pickStickyDateLabel(rows([[10, 'Mon'], [200, null]]), 500, 14)).toBe('Mon'); // trailing null skipped
+    expect(
+      pickStickyDateLabel(
+        rows([
+          [10, null],
+          [200, 'Tue'],
+        ]),
+        300,
+        14,
+      ),
+    ).toBe('Tue');
+    expect(
+      pickStickyDateLabel(
+        rows([
+          [10, 'Mon'],
+          [200, null],
+          [300, 'Wed'],
+        ]),
+        500,
+        14,
+      ),
+    ).toBe('Wed');
+    expect(
+      pickStickyDateLabel(
+        rows([
+          [10, 'Mon'],
+          [200, null],
+        ]),
+        500,
+        14,
+      ),
+    ).toBe('Mon'); // trailing null skipped
   });
 
   // The load-bearing scenario the user raised: a keyboard lift slides the viewport's own top UNDER the
@@ -74,11 +123,11 @@ describe('pickStickyDateLabel', () => {
     // viewport's getBoundingClientRect().top = 56 − 300 = −244 (under the header). Date rows translate with
     // the viewport: "Yesterday" (was at 56, the visible top) is now at −244 (hidden behind the header);
     // "Today" (was 300px below, at 356) is now at 56 (the new visible top).
-    const visibleTop = 56;        // header bottom — the correct baseline
-    const viewportTop = -244;     // the OLD (buggy) baseline — the viewport's translated top
+    const visibleTop = 56; // header bottom — the correct baseline
+    const viewportTop = -244; // the OLD (buggy) baseline — the viewport's translated top
     const liftedRows: StickyDateRow[] = [
       { top: -244, label: 'Yesterday' }, // now hidden under the header
-      { top: 56, label: 'Today' },       // now at the visible top
+      { top: 56, label: 'Today' }, // now at the visible top
     ];
 
     it('keys off the header bottom → picks the now-visible date', () => {
@@ -88,7 +137,9 @@ describe('pickStickyDateLabel', () => {
     it('keying off the translated viewport top would pick the hidden date (the bug this replaces)', () => {
       // Documents WHY visibleTop must be the header bottom: the viewport top has slid under the header, so
       // a viewport-top baseline selects the hidden "Yesterday" instead of the visible "Today".
-      expect(pickStickyDateLabel(liftedRows, viewportTop, 14)).toBe('Yesterday');
+      expect(pickStickyDateLabel(liftedRows, viewportTop, 14)).toBe(
+        'Yesterday',
+      );
     });
   });
 });
@@ -117,15 +168,30 @@ describe('isViewportTransformEnd', () => {
   const viewport = {} as HTMLElement;
   const child = {} as HTMLElement;
 
-  it('is true for the viewport\'s own transform transition', () => {
-    expect(isViewportTransformEnd({ target: viewport, propertyName: 'transform' }, viewport)).toBe(true);
+  it("is true for the viewport's own transform transition", () => {
+    expect(
+      isViewportTransformEnd(
+        { target: viewport, propertyName: 'transform' },
+        viewport,
+      ),
+    ).toBe(true);
   });
 
   it('is false for a bubbled item transition (target is a child, not the viewport)', () => {
-    expect(isViewportTransformEnd({ target: child, propertyName: 'transform' }, viewport)).toBe(false);
+    expect(
+      isViewportTransformEnd(
+        { target: child, propertyName: 'transform' },
+        viewport,
+      ),
+    ).toBe(false);
   });
 
   it('is false for a non-transform property on the viewport', () => {
-    expect(isViewportTransformEnd({ target: viewport, propertyName: 'opacity' }, viewport)).toBe(false);
+    expect(
+      isViewportTransformEnd(
+        { target: viewport, propertyName: 'opacity' },
+        viewport,
+      ),
+    ).toBe(false);
   });
 });

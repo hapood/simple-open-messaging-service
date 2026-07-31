@@ -481,10 +481,9 @@ export class GroupController {
     @Body() dto: KickGroupDto,
   ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
-    const { participant } = req.threadAccess!;
     const result = await this.groupService.kickMember({
       threadId,
-      operatorRole: participant.role as GroupRole,
+      operatorUserId: req.user.userId,
       targetUserId: dto.userId,
     });
     if (result.transitioned) {

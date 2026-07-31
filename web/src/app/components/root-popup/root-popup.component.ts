@@ -63,6 +63,18 @@ export class RootPopupComponent {
       const top = this.dlgList().at(-1)
       if (top) this.instantBackdropHide.set(!this.isCard() && top.presentation === 'page')
     })
+    // A browser text selection belongs to the document rather than to a dialog. Without explicitly
+    // releasing it, opening/closing a stacked dialog can leave highlighted text visible on the newly
+    // exposed surface. Track the top entry (not merely the stack length) so sibling replacements clear it
+    // too; the initial empty state is intentionally a no-op.
+    let previousTopId: number | undefined
+    effect(() => {
+      const topId = this.dlgList().at(-1)?.id
+      if (previousTopId !== undefined && topId !== previousTopId) {
+        document.getSelection()?.removeAllRanges()
+      }
+      previousTopId = topId
+    })
   }
 
   protected dialogState(info: DlgInfo): 'desktop' | 'page' | 'modal' | 'viewer' {

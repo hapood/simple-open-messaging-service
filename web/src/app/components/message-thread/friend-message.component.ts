@@ -24,7 +24,11 @@ import {
 } from '../../lib/chat-box/chat-box-scroller';
 import {
   pickStickyDateLabel,
+  stickyDateRowOpacity,
   isViewportTransformEnd,
+  STICKY_DATE_COLLISION_BOTTOM_PX,
+  STICKY_DATE_COLLISION_TOP_PX,
+  STICKY_DATE_PICK_FUZZ_PX,
   unreadDividerOverlapsStickyDate,
 } from '../../lib/sticky-date';
 import { HttpItemSource } from './http-item-source';
@@ -1456,6 +1460,13 @@ export class MessageThreadComponent implements OnDestroy {
     const visibleTop =
       this.headerRef()?.nativeElement.getBoundingClientRect().bottom ??
       vp.getBoundingClientRect().top;
+    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
+      (element) => ({
+        element,
+        top: element.getBoundingClientRect().top,
+        label: element.textContent?.trim() ?? null,
+      }),
+    );
     const unreadDivider = ct.querySelector<HTMLElement>('.cb-unread-divider');
     if (
       unreadDividerOverlapsStickyDate(
@@ -1464,15 +1475,25 @@ export class MessageThreadComponent implements OnDestroy {
       )
     ) {
       this.stickyDate.set(null);
+      for (const { element } of rows) element.style.opacity = '1';
       return;
     }
-    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
-      (d) => ({
-        top: d.getBoundingClientRect().top,
-        label: d.textContent?.trim() ?? null,
-      }),
+    const current = pickStickyDateLabel(
+      rows,
+      visibleTop,
+      STICKY_DATE_PICK_FUZZ_PX,
     );
-    this.stickyDate.set(pickStickyDateLabel(rows, visibleTop, 14));
+    this.stickyDate.set(current);
+    const fadeLo = visibleTop + STICKY_DATE_COLLISION_TOP_PX;
+    const fadeHi = visibleTop + STICKY_DATE_COLLISION_BOTTOM_PX;
+    for (const { element, top } of rows) {
+      element.style.opacity = stickyDateRowOpacity(
+        top,
+        fadeLo,
+        fadeHi,
+        current !== null,
+      ).toFixed(2);
+    }
   }
 
   /** Recompute the sticky-date pill when the keyboard-lift `transform` settles on the viewport. The

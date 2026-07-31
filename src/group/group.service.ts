@@ -231,15 +231,16 @@ export class GroupService implements OnModuleInit {
     role: GroupRole | null;
     deleteData: boolean;
   }): Promise<{ remainingMemberIds: number[]; transitioned: boolean }> {
-    const hidden = params.deleteData
-      ? await this.threadRevisionService.isThreadHidden(
-          params.userId,
-          params.threadId,
-        )
-      : false;
-    const shouldDelete = params.deleteData && !hidden;
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
+      const hidden = params.deleteData
+        ? await this.threadRevisionService.isThreadHiddenInTx(
+            tx,
+            params.userId,
+            params.threadId,
+          )
+        : false;
+      const shouldDelete = params.deleteData && !hidden;
       const current = await tx.threadParticipant.findUnique({
         where: {
           userId_threadId: {
@@ -297,23 +298,35 @@ export class GroupService implements OnModuleInit {
         where: { threadId: params.threadId, leftAt: null },
         select: { userId: true },
       });
+      const revision = shouldDelete
+        ? await this.threadRevisionService.recordThreadDeleteInTx(
+            tx,
+            params.userId,
+            params.threadId,
+          )
+        : ended.count > 0 && !hidden
+          ? await this.threadRevisionService.recordThreadAddInTx(
+              tx,
+              params.userId,
+              params.threadId,
+            )
+          : null;
       return {
         transitioned: ended.count > 0,
         remainingMemberIds: remaining.map((row) => row.userId),
+        revision,
       };
     });
-    if (shouldDelete) {
-      await this.threadRevisionService.recordThreadDelete(
-        params.userId,
-        params.threadId,
-      );
-    } else if (result.transitioned) {
-      await this.threadRevisionService.recordThreadAdd(
-        params.userId,
-        params.threadId,
-      );
+    if (result.revision !== null) {
+      this.threadRevisionService.notifyThreadRevision({
+        userId: params.userId,
+        revision: result.revision,
+      });
     }
-    return result;
+    return {
+      transitioned: result.transitioned,
+      remainingMemberIds: result.remainingMemberIds,
+    };
   }
 
   /** Mark a group terminal while retaining participants and history visibility. Pending invites are
@@ -323,15 +336,16 @@ export class GroupService implements OnModuleInit {
     deleteForUserId?: number;
   }): Promise<{ transitioned: boolean }> {
     const now = new Date();
-    const hidden =
-      params.deleteForUserId === undefined
-        ? false
-        : await this.threadRevisionService.isThreadHidden(
-            params.deleteForUserId,
-            params.threadId,
-          );
-    const shouldDelete = params.deleteForUserId !== undefined && !hidden;
-    const transitioned = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const hidden =
+        params.deleteForUserId === undefined
+          ? false
+          : await this.threadRevisionService.isThreadHiddenInTx(
+              tx,
+              params.deleteForUserId,
+              params.threadId,
+            );
+      const shouldDelete = params.deleteForUserId !== undefined && !hidden;
       const thread = await tx.messageThread.findUnique({
         where: { id: params.threadId },
         select: { groupUserId: true },
@@ -364,15 +378,23 @@ export class GroupService implements OnModuleInit {
           data: { clearedAt: now, pinned: false, pinnedAt: null },
         });
       }
-      return dissolved.count > 0;
+      const revision =
+        shouldDelete && params.deleteForUserId !== undefined
+          ? await this.threadRevisionService.recordThreadDeleteInTx(
+              tx,
+              params.deleteForUserId,
+              params.threadId,
+            )
+          : null;
+      return { transitioned: dissolved.count > 0, revision };
     });
-    if (shouldDelete && params.deleteForUserId !== undefined) {
-      await this.threadRevisionService.recordThreadDelete(
-        params.deleteForUserId,
-        params.threadId,
-      );
+    if (result.revision !== null && params.deleteForUserId !== undefined) {
+      this.threadRevisionService.notifyThreadRevision({
+        userId: params.deleteForUserId,
+        revision: result.revision,
+      });
     }
-    return { transitioned };
+    return { transitioned: result.transitioned };
   }
 
   /**
@@ -381,55 +403,84 @@ export class GroupService implements OnModuleInit {
    */
   async kickMember(params: {
     threadId: number;
-    operatorRole: GroupRole;
+    operatorUserId: number;
     targetUserId: number;
   }): Promise<{ transitioned: boolean }> {
-    const target = await this.prisma.threadParticipant.findUnique({
-      where: {
-        userId_threadId: {
-          userId: params.targetUserId,
-          threadId: params.threadId,
-        },
-      },
-    });
-    if (target === null) {
-      throw new BusinessException(
-        BusinessCode.GROUP_TARGET_NOT_MEMBER,
-        'target is not a member',
-      );
-    }
-    if (target.leftAt !== null) return { transitioned: false };
-    if (target.role === GroupRole.OWNER) {
-      throw new BusinessException(
-        BusinessCode.GROUP_FORBIDDEN,
-        'cannot kick the owner',
-      );
-    }
-    if (!outranks(params.operatorRole, target.role)) {
-      throw new BusinessException(
-        BusinessCode.GROUP_FORBIDDEN,
-        'you can only kick members below your role',
-      );
-    }
-    const hidden = await this.threadRevisionService.isThreadHidden(
-      params.targetUserId,
-      params.threadId,
-    );
-    const ended = await this.prisma.threadParticipant.updateMany({
-      where: { id: target.id, leftAt: null, role: target.role },
-      data: { leftAt: new Date() },
-    });
-    if (ended.count === 0) return { transitioned: false };
-    await this.bumpRosterRev(params.threadId);
-    // A kicked member retains readable history. Re-hydrate visible copies as READ_ONLY; preserve an
-    // already-hidden copy until the user explicitly opens/deletes it.
-    if (!hidden) {
-      await this.threadRevisionService.recordThreadAdd(
+    const result = await this.prisma.$transaction(async (tx) => {
+      const [operator, target] = await Promise.all([
+        tx.threadParticipant.findUnique({
+          where: {
+            userId_threadId: {
+              userId: params.operatorUserId,
+              threadId: params.threadId,
+            },
+          },
+        }),
+        tx.threadParticipant.findUnique({
+          where: {
+            userId_threadId: {
+              userId: params.targetUserId,
+              threadId: params.threadId,
+            },
+          },
+        }),
+      ]);
+      if (target === null) {
+        throw new BusinessException(
+          BusinessCode.GROUP_TARGET_NOT_MEMBER,
+          'target is not a member',
+        );
+      }
+      if (target.leftAt !== null)
+        return { transitioned: false, revision: null };
+      if (
+        operator === null ||
+        operator.leftAt !== null ||
+        operator.role === null ||
+        target.role === GroupRole.OWNER ||
+        !outranks(operator.role, target.role)
+      ) {
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'you can only kick members below your role',
+        );
+      }
+      const hidden = await this.threadRevisionService.isThreadHiddenInTx(
+        tx,
         params.targetUserId,
         params.threadId,
       );
+      const ended = await tx.threadParticipant.updateMany({
+        where: { id: target.id, leftAt: null, role: target.role },
+        data: { leftAt: new Date() },
+      });
+      if (ended.count === 0) return { transitioned: false, revision: null };
+      const thread = await tx.messageThread.findUnique({
+        where: { id: params.threadId },
+        select: { groupUserId: true },
+      });
+      if (thread?.groupUserId != null) {
+        await tx.group.update({
+          where: { groupUserId: thread.groupUserId },
+          data: { rosterRev: { increment: 1 } },
+        });
+      }
+      const revision = hidden
+        ? null
+        : await this.threadRevisionService.recordThreadAddInTx(
+            tx,
+            params.targetUserId,
+            params.threadId,
+          );
+      return { transitioned: true, revision };
+    });
+    if (result.revision !== null) {
+      this.threadRevisionService.notifyThreadRevision({
+        userId: params.targetUserId,
+        revision: result.revision,
+      });
     }
-    return { transitioned: true };
+    return { transitioned: result.transitioned };
   }
 
   /**

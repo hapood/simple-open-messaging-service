@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { SseService } from '../gateway/sse.service.js';
+import { Prisma } from '../prisma/generated/client.js';
+
+export interface PendingThreadRevision {
+  userId: number;
+  revision: number;
+}
 
 /**
  * Per-user thread-list versioning. Every thread add/delete (friend approve, group join, unfriend,
@@ -20,72 +26,98 @@ export class ThreadRevisionService {
 
   /** Record a thread ADD: bump threadRevision, upsert the ADD row (reactivate on re-add), push signal. */
   async recordThreadAdd(userId: number, threadId: number): Promise<void> {
-    const revision = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.user.update({
-        where: { id: userId },
-        data: { threadRevision: { increment: 1 } },
-        select: { threadRevision: true },
-      });
-      await tx.threadRevision.upsert({
-        where: {
-          userId_threadId_direction: { userId, threadId, direction: 'ADD' },
-        },
-        create: {
-          userId,
-          threadId,
-          direction: 'ADD',
-          revision: u.threadRevision,
-          isDelete: false,
-        },
-        update: { revision: u.threadRevision, isDelete: false },
-      });
-      return u.threadRevision;
+    const revision = await this.prisma.$transaction((tx) =>
+      this.recordThreadAddInTx(tx, userId, threadId),
+    );
+    this.notifyThreadRevision({ userId, revision });
+  }
+
+  async recordThreadAddInTx(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    threadId: number,
+  ): Promise<number> {
+    const u = await tx.user.update({
+      where: { id: userId },
+      data: { threadRevision: { increment: 1 } },
+      select: { threadRevision: true },
     });
-    this.sse.onThreadRevisionUpdated(userId, {
-      threadRevision: revision,
+    await tx.threadRevision.upsert({
+      where: {
+        userId_threadId_direction: { userId, threadId, direction: 'ADD' },
+      },
+      create: {
+        userId,
+        threadId,
+        direction: 'ADD',
+        revision: u.threadRevision,
+        isDelete: false,
+      },
+      update: { revision: u.threadRevision, isDelete: false },
+    });
+    return u.threadRevision;
+  }
+
+  notifyThreadRevision(pending: PendingThreadRevision): void {
+    this.sse.onThreadRevisionUpdated(pending.userId, {
+      threadRevision: pending.revision,
     });
   }
 
   /** Record a thread DELETE: bump threadRevision, upsert the DELETE row, mark the ADD row soft-deleted,
    *  push signal. */
   async recordThreadDelete(userId: number, threadId: number): Promise<void> {
-    const revision = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.user.update({
-        where: { id: userId },
-        data: { threadRevision: { increment: 1 } },
-        select: { threadRevision: true },
-      });
-      await tx.threadRevision.upsert({
-        where: {
-          userId_threadId_direction: { userId, threadId, direction: 'DELETE' },
-        },
-        create: {
-          userId,
-          threadId,
-          direction: 'DELETE',
-          revision: u.threadRevision,
-        },
-        update: { revision: u.threadRevision },
-      });
-      await tx.threadRevision.updateMany({
-        where: { userId, threadId, direction: 'ADD' },
-        data: { isDelete: true },
-      });
-      return u.threadRevision;
-    });
-    this.sse.onThreadRevisionUpdated(userId, {
-      threadRevision: revision,
-    });
+    const revision = await this.prisma.$transaction((tx) =>
+      this.recordThreadDeleteInTx(tx, userId, threadId),
+    );
+    this.notifyThreadRevision({ userId, revision });
   }
 
-  async isThreadHidden(userId: number, threadId: number): Promise<boolean> {
-    const add = await this.prisma.threadRevision.findUnique({
+  async recordThreadDeleteInTx(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    threadId: number,
+  ): Promise<number> {
+    const u = await tx.user.update({
+      where: { id: userId },
+      data: { threadRevision: { increment: 1 } },
+      select: { threadRevision: true },
+    });
+    await tx.threadRevision.upsert({
+      where: {
+        userId_threadId_direction: { userId, threadId, direction: 'DELETE' },
+      },
+      create: {
+        userId,
+        threadId,
+        direction: 'DELETE',
+        revision: u.threadRevision,
+      },
+      update: { revision: u.threadRevision },
+    });
+    await tx.threadRevision.updateMany({
+      where: { userId, threadId, direction: 'ADD' },
+      data: { isDelete: true },
+    });
+    return u.threadRevision;
+  }
+
+  async isThreadHiddenInTx(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    threadId: number,
+  ): Promise<boolean> {
+    const add = await tx.threadRevision.findUnique({
       where: {
         userId_threadId_direction: { userId, threadId, direction: 'ADD' },
       },
       select: { isDelete: true },
     });
     return add?.isDelete === true;
+  }
+
+  async isThreadHidden(userId: number, threadId: number): Promise<boolean> {
+    return this.isThreadHiddenInTx(this.prisma, userId, threadId);
   }
 
   /** Re-add only participants whose current list state is DELETE. This makes a fresh message restore an

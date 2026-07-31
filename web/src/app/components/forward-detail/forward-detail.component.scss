@@ -95,7 +95,9 @@
   min-height: 100%;
   width: min(680px, 100%);
   margin: 0 auto;
-  padding: 16px 0 20px;
+  // Message rows already own their top spacing (the same row components used by the live chatbox).
+  // Adding another 16px here made chat-history records sit farther below the header than chatbox rows.
+  padding: 0 0 20px;
   box-sizing: border-box;
 }
 .msg-content > * {
