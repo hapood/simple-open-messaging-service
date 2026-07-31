@@ -36,6 +36,7 @@ import { DiagnosticsModule } from './diagnostics/diagnostics.module.js';
 import { LinkPreviewModule } from './link-preview/link-preview.module.js';
 import { CallsModule } from './calls/calls.module.js';
 import { CallsController } from './controller/calls.controller.js';
+import { ForwardBundleModule } from './forward/forward-bundle.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -67,6 +68,7 @@ import { CallsController } from './controller/calls.controller.js';
     DiagnosticsModule,
     LinkPreviewModule,
     CallsModule,
+    ForwardBundleModule,
   ],
   controllers: [
     MessageController,

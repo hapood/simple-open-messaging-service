@@ -50,6 +50,24 @@ export class MsgService {
   }
 
   /**
+   * Ask the server to snapshot messages the caller can currently see and attach the immutable bundle
+   * to a new FORWARD message in the destination thread. A clientMessageId is mandatory because the
+   * forwarding dialog may target several conversations and each independent send must be safely
+   * retryable by the HTTP replay layer.
+   */
+  sendForward(params: {
+    threadId: number;
+    sourceMessages: ReadonlyArray<{ threadId: number; seq: number }>;
+    clientMessageId: string;
+  }) {
+    return this.http.post<StandardResponse<Message>>(
+      `${apiPrefix()}/send-forward`,
+      params,
+      { context: new HttpContext().set(REPLAY_SAFE, true) },
+    );
+  }
+
+  /**
    * Stage a media message BEFORE its upload: the server creates a PendingMedia row keyed by
    * `clientMessageId` (+ the client-probed display meta) — durable intent recorded before the file
    * write, so a crash between staging and upload leaves a reclaimable record, never an orphan. No
@@ -114,12 +132,7 @@ export class MsgService {
     fd.append('h', String(h));
     return this.httpUpload<
       StandardResponse<{ url: string; w: number; h: number }>
-    >(
-      `${apiPrefix()}/upload`,
-      fd,
-      clientMessageId,
-      onProgress,
-    );
+    >(`${apiPrefix()}/upload`, fd, clientMessageId, onProgress);
   }
 
   /**
@@ -159,12 +172,7 @@ export class MsgService {
         size: number;
         mimeType: string;
       }>
-    >(
-      `${apiPrefix()}/upload/file`,
-      fd,
-      clientMessageId,
-      onProgress,
-    );
+    >(`${apiPrefix()}/upload/file`, fd, clientMessageId, onProgress);
   }
 
   /** Upload a video (multipart: file). The server validates only the container family via magic bytes
@@ -202,12 +210,7 @@ export class MsgService {
         size: number;
         mimeType: string;
       }>
-    >(
-      `${apiPrefix()}/upload/video`,
-      fd,
-      clientMessageId,
-      onProgress,
-    );
+    >(`${apiPrefix()}/upload/video`, fd, clientMessageId, onProgress);
   }
 
   /** Upload an audio clip (multipart: file). Same contract as uploadVideo (magic-byte check only);
@@ -248,12 +251,7 @@ export class MsgService {
         mimeType: string;
         promoted: boolean;
       }>
-    >(
-      `${apiPrefix()}/upload/audio`,
-      fd,
-      clientMessageId,
-      onProgress,
-    );
+    >(`${apiPrefix()}/upload/audio`, fd, clientMessageId, onProgress);
   }
 
   /** True when the upload can stream from disk: the Tauri DESKTOP shell, where Tauri's `<input type=file>`
@@ -302,12 +300,10 @@ export class MsgService {
       loaded: number;
       total: number;
     }>('upload-progress', ({ payload }) => {
-      this.streamProgressHandlers
-        .get(payload.clientMessageId)
-        ?.(
-          Math.max(0, payload.loaded),
-          Math.max(0, payload.total),
-        );
+      this.streamProgressHandlers.get(payload.clientMessageId)?.(
+        Math.max(0, payload.loaded),
+        Math.max(0, payload.total),
+      );
     }).then(() => undefined);
     return this.streamProgressListener;
   }
@@ -332,9 +328,7 @@ export class MsgService {
     }
     return this.http
       .post<T>(url, body, {
-        headers: clientMessageId
-          ? this.cmidHeader(clientMessageId)
-          : undefined,
+        headers: clientMessageId ? this.cmidHeader(clientMessageId) : undefined,
         context: clientMessageId
           ? new HttpContext().set(REPLAY_SAFE, true)
           : undefined,
@@ -346,7 +340,9 @@ export class MsgService {
           if (event.type !== HttpEventType.UploadProgress) return;
           onProgress(event.loaded, event.total ?? bodyFileSize(body));
         }),
-        filter((event): event is HttpResponse<T> => event instanceof HttpResponse),
+        filter(
+          (event): event is HttpResponse<T> => event instanceof HttpResponse,
+        ),
         map((event) => event.body as T),
       );
   }

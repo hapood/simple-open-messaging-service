@@ -394,10 +394,51 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const items = repo.items();
     expect(items[0].threadId).toBe(1); // moved to the head of the unpinned tier (lastMessageAt 300)
     expect(repo.latestSeq(1)).toBe(100);
+    expect(items[0].lastMessageSeq).toBe(100);
     // unreadCount is NOT bumped — it is server-authoritative, applied by the missed-summary pull.
     expect(items[0].unreadCount).toBe(0);
     const rec = await (await webdb.db()).get('threads', 1);
     expect(rec?.unreadCount).toBe(0);
+    expect(rec?.lastMessageSeq).toBe(100);
+  });
+
+  it('drains a trailing missed-summary pull when messages arrive during an in-flight pull', async () => {
+    const missed = TestBed.inject(MissedSyncService) as unknown as {
+      fetchMissedSummary: jasmine.Spy;
+    };
+    let resolveFirst!: (value: {
+      items: never[];
+      hasMore: boolean;
+      nextCursor: null;
+    }) => void;
+    const first = new Promise<{
+      items: never[];
+      hasMore: boolean;
+      nextCursor: null;
+    }>((resolve) => { resolveFirst = resolve; });
+    missed.fetchMissedSummary.and.returnValues(
+      first,
+      Promise.resolve({ items: [], hasMore: false, nextCursor: null }),
+    );
+    await populate([p2p(1, 11)]);
+
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 1, ts: 100 } });
+    await flush(250); // first debounced pull is now in flight
+    expect(missed.fetchMissedSummary).toHaveBeenCalledOnceWith(
+      null,
+      { threadId: 1, seq: 1 },
+    );
+
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 3, ts: 300 } });
+    await flush(350); // trailing debounce fires while the first request is unresolved
+    resolveFirst({ items: [], hasMore: false, nextCursor: null });
+    await flush(50);
+
+    expect(missed.fetchMissedSummary.calls.count()).toBe(2);
+    expect(missed.fetchMissedSummary.calls.mostRecent().args).toEqual([
+      null,
+      { threadId: 1, seq: 3 },
+    ]);
   });
 
   it('onNewMessage does not badge the open thread', async () => {
@@ -511,6 +552,37 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   // ── optimistic read-watermark merge (B6) ───────────────────────────────────────────────────
+
+  it('repairs a stale unread badge when the read cursor already covers the known live tail', async () => {
+    await populate([p2p(1, 11, {
+      lastReadSeq: 5,
+      lastMessageSeq: null,
+      unreadCount: 1,
+      mentionUnread: 'me',
+    })]);
+    // Reproduce the captured state: the live signal proves seq 5 is the tail, but the legacy thread row has
+    // lastReadSeq=5 + unreadCount=1 + lastMessageSeq=null.
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 5, ts: 1000 } });
+
+    expect(repo.commitLocalRead(1, 5)).toBeTrue();
+    expect(repo.items()[0]).toEqual(jasmine.objectContaining({
+      lastReadSeq: 5,
+      lastMessageSeq: 5,
+      unreadCount: 0,
+      mentionUnread: 'none',
+    }));
+  });
+
+  it('does not repair a repeated read cursor when a newer known message is still unread', async () => {
+    await populate([p2p(1, 11, {
+      lastReadSeq: 5,
+      lastMessageSeq: 6,
+      unreadCount: 1,
+    })]);
+
+    expect(repo.commitLocalRead(1, 5)).toBeFalse();
+    expect(repo.items()[0].unreadCount).toBe(1);
+  });
 
   it('optimistic lastReadSeq masks a stale server unread regression while a markRead POST is in flight', async () => {
     // Reconfigure the missed-summary pull to return the SERVER's stale view: lastReadSeq 5, unread 3 (the

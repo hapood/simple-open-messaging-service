@@ -2,7 +2,10 @@ import { Component, computed, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { By } from '@angular/platform-browser';
-import { KbdOffsetDirective } from './kbd-offset.directive';
+import {
+  KbdOffsetDirective,
+  shouldResizeChatHost,
+} from './kbd-offset.directive';
 import {
   KeyboardInsetAnimation,
   KeyboardInsetService,
@@ -85,6 +88,18 @@ describe('KbdOffsetDirective', () => {
     detect();
     expect(directive.offset()).toBe(0);
     expect(host.style.getPropertyValue('--kbd-lift')).toBe('0px');
+  });
+
+  it('enables host resizing only for a soft-keyboard browser', () => {
+    expect(shouldResizeChatHost(false, false)).toBe(true);
+    expect(shouldResizeChatHost(false, true)).toBe(false);
+    expect(shouldResizeChatHost(true, false)).toBe(false);
+
+    const { host, detect } = setup();
+    expect(host.classList.contains('kbd-offset--resize-host')).toBe(true);
+    hasPhysicalKeyboard.set(true);
+    detect();
+    expect(host.classList.contains('kbd-offset--resize-host')).toBe(false);
   });
 
   it('a physical keyboard forces offset to 0 even while the inset is non-zero', () => {

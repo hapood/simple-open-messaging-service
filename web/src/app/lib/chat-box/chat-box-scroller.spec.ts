@@ -323,6 +323,22 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(info.noOlder).toBe(false); // not yet at the oldest
   });
 
+  it('non-empty init emits fully-visible entries without requiring a user scroll', async () => {
+    const { hooks } = controllableHooks();
+    const entered: number[] = [];
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source: fakeSource(3),
+      onFullyVisibleEnter: (entries) => entered.push(...entries.map((entry) => entry.item.id)),
+    });
+
+    await scroller.init();
+
+    expect(entered).toEqual([0, 1, 2]);
+  });
+
   it('init does not mount rows when destroyed during the fetch (no orphan injection into reused content)', async () => {
     // Regression: init()'s normal path (startMsgId === null) awaits source.init() and once OMITTED the post-await
     // `destroyed` check that openAround already had. A coordinator teardown/re-init overtaking the fetch would

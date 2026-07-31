@@ -35,10 +35,10 @@ SOMS authenticates users with a **single opaque session token** — there is **n
 
 ```ts
 interface ApiResult<T = any> {
-  code: number;        // 0 = success; non-0 = business error code (segmented by domain, see below)
+  code: number; // 0 = success; non-0 = business error code (segmented by domain, see below)
   message: string;
   data?: T;
-  hasMore?: boolean;   // populated for paginated endpoints
+  hasMore?: boolean; // populated for paginated endpoints
 }
 ```
 
@@ -48,16 +48,16 @@ interface ApiResult<T = any> {
 
 Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../../src/common/business-code.ts) (`BusinessCode` enum).
 
-| Segment | Domain | Primary codes |
-| --- | --- | --- |
-| `0` | Success | |
-| `10xxx` | General | `10000` validation · `10001` not found · `10002` already exists · `10003` unauthenticated · `10004` forbidden · `10005` rate-limited/IP-banned · `10007` session revoked · `10008` quota exceeded · `10009` invalid credentials · `10010` registration disabled · `10011` login method disabled · `10012-10016` OTP/QR invalid/expired/consumed · `10017` password not set · `10018` must change password · `10019-10025` admin 2FA / WebAuthn · `10999` server error |
-| `20xxx` | Friend · Invite | `20001` friend self · `20002` friend not found · `20004` invalid target (e.g. a group account) · `20010` invite not found · `20011` invite expired · `20012` invite not yours · `20013` invite already handled |
-| `30xxx` | Message | `30001` empty content · `30002` thread not approved · `30003` thread not found |
-| `40xxx` | Group | `40002` non-friend · `40003` invalid invite token · `40004` owner must transfer · `40005` role forbidden · `40006` target not a member |
-| `50xxx` | Federation | `50011` peer daily-quota exceeded (HTTP 429) |
-| `60xxx` | Push | `60001` VAPID invalid |
-| `70xxx` | Call | `70001` not allowed (not friends) · `70002` call not found · `70003` not a participant · `70004` busy · `70005` invalid state transition |
+| Segment | Domain          | Primary codes                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`     | Success         |                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `10xxx` | General         | `10000` validation · `10001` not found · `10002` already exists · `10003` unauthenticated · `10004` forbidden · `10005` rate-limited/IP-banned · `10007` session revoked · `10008` quota exceeded · `10009` invalid credentials · `10010` registration disabled · `10011` login method disabled · `10012-10016` OTP/QR invalid/expired/consumed · `10017` password not set · `10018` must change password · `10019-10025` admin 2FA / WebAuthn · `10999` server error |
+| `20xxx` | Friend · Invite | `20001` friend self · `20002` friend not found · `20004` invalid target (e.g. a group account) · `20010` invite not found · `20011` invite expired · `20012` invite not yours · `20013` invite already handled                                                                                                                                                                                                                                                        |
+| `30xxx` | Message         | `30001` empty content · `30002` thread not approved · `30003` thread not found                                                                                                                                                                                                                                                                                                                                                                                        |
+| `40xxx` | Group           | `40002` non-friend · `40003` invalid invite token · `40004` owner must transfer · `40005` role forbidden · `40006` target not a member                                                                                                                                                                                                                                                                                                                                |
+| `50xxx` | Federation      | `50011` peer daily-quota exceeded (HTTP 429)                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `60xxx` | Push            | `60001` VAPID invalid                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `70xxx` | Call            | `70001` not allowed (not friends) · `70002` call not found · `70003` not a participant · `70004` busy · `70005` invalid state transition                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -65,24 +65,24 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 > Controllers: [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts) · [auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts) · [auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts) · Service: [src/auth/auth.service.ts](../../src/auth/auth.service.ts)
 
-### POST `/auth/login` — Password login  `@Public`
+### POST `/auth/login` — Password login `@Public`
 
 - **Body**: `{ account: string, password: string, client?: 'app'|'web'|'desktop', persistent?: boolean, trusted?: boolean, device?: string }`
   - `client` defaults to `web`. `persistent` (default `true`) = 14-day sliding cookie vs session cookie. `trusted = client==='app' || (client==='desktop' && trusted===true)` → permanent (revocation-only) session.
 - **Behavior**: `LocalStrategy` verifies the password (argon2); on success issues a `SessionToken` and sets the session cookies (browser) / returns `{ sessionToken }` (native). Failures are counted by the shared `BruteForceService` (ip + user dims, sliding window + graduated ban ladder).
 - **Errors**: `10009` invalid credentials · `10005` banned (`data.bannedUntil`) · `10017` password not set (OTP/QR-only account) · `10018` must change password (admin-generated initial password).
 
-### POST `/auth/otp/login` — OTP login (Android app session)  `@Public`
+### POST `/auth/otp/login` — OTP login (Android app session) `@Public`
 
 - **Body**: `{ account: string, code: string, device?: string }` — the admin-issued 6-digit one-time login code.
 - **Behavior**: verifies the `LoginCode` (argon2, single-use via updateMany guard) → issues a trusted `app` `SessionToken`.
 - **Errors**: `10012` OTP invalid · `10013` expired · `10014` consumed.
 
-### POST `/auth/qr/{create,poll,scan,confirm}` — QR login  `@Public`
+### POST `/auth/qr/{create,poll,scan,confirm}` — QR login `@Public`
 
 - Desktop calls `create` to render a QR; an already-logged-in device `scan`s it and the desktop `poll`s / `confirm`s to receive a session. Errors: `10015` QR invalid · `10016` expired.
 
-### POST `/auth/logout` — Logout (current session)  `@Public`
+### POST `/auth/logout` — Logout (current session) `@Public`
 
 - Revokes the current `SessionToken` (`revokeReason='logout'`) and clears the session cookies.
 
@@ -108,7 +108,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 > Controller: [src/controller/user.controller.ts](../../src/controller/user.controller.ts)
 
-### POST `/user/register`  `@Public`
+### POST `/user/register` `@Public`
 
 - **Body**: `{ account, password, name? }`. Validation: account `^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$`; password 6–20, allowed charset.
 - **Behavior**: creates a `User` (profile columns inline — name defaults to account); `domain='local'`, `isForeigner=false`.
@@ -180,6 +180,13 @@ Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP
 ### POST `/send-media` — Send media (staged)
 
 - **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/upload` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
+
+### POST `/send-forward` — Send an immutable forwarded-message bundle
+
+- **Body**: `{ threadId, sourceMessages: [{ threadId, seq }], clientMessageId }` (1–100 source messages).
+- **Behavior**: the server, never the client, snapshots sender display data and content into a `ForwardBundle.manifest` JSONB document. `manifest.children` is an ordered array of directly nested bundle ids; `ForwardBundleDependency` mirrors it for indexed traversal. Attachment and avatar bytes remain deduplicated CAS objects referenced by `ForwardBundleAsset`. The resulting `Message` has `contentType: 'FORWARD'`; its small JSON content contains only `bundleId`, up to three 100-grapheme summary lines and counts.
+- **Depth**: a leaf bundle is depth 1 and a parent is `1 + max(child.depth)`. Maximum depth is 3. Attempting to forward an existing depth-3 card returns `30004`; the server recomputes this regardless of frontend checks.
+- **Read**: `GET /forward-bundles/:bundleId` returns the visible root and its complete child closure after checking that the caller participates in a thread containing the root card.
 
 ### POST `/query-messages` — Paginated history
 
@@ -296,13 +303,13 @@ data: <json>
 
 ### Event list (backend → frontend)
 
-| Event | Trigger | `data` | Client handling |
-| --- | --- | --- | --- |
-| `HELLO` | connect | cursors (message / threadRevision / profileRev / friendReqRev / activeCall) | delta-replay thread list; re-derive active call |
-| `NEW_MESSAGE` | a message is sent to the user | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
-| `NOTIFY` | friend request / system notice | notification descriptor | update badge |
-| `THREAD_META` | thread mute/pin/clear/revision change | `{ threadId, ... }` | update conversation list |
-| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason | disconnect + force re-login |
+| Event          | Trigger                                   | `data`                                                                      | Client handling                                 |
+| -------------- | ----------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------- |
+| `HELLO`        | connect                                   | cursors (message / threadRevision / profileRev / friendReqRev / activeCall) | delta-replay thread list; re-derive active call |
+| `NEW_MESSAGE`  | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render         |
+| `NOTIFY`       | friend request / system notice            | notification descriptor                                                     | update badge                                    |
+| `THREAD_META`  | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                        |
+| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login                     |
 
 > Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; messages missed during a disconnect are caught up after reconnect via the threadRevision delta + per-thread message cursors (the stream does not replay history — no `Last-Event-ID`).
 

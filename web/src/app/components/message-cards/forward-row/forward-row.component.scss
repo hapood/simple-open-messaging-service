@@ -1,0 +1,48 @@
+@use '../row-base' as *;
+
+.forward-card {
+  width: 280px;
+  display: block;
+  padding: 10px 12px 8px;
+  transition: opacity 0.2s ease-out;
+}
+
+.forward-card.msg-sending {
+  opacity: 0.88;
+}
+
+.forward-title {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.forward-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.forward-line {
+  min-width: 0;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.forward-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  margin-top: 8px;
+  padding-top: 6px;
+  color: var(--app-text-muted);
+  font-size: 11px;
+  line-height: 14px;
+}

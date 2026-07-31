@@ -88,6 +88,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
   setTab(tab: number) {
     this.activeTab.set(tab)
+    this.loadTab(tab)
   }
 
   goBack() {
@@ -343,8 +344,18 @@ export class FriendRequestsComponent implements OnDestroy {
     return dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')
   }
 
-  ngOnInit() {
-    this.activeTab.set(this.initialTab() === 'pending' ? 1 : 0)
+  private loadTab(tab: number) {
+    if (tab === 1) this.loadIncomingInvites()
+    if (tab === 2) this.loadOutgoingInvites()
+  }
+
+  private loadIncomingInvites() {
+    // Clear the previous snapshot before refreshing so stale requests never remain visible while the
+    // newly displayed tab is loading.
+    this.pendingReqList.set([])
+    this.toPendingErrTxt.set('')
+    this.pendingLoading.set(true)
+
     // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
     // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
     this.userService.listIncomingInvites().subscribe({
@@ -361,6 +372,12 @@ export class FriendRequestsComponent implements OnDestroy {
         this.pendingLoading.set(false)
       },
     })
+  }
+
+  private loadOutgoingInvites() {
+    this.sentReqList.set([])
+    this.sentErrTxt.set('')
+    this.sentLoading.set(true)
 
     this.userService.listOutgoingInvites().subscribe({
       next: (res) => {
@@ -376,6 +393,12 @@ export class FriendRequestsComponent implements OnDestroy {
         this.sentLoading.set(false)
       },
     })
+  }
+
+  ngOnInit() {
+    const initialTab = this.initialTab() === 'pending' ? 1 : 0
+    this.activeTab.set(initialTab)
+    this.loadTab(initialTab)
 
     // Opening the panel counts as "seen" → acknowledge the current friend-request revision. markFriendReqRead
     // optimistically clears the badge locally (friendReqAckRev → friendReqRev) AND POSTs /invite/mark-read,

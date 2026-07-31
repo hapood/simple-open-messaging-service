@@ -594,6 +594,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.pinToBottom(); // a prepend grew content above → re-pin to the new bottom before the next async fetch yields to the painter
     }
     this.scrollToBottom();
+    // Non-empty init must publish its first settled viewport just like the empty path above. Without this,
+    // a short thread that needs no user scroll mounts visibly but never fires onFullyVisibleEnter, so its
+    // 500ms stable-read cursor (and stale-unread repair) cannot start until an unrelated later scroll/live event.
+    this.emit();
     this.primeAndReplay();
   }
 

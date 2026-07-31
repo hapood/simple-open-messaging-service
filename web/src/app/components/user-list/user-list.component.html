@@ -3,7 +3,7 @@
     [attr.aria-pressed]="thread.selected === true"
     (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
-      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.account"
+      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.name"
         [identityId]="thread.peerUser.id" [src]="thread.peerUser.avatar"></app-user-avatar>
       @if (thread.selected === true) {
         <span class="check" aria-hidden="true">

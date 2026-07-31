@@ -20,7 +20,11 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { SignatureService } from '../src/federation/signature.service.js';
-import { MessageThreadType, ContentType } from '../src/prisma/generated/client.js';
+import {
+  MessageThreadType,
+  ContentType,
+} from '../src/prisma/generated/client.js';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Federation e2e — two full SOMS apps (aaa.local + bbb.local) in one process, making real signed HTTP
@@ -42,6 +46,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let bobStubIdOnA: number; // appA's stub of bob (foreign)
   let aliceStubIdOnB: number; // appB's stub of alice (foreign)
   let aliceLocalIdA: number;
+  let bobLocalIdB: number;
   let carolLocalIdA: number;
   let adminCookieA: string; // super-admin on appA — admin_session cookie pair for the block test + admin reads
   let png2: Buffer; // second avatar (distinct color) for the re-pull test
@@ -65,18 +70,36 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // Seed alice @ appA + bob @ appB via the real register+login HTTP path (Passport's `local` strategy is
     // now isolated per process, so /auth/login works correctly for each app).
-    ({ id: aliceLocalIdA, token: tokenA } = await registerAndLogin(appA, 'alice', 'Alice'));
-    ({ token: tokenB } = await registerAndLogin(appB, 'bob', 'Bob'));
+    ({ id: aliceLocalIdA, token: tokenA } = await registerAndLogin(
+      appA,
+      'alice',
+      'Alice',
+    ));
+    ({ id: bobLocalIdB, token: tokenB } = await registerAndLogin(
+      appB,
+      'bob',
+      'Bob',
+    ));
     // dave @ appB — a second local user, used as a second member of the same group MIRROR (the
     // shared-mirror two-member test: same-server members receive via the one mirror thread's SSE fan).
-    ({ id: daveLocalIdB, token: tokenDave } = await registerAndLogin(appB, 'dave', 'Dave'));
+    ({ id: daveLocalIdB, token: tokenDave } = await registerAndLogin(
+      appB,
+      'dave',
+      'Dave',
+    ));
 
     // carol @ appA — a LOCAL friend of alice. The profile-edit fan-out (PEER_PROFILE_UPDATED) targets
     // active P2P peers; a foreign stub holds no SSE connection, so this gives the fan-out a real local
     // recipient whose SSE stream the test can read.
-    ({ id: carolLocalIdA, token: tokenCarol } = await registerAndLogin(appA, 'carol', 'Carol'));
+    ({ id: carolLocalIdA, token: tokenCarol } = await registerAndLogin(
+      appA,
+      'carol',
+      'Carol',
+    ));
     await appA.prisma.$transaction(async (tx) => {
-      const t = await tx.messageThread.create({ data: { type: MessageThreadType.P2P } });
+      const t = await tx.messageThread.create({
+        data: { type: MessageThreadType.P2P },
+      });
       await tx.threadParticipant.createMany({
         data: [
           { userId: aliceLocalIdA, threadId: t.id },
@@ -149,6 +172,38 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(inviteB).not.toBeNull();
     expect(inviteB!.toUserId).not.toBe(aliceStubIdOnB); // addressed to bob (local), not the stub
+
+    // Crossed-request edge: before accepting Alice's request, Bob independently adds Alice. Both
+    // nodes temporarily hold one incoming + one outgoing PENDING row for the pair.
+    const reverse = await request(appB.baseUrl)
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ toUserId: aliceStubIdOnB, note: 'hi back from bbb' });
+    expect(reverse.status).toBe(200);
+    expect(reverse.body.code).toBe(BusinessCode.OK);
+
+    const pendingA = await appA.prisma.invite.count({
+      where: {
+        kind: 'FRIEND',
+        status: 'PENDING',
+        OR: [
+          { fromUserId: aliceLocalIdA, toUserId: bobStubIdOnA },
+          { fromUserId: bobStubIdOnA, toUserId: aliceLocalIdA },
+        ],
+      },
+    });
+    const pendingB = await appB.prisma.invite.count({
+      where: {
+        kind: 'FRIEND',
+        status: 'PENDING',
+        OR: [
+          { fromUserId: bobLocalIdB, toUserId: aliceStubIdOnB },
+          { fromUserId: aliceStubIdOnB, toUserId: bobLocalIdB },
+        ],
+      },
+    });
+    expect(pendingA).toBe(2);
+    expect(pendingB).toBe(2);
   });
 
   it('friend.approve (no profile) creates the P2P thread on both servers', async () => {
@@ -177,9 +232,37 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // appA (requester side): received friend.approve → its own P2P thread + outgoing invite ACCEPTED.
     const invA = await appA.prisma.invite.findFirst({
-      where: { kind: 'FRIEND', fromUserId: aliceLocalIdA, toUserId: bobStubIdOnA },
+      where: {
+        kind: 'FRIEND',
+        fromUserId: aliceLocalIdA,
+        toUserId: bobStubIdOnA,
+      },
     });
     expect(invA?.status).toBe('ACCEPTED');
+    expect(
+      await appA.prisma.invite.count({
+        where: {
+          kind: 'FRIEND',
+          status: 'PENDING',
+          OR: [
+            { fromUserId: aliceLocalIdA, toUserId: bobStubIdOnA },
+            { fromUserId: bobStubIdOnA, toUserId: aliceLocalIdA },
+          ],
+        },
+      }),
+    ).toBe(0);
+    expect(
+      await appB.prisma.invite.count({
+        where: {
+          kind: 'FRIEND',
+          status: 'PENDING',
+          OR: [
+            { fromUserId: bobLocalIdB, toUserId: aliceStubIdOnB },
+            { fromUserId: aliceStubIdOnB, toUserId: bobLocalIdB },
+          ],
+        },
+      }),
+    ).toBe(0);
     const threadA = await appA.prisma.threadParticipant.findFirst({
       where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
       select: { threadId: true },
@@ -242,16 +325,100 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         { timeout: 5000 },
       );
       // The real SSE stream delivered the identity-only NEW_MESSAGE signal to bob (end-to-end wire delivery).
-      await waitForSseEvent(reader, (event, data) =>
-        event === 'NEW_MESSAGE' &&
-        typeof data === 'object' && data !== null &&
-        (data as { threadId?: number }).threadId === bobLocalThreadId &&
-        (data as { seq?: number }).seq === bobLocalSeq,
+      await waitForSseEvent(
+        reader,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === bobLocalThreadId &&
+          (data as { seq?: number }).seq === bobLocalSeq,
       );
     } finally {
       await reader.cancel();
     }
   });
+
+  it('forwards a complete bundle closure, preserves retry idempotency, and relays a nested bundle from the receiving server', async () => {
+    const sourceA = await appA.prisma.message.findFirstOrThrow({
+      where: { content: 'hi from alice', creator: aliceLocalIdA },
+    });
+    const clientMessageIdA = randomUUID();
+    const payloadA = {
+      threadId: sourceA.threadId,
+      sourceMessages: [{ threadId: sourceA.threadId, seq: sourceA.seq }],
+      clientMessageId: clientMessageIdA,
+    };
+    const first = await request(appA.baseUrl)
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send(payloadA);
+    expect(first.status).toBe(200);
+    expect(first.body.code).toBe(BusinessCode.OK);
+    const retry = await request(appA.baseUrl)
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send(payloadA);
+    expect(retry.body.data.seq).toBe(first.body.data.seq);
+    expect(
+      await appA.prisma.message.count({
+        where: { clientMessageId: clientMessageIdA },
+      }),
+    ).toBe(1);
+
+    let importedOnB: {
+      threadId: number;
+      seq: number;
+      forwardMessage: { bundleId: string; bundle: { depth: number } } | null;
+    } | null = null;
+    await vi.waitFor(
+      async () => {
+        importedOnB = await appB.prisma.message.findFirst({
+          where: {
+            creator: aliceStubIdOnB,
+            contentType: ContentType.FORWARD,
+          },
+          include: { forwardMessage: { include: { bundle: true } } },
+          orderBy: { seq: 'desc' },
+        });
+        expect(importedOnB?.forwardMessage?.bundle.depth).toBe(1);
+      },
+      { timeout: 8000 },
+    );
+
+    const clientMessageIdB = randomUUID();
+    const nested = await request(appB.baseUrl)
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: importedOnB!.threadId,
+        sourceMessages: [
+          { threadId: importedOnB!.threadId, seq: importedOnB!.seq },
+        ],
+        clientMessageId: clientMessageIdB,
+      });
+    expect(nested.status).toBe(200);
+    expect(nested.body.code).toBe(BusinessCode.OK);
+
+    await vi.waitFor(
+      async () => {
+        const relayed = await appA.prisma.message.findFirst({
+          where: {
+            creator: bobStubIdOnA,
+            contentType: ContentType.FORWARD,
+          },
+          include: { forwardMessage: { include: { bundle: true } } },
+          orderBy: { seq: 'desc' },
+        });
+        expect(relayed?.forwardMessage?.bundle.depth).toBe(2);
+        const closure = await appA.prisma.forwardBundleDependency.findMany({
+          where: { parentBundleId: relayed!.forwardMessage!.bundleId },
+        });
+        expect(closure).toHaveLength(1);
+      },
+      { timeout: 8000 },
+    );
+  }, 30_000);
 
   it('Step 2: pull-on-open is idempotent (a re-sync stores no duplicate)', async () => {
     const before = await appB.prisma.message.count({
@@ -300,13 +467,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // Drive appA's /s2s/messages/before as appB (the requester) via the test probe.
     const before = async (beforeSeq: number, take: number) =>
-      (
-        await fetch(
-          `http://127.0.0.1:${appB.port}/api/v1/test/signed-s2s-get?peerDomain=${DOM_A}&path=${encodeURIComponent(
-            `/api/v1/s2s/messages/before?fromAccount=alice&fromDomain=${DOM_A}&toAccount=bob&toDomain=${DOM_B}&beforeSeq=${beforeSeq}&take=${take}`,
-          )}`,
-        ).then((r) => r.json())
-      ) as {
+      (await fetch(
+        `http://127.0.0.1:${appB.port}/api/v1/test/signed-s2s-get?peerDomain=${DOM_A}&path=${encodeURIComponent(
+          `/api/v1/s2s/messages/before?fromAccount=alice&fromDomain=${DOM_A}&toAccount=bob&toDomain=${DOM_B}&beforeSeq=${beforeSeq}&take=${take}`,
+        )}`,
+      ).then((r) => r.json())) as {
         status: number;
         body: {
           code: number;
@@ -396,7 +561,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('Step 2: a federated image localizes on the peer (media round-trip, same-origin)', async () => {
     // alice uploads an image on appA (fixture) → a CAS url. Sent as an IMAGE message whose content
     // embeds the url (the shape extractDigestEntries scans for the digest + ext).
-    const { url, size, digest } = await stageCasAsset(appA.prisma, 'image/png', await makePng(77));
+    const { url, size, digest } = await stageCasAsset(
+      appA.prisma,
+      'image/png',
+      await makePng(77),
+    );
     const content = JSON.stringify({ url, w: 16, h: 16, size });
     const res = await request(appA.baseUrl)
       .post('/api/v1/send-message')
@@ -443,7 +612,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // A 48x48 PNG spans several 64-byte chunks (chunk size forced small in beforeAll). The file can ONLY
     // localize if appB fetches /get_file as a sequence of signed Range GETs + reassembles them — so a
     // byte-exact result here PROVES the multi-chunk path (no need to count /get_file calls).
-    const { url, size, digest } = await stageCasAsset(appA.prisma, 'image/png', await makePng(77, 48));
+    const { url, size, digest } = await stageCasAsset(
+      appA.prisma,
+      'image/png',
+      await makePng(77, 48),
+    );
     const content = JSON.stringify({ url, w: 48, h: 48, size });
 
     const res = await request(appA.baseUrl)
@@ -493,7 +666,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('Step 2: a dropped /get_file chunk resumes from its offset (no demote, byte-exact)', async () => {
-    const { url, size, digest } = await stageCasAsset(appA.prisma, 'image/png', await makePng(190, 48));
+    const { url, size, digest } = await stageCasAsset(
+      appA.prisma,
+      'image/png',
+      await makePng(190, 48),
+    );
     const content = JSON.stringify({ url, w: 48, h: 48, size });
 
     // Arm the S2S proxy (on appB→appA) to truncate the FIRST /get_file `bytes=0-` response mid-stream —
@@ -579,7 +756,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 8000 },
     );
     expect(after.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
-    expect(after.remoteProfileRev!).toBeGreaterThanOrEqual(before!.remoteProfileRev!);
+    expect(after.remoteProfileRev!).toBeGreaterThanOrEqual(
+      before!.remoteProfileRev!,
+    );
   });
 
   it('sync-peer-profile is ACK-only (no payload) and no-ops when the stub is fresh', async () => {
@@ -595,7 +774,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appB.baseUrl)
       .post('/api/v1/user/sync-peer-profile')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB, sinceProfileRev: before!.remoteProfileRev! });
+      .send({
+        userId: aliceStubIdOnB,
+        sinceProfileRev: before!.remoteProfileRev!,
+      });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
     expect(res.body.data).toBeFalsy(); // ACK-only — no profile payload on the wire
@@ -625,7 +807,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         reader,
         (event, data) =>
           event === 'PEER_PROFILE_UPDATED' &&
-          typeof data === 'object' && data !== null &&
+          typeof data === 'object' &&
+          data !== null &&
           (data as { userId?: number }).userId === aliceLocalIdA,
       )) as { userId?: number };
       // Signal-only: the payload carries just { userId } — the client HTTP-pulls the fresh profile itself
@@ -657,7 +840,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         reader,
         (event, data) =>
           event === 'PEER_PROFILE_UPDATED' &&
-          typeof data === 'object' && data !== null &&
+          typeof data === 'object' &&
+          data !== null &&
           (data as { userId?: number }).userId === aliceStubIdOnB,
       );
     } finally {
@@ -713,7 +897,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const card = await appB.prisma.message.findFirst({
-          where: { contentType: ContentType.INVITE, content: { contains: groupAccount } },
+          where: {
+            contentType: ContentType.INVITE,
+            content: { contains: groupAccount },
+          },
         });
         expect(card).not.toBeNull();
       },
@@ -727,13 +914,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ inviteId: groupAccount });
     expect(accept.status).toBe(200);
-    expect([BusinessCode.OK, BusinessCode.FEDERATION_DELIVERY_FAILED]).toContain(accept.body.code);
+    expect([
+      BusinessCode.OK,
+      BusinessCode.FEDERATION_DELIVERY_FAILED,
+    ]).toContain(accept.body.code);
 
     // The origin (appA) records bob on its canonical roster (handleGroupAccept). Poll for it.
     await vi.waitFor(
       async () => {
         const bobOnA = await appA.prisma.threadParticipant.findUnique({
-          where: { userId_threadId: { userId: bobStubIdOnA, threadId: groupThreadA } },
+          where: {
+            userId_threadId: { userId: bobStubIdOnA, threadId: groupThreadA },
+          },
           select: { leftAt: true },
         });
         expect(bobOnA?.leftAt).toBeNull(); // bob is an active member on the origin roster
@@ -748,7 +940,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       const send = await request(appA.baseUrl)
         .post('/api/v1/send-message')
         .set('Authorization', `Bearer ${tokenA}`)
-        .send({ threadId: groupThreadA, content: 'hello group', contentType: 'PURE_TEXT' });
+        .send({
+          threadId: groupThreadA,
+          content: 'hello group',
+          contentType: 'PURE_TEXT',
+        });
       expect(send.status).toBe(200);
       expect(send.body.code).toBe(BusinessCode.OK);
       // The message lands on bob's mirror (origin-hub: appA signals appB; appB pulls). Capture its
@@ -765,11 +961,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         { timeout: 8000 },
       );
       // ...AND arrives on bob's real SSE stream (identity-only NEW_MESSAGE signal, end-to-end cross-server).
-      await waitForSseEvent(reader, (event, data) =>
-        event === 'NEW_MESSAGE' &&
-        typeof data === 'object' && data !== null &&
-        (data as { threadId?: number }).threadId === mirrorB.id &&
-        (data as { seq?: number }).seq === helloGroupSeq,
+      await waitForSseEvent(
+        reader,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === mirrorB.id &&
+          (data as { seq?: number }).seq === helloGroupSeq,
       );
     } finally {
       await reader.cancel();
@@ -787,18 +986,30 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ threadId: firstGroupThreadA, content: 'open-recover-1', contentType: 'PURE_TEXT' });
+      .send({
+        threadId: firstGroupThreadA,
+        content: 'open-recover-1',
+        contentType: 'PURE_TEXT',
+      });
     await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ threadId: firstGroupThreadA, content: 'open-recover-2', contentType: 'PURE_TEXT' });
+      .send({
+        threadId: firstGroupThreadA,
+        content: 'open-recover-2',
+        contentType: 'PURE_TEXT',
+      });
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-1' } }),
+          await appB.prisma.message.findFirst({
+            where: { threadId: firstMirrorBId, content: 'open-recover-1' },
+          }),
         ).not.toBeNull();
         expect(
-          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-2' } }),
+          await appB.prisma.message.findFirst({
+            where: { threadId: firstMirrorBId, content: 'open-recover-2' },
+          }),
         ).not.toBeNull();
       },
       { timeout: 8000 },
@@ -810,21 +1021,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // per-author), so a deletion alone would NOT self-heal (unlike P2P's derived MAX). We regress the
     // cursor explicitly — the exact real stuck condition — reading open-recover-1's origin thread seq from
     // appA (the authority), since appB's stored copy carries only its OWN local seq + the per-author originSeq.
-    const recover1OriginSeq = (
-      await appA.prisma.message.findFirst({
-        where: { threadId: firstGroupThreadA, content: 'open-recover-1' },
-        select: { seq: true },
-      })
-    )!.seq;
+    const recover1OriginSeq = (await appA.prisma.message.findFirst({
+      where: { threadId: firstGroupThreadA, content: 'open-recover-1' },
+      select: { seq: true },
+    }))!.seq;
     await appB.prisma.message.deleteMany({
-      where: { threadId: firstMirrorBId, content: { in: ['open-recover-1', 'open-recover-2'] } },
+      where: {
+        threadId: firstMirrorBId,
+        content: { in: ['open-recover-1', 'open-recover-2'] },
+      },
     });
     await appB.prisma.messageThread.update({
       where: { id: firstMirrorBId },
       data: { pullUntil: recover1OriginSeq - 1 },
     });
     expect(
-      await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-1' } }),
+      await appB.prisma.message.findFirst({
+        where: { threadId: firstMirrorBId, content: 'open-recover-1' },
+      }),
     ).toBeNull();
 
     // bob opens the group chat → /group/sync-meta → syncGroupMessagesOnOpen → force-pull (bypasses the
@@ -837,10 +1051,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-1' } }),
+          await appB.prisma.message.findFirst({
+            where: { threadId: firstMirrorBId, content: 'open-recover-1' },
+          }),
         ).not.toBeNull();
         expect(
-          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-2' } }),
+          await appB.prisma.message.findFirst({
+            where: { threadId: firstMirrorBId, content: 'open-recover-2' },
+          }),
         ).not.toBeNull();
       },
       { timeout: 8000 },
@@ -882,7 +1100,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       async () => {
         expect(
           await appB.prisma.threadParticipant.findFirst({
-            where: { userId: daveLocalIdB, leftAt: null, thread: { type: 'P2P' } },
+            where: {
+              userId: daveLocalIdB,
+              leftAt: null,
+              thread: { type: 'P2P' },
+            },
             select: { threadId: true },
           }),
         ).not.toBeNull();
@@ -914,14 +1136,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenDave}`)
       .send({ inviteId: firstGroupAccount });
-    expect([BusinessCode.OK, BusinessCode.FEDERATION_DELIVERY_FAILED]).toContain(daveAccept.body.code);
+    expect([
+      BusinessCode.OK,
+      BusinessCode.FEDERATION_DELIVERY_FAILED,
+    ]).toContain(daveAccept.body.code);
 
     // dave is now on the SAME mirror thread as bob (the shared-mirror property).
     await vi.waitFor(
       async () => {
         expect(
           await appB.prisma.threadParticipant.findFirst({
-            where: { userId: daveLocalIdB, threadId: firstMirrorBId, leftAt: null },
+            where: {
+              userId: daveLocalIdB,
+              threadId: firstMirrorBId,
+              leftAt: null,
+            },
           }),
         ).not.toBeNull();
       },
@@ -935,7 +1164,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       await request(appA.baseUrl)
         .post('/api/v1/send-message')
         .set('Authorization', `Bearer ${tokenA}`)
-        .send({ threadId: firstGroupThreadA, content: 'hi both', contentType: 'PURE_TEXT' });
+        .send({
+          threadId: firstGroupThreadA,
+          content: 'hi both',
+          contentType: 'PURE_TEXT',
+        });
       // 'hi both' is pulled into the SHARED mirror; capture its receiver-local seq once, then assert the
       // identity-only NEW_MESSAGE signal { threadId, seq, ts } reached BOTH local members — the fan must
       // iterate every active local member of the one mirror thread, not just the first.
@@ -976,7 +1209,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('Step 3: a mirror member leaving propagates to the origin roster (pull-reject dissolution, no demote)', async () => {
     // Precondition: bob's stub is ACTIVE on the origin's canonical roster for the first group.
     const bobOnABefore = await appA.prisma.threadParticipant.findUnique({
-      where: { userId_threadId: { userId: bobStubIdOnA, threadId: firstGroupThreadA } },
+      where: {
+        userId_threadId: { userId: bobStubIdOnA, threadId: firstGroupThreadA },
+      },
       select: { leftAt: true },
     });
     expect(bobOnABefore?.leftAt).toBeNull();
@@ -1003,7 +1238,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const bobOnB = await appB.prisma.threadParticipant.findUnique({
-          where: { userId_threadId: { userId: bobLocalB!.id, threadId: firstMirrorBId } },
+          where: {
+            userId_threadId: {
+              userId: bobLocalB!.id,
+              threadId: firstMirrorBId,
+            },
+          },
           select: { leftAt: true },
         });
         expect(bobOnB?.leftAt).not.toBeNull();
@@ -1016,7 +1256,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         const bobOnAAfter = await appA.prisma.threadParticipant.findUnique({
-          where: { userId_threadId: { userId: bobStubIdOnA, threadId: firstGroupThreadA } },
+          where: {
+            userId_threadId: {
+              userId: bobStubIdOnA,
+              threadId: firstGroupThreadA,
+            },
+          },
           select: { leftAt: true },
         });
         expect(bobOnAAfter?.leftAt).not.toBeNull();
@@ -1050,7 +1295,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const pre = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ threadId: groupThreadA, content: 'before-bob-joined', contentType: 'PURE_TEXT' });
+      .send({
+        threadId: groupThreadA,
+        content: 'before-bob-joined',
+        contentType: 'PURE_TEXT',
+      });
     expect(pre.body.code).toBe(BusinessCode.OK);
 
     // Invite bob — the invite carries sinceSeq = origin curSeq = 0.
@@ -1084,13 +1333,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ inviteId: groupAccount });
-    expect([BusinessCode.OK, BusinessCode.FEDERATION_DELIVERY_FAILED]).toContain(accept.body.code);
+    expect([
+      BusinessCode.OK,
+      BusinessCode.FEDERATION_DELIVERY_FAILED,
+    ]).toContain(accept.body.code);
 
     // A post-invite message (origin seq 1) → appB pulls seq > 0 → gets this, NOT seq 0.
     const post = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ threadId: groupThreadA, content: 'after-invite', contentType: 'PURE_TEXT' });
+      .send({
+        threadId: groupThreadA,
+        content: 'after-invite',
+        contentType: 'PURE_TEXT',
+      });
     expect(post.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
       async () => {
@@ -1243,7 +1499,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .post(`/api/v1/admin/federation/peers/${DOM_B}/events`)
       .set('Cookie', adminCookieA)
       .send({ take: 50 });
-    const types = (eventsRes.body.data as { type: string }[]).map((e) => e.type);
+    const types = (eventsRes.body.data as { type: string }[]).map(
+      (e) => e.type,
+    );
     expect(types[0]).toBe('trusted');
     expect(types).toContain('demoted');
   });
@@ -1274,7 +1532,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Cookie', adminCookieA)
       .send({ skip: 0, take: 10, status: 'blocked' });
     expect(
-      (listRes.body.data.list as { domain: string }[]).some((p) => p.domain === DOM_B),
+      (listRes.body.data.list as { domain: string }[]).some(
+        (p) => p.domain === DOM_B,
+      ),
     ).toBe(true);
 
     const tlRes = await request(appA.baseUrl)

@@ -16,6 +16,7 @@ import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
+import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -40,6 +41,7 @@ import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
     UploadModule,
     MessageModule,
     LinkPreviewModule,
+    ForwardBundleModule,
   ],
   controllers: [WellKnownController, S2sController, S2sInitController],
   providers: [
@@ -51,6 +53,12 @@ import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
     FederationBufferService,
     FederationReconnectService,
   ],
-  exports: [KeypairService, SignatureService, DiscoveryService, FederationService, FederationBufferService],
+  exports: [
+    KeypairService,
+    SignatureService,
+    DiscoveryService,
+    FederationService,
+    FederationBufferService,
+  ],
 })
 export class FederationModule {}

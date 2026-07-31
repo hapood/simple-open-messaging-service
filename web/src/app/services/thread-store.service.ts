@@ -176,7 +176,6 @@ export class ThreadRepository {
           break;
       }
     });
-
     // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
     // (cache-paint + delta-replay + missed-summary walk). No separate reconnect→boot wiring needed.
 
@@ -420,14 +419,29 @@ export class ThreadRepository {
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
       const found = list.find((t) => t.threadId === threadId);
-      if (!found || seq <= (found.lastReadSeq ?? -1)) return list;
+      if (!found) return list;
+      const currentReadSeq = found.lastReadSeq ?? -1;
+      const knownLatestSeq = Math.max(
+        found.lastMessageSeq ?? -1,
+        this.lastSeenSeq.get(threadId) ?? -1,
+      );
+      if (seq < currentReadSeq) return list;
+      if (seq === currentReadSeq) {
+        // Normally a repeated cursor is a no-op. Repair the legacy/in-flight contradictory state where the
+        // cursor already covers the known tail but a stale summary left a positive badge behind. Requiring a
+        // known HWM prevents viewing an older message from clearing genuinely newer unread messages.
+        if (found.unreadCount === 0 || knownLatestSeq < 0 || seq < knownLatestSeq)
+          return list;
+      }
       const unreadCount =
-        typeof found.lastMessageSeq === 'number'
-          ? Math.max(0, found.lastMessageSeq - seq)
+        knownLatestSeq >= 0
+          ? Math.max(0, knownLatestSeq - seq)
           : found.unreadCount;
       changed = {
         ...found,
         lastReadSeq: seq,
+        lastMessageSeq:
+          knownLatestSeq >= 0 ? knownLatestSeq : found.lastMessageSeq,
         unreadCount,
         mentionUnread:
           unreadCount === 0 ? 'none' : found.mentionUnread,
@@ -650,7 +664,11 @@ export class ThreadRepository {
       const item = list[idx];
       // No live unread bump — `unreadCount` is server-authoritative (set by mergeSummaryReadState on the
       // missed-summary pull). Advance the public per-thread message HWM together with recency.
-      changed = { ...item, lastMessageAt: msg.ts };
+      changed = {
+        ...item,
+        lastMessageAt: msg.ts,
+        lastMessageSeq: Math.max(item.lastMessageSeq ?? -1, msg.seq),
+      };
       const next = list.slice();
       next[idx] = changed;
       next.sort(byPinRank);
@@ -712,6 +730,10 @@ export class ThreadRepository {
   private static readonly PULL_DEBOUNCE_MS = 200;
   private static readonly PULL_MAX_WAIT_MS = 3000;
   private pullTimer?: ReturnType<typeof setTimeout>;
+  /** A pull can outlive the debounce window. Preserve a later window as trailing work instead of letting
+   *  MissedSyncService's single-flight no-op discard it. */
+  private pullInFlight = false;
+  private pullPending = false;
   /** Epoch-ms the current debounce window opened (0 = no window armed). Lets a mid-window [schedulePull]
    *  compute how much of the max-wait budget remains from the leading edge. */
   private pullArmedAt = 0;
@@ -832,8 +854,13 @@ export class ThreadRepository {
    *  never regresses on a stale `to ≤ from` — an empty walk leaves the HWM). Fire-and-forget from HELLO +
    *  (debounced) each NEW_MESSAGE; a transient failure retries on the next trigger. */
   private async pullMissed(): Promise<void> {
+    if (this.pullInFlight) {
+      this.pullPending = true;
+      return;
+    }
     const to = this._to;
     if (!to) return; // no HELLO yet → nothing to walk toward
+    this.pullInFlight = true;
     try {
       let from = this._missedCursor();
       let walkedAny = false;
@@ -854,6 +881,14 @@ export class ThreadRepository {
       await this.hydratePreviews();
     } catch {
       /* best-effort — the next HELLO/NEW_MESSAGE retries */
+    } finally {
+      this.pullInFlight = false;
+      if (this.pullPending) {
+        this.pullPending = false;
+        // `_to` may have advanced while the previous request was in flight. Drain that newest bound now,
+        // after the service-level single-flight guard has been released by the awaited request.
+        void this.pullMissed();
+      }
     }
   }
 

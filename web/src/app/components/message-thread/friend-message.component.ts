@@ -25,6 +25,7 @@ import {
 import {
   pickStickyDateLabel,
   isViewportTransformEnd,
+  unreadDividerOverlapsStickyDate,
 } from '../../lib/sticky-date';
 import { HttpItemSource } from './http-item-source';
 import { MediaProbeScheduler } from './media-probe-scheduler';
@@ -101,6 +102,11 @@ import { AttachmentUploadQueueService } from '../../services/attachment-upload-q
 import { DebugToolsService } from '../../services/debug-tools.service';
 import { ToastService } from '../../services/toast.service';
 import {
+  messageCopyBody,
+  selectedMessagesCopyText,
+  type MessageCopyLabels,
+} from './message-copy';
+import {
   NativeComposerService,
   type NativeComposerEvent,
   type NativeVoiceUploadEvent,
@@ -128,6 +134,7 @@ import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
 import { messageOpenOptions } from './message-open-position';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
+import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
 
 type PreparedWebAttachment =
   | {
@@ -287,7 +294,10 @@ export class MessageThreadComponent implements OnDestroy {
   readonly selectionMode = signal(false);
   readonly selectedMessageIds = signal<ReadonlySet<number>>(new Set());
   readonly selectedCount = computed(() => this.selectedMessageIds().size);
-  private readonly selectedMessageItems = new Map<number, CbItem<ChatItemData>>();
+  private readonly selectedMessageItems = new Map<
+    number,
+    CbItem<ChatItemData>
+  >();
   readonly messageContextMenu = signal<{
     item: CbItem<ChatItemData>;
     x: number;
@@ -898,28 +908,32 @@ export class MessageThreadComponent implements OnDestroy {
           : undefined,
       )
       .finally(() => {
-      this.initialLoading.set(false);
-      this.kernelReady = true;
-      if (isDevMode()) {
-        console.log('[chat-perf] scroller:ready', {
-          threadId: trd.threadId,
-          elapsedMs: Math.round(performance.now() - initStartedAt),
-        });
-      }
-      this.ready.emit(trd.threadId);
-      // Only after the DB/scroller phase is complete may the source compare the locally-loaded tail with
-      // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
-      // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
-      // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
-      this.source?.finishLocalInit(
-        this.convList.latestSeq(trd.threadId),
-        trd.lastMessageSeq,
-      );
-      // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
-      // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
-      void this.scroller
-        ?.backfillOlder?.()
-        .catch((e) => console.error('[chat] history backfill rejected', e));
+        this.initialLoading.set(false);
+        this.kernelReady = true;
+        // `onScroll` normally runs after the initial batch mounts, but the first paint must not depend on that
+        // kernel callback: explicitly recompute once init has settled so a top-anchored unread divider suppresses
+        // the floating date pill before the pane is handed to the user.
+        this.updateStickyDate();
+        if (isDevMode()) {
+          console.log('[chat-perf] scroller:ready', {
+            threadId: trd.threadId,
+            elapsedMs: Math.round(performance.now() - initStartedAt),
+          });
+        }
+        this.ready.emit(trd.threadId);
+        // Only after the DB/scroller phase is complete may the source compare the locally-loaded tail with
+        // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
+        // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
+        // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
+        this.source?.finishLocalInit(
+          this.convList.latestSeq(trd.threadId),
+          trd.lastMessageSeq,
+        );
+        // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
+        // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
+        void this.scroller
+          ?.backfillOlder?.()
+          .catch((e) => console.error('[chat] history backfill rejected', e));
       });
   }
 
@@ -958,9 +972,15 @@ export class MessageThreadComponent implements OnDestroy {
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
     );
     const selection = this.messageSelectionState(item);
-    rendered.el.classList.toggle('cb-message--selection-mode', this.selectionMode());
+    rendered.el.classList.toggle(
+      'cb-message--selection-mode',
+      this.selectionMode(),
+    );
     rendered.el.classList.toggle('cb-message--selected', selection === 'all');
-    rendered.el.classList.toggle('cb-message--partially-selected', selection === 'some');
+    rendered.el.classList.toggle(
+      'cb-message--partially-selected',
+      selection === 'some',
+    );
     rendered.el.setAttribute('aria-selected', String(selection === 'all'));
     rendered.el
       .querySelectorAll<HTMLElement>('[data-media-message-id]')
@@ -1022,6 +1042,57 @@ export class MessageThreadComponent implements OnDestroy {
   dismissContextMenu(): void {
     this.messageContextMenu.set(null);
     this.syncMountedSelectionState();
+  }
+
+  async copyContextMessage(): Promise<void> {
+    const context = this.messageContextMenu();
+    if (!context) return;
+    this.messageContextMenu.set(null);
+    await this.writeMessageClipboard(
+      messageCopyBody(context.item.data, this.messageCopyLabels()),
+      1,
+      false,
+    );
+  }
+
+  async copySelectedMessages(): Promise<void> {
+    const messages = [...this.selectedMessageIds()]
+      .map((id) => this.selectedMessageItems.get(id)?.data)
+      .filter((message): message is ChatMsgData => message !== undefined);
+    if (!messages.length) return;
+    await this.writeMessageClipboard(
+      selectedMessagesCopyText(messages, this.messageCopyLabels()),
+      messages.length,
+      true,
+    );
+  }
+
+  private async writeMessageClipboard(
+    text: string,
+    count: number,
+    exitSelection: boolean,
+  ): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      this.toast.info(
+        this.transloco.translate('chat.selection.copied', { count }),
+      );
+      if (exitSelection) this.exitSelectionMode();
+    } catch {
+      this.toast.warn(this.transloco.translate('chat.selection.copyFailed'));
+    }
+  }
+
+  private messageCopyLabels(): MessageCopyLabels {
+    return {
+      photo: this.transloco.translate('chat.preview.photo'),
+      video: this.transloco.translate('chat.preview.video'),
+      voice: this.transloco.translate('chat.preview.voice'),
+      file: this.transloco.translate('chat.preview.file'),
+      invite: this.transloco.translate('chat.preview.invite'),
+      call: this.transloco.translate('forward.call'),
+      forward: this.transloco.translate('forward.chatHistory'),
+    };
   }
 
   dismissContextMenuOnOutside(event: PointerEvent): void {
@@ -1127,26 +1198,99 @@ export class MessageThreadComponent implements OnDestroy {
     const messages = items
       .slice()
       .sort((a, b) => a.data.createdAtMs - b.data.createdAtMs)
-      .map((item): ForwardMessageItem => ({
-        id: item.id,
-        name: item.data.name,
-        summary: this.forwardSummary(item.data),
-        original: item.data,
-      }));
+      .map(
+        (item): ForwardMessageItem => ({
+          id: item.id,
+          name: item.data.name,
+          summary: this.forwardSummary(item.data),
+          original: item.data,
+        }),
+      );
     const source = this.convList
       .items()
       .find((thread) => thread.threadId === this.threadId());
-    this.route.popupDlg(PopupType.FORWARD, {
-      messages,
-      recordKind: source?.type === 'GROUP' ? 'group' : 'chat',
-    });
+    const sourceThreadId = this.threadId();
+    if (!sourceThreadId) return;
+    this.route.popupDlg(
+      PopupType.FORWARD,
+      {
+        messages,
+        recordKind: source?.type === 'GROUP' ? 'group' : 'chat',
+      },
+      (result) => {
+        if (result) void this.sendForward(result, sourceThreadId);
+      },
+    );
+  }
+
+  private async sendForward(
+    result: ForwardDialogResult,
+    sourceThreadId: number,
+  ): Promise<void> {
+    const sourceMessages = result.messages.map((message) => ({
+      threadId: sourceThreadId,
+      seq: message.id,
+    }));
+    const outcomes = await Promise.all(
+      result.threadIds.map(
+        async (
+          threadId,
+        ): Promise<{
+          ok: boolean;
+          response?: StandardResponse<unknown>;
+        }> => {
+          try {
+            const response = await firstValueFrom(
+              this.msgService.sendForward({
+                threadId,
+                sourceMessages,
+                clientMessageId: this.newClientMessageId(),
+              }),
+            );
+            return { ok: response.code === 0, response };
+          } catch {
+            return { ok: false };
+          }
+        },
+      ),
+    );
+    const sent = outcomes.filter((outcome) => outcome.ok).length;
+    if (sent === outcomes.length) {
+      this.toast.info(
+        this.transloco.translate('forward.sent', { count: sent }),
+      );
+      this.exitSelectionMode();
+      return;
+    }
+    if (sent > 0) {
+      this.toast.warn(
+        this.transloco.translate('forward.partiallySent', {
+          sent,
+          total: outcomes.length,
+        }),
+      );
+      this.exitSelectionMode();
+      return;
+    }
+    const businessFailure = outcomes.find(
+      (outcome) => outcome.response,
+    )?.response;
+    this.toast.warn(
+      businessFailure
+        ? translateBizResult(businessFailure, this.transloco)
+        : this.transloco.translate('forward.sendFailed'),
+    );
   }
 
   private forwardSummary(message: ChatMsgData): string {
     if (message.contentType === 'PURE_TEXT' || message.contentType === 'LINK')
-      return message.text.trim() || this.transloco.translate('forward.emptyMessage');
+      return (
+        message.text.trim() || this.transloco.translate('forward.emptyMessage')
+      );
     if (message.contentType === 'FILE')
-      return message.file?.name || this.transloco.translate('chat.preview.file');
+      return (
+        message.file?.name || this.transloco.translate('chat.preview.file')
+      );
     const keys: Partial<Record<ChatMsgData['contentType'], string>> = {
       IMAGE: 'chat.preview.photo',
       VIDEO: 'chat.preview.video',
@@ -1154,7 +1298,9 @@ export class MessageThreadComponent implements OnDestroy {
       INVITE: 'chat.preview.invite',
       CALL: 'forward.call',
     };
-    return this.transloco.translate(keys[message.contentType] ?? 'forward.message');
+    return this.transloco.translate(
+      keys[message.contentType] ?? 'forward.message',
+    );
   }
 
   private syncMountedSelectionState(): void {
@@ -1179,7 +1325,10 @@ export class MessageThreadComponent implements OnDestroy {
               ? 'all'
               : 'some';
         host.classList.toggle('cb-message--selection-mode', active);
-        host.classList.toggle('cb-message--selected', active && state === 'all');
+        host.classList.toggle(
+          'cb-message--selected',
+          active && state === 'all',
+        );
         host.classList.toggle(
           'cb-message--partially-selected',
           active && state === 'some',
@@ -1246,8 +1395,7 @@ export class MessageThreadComponent implements OnDestroy {
     if (
       item.data.type !== 'msg' ||
       item.data.isSelf ||
-      (item.data.mentionState !== 'me' &&
-        item.data.mentionState !== 'all')
+      (item.data.mentionState !== 'me' && item.data.mentionState !== 'all')
     )
       return;
     const className =
@@ -1278,6 +1426,16 @@ export class MessageThreadComponent implements OnDestroy {
     const visibleTop =
       this.headerRef()?.nativeElement.getBoundingClientRect().bottom ??
       vp.getBoundingClientRect().top;
+    const unreadDivider = ct.querySelector<HTMLElement>('.cb-unread-divider');
+    if (
+      unreadDividerOverlapsStickyDate(
+        unreadDivider?.getBoundingClientRect() ?? null,
+        visibleTop,
+      )
+    ) {
+      this.stickyDate.set(null);
+      return;
+    }
     const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
       (d) => ({
         top: d.getBoundingClientRect().top,
@@ -1477,49 +1635,22 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const limitMb =
       entry.kind === 'image' ? 10 : entry.kind === 'video' ? 100 : 50;
-    if (
-      await this.rejectOversizedUpload(
-        entry.cid,
-        item,
-        entry.file,
-        limitMb,
-      )
-    )
+    if (await this.rejectOversizedUpload(entry.cid, item, entry.file, limitMb))
       return;
     if (entry.kind === 'image') {
       const meta = await entry.probeMeta();
       return this.enqueueAttachmentUpload(entry.cid, () =>
-        this.uploadAndSendImage(
-          entry.cid,
-          entry.file,
-          item,
-          meta,
-          retry,
-          true,
-        ),
+        this.uploadAndSendImage(entry.cid, entry.file, item, meta, retry, true),
       );
     }
     if (entry.kind === 'video') {
       const meta = await entry.probeMeta();
       return this.enqueueAttachmentUpload(entry.cid, () =>
-        this.uploadAndSendVideo(
-          entry.cid,
-          entry.file,
-          item,
-          meta,
-          retry,
-          true,
-        ),
+        this.uploadAndSendVideo(entry.cid, entry.file, item, meta, retry, true),
       );
     }
     return this.enqueueAttachmentUpload(entry.cid, () =>
-      this.uploadAndSendFile(
-        entry.cid,
-        entry.file,
-        item,
-        retry,
-        true,
-      ),
+      this.uploadAndSendFile(entry.cid, entry.file, item, retry, true),
     );
   }
 

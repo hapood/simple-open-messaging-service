@@ -84,7 +84,13 @@ export class InviteService {
   async friendRelationshipStatuses(
     me: number,
     requestedUserIds: number[],
-  ): Promise<Array<{ userId: number; status: FriendRelationshipState; inviteId?: string }>> {
+  ): Promise<
+    Array<{
+      userId: number;
+      status: FriendRelationshipState;
+      inviteId?: string;
+    }>
+  > {
     const userIds = [...new Set(requestedUserIds)].filter((id) => id !== me);
     if (userIds.length === 0) return [];
 
@@ -118,9 +124,11 @@ export class InviteService {
     return userIds.map((userId) => {
       if (friends.has(userId)) return { userId, status: 'FRIEND' };
       const outgoingId = outgoing.get(userId);
-      if (outgoingId) return { userId, status: 'OUTGOING_PENDING', inviteId: outgoingId };
+      if (outgoingId)
+        return { userId, status: 'OUTGOING_PENDING', inviteId: outgoingId };
       const incomingId = incoming.get(userId);
-      if (incomingId) return { userId, status: 'INCOMING_PENDING', inviteId: incomingId };
+      if (incomingId)
+        return { userId, status: 'INCOMING_PENDING', inviteId: incomingId };
       return { userId, status: 'NONE' };
     });
   }
@@ -145,75 +153,90 @@ export class InviteService {
     // Explicit type param keeps the callback's `status` literals from widening to string (the
     // bare `const result = await …` form loses the method-return contextual type the old
     // `return this.prisma.$transaction(…)` form got for free).
-    const result = await this.prisma.$transaction<CreateFriendInviteResult>(async (tx) => {
-      if (allowAutoAccept) {
-        const mutual = await tx.invite.findFirst({
-          where: {
-            kind: InviteKind.FRIEND,
-            status: InviteStatus.PENDING,
-            fromUserId: toUserId,
-            toUserId: fromUserId,
-          },
-        });
-        if (mutual) {
-          const threadId = await this.createP2PFriendshipInTx(tx, fromUserId, toUserId);
-          await tx.invite.update({
-            where: { id: mutual.id },
-            data: { status: InviteStatus.ACCEPTED },
-          });
-          return { status: 'auto-accepted', threadId };
-        }
-      }
-
-      const originId = originIdOverride ?? mintUlid();
-      try {
-        const invite = await tx.invite.create({
-          data: {
-            kind: InviteKind.FRIEND,
-            fromUserId,
-            toUserId,
-            note: trimmed,
-            status: InviteStatus.PENDING,
-            expiresAt,
-            origin,
-            originId,
-          },
-        });
-        // The friend-request badge is derived (MAX(createdAt) over incoming FRIEND invites) — creating
-        // this PENDING row advances it automatically (accept/decline don't: createdAt is immutable); no
-        // denormalized badge column to arm here.
-        return { status: 'created', inviteId: invite.id.toString() };
-      } catch (e) {
-        if (
-          e instanceof Prisma.PrismaClientKnownRequestError &&
-          e.code === 'P2002'
-        ) {
-          // Partial unique index (FRIEND, from→to, PENDING) — refresh the existing row in place.
-          const existing = await tx.invite.findFirst({
+    const result = await this.prisma.$transaction<CreateFriendInviteResult>(
+      async (tx) => {
+        if (allowAutoAccept) {
+          const mutual = await tx.invite.findFirst({
             where: {
               kind: InviteKind.FRIEND,
               status: InviteStatus.PENDING,
-              fromUserId,
-              toUserId,
+              fromUserId: toUserId,
+              toUserId: fromUserId,
             },
           });
-          if (existing !== null) {
+          if (mutual) {
+            const threadId = await this.createP2PFriendshipInTx(
+              tx,
+              fromUserId,
+              toUserId,
+            );
             await tx.invite.update({
-              where: { id: existing.id },
-              data: { note: trimmed, expiresAt, origin, originId },
+              where: { id: mutual.id },
+              data: { status: InviteStatus.ACCEPTED },
             });
-            return { status: 'already-pending', inviteId: existing.id.toString() };
+            return { status: 'auto-accepted', threadId };
           }
         }
-        throw e;
-      }
-    });
+
+        const originId = originIdOverride ?? mintUlid();
+        try {
+          const invite = await tx.invite.create({
+            data: {
+              kind: InviteKind.FRIEND,
+              fromUserId,
+              toUserId,
+              note: trimmed,
+              status: InviteStatus.PENDING,
+              expiresAt,
+              origin,
+              originId,
+            },
+          });
+          // The friend-request badge is derived (MAX(createdAt) over incoming FRIEND invites) — creating
+          // this PENDING row advances it automatically (accept/decline don't: createdAt is immutable); no
+          // denormalized badge column to arm here.
+          return { status: 'created', inviteId: invite.id.toString() };
+        } catch (e) {
+          if (
+            e instanceof Prisma.PrismaClientKnownRequestError &&
+            e.code === 'P2002'
+          ) {
+            // Partial unique index (FRIEND, from→to, PENDING) — refresh the existing row in place.
+            const existing = await tx.invite.findFirst({
+              where: {
+                kind: InviteKind.FRIEND,
+                status: InviteStatus.PENDING,
+                fromUserId,
+                toUserId,
+              },
+            });
+            if (existing !== null) {
+              await tx.invite.update({
+                where: { id: existing.id },
+                data: { note: trimmed, expiresAt, origin, originId },
+              });
+              return {
+                status: 'already-pending',
+                inviteId: existing.id.toString(),
+              };
+            }
+          }
+          throw e;
+        }
+      },
+    );
     // Record the thread add AFTER the tx commits (bump threadRevision + push signal). Auto-accept
     // creates the P2P thread for BOTH users — mirrors acceptInvite's recordThreadAdd for both
     // (inviter + accepter). The 'created'/'already-pending' paths create no thread, so no signal.
     if (result.status === 'auto-accepted') {
-      await this.threadRevisionService.recordThreadAdd(fromUserId, result.threadId);
-      await this.threadRevisionService.recordThreadAdd(toUserId, result.threadId);
+      await this.threadRevisionService.recordThreadAdd(
+        fromUserId,
+        result.threadId,
+      );
+      await this.threadRevisionService.recordThreadAdd(
+        toUserId,
+        result.threadId,
+      );
     }
     return result;
   }
@@ -254,10 +277,18 @@ export class InviteService {
       });
       return invite.id.toString();
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
         // Partial unique index (GROUP, to, thread, PENDING) — refresh in place; id stays stable.
         const existing = await this.prisma.invite.findFirst({
-          where: { kind: InviteKind.GROUP, status: InviteStatus.PENDING, toUserId, threadId },
+          where: {
+            kind: InviteKind.GROUP,
+            status: InviteStatus.PENDING,
+            toUserId,
+            threadId,
+          },
         });
         if (existing !== null) {
           await this.prisma.invite.update({
@@ -276,7 +307,10 @@ export class InviteService {
    * whether the caller already joined. Non-leaking — an invite not addressed to the caller (or a missing
    * one) resolves to INVITE_NOT_FOUND. The dialog renders "valid → Join", "joined", "expired", or "invalid".
    */
-  async getInviteDetail(inviteIdOrGroup: string, callerId: number): Promise<{
+  async getInviteDetail(
+    inviteIdOrGroup: string,
+    callerId: number,
+  ): Promise<{
     id: string;
     kind: string;
     status: string;
@@ -302,16 +336,25 @@ export class InviteService {
       where: { id },
       include: {
         fromUser: { select: USER_SELECT },
-        thread: { select: { groupUser: { select: { name: true, avatar: true, domain: true } } } },
+        thread: {
+          select: {
+            groupUser: { select: { name: true, avatar: true, domain: true } },
+          },
+        },
       },
     });
     if (invite === null || invite.toUserId !== callerId) {
-      throw new BusinessException(BusinessCode.INVITE_NOT_FOUND, 'invite not found');
+      throw new BusinessException(
+        BusinessCode.INVITE_NOT_FOUND,
+        'invite not found',
+      );
     }
     let alreadyJoined = false;
     if (invite.threadId !== null) {
       const p = await this.prisma.threadParticipant.findUnique({
-        where: { userId_threadId: { userId: callerId, threadId: invite.threadId } },
+        where: {
+          userId_threadId: { userId: callerId, threadId: invite.threadId },
+        },
         select: { leftAt: true },
       });
       alreadyJoined = p !== null && p.leftAt === null;
@@ -346,89 +389,109 @@ export class InviteService {
     byUserId: number,
   ): Promise<AcceptInviteResult> {
     const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
-    const result = await this.prisma.$transaction(async (tx): Promise<AcceptInviteResult> => {
-      const invite = await tx.invite.findUnique({ where: { id } });
-      if (invite === null || invite.status !== InviteStatus.PENDING) {
-        throw new BusinessException(
-          invite === null
-            ? BusinessCode.INVITE_NOT_FOUND
-            : BusinessCode.INVITE_ALREADY_HANDLED,
-          invite === null ? 'invite not found' : 'invite already handled',
-        );
-      }
-      if (invite.toUserId !== byUserId) {
-        throw new BusinessException(
-          BusinessCode.INVITE_NOT_YOURS,
-          'this invite is not yours to accept',
-        );
-      }
-      if (invite.expiresAt.getTime() <= Date.now()) {
-        throw new BusinessException(BusinessCode.INVITE_EXPIRED, 'invite expired');
-      }
+    const result = await this.prisma.$transaction(
+      async (tx): Promise<AcceptInviteResult> => {
+        const invite = await tx.invite.findUnique({ where: { id } });
+        if (invite === null || invite.status !== InviteStatus.PENDING) {
+          throw new BusinessException(
+            invite === null
+              ? BusinessCode.INVITE_NOT_FOUND
+              : BusinessCode.INVITE_ALREADY_HANDLED,
+            invite === null ? 'invite not found' : 'invite already handled',
+          );
+        }
+        if (invite.toUserId !== byUserId) {
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_YOURS,
+            'this invite is not yours to accept',
+          );
+        }
+        if (invite.expiresAt.getTime() <= Date.now()) {
+          throw new BusinessException(
+            BusinessCode.INVITE_EXPIRED,
+            'invite expired',
+          );
+        }
 
-      if (invite.kind === InviteKind.FRIEND) {
-        const threadId = await this.createP2PFriendshipInTx(
+        if (invite.kind === InviteKind.FRIEND) {
+          const threadId = await this.createP2PFriendshipInTx(
+            tx,
+            invite.fromUserId,
+            invite.toUserId,
+          );
+          await tx.invite.update({
+            where: { id },
+            data: { status: InviteStatus.ACCEPTED },
+          });
+          // Symmetric cleanup: any other pending friend invite between this pair (either direction) is
+          // now moot — mark it ACCEPTED so it leaves both pending lists.
+          await tx.invite.updateMany({
+            where: {
+              kind: InviteKind.FRIEND,
+              status: InviteStatus.PENDING,
+              id: { not: id },
+              OR: [
+                { fromUserId: invite.fromUserId, toUserId: invite.toUserId },
+                { fromUserId: invite.toUserId, toUserId: invite.fromUserId },
+              ],
+            },
+            data: { status: InviteStatus.ACCEPTED },
+          });
+          return { kind: 'FRIEND', threadId, fromUserId: invite.fromUserId };
+        }
+
+        // GROUP
+        if (invite.threadId === null) {
+          throw new BusinessException(
+            BusinessCode.INVITE_NOT_FOUND,
+            'group invite has no target thread',
+          );
+        }
+        // NOTE: upsertMemberInTx(tx, threadId, userId, role) — threadId FIRST. (A swapped-arg bug here left
+        // the group accept marking the Invite ACCEPTED but never adding the joiner to the mirror thread.)
+        await this.participantService.upsertMemberInTx(
           tx,
-          invite.fromUserId,
-          invite.toUserId,
+          invite.threadId,
+          byUserId,
+          GroupRole.MEMBER,
         );
         await tx.invite.update({
           where: { id },
           data: { status: InviteStatus.ACCEPTED },
         });
-        // Symmetric cleanup: any other pending friend invite between this pair (either direction) is
-        // now moot — mark it ACCEPTED so it leaves both pending lists.
-        await tx.invite.updateMany({
-          where: {
-            kind: InviteKind.FRIEND,
-            status: InviteStatus.PENDING,
-            id: { not: id },
-            OR: [
-              { fromUserId: invite.fromUserId, toUserId: invite.toUserId },
-              { fromUserId: invite.toUserId, toUserId: invite.fromUserId },
-            ],
-          },
-          data: { status: InviteStatus.ACCEPTED },
+        // The group's federation fields: a cross-server mirror iff groupUser.domain !== 'local'. The
+        // controller uses originDomain (non-null = mirror) to propagate the join to the origin (roster fanout).
+        const thread = await tx.messageThread.findUnique({
+          where: { id: invite.threadId },
+          select: { groupUser: { select: { account: true, domain: true } } },
         });
-        return { kind: 'FRIEND', threadId, fromUserId: invite.fromUserId };
-      }
-
-      // GROUP
-      if (invite.threadId === null) {
-        throw new BusinessException(
-          BusinessCode.INVITE_NOT_FOUND,
-          'group invite has no target thread',
-        );
-      }
-      // NOTE: upsertMemberInTx(tx, threadId, userId, role) — threadId FIRST. (A swapped-arg bug here left
-      // the group accept marking the Invite ACCEPTED but never adding the joiner to the mirror thread.)
-      await this.participantService.upsertMemberInTx(tx, invite.threadId, byUserId, GroupRole.MEMBER);
-      await tx.invite.update({
-        where: { id },
-        data: { status: InviteStatus.ACCEPTED },
-      });
-      // The group's federation fields: a cross-server mirror iff groupUser.domain !== 'local'. The
-      // controller uses originDomain (non-null = mirror) to propagate the join to the origin (roster fanout).
-      const thread = await tx.messageThread.findUnique({
-        where: { id: invite.threadId },
-        select: { groupUser: { select: { account: true, domain: true } } },
-      });
-      const groupAccount = thread?.groupUser?.account ?? null;
-      const groupDomain = thread?.groupUser?.domain ?? null;
-      return {
-        kind: 'GROUP',
-        threadId: invite.threadId,
-        fedGroupAccount: groupAccount, // the group `!account` (S2S 'to'); non-null for any group
-        originDomain: groupDomain && groupDomain !== 'local' ? groupDomain : null, // non-null = federated mirror
-      };
-    });
+        const groupAccount = thread?.groupUser?.account ?? null;
+        const groupDomain = thread?.groupUser?.domain ?? null;
+        return {
+          kind: 'GROUP',
+          threadId: invite.threadId,
+          fedGroupAccount: groupAccount, // the group `!account` (S2S 'to'); non-null for any group
+          originDomain:
+            groupDomain && groupDomain !== 'local' ? groupDomain : null, // non-null = federated mirror
+        };
+      },
+    );
     // Record the thread add AFTER the tx commits (bump threadRevision + push signal). FRIEND adds the
     // thread for BOTH users (inviter + accepter); GROUP adds it for the joiner only.
     if (result.kind === 'FRIEND') {
-      await this.threadRevisionService.recordThreadAdd(result.fromUserId, result.threadId);
-      await this.threadRevisionService.recordThreadAdd(byUserId, result.threadId);
+      await this.threadRevisionService.recordThreadAdd(
+        result.fromUserId,
+        result.threadId,
+      );
+      await this.threadRevisionService.recordThreadAdd(
+        byUserId,
+        result.threadId,
+      );
     } else {
-      await this.threadRevisionService.recordThreadAdd(byUserId, result.threadId);
+      await this.threadRevisionService.recordThreadAdd(
+        byUserId,
+        result.threadId,
+      );
     }
     return result;
   }
@@ -452,7 +515,10 @@ export class InviteService {
           'this invite is not yours to reject',
         );
       }
-      await tx.invite.update({ where: { id }, data: { status: InviteStatus.REJECTED } });
+      await tx.invite.update({
+        where: { id },
+        data: { status: InviteStatus.REJECTED },
+      });
     });
   }
 
@@ -475,7 +541,10 @@ export class InviteService {
           'this invite is not yours to revoke',
         );
       }
-      await tx.invite.update({ where: { id }, data: { status: InviteStatus.REVOKED } });
+      await tx.invite.update({
+        where: { id },
+        data: { status: InviteStatus.REVOKED },
+      });
     });
   }
 
@@ -516,8 +585,16 @@ export class InviteService {
     originId: string;
   }): Promise<void> {
     const invite = await this.prisma.invite.findUnique({
-      where: { origin_originId: { origin: params.origin, originId: params.originId } },
-      select: { id: true, kind: true, status: true, fromUserId: true, toUserId: true },
+      where: {
+        origin_originId: { origin: params.origin, originId: params.originId },
+      },
+      select: {
+        id: true,
+        kind: true,
+        status: true,
+        fromUserId: true,
+        toUserId: true,
+      },
     });
     if (
       invite === null ||
@@ -549,7 +626,10 @@ export class InviteService {
       },
       orderBy: { createdAt: 'desc' },
       take: LIST_LIMIT,
-      include: { fromUser: { select: USER_SELECT }, toUser: { select: USER_SELECT } },
+      include: {
+        fromUser: { select: USER_SELECT },
+        toUser: { select: USER_SELECT },
+      },
     });
   }
 
@@ -565,7 +645,10 @@ export class InviteService {
       },
       orderBy: { createdAt: 'desc' },
       take: LIST_LIMIT,
-      include: { fromUser: { select: USER_SELECT }, toUser: { select: USER_SELECT } },
+      include: {
+        fromUser: { select: USER_SELECT },
+        toUser: { select: USER_SELECT },
+      },
     });
   }
 
@@ -573,11 +656,19 @@ export class InviteService {
    *  `friendReqAckRev` (a Date) to the current `friendReqRev` (MAX(createdAt)), clearing the badge on ALL
    *  devices (the caller pushes the returned state via FRIEND_REQ_REV_UPDATED). Returns the post-ack wire
    *  state (epoch-ms) so the caller can push without a re-read. */
-  async markRead(userId: number): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
+  async markRead(
+    userId: number,
+  ): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
     const d = await this.latestFriendReqDate(userId);
     const ackDate = d ?? new Date(0); // no incoming FRIEND invites → ack epoch (no badge either way)
-    await this.prisma.user.update({ where: { id: userId }, data: { friendReqAckRev: ackDate } });
-    return { friendReqRev: d ? d.getTime() : null, friendReqAckRev: ackDate.getTime() };
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { friendReqAckRev: ackDate },
+    });
+    return {
+      friendReqRev: d ? d.getTime() : null,
+      friendReqAckRev: ackDate.getTime(),
+    };
   }
 
   /** The `createdAt` of the most-recently-CREATED incoming FRIEND invite (the raw, Date-typed derivation),
@@ -601,14 +692,21 @@ export class InviteService {
   /** The full friend-request badge state — `{ friendReqRev, friendReqAckRev }` (epoch-ms) — what HELLO +
    *  the FRIEND_REQ_REV_UPDATED push carry (so the native layer merges both + the client derives
    *  `friendReqRev > friendReqAckRev`). */
-  async friendReqState(userId: number): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
+  async friendReqState(
+    userId: number,
+  ): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
     const [d, user] = await Promise.all([
       this.latestFriendReqDate(userId),
-      this.prisma.user.findUnique({ where: { id: userId }, select: { friendReqAckRev: true } }),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { friendReqAckRev: true },
+      }),
     ]);
     return {
       friendReqRev: d ? d.getTime() : null,
-      friendReqAckRev: user?.friendReqAckRev ? user.friendReqAckRev.getTime() : 0,
+      friendReqAckRev: user?.friendReqAckRev
+        ? user.friendReqAckRev.getTime()
+        : 0,
     };
   }
 
@@ -647,7 +745,10 @@ export class InviteService {
       // invites) — no denormalized badge column to arm.
       return invite.id.toString();
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
         // Existing PENDING invite from this foreign stub → refresh in place, keep the badge armed.
         const existing = await this.prisma.invite.findFirst({
           where: {
@@ -660,7 +761,12 @@ export class InviteService {
         if (existing !== null) {
           await this.prisma.invite.update({
             where: { id: existing.id },
-            data: { note, expiresAt: params.expiresAt, origin: params.origin, originId: params.originId },
+            data: {
+              note,
+              expiresAt: params.expiresAt,
+              origin: params.origin,
+              originId: params.originId,
+            },
           });
           return existing.id.toString();
         }
@@ -670,8 +776,8 @@ export class InviteService {
   }
 
   /**
-   * Inbound friend-approve from a peer: the remote user accepted our local user's invite. Mark the
-   * local user's outgoing PENDING invite (from=local, to=foreignApprover) ACCEPTED, and form the
+   * Inbound friend-approve from a peer: the remote user accepted our local user's invite. Mark every
+   * PENDING invite between the pair (including a crossed reverse request) ACCEPTED, and form the
    * friendship if it isn't already (ACCEPT-WINS — robust under message reordering: even if the
    * outgoing invite was revoked/expired/never landed, the approver definitively approved, so the
    * friendship is formed). Returns the P2P threadId + whether it was newly created (for SSE).
@@ -685,14 +791,30 @@ export class InviteService {
         where: {
           kind: InviteKind.FRIEND,
           status: InviteStatus.PENDING,
-          fromUserId: localRequesterId,
-          toUserId: foreignApproverId,
+          OR: [
+            {
+              fromUserId: localRequesterId,
+              toUserId: foreignApproverId,
+            },
+            {
+              fromUserId: foreignApproverId,
+              toUserId: localRequesterId,
+            },
+          ],
         },
         data: { status: InviteStatus.ACCEPTED },
       });
-      const existing = await this.findP2PThreadBetweenInTx(tx, localRequesterId, foreignApproverId);
+      const existing = await this.findP2PThreadBetweenInTx(
+        tx,
+        localRequesterId,
+        foreignApproverId,
+      );
       if (existing !== null) return { threadId: existing, created: false };
-      const threadId = await this.createP2PFriendshipInTx(tx, localRequesterId, foreignApproverId);
+      const threadId = await this.createP2PFriendshipInTx(
+        tx,
+        localRequesterId,
+        foreignApproverId,
+      );
       return { threadId, created: true };
     });
   }
@@ -708,12 +830,20 @@ export class InviteService {
     userY: number,
   ): Promise<number | null> {
     const mine = await tx.threadParticipant.findMany({
-      where: { userId: userX, leftAt: null, thread: { type: MessageThreadType.P2P } },
+      where: {
+        userId: userX,
+        leftAt: null,
+        thread: { type: MessageThreadType.P2P },
+      },
       select: { threadId: true },
     });
     if (mine.length === 0) return null;
     const peer = await tx.threadParticipant.findFirst({
-      where: { userId: userY, leftAt: null, threadId: { in: mine.map((m) => m.threadId) } },
+      where: {
+        userId: userY,
+        leftAt: null,
+        threadId: { in: mine.map((m) => m.threadId) },
+      },
       select: { threadId: true },
     });
     return peer?.threadId ?? null;
@@ -769,7 +899,9 @@ export class InviteService {
         toUserId: callerId,
         kind: InviteKind.GROUP,
         ...(pendingOnly ? { status: InviteStatus.PENDING } : {}),
-        thread: { groupUser: { account: normalizeAccount(groupAccount), isGroup: true } },
+        thread: {
+          groupUser: { account: normalizeAccount(groupAccount), isGroup: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
       select: { id: true },
@@ -784,9 +916,16 @@ export class InviteService {
     pendingOnly: boolean,
   ): Promise<bigint> {
     if (groupAccountOrId.startsWith('!')) {
-      const id = await this.findInviteIdByGroup(groupAccountOrId, callerId, pendingOnly);
+      const id = await this.findInviteIdByGroup(
+        groupAccountOrId,
+        callerId,
+        pendingOnly,
+      );
       if (id === null) {
-        throw new BusinessException(BusinessCode.INVITE_NOT_FOUND, 'invite not found');
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'invite not found',
+        );
       }
       return id;
     }

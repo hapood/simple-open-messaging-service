@@ -7,7 +7,10 @@ import { MEDIA_STATUS } from '../common/media-status.js';
 import { parseCallContent, callPreviewLabel } from '../calls/call-content.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { parseMessageEntities, toDisplayText } from '../common/message-entity.js';
+import {
+  parseMessageEntities,
+  toDisplayText,
+} from '../common/message-entity.js';
 
 export type UnreadMentionState = 'none' | 'all' | 'me';
 
@@ -79,6 +82,17 @@ export function derivePreview(type: ContentType, content: string): string {
       return '[File]';
     case ContentType.AUDIO:
       return '[Voice message]';
+    case ContentType.FORWARD: {
+      try {
+        const c = JSON.parse(content) as { summaryLines?: string[] };
+        const first = c.summaryLines?.[0]?.replace(/\s+/g, ' ').trim();
+        return first
+          ? `[聊天记录] ${first}`.slice(0, PREVIEW_TEXT_MAX)
+          : '[聊天记录]';
+      } catch {
+        return '[聊天记录]';
+      }
+    }
     case ContentType.CALL: {
       // A call-record bubble: the status-aware label (never the raw JSON). Degrades to a generic
       // label on a malformed payload (parseCallContent returns null).
@@ -106,6 +120,13 @@ export class MessageService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {}
+
+  findByClientMessageId(clientMessageId: string) {
+    return this.prisma.message.findUnique({
+      where: { clientMessageId },
+      omit: { id: true },
+    });
+  }
 
   /**
    * Append a message AND update the thread's denormalized last-message cache AND advance the sender's
@@ -137,6 +158,8 @@ export class MessageService implements OnModuleInit {
     content: string,
     type: ContentType,
     clientMessageId?: string,
+    forwardBundleId?: string,
+    beforeMessageCreate?: (tx: Prisma.TransactionClient) => Promise<void>,
   ): Promise<Omit<Message, 'id'>> {
     if (clientMessageId !== undefined) {
       const existing = await this.prisma.message.findUnique({
@@ -147,6 +170,7 @@ export class MessageService implements OnModuleInit {
     }
     try {
       return await this.prisma.$transaction(async (tx) => {
+        if (beforeMessageCreate) await beforeMessageCreate(tx);
         // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
         // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
         // keeps curSeq == MAX(seq) by construction — no MAX() aggregate, no allocation race, no retry.
@@ -169,6 +193,14 @@ export class MessageService implements OnModuleInit {
             originSeq: seq,
           },
         });
+        if (type === ContentType.FORWARD) {
+          if (!forwardBundleId) {
+            throw new Error('FORWARD message requires forwardBundleId');
+          }
+          await tx.forwardMessage.create({
+            data: { messageId: msg.id, bundleId: forwardBundleId },
+          });
+        }
         await tx.messageThread.update({
           where: { id: threadId },
           data: {
@@ -985,6 +1017,21 @@ export class MessageService implements OnModuleInit {
     );
   }
 
+  /** Authoritative read badge state for one thread. Used immediately after mark-read so HTTP and SSE
+   *  clients apply the exact same server-derived count/mention instead of inferring them from seq gaps. */
+  async unreadAttentionForThread(
+    userId: number,
+    threadId: number,
+  ): Promise<ThreadAttentionState> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { account: true },
+    });
+    if (!user) return { count: 0, mention: 'none' };
+    const states = await this.unreadAttentionByThread(userId, user.account, [threadId]);
+    return states.get(threadId) ?? { count: 0, mention: 'none' };
+  }
+
   /**
    * One read model for per-conversation away notifications. The global HWM and optional per-thread dismiss
    * HWM are applied before sampling; count, latest seq and mention are then derived from that same sample.
@@ -1125,20 +1172,29 @@ export class MessageService implements OnModuleInit {
     return result;
   }
 
-  private mentionState(contents: string[], selfAccount: string): UnreadMentionState {
+  private mentionState(
+    contents: string[],
+    selfAccount: string,
+  ): UnreadMentionState {
     const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
     if (!normalizedSelf) return 'none';
     let state: UnreadMentionState = 'none';
     for (const content of contents) {
       for (const segment of parseMessageEntities(content)) {
-        if (segment.kind !== 'entity' || segment.version !== 1 || segment.sigil !== '@') continue;
+        if (
+          segment.kind !== 'entity' ||
+          segment.version !== 1 ||
+          segment.sigil !== '@'
+        )
+          continue;
         if (
           segment.entityType === 'user' &&
           segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
         ) {
           return 'me';
         }
-        if (segment.entityType === 'audience' && segment.entityId === 'all') state = 'all';
+        if (segment.entityType === 'audience' && segment.entityId === 'all')
+          state = 'all';
       }
     }
     return state;
@@ -1178,7 +1234,12 @@ export class MessageService implements OnModuleInit {
     for (const row of rows) {
       let state = states.get(row.threadId) ?? 'none';
       for (const segment of parseMessageEntities(row.content)) {
-        if (segment.kind !== 'entity' || segment.version !== 1 || segment.sigil !== '@') continue;
+        if (
+          segment.kind !== 'entity' ||
+          segment.version !== 1 ||
+          segment.sigil !== '@'
+        )
+          continue;
         if (
           segment.entityType === 'user' &&
           segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
@@ -1239,7 +1300,12 @@ export class MessageService implements OnModuleInit {
     for (const row of rows) {
       let state = states.get(row.threadId) ?? 'none';
       for (const segment of parseMessageEntities(row.content)) {
-        if (segment.kind !== 'entity' || segment.version !== 1 || segment.sigil !== '@') continue;
+        if (
+          segment.kind !== 'entity' ||
+          segment.version !== 1 ||
+          segment.sigil !== '@'
+        )
+          continue;
         if (
           segment.entityType === 'user' &&
           segment.entityId.trim().toLocaleLowerCase() === normalizedSelf

@@ -51,6 +51,17 @@
   background-repeat: repeat;
 }
 
+// A touch browser may pan the layout viewport to reveal the focused editor even though visualViewport
+// already reports the keyboard occlusion. Shrink the complete chat surface there so the header stays at
+// the top and the absolutely-positioned composer naturally lands above the IME. Native Tauri deliberately
+// retains the transform-only path below to keep its virtual-scroll geometry stable during IME animation.
+.msg-container.kbd-offset--resize-host {
+  height: calc(100% - var(--kbd-lift-effective, 0px));
+  // Custom properties cross Angular component boundaries; ChatInput consumes this inside its own
+  // encapsulation scope, unlike a parent selector targeting `.ci-input-bar` directly.
+  --kbd-compositor-lift: 0px;
+}
+
 // Scroll viewport (kernel B manual compensation: overflow-anchor:none exclusively,
 // to stop the browser from fighting our scrollTop adjustments).
 .msg-viewport {
@@ -65,7 +76,7 @@
   // translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
   // absolute skeleton, which rides the transform) and below the header (z-index:2) so lifted content slides
   // UNDER the header.
-  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transform: translateY(calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px))));
   transition: transform var(--kbd-duration, 60ms) ease-out;
   overflow-x: hidden;
   overflow-y: auto;

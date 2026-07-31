@@ -209,10 +209,26 @@
   "userDetail": {
     "back": "Back to users",
     "notFound": "User not found",
-    "section": { "profile": "Profile", "groups": "Groups", "sessions": "Active sessions", "push": "Push devices" },
-    "field": { "domain": "Domain", "foreigner": "Foreigner", "tokenVer": "tokenVer", "createdAt": "Created", "updatedAt": "Updated", "bio": "Bio" },
+    "section": {
+      "profile": "Profile",
+      "groups": "Groups",
+      "sessions": "Active sessions",
+      "push": "Push devices"
+    },
+    "field": {
+      "domain": "Domain",
+      "foreigner": "Foreigner",
+      "tokenVer": "tokenVer",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "bio": "Bio"
+    },
     "group": { "name": "Group", "role": "Role", "joined": "Joined" },
-    "empty": { "groups": "No group memberships", "sessions": "No active sessions", "push": "No push devices" },
+    "empty": {
+      "groups": "No group memberships",
+      "sessions": "No active sessions",
+      "push": "No push devices"
+    },
     "push": { "deviceId": "Device ID" }
   },
   "bans": {
@@ -256,7 +272,11 @@
       "expires": "Expires"
     },
     "empty": "No active sessions",
-    "tabs": { "users": "User sessions", "admins": "Admin sessions", "reuse": "Reuse alerts" }
+    "tabs": {
+      "users": "User sessions",
+      "admins": "Admin sessions",
+      "reuse": "Reuse alerts"
+    }
   },
   "connections": {
     "title": "Live Connections",
@@ -388,7 +408,12 @@
       "blocked": "Blocked by admin",
       "unblocked": "Unblocked by admin"
     },
-    "detail": { "back": "Back to federation", "notFound": "Peer not found", "tabOverview": "Overview", "tabTimeline": "Timeline" },
+    "detail": {
+      "back": "Back to federation",
+      "notFound": "Peer not found",
+      "tabOverview": "Overview",
+      "tabTimeline": "Timeline"
+    },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",
       "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/soms, key consistency, signature loopback and clock skew. Each network check is run per resolved IP (SRV→DDNS or multi-A/AAAA).",
@@ -591,7 +616,13 @@
     "outcomeSuccess": "Success",
     "outcomeFailed": "Failed",
     "empty": "No matching actions",
-    "col": { "action": "Action", "target": "Target", "actor": "Actor", "ip": "IP", "at": "When" }
+    "col": {
+      "action": "Action",
+      "target": "Target",
+      "actor": "Actor",
+      "ip": "IP",
+      "at": "When"
+    }
   },
   "diagnosticReports": {
     "desc": "Client-uploaded diagnostic log bundles (Rust logs + web console + version info) for field support.",
@@ -603,7 +634,14 @@
     "deleteConfirm": "Delete this diagnostic report?",
     "deleteConfirmDesc": "The report row and its bundle file will be removed. This cannot be undone.",
     "deleted": "Report deleted",
-    "col": { "reporter": "Reporter", "platform": "Platform", "versions": "Versions", "size": "Size", "status": "Status", "at": "When" }
+    "col": {
+      "reporter": "Reporter",
+      "platform": "Platform",
+      "versions": "Versions",
+      "size": "Size",
+      "status": "Status",
+      "at": "When"
+    }
   },
   "media": {
     "title": "Media & Storage",
@@ -617,15 +655,33 @@
     "byExt": "By extension",
     "gc": "Run GC",
     "gcAvatars": "GC avatars",
+    "gcForwardBundles": "Inspect forward bundles",
     "reconcile": "Reconcile",
     "col": { "ext": "Extension", "files": "Files", "bytes": "Bytes" },
     "emptyExt": "No shard files",
-    "confirmTitle": { "gc": "Run garbage collection?", "reconcile": "Reconcile shards?", "avatars": "Reclaim orphan avatars?" },
-    "confirmBody": { "gc": "Deletes MediaAsset rows with refs<=0 and their shard files, then sweeps stale tmp.", "reconcile": "Walks uploads/shards and deletes any file with no MediaAsset row. O(files) — run sparingly.", "avatars": "Deletes avatar files no longer referenced by any user or group." },
-    "confirmAction": { "gc": "Run GC", "reconcile": "Reconcile", "avatars": "Reclaim" },
+    "confirmTitle": {
+      "gc": "Run garbage collection?",
+      "reconcile": "Reconcile shards?",
+      "avatars": "Reclaim orphan avatars?",
+      "forwardBundles": "Inspect and clean orphan forward bundles?"
+    },
+    "confirmBody": {
+      "gc": "Deletes MediaAsset rows with refs<=0 and their shard files, then sweeps stale tmp.",
+      "reconcile": "Walks uploads/shards and deletes any file with no MediaAsset row. O(files) — run sparingly.",
+      "avatars": "Deletes avatar files no longer referenced by any user or group.",
+      "forwardBundles": "Inspects bundles unreachable from every forward message, then removes any found and releases their asset references. Manual only."
+    },
+    "confirmAction": {
+      "gc": "Run GC",
+      "reconcile": "Reconcile",
+      "avatars": "Reclaim",
+      "forwardBundles": "Inspect and clean"
+    },
     "gcDone": "GC: reaped {{rows}} row(s) / {{files}} file(s)",
     "reconcileDone": "Reconcile: reaped {{files}} file(s)",
-    "avatarsDone": "Reclaimed {{files}} avatar file(s)"
+    "avatarsDone": "Reclaimed {{files}} avatar file(s)",
+    "forwardBundlesNone": "No orphan forward bundles found",
+    "forwardBundlesDone": "Removed {{bundles}} bundle(s) and released {{assets}} asset reference(s)"
   },
   "admins": {
     "title": "Admin Accounts",
@@ -636,16 +692,38 @@
     "userIdHint": "Numeric id of an existing user to promote (find it on the Users page).",
     "roleLabel": "Role",
     "empty": "No admins",
-    "col": { "account": "Admin", "role": "Role", "status": "Status", "lastLogin": "Last login", "twoFactor": "2FA" },
-    "action": { "disable": "Disable", "enable": "Enable", "reset2fa": "Reset 2FA" },
+    "col": {
+      "account": "Admin",
+      "role": "Role",
+      "status": "Status",
+      "lastLogin": "Last login",
+      "twoFactor": "2FA"
+    },
+    "action": {
+      "disable": "Disable",
+      "enable": "Enable",
+      "reset2fa": "Reset 2FA"
+    },
     "reset2faConfirm": "Reset two-factor for {{name}}? They will be able to sign in with their password only. Use this to recover a locked-out admin who lost their device.",
-    "toast": { "created": "Admin created", "disabled": "Admin disabled", "enabled": "Admin enabled", "role": "Role updated", "reset2fa": "Two-factor reset" }
+    "toast": {
+      "created": "Admin created",
+      "disabled": "Admin disabled",
+      "enabled": "Admin enabled",
+      "role": "Role updated",
+      "reset2fa": "Two-factor reset"
+    }
   },
   "groups": {
     "title": "Groups",
     "desc": "Every group thread (local + federated) with member counts and origin.",
     "searchPlaceholder": "Search group name / account",
-    "col": { "name": "Group", "members": "Members", "origin": "Origin", "lastMessage": "Last message", "created": "Created" },
+    "col": {
+      "name": "Group",
+      "members": "Members",
+      "origin": "Origin",
+      "lastMessage": "Last message",
+      "created": "Created"
+    },
     "empty": "No groups",
     "local": "local"
   },

@@ -289,6 +289,7 @@
     "approve": "Approve",
     "decline": "Decline",
     "revoke": "Withdraw",
+    "requestMessage": "Message",
     "invalidUser": "Invalid User",
     "approved": "Approved",
     "tab": {
@@ -360,7 +361,11 @@
     "allChats": "Chats",
     "emptyMessage": "Empty message",
     "message": "Message",
-    "call": "Call"
+    "call": "Call",
+    "sent": "Forwarded to {{count}} chats",
+    "partiallySent": "Forwarded to {{sent}} of {{total}} chats",
+    "sendFailed": "Could not forward messages. Please try again",
+    "unavailable": "This chat history is unavailable"
   },
   "chat": {
     "clearSearch": "Clear search",
@@ -378,6 +383,8 @@
     "selection": {
       "toolbar": "Selected message actions",
       "copy": "Copy",
+      "copied": "Copied {{count}} message(s)",
+      "copyFailed": "Copy failed",
       "forward": "Forward",
       "multiSelect": "Select multiple"
     },

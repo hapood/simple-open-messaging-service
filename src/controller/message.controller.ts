@@ -1,6 +1,8 @@
 import {
   Controller,
+  Get,
   Post,
+  Param,
   Body,
   Request,
   UseGuards,
@@ -15,7 +17,7 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { MessageResponseDto } from '../dto/response.dto.js';
+import { MessageResponseDto, ThreadReadStateDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
@@ -45,12 +47,14 @@ import {
   ClearHistoryDto,
   SetAliasDto,
   SearchMessagesDto,
+  SendForwardDto,
 } from '../dto/message.dto.js';
 import {
   serializeAudienceMention,
   serializeUserMention,
   transformMessageEntities,
 } from '../common/message-entity.js';
+import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 
 @ApiTags('message')
 @Controller()
@@ -64,6 +68,7 @@ export class MessageController {
     private readonly quota: QuotaService,
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
+    private readonly forwardBundles: ForwardBundleService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -156,6 +161,62 @@ export class MessageController {
     // path uses the same dispatch, so text and media fan out identically.
     void this.fanout.dispatch(data);
     return data;
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SendForwardDto>('threadId')
+  @Throttle(60, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('send-forward')
+  @ApiOperation({
+    summary: 'Snapshot visible messages into a bundle and send a FORWARD card',
+  })
+  @ApiResultResponse(MessageResponseDto)
+  async sendForward(
+    @Request() req: FastifyRequest,
+    @Body() dto: SendForwardDto,
+  ) {
+    const prior = await this.messageService.findByClientMessageId(
+      dto.clientMessageId,
+    );
+    if (prior) return prior;
+    const q = await this.quota.tryTickLocal('messages');
+    if (q.exceeded) {
+      throw new BusinessException(
+        BusinessCode.QUOTA_EXCEEDED,
+        `daily message quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+        HttpStatus.OK,
+        { category: 'messages', limit: q.limit, retryAfter: q.retryAfter },
+      );
+    }
+    const bundle = await this.forwardBundles.prepareFromMessages(
+      req.user.userId,
+      dto.sourceMessages,
+    );
+    const data = await this.messageService.writeMsgToThread(
+      req.user.userId,
+      dto.threadId,
+      bundle.content,
+      ContentType.FORWARD,
+      dto.clientMessageId,
+      bundle.bundleId,
+      (tx) => this.forwardBundles.persistPrepared(tx, bundle),
+    );
+    void this.fanout.dispatch(data);
+    return data;
+  }
+
+  @ApiBearerAuth()
+  @Get('forward-bundles/:bundleId')
+  @ApiOperation({
+    summary: 'Read a visible FORWARD bundle and every nested child bundle',
+  })
+  getForwardBundle(
+    @Request() req: FastifyRequest,
+    @Param('bundleId') bundleId: string,
+  ) {
+    return this.forwardBundles.getClosureForUser(req.user.userId, bundleId);
   }
 
   /**
@@ -365,10 +426,11 @@ export class MessageController {
   @ApiOperation({
     summary: 'Mark a conversation read (advances the per-user read cursor)',
   })
+  @ApiResultResponse(ThreadReadStateDto)
   async markRead(
     @Request() req: FastifyRequest,
     @Body() dto: MarkReadDto,
-  ): Promise<void> {
+  ): Promise<ThreadReadStateDto | void> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
     // participant row is on req.threadAccess.participant.
     // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
@@ -403,16 +465,29 @@ export class MessageController {
       dto.threadId,
       cursor,
     );
+    const participant = await this.participantService.findActiveParticipant(
+      req.user.userId,
+      dto.threadId,
+    );
+    const lastReadSeq = participant?.lastReadSeq ?? cursor;
+    const attention = await this.messageService.unreadAttentionForThread(
+      req.user.userId,
+      dto.threadId,
+    );
+    const state: ThreadReadStateDto = {
+      threadId: dto.threadId,
+      lastReadSeq,
+      unreadCount: attention.count,
+      mentionUnread: attention.mention,
+    };
     if (moved) {
       // Sync the caller's OTHER online devices/tabs so their unread badge for this thread clears
       // immediately — the same multi-device consistency send-message already provides by fanning
       // NEW_MESSAGE to the sender. advanceReadCursor's "did it move?" return suppresses the frame
       // for an idempotent/stale mark-read (cursor already ≥ this id).
-      this.sseService.onReadCursor(req.user.userId, {
-        threadId: dto.threadId,
-        lastReadSeq: cursor,
-      });
+      this.sseService.onReadCursor(req.user.userId, state);
     }
+    return state;
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

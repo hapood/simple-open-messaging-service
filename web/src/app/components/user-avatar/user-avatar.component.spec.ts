@@ -44,6 +44,39 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(getBlobSpy).not.toHaveBeenCalled();
   });
 
+  it('keeps an identified user color stable when the display name changes', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.OTHER);
+    fixture.componentRef.setInput('identityId', 42);
+    fixture.componentRef.setInput('name', 'Alice');
+    const color = fixture.componentInstance.bg();
+
+    fixture.componentRef.setInput('name', 'Renamed Alice');
+
+    expect(fixture.componentInstance.initial()).toBe('R');
+    expect(fixture.componentInstance.bg()).toBe(color);
+  });
+
+  it('uses separate user and group identity namespaces for fallback colors', () => {
+    fixture.componentRef.setInput('identityId', 42);
+    fixture.componentRef.setInput('name', 'Same label');
+    fixture.componentRef.setInput('type', UserAvatarType.OTHER);
+    const userColor = fixture.componentInstance.bg();
+
+    fixture.componentRef.setInput('type', UserAvatarType.GROUP);
+
+    expect(fixture.componentInstance.groupFill().from).not.toBe(userColor);
+  });
+
+  it('uses the display name as the color seed while an identity is not available', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.GROUP);
+    fixture.componentRef.setInput('name', 'Draft group');
+    const color = fixture.componentInstance.groupFill().from;
+
+    fixture.componentRef.setInput('name', 'Renamed draft');
+
+    expect(fixture.componentInstance.groupFill().from).not.toBe(color);
+  });
+
   it('passes a local-preview src (blob:/data:) straight through without the DB', () => {
     fixture.componentRef.setInput('identityId', 9);
     fixture.componentRef.setInput('src', 'blob:http://localhost/abc');

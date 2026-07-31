@@ -35,7 +35,9 @@ export class MediaAssetGcController {
   @Audit('media.gc')
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/gc')
-  @ApiOperation({ summary: 'Reclaim orphaned media (MediaAsset refs<=0) + sweep stale tmp' })
+  @ApiOperation({
+    summary: 'Reclaim orphaned media (MediaAsset refs<=0) + sweep stale tmp',
+  })
   async triggerGc() {
     return this.gc.gcOrphanedAssets();
   }
@@ -44,7 +46,8 @@ export class MediaAssetGcController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/reconcile')
   @ApiOperation({
-    summary: 'Scan-driven reconcile of shards vs MediaAsset (O(files); run sparingly)',
+    summary:
+      'Scan-driven reconcile of shards vs MediaAsset (O(files); run sparingly)',
   })
   async reconcile() {
     return { reapedFiles: await this.gc.reconcileShards() };
@@ -54,9 +57,28 @@ export class MediaAssetGcController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/gc-avatars')
   @ApiOperation({
-    summary: 'Reap orphaned avatars (no longer any User current avatar) from uploads/avatars',
+    summary:
+      'Reap orphaned avatars (no longer any User current avatar) from uploads/avatars',
   })
   async gcAvatars() {
     return this.gc.gcOrphanedAvatars();
+  }
+
+  @Audit('media.inspect_forward_bundles')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/media/forward-bundles/inspect')
+  @ApiOperation({ summary: 'Inspect unreachable forward bundles (read-only)' })
+  inspectForwardBundles() {
+    return this.gc.inspectOrphanedForwardBundles();
+  }
+
+  @Audit('media.gc_forward_bundles')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/media/forward-bundles/gc')
+  @ApiOperation({
+    summary: 'Delete unreachable forward bundles and release their CAS refs',
+  })
+  gcForwardBundles() {
+    return this.gc.gcOrphanedForwardBundles();
   }
 }

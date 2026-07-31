@@ -1,6 +1,11 @@
 <button mat-button type="button" [matMenuTriggerFor]="methods">
   {{ 'auth.otherMethods' | transloco }}
-  <span class="chevron" aria-hidden="true">⌄</span>
+  <app-icon
+    class="chevron"
+    aria-hidden="true"
+    [type]="AppIcon.CHEVRON_DOWN"
+    [style]="{ width: '16px', height: '16px' }"
+  />
 </button>
 
 <mat-menu #methods="matMenu">

@@ -70,6 +70,21 @@ export class UserResponseDto {
   // `friendReqRev` (MAX(createdAt) over incoming FRIEND invites) vs friendReqAckRev (server-state).
 }
 
+/** Authoritative per-thread read state returned by mark-read and broadcast to the caller's other clients. */
+export class ThreadReadStateDto {
+  @ApiProperty({ example: 12, description: 'Conversation id' })
+  threadId!: number;
+
+  @ApiProperty({ example: 42, description: 'Server-confirmed read cursor' })
+  lastReadSeq!: number;
+
+  @ApiProperty({ example: 3, description: 'Server-counted unread messages remaining after the cursor' })
+  unreadCount!: number;
+
+  @ApiProperty({ enum: ['none', 'all', 'me'] })
+  mentionUnread!: 'none' | 'all' | 'me';
+}
+
 export class MessageResponseDto {
   @ApiProperty({
     example: 42,

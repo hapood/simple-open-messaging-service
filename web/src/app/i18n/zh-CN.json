@@ -289,6 +289,7 @@
     "approve": "同意",
     "decline": "拒绝",
     "revoke": "撤回",
+    "requestMessage": "验证消息",
     "invalidUser": "无效用户",
     "approved": "已同意",
     "tab": {
@@ -360,7 +361,11 @@
     "allChats": "聊天",
     "emptyMessage": "空消息",
     "message": "消息",
-    "call": "通话"
+    "call": "通话",
+    "sent": "已转发到 {{count}} 个聊天",
+    "partiallySent": "已转发 {{sent}} 个，共 {{total}} 个聊天",
+    "sendFailed": "消息转发失败，请重试",
+    "unavailable": "该聊天记录暂不可用"
   },
   "chat": {
     "clearSearch": "清除搜索",
@@ -378,6 +383,8 @@
     "selection": {
       "toolbar": "已选消息操作",
       "copy": "复制",
+      "copied": "已复制 {{count}} 条消息",
+      "copyFailed": "复制失败",
       "forward": "转发",
       "multiSelect": "多选"
     },

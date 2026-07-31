@@ -353,6 +353,7 @@ enum ContentType {
   FILE
   AUDIO
   LINK
+  FORWARD // Immutable forwarded-message bundle. Message.content is the lightweight card summary JSON.
   CALL // 1:1 WebRTC call record — SERVER-AUTHORED ONLY (CallsService writes the terminal bubble).
   // Never client-authorable (SendMessageDto's @IsIn allowlist excludes it, like INVITE). The
   // call's lifecycle is in-memory in CallsService; this row is the persisted terminal record.
@@ -392,13 +393,85 @@ model Message {
   // time) and pre-Step-2 legacy rows.
   originServerTime DateTime?
 
-  mediaMessages MediaMessage[] // per-object media authz index (digest → thread)
+  mediaMessages  MediaMessage[] // per-object media authz index (digest → thread)
+  forwardMessage ForwardMessage?
 
   @@unique([threadId, seq]) // per-thread seq identity: allocation authority + keyset cursor (also the hot pagination index)
   @@unique([threadId, creator, originSeq]) // (a) sender seq allocation race AND (b) receiver pull dedup
   @@index([threadId, createdAt])
   @@index([createdAt]) // cross-thread "messages since T" catch-up (POST /notifications/missed) — global time range scan
   @@index([creator])
+}
+
+/// Immutable snapshot behind one or more FORWARD message cards. `manifest` is the canonical render
+/// document and contains a `children` array; the dependency table below mirrors those references so
+/// depth validation, S2S closure traversal, authorization and GC never need recursive JSONB scans.
+model ForwardBundle {
+  id             String   @id @db.VarChar(26)
+  schemaVersion  Int      @default(1)
+  depth          Int
+  manifest       Json
+  manifestDigest String   @db.VarChar(64)
+  messageCount   Int
+  assetCount     Int
+  totalBytes     BigInt
+  sourceDomain   String?  @db.VarChar(63)
+  sourceBundleId String?  @db.VarChar(26)
+  createdBy      Int?
+  createdAt      DateTime @default(now())
+
+  messages ForwardMessage[]
+  assets   ForwardBundleAsset[]
+  children ForwardBundleDependency[] @relation("ForwardBundleParent")
+  parents  ForwardBundleDependency[] @relation("ForwardBundleChild")
+
+  @@unique([sourceDomain, sourceBundleId])
+  @@index([createdBy])
+}
+
+/// A visible FORWARD Message's root bundle. A bundle may be referenced by multiple messages without
+/// copying its JSON or CAS bytes.
+model ForwardMessage {
+  messageId BigInt @id
+  bundleId  String @db.VarChar(26)
+
+  message Message       @relation(fields: [messageId], references: [id])
+  bundle  ForwardBundle @relation(fields: [bundleId], references: [id])
+
+  @@index([bundleId])
+}
+
+/// Searchable parent/child mirror of `ForwardBundle.manifest.children`.
+model ForwardBundleDependency {
+  parentBundleId String @db.VarChar(26)
+  childBundleId  String @db.VarChar(26)
+  ordinal        Int
+
+  parent ForwardBundle @relation("ForwardBundleParent", fields: [parentBundleId], references: [id])
+  child  ForwardBundle @relation("ForwardBundleChild", fields: [childBundleId], references: [id])
+
+  @@id([parentBundleId, childBundleId])
+  @@unique([parentBundleId, ordinal])
+  @@index([childBundleId])
+}
+
+/// Every binary object required to render a bundle, including immutable avatar snapshots. Files stay
+/// deduplicated in MediaAsset CAS; this table is the bundle authorization/ref graph.
+model ForwardBundleAsset {
+  bundleId  String  @db.VarChar(26)
+  digest    String  @db.VarChar(64)
+  ordinal   Int
+  kind      String  @db.VarChar(16)
+  extension String  @db.VarChar(16)
+  filename  String?
+  mime      String?
+  bytes     BigInt
+
+  bundle ForwardBundle @relation(fields: [bundleId], references: [id])
+
+  @@id([bundleId, ordinal])
+  @@unique([bundleId, digest, kind])
+  @@index([digest])
 }
 
 /// Content-addressed media asset (chat images/files/video/audio). One file per sha256 digest at

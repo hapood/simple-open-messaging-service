@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { PrismaService } from '../prisma.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { parseAvatarBase } from '../upload/avatar-path.js';
+import { Prisma } from '../prisma/generated/client.js';
 
 const readdirAsync = promisify(readdir);
 const statAsync = promisify(stat);
@@ -27,6 +28,12 @@ export interface GcResult {
   sweptPending: number;
   /** Orphan shard files reaped via the stale-pending sweep (file written but the message never committed). */
   reapedPendingFiles: number;
+}
+
+export interface ForwardBundleGcResult {
+  orphanBundles: number;
+  orphanAssets: number;
+  orphanBytes: string;
 }
 
 /**
@@ -54,6 +61,93 @@ export class MediaAssetGcService {
     private readonly prisma: PrismaService,
     private readonly upload: UploadService,
   ) {}
+
+  /** Find immutable bundles that are not reachable from any visible ForwardMessage root. This is
+   * intentionally admin-triggered only: bundle retention must never depend on a background timer. */
+  async inspectOrphanedForwardBundles(): Promise<ForwardBundleGcResult> {
+    const ids = await this.findOrphanedForwardBundleIds();
+    if (ids.length === 0) {
+      return { orphanBundles: 0, orphanAssets: 0, orphanBytes: '0' };
+    }
+    const aggregate = await this.prisma.forwardBundle.aggregate({
+      where: { id: { in: ids } },
+      _sum: { assetCount: true, totalBytes: true },
+    });
+    return {
+      orphanBundles: ids.length,
+      orphanAssets: aggregate._sum.assetCount ?? 0,
+      orphanBytes: String(aggregate._sum.totalBytes ?? 0n),
+    };
+  }
+
+  /** Delete the currently unreachable closure and release exactly the CAS refs owned by its bundle
+   * asset rows. A fresh reachability scan runs inside the transaction, so inspection is advisory and
+   * cleanup never trusts a stale list supplied by the browser. */
+  async gcOrphanedForwardBundles(): Promise<ForwardBundleGcResult> {
+    return this.prisma.$transaction(async (tx) => {
+      const ids = await this.findOrphanedForwardBundleIds(tx);
+      if (ids.length === 0) {
+        return { orphanBundles: 0, orphanAssets: 0, orphanBytes: '0' };
+      }
+      const bundles = await tx.forwardBundle.findMany({
+        where: { id: { in: ids } },
+        select: { assetCount: true, totalBytes: true },
+      });
+      const assets = await tx.forwardBundleAsset.findMany({
+        where: { bundleId: { in: ids } },
+        select: { digest: true },
+      });
+      const refsByDigest = new Map<string, number>();
+      for (const asset of assets) {
+        refsByDigest.set(
+          asset.digest,
+          (refsByDigest.get(asset.digest) ?? 0) + 1,
+        );
+      }
+      for (const [digest, count] of refsByDigest) {
+        await tx.mediaAsset.updateMany({
+          where: { digest },
+          data: { refs: { decrement: count } },
+        });
+      }
+      await tx.forwardBundleDependency.deleteMany({
+        where: {
+          OR: [{ parentBundleId: { in: ids } }, { childBundleId: { in: ids } }],
+        },
+      });
+      await tx.forwardBundleAsset.deleteMany({
+        where: { bundleId: { in: ids } },
+      });
+      await tx.forwardBundle.deleteMany({ where: { id: { in: ids } } });
+      return {
+        orphanBundles: bundles.length,
+        orphanAssets: bundles.reduce((sum, row) => sum + row.assetCount, 0),
+        orphanBytes: String(
+          bundles.reduce((sum, row) => sum + row.totalBytes, 0n),
+        ),
+      };
+    });
+  }
+
+  private async findOrphanedForwardBundleIds(
+    client: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<string[]> {
+    const rows = await client.$queryRaw<Array<{ id: string }>>`
+      WITH RECURSIVE live(id) AS (
+        SELECT DISTINCT fm."bundleId"
+        FROM "ForwardMessage" fm
+        UNION
+        SELECT d."childBundleId"
+        FROM "ForwardBundleDependency" d
+        JOIN live l ON l.id = d."parentBundleId"
+      )
+      SELECT fb.id
+      FROM "ForwardBundle" fb
+      LEFT JOIN live l ON l.id = fb.id
+      WHERE l.id IS NULL
+    `;
+    return rows.map((row) => row.id);
+  }
 
   /** Primary GC: reap MediaAsset rows with refs <= 0 + their shard file, sweep stale tmp, and reap
    *  stale PendingMedia staging rows (abandoned pending sends and expired failed recovery records) along

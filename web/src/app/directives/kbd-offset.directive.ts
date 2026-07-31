@@ -1,10 +1,19 @@
-import { Directive, effect, inject, signal } from '@angular/core';
+import { computed, Directive, effect, inject, signal } from '@angular/core';
 import {
   KeyboardInsetService,
   uncompensatedKbdInset,
 } from '../services/keyboard-inset.service';
 import { InputDeviceService } from '../services/input-device.service';
 import { LayoutService } from '../services/layout.service';
+import { isTauri } from '../services/runtime';
+
+/** Layout policy kept pure so the browser/Tauri boundary is regression-testable without spoofing globals. */
+export function shouldResizeChatHost(
+  tauri: boolean,
+  hasPhysicalKeyboard: boolean,
+): boolean {
+  return !tauri && !hasPhysicalKeyboard;
+}
 
 /**
  * Soft-keyboard lift policy for a chat surface.
@@ -31,6 +40,7 @@ import { LayoutService } from '../services/layout.service';
   host: {
     '[style.--kbd-lift]': 'offset() + "px"',
     '[style.--kbd-duration]': 'duration() + "ms"',
+    '[class.kbd-offset--resize-host]': 'resizeHost()',
   },
 })
 export class KbdOffsetDirective {
@@ -44,6 +54,11 @@ export class KbdOffsetDirective {
   /** Native IME duration while an endpoint-driven animation is active; 60ms retains the existing
    *  low-pass smoothing for ordinary/non-animated inset corrections. */
   readonly duration = signal(60);
+  /** Mobile browsers resize the whole chat surface so the header remains in view. Tauri keeps the
+   * compositor-only lift: its native IME bridge deliberately avoids layout churn during animation. */
+  readonly resizeHost = computed(
+    () => shouldResizeChatHost(isTauri(), this.inputDevice.hasPhysicalKeyboard()),
+  );
 
   private readonly track = effect(() => {
     const frozen = this.layout.reflowFrozen(); // track → re-run on freeze/thaw edges

@@ -93,7 +93,10 @@ export class S2sController {
     if (!profile) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
       // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(BusinessCode.NOT_FOUND, `user ${account} not found`);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `user ${account} not found`,
+      );
     }
     return profile;
   }
@@ -105,7 +108,10 @@ export class S2sController {
     if (!rev) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
       // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(BusinessCode.NOT_FOUND, `user ${account} not found`);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `user ${account} not found`,
+      );
     }
     return rev;
   }
@@ -119,7 +125,10 @@ export class S2sController {
     if (!rev) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
       // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(BusinessCode.NOT_FOUND, `group ${account} not found`);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `group ${account} not found`,
+      );
     }
     return rev;
   }
@@ -134,7 +143,10 @@ export class S2sController {
     if (roster === null) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
       // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(BusinessCode.NOT_FOUND, `group ${account} not found`);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `group ${account} not found`,
+      );
     }
     return roster;
   }
@@ -209,7 +221,12 @@ export class S2sController {
           signer,
         );
       }
-      return this.federation.serveOutboundMessagesGroup(toAccount, after, take, signer);
+      return this.federation.serveOutboundMessagesGroup(
+        toAccount,
+        after,
+        take,
+        signer,
+      );
     }
     // P2P: `fromAccount` is our local sender, `toAccount` is the requester's user. Friendship gate inside.
     if (!fromAccount) {
@@ -277,7 +294,12 @@ export class S2sController {
           signer,
         );
       }
-      return this.federation.serveOutboundMessagesGroupBefore(toAccount, beforeSeq, take, signer);
+      return this.federation.serveOutboundMessagesGroupBefore(
+        toAccount,
+        beforeSeq,
+        take,
+        signer,
+      );
     }
     // P2P: `fromAccount` is our local sender, `toAccount` is the requester's user. Friendship gate inside.
     if (!fromAccount) {
@@ -377,22 +399,24 @@ export class S2sController {
     @Query('fromDomain') fromDomain?: string,
     @Query('toAccount') toAccount?: string,
     @Query('toDomain') toDomain?: string,
+    @Query('bundleId') bundleId?: string,
   ) {
     const signer = this.signerDomain(req);
-    this.requireBinding(toDomain, signer);
-    if (!digest || !fromAccount || !toAccount) {
+    if (!bundleId) this.requireBinding(toDomain, signer);
+    if (!digest || (!bundleId && (!fromAccount || !toAccount))) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing digest/fromAccount/toAccount query param',
+        'missing digest or media authorization query params',
         HttpStatus.BAD_REQUEST,
       );
     }
     const { absPath, bytes } = await this.federation.resolveMediaFile(
-      fromAccount,
-      toAccount,
+      fromAccount ?? '',
+      toAccount ?? '',
       fromDomain,
       signer,
       digest,
+      bundleId,
     );
     const range = parseRange(req.headers.range, bytes);
     if (range === null) {
@@ -431,6 +455,19 @@ export class S2sController {
     // down. The receiver's digest check catches a truncated chunk and re-requests that range.
     fileStream.on('error', () => reply.raw.destroy());
     fileStream.pipe(reply.raw);
+  }
+
+  /** JSONB is serialized as ordinary UTF-8 application/json. The response contains the root plus the
+   * complete child-bundle closure; binary assets remain resumable /get_file transfers. */
+  @Get('forward-bundles/:bundleId')
+  getForwardBundle(
+    @Req() req: FastifyRequest,
+    @Param('bundleId') bundleId: string,
+  ) {
+    return this.federation.serveForwardBundleClosure(
+      bundleId,
+      this.signerDomain(req),
+    );
   }
 }
 

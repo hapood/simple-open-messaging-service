@@ -6,13 +6,17 @@ import {
   Type,
 } from '@angular/core';
 import type { CbElement, CbItem } from '../../lib/chat-box/chat-box-scroller';
-import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
+import {
+  classifyGroupFlags,
+  type GroupCtx,
+} from '../../lib/chat-box/group-logic';
 import { shouldShowDateSeparator } from './date-format';
 import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { InviteRowComponent } from './invite-row/invite-row.component';
 import { LinkRowComponent } from './link-row/link-row.component';
 import { CallRowComponent } from './call-row/call-row.component';
+import { ForwardRowComponent } from './forward-row/forward-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
 import { MessagePressGesture } from './message-press-gesture';
@@ -37,7 +41,10 @@ interface RowComponent {
  * recompute grouping (isShowHead/isGroupStart) + dateLabel against the NEW prev on the same DOM node — without
  * recreating it (which would break a FLIP move). Returns head-shown / no-group-start / no-date by default for non-msg.
  */
-export function computeRowFlags(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): {
+export function computeRowFlags(
+  item: CbItem<ChatItemData>,
+  prev: CbItem<ChatItemData> | null,
+): {
   isShowHead: boolean;
   isGroupStart: boolean;
   showDate: boolean;
@@ -49,14 +56,20 @@ export function computeRowFlags(item: CbItem<ChatItemData>, prev: CbItem<ChatIte
     const msg = item.data;
     const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
     const curCtx: GroupCtx = { creator: msg.creator };
-    const prevCtx: GroupCtx | null = prevMsg ? { creator: prevMsg.creator } : null;
+    const prevCtx: GroupCtx | null = prevMsg
+      ? { creator: prevMsg.creator }
+      : null;
     isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
     isGroupStart = isShowHead && !!prevMsg; // a sender-change group start adds inter-group spacing
     // date separator: derived per-window from the prev message's createdAtMs (date lives outside the source). The
     // oldest boundary always shows date above; a non-oldest prev==null (trim re-mount) does not (anti-flicker).
     // The label text itself is computed by DateRowComponent from the timestamp + active language, so the factory
     // only needs the show/hide decision here.
-    showDate = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest');
+    showDate = shouldShowDateSeparator(
+      prevMsg?.createdAtMs ?? null,
+      msg.createdAtMs,
+      item.boundary === 'oldest',
+    );
   }
   return { isShowHead, isGroupStart, showDate };
 }
@@ -112,7 +125,9 @@ export function createMsgCbElement(
             ? FileRowComponent
             : data.contentType === 'CALL'
               ? CallRowComponent
-              : TextRowComponent;
+              : data.contentType === 'FORWARD'
+                ? ForwardRowComponent
+                : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   // createComponent() only constructs the view; it does not enroll it in Angular's application view
@@ -144,12 +159,12 @@ export function createMsgCbElement(
     host.dataset['messageMemberIds'] = (
       nextItem.ids?.length ? nextItem.ids : [nextItem.id]
     ).join(',');
-    host.classList.toggle(
-      'cb-message--album',
-      (nextItem.ids?.length ?? 0) > 1,
-    );
+    host.classList.toggle('cb-message--album', (nextItem.ids?.length ?? 0) > 1);
   };
-  const update = (nextItem: CbItem<ChatItemData>, nextPrev: CbItem<ChatItemData> | null): void => {
+  const update = (
+    nextItem: CbItem<ChatItemData>,
+    nextPrev: CbItem<ChatItemData> | null,
+  ): void => {
     const flags = computeRowFlags(nextItem, nextPrev);
     ref.setInput('data', nextItem.data as ChatMsgData);
     ref.setInput('isShowHead', flags.isShowHead);
@@ -281,30 +296,58 @@ export function createMsgCbElement(
   // Wire optional row outputs (failed-send retry on TextRow; open-image on MediaRow). Each subscription is released on
   // destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler. Several outputs may compose
   // on one entry — wrapDestroy chains them LIFO into a single destroy().
-  const wrapDestroy = (extra: () => void): void => { const base = el.destroy; el.destroy = () => { extra(); base(); }; };
+  const wrapDestroy = (extra: () => void): void => {
+    const base = el.destroy;
+    el.destroy = () => {
+      extra();
+      base();
+    };
+  };
   if (onRetry) {
     // The row's retry output is a click SIGNAL only (its emitted value is the numeric msgId, which for a failed
     // optimistic bubble is a placeholder — not the correlation key). The kernel reconciles retries by the stable
     // clientMessageId on the CbItem (retryPending matches on it), so map the click to item.clientMessageId, which
     // is stable across the failed→sending in-place morph.
-    const inst = ref.instance as { retry?: { subscribe: (fn: (id: number) => void) => { unsubscribe(): void } } };
+    const inst = ref.instance as {
+      retry?: {
+        subscribe: (fn: (id: number) => void) => { unsubscribe(): void };
+      };
+    };
     const cid = item.clientMessageId;
-    const sub = inst.retry?.subscribe(() => { if (cid !== undefined) onRetry(cid); });
+    const sub = inst.retry?.subscribe(() => {
+      if (cid !== undefined) onRetry(cid);
+    });
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   if (onCancel) {
-    const inst = ref.instance as { cancel?: { subscribe: (fn: (id: number) => void) => { unsubscribe(): void } } };
+    const inst = ref.instance as {
+      cancel?: {
+        subscribe: (fn: (id: number) => void) => { unsubscribe(): void };
+      };
+    };
     const cid = item.clientMessageId;
-    const sub = inst.cancel?.subscribe(() => { if (cid !== undefined) onCancel(cid); });
+    const sub = inst.cancel?.subscribe(() => {
+      if (cid !== undefined) onCancel(cid);
+    });
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   if (onOpenImage) {
-    const inst = ref.instance as { openImage?: { subscribe: (fn: (p: { images: AlbumImage[]; index: number }) => void) => { unsubscribe(): void } } };
-    const sub = inst.openImage?.subscribe(p => onOpenImage(p.images, p.index));
+    const inst = ref.instance as {
+      openImage?: {
+        subscribe: (
+          fn: (p: { images: AlbumImage[]; index: number }) => void,
+        ) => { unsubscribe(): void };
+      };
+    };
+    const sub = inst.openImage?.subscribe((p) =>
+      onOpenImage(p.images, p.index),
+    );
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   if (onOpenFile) {
-    const inst = ref.instance as { openFile?: { subscribe: (fn: () => void) => { unsubscribe(): void } } };
+    const inst = ref.instance as {
+      openFile?: { subscribe: (fn: () => void) => { unsubscribe(): void } };
+    };
     const sub = inst.openFile?.subscribe(() => onOpenFile(data));
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }

@@ -128,10 +128,18 @@
           <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
               [identityId]="req.peerId" [src]="req.avatar"></app-user-avatar></div>
           <div class="pending-meta">
-            <div class="user-name">{{displayUserName(req)}}</div>
+            <div class="pending-heading">
+              <div class="user-name">{{displayUserName(req)}}</div>
+              <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
+            </div>
+            @if(req.account){<div class="user-account">&#64;{{req.account}}</div>}
             @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
-            @if(req.reqMessage){<blockquote class="pending-reason">{{req.reqMessage}}</blockquote>}
-            <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
+            @if(req.reqMessage){
+              <div class="pending-reason">
+                <div class="reason-label">{{ 'friend.requestMessage' | transloco }}</div>
+                <div class="reason-text">{{req.reqMessage}}</div>
+              </div>
+            }
           </div>
           <div class="pending-actions">
             @if(req.status===0){
@@ -167,12 +175,21 @@
           <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
               [identityId]="req.peerId" [src]="req.avatar"></app-user-avatar></div>
           <div class="pending-meta">
-            <div class="user-name">{{displayUserName(req)}}</div>
+            <div class="pending-heading">
+              <div class="user-name">{{displayUserName(req)}}</div>
+              <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
+            </div>
+            @if(req.account){<div class="user-account">&#64;{{req.account}}</div>}
             @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
-            <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
+            @if(req.reqMessage){
+              <div class="pending-reason">
+                <div class="reason-label">{{ 'friend.requestMessage' | transloco }}</div>
+                <div class="reason-text">{{req.reqMessage}}</div>
+              </div>
+            }
           </div>
           <div class="pending-actions">
-            <button mat-button class="decline-btn" (click)="cancelSent($index)">{{ 'friend.revoke' | transloco }}</button>
+            <button mat-button class="revoke-btn" (click)="cancelSent($index)">{{ 'friend.revoke' | transloco }}</button>
           </div>
         </div>
         @if(req.errText){<div class="row-err">{{req.errText}}</div>}

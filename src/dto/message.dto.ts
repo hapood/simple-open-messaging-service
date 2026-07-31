@@ -68,6 +68,43 @@ export class SendMessageDto {
   clientMessageId?: string;
 }
 
+export class ForwardSourceMessageDto {
+  @ApiProperty({ example: 8, description: 'Source conversation id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({
+    example: 31,
+    description: 'Source message seq within the conversation',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  seq!: number;
+}
+
+/** Create an immutable bundle from visible source messages and send its FORWARD card. */
+export class SendForwardDto {
+  @ApiProperty({ example: 12, description: 'Destination conversation id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({ type: ForwardSourceMessageDto, isArray: true })
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => ForwardSourceMessageDto)
+  sourceMessages!: ForwardSourceMessageDto[];
+
+  @ApiProperty({ description: 'Client send-idempotency UUID' })
+  @IsUUID()
+  clientMessageId!: string;
+}
+
 /**
  * Client-probed display metadata for a staged media send. Only the fields the upload route does NOT
  * itself derive are carried here: w/h (pixels) for image/video and duration (seconds) for video/audio.

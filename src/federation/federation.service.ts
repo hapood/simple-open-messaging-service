@@ -1,10 +1,25 @@
-import { Injectable, HttpStatus, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  HttpStatus,
+  Logger,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'node:crypto';
-import { mintUlid, normalizeAccount, isValidAccount, isValidGroupAccount } from '../common/account.js';
+import {
+  mintUlid,
+  normalizeAccount,
+  isValidAccount,
+  isValidGroupAccount,
+} from '../common/account.js';
 import { PrismaService } from '../prisma.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
+import {
+  FORWARD_MAX_WIRE_JSON_BYTES,
+  ForwardBundleService,
+  type ForwardWireClosure,
+} from '../forward/forward-bundle.service.js';
 import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
@@ -22,9 +37,15 @@ import {
   MessageThreadType,
   Prisma,
 } from '../prisma/generated/client.js';
-import { derivePreview, stripMessageId, MessageService } from '../message/message.service.js';
-import { FederationBufferService, type NewMsgMapEntry } from './federation-buffer.service.js';
-import { extractDigestEntries, extractDigests } from '../upload/file-content.js';
+import { derivePreview, MessageService } from '../message/message.service.js';
+import {
+  FederationBufferService,
+  type NewMsgMapEntry,
+} from './federation-buffer.service.js';
+import {
+  extractDigestEntries,
+  extractDigests,
+} from '../upload/file-content.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -231,6 +252,7 @@ export class FederationService implements OnModuleDestroy {
     private readonly buffer: FederationBufferService,
     private readonly quota: QuotaService,
     private readonly linkPreview: LinkPreviewService,
+    private readonly forwardBundles: ForwardBundleService,
     // Inbound S2S call frames are bridged to CallsService via emitAsync('call.frame.inbound') rather
     // than a direct injection — FederationService must NOT inject CallsService (that would cycle: the
     // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
@@ -256,14 +278,21 @@ export class FederationService implements OnModuleDestroy {
 
   /** Hook for the local-send path (MessageController.sendMessage) + the pulled path (storePulledMessage):
    *  after a message lands, route the outbound hint. Best-effort — never throws into the caller. */
-  async notifyOnSend(senderUserId: number, threadId: number, originSeq: number): Promise<void> {
+  async notifyOnSend(
+    senderUserId: number,
+    threadId: number,
+    originSeq: number,
+  ): Promise<void> {
     await this.signalOutbound(threadId, senderUserId, originSeq, undefined);
   }
 
   /** Best-effort: if a local user just left a federated GROUP MIRROR, nudge the origin so it discovers the
    *  leave (a normal per-author hint → the origin pulls → answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) →
    *  dissolves the leaver). No-op for a local group / when we ARE the origin. */
-  async notifyGroupLeave(threadId: number, leaverUserId: number): Promise<void> {
+  async notifyGroupLeave(
+    threadId: number,
+    leaverUserId: number,
+  ): Promise<void> {
     try {
       const trd = await this.prisma.messageThread.findUnique({
         where: { id: threadId },
@@ -280,22 +309,35 @@ export class FederationService implements OnModuleDestroy {
       if (!leaver) return;
       const cursor = await this.derivedOriginSeqCursor(threadId, leaverUserId);
       const latestSeq = Math.max(cursor + 1, 0);
-      const leaverDomain = leaver.isForeigner ? leaver.domain : this.config.domain;
+      const leaverDomain = leaver.isForeigner
+        ? leaver.domain
+        : this.config.domain;
       // A NORMAL per-author hint (latestSeq beats the origin's derived cursor → the pull always fires).
       // The origin pulls → this mirror answers HTTP 410 (FEDERATION_GROUP_AUTHOR_LEFT — author soft-left) → the origin
       // softLeaveMemberAndBump's the leaver on its canonical roster. No `left` flag — the leave signal
       // lives on the per-author pull RESPONSE (the 50010 business code), not in the hint map.
-      this.buffer.markDirty(originDomain, leaver.account, leaverDomain, groupAccount, latestSeq);
+      this.buffer.markDirty(
+        originDomain,
+        leaver.account,
+        leaverDomain,
+        groupAccount,
+        latestSeq,
+      );
       this.scheduleFlush(originDomain);
     } catch (e) {
-      this.logger.debug(`notifyGroupLeave(${threadId}) failed: ${(e as Error).message}`);
+      this.logger.debug(
+        `notifyGroupLeave(${threadId}) failed: ${(e as Error).message}`,
+      );
     }
   }
 
   /** The leaver's per-author origin-seq cursor on this thread (MAX over Message ∪ PendingMedia). Used by
    *  notifyGroupLeave so the leave hint's latestSeq beats the origin's per-author pull cursor (the origin
    *  pulls → sees the leaver soft-left → dissolves the roster entry). */
-  private async derivedOriginSeqCursor(threadId: number, userId: number): Promise<number> {
+  private async derivedOriginSeqCursor(
+    threadId: number,
+    userId: number,
+  ): Promise<number> {
     const [msg, pend] = await Promise.all([
       this.prisma.message.aggregate({
         where: { threadId, creator: userId },
@@ -331,13 +373,19 @@ export class FederationService implements OnModuleDestroy {
         }),
         this.prisma.threadParticipant.findMany({
           where: { threadId, leftAt: null },
-          include: { user: { select: { account: true, domain: true, isForeigner: true } } },
+          include: {
+            user: {
+              select: { account: true, domain: true, isForeigner: true },
+            },
+          },
         }),
       ]);
       if (!trd) return;
       const author = participants.find((p) => p.userId === authorUserId);
       if (!author) return;
-      const authorDomain = author.user.isForeigner ? author.user.domain : this.ourDomain;
+      const authorDomain = author.user.isForeigner
+        ? author.user.domain
+        : this.ourDomain;
       const authorAccount = author.user.account;
 
       const groupDomain = trd.groupUser?.domain; // 'local' = origin; <peer> = mirror; undefined = P2P
@@ -346,8 +394,15 @@ export class FederationService implements OnModuleDestroy {
         // fetch source. A pulled P2P message's only foreign participant is the author → nobody to signal.
         for (const p of participants) {
           if (p.userId === authorUserId || !p.user.isForeigner) continue;
-          if (fetchedFromDomain && p.user.domain === fetchedFromDomain) continue;
-          this.buffer.markDirty(p.user.domain, authorAccount, authorDomain, p.user.account, latestSeq);
+          if (fetchedFromDomain && p.user.domain === fetchedFromDomain)
+            continue;
+          this.buffer.markDirty(
+            p.user.domain,
+            authorAccount,
+            authorDomain,
+            p.user.account,
+            latestSeq,
+          );
           this.scheduleFlush(p.user.domain);
         }
         return;
@@ -358,18 +413,27 @@ export class FederationService implements OnModuleDestroy {
       if (!groupAccount) return;
       const destDomains = new Set<string>();
       if (groupDomain === 'local') {
-        for (const p of participants) if (p.user.isForeigner) destDomains.add(p.user.domain);
+        for (const p of participants)
+          if (p.user.isForeigner) destDomains.add(p.user.domain);
       } else {
         destDomains.add(groupDomain);
       }
       if (fetchedFromDomain) destDomains.delete(fetchedFromDomain);
       for (const d of destDomains) {
-        this.buffer.markDirty(d, authorAccount, authorDomain, groupAccount, latestSeq);
+        this.buffer.markDirty(
+          d,
+          authorAccount,
+          authorDomain,
+          groupAccount,
+          latestSeq,
+        );
         this.scheduleFlush(d);
       }
     } catch (e) {
       // Never break the caller (send/pull path) — a transient DB error just skips this notify.
-      this.logger.debug(`signalOutbound(${threadId}) failed: ${(e as Error).message}`);
+      this.logger.debug(
+        `signalOutbound(${threadId}) failed: ${(e as Error).message}`,
+      );
     }
   }
 
@@ -392,7 +456,10 @@ export class FederationService implements OnModuleDestroy {
    */
   async flushDomain(domain: string): Promise<void> {
     for (;;) {
-      const batch = this.buffer.flushBatch(domain, FederationService.FLUSH_BATCH);
+      const batch = this.buffer.flushBatch(
+        domain,
+        FederationService.FLUSH_BATCH,
+      );
       if (batch.entries.length === 0) break;
       try {
         await this.pushNewMsgMap(domain, batch.entries, batch.hasMore);
@@ -417,7 +484,9 @@ export class FederationService implements OnModuleDestroy {
    *  unless we reject the soft-deleted row here. */
   async findLocalUserId(account: string): Promise<number | null> {
     const u = await this.prisma.user.findUnique({
-      where: { account_domain: { account: normalizeAccount(account), domain: 'local' } },
+      where: {
+        account_domain: { account: normalizeAccount(account), domain: 'local' },
+      },
     });
     return u && !u.isForeigner && !u.isDeleted ? u.id : null;
   }
@@ -470,7 +539,10 @@ export class FederationService implements OnModuleDestroy {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
       where: {
-        account_domain: { account: normalizeAccount(address.account), domain: 'local' },
+        account_domain: {
+          account: normalizeAccount(address.account),
+          domain: 'local',
+        },
       },
     });
     if (!u || u.isForeigner) return null;
@@ -486,7 +558,10 @@ export class FederationService implements OnModuleDestroy {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
       where: {
-        account_domain: { account: normalizeAccount(address.account), domain: 'local' },
+        account_domain: {
+          account: normalizeAccount(address.account),
+          domain: 'local',
+        },
       },
       select: { profileRev: true, isForeigner: true },
     });
@@ -496,9 +571,12 @@ export class FederationService implements OnModuleDestroy {
 
   /** Origin's roster revision for a group (GET /s2s/group/:account/roster-revision). Null if the group
    *  isn't local (not the origin) or has no Group row. `groupAccount` = the group's `!account`. */
-  async getLocalGroupRosterRevision(groupAccount: string): Promise<{ rosterRev: number } | null> {
+  async getLocalGroupRosterRevision(
+    groupAccount: string,
+  ): Promise<{ rosterRev: number } | null> {
     const trd = await this.findGroupThread(groupAccount);
-    if (!trd || !this.isOriginThread(trd) || trd.groupUserId == null) return null;
+    if (!trd || !this.isOriginThread(trd) || trd.groupUserId == null)
+      return null;
     const grp = await this.prisma.group.findUnique({
       where: { groupUserId: trd.groupUserId },
       select: { rosterRev: true },
@@ -614,7 +692,11 @@ export class FederationService implements OnModuleDestroy {
   }
 
   /** GET a signed S2S endpoint (users / revision). Returns the parsed JSON. Throws on non-success. */
-  private async getSigned<T>(path: string, peerDomain: string): Promise<T> {
+  private async getSigned<T>(
+    path: string,
+    peerDomain: string,
+    maxResponseBytes?: number,
+  ): Promise<T> {
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}${path}`);
     const headers = this.signature.signOutbound({
@@ -656,7 +738,34 @@ export class FederationService implements OnModuleDestroy {
       );
     }
     await this.markContactSuccess(peerDomain);
-    const body = await res.json();
+    if (maxResponseBytes !== undefined) {
+      const declared = Number(res.headers.get('content-length') ?? 0);
+      if (declared > maxResponseBytes) {
+        throw new S2sResponseError(
+          `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
+          HttpStatus.PAYLOAD_TOO_LARGE,
+          BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+        );
+      }
+    }
+    let boundedBody: unknown;
+    if (maxResponseBytes === undefined) {
+      boundedBody = await res.json();
+    } else {
+      const text = await res.text();
+      if (Buffer.byteLength(text) > maxResponseBytes) {
+        throw new S2sResponseError(
+          `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
+          HttpStatus.PAYLOAD_TOO_LARGE,
+          BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+        );
+      }
+      boundedBody = JSON.parse(text) as unknown;
+    }
+    const parsed = boundedBody as {
+      code?: number;
+      data?: unknown;
+    };
     // Success bodies are ApiResult envelopes { code, message, data }. A non-zero code is a business
     // outcome delivered at HTTP 200 (a lookup target that doesn't exist → NOT_FOUND); the peer is healthy
     // and answered (markContactSuccess above already advanced liveness), so surface it as a typed
@@ -664,14 +773,14 @@ export class FederationService implements OnModuleDestroy {
     // every getSigned caller still receives the typed payload (res.messages / res.profileRev / …), not the
     // envelope — no call site changes. The !res.ok branch above still carries 400/401/410/5xx (notably the
     // 410 group-author-left leave signal, which the consumer detects via S2sResponseError.status).
-    if (typeof body?.code === 'number' && body.code !== BusinessCode.OK) {
+    if (typeof parsed?.code === 'number' && parsed.code !== BusinessCode.OK) {
       throw new S2sResponseError(
-        `S2S GET ${path} from ${peerDomain} business error: code ${body.code}`,
+        `S2S GET ${path} from ${peerDomain} business error: code ${parsed.code}`,
         res.status,
-        body.code,
+        parsed.code,
       );
     }
-    return (body?.data ?? body) as T;
+    return (parsed?.data ?? parsed) as T;
   }
 
   // ─── trust establishment (init handshake) ────────────────────────────────────
@@ -1026,7 +1135,11 @@ export class FederationService implements OnModuleDestroy {
       // caught up to — at worst slightly behind the origin's true latest; the gap closes on the next push).
       const trd = await this.prisma.messageThread.findUnique({
         where: { id: params.threadId! },
-        select: { curSeq: true, pullUntil: true, groupUser: { select: { domain: true } } },
+        select: {
+          curSeq: true,
+          pullUntil: true,
+          groupUser: { select: { domain: true } },
+        },
       });
       payload.sinceSeq =
         trd == null || trd.groupUser == null
@@ -1041,7 +1154,11 @@ export class FederationService implements OnModuleDestroy {
       payload.groupRevision = params.groupRevision ?? 0;
       payload.owner = params.owner ?? payload.from;
     }
-    await this.postSigned('/api/v1/s2s/invite', JSON.stringify(payload), params.to.domain);
+    await this.postSigned(
+      '/api/v1/s2s/invite',
+      JSON.stringify(payload),
+      params.to.domain,
+    );
   }
 
   /** POST /api/v1/s2s/invite-accept — notify the other side that a local user accepted an invite. FRIEND
@@ -1131,7 +1248,11 @@ export class FederationService implements OnModuleDestroy {
     if (params.kind !== undefined) frame.kind = params.kind;
     if (params.payload !== undefined) frame.payload = params.payload;
     if (params.startedAt !== undefined) frame.startedAt = params.startedAt;
-    await this.postSigned('/api/v1/s2s/call', JSON.stringify(frame), peerDomain);
+    await this.postSigned(
+      '/api/v1/s2s/call',
+      JSON.stringify(frame),
+      peerDomain,
+    );
   }
 
   // ─── Step 3: cross-server group threads (origin-hub) ────────────────────────
@@ -1156,7 +1277,9 @@ export class FederationService implements OnModuleDestroy {
   /** Whether THIS server is the origin (roster + history authority) of a group thread: the group
    *  !-User row is homed locally (domain='local'). True for purely-local groups AND federated origins;
    *  false for a federated mirror (groupUser.domain = the origin's domain). */
-  private isOriginThread(trd: { groupUser: { domain: string } | null }): boolean {
+  private isOriginThread(trd: {
+    groupUser: { domain: string } | null;
+  }): boolean {
     return trd.groupUser?.domain === 'local';
   }
 
@@ -1185,7 +1308,9 @@ export class FederationService implements OnModuleDestroy {
     groupUser: { account: string; domain: string } | null;
   } | null> {
     return this.prisma.messageThread.findFirst({
-      where: { groupUser: { account: normalizeAccount(groupAccount), isGroup: true } },
+      where: {
+        groupUser: { account: normalizeAccount(groupAccount), isGroup: true },
+      },
       select: {
         id: true,
         type: true,
@@ -1213,7 +1338,8 @@ export class FederationService implements OnModuleDestroy {
     const from = this.requireS2SAddress(body.from);
     const to = this.requireS2SAddress(body.to);
     const foreignId = await this.ensureForeignUser(from.account, from.domain);
-    if (body.profile) await this.localizeForeignProfile(foreignId, body.profile);
+    if (body.profile)
+      await this.localizeForeignProfile(foreignId, body.profile);
     const localId = await this.findLocalUserIdByAddress(to);
     if (localId === null) {
       throw new BusinessException(
@@ -1229,15 +1355,17 @@ export class FederationService implements OnModuleDestroy {
       originId: body.id,
       expiresAt: new Date(Date.now() + INVITE_TTL_MS),
     });
-    this.sse.onNotify(
-      localId,
-      { event: 'NOTIFY', type: 'FRIEND_REQUEST', fromUserId: foreignId, inviteId },
-    );
+    this.sse.onNotify(localId, {
+      event: 'NOTIFY',
+      type: 'FRIEND_REQUEST',
+      fromUserId: foreignId,
+      inviteId,
+    });
     // friendReqRev push (the mergeable badge signal) — MAX(createdAt) over the local recipient's incoming
     // FRIEND invites, just advanced by receiveInboundFriendInvite's PENDING create.
-    void this.invite.friendReqState(localId).then((s) =>
-      this.sse.onFriendReqRevUpdated(localId, s),
-    );
+    void this.invite
+      .friendReqState(localId)
+      .then((s) => this.sse.onFriendReqRevUpdated(localId, s));
   }
 
   /** GROUP: friend-gate → find-or-create mirror (stores the OWNER participant) → REVISION-GATED avatar/
@@ -1268,13 +1396,21 @@ export class FederationService implements OnModuleDestroy {
     // The inviter's stub must already exist (a passing friend gate ⇒ they're already friends ⇒ the stub
     // was created when they befriended). LOOK IT UP (don't ensure/create) — missing ⇒ not friends.
     const byStub = await this.prisma.user.findUnique({
-      where: { account_domain: { account: normalizeAccount(by.account), domain: by.domain } },
+      where: {
+        account_domain: {
+          account: normalizeAccount(by.account),
+          domain: by.domain,
+        },
+      },
     });
     if (byStub === null) {
       throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
     }
     const byStubId = byStub.id;
-    const p2pThreadId = await this.participantService.findP2PThreadBetween(byStubId, localId);
+    const p2pThreadId = await this.participantService.findP2PThreadBetween(
+      byStubId,
+      localId,
+    );
     if (p2pThreadId === null) {
       throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
     }
@@ -1306,10 +1442,13 @@ export class FederationService implements OnModuleDestroy {
           })
         : null;
     const rev = body.groupRevision ?? 0;
-    const stale = gu == null || gu.remoteProfileRev == null || gu.remoteProfileRev < rev;
+    const stale =
+      gu == null || gu.remoteProfileRev == null || gu.remoteProfileRev < rev;
     let avatarUrl = gu?.avatar ?? '';
     if (stale && mirror?.groupUserId != null) {
-      avatarUrl = body.groupAvatar ? await this.upload.saveAvatarFromWire(body.groupAvatar) : avatarUrl;
+      avatarUrl = body.groupAvatar
+        ? await this.upload.saveAvatarFromWire(body.groupAvatar)
+        : avatarUrl;
       await this.prisma.user.update({
         where: { id: mirror.groupUserId },
         data: {
@@ -1323,10 +1462,16 @@ export class FederationService implements OnModuleDestroy {
     // sender's P2P mirror), delivered to this server via the Step-2 message pull in Phase B. Phase A
     // ships the machinery (Invite + mirror + accept + roster fanout); the invitee's visible card arrives
     // with Phase-B messaging.
-    await this.invite.createGroupInvite(byStubId, mirrorThreadId, localId, body.note ?? '', {
-      origin: body.origin,
-      originId: body.id,
-    });
+    await this.invite.createGroupInvite(
+      byStubId,
+      mirrorThreadId,
+      localId,
+      body.note ?? '',
+      {
+        origin: body.origin,
+        originId: body.id,
+      },
+    );
   }
 
   /** Inbound POST /s2s/invite-accept — the other side accepted an invite. FRIEND → create THIS server's
@@ -1396,7 +1541,10 @@ export class FederationService implements OnModuleDestroy {
         `local user ${to.account} not found`,
       );
     }
-    const threadId = await this.participantService.findP2PThreadBetween(localUserId, peerStubId);
+    const threadId = await this.participantService.findP2PThreadBetween(
+      localUserId,
+      peerStubId,
+    );
     if (threadId === null) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_ALLOWED,
@@ -1424,7 +1572,10 @@ export class FederationService implements OnModuleDestroy {
         `local requester not found`,
       );
     }
-    const { threadId, created } = await this.invite.applyInboundFriendApprove(localId, foreignId);
+    const { threadId, created } = await this.invite.applyInboundFriendApprove(
+      localId,
+      foreignId,
+    );
     if (created) {
       // Local user's thread list gained a P2P thread — bump threadRevision + push signal (replaces the
       // former FRIEND_APPROVED NOTIFY; the client pulls the delta).
@@ -1447,8 +1598,15 @@ export class FederationService implements OnModuleDestroy {
         `group ${body.group} not found`,
       );
     }
-    const accepterStubId = await this.ensureForeignUser(accepter.account, accepter.domain);
-    await this.participantService.upsertMember(trd.id, accepterStubId, GroupRole.MEMBER);
+    const accepterStubId = await this.ensureForeignUser(
+      accepter.account,
+      accepter.domain,
+    );
+    await this.participantService.upsertMember(
+      trd.id,
+      accepterStubId,
+      GroupRole.MEMBER,
+    );
     // Bump the roster revision so mirrors re-pull the roster on the next chat-open (lazy meta-pull).
     // The former bump-User.updatedAt hack is replaced by Group.rosterRev++ (identity is untouched).
     if (trd.groupUserId != null) {
@@ -1464,9 +1622,9 @@ export class FederationService implements OnModuleDestroy {
   /** ORIGIN serves the canonical roster for a federated group (GET /s2s/group/:account/roster).
    *  Members carry WIRE addresses (a local member's domain is our real domain, never the "local" sentinel)
    *  so the pulling mirror can ensureForeignUser each. */
-  async serveGroupRoster(
-    groupAccount: string,
-  ): Promise<{ members: { account: string; domain: string; role: GroupRole }[] } | null> {
+  async serveGroupRoster(groupAccount: string): Promise<{
+    members: { account: string; domain: string; role: GroupRole }[];
+  } | null> {
     const trd = await this.findGroupThread(groupAccount);
     if (trd == null) return null;
     const rows = await this.prisma.threadParticipant.findMany({
@@ -1486,11 +1644,16 @@ export class FederationService implements OnModuleDestroy {
   private async pullGroupRoster(
     groupAccount: string,
     originDomain: string,
-  ): Promise<{ members: { account: string; domain: string; role: GroupRole }[] } | null> {
+  ): Promise<{
+    members: { account: string; domain: string; role: GroupRole }[];
+  } | null> {
     try {
       return await this.getSigned<{
         members: { account: string; domain: string; role: GroupRole }[];
-      }>(`/api/v1/s2s/group/${encodeURIComponent(groupAccount)}/roster`, originDomain);
+      }>(
+        `/api/v1/s2s/group/${encodeURIComponent(groupAccount)}/roster`,
+        originDomain,
+      );
     } catch {
       return null;
     }
@@ -1532,20 +1695,31 @@ export class FederationService implements OnModuleDestroy {
       }
       if (grp) {
         const rrev = await this.fetchRemoteRosterRevision(address);
-        if (grp.remoteRosterRev == null || rrev.rosterRev > grp.remoteRosterRev) {
+        if (
+          grp.remoteRosterRev == null ||
+          rrev.rosterRev > grp.remoteRosterRev
+        ) {
           const roster = await this.pullGroupRoster(gu.account, gu.domain);
           if (roster) {
             await this.reconcileRoster(threadId, roster.members);
-            await this.prisma.group.update({ where: { groupUserId }, data: { remoteRosterRev: rrev.rosterRev } });
+            await this.prisma.group.update({
+              where: { groupUserId },
+              data: { remoteRosterRev: rrev.rosterRev },
+            });
             rosterChanged = true;
           }
         }
       }
       if (profileChanged || rosterChanged) {
-        const members = await this.participantService.getActiveParticipantUserIds(threadId);
+        const members =
+          await this.participantService.getActiveParticipantUserIds(threadId);
         members.forEach((m) => {
-          if (profileChanged) this.sse.onGroupEvent(m.userId, 'GROUP_UPDATED', { threadId });
-          if (rosterChanged) this.sse.onGroupEvent(m.userId, 'GROUP_ROSTER_UPDATED', { threadId });
+          if (profileChanged)
+            this.sse.onGroupEvent(m.userId, 'GROUP_UPDATED', { threadId });
+          if (rosterChanged)
+            this.sse.onGroupEvent(m.userId, 'GROUP_ROSTER_UPDATED', {
+              threadId,
+            });
         });
       }
     } catch {
@@ -1598,7 +1772,9 @@ export class FederationService implements OnModuleDestroy {
       where: { threadId, leftAt: null, user: { isForeigner: true } },
       select: { userId: true },
     });
-    for (const p of localForeign.filter((p) => !originForeignIds.has(p.userId))) {
+    for (const p of localForeign.filter(
+      (p) => !originForeignIds.has(p.userId),
+    )) {
       await this.participantService.softLeaveMember(threadId, p.userId);
     }
   }
@@ -1616,7 +1792,12 @@ export class FederationService implements OnModuleDestroy {
     sinceSeq?: number;
   }): Promise<number> {
     const existing = await this.prisma.messageThread.findFirst({
-      where: { groupUser: { account: normalizeAccount(params.fedGroupAccount), isGroup: true } },
+      where: {
+        groupUser: {
+          account: normalizeAccount(params.fedGroupAccount),
+          isGroup: true,
+        },
+      },
       select: { id: true },
     });
     if (existing) return existing.id;
@@ -1645,11 +1826,19 @@ export class FederationService implements OnModuleDestroy {
     });
     // Group-exclusive state: owner + roster revision. remoteRosterRev stays null until the first probe.
     await this.prisma.group.create({
-      data: { groupUserId: groupUser.id, ownerId: params.ownerStubId, rosterRev: 0 },
+      data: {
+        groupUserId: groupUser.id,
+        ownerId: params.ownerStubId,
+        rosterRev: 0,
+      },
     });
     // Record the origin owner on the mirror (roster authority is the origin).
     await this.prisma.threadParticipant.create({
-      data: { userId: params.ownerStubId, threadId: trd.id, role: GroupRole.OWNER },
+      data: {
+        userId: params.ownerStubId,
+        threadId: trd.id,
+        role: GroupRole.OWNER,
+      },
     });
     return trd.id;
   }
@@ -1930,7 +2119,9 @@ export class FederationService implements OnModuleDestroy {
     }
     const participants = await this.prisma.threadParticipant.findMany({
       where: { threadId: trd.id, leftAt: null },
-      include: { user: { select: { account: true, domain: true, isForeigner: true } } },
+      include: {
+        user: { select: { account: true, domain: true, isForeigner: true } },
+      },
     });
     const signerIsMember = participants.some(
       (p) => this.effectiveDomain(p.user) === signerDomain,
@@ -1946,7 +2137,10 @@ export class FederationService implements OnModuleDestroy {
           this.effectiveDomain(p.user) === fromDomain,
       );
       if (!author) {
-        throw new BusinessException(BusinessCode.FORBIDDEN, 'author not a member');
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'author not a member',
+        );
       }
       authorId = author.userId;
     }
@@ -1968,9 +2162,17 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<{ authorId: number }> {
     const p = await this.prisma.threadParticipant.findFirst({
       where: { threadId, user: { account: normalizeAccount(fromAccount) } },
-      select: { userId: true, leftAt: true, user: { select: { isForeigner: true, domain: true } } },
+      select: {
+        userId: true,
+        leftAt: true,
+        user: { select: { isForeigner: true, domain: true } },
+      },
     });
-    if (!p || this.effectiveDomain(p.user) !== fromDomain || p.leftAt !== null) {
+    if (
+      !p ||
+      this.effectiveDomain(p.user) !== fromDomain ||
+      p.leftAt !== null
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT,
         `author ${fromAccount}@${fromDomain} left the group`,
@@ -1983,7 +2185,10 @@ export class FederationService implements OnModuleDestroy {
   /** Soft-leave a member on OUR canonical roster + bump the group-meta revision (the `!`-User.updatedAt
    *  mirrors compare on chat-open) so mirrors reconcile. Called when the ORIGIN detects a member left a
    *  mirror — the per-author hub-leg pull answered HTTP 410 (FEDERATION_GROUP_AUTHOR_LEFT). */
-  private async softLeaveMemberAndBump(threadId: number, userId: number): Promise<void> {
+  private async softLeaveMemberAndBump(
+    threadId: number,
+    userId: number,
+  ): Promise<void> {
     await this.participantService.softLeaveMember(threadId, userId);
     const trd = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
@@ -2021,7 +2226,11 @@ export class FederationService implements OnModuleDestroy {
       where: { threadId, seq: { gt: after } },
       orderBy: { seq: 'asc' },
       take: take + 1,
-      include: { creatorItem: { select: { account: true, domain: true, isForeigner: true } } },
+      include: {
+        creatorItem: {
+          select: { account: true, domain: true, isForeigner: true },
+        },
+      },
     });
     const hasMore = rows.length > take;
     const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
@@ -2037,7 +2246,8 @@ export class FederationService implements OnModuleDestroy {
     }));
     // latestSeq = the highest seq in THIS batch (the cursor the receiver lands on after storing it), NOT
     // the thread total — so a multi-page catch-up walks every page. -1 only when the batch is empty.
-    const latestSeq = messages.length > 0 ? messages[messages.length - 1].seq : -1;
+    const latestSeq =
+      messages.length > 0 ? messages[messages.length - 1].seq : -1;
     return { messages, latestSeq, hasMore };
   }
 
@@ -2062,7 +2272,11 @@ export class FederationService implements OnModuleDestroy {
     );
     // Author gate with LEAVE signal: active → serve; soft-left/absent → resolveGroupAuthorOrLeave
     // throws (→ HTTP 410 GONE) before reaching here.
-    const { authorId } = await this.resolveGroupAuthorOrLeave(threadId, fromAccount, fromDomain);
+    const { authorId } = await this.resolveGroupAuthorOrLeave(
+      threadId,
+      fromAccount,
+      fromDomain,
+    );
     const rows = await this.prisma.message.findMany({
       where: { threadId, creator: authorId, originSeq: { gt: after } },
       orderBy: { originSeq: 'asc' },
@@ -2114,7 +2328,11 @@ export class FederationService implements OnModuleDestroy {
       },
       orderBy: { seq: 'desc' },
       take: take + 1,
-      include: { creatorItem: { select: { account: true, domain: true, isForeigner: true } } },
+      include: {
+        creatorItem: {
+          select: { account: true, domain: true, isForeigner: true },
+        },
+      },
     });
     const hasMore = rows.length > take;
     // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
@@ -2131,7 +2349,8 @@ export class FederationService implements OnModuleDestroy {
       ts: m.createdAt.getTime(),
     }));
     // latestSeq = the NEWEST seq in this batch (mirrors the forward leg's batch cursor); -1 when empty.
-    const latestSeq = messages.length > 0 ? messages[messages.length - 1].seq : -1;
+    const latestSeq =
+      messages.length > 0 ? messages[messages.length - 1].seq : -1;
     return { messages, latestSeq, hasMore };
   }
 
@@ -2157,7 +2376,11 @@ export class FederationService implements OnModuleDestroy {
     );
     // Author gate with LEAVE signal: active → serve; soft-left/absent → resolveGroupAuthorOrLeave
     // throws (→ HTTP 410 GONE) before reaching here.
-    const { authorId } = await this.resolveGroupAuthorOrLeave(threadId, fromAccount, fromDomain);
+    const { authorId } = await this.resolveGroupAuthorOrLeave(
+      threadId,
+      fromAccount,
+      fromDomain,
+    );
     const rows = await this.prisma.message.findMany({
       where: {
         threadId,
@@ -2184,14 +2407,25 @@ export class FederationService implements OnModuleDestroy {
     return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
   }
 
-
   async resolveMediaFile(
     fromAccount: string,
     toAccount: string,
     fromDomain: string | undefined,
     signerDomain: string,
     digest: string,
+    forwardBundleId?: string,
   ): Promise<{ absPath: string; bytes: number }> {
+    if (forwardBundleId) {
+      await this.requireForwardBundlePeerAccess(forwardBundleId, signerDomain);
+      const closure = await this.forwardBundles.buildClosure(forwardBundleId);
+      if (!closure.assets.some((asset) => asset.digest === digest)) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'digest not in forward bundle',
+        );
+      }
+      return this.resolveCasFile(digest);
+    }
     // Group media (`toAccount` is the group `!account`): roster gate via resolveGroupThreadAccess. P2P
     // media: friendship gate via resolveFriendshipThread (`fromAccount` is the local owner). The 3rd
     // check (digest in thread) is identical for both — it keys on threadId, however resolved.
@@ -2205,7 +2439,11 @@ export class FederationService implements OnModuleDestroy {
           )
         ).threadId
       : (
-          await this.resolveFriendshipThread(fromAccount, toAccount, signerDomain)
+          await this.resolveFriendshipThread(
+            fromAccount,
+            toAccount,
+            signerDomain,
+          )
         ).threadId;
     // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
     const inThread = await this.prisma.mediaMessage.findFirst({
@@ -2218,6 +2456,50 @@ export class FederationService implements OnModuleDestroy {
         'digest not in thread',
       );
     }
+    return this.resolveCasFile(digest);
+  }
+
+  async serveForwardBundleClosure(bundleId: string, signerDomain: string) {
+    await this.requireForwardBundlePeerAccess(bundleId, signerDomain);
+    return this.forwardBundles.buildClosure(bundleId);
+  }
+
+  private async requireForwardBundlePeerAccess(
+    bundleId: string,
+    signerDomain: string,
+  ): Promise<void> {
+    const visible = await this.prisma.forwardMessage.findFirst({
+      where: {
+        bundleId,
+        message: {
+          isDeleted: false,
+          threadItem: {
+            ThreadParticipant: {
+              some: {
+                leftAt: null,
+                user: {
+                  isForeigner: true,
+                  domain: signerDomain,
+                  isDeleted: false,
+                },
+              },
+            },
+          },
+        },
+      },
+      select: { messageId: true },
+    });
+    if (!visible) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'forward bundle not visible to peer',
+      );
+    }
+  }
+
+  private async resolveCasFile(
+    digest: string,
+  ): Promise<{ absPath: string; bytes: number }> {
     // Resolve data/uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
     const shardDir = join(
       process.cwd(),
@@ -2231,17 +2513,11 @@ export class FederationService implements OnModuleDestroy {
     try {
       names = await readdir(shardDir);
     } catch {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'file unavailable',
-      );
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
     }
     const name = names.find((f) => f.startsWith(`${digest}.`));
     if (!name) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'file unavailable',
-      );
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
     }
     const absPath = join(shardDir, name);
     const s = await stat(absPath);
@@ -2269,7 +2545,10 @@ export class FederationService implements OnModuleDestroy {
     // `toAccount` is the requester's user → on OUR side it's a foreign stub on the signer's domain.
     const toStub = await this.prisma.user.findUnique({
       where: {
-        account_domain: { account: normalizeAccount(toAccount), domain: signerDomain },
+        account_domain: {
+          account: normalizeAccount(toAccount),
+          domain: signerDomain,
+        },
       },
       select: { id: true, isForeigner: true },
     });
@@ -2279,14 +2558,14 @@ export class FederationService implements OnModuleDestroy {
         `recipient ${toAccount} not found`,
       );
     }
-    const threadId = await this.participantService.findP2PThreadBetween(fromId, toStub.id);
+    const threadId = await this.participantService.findP2PThreadBetween(
+      fromId,
+      toStub.id,
+    );
     if (threadId === null) {
       // Gate 2 failed: no active P2P thread (not friends — e.g. after a local-only unfriend). The 403
       // is also the rejection that teaches the peer about the severed edge (§9.4).
-      throw new BusinessException(
-        BusinessCode.FORBIDDEN,
-        'not friends',
-      );
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
     }
     return { fromId, threadId };
   }
@@ -2300,12 +2579,19 @@ export class FederationService implements OnModuleDestroy {
   // + latestSeq): `toAccount` is a peer user account (P2P) or the group `!account` (group).
 
   /** One queued pull hint. Mirrors the wire NewMsgMapEntry shape (fromAccount/fromDomain/toAccount/latestSeq). */
-  private readonly pendingPulls = new Map<string, Map<string, NewMsgMapEntry>>();
+  private readonly pendingPulls = new Map<
+    string,
+    Map<string, NewMsgMapEntry>
+  >();
   /** Single-flight guard so only one drain runs per domain at a time (a push mid-drain just updates the map). */
   private readonly drainingPulls = new Set<string>();
 
   /** scopeKey for pendingPulls (internal \0 separator; accounts/domains never contain \0). */
-  private pullScopeKey(e: { fromAccount: string; fromDomain: string; toAccount: string }): string {
+  private pullScopeKey(e: {
+    fromAccount: string;
+    fromDomain: string;
+    toAccount: string;
+  }): string {
     return `${e.fromAccount}\0${e.fromDomain}\0${e.toAccount}`;
   }
 
@@ -2411,7 +2697,10 @@ export class FederationService implements OnModuleDestroy {
    *  signalOutbound signals nobody — the receiver never re-propagates a 1:1 message). */
   private async pullP2P(domain: string, e: NewMsgMapEntry): Promise<boolean> {
     try {
-      const creatorId = await this.ensureForeignUser(e.fromAccount, e.fromDomain);
+      const creatorId = await this.ensureForeignUser(
+        e.fromAccount,
+        e.fromDomain,
+      );
       const toLocalUserId = await this.findLocalUserId(e.toAccount);
       if (toLocalUserId === null) return true; // local user gone → drop
       const threadId = await this.participantService.findP2PThreadBetween(
@@ -2450,7 +2739,13 @@ export class FederationService implements OnModuleDestroy {
             m,
           );
           if (created && this.isMediaContentType(created.contentType)) {
-            await this.localizeMedia(created, domain, e.fromAccount, e.fromDomain, e.toAccount);
+            await this.localizeMedia(
+              created,
+              domain,
+              e.fromAccount,
+              e.fromDomain,
+              e.toAccount,
+            );
           }
         }
         if (res.messages.length > 0) {
@@ -2470,7 +2765,8 @@ export class FederationService implements OnModuleDestroy {
     try {
       const trd = await this.findGroupThread(e.toAccount);
       if (!trd) return true; // not a member here → drop
-      if (this.isOriginThread(trd)) return this.pullGroupFromAuthor(domain, trd.id, e);
+      if (this.isOriginThread(trd))
+        return this.pullGroupFromAuthor(domain, trd.id, e);
       return this.pullGroupWhole(trd.id, trd.groupUser!.domain, e.toAccount);
     } catch {
       return false;
@@ -2503,7 +2799,10 @@ export class FederationService implements OnModuleDestroy {
     // anything inside the window is recovered on the next chat-open (force) — never lost.
     if (!force) {
       const last = this.recentGroupPulls.get(threadId);
-      if (last !== undefined && Date.now() - last < FederationService.GROUP_PULL_DEBOUNCE_MS) {
+      if (
+        last !== undefined &&
+        Date.now() - last < FederationService.GROUP_PULL_DEBOUNCE_MS
+      ) {
         return true; // recently pulled — skip the redundant empty GET
       }
     }
@@ -2533,7 +2832,10 @@ export class FederationService implements OnModuleDestroy {
         ),
       );
       for (const m of res.messages) {
-        const creatorId = await this.ensureForeignUser(m.creator.account, m.creator.domain);
+        const creatorId = await this.ensureForeignUser(
+          m.creator.account,
+          m.creator.domain,
+        );
         const created = await this.storePulledMessage(
           threadId,
           creatorId,
@@ -2612,7 +2914,13 @@ export class FederationService implements OnModuleDestroy {
             m,
           );
           if (created && this.isMediaContentType(created.contentType)) {
-            await this.localizeMedia(created, domain, e.fromAccount, e.fromDomain, e.toAccount);
+            await this.localizeMedia(
+              created,
+              domain,
+              e.fromAccount,
+              e.fromDomain,
+              e.toAccount,
+            );
           }
         }
         if (messages.length > 0) {
@@ -2664,7 +2972,53 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<Message | null> {
     // LINK thumbnails arrive inlined (base64) on the wire; decode + persist content-addressed, keeping
     // only the digest in our DB (mirrors the local send path's storage). Other types pass through.
-    const storedContent = await this.linkPreview.decodeFromWire(m.contentType, m.content);
+    let storedContent = await this.linkPreview.decodeFromWire(
+      m.contentType,
+      m.content,
+    );
+    let remoteForwardBundleId: string | undefined;
+    let forwardClosure: ForwardWireClosure | undefined;
+    let localForwardBundleId: string | undefined;
+    let forwardCard:
+      | {
+          version: number;
+          bundleId: string;
+          summaryLines: string[];
+          messageCount: number;
+          assetCount: number;
+        }
+      | undefined;
+    if (m.contentType === ContentType.FORWARD) {
+      try {
+        forwardCard = JSON.parse(m.content) as typeof forwardCard;
+      } catch {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid FORWARD card JSON',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (
+        forwardCard?.version !== 1 ||
+        typeof forwardCard.bundleId !== 'string' ||
+        !Array.isArray(forwardCard.summaryLines) ||
+        forwardCard.summaryLines.length > 3
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid FORWARD card shape',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      remoteForwardBundleId = forwardCard.bundleId;
+      forwardClosure = await this.withTrustedPeer(fetchedFromDomain, () =>
+        this.getSigned<ForwardWireClosure>(
+          `/api/v1/s2s/forward-bundles/${encodeURIComponent(forwardCard!.bundleId)}`,
+          fetchedFromDomain,
+          FORWARD_MAX_WIRE_JSON_BYTES + 64 * 1024,
+        ),
+      );
+    }
     // The sender server's allocation time (payload `ts`) is stored as originServerTime (future use,
     // never displayed). The receiver's own createdAt defaults to now() — the local ARRIVAL time, which
     // is what the chatbox displays and what orders the conversation list. The protocol never trusts the
@@ -2676,6 +3030,18 @@ export class FederationService implements OnModuleDestroy {
     // back too (no seq gap from a deduped re-pull).
     const created = await this.prisma
       .$transaction(async (tx) => {
+        if (forwardClosure && forwardCard) {
+          const imported = await this.forwardBundles.importClosure(
+            fetchedFromDomain,
+            forwardClosure,
+            tx,
+          );
+          localForwardBundleId = imported.localRootBundleId;
+          storedContent = JSON.stringify({
+            ...forwardCard,
+            bundleId: localForwardBundleId,
+          });
+        }
         const { curSeq: seq } = await tx.messageThread.update({
           where: { id: threadId },
           data: { curSeq: { increment: 1 } },
@@ -2693,6 +3059,11 @@ export class FederationService implements OnModuleDestroy {
             // createdAt defaults to now() → the local arrival time
           },
         });
+        if (localForwardBundleId) {
+          await tx.forwardMessage.create({
+            data: { messageId: msg.id, bundleId: localForwardBundleId },
+          });
+        }
         // Quota: tick the peer's daily message budget ON THE SAME tx. Over-limit throws inside the tx →
         // rolls back the seq increment + this message too (no seq gap, no count burn); caught below as a
         // skip. `fetchedFromDomain` is always a peer (we pull FROM peers, never ourselves).
@@ -2726,7 +3097,13 @@ export class FederationService implements OnModuleDestroy {
     // freshly-pulled media message is mid-localize; the client learns mediaStatus from the pulled body +
     // the MEDIA_STATUS terminal event pushed when localization completes.
     for (const uid of recipients) {
-      if (uid !== creatorId) this.sse.onNewMessage(uid, threadId, created.seq, created.createdAt.getTime());
+      if (uid !== creatorId)
+        this.sse.onNewMessage(
+          uid,
+          threadId,
+          created.seq,
+          created.createdAt.getTime(),
+        );
     }
     const arrival = created.createdAt;
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
@@ -2739,17 +3116,85 @@ export class FederationService implements OnModuleDestroy {
       },
       data: {
         lastMessageSeq: created.seq,
-        lastMessagePreview: derivePreview(m.contentType as ContentType, storedContent),
+        lastMessagePreview: derivePreview(
+          m.contentType as ContentType,
+          storedContent,
+        ),
         lastMessageAt: arrival,
       },
     });
     // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
     // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
     // the OTHER member-domains. See plan "Hub loop-safety".
-    void this
-      .signalOutbound(threadId, creatorId, m.originSeq, fetchedFromDomain)
-      .catch(() => undefined);
+    void this.signalOutbound(
+      threadId,
+      creatorId,
+      m.originSeq,
+      fetchedFromDomain,
+    ).catch(() => undefined);
+    if (remoteForwardBundleId && forwardClosure) {
+      await this.localizeForwardAssets(
+        forwardClosure,
+        fetchedFromDomain,
+        remoteForwardBundleId,
+      );
+    }
     return created;
+  }
+
+  private async localizeForwardAssets(
+    closure: ForwardWireClosure,
+    peerDomain: string,
+    remoteRootBundleId: string,
+  ): Promise<void> {
+    // Derive from the validated per-bundle manifests; the top-level `assets` array is only a wire
+    // convenience summary and is never an independent authorization/download authority.
+    const referenceCounts = new Map<string, number>();
+    for (const bundle of closure.bundles) {
+      for (const asset of bundle.assets) {
+        referenceCounts.set(
+          asset.digest,
+          (referenceCounts.get(asset.digest) ?? 0) + 1,
+        );
+      }
+    }
+    for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
+      try {
+        const have = await this.prisma.mediaAsset.findUnique({
+          where: { digest: asset.digest },
+          select: { refs: true },
+        });
+        if (have && have.refs > 0) continue;
+        const category: 'images' | 'largeFiles' =
+          asset.kind === 'avatar' ||
+          asset.kind === 'image' ||
+          asset.kind === 'link'
+            ? 'images'
+            : 'largeFiles';
+        await this.upload.saveCasFromStream(
+          asset.extension,
+          this.fetchMediaChunks(
+            peerDomain,
+            asset.digest,
+            '',
+            '',
+            '',
+            category,
+            remoteRootBundleId,
+          ),
+          asset.digest,
+        );
+        const remainingRefs = (referenceCounts.get(asset.digest) ?? 1) - 1;
+        if (remainingRefs > 0) {
+          await this.prisma.mediaAsset.update({
+            where: { digest: asset.digest },
+            data: { refs: { increment: remainingRefs } },
+          });
+        }
+      } catch {
+        // Bundle JSON remains usable and the client can retry asset localization later.
+      }
+    }
   }
 
   /** Whether a content type carries CAS media the receiver must localize from the peer. */
@@ -2805,7 +3250,14 @@ export class FederationService implements OnModuleDestroy {
           // inert for a later retry.
           await this.upload.saveCasFromStream(
             ext,
-            this.fetchMediaChunks(peerDomain, digest, fromAccount, fromDomain, toAccount, category),
+            this.fetchMediaChunks(
+              peerDomain,
+              digest,
+              fromAccount,
+              fromDomain,
+              toAccount,
+              category,
+            ),
             digest,
           );
         }
@@ -2971,10 +3423,13 @@ export class FederationService implements OnModuleDestroy {
     fromDomain: string,
     toAccount: string,
     category: 'images' | 'largeFiles',
+    forwardBundleId?: string,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
-    const path = `/api/v1/s2s/get_file?digest=${digest}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}`;
+    const path = forwardBundleId
+      ? `/api/v1/s2s/get_file?digest=${digest}&bundleId=${encodeURIComponent(forwardBundleId)}`
+      : `/api/v1/s2s/get_file?digest=${digest}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}`;
     const url = new URL(`${base}${path}`);
     let offset = 0;
     let total: number | null = null;
@@ -2996,7 +3451,8 @@ export class FederationService implements OnModuleDestroy {
         // is the only size hint; if absent the cap is best-effort (skipped) but the COUNT still ticks.
         if (!quotaChecked) {
           const len = Number(unit.res.headers.get('content-length') ?? 0);
-          if (len > 0) await this.quota.assertUnderCap(peerDomain, category, len);
+          if (len > 0)
+            await this.quota.assertUnderCap(peerDomain, category, len);
           await this.quota.tick(peerDomain, category);
           quotaChecked = true;
         }
@@ -3257,11 +3713,14 @@ export class FederationService implements OnModuleDestroy {
    * fan-out never blocks the triggering request, and a user with no friends / a missing row is a no-op.
    */
   async notifyPeersOfProfileUpdate(userId: number): Promise<void> {
-    const peerIds = await this.participantService.getActiveP2PPeerUserIds(userId);
+    const peerIds =
+      await this.participantService.getActiveP2PPeerUserIds(userId);
     if (peerIds.length === 0) return;
     // Signal-only: the client receives { userId } and HTTP-pulls the fresh profile itself (queryUserInfo),
     // matching the project's SSE-signal-only convention. No profile payload on the wire.
-    peerIds.forEach((peerId) => this.sse.onPeerProfileUpdated(peerId, { userId }));
+    peerIds.forEach((peerId) =>
+      this.sse.onPeerProfileUpdated(peerId, { userId }),
+    );
   }
 
   /**

@@ -16,7 +16,13 @@
   align-items: center;
   gap: 10px;
   padding: 12px max(16px, calc((100% - 800px) / 2 + 16px)) 8px;
-  color: var(--app-brand);
+  // Keep enough brand tint to remain scannable without laying a saturated accent across the wallpaper.
+  // Mixing with semantic text/border tokens lets the divider settle naturally in both light and dark themes.
+  color: color-mix(
+    in srgb,
+    var(--app-text-muted) 68%,
+    var(--app-brand)
+  );
   font-size: 12px;
   font-weight: 600;
   line-height: 18px;
@@ -27,11 +33,24 @@
     content: '';
     flex: 1 1 auto;
     height: 1px;
-    background: color-mix(in srgb, var(--app-brand) 35%, transparent);
+    background: color-mix(
+      in srgb,
+      var(--app-border) 78%,
+      var(--app-brand)
+    );
   }
 
   > span {
     flex: 0 0 auto;
+    padding: 2px 10px;
+    border: 1px solid
+      color-mix(in srgb, var(--app-border) 82%, var(--app-brand));
+    border-radius: var(--app-radius-pill);
+    background: color-mix(
+      in srgb,
+      var(--app-surface-elevated) 90%,
+      var(--app-brand)
+    );
   }
 }
 

@@ -14,6 +14,36 @@ export interface StickyDateRow {
   readonly label: string | null;
 }
 
+/** A measured vertical interval in viewport coordinates. */
+export interface StickyDateInterval {
+  readonly top: number;
+  readonly bottom: number;
+}
+
+/**
+ * The floating pill starts 6px below the visible message-list top and occupies roughly 19px plus its
+ * shadow. Keep this collision band in sync with `sticky-date-overlay.component.scss`.
+ */
+export const STICKY_DATE_COLLISION_TOP_PX = 6;
+export const STICKY_DATE_COLLISION_BOTTOM_PX = 32;
+
+/**
+ * Whether the unread divider intersects the floating date pill's vertical band.
+ *
+ * This is intentionally based on geometry rather than "divider is visible": an unread divider in the
+ * middle of the viewport should not remove useful date context. Strict interval bounds also avoid a
+ * one-frame flicker when the divider merely touches, but does not enter, the pill band.
+ */
+export function unreadDividerOverlapsStickyDate(
+  divider: StickyDateInterval | null,
+  visibleTop: number,
+): boolean {
+  if (divider === null) return false;
+  const pillTop = visibleTop + STICKY_DATE_COLLISION_TOP_PX;
+  const pillBottom = visibleTop + STICKY_DATE_COLLISION_BOTTOM_PX;
+  return divider.top < pillBottom && divider.bottom > pillTop;
+}
+
 /**
  * The sticky-date label: the last date row at/above the visible top (within `fuzz` px).
  *

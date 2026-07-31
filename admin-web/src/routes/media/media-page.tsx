@@ -1,25 +1,27 @@
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-import { Loader2 } from 'lucide-react'
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
+import { Loader2 } from 'lucide-react';
 import {
   useGcAvatars,
+  useGcForwardBundles,
+  useInspectForwardBundles,
   useMediaStats,
   useReconcileMedia,
   useTriggerMediaGc,
-} from '@/hooks/use-media'
-import { useIsSuperAdmin } from '@/hooks/use-me'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+} from '@/hooks/use-media';
+import { useIsSuperAdmin } from '@/hooks/use-me';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
+} from '@/components/ui/dialog';
 import {
   Table,
   TableBody,
@@ -27,74 +29,128 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { TableBodyState } from '@/components/common/table-state'
-import { formatApiError } from '@/lib/format-error'
+} from '@/components/ui/table';
+import { TableBodyState } from '@/components/common/table-state';
+import { formatApiError } from '@/lib/format-error';
 
-type GcAction = 'gc' | 'reconcile' | 'avatars'
+type GcAction = 'gc' | 'reconcile' | 'avatars' | 'forwardBundles';
 
 function formatBytes(bytes: number): string {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
-  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+  );
+  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function MetricTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function MetricTile({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+}) {
   return (
     <div className="rounded-md border p-4">
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
-      {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
+      {sub ? (
+        <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+      ) : null}
     </div>
-  )
+  );
 }
 
 /** Media storage overview + GC triggers. Stats are open to all roles; the GC actions are super-admin
  *  only (the backend endpoints are SUPER_ADMIN-gated) and each runs behind a confirm dialog. */
 export function MediaPage() {
-  const { t } = useTranslation()
-  const { data, isLoading, error } = useMediaStats()
-  const isSuper = useIsSuperAdmin()
-  const gc = useTriggerMediaGc()
-  const reconcile = useReconcileMedia()
-  const avatars = useGcAvatars()
-  const [pending, setPending] = useState<GcAction | null>(null)
+  const { t } = useTranslation();
+  const { data, isLoading, error } = useMediaStats();
+  const isSuper = useIsSuperAdmin();
+  const gc = useTriggerMediaGc();
+  const reconcile = useReconcileMedia();
+  const avatars = useGcAvatars();
+  const inspectBundles = useInspectForwardBundles();
+  const bundleGc = useGcForwardBundles();
+  const [pending, setPending] = useState<GcAction | null>(null);
 
-  const busy = gc.isPending || reconcile.isPending || avatars.isPending
+  const busy =
+    gc.isPending ||
+    reconcile.isPending ||
+    avatars.isPending ||
+    inspectBundles.isPending ||
+    bundleGc.isPending;
 
   const run = async (a: GcAction) => {
     try {
       if (a === 'gc') {
-        const r = await gc.mutateAsync()
-        toast.success(t('media.gcDone', { rows: r.reapedRows, files: r.reapedFiles }))
+        const r = await gc.mutateAsync();
+        toast.success(
+          t('media.gcDone', { rows: r.reapedRows, files: r.reapedFiles }),
+        );
       } else if (a === 'reconcile') {
-        const r = await reconcile.mutateAsync()
-        toast.success(t('media.reconcileDone', { files: r.reapedFiles }))
+        const r = await reconcile.mutateAsync();
+        toast.success(t('media.reconcileDone', { files: r.reapedFiles }));
+      } else if (a === 'avatars') {
+        const r = await avatars.mutateAsync();
+        toast.success(t('media.avatarsDone', { files: r.sweptFiles }));
       } else {
-        const r = await avatars.mutateAsync()
-        toast.success(t('media.avatarsDone', { files: r.sweptFiles }))
+        const inspected = await inspectBundles.mutateAsync();
+        if (inspected.orphanBundles === 0) {
+          toast.success(t('media.forwardBundlesNone'));
+        } else {
+          const r = await bundleGc.mutateAsync();
+          toast.success(
+            t('media.forwardBundlesDone', {
+              bundles: r.orphanBundles,
+              assets: r.orphanAssets,
+            }),
+          );
+        }
       }
     } catch (e) {
-      toast.error(formatApiError(e))
+      toast.error(formatApiError(e));
     }
-    setPending(null)
-  }
+    setPending(null);
+  };
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('media.title')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t('media.desc')}</p>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t('media.title')}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t('media.desc')}
+          </p>
         </div>
         {isSuper ? (
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={() => setPending('gc')}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPending('gc')}
+            >
               {t('media.gc')}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setPending('avatars')}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPending('avatars')}
+            >
               {t('media.gcAvatars')}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPending('forwardBundles')}
+            >
+              {t('media.gcForwardBundles')}
             </Button>
             <Button
               variant="outline"
@@ -121,7 +177,10 @@ export function MediaPage() {
               label={t('media.tileDbBytes')}
               value={formatBytes(Number(data.db.bytes))}
             />
-            <MetricTile label={t('media.tileAssets')} value={String(data.db.assetCount)} />
+            <MetricTile
+              label={t('media.tileAssets')}
+              value={String(data.db.assetCount)}
+            />
             <MetricTile
               label={t('media.tileReclaimable')}
               value={String(data.db.reclaimable)}
@@ -143,8 +202,12 @@ export function MediaPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t('media.col.ext')}</TableHead>
-                    <TableHead className="w-24">{t('media.col.files')}</TableHead>
-                    <TableHead className="w-32">{t('media.col.bytes')}</TableHead>
+                    <TableHead className="w-24">
+                      {t('media.col.files')}
+                    </TableHead>
+                    <TableHead className="w-32">
+                      {t('media.col.bytes')}
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -158,11 +221,16 @@ export function MediaPage() {
                     {data.onDisk.byExt.map((b) => (
                       <TableRow key={b.ext}>
                         <TableCell>
-                          <Badge variant="outline" className="font-mono text-xs">
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-xs"
+                          >
                             {b.ext}
                           </Badge>
                         </TableCell>
-                        <TableCell className="tabular-nums">{b.files}</TableCell>
+                        <TableCell className="tabular-nums">
+                          {b.files}
+                        </TableCell>
                         <TableCell className="tabular-nums">
                           {formatBytes(Number(b.bytes))}
                         </TableCell>
@@ -176,15 +244,24 @@ export function MediaPage() {
         </>
       ) : null}
 
-      <Dialog open={pending !== null} onOpenChange={(o) => !o && setPending(null)}>
+      <Dialog
+        open={pending !== null}
+        onOpenChange={(o) => !o && setPending(null)}
+      >
         {pending ? (
           <DialogContent>
             <DialogHeader>
               <DialogTitle>{t(`media.confirmTitle.${pending}`)}</DialogTitle>
             </DialogHeader>
-            <p className="text-sm text-muted-foreground">{t(`media.confirmBody.${pending}`)}</p>
+            <p className="text-sm text-muted-foreground">
+              {t(`media.confirmBody.${pending}`)}
+            </p>
             <DialogFooter>
-              <Button variant="outline" disabled={busy} onClick={() => setPending(null)}>
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => setPending(null)}
+              >
                 {t('common.cancel')}
               </Button>
               <Button
@@ -200,5 +277,5 @@ export function MediaPage() {
         ) : null}
       </Dialog>
     </div>
-  )
+  );
 }

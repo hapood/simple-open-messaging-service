@@ -209,10 +209,26 @@
   "userDetail": {
     "back": "返回用户列表",
     "notFound": "用户不存在",
-    "section": { "profile": "资料", "groups": "群组", "sessions": "活跃会话", "push": "推送设备" },
-    "field": { "domain": "域", "foreigner": "境外", "tokenVer": "tokenVer", "createdAt": "创建时间", "updatedAt": "更新时间", "bio": "简介" },
+    "section": {
+      "profile": "资料",
+      "groups": "群组",
+      "sessions": "活跃会话",
+      "push": "推送设备"
+    },
+    "field": {
+      "domain": "域",
+      "foreigner": "境外",
+      "tokenVer": "tokenVer",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间",
+      "bio": "简介"
+    },
     "group": { "name": "群组", "role": "角色", "joined": "加入时间" },
-    "empty": { "groups": "无群组成员关系", "sessions": "无活跃会话", "push": "无推送设备" },
+    "empty": {
+      "groups": "无群组成员关系",
+      "sessions": "无活跃会话",
+      "push": "无推送设备"
+    },
     "push": { "deviceId": "设备 ID" }
   },
   "bans": {
@@ -388,7 +404,12 @@
       "blocked": "管理员屏蔽",
       "unblocked": "管理员取消屏蔽"
     },
-    "detail": { "back": "返回联邦", "notFound": "节点不存在", "tabOverview": "概览", "tabTimeline": "时间线" },
+    "detail": {
+      "back": "返回联邦",
+      "notFound": "节点不存在",
+      "tabOverview": "概览",
+      "tabTimeline": "时间线"
+    },
     "selfCheck": {
       "title": "S2S 握手自检",
       "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/soms、密钥一致性、签名回环与时钟偏移。每项网络检查按解析出的每个 IP 独立执行（SRV→DDNS 或多 A/AAAA 记录）。",
@@ -591,7 +612,13 @@
     "outcomeSuccess": "成功",
     "outcomeFailed": "失败",
     "empty": "无匹配操作",
-    "col": { "action": "操作", "target": "目标", "actor": "操作者", "ip": "IP", "at": "时间" }
+    "col": {
+      "action": "操作",
+      "target": "目标",
+      "actor": "操作者",
+      "ip": "IP",
+      "at": "时间"
+    }
   },
   "diagnosticReports": {
     "desc": "客户端上报的诊断日志包（Rust 日志 + 网页控制台 + 版本信息），供现场支持使用。",
@@ -603,7 +630,14 @@
     "deleteConfirm": "删除这条诊断上报？",
     "deleteConfirmDesc": "将删除该上报记录及其日志包文件，此操作不可撤销。",
     "deleted": "已删除",
-    "col": { "reporter": "上报人", "platform": "平台", "versions": "版本", "size": "大小", "status": "状态", "at": "时间" }
+    "col": {
+      "reporter": "上报人",
+      "platform": "平台",
+      "versions": "版本",
+      "size": "大小",
+      "status": "状态",
+      "at": "时间"
+    }
   },
   "media": {
     "title": "媒体与存储",
@@ -617,15 +651,33 @@
     "byExt": "按扩展名",
     "gc": "执行 GC",
     "gcAvatars": "回收头像",
+    "gcForwardBundles": "检测转发 Bundle",
     "reconcile": "对账",
     "col": { "ext": "扩展名", "files": "文件数", "bytes": "字节" },
     "emptyExt": "无 shard 文件",
-    "confirmTitle": { "gc": "执行垃圾回收？", "reconcile": "对账 shards？", "avatars": "回收孤立头像？" },
-    "confirmBody": { "gc": "删除 refs<=0 的 MediaAsset 行及其 shard 文件，并清理残留 tmp。", "reconcile": "遍历 uploads/shards，删除任何无 MediaAsset 记录的文件。O(文件数)——请谨慎执行。", "avatars": "删除不再被任何用户或群组引用的头像文件。" },
-    "confirmAction": { "gc": "执行 GC", "reconcile": "对账", "avatars": "回收" },
+    "confirmTitle": {
+      "gc": "执行垃圾回收？",
+      "reconcile": "对账 shards？",
+      "avatars": "回收孤立头像？",
+      "forwardBundles": "检测并清理孤立转发 Bundle？"
+    },
+    "confirmBody": {
+      "gc": "删除 refs<=0 的 MediaAsset 行及其 shard 文件，并清理残留 tmp。",
+      "reconcile": "遍历 uploads/shards，删除任何无 MediaAsset 记录的文件。O(文件数)——请谨慎执行。",
+      "avatars": "删除不再被任何用户或群组引用的头像文件。",
+      "forwardBundles": "先检测不再能从任何转发消息访问的 Bundle；如有结果，将立即清理并释放其资源引用。仅手动执行。"
+    },
+    "confirmAction": {
+      "gc": "执行 GC",
+      "reconcile": "对账",
+      "avatars": "回收",
+      "forwardBundles": "检测并清理"
+    },
     "gcDone": "GC：回收 {{rows}} 行 / {{files}} 文件",
     "reconcileDone": "对账：回收 {{files}} 文件",
-    "avatarsDone": "回收 {{files}} 个头像文件"
+    "avatarsDone": "回收 {{files}} 个头像文件",
+    "forwardBundlesNone": "未发现孤立转发 Bundle",
+    "forwardBundlesDone": "已清理 {{bundles}} 个 Bundle，释放 {{assets}} 个资源引用"
   },
   "admins": {
     "title": "管理员账号",
@@ -636,16 +688,38 @@
     "userIdHint": "要提升的已有用户的数字 ID（在用户页查找）。",
     "roleLabel": "角色",
     "empty": "无管理员",
-    "col": { "account": "管理员", "role": "角色", "status": "状态", "lastLogin": "最近登录", "twoFactor": "二次验证" },
-    "action": { "disable": "禁用", "enable": "启用", "reset2fa": "重置二次验证" },
+    "col": {
+      "account": "管理员",
+      "role": "角色",
+      "status": "状态",
+      "lastLogin": "最近登录",
+      "twoFactor": "二次验证"
+    },
+    "action": {
+      "disable": "禁用",
+      "enable": "启用",
+      "reset2fa": "重置二次验证"
+    },
     "reset2faConfirm": "重置 {{name}} 的二次验证？重置后该账号将仅凭密码登录。用于为丢失设备的被锁管理员解锁。",
-    "toast": { "created": "已创建管理员", "disabled": "已禁用管理员", "enabled": "已启用管理员", "role": "角色已更新", "reset2fa": "二次验证已重置" }
+    "toast": {
+      "created": "已创建管理员",
+      "disabled": "已禁用管理员",
+      "enabled": "已启用管理员",
+      "role": "角色已更新",
+      "reset2fa": "二次验证已重置"
+    }
   },
   "groups": {
     "title": "群组",
     "desc": "所有群组会话（本地 + 联邦）及其成员数与来源。",
     "searchPlaceholder": "搜索群组名称 / 账号",
-    "col": { "name": "群组", "members": "成员", "origin": "来源", "lastMessage": "最近消息", "created": "创建时间" },
+    "col": {
+      "name": "群组",
+      "members": "成员",
+      "origin": "来源",
+      "lastMessage": "最近消息",
+      "created": "创建时间"
+    },
     "empty": "无群组",
     "local": "本地"
   },

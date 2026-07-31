@@ -351,34 +351,57 @@ $danger: var(--app-danger);
 .pending-area {
   flex: 1;
   overflow-y: auto;
-  padding: 10px 12px;
+  padding: 12px;
 
   .pending-row {
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-columns: 48px minmax(0, 1fr);
     column-gap: 12px;
-    align-items: center;
-    padding: 14px;
+    align-items: start;
+    padding: 16px;
     border: 1px solid $border;
     border-radius: var(--app-radius-lg);
-    background: var(--app-surface-elevated);
+    background: var(--app-surface);
+    transition: border-color 160ms ease, box-shadow 160ms ease;
 
     & + .pending-row {
-      margin-top: 10px;
+      margin-top: 12px;
+    }
+
+    &:hover {
+      border-color: var(--app-border-strong);
+      box-shadow: var(--app-shadow-sm, 0 4px 16px rgb(0 0 0 / 6%));
     }
 
     .user-avatar {
-      width: 44px;
-      height: 44px;
+      width: 48px;
+      height: 48px;
       flex: 0 0 auto;
     }
 
     .pending-meta {
       min-width: 0;
 
+      .pending-heading {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+
       .user-name {
+        flex: 1;
+        min-width: 0;
         font-size: 15px;
-        font-weight: 600;
+        font-weight: 650;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .user-account {
+        margin-top: 2px;
+        color: $muted;
+        font-size: 12px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -386,26 +409,38 @@ $danger: var(--app-danger);
 
       // Federated-domain chip, on its own line directly under the nickname (local users render none).
       .pending-fed {
-        margin-top: 3px;
+        margin-top: 5px;
       }
 
       .pending-date {
+        flex: none;
         font-size: 12px;
         color: $muted;
-        margin-top: 2px;
+        white-space: nowrap;
       }
 
       .pending-reason {
-        margin: 5px 0 0;
-        padding: 5px 8px;
-        border-left: 2px solid var(--app-border-strong);
-        border-radius: 0 var(--app-radius-sm) var(--app-radius-sm) 0;
-        background: var(--app-bg-muted);
-        font-size: 13px;
-        line-height: 18px;
-        color: $muted;
-        white-space: pre-wrap;
-        word-break: break-word;
+        margin-top: 12px;
+
+        .reason-label {
+          margin-bottom: 6px;
+          color: $muted;
+          font-size: 12px;
+          font-weight: 650;
+          line-height: 17px;
+        }
+
+        .reason-text {
+          padding: 9px 11px;
+          border: 1px solid $border;
+          border-radius: var(--app-radius-md);
+          background: var(--app-bg-muted);
+          color: var(--app-text);
+          font-size: 13px;
+          line-height: 19px;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
       }
     }
 
@@ -418,18 +453,27 @@ $danger: var(--app-danger);
       margin-top: 12px;
 
       button {
-        min-width: 72px;
+        min-width: 76px;
       }
 
       .decline-btn {
-        color: $danger;
+        color: $muted;
+      }
+
+      .revoke-btn {
+        background: var(--app-bg-muted);
+        color: var(--app-text);
+
+        &:hover {
+          background: var(--app-hover);
+        }
       }
     }
   }
 
   .row-err {
     margin: -1px 0 10px;
-    padding: 8px 14px 8px 70px;
+    padding: 8px 14px 8px 76px;
     font-size: 12px;
     color: $danger;
   }
@@ -443,6 +487,12 @@ $danger: var(--app-danger);
 
   .pending-area .pending-row {
     padding: 12px;
+
+    .pending-meta .pending-heading {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 2px;
+    }
 
     .pending-actions {
       grid-column: 1 / -1;

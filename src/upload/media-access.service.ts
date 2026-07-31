@@ -29,6 +29,81 @@ export class MediaAccessService {
       },
       select: { messageId: true },
     });
-    return row !== null;
+    if (row !== null) return true;
+    // Forward assets may live on a nested child bundle rather than directly on the visible root card.
+    // Depth is capped at 3, so the explicit parent / grandparent probes are bounded and indexable.
+    const forwarded = await this.prisma.forwardBundleAsset.findFirst({
+      where: {
+        digest,
+        OR: [
+          {
+            bundle: {
+              messages: {
+                some: {
+                  message: {
+                    threadItem: {
+                      ThreadParticipant: { some: { userId, leftAt: null } },
+                    },
+                    isDeleted: false,
+                  },
+                },
+              },
+            },
+          },
+          {
+            bundle: {
+              parents: {
+                some: {
+                  parent: {
+                    messages: {
+                      some: {
+                        message: {
+                          threadItem: {
+                            ThreadParticipant: {
+                              some: { userId, leftAt: null },
+                            },
+                          },
+                          isDeleted: false,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            bundle: {
+              parents: {
+                some: {
+                  parent: {
+                    parents: {
+                      some: {
+                        parent: {
+                          messages: {
+                            some: {
+                              message: {
+                                threadItem: {
+                                  ThreadParticipant: {
+                                    some: { userId, leftAt: null },
+                                  },
+                                },
+                                isDeleted: false,
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+      select: { bundleId: true },
+    });
+    return forwarded !== null;
   }
 }

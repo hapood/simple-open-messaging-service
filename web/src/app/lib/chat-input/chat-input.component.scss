@@ -25,7 +25,7 @@ app-chat-input {
   // No-op on desktop (--kbd-lift: 0). translateY(0px) is non-`none`, so it is a permanent
   // stacking context / containing block for fixed descendants — which is exactly why the .ci-backdrop was
   // re-parented out of the form.
-  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transform: translateY(calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px))));
   transition: transform var(--kbd-duration, 60ms) ease-out;
   // Bottom padding carries ONLY the static gesture-/navigation-bar inset (closed keyboard): the bar's own
   // Composer background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal

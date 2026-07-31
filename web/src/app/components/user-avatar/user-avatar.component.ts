@@ -9,9 +9,10 @@ import { UserService } from '../../services/user.service'
  *
  * The placeholder SVG has been removed — instead the first character of the name is centered, with a background color:
  *  · SELF: fixed brand blue (the logo / --app-brand color, instantly recognizable as "you").
- *  · OTHER / GROUP: a name-hashed deterministic palette (stable color per object, easy to distinguish across
- *    objects, on par with Telegram / Google Messages / Slack). The palette uses Material dark shades, reaching
- *    WCAG AA contrast against white text.
+ *  · OTHER / GROUP: an identity-hashed deterministic palette. The stable key includes the avatar type,
+ *    so a user and group with the same numeric id do not share an identity namespace. If an identity is not
+ *    available yet (for example, a group being composed before creation), the name provides a preview color.
+ *    The palette uses Material dark shades, reaching WCAG AA contrast against white text.
  *
  * Rounded square (WeChat-style, rx=20% → 8px under a 40px container, matching .msg-avatar in chats) + SVG
  * viewBox: the font size is fixed within the viewBox and scales with the container (44–56px covers both lists
@@ -140,29 +141,31 @@ export class UserAvatarComponent {
     return n.length > 0 ? n.charAt(0).toUpperCase() : '?'
   })
 
-  /** Deterministic 31× name hash (abs) — shared by bg + groupFill so a given name always maps to the
-   *  same color(s). Reads the name signal, so callers inside computed() stay reactive. */
-  private hashName(): number {
-    const n = (this.effectiveName() ?? '').trim() || '?'
+  /** Deterministic 31× hash for fallback colors. Prefer the stable, namespaced identity (`u…` / `g…`);
+   *  a not-yet-created identity falls back to its display name so previews still receive a color. */
+  private hashColorKey(): number {
+    const id = this.effectiveIdentityId()
+    const n = id == null
+      ? (this.effectiveName() ?? '').trim() || '?'
+      : `${this.type() === UserAvatarType.GROUP ? 'g' : 'u'}${id}`
     let h = 0
     for (let i = 0; i < n.length; i++) h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0
-    return Math.abs(h)
+    return h >>> 0
   }
 
-  /** Background fill: SELF = brand blue; everyone else = a name-hashed palette slot (deterministic,
-   *  stable per name). */
+  /** Background fill: SELF = brand blue; everyone else = an identity-hashed palette slot. */
   readonly bg = computed(() => {
     if (this.type() === UserAvatarType.SELF) return 'var(--app-brand)' // brand blue, single-sourced from --app-brand via [style.fill]
-    return PALETTE[this.hashName() % PALETTE.length]
+    return PALETTE[this.hashColorKey() % PALETTE.length]
   })
 
   /** GROUP fallback mock — a DISTINCT design from the user mock: a 2-tone diagonal gradient (two
-   *  name-hashed colors, visually signaling multiple members) + a white "users" glyph (rendered in
+   *  identity-hashed colors, visually signaling multiple members) + a white "users" glyph (rendered in
    *  the template). The user mock stays a solid bg + single initial, so a group reads as a group at
-   *  a glance. Same name → same color pair (deterministic). */
+   *  a glance. The same group identity → the same color pair (deterministic). */
   readonly isGroup = computed(() => this.type() === UserAvatarType.GROUP)
   readonly groupFill = computed(() => {
-    const a = this.hashName()
+    const a = this.hashColorKey()
     return {
       id: `grp-${a}`,
       from: PALETTE[a % PALETTE.length],

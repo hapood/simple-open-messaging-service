@@ -95,7 +95,8 @@ export interface ChatMsgData {
     | 'FILE'
     | 'AUDIO'
     | 'LINK'
-    | 'CALL';
+    | 'CALL'
+    | 'FORWARD';
   /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
   images: AlbumMedia[] | null;
   /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */

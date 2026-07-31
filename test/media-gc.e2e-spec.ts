@@ -93,6 +93,45 @@ describe('Media asset garbage collection (Phase 5)', () => {
     await unlink(absPath).catch(() => {});
   });
 
+  it('detects and manually removes an unreachable forward bundle', async () => {
+    const id = `01GC${String(Date.now()).padStart(22, '0').slice(-22)}`;
+    const manifest = {
+      schemaVersion: 1,
+      bundleId: id,
+      depth: 1,
+      children: [],
+      messages: [
+        {
+          sender: {
+            displayName: 'GC fixture',
+            account: 'gc',
+            domain: 'local',
+          },
+          contentType: 'PURE_TEXT',
+          content: 'orphan',
+          sentAt: Date.now(),
+        },
+      ],
+    };
+    await prisma.forwardBundle.create({
+      data: {
+        id,
+        depth: 1,
+        manifest,
+        manifestDigest: '0'.repeat(64),
+        messageCount: 1,
+        assetCount: 0,
+        totalBytes: 0n,
+      },
+    });
+
+    const inspected = await gc.inspectOrphanedForwardBundles();
+    expect(inspected.orphanBundles).toBeGreaterThanOrEqual(1);
+    const cleaned = await gc.gcOrphanedForwardBundles();
+    expect(cleaned.orphanBundles).toBeGreaterThanOrEqual(1);
+    expect(await prisma.forwardBundle.findUnique({ where: { id } })).toBeNull();
+  });
+
   it('gcOrphanedAvatars reaps superseded avatars and keeps the live one', async () => {
     // Two avatars via the real pipeline — each writes 5 webp sizes to uploads/avatars/ under a unique
     // base (saveAvatars mints Date.now()+random, so identical bytes still produce distinct files).

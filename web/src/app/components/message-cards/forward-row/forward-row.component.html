@@ -1,0 +1,70 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar">
+      <app-user-avatar
+        [type]="UserAvatarType.OTHER"
+        [name]="data().name"
+        [identityId]="data().avatarIdentityId"
+        [src]="data().avatar"
+      />
+    </div>
+  }
+
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">
+        {{ data().name || ('common.unknown' | transloco) }}
+      </div>
+    }
+    <div
+      class="msg-bubble msg-{{ side() }} msg-{{ pos() }} forward-card"
+      [class.msg-sending]="isSending()"
+    >
+      @if (card(); as forward) {
+        <div class="forward-title">{{ 'forward.chatHistory' | transloco }}</div>
+        <div class="forward-lines">
+          @for (line of forward.summaryLines; track $index) {
+            <div class="forward-line">{{ line }}</div>
+          }
+        </div>
+        <div class="forward-meta">
+          <span>{{
+            'forward.messageCount' | transloco: { count: forward.messageCount }
+          }}</span>
+          <span>{{ data().time }}</span>
+        </div>
+      } @else {
+        <div class="forward-title">{{ 'forward.chatHistory' | transloco }}</div>
+        <div class="forward-line">{{ 'forward.unavailable' | transloco }}</div>
+        <div class="forward-meta">
+          <span></span><span>{{ data().time }}</span>
+        </div>
+      }
+      @if (statusTick() && !isFailed()) {
+        <span
+          class="msg-status msg-status--{{ data().status }}"
+          aria-hidden="true"
+        ></span>
+      }
+    </div>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar">
+      <app-user-avatar
+        [type]="UserAvatarType.SELF"
+        [name]="data().name"
+        [identityId]="data().avatarIdentityId"
+        [src]="data().avatar"
+      />
+    </div>
+  }
+</div>
