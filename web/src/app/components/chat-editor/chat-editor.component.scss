@@ -90,9 +90,48 @@ app-chat-editor {
   color: var(--im-text, #222);
 }
 .cb-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
+}
+.cb-mention-all-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, #be4749 13%, var(--im-surface, #fff));
+  color: #be4749;
+  position: relative;
+}
+.cb-mention-all-icon::before,
+.cb-mention-all-icon::after {
+  content: '';
+  position: absolute;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+.cb-mention-all-icon::before {
+  width: 7px;
+  height: 7px;
+  left: 7px;
+  top: 6px;
+  box-shadow: 9px 1px 0 -2px
+    color-mix(in srgb, #be4749 13%, var(--im-surface, #fff));
+}
+.cb-mention-all-icon::after {
+  width: 17px;
+  height: 8px;
+  left: 6px;
+  bottom: 5px;
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+}
+.cb-mention-item--all {
+  color: #be4749;
+  font-weight: 500;
 }
 .cb-mention-item--active {
   background: rgba(33, 150, 243, 0.14);

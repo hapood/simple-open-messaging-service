@@ -223,7 +223,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             }.toString()
             val locale = java.util.Locale.getDefault().toLanguageTag()
             val request = Request.Builder()
-                .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
+                .url("$origin${SomsSecureStore.API_PREFIX}/notification-feed/query")
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .addHeader("Authorization", "Bearer $token")
                 .addHeader("Accept-Language", locale)

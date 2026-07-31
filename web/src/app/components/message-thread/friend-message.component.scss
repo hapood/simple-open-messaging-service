@@ -477,6 +477,14 @@ app-chat-input {
   bottom: calc(14px + var(--soms-content-bottom-reserve, 0px));
 }
 
+.msg-unread-jump {
+  bottom: 66px;
+}
+
+.msg-container--has-floating-composer .msg-unread-jump {
+  bottom: calc(66px + var(--soms-content-bottom-reserve, 0px));
+}
+
 .msg-latest-count {
   min-width: 18px;
   height: 18px;

@@ -165,6 +165,9 @@ export class ThreadListComponent implements OnInit {
     if (t.unreadCount > 0) {
       parts.push(this.transloco.translate('threadList.unreadCount', { count: t.unreadCount }))
     }
+    if (t.mentionUnread === 'me' || t.mentionUnread === 'all') {
+      parts.push(this.transloco.translate('threadList.mentionedYou'))
+    }
     if (t.muted) parts.push(this.transloco.translate('threadList.muted'))
     if (t.pinned) parts.push(this.transloco.translate('threadList.pinned'))
     return parts.filter(Boolean).join(', ')

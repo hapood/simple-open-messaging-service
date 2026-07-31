@@ -1,2 +1,67 @@
 // Text message row: reuses only the shared rules (msg-row/avatar/col/name/bubble/time/tail).
 @use '../row-base' as *;
+
+.msg-mention {
+  display: inline;
+  padding: 1px 4px;
+  border-radius: 5px;
+  font-weight: 600;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.msg-mention--other {
+  color: var(--app-primary);
+  background: color-mix(in srgb, var(--app-primary) 11%, transparent);
+}
+
+.msg-mention--me {
+  color: #9a3412;
+  background: #ffedd5;
+  box-shadow: inset 0 0 0 1px #fdba74;
+}
+
+.msg-mention--all {
+  color: #9f1239;
+  background: #ffe4e6;
+  box-shadow: inset 0 0 0 1px #fda4af;
+}
+
+:host(.cb-mention-me-pulse) .msg-bubble {
+  animation: mention-me-visible 1400ms ease-out;
+}
+
+:host(.cb-mention-all-pulse) .msg-bubble {
+  animation: mention-all-visible 1400ms ease-out;
+}
+
+@keyframes mention-me-visible {
+  0%, 38% {
+    background: #fff7ed;
+    box-shadow:
+      0 0 0 3px #fb923c,
+      0 4px 18px rgba(234, 88, 12, 0.26);
+  }
+  100% {
+    box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  }
+}
+
+@keyframes mention-all-visible {
+  0%, 38% {
+    background: #fff1f2;
+    box-shadow:
+      0 0 0 3px #fb7185,
+      0 4px 18px rgba(225, 29, 72, 0.22);
+  }
+  100% {
+    box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host(.cb-mention-me-pulse) .msg-bubble,
+  :host(.cb-mention-all-pulse) .msg-bubble {
+    animation-duration: 1ms;
+  }
+}

@@ -73,6 +73,13 @@ export interface ChatMsgData {
   avatarIdentityId?: number;
   /** PURE_TEXT body / INVITE JSON source / fallback text for unsupported types. */
   text: string;
+  /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
+   *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
+  wireText?: string;
+  /** Parsed PURE_TEXT body. Stable mention identity is retained for recipient-relative rendering. */
+  textSegments?: ChatTextSegment[];
+  /** `me` is a direct account match; `all` is the group-wide audience. */
+  mentionState?: 'none' | 'me' | 'all';
   /** Whether the PURE_TEXT body is rich-text HTML (from the Tiptap editor: <strong>/<em>/<code>/@mention chip).
    *  true = render via [innerHTML] (Angular sanitizes automatically); default/false = plain-text {{}} render
    *  (auto-escaped). This split both surfaces the editor's rich text / atomic @chips AND keeps historical /
@@ -109,6 +116,15 @@ export interface ChatMsgData {
    *  ignores it (a transient is a transient regardless of kind). */
   kind?: 'pending' | 'fake';
 }
+
+export type ChatTextSegment =
+  | { kind: 'text'; text: string }
+  | {
+      kind: 'mention';
+      text: string;
+      target: 'me' | 'other' | 'all';
+      account?: string;
+    };
 
 /**
  * Virtual-scroll item data. The date separator is no longer a data type — the source returns only real

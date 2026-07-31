@@ -5,6 +5,7 @@ import { ChatAppearanceService } from './chat-appearance.service';
 describe('ChatAppearanceService', () => {
   beforeEach(() => {
     localStorage.removeItem('soms.chat.showSelfAvatar');
+    localStorage.removeItem('soms.chat.openPosition');
     document.documentElement.removeAttribute('data-show-self-avatar');
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
@@ -23,5 +24,15 @@ describe('ChatAppearanceService', () => {
     expect(service.showSelfAvatar()).toBeFalse();
     expect(localStorage.getItem('soms.chat.showSelfAvatar')).toBe('false');
     expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe('false');
+  });
+
+  it('defaults to latest and persists the conversation open position', () => {
+    const service = TestBed.inject(ChatAppearanceService);
+
+    expect(service.openPosition()).toBe('latest');
+    service.setOpenPosition('last-read');
+
+    expect(service.openPosition()).toBe('last-read');
+    expect(localStorage.getItem('soms.chat.openPosition')).toBe('last-read');
   });
 });

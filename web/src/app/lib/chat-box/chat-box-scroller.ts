@@ -132,6 +132,11 @@ export interface CbOptions<T> {
   /** Passed through to source.init (chatId etc.). */
   initOpts?: { chatId?: number };
   onScroll?: (info: CbScrollInfo) => void;
+  /** Fires on the rising edge from not-fully-visible to fully visible. Visibility uses the kernel's measured
+   *  prefix/height model, so consumers do not need a second DOM observer. */
+  onFullyVisibleEnter?: (
+    entries: readonly { item: CbItem<T>; el: HTMLElement }[],
+  ) => void;
   onDebug?: (stats: CbDebugStats) => void;
   /** Immunity-frame predicate: while it returns true, {@link onViewportResize} defers
    *  (sets a pending flag and returns) instead of reflowing. Used by the route-transition
@@ -155,6 +160,34 @@ export interface CbScrollInfo {
   noNewer: boolean;
 }
 
+/** Pure geometry behind the fully-visible callback. `totalHeight` includes the tail cap; when it is shorter
+ *  than the viewport, the returned positions include the flex-end offset used by the chat content column. */
+export function fullyVisibleIndexes(
+  heights: readonly number[],
+  scrollTop: number,
+  viewportHeight: number,
+  totalHeight: number,
+): number[] {
+  const visibleTop = scrollTop;
+  const visibleBottom = scrollTop + viewportHeight;
+  const bottomAlignOffset = Math.max(0, viewportHeight - totalHeight);
+  const visible: number[] = [];
+  let top = bottomAlignOffset;
+  for (let i = 0; i < heights.length; i++) {
+    const height = heights[i];
+    const bottom = top + height;
+    if (
+      height > 0 &&
+      top >= visibleTop - 0.5 &&
+      bottom <= visibleBottom + 0.5
+    ) {
+      visible.push(i);
+    }
+    top = bottom;
+  }
+  return visible;
+}
+
 /** Per-frame balance diagnostics (onDebug payload, debug UI only). */
 export interface CbDebugStats {
   ms: number;
@@ -175,6 +208,9 @@ export interface CbInitOpts {
   anchor?: 'top' | 'center' | 'bottom';
   /** Add a one-shot highlight flash to the target after positioning (default false). */
   highlight?: boolean;
+  /** If startMsgId is no longer queryable (cleared history/stale unread cursor), open at newest instead. */
+  fallbackToLatest?: boolean;
+  onFallbackToLatest?: () => void;
 }
 
 /**
@@ -356,6 +392,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private readonly cfg: Required<CbConfig>;
   private readonly initOpts: { chatId?: number };
   private readonly onScroll?: (info: CbScrollInfo) => void;
+  private readonly onFullyVisibleEnter?: CbOptions<T>['onFullyVisibleEnter'];
+  private fullyVisibleIds = new Set<number>();
   private readonly onDebug?: (stats: CbDebugStats) => void;
   private readonly isFrozen: () => boolean;
 
@@ -463,6 +501,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.hooks = opts.hooks;
     this.source = opts.source;
     this.onScroll = opts.onScroll;
+    this.onFullyVisibleEnter = opts.onFullyVisibleEnter;
     this.onDebug = opts.onDebug;
     this.isFrozen = opts.isFrozen ?? (() => false);
     this.initOpts = opts.initOpts ?? {};
@@ -491,7 +530,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   async init(opts?: CbInitOpts): Promise<void> {
     // Jump / re-anchor: open at a specific message (bidirectional fetch + centered positioning), skip the newest-layout path.
     const startId = opts?.startMsgId ?? null;
-    if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); this.primeAndReplay(); return; }
+    if (startId !== null) {
+      await this.openAround(
+        startId,
+        opts?.anchor ?? 'center',
+        opts?.highlight ?? false,
+        opts?.fallbackToLatest ?? false,
+        opts?.onFallbackToLatest,
+      );
+      this.primeAndReplay();
+      return;
+    }
     const batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
     // A teardown / re-init can overtake this scroller during the await (the coordinator's teardownKernel/reset→reinit
     // fires while the fetch is in flight, destroy()ing this one and handing the shared content element to a newer
@@ -935,7 +984,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       return;
     }
     // Not mounted: reset the window around the id (re-seed), then position once done
-    void this.openAround(id, anchor, highlight);
+    void this.openAround(id, anchor, highlight, false);
   }
 
   /**
@@ -947,7 +996,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * in the source cache, retrieved by getNewer when scrolling back). A centered anchor needs enough content on both
    * sides for a "true center"; fillAround grows the window to threshold (best-effort near boundaries, clamp concedes).
    */
-  private async openAround(id: number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
+  private async openAround(
+    id: number,
+    anchor: 'top' | 'center' | 'bottom',
+    highlight: boolean,
+    fallbackToLatest: boolean,
+    onFallbackToLatest?: () => void,
+  ): Promise<void> {
     const g = ++this.gen;
     if (isDevMode()) console.log('[JUMP] openAround start id=', id, 'gen=', g, 'vh=', this.vh, 'threshold=', this.threshold);
     this.resetWindowState();
@@ -958,7 +1013,34 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const key = String(id);
       const hasTarget = merged.some(it => this.itemHasId(it, id));
       if (isDevMode()) console.log('[JUMP] init batch merged=', merged.length, 'hasTarget=', hasTarget, 'ids=', merged.slice(0, 2).map(i => i.id), '..', merged.slice(-2).map(i => i.id), 'noOlder/noNewer=', this.noOlder, this.noNewer);
-      if (merged.length === 0 || !hasTarget) { this.updateGhost(); this.emit(); return; } // source did not return the target
+      if (merged.length === 0 || !hasTarget) {
+        if (fallbackToLatest) {
+          onFallbackToLatest?.();
+          const latestRaw = await this.source.init(
+            -1,
+            this.cfg.initBatch,
+            0,
+            this.initOpts,
+          );
+          if (this.destroyed || g !== this.gen) return;
+          const latest = this.mergeBatch(latestRaw);
+          if (latest.length === 0) {
+            this.noOlder = true;
+            this.noNewer = true;
+          } else {
+            this.absorbBoundary(latest);
+            this.mountBatch(latest, 'init');
+            this.measurePending();
+          }
+          this.updateGhost();
+          this.scrollToBottom();
+          this.emit();
+        } else {
+          this.updateGhost();
+          this.emit();
+        }
+        return;
+      }
       this.absorbBoundary(merged);
       this.mountBatch(merged, 'init');
       this.measurePending();
@@ -2319,5 +2401,30 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
   }
 
-  private emit(): void { this.onScroll?.(this.getInfo()); }
+  private emit(): void {
+    this.emitFullyVisibleEnter();
+    this.onScroll?.(this.getInfo());
+  }
+
+  private emitFullyVisibleEnter(): void {
+    if (!this.onFullyVisibleEnter) return;
+    const indexes = fullyVisibleIndexes(
+      this.mounted.map((entry) => entry.height),
+      this.viewport.scrollTop,
+      this.vh,
+      this.totalH(),
+    );
+    const current = new Set<number>();
+    const entered: Array<{ item: CbItem<T>; el: HTMLElement }> = [];
+    for (const index of indexes) {
+      const entry = this.mounted[index];
+      if (!entry || entry.leaving || entry.el.classList.contains('cb-ghost'))
+        continue;
+      current.add(entry.item.id);
+      if (!this.fullyVisibleIds.has(entry.item.id))
+        entered.push({ item: entry.item, el: entry.el });
+    }
+    this.fullyVisibleIds = current;
+    if (entered.length > 0) this.onFullyVisibleEnter(entered);
+  }
 }

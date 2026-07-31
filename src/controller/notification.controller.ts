@@ -10,22 +10,23 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import { NotificationQueryService } from '../notification/notification-query.service.js';
 import { NotificationActionService } from '../notification/notification-action.service.js';
+import { AwayNotificationService } from '../notification/away-notification.service.js';
+import { ThreadListSyncService } from '../thread-sync/thread-list-sync.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { MissedDto, MissedSummaryDto, ReportActionDto } from '../dto/notification.dto.js';
 
 /** Page-size bounds for the paginated missed catch-up (the DTO validates 1–200; this is the default). */
-/** Per-page cap for /notifications/missed-summary (the threadlist body walk). */
+/** Per-page cap for /thread-sync/catch-up (the threadlist body walk). */
 const MISSED_MAX_TAKE = 200;
 
 /**
  * The notification + incremental-sync surface.
  *  - GET  /notifications/vapid-key — public Web Push VAPID key (no auth).
- *  - POST /notifications/missed     — the cross-thread incremental-sync endpoint (global guard: session
- *    token OR access JWT). `summary:true` returns the unread-thread snapshot the FCM/WorkManager
- *    notification coalescing consumes; the default returns paginated messages (init seed =
- *    newest-per-thread; catch-up = messages newer than the high-water-mark, time-ascending).
+ * New code uses two explicit domain resources:
+ *  - POST /thread-sync/catch-up — ThreadList preview/read-state catch-up.
+ *  - POST /notification-feed/query — system-notification descriptors while the app is away.
+ * Legacy `/notifications/missed*` paths remain aliases during rolling client upgrades.
  *
  * Handlers return raw data (the global SerializeInterceptor wraps the ApiResult envelope).
  */
@@ -34,7 +35,8 @@ const MISSED_MAX_TAKE = 200;
 @Controller()
 export class NotificationController {
   constructor(
-    private readonly notifQuery: NotificationQueryService,
+    private readonly threadListSync: ThreadListSyncService,
+    private readonly awayNotifications: AwayNotificationService,
     private readonly notifAction: NotificationActionService,
     private readonly settings: SettingsService,
   ) {}
@@ -56,7 +58,7 @@ export class NotificationController {
    *  Authenticated by the global guard (session token / access JWT). The client walks pages until `!hasMore`,
    *  then sets HWM = `to`. `to ≤ from` (stale SSE) → empty no-op. */
   @HttpCode(HttpStatus.OK)
-  @Post('notifications/missed-summary')
+  @Post(['thread-sync/catch-up', 'notifications/missed-summary'])
   @ApiOperation({
     summary: 'Threadlist body pre-warm: per-thread latest body in the (from, to] range (double-boundary walk)',
   })
@@ -75,7 +77,7 @@ export class NotificationController {
       // `to` is @IsRequired on the DTO (ValidationPipe rejects absent); defensive guard for shape.
       return { items: [], hasMore: false, nextCursor: null };
     }
-    return this.notifQuery.buildSummary(userId, { from, to, take });
+    return this.threadListSync.catchUp(userId, { from, to, take });
   }
 
   /** The away-notification summary — per-sender aggregation of the messages newer than `since` (the HWM),
@@ -83,7 +85,7 @@ export class NotificationController {
    *  stacked-avatar icon. NOTIFICATION renderers only (Web SW / Android FCM-FGS / desktop). One-shot current
    *  snapshot, replace-by-tag. Locale negotiated from `Accept-Language`. */
   @HttpCode(HttpStatus.OK)
-  @Post('notifications/missed')
+  @Post(['notification-feed/query', 'notifications/missed'])
   @ApiOperation({
     summary: 'Away-notification summary: per-sender aggregation of messages since the high-water mark',
   })
@@ -93,7 +95,7 @@ export class NotificationController {
       dto.since && typeof dto.since.threadId === 'number' && typeof dto.since.seq === 'number'
         ? { threadId: dto.since.threadId, seq: dto.since.seq }
         : null;
-    return this.notifQuery.buildNotifyResponse(userId, {
+    return this.awayNotifications.query(userId, {
       since,
       grouping: dto.grouping,
       threadHwms: dto.threadHwms,

@@ -2,6 +2,8 @@ package com.soms.client
 
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.content.Context
@@ -35,6 +37,11 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
+import android.widget.ImageView
+import android.util.Base64
+import android.util.LruCache
+import androidx.appcompat.widget.ListPopupWindow
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicLong
 
@@ -90,7 +97,7 @@ class NativeComposerController(
         isFocusable = false
         setPadding(dp(8), dp(8), dp(8), dp(8))
     }
-    private val input = EditText(activity).apply {
+    private val input = MentionEditText(activity).apply {
         hint = "Message"
         textSize = 16f
         maxLines = if (isExpandedWindow) TABLET_MAX_LINES else PHONE_MAX_LINES
@@ -112,6 +119,94 @@ class NativeComposerController(
         overScrollMode = View.OVER_SCROLL_NEVER
         setHorizontallyScrolling(false)
         setSingleLine(false)
+    }
+    private data class MentionCandidate(
+        val kind: String,
+        val id: String,
+        val label: String,
+        val avatarUrl: String,
+        val fallbackText: String,
+        val colorSeed: String,
+    )
+    private val mentionCandidates = mutableListOf<MentionCandidate>()
+    private var mentionQueryStart = -1
+    private var mentionRequestId = 0L
+    private var latestMentionRequestId = 0L
+    private val requestedMedia = mutableSetOf<String>()
+    private val mediaRequestUrls = mutableMapOf<Long, String>()
+    private val avatarCache = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+    private val mentionAdapter = object : BaseAdapter() {
+        override fun getCount() = mentionCandidates.size
+        override fun getItem(position: Int) = mentionCandidates[position]
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val candidate = getItem(position)
+            val item = (convertView as? LinearLayout) ?: LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                addView(
+                    ImageView(activity).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        clipToOutline = true
+                        outlineProvider = object : ViewOutlineProvider() {
+                            override fun getOutline(view: View, outline: Outline) {
+                                outline.setOval(0, 0, view.width, view.height)
+                            }
+                        }
+                    },
+                    LinearLayout.LayoutParams(dp(32), dp(32)).apply {
+                        rightMargin = dp(10)
+                    },
+                )
+                addView(
+                    TextView(activity).apply { textSize = 15f },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+                )
+            }
+            val avatar = item.getChildAt(0) as ImageView
+            val label = item.getChildAt(1) as TextView
+            label.text = if (candidate.kind == "all") "@${candidate.label}" else candidate.label
+            label.setTextColor(onSurface)
+            if (candidate.kind == "all") {
+                avatar.setImageResource(R.drawable.ic_mention_everyone)
+                avatar.setColorFilter(
+                    if (darkTheme) Color.rgb(255, 172, 174) else Color.rgb(190, 71, 73),
+                )
+                avatar.setPadding(dp(6), dp(6), dp(6), dp(6))
+                avatar.background = rounded(
+                    if (darkTheme) Color.rgb(76, 46, 49) else Color.rgb(255, 235, 236),
+                    16,
+                )
+                return item
+            }
+            avatar.clearColorFilter()
+            avatar.setPadding(0, 0, 0, 0)
+            val bitmap = avatarCache.get(candidate.avatarUrl)
+            if (bitmap != null) {
+                avatar.setImageBitmap(bitmap)
+            } else {
+                avatar.setImageDrawable(
+                    InitialsAvatarDrawable(
+                        candidate.fallbackText,
+                        candidate.colorSeed,
+                        darkTheme,
+                    ),
+                )
+                requestMentionAvatar(candidate.avatarUrl)
+            }
+            return item
+        }
+    }
+    private val mentionPopup = ListPopupWindow(activity).apply {
+        anchorView = input
+        setAdapter(mentionAdapter)
+        isModal = true
+        setOnItemClickListener { _, _, position, _ ->
+            insertMentionCandidate(mentionCandidates[position])
+        }
     }
     private val keyboard = iconButton(
         R.drawable.ic_composer_emoji,
@@ -210,7 +305,7 @@ class NativeComposerController(
                 deleteBeforeCursor()
             } else {
                 val at = input.selectionStart.coerceAtLeast(0)
-                input.text.insert(at, EMOJI[position])
+                input.text?.insert(at, EMOJI[position])
             }
             input.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         }
@@ -323,6 +418,13 @@ class NativeComposerController(
             }
             override fun afterTextChanged(s: Editable?) = Unit
         })
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                queryMentionsAtCursor()
+            }
+        })
         input.setOnClickListener {
             if (keyboardSurface == KeyboardSurface.EMOJI) switchToSystemKeyboard()
         }
@@ -420,7 +522,7 @@ class NativeComposerController(
         )
         input.hint = context.optString("placeholder", "Message")
         input.setText(context.optString("initialDraft", ""))
-        input.setSelection(input.text.length)
+        input.setSelection(input.length())
         ensureAttached()
         visible = true
         root.animate().cancel()
@@ -476,11 +578,13 @@ class NativeComposerController(
                 },
             )
         }
+        patch.optJSONObject("mentionResults")?.let(::applyMentionResults)
+        patch.optJSONObject("mediaResolved")?.let(::applyResolvedMedia)
     }
 
     fun acknowledge(actionId: Long, accepted: Boolean) {
         if (pendingSend == actionId) {
-            if (accepted) input.text.clear()
+            if (accepted) input.text?.clear()
             pendingSend = null
             setSending(false)
         }
@@ -548,6 +652,7 @@ class NativeComposerController(
 
     fun hide(requestContextId: Long) {
         if (requestContextId != contextId) return
+        mentionPopup.dismiss()
         dismissKeyboard()
         visible = false
         val hidingContext = contextId
@@ -561,7 +666,7 @@ class NativeComposerController(
                     root.animate().setListener(null)
                     if (visible || contextId != hidingContext) return
                     root.visibility = View.GONE
-                    input.text.clear()
+                    input.text?.clear()
                     hasBounds = false
                 }
             })
@@ -818,23 +923,142 @@ class NativeComposerController(
     }
 
     private fun deleteBeforeCursor() {
+        if (input.deleteMentionBeforeCursor()) return
         val end = input.selectionStart
         if (end <= 0) return
-        val text = input.text
+        val text = input.text ?: return
         val start = Character.offsetByCodePoints(text, end, -1)
         text.delete(start, end)
     }
 
     private fun emitSend() {
-        val text = input.text.toString().trim()
+        val rawText = input.text?.toString().orEmpty()
+        val text = rawText.trim()
         if (text.isEmpty() || pendingSend != null) return
+        val leadingTrim = rawText.length - rawText.trimStart().length
+        val mentions = JSONArray()
+        NativeMentionLogic.validRanges(rawText, input.mentionRanges()).forEach { range ->
+            mentions.put(JSONObject().apply {
+                put("start", range.start - leadingTrim)
+                put("end", range.end - leadingTrim)
+                put("kind", range.kind)
+                put("id", range.id)
+                put("label", range.label)
+            })
+        }
         val actionId = actionIds.incrementAndGet()
         pendingSend = actionId
         emit(JSONObject().apply {
             put("kind", "sendText")
             put("actionId", actionId)
             put("text", text)
+            put("mentions", mentions)
         })
+    }
+
+    private fun queryMentionsAtCursor() {
+        if (!visible || input.selectionStart != input.selectionEnd) {
+            mentionPopup.dismiss()
+            return
+        }
+        val editable = input.text ?: return
+        val query = NativeMentionLogic.query(editable, input.selectionStart)
+        if (query == null) {
+            mentionQueryStart = -1
+            mentionPopup.dismiss()
+            return
+        }
+        mentionQueryStart = query.start
+        val requestId = ++mentionRequestId
+        latestMentionRequestId = requestId
+        emit(JSONObject().apply {
+            put("kind", "queryMentions")
+            put("requestId", requestId)
+            put("query", query.query)
+        })
+    }
+
+    private fun applyMentionResults(result: JSONObject) {
+        if (
+            result.optLong("requestId") != latestMentionRequestId ||
+            mentionQueryStart < 0 ||
+            !visible
+        ) return
+        val items = result.optJSONArray("items") ?: JSONArray()
+        mentionCandidates.clear()
+        for (index in 0 until items.length()) {
+            val item = items.optJSONObject(index) ?: continue
+            val kind = item.optString("kind")
+            val id = item.optString("id")
+            val label = item.optString("label")
+            if ((kind != "user" && kind != "all") || id.isBlank() || label.isBlank()) continue
+            val avatar = item.optJSONObject("avatar")
+            mentionCandidates += MentionCandidate(
+                kind,
+                id,
+                label,
+                if (avatar?.optString("kind") == "user") avatar.optString("url") else "",
+                if (avatar?.optString("kind") == "user") {
+                    avatar.optString("fallbackText", label.take(1))
+                } else {
+                    ""
+                },
+                if (avatar?.optString("kind") == "user") avatar.optString("colorSeed", id) else id,
+            )
+        }
+        mentionAdapter.notifyDataSetChanged()
+        if (mentionCandidates.isEmpty()) {
+            mentionPopup.dismiss()
+        } else {
+            mentionPopup.width = input.width.coerceAtLeast(dp(220))
+            mentionPopup.height = ViewGroup.LayoutParams.WRAP_CONTENT
+            mentionPopup.show()
+        }
+    }
+
+    private fun insertMentionCandidate(candidate: MentionCandidate) {
+        val start = mentionQueryStart
+        if (start < 0) return
+        mentionPopup.dismiss()
+        mentionQueryStart = -1
+        val mentionForeground =
+            if (candidate.kind == "all") Color.rgb(190, 71, 73)
+            else if (darkTheme) Color.rgb(129, 184, 255) else Color.rgb(28, 100, 190)
+        val mentionBackground =
+            if (candidate.kind == "all") Color.argb(35, 220, 70, 80)
+            else Color.argb(28, 50, 130, 230)
+        input.insertMention(
+            start,
+            candidate.kind,
+            candidate.id,
+            candidate.label,
+            mentionForeground,
+            mentionBackground,
+            dp(3),
+            dp(4).toFloat(),
+        )
+    }
+
+    private fun requestMentionAvatar(url: String) {
+        if (url.isBlank() || avatarCache.get(url) != null || !requestedMedia.add(url)) return
+        val requestId = ++mentionRequestId
+        mediaRequestUrls[requestId] = url
+        emit(JSONObject().apply {
+            put("kind", "resolveMedia")
+            put("requestId", requestId)
+            put("url", url)
+        })
+    }
+
+    private fun applyResolvedMedia(result: JSONObject) {
+        val requestId = result.optLong("requestId")
+        val url = mediaRequestUrls.remove(requestId) ?: return
+        val encoded = result.optString("base64")
+        if (encoded.isBlank()) return
+        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
+        avatarCache.put(url, bitmap)
+        mentionAdapter.notifyDataSetChanged()
     }
 
     private fun showAttachmentMenu() {

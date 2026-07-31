@@ -161,10 +161,30 @@
       text-align: center;
       box-sizing: border-box;
     }
+
+    .mention-unread-badge {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--app-brand) 14%, transparent);
+      color: var(--app-brand);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 20px;
+      text-align: center;
+    }
   }
 }
 
 .thread-item.muted .unread-badge {
+  background: var(--app-bg-muted);
+  color: var(--app-text-muted);
+  border: 1px solid var(--app-border-strong);
+  line-height: 18px;
+}
+
+.thread-item.muted .mention-unread-badge {
   background: var(--app-bg-muted);
   color: var(--app-text-muted);
   border: 1px solid var(--app-border-strong);

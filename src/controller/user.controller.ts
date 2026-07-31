@@ -176,11 +176,16 @@ export class UserController {
     me: number,
     list: Prisma.ThreadParticipantGetPayload<{ include: { thread: true } }>[],
   ) {
-    // Unread counts for every thread in one batched query (uses the Message(threadId,id) index).
-    const unread = await this.messageService.countUnreadByThread(
-      me,
-      list.map((p) => p.threadId),
-    );
+    // Count + semantic mention come from the same unread range query; they must never disagree about the
+    // caller's read watermark or own-message exclusion.
+    const self = await this.userService.findUniqueUser({ id: me });
+    const attention = self
+      ? await this.messageService.unreadAttentionByThread(
+          me,
+          self.account,
+          list.map((p) => p.threadId),
+        )
+      : new Map();
     // Pinned tier first (pinned = true), within it most-recently-pinned first (pinnedAt desc); then the
     // unpinned tier recent-first by lastMessageAt; empty threads sink. In-memory sort of ≤take rows is
     // trivial; threadId breaks ties deterministically. (Pinned/pinnedAt are on the participant row.)
@@ -230,7 +235,8 @@ export class UserController {
         type: p.thread.type,
         lastReadSeq: p.lastReadSeq ?? undefined,
         role: p.role ?? undefined,
-        unreadCount: unread.get(p.threadId) ?? 0,
+        unreadCount: attention.get(p.threadId)?.count ?? 0,
+        mentionUnread: attention.get(p.threadId)?.mention ?? 'none',
         // The list preview is NOT embedded — the client derives it from its local message store
         // (local-first). lastMessageAt stays (cheap, needed for sort). lastMessageSeq is the mark-read target
         // the client passes when opening the thread (mark all current up to this seq).

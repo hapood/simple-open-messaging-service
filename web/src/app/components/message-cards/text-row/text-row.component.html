@@ -55,7 +55,18 @@
       [class.msg-sending]="isSending()"
     >
       <p class="msg-bubble-text">
-        @if (data().rich) {
+        @if (data().textSegments?.length) {
+          @for (segment of data().textSegments; track $index) {
+            @if (segment.kind === 'mention') {
+              <span
+                class="msg-mention msg-mention--{{ segment.target }}"
+                [attr.data-account]="segment.account ?? null"
+              >{{ segment.text }}</span>
+            } @else {
+              {{ segment.text }}
+            }
+          }
+        } @else if (data().rich) {
           <span class="msg-richtext" [innerHTML]="data().text"></span>
         } @else {
           {{ data().text }}

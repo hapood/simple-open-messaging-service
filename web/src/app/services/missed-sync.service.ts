@@ -18,6 +18,8 @@ export interface MissedThreadItem {
   type: 'P2P' | 'GROUP';
   displayName: string;
   unreadCount: number;
+  /** Optional for compatibility with an older server during rolling upgrades. */
+  mentionUnread?: 'none' | 'all' | 'me';
   muted: boolean;
   /** The caller's per-thread read watermark (null = never read); merged with the optimistic value (B6). */
   lastReadSeq: number | null;
@@ -47,12 +49,12 @@ export interface MissedSummaryResult {
 const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null };
 
 /**
- * The two SEPARATED missed endpoints, each with its OWN single-flight guard so the two consumers never
+ * Compatibility facade over the two separated domain endpoints, each with its OWN single-flight guard:
  * starve each other:
- *  - {@link fetchMissedSummary} — POST /notifications/missed-summary (the threadlist body pre-warm). Used by
+ *  - {@link fetchMissedSummary} — POST /thread-sync/catch-up (the threadlist body pre-warm). Used by
  *    ThreadRepository: walks the `(from, to]` double-boundary range of per-thread latest bodies, caching each
  *    into the local store.
- *  - {@link fetchAwayNotifications} — POST /notifications/missed (the away-notification summary). Used by
+ *  - {@link fetchAwayNotifications} — POST /notification-feed/query (away notification descriptors). Used by
  *    UnreadAttentionService: per-sender aggregation since the HWM → the server-authored descriptors.
  *
  * Why two guards: a NEW_MESSAGE arriving while unfocused fires BOTH a threadlist body walk (from/to) and an
@@ -110,7 +112,7 @@ export class MissedSyncService {
     try {
       const res = await firstValueFrom(
         this.http.post<StandardResponse<MissedSummaryResult>>(
-          `${apiPrefix()}/notifications/missed-summary`,
+          `${apiPrefix()}/thread-sync/catch-up`,
           { ...(from ? { from } : {}), to, take: SUMMARY_TAKE },
           { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
         ),
@@ -139,7 +141,7 @@ export class MissedSyncService {
     try {
       const res = await firstValueFrom(
         this.http.post<StandardResponse<{ notifications: NotificationDescriptor[] }>>(
-          `${apiPrefix()}/notifications/missed`,
+          `${apiPrefix()}/notification-feed/query`,
           // threadHwms: the client's per-thread dismiss cursors (Android, in-memory). Web omits it (in-page
           // Notifications have no per-card dismiss — only clear-all-on-focus), so the server counts every
           // thread since `since` (cumulative since foreground). Declared on MissedDto.

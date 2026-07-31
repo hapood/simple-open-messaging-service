@@ -1018,6 +1018,30 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller.getInfo().mounted).toBe(0); // !hasTarget early return, nothing mounted
   });
 
+  it('init missing unread anchor with fallbackToLatest → mounts newest and reports the fallback', async () => {
+    const { hooks } = controllableHooks();
+    const fallback = jasmine.createSpy('fallback');
+    const src = fakeSource(20);
+    await src.init(9999, 1, 1); // document the missing target in this source
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source: src,
+    });
+
+    await scroller.init({
+      startMsgId: 9999,
+      anchor: 'top',
+      fallbackToLatest: true,
+      onFallbackToLatest: fallback,
+    });
+
+    expect(fallback).toHaveBeenCalledTimes(1);
+    expect(scroller.getInfo().newestId).toBe(19);
+    expect(scroller.getInfo().mounted).toBeGreaterThan(0);
+  });
+
   it('two jumps in a row → gen guard: the in-flight first jump is dropped, the final window surrounds the second', async () => {
     const { hooks } = controllableHooks();
     const src = controllableInitSource(5000);

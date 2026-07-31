@@ -30,10 +30,10 @@ export class MissedCursorDto {
 }
 
 /**
- * Input for POST /notifications/missed — the away-notification summary (NOTIFICATION renderers only: Web SW /
+ * Input for POST /notification-feed/query — away/system-notification renderers only: Web SW /
  * Android FCM-FGS / desktop). The server aggregates, per sender, the messages newer than `since` (the
  * client's high-water mark = the newest message in its IDB before it went to background; ordering confirmed
- * by /notifications/missed-summary, never SSE order) and authors ONE descriptor: "X, Y sent you N messages"
+ * by /thread-sync/catch-up, never SSE order) and authors ONE descriptor: "X, Y sent you N messages"
  * (or "999+" past the 1000-message sample) + a composited stacked-avatar icon. Returns `notifications[]` only
  * (no items, no pagination) — the away surface is a one-shot current snapshot, replace-by-tag.
  */
@@ -69,7 +69,7 @@ export class MissedDto {
 }
 
 /**
- * Input for POST /notifications/missed-summary — the threadlist's body pre-warm (preview + chat-open). A
+ * Input for POST /thread-sync/catch-up — the threadlist's body pre-warm (preview + chat-open). A
  * DOUBLE-BOUNDARY `(from, to]` walk: `to` = the newest SSE signal (the pinned upper bound — pinning it makes
  * the walk converge; new messages arriving mid-walk are > `to` and wait for the next walk); `from` = the
  * client's high-water mark (exclusive lower bound, advancing). Returns one item per thread whose latest

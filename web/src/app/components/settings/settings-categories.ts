@@ -18,11 +18,14 @@ import { SettingsConnectionComponent } from './settings-connection.component';
 import { SettingsAboutComponent } from './settings-about.component';
 import { SettingsDevicesComponent } from './settings-devices.component';
 import { SettingsDataComponent } from './settings-data.component';
+import { SettingsChatComponent } from './settings-chat.component';
+import { ChatAppearanceService } from '../../services/chat-appearance.service';
 
 /** Identifiers for the Settings categories (drives the aside-stack `params.category` on mobile, and the
  *  local selection signal in the desktop/tablet dialog). */
 export type SettingsCategoryId =
   | 'appearance'
+  | 'chat'
   | 'language'
   | 'media'
   | 'devices'
@@ -55,6 +58,7 @@ export interface SettingsCategory {
 /** Services the category summaries/visibility read. Passed in by each host component. */
 export interface SettingsCategoryDeps {
   readonly theme: ThemeService;
+  readonly chatAppearance: ChatAppearanceService;
   readonly language: LanguageService;
   readonly mediaSize: MediaSizeThresholdService;
   readonly bgSync: BackgroundSyncService;
@@ -121,13 +125,29 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
       order: 0,
     },
     {
+      id: 'chat',
+      icon: AppIconType.CHATS,
+      titleKey: 'settings.chat',
+      summary: () => {
+        void d.language.lang();
+        return d.transloco.translate(
+          d.chatAppearance.openPosition() === 'latest'
+            ? 'settings.chatOpenLatest'
+            : 'settings.chatOpenLastRead',
+        );
+      },
+      component: SettingsChatComponent,
+      visible: () => true,
+      order: 1,
+    },
+    {
       id: 'language',
       icon: AppIconType.GLOBE,
       titleKey: 'settings.language',
       summary: () => d.language.langLabel(),
       component: SettingsLanguageComponent,
       visible: () => true,
-      order: 1,
+      order: 2,
     },
     {
       id: 'media',

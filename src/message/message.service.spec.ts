@@ -96,3 +96,117 @@ describe('MessageService.attachMediaStatus', () => {
     expect(prisma.mediaAsset.findMany).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('MessageService.countUnreadByThread', () => {
+  it('counts from seq 0 for a null watermark and excludes the current user', async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      { threadId: 7, unread: 2 },
+      { threadId: 8, unread: 0 },
+    ]);
+    const svc = new MessageService({ $queryRaw: queryRaw } as never, {} as never);
+
+    await expect(svc.countUnreadByThread(42, [7, 8])).resolves.toEqual(
+      new Map([
+        [7, 2],
+        [8, 0],
+      ]),
+    );
+
+    const [strings, ...values] = queryRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    const sql = strings.join('?');
+    expect(sql).toContain('m.seq > COALESCE(tp."lastReadSeq", -1)');
+    expect(sql).toContain('m.creator <>');
+    expect(values.filter((value) => value === 42)).toHaveLength(2);
+  });
+
+  it('does not query PostgreSQL for an empty thread list', async () => {
+    const queryRaw = vi.fn();
+    const svc = new MessageService({ $queryRaw: queryRaw } as never, {} as never);
+
+    await expect(svc.countUnreadByThread(42, [])).resolves.toEqual(new Map());
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe('MessageService.unreadMentionStates', () => {
+  it('uses semantic entities, ignores escaped protocol text, and gives @me priority over @all', async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        threadId: 7,
+        content: '大家好 [@所有人](soms://audience/all?v=1)',
+      },
+      {
+        threadId: 7,
+        content: '请看 [@我](soms://user/self?v=1)',
+      },
+      {
+        threadId: 8,
+        content: String.raw`\[@我](soms://user/self?v=1)`,
+      },
+    ]);
+    const svc = new MessageService({ $queryRaw: queryRaw } as never, {} as never);
+
+    await expect(svc.unreadMentionStates(42, 'SELF', [7, 8])).resolves.toEqual(
+      new Map([
+        [7, 'me'],
+        [8, 'none'],
+      ]),
+    );
+  });
+});
+
+describe('MessageService unified attention queries', () => {
+  it('returns unread count and semantic mention from one PostgreSQL result set', async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        threadId: 7,
+        unread: 3,
+        mentionContents: [
+          '大家好 [@所有人](soms://audience/all?v=1)',
+          '请看 [@我](soms://user/self?v=1)',
+        ],
+      },
+      {
+        threadId: 8,
+        unread: 1,
+        mentionContents: [String.raw`\[@我](soms://user/self?v=1)`],
+      },
+    ]);
+    const svc = new MessageService({ $queryRaw: queryRaw } as never, {} as never);
+
+    await expect(svc.unreadAttentionByThread(42, 'SELF', [7, 8])).resolves.toEqual(
+      new Map([
+        [7, { count: 3, mention: 'me' }],
+        [8, { count: 1, mention: 'none' }],
+      ]),
+    );
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies global and per-thread dismiss bounds before deriving away count and mention', async () => {
+    const queryRaw = vi.fn().mockResolvedValue([
+      {
+        threadId: 7,
+        cnt: 2n,
+        latest: 12,
+        mentionContents: ['[@我](soms://user/self?v=1)'],
+      },
+    ]);
+    const svc = new MessageService({ $queryRaw: queryRaw } as never, {} as never);
+
+    await expect(
+      svc.awayAttentionByThread(42, 'self', 100n, 30, { 7: 10 }, [42]),
+    ).resolves.toEqual(
+      new Map([[7, { count: 2, latestSeq: 12, mention: 'me' }]]),
+    );
+
+    const [strings] = queryRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const sql = strings.join('?');
+    expect(sql).toContain('LEFT JOIN thread_hwm');
+    expect(sql).toContain('m.seq > COALESCE(h.since_seq, -1)');
+    expect(sql.indexOf('m.seq > COALESCE')).toBeLessThan(sql.indexOf('ARRAY_AGG(content)'));
+  });
+});

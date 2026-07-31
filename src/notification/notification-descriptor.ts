@@ -58,6 +58,8 @@ export interface NotificationDescriptor {
   icon: string | null;
   /** Re-alert on replace (false = silent update after the first post). Maps to `setOnlyAlertOnce(!renotify)`. */
   renotify: boolean;
+  /** Optional attention reason; clients may accent it while still rendering server-authored copy verbatim. */
+  attention?: 'mention';
   /** Quiet update (no sound). */
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]` (actions land in a later phase). */

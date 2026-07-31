@@ -42,6 +42,7 @@ import {
   isVoiceRecordingTooShort,
   nextVoiceCancelState,
 } from './voice-recording-state';
+import { escapePlainText } from '../message-entity';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -313,7 +314,7 @@ export class ChatInputComponent implements OnDestroy {
     const text = this.pasteText().trim();
     if (files.length === 0 && !text) return;
     this.clearPasteState();
-    this.send.emit({ kind: 'paste', text, files });
+    this.send.emit({ kind: 'paste', text: escapePlainText(text), files });
   }
 
   private clearPasteState(): void {
@@ -438,8 +439,9 @@ export class ChatInputComponent implements OnDestroy {
   private sendText(): void {
     const editor = this.editor();
     if (!editor) return;
-    const text = editor.getText().trim();
-    if (!text) return;
+    const displayText = editor.getText().trim();
+    if (!displayText) return;
+    const storageText = editor.getStorageText().trim();
     editor.clear();
     this.draftHtml.set('');
     this.previewCard.set(null);
@@ -447,7 +449,9 @@ export class ChatInputComponent implements OnDestroy {
     this.closeEmoji();
     this.closeAttach();
     this.send.emit(
-      isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text },
+      isBareUrl(displayText)
+        ? { kind: 'link', url: displayText }
+        : { kind: 'text', text: storageText },
     );
   }
 

@@ -10,7 +10,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
-import { ContentType, Prisma } from '../prisma/generated/client.js';
+import { ContentType, GroupRole, Prisma } from '../prisma/generated/client.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -46,6 +46,11 @@ import {
   SetAliasDto,
   SearchMessagesDto,
 } from '../dto/message.dto.js';
+import {
+  serializeAudienceMention,
+  serializeUserMention,
+  transformMessageEntities,
+} from '../common/message-entity.js';
 
 @ApiTags('message')
 @Controller()
@@ -69,7 +74,10 @@ export class MessageController {
   @Post('send-message')
   @ApiOperation({ summary: 'Send a message (unified for P2P and group)' })
   @ApiResultResponse(MessageResponseDto)
-  async sendMessage(@Request() req: FastifyRequest, @Body() dto: SendMessageDto) {
+  async sendMessage(
+    @Request() req: FastifyRequest,
+    @Body() dto: SendMessageDto,
+  ) {
     // Membership is resolved by ThreadAccessGuard (throws THREAD_NOT_FOUND for non-participants);
     // req.threadAccess.participant is the caller's row. A missing/empty content string is already
     // rejected by SendMessageDto's @IsNotEmpty/@MaxLength via ValidationPipe (HTTP 200 + code 10000);
@@ -78,19 +86,31 @@ export class MessageController {
       throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
     }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
+    if (contentType === ContentType.PURE_TEXT) {
+      dto.content = await this.canonicalizeMentions(req, dto.content);
+    }
     // Media content (FILE/VIDEO/AUDIO) is a server-trust contract: the client only forwards what
     // the matching POST /upload/* route returned. parse{File,Video,Audio}Content reject any non-upload
     // URL, disallowed mimetype, or bad shape so a forged `javascript:`/external/traversal URL or
     // oversized value can never be stored (and later rendered into a link). PURE_TEXT/IMAGE keep
     // their existing verbatim storage.
     if (contentType === ContentType.FILE && !parseFileContent(dto.content)) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid file content');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid file content',
+      );
     }
     if (contentType === ContentType.VIDEO && !parseVideoContent(dto.content)) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid video content');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid video content',
+      );
     }
     if (contentType === ContentType.AUDIO && !parseAudioContent(dto.content)) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid audio content');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid audio content',
+      );
     }
     // LINK: the client sends only the URL. The card is rebuilt server-side (SSRF-safe OG fetch +
     // og:image localization into CAS) so the metadata is server-authoritative and unforgable, then
@@ -100,7 +120,10 @@ export class MessageController {
         await this.linkPreview.buildCardContent(dto.content),
       );
       if (!parseLinkContent(dto.content)) {
-        throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid link content');
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'invalid link content',
+        );
       }
     }
     // Daily quota (local aggregate budget — one bucket shared by all local users). A TEXT send consumes
@@ -133,6 +156,76 @@ export class MessageController {
     // path uses the same dispatch, so text and media fan out identically.
     void this.fanout.dispatch(data);
     return data;
+  }
+
+  /**
+   * Treat only supported, unescaped v1 entities as mention semantics. User labels are rewritten from
+   * the active roster; @all is owner/admin-only. This is the security boundary — hiding a candidate
+   * in the composer is presentation, not authorization.
+   */
+  private async canonicalizeMentions(
+    req: FastifyRequest,
+    content: string,
+  ): Promise<string> {
+    const entities: Array<{
+      entityType: string;
+      entityId: string;
+      version: number;
+    }> = [];
+    transformMessageEntities(content, (entity) => {
+      if (
+        entity.version === 1 &&
+        (entity.entityType === 'user' ||
+          (entity.entityType === 'audience' && entity.entityId === 'all'))
+      ) {
+        entities.push(entity);
+      }
+      return entity.raw;
+    });
+    if (entities.length === 0) return content;
+    if (entities.length > 20) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'too many mentions (maximum 20)',
+      );
+    }
+    if (req.threadAccess.threadType !== 'GROUP') {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'mentions are only supported in group conversations',
+      );
+    }
+
+    const roster = await this.participantService.getRoster(
+      req.threadAccess.threadId,
+    );
+    const membersByAccount = new Map(
+      roster.map((member) => [member.user.account, member.user]),
+    );
+    return transformMessageEntities(content, (entity) => {
+      if (entity.version !== 1) return entity.raw;
+      if (entity.entityType === 'user') {
+        const user = membersByAccount.get(entity.entityId);
+        if (!user) {
+          throw new BusinessException(
+            BusinessCode.GROUP_TARGET_NOT_MEMBER,
+            `mention target is not an active member: ${entity.entityId}`,
+          );
+        }
+        return serializeUserMention(user.name, user.account);
+      }
+      if (entity.entityType === 'audience' && entity.entityId === 'all') {
+        const role = req.threadAccess.participant.role;
+        if (role !== GroupRole.OWNER && role !== GroupRole.ADMIN) {
+          throw new BusinessException(
+            BusinessCode.GROUP_FORBIDDEN,
+            'only group owners and admins may mention everyone',
+          );
+        }
+        return serializeAudienceMention(entity.label, 'all');
+      }
+      return entity.raw;
+    });
   }
 
   /**
@@ -181,7 +274,10 @@ export class MessageController {
     summary:
       'Query the current user’s uncommitted media-send states in a conversation',
   })
-  async queryMediaStages(@Request() req: FastifyRequest, @Body() dto: QueryMediaStagesDto) {
+  async queryMediaStages(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryMediaStagesDto,
+  ) {
     return this.messageService.queryMediaStages(req.user.userId, dto.threadId);
   }
 
@@ -194,7 +290,10 @@ export class MessageController {
     summary: 'Query conversation history messages (cursor pagination)',
   })
   @ApiResultResponse(MessageResponseDto, true)
-  async queryMessages(@Request() req: FastifyRequest, @Body() dto: QueryMessagesDto) {
+  async queryMessages(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryMessagesDto,
+  ) {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
     // IDOR fix as send, now declarative. The participant row is on req.threadAccess.participant.
     // take+1 trick: fetch one extra row to decide hasMore, then truncate `data` back to `take` rows.
@@ -221,7 +320,11 @@ export class MessageController {
       const blocked = await this.userBlockService.blockedByMe(req.user.userId);
       if (blocked.size > 0) filters.hideCreatorIds = [...blocked];
     }
-    const rows = await this.messageService.queryMessages(dto.threadId, newParams, filters);
+    const rows = await this.messageService.queryMessages(
+      dto.threadId,
+      newParams,
+      filters,
+    );
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
     return envelope(data, { hasMore });
@@ -233,7 +336,10 @@ export class MessageController {
   @ApiOperation({
     summary: 'Look up the P2P thread by peer userId (friends only)',
   })
-  async getThreadByUserId(@Request() req: FastifyRequest, @Body() dto: UserIdDto) {
+  async getThreadByUserId(
+    @Request() req: FastifyRequest,
+    @Body() dto: UserIdDto,
+  ) {
     // A friend relationship == an active P2P thread shared by both. No thread → THREAD_NOT_FOUND,
     // deliberately non-leaking (a caller cannot probe a pending invite or prior relationship), the
     // same policy ThreadAccessGuard enforces.
@@ -259,7 +365,10 @@ export class MessageController {
   @ApiOperation({
     summary: 'Mark a conversation read (advances the per-user read cursor)',
   })
-  async markRead(@Request() req: FastifyRequest, @Body() dto: MarkReadDto): Promise<void> {
+  async markRead(
+    @Request() req: FastifyRequest,
+    @Body() dto: MarkReadDto,
+  ): Promise<void> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
     // participant row is on req.threadAccess.participant.
     // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
@@ -316,8 +425,15 @@ export class MessageController {
     summary:
       'Mute / unmute a conversation (suppresses notifications, not delivery)',
   })
-  async setMuted(@Request() req: FastifyRequest, @Body() dto: SetMutedDto): Promise<void> {
-    await this.participantService.setMuted(req.user.userId, dto.threadId, dto.muted);
+  async setMuted(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetMutedDto,
+  ): Promise<void> {
+    await this.participantService.setMuted(
+      req.user.userId,
+      dto.threadId,
+      dto.muted,
+    );
     // Sync the caller's other online devices so their list row swaps the mute icon live (no reload).
     this.sseService.onThreadMeta(req.user.userId, {
       event: 'THREAD_META',
@@ -335,7 +451,10 @@ export class MessageController {
   @ApiOperation({
     summary: 'Pin / unpin a conversation (pinned-first ordering)',
   })
-  async setPinned(@Request() req: FastifyRequest, @Body() dto: SetPinnedDto): Promise<void> {
+  async setPinned(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetPinnedDto,
+  ): Promise<void> {
     const updated = await this.participantService.setPinned(
       req.user.userId,
       dto.threadId,
@@ -361,8 +480,14 @@ export class MessageController {
     summary:
       'Clear chat history for me (hides all messages up to now; peer copy untouched)',
   })
-  async clearHistory(@Request() req: FastifyRequest, @Body() dto: ClearHistoryDto): Promise<void> {
-    const updated = await this.participantService.clearHistory(req.user.userId, dto.threadId);
+  async clearHistory(
+    @Request() req: FastifyRequest,
+    @Body() dto: ClearHistoryDto,
+  ): Promise<void> {
+    const updated = await this.participantService.clearHistory(
+      req.user.userId,
+      dto.threadId,
+    );
     this.sseService.onThreadMeta(req.user.userId, {
       event: 'THREAD_META',
       threadId: dto.threadId,
@@ -380,7 +505,10 @@ export class MessageController {
     summary:
       'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
   })
-  async setAlias(@Request() req: FastifyRequest, @Body() dto: SetAliasDto): Promise<void> {
+  async setAlias(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetAliasDto,
+  ): Promise<void> {
     const updated = await this.participantService.setAlias(
       req.user.userId,
       dto.threadId,
@@ -432,7 +560,10 @@ export class MessageController {
     summary:
       'Manually re-run federated media localize for one message (retry after a localize failure)',
   })
-  async relocalizeMedia(@Request() req: FastifyRequest, @Body() dto: RelocalizeMediaDto) {
+  async relocalizeMedia(
+    @Request() req: FastifyRequest,
+    @Body() dto: RelocalizeMediaDto,
+  ) {
     // ThreadAccessGuard resolved membership + scoped threadId; localizeMediaForMessage re-validates
     // (threadId, seq) exists and re-runs the idempotent localize path. localizeMedia pushes the terminal
     // MEDIA_STATUS itself, so this returns the outcome for the caller's optimistic flip.
@@ -455,7 +586,10 @@ export class MessageController {
   async mediaStatus(@Body() dto: MediaStatusDto) {
     // No ThrottleGuard: a cheap read (two batched queries), fired only on scroll when the viewport
     // exposes non-ready media. ThreadAccessGuard scopes threadId; missing seqs are omitted.
-    const statuses = await this.messageService.queryMediaStatus(dto.threadId, dto.seqs);
+    const statuses = await this.messageService.queryMediaStatus(
+      dto.threadId,
+      dto.seqs,
+    );
     return { statuses };
   }
 }

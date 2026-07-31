@@ -18,12 +18,16 @@ import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
+import { filterMentionCandidates } from './mention-candidates';
+import { serializeEditorBlocks } from './editor-message-serializer';
+import { ALL_MENTION_ID } from '../../lib/message-entity';
 
 /** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
  *  so the production port swaps in GroupService.getMembers() unchanged. */
 export interface ChatMember {
   id: string;
   label: string;
+  avatarUrl?: string;
 }
 
 /**
@@ -106,9 +110,16 @@ export class ChatEditorComponent {
     const editor = new Editor({
       element: el,
       extensions: [
-        SendKeymapExtension({ onSend: () => this.onEnterSend(), enterToSend: () => this.inputDevice.enterToSend() }),
+        SendKeymapExtension({
+          onSend: () => this.onEnterSend(),
+          enterToSend: () => this.inputDevice.enterToSend(),
+        }),
         StarterKit.configure({ heading: false }),
-        Placeholder.configure({ placeholder: () => this.placeholder() || this.transloco.translate('chat.inputPlaceholder') }),
+        Placeholder.configure({
+          placeholder: () =>
+            this.placeholder() ||
+            this.transloco.translate('chat.inputPlaceholder'),
+        }),
         Mention.configure({
           HTMLAttributes: { class: 'cb-mention' },
           suggestion: {
@@ -121,7 +132,8 @@ export class ChatEditorComponent {
       ],
       editorProps: {
         handlePaste: (_view, event) => {
-          if (!event.clipboardData || event.clipboardData.files.length === 0) return false;
+          if (!event.clipboardData || event.clipboardData.files.length === 0)
+            return false;
           this.attachmentPaste.emit(event);
           return true;
         },
@@ -160,10 +172,7 @@ export class ChatEditorComponent {
   }
 
   private filterMembers(query: string): ChatMember[] {
-    const q = query.trim().toLowerCase();
-    const src = this.membersRef;
-    if (!q) return src.slice(0, 8);
-    return src.filter((m) => m.label.toLowerCase().includes(q)).slice(0, 8);
+    return filterMentionCandidates(this.membersRef, query);
   }
 
   // ---------- imperative API (parent drives via viewChild) ----------
@@ -191,6 +200,17 @@ export class ChatEditorComponent {
    *  label). Used by plain-text send mode — the composer UX is rich, but the stored/sent payload is text. */
   getText(): string {
     return this.editor?.getText() ?? '';
+  }
+
+  /**
+   * Serialize the editor document for Message.content. Plain text is escaped as plain text, while only
+   * an atomic Tiptap mention node becomes a SOMS user entity. Consequently typing/pasting the complete
+   * protocol by hand can never promote it into a real mention.
+   */
+  getStorageText(): string {
+    const doc = this.editor?.getJSON();
+    if (!doc?.content) return '';
+    return serializeEditorBlocks(doc.content);
   }
 
   /** Insert text (or any inline content) at the last selection. Touch emoji keyboards deliberately keep
@@ -240,7 +260,10 @@ function SendKeymapExtension(opts: {
             const active = document.querySelector('.cb-mention-item--active');
             if (active) {
               active.dispatchEvent(
-                new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+                new MouseEvent('mousedown', {
+                  bubbles: true,
+                  cancelable: true,
+                }),
               );
               return true;
             }
@@ -283,8 +306,19 @@ function suggestionPopup() {
     popup.classList.remove('cb-mention-popup--empty');
     items.forEach((m, i) => {
       const row = document.createElement('div');
-      row.className = 'cb-mention-item' + (i === selected ? ' cb-mention-item--active' : '');
-      row.textContent = m.label;
+      row.className =
+        'cb-mention-item' + (i === selected ? ' cb-mention-item--active' : '');
+      if (m.id === ALL_MENTION_ID) {
+        row.classList.add('cb-mention-item--all');
+        const icon = document.createElement('span');
+        icon.className = 'cb-mention-all-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        const label = document.createElement('span');
+        label.textContent = `@${m.label}`;
+        row.append(icon, label);
+      } else {
+        row.textContent = m.label;
+      }
       // mousedown (not click) so the editor does not blur before the command runs.
       row.addEventListener('mousedown', (e) => {
         e.preventDefault();

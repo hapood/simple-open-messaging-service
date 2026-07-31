@@ -1,6 +1,7 @@
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideTransloco } from '@jsverse/transloco';
+import { provideTransloco, TranslocoService } from '@jsverse/transloco';
+import { firstValueFrom } from 'rxjs';
 import type { AlbumImage } from '../message-cards/chat-item';
 import type { ImageDownloadTask } from '../../services/image-download.service';
 import { ImageDownloadService } from '../../services/image-download.service';
@@ -24,7 +25,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
   let downloads: FakeGalleryDownloads;
   let toast: { info: jasmine.Spy; warn: jasmine.Spy };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     downloads = new FakeGalleryDownloads();
     toast = {
       info: jasmine.createSpy('info'),
@@ -49,6 +50,9 @@ describe('GalleryViewerComponent — deferred image actions', () => {
         { provide: ToastService, useValue: toast },
       ],
     });
+    const i18n = TestBed.inject(TranslocoService);
+    await firstValueFrom(i18n.load('en'));
+    i18n.setActiveLang('en');
   });
 
   it('keeps load and download as distinct intents', () => {
@@ -103,7 +107,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the thumbnail rail for image pages but removes it from video pages', () => {
+  it('shows thumbnails for paused video and hides them while video is playing', () => {
     const component = create([
       media,
       {
@@ -118,7 +122,11 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(component.showThumbs()).toBe(true);
     component.index.set(1);
     expect(component.currentIsVideo()).toBe(true);
+    expect(component.showThumbs()).toBe(true);
+    component.videoPlaying.set(true);
     expect(component.showThumbs()).toBe(false);
+    component.videoPlaying.set(false);
+    expect(component.showThumbs()).toBe(true);
   });
 
   it('uses one shared visibility state for the viewer chrome', () => {
@@ -129,6 +137,109 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(component.chromeVisible()).toBe(false);
     component.toggleChrome();
     expect(component.chromeVisible()).toBe(true);
+  });
+
+  it('leaves normal video gestures to PhotoSwipe and isolates them only in fullscreen', () => {
+    const component = create();
+    const parent = document.createElement('div');
+    const container = document.createElement('div');
+    parent.append(container);
+    const pointerDown = jasmine.createSpy('pointerDown');
+    parent.addEventListener('pointerdown', pointerDown);
+    const setIsolation = (
+      component as unknown as {
+        prepareVideoGestureIsolation(
+          element: HTMLElement,
+        ): (active: boolean) => void;
+      }
+    ).prepareVideoGestureIsolation(container);
+
+    container.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(pointerDown).toHaveBeenCalledTimes(1);
+
+    setIsolation(true);
+    container.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(pointerDown).toHaveBeenCalledTimes(1);
+
+    setIsolation(false);
+    container.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(pointerDown).toHaveBeenCalledTimes(2);
+  });
+
+  it('fully destroys an inactive video player so its media resources are released', () => {
+    const component = create();
+    const destroy = jasmine.createSpy('destroy');
+    const internals = component as unknown as {
+      videoPlayers: Map<number, { destroy(clearHtml: boolean): void }>;
+      destroyVideoPlayer(index: number): void;
+    };
+    internals.videoPlayers.set(1, { destroy });
+
+    internals.destroyVideoPlayer(1);
+
+    expect(destroy).toHaveBeenCalledOnceWith(true);
+    expect(internals.videoPlayers.has(1)).toBe(false);
+  });
+
+  it('destroys video A on image switch and rebuilds it only when returning', () => {
+    const video: AlbumImage = {
+      kind: 'video',
+      src: '/uploads/a.mp4',
+      w: 1280,
+      h: 720,
+      msgId: 43,
+    };
+    const component = create([video, media]);
+    const destroy = jasmine.createSpy('destroy');
+    const contentElement = document.createElement('div');
+    const internals = component as unknown as {
+      videoPlayers: Map<
+        number,
+        { destroy(clearHtml: boolean): void; play(): Promise<void> }
+      >;
+      pswp: {
+        currSlide: { content: { element: HTMLElement } };
+        destroy(): void;
+      };
+      activateVideo(index: number): void;
+      mountVideoPlayer(element: HTMLElement, index: number): Promise<void>;
+    };
+    internals.videoPlayers.set(0, {
+      destroy,
+      play: () => Promise.resolve(),
+    });
+
+    component.index.set(1);
+    internals.activateVideo(1);
+    expect(destroy).toHaveBeenCalledOnceWith(true);
+    expect(internals.videoPlayers.size).toBe(0);
+
+    internals.pswp = {
+      currSlide: { content: { element: contentElement } },
+      destroy: () => undefined,
+    };
+    const mount = spyOn(internals, 'mountVideoPlayer').and.resolveTo();
+    component.index.set(0);
+    internals.activateVideo(0);
+    expect(mount).toHaveBeenCalledOnceWith(contentElement, 0);
+  });
+
+  it('destroys every mounted player when the viewer closes', () => {
+    const component = create();
+    const destroyA = jasmine.createSpy('destroyA');
+    const destroyB = jasmine.createSpy('destroyB');
+    const internals = component as unknown as {
+      videoPlayers: Map<number, { destroy(clearHtml: boolean): void }>;
+      destroyVideoPlayers(): void;
+    };
+    internals.videoPlayers.set(0, { destroy: destroyA });
+    internals.videoPlayers.set(2, { destroy: destroyB });
+
+    internals.destroyVideoPlayers();
+
+    expect(destroyA).toHaveBeenCalledOnceWith(true);
+    expect(destroyB).toHaveBeenCalledOnceWith(true);
+    expect(internals.videoPlayers.size).toBe(0);
   });
 
   it('renders video errors inside the player with an error-specific action', () => {
@@ -150,14 +261,18 @@ describe('GalleryViewerComponent — deferred image actions', () => {
 
     internals.setVideoError(0, 'network');
     expect(layer.hidden).toBe(false);
-    expect(layer.textContent).toContain('gallery.videoNetworkFailed');
-    expect(action.textContent).toBe('common.retry');
+    expect(layer.textContent).toContain(
+      "Video couldn't be loaded. Check your connection and try again.",
+    );
+    expect(action.textContent).toBe('Retry');
     action.click();
     expect(retry).toHaveBeenCalledWith(0);
 
     internals.setVideoError(0, 'unsupported');
-    expect(layer.textContent).toContain('gallery.videoUnsupported');
-    expect(action.textContent).toBe('gallery.downloadVideo');
+    expect(layer.textContent).toContain(
+      "This video format or codec isn't supported on this device.",
+    );
+    expect(action.textContent).toBe('Download video');
     action.click();
     expect(save).toHaveBeenCalledWith(0);
   });

@@ -4,6 +4,37 @@
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
 @use './app/lib/chat-box/cb-skeleton'; // shared chat shimmer skeleton (.cb-skeleton) — used by MessageThread + playground
 
+// The unread boundary decorates the first real unread message; it is deliberately not a virtual source
+// item, so message cursors, sender grouping, albums, and previous-message avatar decisions stay untouched.
+.cb-unread-entry {
+  display: block;
+}
+
+.cb-unread-divider {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px max(16px, calc((100% - 800px) / 2 + 16px)) 8px;
+  color: var(--app-brand);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+
+  &::before,
+  &::after {
+    content: '';
+    flex: 1 1 auto;
+    height: 1px;
+    background: color-mix(in srgb, var(--app-brand) 35%, transparent);
+  }
+
+  > span {
+    flex: 0 0 auto;
+  }
+}
+
 /* === M3 theme: primary #2196f3 (mat.$blue-palette 500 step, matching the former hand-tuned value) === */
 $theme: mat.define-theme((
   color: (

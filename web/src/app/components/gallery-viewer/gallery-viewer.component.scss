@@ -25,8 +25,11 @@
 :host ::ng-deep .gv-native-video-poster {
   display: grid;
   place-items: center;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(91, 140, 255, 0.2), transparent 35%),
+  background: radial-gradient(
+      circle at 50% 42%,
+      rgba(91, 140, 255, 0.2),
+      transparent 35%
+    ),
     #17191f;
 }
 
@@ -84,11 +87,11 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   box-sizing: border-box;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.72);
-  color: rgba(255, 255, 255, 0.88);
+  background: rgba(0, 0, 0, 0.46);
+  color: rgba(255, 255, 255, 0.76);
   text-align: center;
 
   &[hidden] {
@@ -97,32 +100,29 @@
 }
 
 :host ::ng-deep .gv-video-error__icon {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  margin-bottom: 2px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
-  font-size: 30px;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 32px;
+  font-weight: 200;
+  line-height: 1;
 }
 
 :host ::ng-deep .gv-video-error__message {
   max-width: min(360px, 100%);
   margin: 0;
-  font-size: 15px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 400;
   line-height: 1.5;
 }
 
 :host ::ng-deep .gv-video-error__action {
-  min-width: 104px;
+  min-width: 112px;
+  min-height: 44px;
   box-sizing: border-box;
   margin-top: 4px;
   padding: 9px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.09);
   color: #fff;
   font: inherit;
   cursor: pointer;
@@ -287,6 +287,19 @@
   );
 }
 
+@media (pointer: coarse), (max-width: 768px) {
+  :host ::ng-deep .art-video-player {
+    --art-padding: 12px;
+    --art-control-height: 44px;
+    --art-control-icon-size: 32px;
+  }
+
+  :host ::ng-deep .art-video-player .art-control-volume,
+  :host ::ng-deep .art-video-player .art-control-fullscreenWeb {
+    display: none;
+  }
+}
+
 .gv-thumb-play {
   position: absolute;
   inset: 50% auto auto 50%;
@@ -328,8 +341,7 @@
   height: 100%;
 }
 
-.gv-load,
-.gv-transfer {
+.gv-load {
   position: absolute;
   inset: 0;
   z-index: 2;
@@ -418,127 +430,108 @@
   }
 }
 
-.gv-transfer {
-  gap: 11px;
-  background: rgba(0, 0, 0, 0.22);
-  // The transfer surface is visual chrome, not a modal. Let PhotoSwipe keep the pointer stream so a
-  // downloading image can be swiped away as smoothly as an already-loaded slide.
+.gv-load-progress {
+  width: min(246px, calc(100vw - 64px));
+  color: rgba(255, 255, 255, 0.72);
   pointer-events: none;
 }
 
-.gv-transfer-ring {
-  --gv-progress: 0%;
-  position: relative;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: conic-gradient(
-    #fff var(--gv-progress),
-    rgba(255, 255, 255, 0.2) 0
-  );
+.gv-load-progress__heading,
+.gv-load-progress__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 20px;
+  font-size: 12px;
+  line-height: 20px;
+}
 
-  &::after {
-    content: '';
-    position: absolute;
-    inset: 4px;
-    border-radius: inherit;
-    background: #111;
+.gv-load-progress__heading {
+  margin-bottom: 7px;
+
+  span {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 14px;
+    font-weight: 500;
   }
 
   strong {
-    position: relative;
-    z-index: 1;
-    font-size: 14px;
-    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
   }
 }
 
-.gv-transfer-ring--indeterminate {
-  background: conic-gradient(transparent 0 58%, #fff 72%, transparent 86%);
-  animation: gv-transfer-spin 0.9s linear infinite;
+.gv-load-progress__track {
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.14);
+
+  span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: rgba(255, 255, 255, 0.78);
+    transition: width 120ms linear;
+  }
 }
 
-.gv-transfer-size {
-  color: rgba(255, 255, 255, 0.76);
-  font-size: 13px;
-  line-height: 18px;
+.gv-load-progress__track--indeterminate span {
+  animation: gv-load-progress 1.15s ease-in-out infinite;
 }
 
-.gv-transfer-cancel {
-  min-width: 88px;
-  min-height: 44px;
-  border: 0;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  font: inherit;
-  cursor: pointer;
-  pointer-events: auto;
+.gv-load-progress__footer {
+  margin-top: 6px;
+  color: rgba(255, 255, 255, 0.42);
+
+  button {
+    min-width: 44px;
+    min-height: 32px;
+    margin: -4px -8px -4px 0;
+    padding: 0 8px;
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.72);
+    font: inherit;
+    cursor: pointer;
+    pointer-events: auto;
+  }
 }
 
-@keyframes gv-transfer-spin {
+@keyframes gv-load-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+:host ::ng-deep .soms-gallery-pswp .pswp__img {
+  animation: gv-image-reveal 180ms ease-out both;
+}
+
+@keyframes gv-image-reveal {
+  from {
+    opacity: 0;
+  }
   to {
-    transform: rotate(360deg);
+    opacity: 1;
   }
 }
 
-.gv-status,
-.gv-retry {
+@media (prefers-reduced-motion: reduce) {
+  :host ::ng-deep .soms-gallery-pswp .pswp__img {
+    animation: none;
+  }
+}
+
+.gv-status {
   position: absolute;
   inset: 0;
   z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.gv-status {
   pointer-events: none;
-}
-
-.gv-retry {
-  flex-direction: column;
-  gap: 6px;
-  border: 0;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.72);
-  color: rgba(255, 255, 255, 0.88);
-  text-align: center;
-  cursor: pointer;
-}
-
-.gv-retry-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  width: 52px;
-  height: 52px;
-  margin-bottom: 6px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
-  font-size: 30px;
-}
-
-.gv-retry-icon svg {
-  display: block;
-  width: 28px;
-  height: 28px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.gv-retry-text {
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.gv-retry-hint {
-  font-size: 13px;
-  opacity: 0.72;
 }

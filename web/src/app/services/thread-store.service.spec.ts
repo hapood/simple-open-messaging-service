@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
-import { ThreadRepository } from './thread-store.service';
+import { rawPreview, ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
 import { MissedSyncService } from './missed-sync.service';
 import { ProfileRepository } from './profile-store.service';
@@ -514,7 +514,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   it('optimistic lastReadSeq masks a stale server unread regression while a markRead POST is in flight', async () => {
     // Reconfigure the missed-summary pull to return the SERVER's stale view: lastReadSeq 5, unread 3 (the
-    // markRead POST has not landed yet). noteOptimisticRead records the local truth (seq 10); the merge must
+    // markRead POST has not landed yet). noteLocalStableRead records the local truth (seq 10); the merge must
     // keep it + mask the unread regression.
     const fetchSpy = (TestBed.inject(MissedSyncService) as unknown as {
       fetchMissedSummary: jasmine.Spy;
@@ -527,7 +527,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       hasMore: false, nextCursor: null,
     });
     await populate([p2p(1, 11, { lastReadSeq: 5, unreadCount: 0 })]);
-    repo.noteOptimisticRead(1, 10); // local truth ahead of the server
+    repo.noteLocalStableRead(1, 10); // local truth ahead of the server
     // A NEW_MESSAGE advances `to` + schedules the debounced missed-summary walk.
     eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 12, ts: 1000 } });
     await flush(300); // past the 200ms pull debounce
@@ -607,5 +607,16 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     sessionUserId.set(null); // logout → reset()
     await flush(20);
     expect(repo.threadHwms()).toEqual({});
+  });
+});
+
+describe('rawPreview', () => {
+  it('renders semantic mentions as readable labels instead of leaking the storage URI', () => {
+    expect(
+      rawPreview(
+        'PURE_TEXT',
+        '你好 [@张三](soms://user/zhangsan%40example.com?v=1)',
+      ),
+    ).toBe('你好 @张三');
   });
 });

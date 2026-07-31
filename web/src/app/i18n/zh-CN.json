@@ -355,6 +355,7 @@
     "all": "全部",
     "loading": "加载中…",
     "inputPlaceholder": "输入消息…",
+    "mentionAll": "所有人",
     "youPrefix": "你：{{text}}",
     "openImageAria": "打开图片",
     "openFileAria": "打开文件",
@@ -407,6 +408,8 @@
     "backUnreadAria": "返回会话列表，其他会话有 {{count}} 条未读消息",
     "scrollToLatestAria": "回到最新消息",
     "newMessagesAria": "回到 {{count}} 条新消息",
+    "jumpToUnreadAria": "跳到本次进入前的第一条未读消息",
+    "unreadDivider": "未读消息",
     "messagePlaceholder": "输入消息",
     "emojiAria": "表情",
     "attachAria": "附件",
@@ -500,7 +503,8 @@
     "blocked": "已拉黑",
     "muted": "已静音",
     "pinned": "已置顶",
-    "unreadCount": "{{count}} 条未读"
+    "unreadCount": "{{count}} 条未读",
+    "mentionedYou": "有人提到了你"
   },
   "errors": {
     "removedFromGroup": "你已被移出 {{group}}",
@@ -593,11 +597,16 @@
   "settings": {
     "title": "设置",
     "appearance": "外观",
+    "chat": "聊天",
     "themeSystem": "跟随系统",
     "themeLight": "浅色",
     "themeDark": "深色",
     "showSelfAvatar": "显示自己的消息头像",
     "showSelfAvatarDesc": "在每组自己发送的首条消息旁显示头像。",
+    "chatOpenLatest": "进入时显示最新消息",
+    "chatOpenLatestDesc": "打开会话后直接定位到最新消息。",
+    "chatOpenLastRead": "从上次已读位置继续",
+    "chatOpenLastReadDesc": "有未读消息时，从第一条未读消息开始。",
     "language": "语言",
     "uploadConcurrency": "并发上传数",
     "uploadConcurrencyCount": "{{count}} 个上传任务",

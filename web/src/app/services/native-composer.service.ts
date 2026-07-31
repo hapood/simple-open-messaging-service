@@ -52,6 +52,23 @@ export type NativeComposerEvent =
       kind: 'sendText';
       actionId: number;
       text: string;
+      mentions?: NativeComposerMention[];
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
+      kind: 'queryMentions';
+      requestId: number;
+      query: string;
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
+      kind: 'resolveMedia';
+      requestId: number;
+      url: string;
     }
   | {
       version: 1;
@@ -72,6 +89,31 @@ export type NativeComposerEvent =
       error?: string;
       selection?: import('./native-upload.service').NativeUploadSelection;
     };
+
+export interface NativeComposerMention {
+  start: number;
+  end: number;
+  kind: 'user' | 'all';
+  id: string;
+  label: string;
+}
+
+export interface NativeMentionCandidate {
+  kind: 'user' | 'all';
+  id: string;
+  label: string;
+  avatar:
+    | {
+        kind: 'user';
+        url?: string;
+        fallbackText: string;
+        colorSeed: string;
+      }
+    | {
+        kind: 'builtin';
+        icon: 'everyone';
+      };
+}
 
 export interface NativeVoiceUploadEvent {
   contextId: number;

@@ -37,7 +37,7 @@ importScripts('./sw-config.js');
     event.waitUntil(
       (async function () {
         try {
-          var res = await fetch(API_PREFIX + '/notifications/missed', {
+          var res = await fetch(API_PREFIX + '/notification-feed/query', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

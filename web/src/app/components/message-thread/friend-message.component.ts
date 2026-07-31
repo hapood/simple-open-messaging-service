@@ -13,6 +13,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { firstValueFrom, takeUntil } from 'rxjs';
+import { HttpClient } from '@angular/common/http';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
   ChatBoxScroller,
@@ -33,7 +34,10 @@ import {
   computeRowFlags,
 } from '../message-cards/create-item';
 import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
-import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
+import {
+  mergeAlbumItemsAtBoundary,
+  absorbAlbumTail,
+} from '../message-cards/merge-items';
 import {
   MEDIA_STATUS,
   type AlbumImage,
@@ -61,9 +65,13 @@ import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { ComposerWidthSourceDirective } from '../../directives/composer-width-source.directive';
 import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
+import { assetUrl } from '../../services/runtime';
 import { MsgService } from '../../services/message.service';
 import { MessageRepository } from '../../services/message-repository.service';
-import { UserService } from '../../services/user.service';
+import {
+  avatarUrl as sizedAvatarUrl,
+  UserService,
+} from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -75,6 +83,8 @@ import {
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
+import { serializeNativeComposerText } from '../chat-editor/editor-message-serializer';
+import { filterMentionCandidates } from '../chat-editor/mention-candidates';
 import { isMessageViewportAtBottom } from './message-scroll-state';
 import {
   MediaTransferService,
@@ -100,6 +110,18 @@ import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { fileExt, type FileCategory } from '../message-cards/file-meta.util';
 import { PopupType, RouteService } from '../../services/route.service';
+import { GroupService } from '../../services/group.service';
+import { ChatAppearanceService } from '../../services/chat-appearance.service';
+import { GroupEventService } from '../../services/group-event.service';
+import {
+  ALL_MENTION_ID,
+  escapePlainText,
+  toDisplayText,
+  toRenderMessageEntities,
+} from '../../lib/message-entity';
+import type { ChatMember } from '../chat-editor/chat-editor.component';
+import { StableReadTracker } from './stable-read-tracker';
+import { messageOpenOptions } from './message-open-position';
 
 let nativeComposerContextSequence = Date.now() * 1000;
 
@@ -185,7 +207,12 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly transloco = inject(TranslocoService);
   private readonly theme = inject(ThemeService);
   private readonly toast = inject(ToastService);
+  private readonly groupService = inject(GroupService);
+  private readonly chatAppearance = inject(ChatAppearanceService);
+  private readonly groupEvents = inject(GroupEventService);
+  private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
+  readonly mentionMembers = signal<ChatMember[]>([]);
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
   private nativeComposerBoundsObserver?: ResizeObserver;
@@ -209,11 +236,19 @@ export class MessageThreadComponent implements OnDestroy {
    *  tell a WARM resident (init done → emit `ready` now, no re-fetch) from a COLD one (idled via
    *  `teardownKernel` → reinit). */
   private kernelReady = false;
+  /** Frozen at chat-open before any local/server read cursor advances. */
+  private firstUnreadSeq: number | null = null;
+  private readonly stableRead = new StableReadTracker((seq) => {
+    const threadId = this.threadId();
+    if (threadId !== undefined) this.convList.markReadStable(threadId, seq);
+  });
 
   readonly atBottom = signal(true);
   /** Incoming message signals received while the user is reading history. Cleared only after the viewport
    *  reaches the visible newest zone, not merely the kernel's much wider newer-prefetch threshold. */
   readonly newMessageCount = signal(0);
+  /** The frozen unread boundary is above the visible viewport; shown as the upward counterpart to latest. */
+  readonly unreadBoundaryAbove = signal(false);
   readonly newMessageLabel = computed(() => {
     const count = this.newMessageCount();
     return count > 99 ? '99+' : String(count);
@@ -377,6 +412,41 @@ export class MessageThreadComponent implements OnDestroy {
    * selection order. Voice notes deliberately bypass this lane. */
 
   constructor() {
+    effect((onCleanup) => {
+      const trd = this.userMsgTrd();
+      const threadId = this.threadId();
+      if (!trd || trd.type !== 'GROUP' || threadId === undefined) {
+        this.mentionMembers.set([]);
+        return;
+      }
+      let active = true;
+      const load = () => {
+        this.groupService.getThreadMembers(threadId).subscribe((res) => {
+          if (!active || res.code !== 0) return;
+          const members = (res.data ?? []).map((member) => ({
+            id: member.account,
+            label: member.name,
+            avatarUrl: assetUrl(sizedAvatarUrl(member.avatar, 32)),
+          }));
+          if (trd.role === 'OWNER' || trd.role === 'ADMIN') {
+            members.unshift({
+              id: ALL_MENTION_ID,
+              label: this.transloco.translate('chat.mentionAll'),
+              avatarUrl: '',
+            });
+          }
+          this.mentionMembers.set(members);
+        });
+      };
+      load();
+      const sub = this.groupEvents.rosterChanged$.subscribe((groupId) => {
+        if (groupId === trd.group.id) load();
+      });
+      onCleanup(() => {
+        active = false;
+        sub.unsubscribe();
+      });
+    });
     // The aggregate attachment card is a single kernel tail item. Moving the Angular-owned node into the
     // kernel's measured tail cap makes it part of the scrollable content/total-height model instead of a
     // fixed row above the composer. The cap's ResizeObserver accounts for show/hide and progress updates.
@@ -547,15 +617,52 @@ export class MessageThreadComponent implements OnDestroy {
         const text = event.text.trim();
         const accepted = text.length > 0;
         if (accepted) {
+          const leadingTrim = event.text.length - event.text.trimStart().length;
+          const mentions = (event.mentions ?? []).map((mention) => ({
+            ...mention,
+            start: mention.start - leadingTrim,
+            end: mention.end - leadingTrim,
+          }));
+          const stored = serializeNativeComposerText(text, mentions);
           this.onSendIntent(
-            /^https?:\/\/\S+$/i.test(text)
+            mentions.length === 0 && /^https?:\/\/\S+$/i.test(text)
               ? { kind: 'link', url: text }
-              : { kind: 'text', text },
+              : { kind: 'text', text: stored },
           );
         }
         this.nativeComposer.acknowledge(event.actionId, accepted);
         return;
       }
+      case 'queryMentions': {
+        const items = filterMentionCandidates(
+          this.mentionMembers(),
+          event.query,
+        ).map((member) => ({
+          kind:
+            member.id === ALL_MENTION_ID ? ('all' as const) : ('user' as const),
+          id: member.id,
+          label: member.label,
+          avatar:
+            member.id === ALL_MENTION_ID
+              ? ({ kind: 'builtin', icon: 'everyone' } as const)
+              : ({
+                  kind: 'user',
+                  url: member.avatarUrl || undefined,
+                  fallbackText: avatarFallbackText(member.label),
+                  colorSeed: member.id,
+                } as const),
+        }));
+        this.nativeComposer.update(event.contextId, {
+          mentionResults: {
+            requestId: event.requestId,
+            items,
+          },
+        });
+        return;
+      }
+      case 'resolveMedia':
+        void this.resolveNativeMentionMedia(event);
+        return;
       case 'pickAttachment':
         void this.pickNativeComposerAttachment(event);
         return;
@@ -563,6 +670,31 @@ export class MessageThreadComponent implements OnDestroy {
       case 'draft':
       case 'recording':
         return;
+    }
+  }
+
+  private async resolveNativeMentionMedia(
+    event: Extract<NativeComposerEvent, { kind: 'resolveMedia' }>,
+  ): Promise<void> {
+    try {
+      // HttpClient is intentional: TauriHttpBackend routes media:// and http://media.localhost through
+      // Rust's authenticated media_request command. Android WebView fetch() rejects custom schemes.
+      const blob = await firstValueFrom(
+        this.http.get(event.url, { responseType: 'blob' }),
+      );
+      if (blob.size > 512 * 1024) throw new Error('avatar is too large');
+      const base64 = await blobToBase64(blob);
+      this.nativeComposer.update(event.contextId, {
+        mediaResolved: {
+          requestId: event.requestId,
+          mimeType: blob.type || 'application/octet-stream',
+          base64,
+        },
+      });
+    } catch {
+      this.nativeComposer.update(event.contextId, {
+        mediaResolved: { requestId: event.requestId, error: 'unavailable' },
+      });
     }
   }
 
@@ -691,10 +823,21 @@ export class MessageThreadComponent implements OnDestroy {
       hooks: {
         createItem: (item, prev) => this.createItem(item, prev),
         createSkeleton: () => createGhostCbElement(),
-        mergeItems: mergeAlbumItems,
-        absorbTail: absorbAlbumTail,
+        mergeItems: (items) =>
+          mergeAlbumItemsAtBoundary(items, this.firstUnreadSeq),
+        absorbTail: (target, incoming) =>
+          incoming.id === this.firstUnreadSeq
+            ? null
+            : absorbAlbumTail(target, incoming),
       },
       onScroll: (info) => this.onScroll(info),
+      onFullyVisibleEnter: (entries) => {
+        for (const entry of entries) {
+          this.pulseVisibleMention(entry.item, entry.el);
+          const ids = entry.item.ids ?? [entry.item.id];
+          this.stableRead.noteFullyVisible(ids);
+        }
+      },
       // Reveal the locally cached latest page immediately. Older history is backfilled after ready,
       // so a one-message preview cache never makes pane switching wait for the network.
       config: { deferInitFill: true },
@@ -714,7 +857,25 @@ export class MessageThreadComponent implements OnDestroy {
     });
     this.initialLoading.set(true);
     this.kernelReady = false;
-    void this.scroller.init().finally(() => {
+    const boundary = this.convList.unreadEntryBoundary(trd.threadId);
+    this.firstUnreadSeq = boundary?.firstUnreadSeq ?? null;
+    const openOptions = messageOpenOptions(
+      this.chatAppearance.openPosition(),
+      this.firstUnreadSeq,
+    );
+    void this.scroller
+      .init(
+        openOptions
+          ? {
+              ...openOptions,
+              onFallbackToLatest: () => {
+                this.firstUnreadSeq = null;
+                this.unreadBoundaryAbove.set(false);
+              },
+            }
+          : undefined,
+      )
+      .finally(() => {
       this.initialLoading.set(false);
       this.kernelReady = true;
       if (isDevMode()) {
@@ -737,7 +898,7 @@ export class MessageThreadComponent implements OnDestroy {
       void this.scroller
         ?.backfillOlder?.()
         .catch((e) => console.error('[chat] history backfill rejected', e));
-    });
+      });
   }
 
   /** Kernel createItem hook: compute grouping flags from the older neighbor prev, wrap the real component.
@@ -753,6 +914,10 @@ export class MessageThreadComponent implements OnDestroy {
     const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
     if (item.data.mediaStatus === MEDIA_STATUS.DOWNLOADING)
       this.probe.track(item.id, true);
+    const isUnreadStart =
+      this.firstUnreadSeq !== null &&
+      (item.id === this.firstUnreadSeq ||
+        item.ids?.includes(this.firstUnreadSeq) === true);
     return createMsgCbElement(
       item,
       isShowHead,
@@ -764,6 +929,9 @@ export class MessageThreadComponent implements OnDestroy {
         this.galleryViewer.open(images, index, this.threadId() ?? 0),
       (data) => this.fileDetail.open(data, this.threadId() ?? 0),
       (clientMessageId) => void this.cancelPending(clientMessageId),
+      isUnreadStart
+        ? String(this.transloco.translate('chat.unreadDivider'))
+        : undefined,
     );
   }
 
@@ -781,6 +949,54 @@ export class MessageThreadComponent implements OnDestroy {
     this.mountedMessageCount.set(info.mounted);
     this.updateStickyDate();
     this.probe.schedule(this.threadId() ?? 0);
+    this.updateUnreadBoundaryPosition(info);
+    this.stableRead.noteScroll();
+  }
+
+  private updateUnreadBoundaryPosition(info: CbScrollInfo): void {
+    const target = this.firstUnreadSeq;
+    const viewport = this.viewportRef()?.nativeElement;
+    if (target === null || !viewport) {
+      this.unreadBoundaryAbove.set(false);
+      return;
+    }
+    const divider =
+      this.contentRef()?.nativeElement.querySelector<HTMLElement>(
+        '.cb-unread-divider',
+      );
+    if (divider) {
+      this.unreadBoundaryAbove.set(
+        divider.getBoundingClientRect().bottom <
+          viewport.getBoundingClientRect().top + 8,
+      );
+      return;
+    }
+    this.unreadBoundaryAbove.set(
+      info.oldestId !== null && info.oldestId > target,
+    );
+  }
+
+  private pulseVisibleMention(
+    item: CbItem<ChatItemData>,
+    host: HTMLElement,
+  ): void {
+    if (
+      item.data.type !== 'msg' ||
+      item.data.isSelf ||
+      (item.data.mentionState !== 'me' &&
+        item.data.mentionState !== 'all')
+    )
+      return;
+    const className =
+      item.data.mentionState === 'me'
+        ? 'cb-mention-me-pulse'
+        : 'cb-mention-all-pulse';
+    host.classList.remove(className);
+    void host.offsetWidth;
+    host.classList.add(className);
+    const clear = () => host.classList.remove(className);
+    host.addEventListener('animationend', clear, { once: true });
+    setTimeout(clear, 1600);
   }
 
   /** Telegram-style sticky date overlay: the text of the last date-separator row at/above the VISIBLE top.
@@ -820,6 +1036,11 @@ export class MessageThreadComponent implements OnDestroy {
 
   scrollToLatest(): void {
     this.scroller?.scrollToBottom();
+  }
+
+  scrollToUnread(): void {
+    if (this.firstUnreadSeq !== null)
+      this.scroller?.scrollToIndex(this.firstUnreadSeq, 'top', true);
   }
 
   openUploadDetails(): void {
@@ -883,7 +1104,20 @@ export class MessageThreadComponent implements OnDestroy {
     const trimmed = text.trim();
     if (!trimmed) return;
     const cid = this.newClientMessageId();
-    const item = this.makeOptimisticItem(cid, trimmed, 'PURE_TEXT', null, null);
+    const item = this.makeOptimisticItem(
+      cid,
+      toDisplayText(trimmed),
+      'PURE_TEXT',
+      null,
+      null,
+    );
+    item.data.wireText = trimmed;
+    const rendered = toRenderMessageEntities(
+      trimmed,
+      this.userService.sessionProfile()?.account,
+    );
+    item.data.textSegments = rendered.segments;
+    item.data.mentionState = rendered.mentionState;
     this.dispatchPending(item);
     this.dispatchHttpSendText(item);
   }
@@ -1195,7 +1429,7 @@ export class MessageThreadComponent implements OnDestroy {
     firstValueFrom(
       this.msgService.sendMessage({
         threadId: tid,
-        content: item.data.text,
+        content: item.data.wireText ?? item.data.text,
         contentType: 'PURE_TEXT',
         clientMessageId: cid,
       }),
@@ -1750,6 +1984,9 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
+    this.stableRead.reset();
+    this.firstUnreadSeq = null;
+    this.unreadBoundaryAbove.set(false);
     this.probe.destroy();
     this.mountedMessageCount.set(0);
     this.atBottom.set(true);
@@ -1876,6 +2113,28 @@ function readFileAsDataURL(f: File): Promise<string> {
     r.onerror = () => resolve('');
     r.readAsDataURL(f);
   });
+}
+
+/** Bridge-safe avatar payload. Return only the base64 body; MIME travels in a separate field. */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const comma = result.indexOf(',');
+      if (comma < 0) reject(new Error('invalid data URL'));
+      else resolve(result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function avatarFallbackText(label: string): string {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  if (words.length > 1)
+    return `${Array.from(words[0])[0] ?? ''}${Array.from(words[1])[0] ?? ''}`.toLocaleUpperCase();
+  return (Array.from(words[0] ?? '')[0] ?? '?').toLocaleUpperCase();
 }
 
 /** Probe a video's real dimensions + duration via <video> loadedmetadata (for the optimistic cell +

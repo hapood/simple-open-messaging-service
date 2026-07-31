@@ -23,6 +23,7 @@ type DescriptorContract = {
   lang: string;
   icon: string | null;
   renotify: boolean;
+  attention?: 'mention';
   silent?: boolean;
   actions: NotifAction[];
   data: { threadId?: number; seq?: number; [k: string]: unknown };

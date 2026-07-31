@@ -77,6 +77,23 @@ describe('ImageDownloadService', () => {
     );
   });
 
+  it('coalesces bursty progress events while preserving the newest byte count', () => {
+    jasmine.clock().install();
+    try {
+      jasmine.clock().mockDate(new Date(1_000));
+      service.start(media, 7);
+      events.next({ type: 'progress', loaded: 100, total: 2_000 });
+      events.next({ type: 'progress', loaded: 300, total: 2_000 });
+      events.next({ type: 'progress', loaded: 500, total: 2_000 });
+
+      expect(service.task(media)?.loaded).toBe(100);
+      jasmine.clock().tick(100);
+      expect(service.task(media)?.loaded).toBe(500);
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
   it('aborts the adapter subscription and removes the task on cancel', () => {
     service.start(media, 7);
     service.cancel(media);

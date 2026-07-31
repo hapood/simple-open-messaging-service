@@ -82,6 +82,7 @@ export function createMsgCbElement(
   onOpenImage?: (images: AlbumImage[], index: number) => void,
   onOpenFile?: (data: ChatMsgData) => void,
   onCancel?: (clientMessageId: string) => void,
+  unreadDividerLabel?: string,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -126,7 +127,21 @@ export function createMsgCbElement(
     ref.changeDetectorRef.detectChanges();
   };
 
-  const el = wrapEl(ref, update);
+  let measuredHost: HTMLElement | undefined;
+  if (unreadDividerLabel) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'cb-unread-entry';
+    const divider = document.createElement('div');
+    divider.className = 'cb-unread-divider';
+    divider.setAttribute('role', 'separator');
+    divider.setAttribute('aria-label', unreadDividerLabel);
+    const label = document.createElement('span');
+    label.textContent = unreadDividerLabel;
+    divider.appendChild(label);
+    wrapper.append(divider, ref.location.nativeElement);
+    measuredHost = wrapper;
+  }
+  const el = wrapEl(ref, update, measuredHost);
   // Wire optional row outputs (failed-send retry on TextRow; open-image on MediaRow). Each subscription is released on
   // destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler. Several outputs may compose
   // on one entry — wrapDestroy chains them LIFO into a single destroy().
@@ -196,8 +211,12 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
  * height=0 and measurePending reads the real offsetHeight synchronously to settle it; this RO only captures
  * post-render async changes (secondary height changes from font/image/data updates).
  */
-function wrapEl<T>(ref: { location: { nativeElement: HTMLElement }; destroy: () => void }, update: (item: CbItem<T>, prev: CbItem<T> | null) => void): CbElement<T> {
-  const el = ref.location.nativeElement;
+function wrapEl<T>(
+  ref: { location: { nativeElement: HTMLElement }; destroy: () => void },
+  update: (item: CbItem<T>, prev: CbItem<T> | null) => void,
+  measuredHost?: HTMLElement,
+): CbElement<T> {
+  const el = measuredHost ?? ref.location.nativeElement;
   applyMessageListItemSemantics(el);
   let ro: ResizeObserver | null = null;
   let live: ((h: number) => void) | null = null;

@@ -7,6 +7,18 @@ import { MEDIA_STATUS } from '../common/media-status.js';
 import { parseCallContent, callPreviewLabel } from '../calls/call-content.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { parseMessageEntities, toDisplayText } from '../common/message-entity.js';
+
+export type UnreadMentionState = 'none' | 'all' | 'me';
+
+export interface ThreadAttentionState {
+  count: number;
+  mention: UnreadMentionState;
+}
+
+export interface AwayThreadAttentionState extends ThreadAttentionState {
+  latestSeq: number;
+}
 
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
 const PREVIEW_TEXT_MAX = 200;
@@ -33,7 +45,10 @@ export function stripMessageId<T extends { id: bigint }>(
 export function derivePreview(type: ContentType, content: string): string {
   switch (type) {
     case ContentType.PURE_TEXT:
-      return content.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
+      return toDisplayText(content)
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, PREVIEW_TEXT_MAX);
     case ContentType.LINK: {
       // The card title (or URL) — never the raw JSON. Degrades to a slice on a malformed payload.
       try {
@@ -717,6 +732,61 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
+   * Folded away-notification read model. Sender counts and mention attention are computed from the exact
+   * same bounded sample, so the presentation layer never performs a second mention query with a drifting
+   * cursor.
+   */
+  async senderAttentionSince(
+    userId: number,
+    selfAccount: string,
+    sinceId: bigint,
+    limit: number,
+    hideCreatorIds: number[] = [],
+  ): Promise<{
+    counts: Map<number, number>;
+    mention: UnreadMentionState;
+    overflow: boolean;
+  }> {
+    const hiddenClause = hideCreatorIds.length
+      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<
+      Array<{ creator: number; contentType: string; content: string }>
+    >`
+      SELECT m.creator, m."contentType" AS "contentType", m.content
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId"
+       AND tp."userId" = ${userId}
+       AND tp."leftAt" IS NULL
+       AND tp.muted = false
+      WHERE m.id > ${sinceId}
+        AND m.creator <> ${userId}
+        AND m."isDeleted" = false
+        ${hiddenClause}
+      ORDER BY m.id ASC
+      LIMIT ${limit}
+    `;
+    const counts = new Map<number, number>();
+    const mentionContents: string[] = [];
+    for (const row of rows) {
+      counts.set(row.creator, (counts.get(row.creator) ?? 0) + 1);
+      if (
+        row.contentType === 'PURE_TEXT' &&
+        (row.content.includes('](soms://user/') ||
+          row.content.includes('](soms://audience/all?v=1)'))
+      ) {
+        mentionContents.push(row.content);
+      }
+    }
+    return {
+      counts,
+      mention: this.mentionState(mentionContents, selfAccount),
+      overflow: rows.length >= limit,
+    };
+  }
+
+  /**
    * Away-notification per-thread aggregation (Query A) for `grouping:'thread'`: the threads with new LIVE
    * messages since `sinceId`, each with its count + latest seq. To BOUND the scan, it first samples the
    * `sampleLimit` (default 1000) NEWEST qualifying messages, then groups the sample by thread (newest-thread-
@@ -828,10 +898,12 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
-   * Unread counts for a user across the given threads, in ONE query. Unread = messages with a per-thread
-   * seq greater than the per-thread read watermark (lastReadSeq; NULL ⇒ never read ⇒ count everything via
-   * COALESCE(...,0)). Uses the Message(threadId,seq) index for the range scan. Returns a Map keyed by
-   * threadId; threads with zero unread are present with value 0 (LEFT JOIN guarantees one row each).
+   * Unread counts for a user across the given threads, in ONE query. Unread = messages authored by someone
+   * else with a per-thread seq greater than the read watermark. A null watermark means "nothing read", so
+   * its lower bound is -1 (seq starts at 0). Excluding the caller here is a defensive invariant in addition
+   * to the send transaction advancing their read cursor: it keeps counts correct if an older client, import,
+   * or recovery path leaves that cursor behind. Uses the Message(threadId,seq) index for the range scan.
+   * Threads with zero unread remain present because the message predicates stay on the LEFT JOIN.
    */
   async countUnreadByThread(
     userId: number,
@@ -845,12 +917,278 @@ export class MessageService implements OnModuleInit {
       FROM "ThreadParticipant" tp
       LEFT JOIN "Message" m
         ON m."threadId" = tp."threadId"
-       AND m.seq > COALESCE(tp."lastReadSeq", 0)
+       AND m.seq > COALESCE(tp."lastReadSeq", -1)
+       AND m.creator <> ${userId}
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL
         AND tp."threadId" IN (${Prisma.join(threadIds)})
       GROUP BY tp."threadId"
     `;
     return new Map(rows.map((r) => [r.threadId, r.unread]));
+  }
+
+  /**
+   * One read model for the ThreadList unread range. Count and mention are derived from exactly the same
+   * joined rows and therefore cannot disagree about membership, creator exclusion, or the read watermark.
+   * PostgreSQL aggregates the count and only returns mention-looking text bodies for semantic parsing.
+   */
+  async unreadAttentionByThread(
+    userId: number,
+    selfAccount: string,
+    threadIds: number[],
+  ): Promise<Map<number, ThreadAttentionState>> {
+    if (threadIds.length === 0) return new Map();
+    const rows = await this.prisma.$queryRaw<
+      Array<{ threadId: number; unread: number; mentionContents: string[] }>
+    >`
+      SELECT
+        tp."threadId" AS "threadId",
+        COUNT(m.seq)::int AS "unread",
+        COALESCE(
+          ARRAY_AGG(m.content) FILTER (
+            WHERE m."contentType" = 'PURE_TEXT'
+              AND (
+                strpos(m.content, '](soms://user/') > 0
+                OR strpos(m.content, '](soms://audience/all?v=1)') > 0
+              )
+          ),
+          ARRAY[]::text[]
+        ) AS "mentionContents"
+      FROM "ThreadParticipant" tp
+      LEFT JOIN "Message" m
+        ON m."threadId" = tp."threadId"
+       AND m.seq > COALESCE(tp."lastReadSeq", -1)
+       AND m.creator <> ${userId}
+      WHERE tp."userId" = ${userId}
+        AND tp."leftAt" IS NULL
+        AND tp."threadId" IN (${Prisma.join(threadIds)})
+      GROUP BY tp."threadId"
+    `;
+    return new Map(
+      rows.map((row) => [
+        row.threadId,
+        {
+          count: row.unread,
+          mention: this.mentionState(row.mentionContents ?? [], selfAccount),
+        },
+      ]),
+    );
+  }
+
+  /**
+   * One read model for per-conversation away notifications. The global HWM and optional per-thread dismiss
+   * HWM are applied before sampling; count, latest seq and mention are then derived from that same sample.
+   */
+  async awayAttentionByThread(
+    userId: number,
+    selfAccount: string,
+    globalSinceId: bigint,
+    threadLimit: number,
+    threadHwms: Record<number, number> = {},
+    hideCreatorIds: number[] = [],
+    sampleLimit = 1000,
+  ): Promise<Map<number, AwayThreadAttentionState>> {
+    const hiddenClause = hideCreatorIds.length
+      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const hwmEntries = Object.entries(threadHwms)
+      .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
+      .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
+    const tids = hwmEntries.map((p) => p.threadId);
+    const seqs = hwmEntries.map((p) => p.seq);
+    const hwmCte =
+      hwmEntries.length > 0
+        ? Prisma.sql`SELECT * FROM UNNEST(ARRAY[${Prisma.join(tids)}]::int[], ARRAY[${Prisma.join(seqs)}]::int[]) AS x(tid, since_seq)`
+        : Prisma.sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        threadId: number;
+        cnt: bigint;
+        latest: number;
+        mentionContents: string[];
+      }>
+    >`
+      WITH thread_hwm AS (${hwmCte}),
+      sample AS (
+        SELECT m."threadId" AS tid, m.seq, m.id, m.content, m."contentType"
+        FROM "Message" m
+        JOIN "ThreadParticipant" tp
+          ON tp."threadId" = m."threadId"
+         AND tp."userId" = ${userId}
+         AND tp."leftAt" IS NULL
+         AND tp.muted = false
+        LEFT JOIN thread_hwm h ON h.tid = m."threadId"
+        WHERE m.id > ${globalSinceId}
+          AND m.seq > COALESCE(h.since_seq, -1)
+          AND m.creator <> ${userId}
+          AND m."isDeleted" = false
+          ${hiddenClause}
+        ORDER BY m.id DESC
+        LIMIT ${sampleLimit}
+      )
+      SELECT
+        tid AS "threadId",
+        COUNT(*) AS cnt,
+        MAX(seq) AS latest,
+        COALESCE(
+          ARRAY_AGG(content) FILTER (
+            WHERE "contentType" = 'PURE_TEXT'
+              AND (
+                strpos(content, '](soms://user/') > 0
+                OR strpos(content, '](soms://audience/all?v=1)') > 0
+              )
+          ),
+          ARRAY[]::text[]
+        ) AS "mentionContents"
+      FROM sample
+      GROUP BY tid
+      ORDER BY MAX(id) DESC
+      LIMIT ${threadLimit}
+    `;
+    return new Map(
+      rows.map((row) => [
+        row.threadId,
+        {
+          count: Number(row.cnt),
+          latestSeq: row.latest,
+          mention: this.mentionState(row.mentionContents ?? [], selfAccount),
+        },
+      ]),
+    );
+  }
+
+  private mentionState(contents: string[], selfAccount: string): UnreadMentionState {
+    const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
+    if (!normalizedSelf) return 'none';
+    let state: UnreadMentionState = 'none';
+    for (const content of contents) {
+      for (const segment of parseMessageEntities(content)) {
+        if (segment.kind !== 'entity' || segment.version !== 1 || segment.sigil !== '@') continue;
+        if (
+          segment.entityType === 'user' &&
+          segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
+        ) {
+          return 'me';
+        }
+        if (segment.entityType === 'audience' && segment.entityId === 'all') state = 'all';
+      }
+    }
+    return state;
+  }
+
+  /**
+   * Whether each requested thread's unread range contains a semantic mention of the viewer. SQL narrows the
+   * scan to text rows that resemble a SOMS mention, then the canonical parser is the authority (so escaped
+   * protocol-looking plain text cannot create a false mention). `me` outranks `all`.
+   */
+  async unreadMentionStates(
+    userId: number,
+    selfAccount: string,
+    threadIds: number[],
+  ): Promise<Map<number, UnreadMentionState>> {
+    if (threadIds.length === 0 || !selfAccount.trim()) return new Map();
+    const rows = await this.prisma.$queryRaw<
+      Array<{ threadId: number; content: string }>
+    >`
+      SELECT m."threadId" AS "threadId", m.content
+      FROM "ThreadParticipant" tp
+      JOIN "Message" m
+        ON m."threadId" = tp."threadId"
+       AND m.seq > COALESCE(tp."lastReadSeq", -1)
+       AND m.creator <> ${userId}
+      WHERE tp."userId" = ${userId}
+        AND tp."leftAt" IS NULL
+        AND tp."threadId" IN (${Prisma.join(threadIds)})
+        AND m."contentType" = 'PURE_TEXT'
+        AND (
+          strpos(m.content, '](soms://user/') > 0
+          OR strpos(m.content, '](soms://audience/all?v=1)') > 0
+        )
+    `;
+    const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
+    const states = new Map<number, UnreadMentionState>();
+    for (const row of rows) {
+      let state = states.get(row.threadId) ?? 'none';
+      for (const segment of parseMessageEntities(row.content)) {
+        if (segment.kind !== 'entity' || segment.version !== 1 || segment.sigil !== '@') continue;
+        if (
+          segment.entityType === 'user' &&
+          segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
+        ) {
+          state = 'me';
+          break;
+        }
+        if (
+          state === 'none' &&
+          segment.entityType === 'audience' &&
+          segment.entityId === 'all'
+        ) {
+          state = 'all';
+        }
+      }
+      states.set(row.threadId, state);
+    }
+    return states;
+  }
+
+  /** Mention state among messages newer than an internal away-notification HWM. */
+  async mentionStatesSinceId(
+    userId: number,
+    selfAccount: string,
+    sinceId: bigint,
+    threadIds?: number[],
+    hideCreatorIds: number[] = [],
+  ): Promise<Map<number, UnreadMentionState>> {
+    if (!selfAccount.trim() || threadIds?.length === 0) return new Map();
+    const threadClause = threadIds
+      ? Prisma.sql`AND m."threadId" IN (${Prisma.join(threadIds)})`
+      : Prisma.empty;
+    const hiddenClause = hideCreatorIds.length
+      ? Prisma.sql`AND m.creator NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<
+      Array<{ threadId: number; content: string }>
+    >`
+      SELECT m."threadId" AS "threadId", m.content
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId"
+       AND tp."userId" = ${userId}
+       AND tp."leftAt" IS NULL
+       AND tp.muted = false
+      WHERE m.id > ${sinceId}
+        AND m.creator <> ${userId}
+        ${hiddenClause}
+        AND m."contentType" = 'PURE_TEXT'
+        ${threadClause}
+        AND (
+          strpos(m.content, '](soms://user/') > 0
+          OR strpos(m.content, '](soms://audience/all?v=1)') > 0
+        )
+    `;
+    const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
+    const states = new Map<number, UnreadMentionState>();
+    for (const row of rows) {
+      let state = states.get(row.threadId) ?? 'none';
+      for (const segment of parseMessageEntities(row.content)) {
+        if (segment.kind !== 'entity' || segment.version !== 1 || segment.sigil !== '@') continue;
+        if (
+          segment.entityType === 'user' &&
+          segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
+        ) {
+          state = 'me';
+          break;
+        }
+        if (
+          state === 'none' &&
+          segment.entityType === 'audience' &&
+          segment.entityId === 'all'
+        ) {
+          state = 'all';
+        }
+      }
+      states.set(row.threadId, state);
+    }
+    return states;
   }
 }

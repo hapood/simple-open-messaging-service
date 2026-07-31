@@ -1,4 +1,9 @@
-import { mergeAlbumItems, absorbAlbumTail, ALBUM_MAX } from './merge-items';
+import {
+  mergeAlbumItems,
+  mergeAlbumItemsAtBoundary,
+  absorbAlbumTail,
+  ALBUM_MAX,
+} from './merge-items';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { AlbumImage, ChatItemData } from './chat-item';
 
@@ -125,6 +130,18 @@ describe('mergeAlbumItems', () => {
     expect(out.length).toBe(2);                        // 10 + 3
     expect(out[0].data.images!.length).toBe(ALBUM_MAX);
     expect(out[1].data.images!.length).toBe(3);
+  });
+
+  it('does not merge a same-sender media run across the unread divider host', () => {
+    const out = mergeAlbumItemsAtBoundary(
+      [imageItem(10), imageItem(11), imageItem(12)],
+      11,
+    );
+
+    expect(out.length).toBe(2);
+    expect(out[0].id).toBe(10);
+    expect(out[1].id).toBe(11);
+    expect(out[1].ids).toEqual([11, 12]);
   });
 });
 

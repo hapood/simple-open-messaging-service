@@ -6,7 +6,12 @@ import { GroupService } from '../group/group.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { AvatarStackService } from '../upload/avatar-stack.service.js';
 import { pickLocale, type SupportedLocale } from '../common/locale.js';
-import { buildSummaryBody, buildSummaryTitle, actionLabel } from './notif-i18n.js';
+import {
+  buildSummaryBody,
+  buildSummaryTitle,
+  buildMentionTitle,
+  actionLabel,
+} from './notif-i18n.js';
 import { AWAY_SUMMARY_TAG, type NotificationDescriptor } from './notification-descriptor.js';
 
 /**
@@ -20,6 +25,8 @@ export interface MissedThreadItem {
   type: 'P2P' | 'GROUP';
   displayName: string;
   unreadCount: number;
+  /** Highest-priority semantic mention in the caller's unread range (`me` outranks group-wide `all`). */
+  mentionUnread: 'none' | 'all' | 'me';
   /** Per-user mute flag (the snapshot carries it for parity). */
   muted: boolean;
   /** The caller's per-thread read watermark (ThreadParticipant.lastReadSeq; null = never read). The
@@ -109,7 +116,27 @@ export class NotificationQueryService {
     const take = Math.max(1, opts.take);
     const hasMore = inRange.length > take;
     const page = inRange.slice(0, take);
-    const items = await this.hydrateItems(userId, page, ctx.unread, ctx.attachedByThread);
+    const self = await this.userService.findUniqueUser({ id: userId });
+    const attention = self
+      ? await this.messageService.unreadAttentionByThread(
+          userId,
+          self.account,
+          page.map((p) => p.threadId),
+        )
+      : new Map();
+    const unread = new Map(
+      [...attention].map(([threadId, state]) => [threadId, state.count]),
+    );
+    const mentions = new Map(
+      [...attention].map(([threadId, state]) => [threadId, state.mention]),
+    );
+    const items = await this.hydrateItems(
+      userId,
+      page,
+      unread,
+      ctx.attachedByThread,
+      mentions,
+    );
     // nextCursor = the page's MAX-id item (advance `from` toward `to`); null once this page is the last.
     let nextCursor: MissedCursor | null = null;
     if (hasMore && page.length > 0) {
@@ -153,12 +180,17 @@ export class NotificationQueryService {
 
     const blocked = await this.userBlockService.blockedByMe(userId);
     const hiddenCreators = [...blocked, userId];
-    const { counts, overflow } = await this.messageService.senderCountsSince(
-      userId,
-      sinceId,
-      1000,
-      hiddenCreators,
-    );
+    const self = await this.userService.findUniqueUser({ id: userId });
+    const attention = self
+      ? await this.messageService.senderAttentionSince(
+          userId,
+          self.account,
+          sinceId,
+          1000,
+          hiddenCreators,
+        )
+      : { counts: new Map<number, number>(), mention: 'none' as const, overflow: false };
+    const { counts, overflow } = attention;
     if (counts.size === 0) return { notifications: [this.clearDescriptor(locale)] }; // nothing new → clear
 
     // Resolve sender display names + avatars (the icon + the folded body). Chronological order: the
@@ -171,6 +203,7 @@ export class NotificationQueryService {
     const name = (id: number) => userById.get(id)?.name || 'Unknown';
     const items = orderedSenders.map((id) => ({ displayName: name(id), unreadCount: counts.get(id) ?? 0 }));
     const body = buildSummaryBody(items, locale, overflow);
+    const hasMention = attention.mention !== 'none';
     const iconInputs = orderedSenders
       .slice(0, AvatarStackService.MAX_TILES)
       .map((id) => ({ avatarUrl: userById.get(id)?.avatar ?? '', displayName: name(id), userId: id }));
@@ -188,11 +221,12 @@ export class NotificationQueryService {
         {
           tag: AWAY_SUMMARY_TAG,
           kind: 'message-summary',
-          title: buildSummaryTitle(locale),
+          title: hasMention ? buildMentionTitle(locale) : buildSummaryTitle(locale),
           body,
           lang: locale,
           icon: iconUrl,
           renotify: true,
+          ...(hasMention ? { attention: 'mention' as const } : {}),
           // One summary-level action: dismiss (PURE frontend — advances the away-HWM to `data` + closes the
           // shade; never POSTed, never touches the read watermark). One action stays within Web Push's 2-action
           // mobile-Chrome cap; per-thread reply belongs to a future kind.
@@ -226,33 +260,22 @@ export class NotificationQueryService {
     const blocked = await this.userBlockService.blockedByMe(userId);
     const hiddenCreators = [...blocked, userId];
     // Query A: threads with new LIVE messages since the global HWM — {count, latestSeq}, newest-first, capped.
-    const buckets = await this.messageService.threadAwayBuckets(
-      userId,
-      sinceId,
-      THREAD_NOTIF_CAP,
-      hiddenCreators,
-    );
+    const self = await this.userService.findUniqueUser({ id: userId });
+    const buckets = self
+      ? await this.messageService.awayAttentionByThread(
+          userId,
+          self.account,
+          sinceId,
+          THREAD_NOTIF_CAP,
+          threadHwms ?? {},
+          hiddenCreators,
+        )
+      : new Map();
     if (buckets.size === 0) return []; // nothing new → client clears all soms-thread-* notifications
 
     // Query B (ONE batched query): for each thread the client dismissed (in threadHwms), count since its HWM.
     // Threads not dismissed keep Query A's cumulative-since-foreground count.
-    const hwms = threadHwms ?? {};
-    const dismissedPairs = [...buckets.keys()]
-      .filter((tid) => hwms[tid] != null)
-      .map((tid) => ({ tid, sinceSeq: hwms[tid] }));
-    const boundsCounts =
-      dismissedPairs.length > 0
-        ? await this.messageService.threadCountsSinceBounds(
-            userId,
-            sinceId,
-            dismissedPairs,
-            hiddenCreators,
-          )
-        : new Map<number, number>();
-    const counts = new Map<number, number>();
-    for (const [tid, { count }] of buckets) {
-      counts.set(tid, hwms[tid] != null ? (boundsCounts.get(tid) ?? 0) : count);
-    }
+    const counts = new Map([...buckets].map(([tid, state]) => [tid, state.count]));
 
     // Drop count-0 (dismissed with no new) BEFORE hydrating, then hydrate names SCOPED to the visible threads
     // only (not all the user's threads — loadThreadContext takes the id list).
@@ -260,19 +283,20 @@ export class NotificationQueryService {
     if (visibleIds.length === 0) return [];
     const ctx = await this.loadThreadContext(userId, visibleIds);
     const rows = ctx.active.sort((a, b) => ctx.cmpByIdAsc(b, a)); // newest conversation first
-    const items = await this.hydrateItems(userId, rows, ctx.unread, ctx.attachedByThread);
-
+    const items = await this.hydrateItems(userId, rows, counts, ctx.attachedByThread);
     return items.map((it) => {
       const count = counts.get(it.threadId) ?? 0;
       const latestSeq = buckets.get(it.threadId)?.latestSeq ?? it.latestMessage?.seq ?? 0;
+      const hasMention = (buckets.get(it.threadId)?.mention ?? 'none') !== 'none';
       return {
         tag: `soms-thread-${it.threadId}`,
         kind: 'thread-message',
-        title: buildSummaryTitle(locale),
+        title: hasMention ? buildMentionTitle(locale) : buildSummaryTitle(locale),
         body: buildSummaryBody([{ displayName: it.displayName, unreadCount: count }], locale, count >= 1000),
         lang: locale,
         icon: null,
         renotify: true,
+        ...(hasMention ? { attention: 'mention' as const } : {}),
         actions: [{ id: 'dismiss', title: actionLabel('dismiss', locale) }],
         data: { threadId: it.threadId, seq: latestSeq },
       };
@@ -316,7 +340,6 @@ export class NotificationQueryService {
     }>;
     latestIdByThread: Map<number, bigint>;
     attachedByThread: Map<number, AttachedMessage>;
-    unread: Map<number, number>;
     cmpByIdAsc: (a: { threadId: number }, b: { threadId: number }) => number;
   }> {
     const list = await this.participantService.queryParticipants({
@@ -324,10 +347,6 @@ export class NotificationQueryService {
       orderBy: { id: 'asc' },
       include: { thread: true },
     });
-    const unread = await this.messageService.countUnreadByThread(
-      userId,
-      list.map((p) => p.threadId),
-    );
     // Latest message per thread (BigInt id intact — the strict-total-order key).
     const pairs = list
       .map((p) => ({ threadId: p.threadId, seq: p.thread.lastMessageSeq }))
@@ -353,7 +372,7 @@ export class NotificationQueryService {
       const bi = latestIdByThread.get(b.threadId)!;
       return ai < bi ? -1 : ai > bi ? 1 : 0;
     };
-    return { active, latestIdByThread, attachedByThread, unread, cmpByIdAsc };
+    return { active, latestIdByThread, attachedByThread, cmpByIdAsc };
   }
 
   /** Resolve display names + sender avatar/id + the latest message body for one page of participant rows. */
@@ -371,6 +390,7 @@ export class NotificationQueryService {
     }>,
     unread: Map<number, number>,
     attachedByThread: Map<number, AttachedMessage>,
+    mentions: Map<number, 'none' | 'all' | 'me'> = new Map(),
   ): Promise<MissedThreadItem[]> {
     // P2P display name + sender = the peer user (id carries for the icon color hash + cache key).
     const p2pThreadIds = rows.filter((p) => p.thread.type === 'P2P').map((p) => p.threadId);
@@ -405,6 +425,7 @@ export class NotificationQueryService {
         senderAvatarUrl: p.thread.type === 'P2P' ? (peer?.avatar ?? '') : (group?.avatar ?? ''),
         senderUserId: p.thread.type === 'P2P' ? (peer?.id ?? p.threadId) : (group?.id ?? p.threadId),
         unreadCount: unread.get(p.threadId) ?? 0,
+        mentionUnread: mentions.get(p.threadId) ?? 'none',
         latestMessage: m
           ? {
               threadId: p.threadId,

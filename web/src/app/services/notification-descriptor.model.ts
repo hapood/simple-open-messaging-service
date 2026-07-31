@@ -33,6 +33,8 @@ export interface NotificationDescriptor {
   icon: string | null;
   /** Re-alert on replace (false = silent update after the first post). */
   renotify: boolean;
+  /** Optional attention reason for platform-specific emphasis. */
+  attention?: 'mention';
   /** Quiet update (no sound). */
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]`. */

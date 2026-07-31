@@ -119,6 +119,11 @@ export function buildSummaryTitle(locale: SupportedLocale): string {
   return 'SOMS';
 }
 
+/** Privacy-safe title used when at least one covered message semantically mentions the recipient. */
+export function buildMentionTitle(locale: SupportedLocale): string {
+  return locale === 'zh-CN' ? '有人提到了你' : 'You were mentioned';
+}
+
 /** Localized labels for the notification action buttons, by action id. The server localizes (the client
  *  renders verbatim) so a button's text is consistent with the body's locale. Add an id here when a new
  *  action is introduced. */

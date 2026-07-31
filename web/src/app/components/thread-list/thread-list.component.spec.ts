@@ -195,4 +195,24 @@ describe('ThreadListComponent', () => {
 
     expect(selected).toEqual([thread]);
   });
+
+  it('shows a separate @ badge only while the conversation has an unread mention', async () => {
+    items.set([
+      {
+        ...p2p(1, 11),
+        unreadCount: 2,
+        mentionUnread: 'me',
+      },
+    ]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const row = fixture.nativeElement.querySelector('.thread-item') as HTMLElement;
+    expect(row.querySelector('.mention-unread-badge')?.textContent?.trim()).toBe('@');
+    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('2');
+    expect(row.getAttribute('aria-label')).toContain(
+      TestBed.inject(TranslocoService).translate('threadList.mentionedYou'),
+    );
+  });
 });

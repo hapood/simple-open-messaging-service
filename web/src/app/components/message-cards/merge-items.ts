@@ -94,6 +94,20 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
   return out;
 }
 
+/** Preserve a real unread-divider host by preventing presentation-only album aggregation across it. */
+export function mergeAlbumItemsAtBoundary(
+  items: CbItem<ChatItemData>[],
+  boundarySeq: number | null,
+): CbItem<ChatItemData>[] {
+  if (boundarySeq === null) return mergeAlbumItems(items);
+  const index = items.findIndex((item) => item.id === boundarySeq);
+  if (index <= 0) return mergeAlbumItems(items);
+  return [
+    ...mergeAlbumItems(items.slice(0, index)),
+    ...mergeAlbumItems(items.slice(index)),
+  ];
+}
+
 /**
  * Cross-batch image-burst absorb (the kernel's absorbTail hook). When `incoming` from a newer batch is about to mount
  * right after the current newest album `target`: if both are IMAGE, same creator, and the merged album stays within

@@ -73,10 +73,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly loadErrors = signal<Set<number>>(new Set());
   readonly videoErrors = signal<Map<number, VideoPlaybackError>>(new Map());
   readonly chromeVisible = signal(true);
+  readonly videoFullscreen = signal(false);
+  readonly videoPlaying = signal(false);
   readonly current = computed(() => this.images()[this.index()] ?? null);
   readonly currentIsVideo = computed(() => this.current()?.kind === 'video');
   readonly showThumbs = computed(
-    () => this.images().length > 1 && !this.currentIsVideo(),
+    () =>
+      this.images().length > 1 &&
+      (!this.currentIsVideo() || !this.videoPlaying()),
   );
   readonly currentStatus = computed<MediaStatus>(
     () =>
@@ -121,6 +125,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly retryKeys = new Map<number, number>();
   private readonly slides: GallerySlideData[] = [];
   private readonly videoPlayers = new Map<number, Artplayer>();
+  private readonly videoPlayerMounts = new Set<number>();
   private readonly videoErrorLayers = new Map<number, HTMLElement>();
   private pswp: PhotoSwipe | null = null;
   private destroying = false;
@@ -136,6 +141,10 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly nativeVideo = inject(NativeVideoService);
   readonly isAndroidApp = isTauri() && isAndroid();
   readonly useNativeVideo = this.isAndroidApp && ANDROID_MEDIA3_ENABLED;
+  readonly compactVideoControls =
+    typeof window !== 'undefined' &&
+    (window.matchMedia?.('(pointer: coarse)').matches ||
+      window.innerWidth <= 768);
   private readonly threshold = inject(MediaSizeThresholdService);
   readonly formatBytes = formatBytes;
 
@@ -222,6 +231,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     pswp.on('contentAppend', ({ content }) => {
       const slide = content.data as GallerySlideData;
       if (slide.kind !== 'video') return;
+      // PhotoSwipe appends adjacent slides for preload. Only Android's lightweight poster needs setup
+      // offscreen; a browser Artplayer is created exclusively for the active slide.
+      if (!this.isAndroidApp && slide.galleryIndex !== pswp.currIndex) return;
       void this.mountVideoPlayer(content.element, slide.galleryIndex);
     });
     pswp.on('contentDestroy', ({ content }) => {
@@ -490,7 +502,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     const media = this.images()[index];
     if (!container || media?.kind !== 'video') return;
 
-    this.destroyVideoPlayer(index);
+    if (this.videoPlayers.has(index) || this.videoPlayerMounts.has(index))
+      return;
+    this.videoPlayerMounts.add(index);
     if (this.isAndroidApp) {
       container
         .querySelector<HTMLButtonElement>('.gv-native-video-open')
@@ -509,9 +523,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
             void this.createVideoPlayer(container, media, index, stream);
           });
         });
+      this.videoPlayerMounts.delete(index);
       return;
     }
-    await this.createVideoPlayer(container, media, index, null);
+    try {
+      await this.createVideoPlayer(container, media, index, null);
+    } finally {
+      this.videoPlayerMounts.delete(index);
+    }
   }
 
   private async createVideoPlayer(
@@ -521,7 +540,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     localStream: LocalVideoStream | null,
   ): Promise<void> {
     const { default: ArtplayerPlayer } = await import('artplayer');
-    if (!container.isConnected) return;
+    if (!container.isConnected || index !== this.index()) return;
+    const setVideoGestureIsolation =
+      this.prepareVideoGestureIsolation(container);
 
     const player = new ArtplayerPlayer({
       container,
@@ -545,10 +566,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       setting: true,
       playbackRate: true,
       pip:
+        !this.compactVideoControls &&
         typeof document !== 'undefined' &&
         document.pictureInPictureEnabled === true,
       fullscreen: true,
-      fullscreenWeb: true,
+      fullscreenWeb: !this.compactVideoControls,
       autoOrientation: true,
       mutex: true,
       backdrop: false,
@@ -558,8 +580,27 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         : 'en',
     });
     player.on('control', (visible: boolean) => {
-      if (index === this.index()) this.chromeVisible.set(visible);
+      if (index === this.index() && !this.videoFullscreen()) {
+        this.chromeVisible.set(visible);
+      }
     });
+    player.on('video:pause', () => {
+      if (index === this.index() && !this.videoFullscreen()) {
+        this.videoPlaying.set(false);
+        this.chromeVisible.set(true);
+      }
+    });
+    player.on('video:ended', () => {
+      if (index === this.index()) this.videoPlaying.set(false);
+    });
+    const syncFullscreen = (active: boolean) => {
+      if (index !== this.index()) return;
+      setVideoGestureIsolation(active);
+      this.videoFullscreen.set(active);
+      this.chromeVisible.set(!active);
+    };
+    player.on('fullscreen', syncFullscreen);
+    player.on('fullscreenWeb', syncFullscreen);
     this.videoPlayers.set(index, player);
     const errorLayer = this.createVideoErrorLayer(index);
     container.append(errorLayer);
@@ -568,6 +609,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     let thumbnailRequested = false;
     const onPlayable = () => {
       this.setVideoError(index, null);
+      if (index === this.index()) this.videoPlaying.set(true);
       if (!localStream || thumbnailRequested) return;
       thumbnailRequested = true;
       const capture = () =>
@@ -611,23 +653,53 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   private activateVideo(activeIndex: number): void {
     if (this.isAndroidApp) return;
-    this.videoPlayers.forEach((player, index) => {
-      if (index !== activeIndex) {
-        player.pause();
-        return;
-      }
+    this.videoPlaying.set(false);
+    for (const index of [...this.videoPlayers.keys()]) {
+      if (index !== activeIndex) this.destroyVideoPlayer(index);
+    }
+
+    const player = this.videoPlayers.get(activeIndex);
+    if (player) {
       void player.play().catch(() => {
         // Expected in browser engines that disallow audible autoplay.
       });
-    });
+      return;
+    }
+
+    const media = this.images()[activeIndex];
+    const contentElement = this.pswp?.currSlide?.content.element;
+    if (media?.kind === 'video' && contentElement) {
+      void this.mountVideoPlayer(contentElement, activeIndex);
+    }
   }
 
   private destroyVideoPlayer(index: number): void {
     this.videoErrorLayers.delete(index);
     const player = this.videoPlayers.get(index);
     if (!player) return;
+    if (index === this.index()) this.videoFullscreen.set(false);
     this.videoPlayers.delete(index);
-    player.destroy(false);
+    // `true` clears Artplayer's <video> element as well as its UI. This closes the media request and
+    // releases decoder/buffer resources; the player is rebuilt on demand if the user returns.
+    player.destroy(true);
+  }
+
+  /** Normal viewing keeps PhotoSwipe paging available over the video surface. Artplayer takes exclusive
+   *  ownership only while it is fullscreen, where an outer-gallery gesture would be surprising. */
+  private prepareVideoGestureIsolation(
+    container: HTMLElement,
+  ): (active: boolean) => void {
+    let isolated = false;
+    const stop = (event: Event) => {
+      if (isolated) event.stopPropagation();
+    };
+    container.addEventListener('pointerdown', stop);
+    container.addEventListener('pointermove', stop);
+    container.addEventListener('pointerup', stop);
+    container.addEventListener('pointercancel', stop);
+    return (active: boolean) => {
+      isolated = active;
+    };
   }
 
   private createVideoErrorLayer(index: number): HTMLElement {

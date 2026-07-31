@@ -355,6 +355,7 @@
     "all": "All",
     "loading": "Loading…",
     "inputPlaceholder": "Type a message…",
+    "mentionAll": "Everyone",
     "youPrefix": "You: {{text}}",
     "openImageAria": "Open image",
     "openFileAria": "Open file",
@@ -407,6 +408,8 @@
     "backUnreadAria": "Back to chats, {{count}} unread messages elsewhere",
     "scrollToLatestAria": "Scroll to latest message",
     "newMessagesAria": "Scroll to {{count}} new messages",
+    "jumpToUnreadAria": "Jump to the first message that was unread on entry",
+    "unreadDivider": "Unread messages",
     "messagePlaceholder": "Message",
     "emojiAria": "Emoji",
     "attachAria": "Attach",
@@ -500,7 +503,8 @@
     "blocked": "Blocked",
     "muted": "Muted",
     "pinned": "Pinned",
-    "unreadCount": "{{count}} unread"
+    "unreadCount": "{{count}} unread",
+    "mentionedYou": "Mentioned you"
   },
   "errors": {
     "removedFromGroup": "You were removed from {{group}}",
@@ -593,11 +597,16 @@
   "settings": {
     "title": "Settings",
     "appearance": "Appearance",
+    "chat": "Chat",
     "themeSystem": "System",
     "themeLight": "Light",
     "themeDark": "Dark",
     "showSelfAvatar": "Show my avatar",
     "showSelfAvatarDesc": "Show your avatar beside the first message in each group.",
+    "chatOpenLatest": "Show latest messages",
+    "chatOpenLatestDesc": "Open conversations at the newest message.",
+    "chatOpenLastRead": "Continue from last read",
+    "chatOpenLastReadDesc": "When unread messages exist, start at the first unread message.",
     "language": "Language",
     "uploadConcurrency": "Concurrent uploads",
     "uploadConcurrencyCount": "{{count}} uploads",

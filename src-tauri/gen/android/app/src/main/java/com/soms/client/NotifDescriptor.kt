@@ -35,6 +35,8 @@ data class NotifDescriptor(
      *  null when the server left it null (no avatar / librsvg absent → the client uses its app icon). */
     val icon: String?,
     val renotify: Boolean,
+    /** Optional reason for elevated visual treatment; copy remains server-authored. */
+    val attention: String?,
     val silent: Boolean?,
     val actions: List<NotifAction>,
     val data: JSONObject,
@@ -78,6 +80,7 @@ data class NotifDescriptor(
                     // optString returns "null" for a JSON null — guard explicitly so null stays null.
                     icon = if (o.isNull("icon")) null else o.optString("icon").takeIf { it.isNotEmpty() },
                     renotify = o.optBoolean("renotify", false),
+                    attention = o.optString("attention").takeIf { it.isNotEmpty() },
                     silent = if (o.has("silent") && !o.isNull("silent")) o.optBoolean("silent") else null,
                     actions = actions,
                     data = o.optJSONObject("data") ?: JSONObject(),

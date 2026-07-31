@@ -6,6 +6,7 @@ import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
 import { MissedSyncService, type MissedThreadItem } from './missed-sync.service';
+import { toDisplayText } from '../lib/message-entity';
 import { isAndroidNative } from './runtime';
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, User } from './model';
@@ -67,17 +68,10 @@ export class ThreadRepository {
   private readonly _openThreadId = signal<number | undefined>(undefined);
   readonly openThreadId = this._openThreadId.asReadonly();
 
-  /** Per-thread OPTIMISTIC read watermark — the seq the UI marked read locally (a markRead POST is in flight)
-   *  ahead of the server's confirmation. {@link reconcileItem} treats this as a lower bound on lastReadSeq and
-   *  masks the unread badge while the server catches up; it is pruned once the server's lastReadSeq reaches it
-   *  (a missed-summary walk or snapshot refresh carries the authoritative value). In-memory only. */
-  private readonly optimisticLastRead = new Map<number, number>();
-
-  /** Emits `{threadId, seq}` when a NEW_MESSAGE lands for the currently-open thread — the signal the UI facade
-   *  subscribes to so IT can fire the debounced `markRead` (B1). The repo owns the SSE timing; the facade owns
-   *  the write ({@link ConversationListService}), per the 3-tier contract (this layer never POSTs). */
-  private readonly _openThreadMessage = new Subject<{ threadId: number; seq: number }>();
-  readonly openThreadMessage$ = this._openThreadMessage.asObservable();
+  /** Authoritative server cursor versus the locally-dwelled lower bound. ConversationItem.lastReadSeq remains
+   *  the effective projection consumed by existing views; these maps keep the two meanings explicit. */
+  private readonly serverLastReadSeq = new Map<number, number | null>();
+  private readonly localStableReadSeq = new Map<number, number>();
 
   /** A thread promoted to index 0 on the most recent update (to be FLIP-animated by the list), or null.
    *  Set in {@link applyItems} / {@link upsertThread} when a top-insert was requested; the list clears it
@@ -104,6 +98,21 @@ export class ThreadRepository {
 
   latestSeq(threadId: number): number | undefined {
     return this.lastSeenSeq.get(threadId);
+  }
+
+  readCursorState(threadId: number): {
+    serverLastReadSeq: number | null;
+    localStableReadSeq: number | null;
+    effectiveLastReadSeq: number | null;
+  } {
+    const server = this.serverLastReadSeq.get(threadId) ?? null;
+    const local = this.localStableReadSeq.get(threadId) ?? null;
+    return {
+      serverLastReadSeq: server,
+      localStableReadSeq: local,
+      effectiveLastReadSeq:
+        server === null ? local : local === null ? server : Math.max(server, local),
+    };
   }
 
   /** Previous sessionUserId seen by the session-end effect (null = no logged-in user). */
@@ -200,7 +209,8 @@ export class ThreadRepository {
     this._deltaInFlight = false;
     this._pendingTailRev = undefined;
     this.lastSeenSeq.clear();
-    this.optimisticLastRead.clear();
+    this.serverLastReadSeq.clear();
+    this.localStableReadSeq.clear();
     this._missedCursor.set(null);
     this._threadHwms.set({});
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
@@ -232,6 +242,10 @@ export class ThreadRepository {
     if (this._items().length > 0) return; // already populated — don't clobber a fresher state
     const cached = await this.readCachedThreads();
     if (cached.length > 0 && this._items().length === 0) {
+      for (const item of cached) {
+        if (typeof item.lastReadSeq === 'number')
+          this.localStableReadSeq.set(item.threadId, item.lastReadSeq);
+      }
       this.applyItems(cached); // flips READY
       void this.hydratePreviews(); // re-derive previews from the local message store
     } else if (this._items().length === 0 && this._status() !== 'READY') {
@@ -376,7 +390,8 @@ export class ThreadRepository {
     this._items.update((list) => list.filter((t) => t.threadId !== threadId));
     if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
     this.lastSeenSeq.delete(threadId);
-    this.optimisticLastRead.delete(threadId);
+    this.serverLastReadSeq.delete(threadId);
+    this.localStableReadSeq.delete(threadId);
     void this.deleteThreadFromDb(threadId);
     void this.messageRepo.deleteByThread(threadId);
   }
@@ -387,40 +402,63 @@ export class ThreadRepository {
     this._items.update((list) => {
       const found = list.find((t) => t.threadId === threadId);
       if (!found) return list;
-      changed = { ...found, unreadCount: 0 };
+      changed = { ...found, unreadCount: 0, mentionUnread: 'none' };
       return list.map((t) => (t.threadId === threadId ? changed! : t));
     });
     if (changed) void this.persistThread(changed);
   }
 
-  /** Record an optimistic read watermark for `threadId` (the facade calls this as it fires markRead) — a cheap
-   *  map set that drives {@link reconcileItem} to mask the unread badge + keep lastReadSeq ahead of the server
-   *  while the POST is in flight. Pruned once the server catches up. No item mutation here (the open thread's
-   *  badge is already 0 via clearUnread / the no-bump-while-open rule). */
-  noteOptimisticRead(threadId: number, seq: number): void {
-    const prev = this.optimisticLastRead.get(threadId);
-    if (prev === undefined || seq > prev) this.optimisticLastRead.set(threadId, seq);
+  /** Record the locally-dwelled cursor independently from the server-confirmed cursor. */
+  noteLocalStableRead(threadId: number, seq: number): void {
+    const prev = this.localStableReadSeq.get(threadId);
+    if (prev === undefined || seq > prev)
+      this.localStableReadSeq.set(threadId, seq);
   }
 
-  /** Reconcile a server-merged item with the optimistic read watermark — PURE (no map mutation). While the
-   *  optimistic seq leads the server's, the server value is transiently stale (a markRead POST is in flight) →
-   *  return the optimistic lastReadSeq + a masked (0) unread badge. When the server has caught up this returns
-   *  the item unchanged; the caller drops the override via {@link pruneOptimistic}. */
+  /** Persist a locally-observed stable read position before the server echo/summary catches up. The cursor
+   *  is monotonic and doubles as the optimistic lower bound used by reconcileItem. Returns false for a
+   *  stale/repeated position so callers do not issue redundant mark-read requests. */
+  commitLocalRead(threadId: number, seq: number): boolean {
+    let changed: ConversationItem | undefined;
+    this._items.update((list) => {
+      const found = list.find((t) => t.threadId === threadId);
+      if (!found || seq <= (found.lastReadSeq ?? -1)) return list;
+      const unreadCount =
+        typeof found.lastMessageSeq === 'number'
+          ? Math.max(0, found.lastMessageSeq - seq)
+          : found.unreadCount;
+      changed = {
+        ...found,
+        lastReadSeq: seq,
+        unreadCount,
+        mentionUnread:
+          unreadCount === 0 ? 'none' : found.mentionUnread,
+      };
+      return list.map((t) => (t.threadId === threadId ? changed! : t));
+    });
+    if (!changed) return false;
+    this.noteLocalStableRead(threadId, seq);
+    void this.persistThread(changed);
+    return true;
+  }
+
+  /** Project server + local cursors into the effective ConversationItem consumed by existing views. */
   private reconcileItem(it: ConversationItem): ConversationItem {
-    const opt = this.optimisticLastRead.get(it.threadId);
+    const opt = this.localStableReadSeq.get(it.threadId);
     if (opt === undefined) return it;
     const server = it.lastReadSeq ?? -1;
     if (server >= opt) return it; // server caught up — caller prunes the override
-    return { ...it, lastReadSeq: opt, unreadCount: 0 };
+    return { ...it, lastReadSeq: opt, unreadCount: 0, mentionUnread: 'none' };
   }
 
-  /** Drop optimistic overrides the server has caught up to (server lastReadSeq ≥ optimistic). Called AFTER a
-   *  server merge so an override stops masking future regressions once it has served its purpose (the POST has
-   *  landed). Kept separate from the pure {@link reconcileItem} so the read has no hidden side effects. */
-  private pruneOptimistic(serverByThread: Map<number, number | null>): void {
+  /** Drop local lower bounds once the authoritative server cursor has caught up. */
+  private pruneLocalStableReads(
+    serverByThread: Map<number, number | null>,
+  ): void {
     for (const [tid, lrs] of serverByThread) {
-      const opt = this.optimisticLastRead.get(tid);
-      if (opt !== undefined && (lrs ?? -1) >= opt) this.optimisticLastRead.delete(tid);
+      const local = this.localStableReadSeq.get(tid);
+      if (local !== undefined && (lrs ?? -1) >= local)
+        this.localStableReadSeq.delete(tid);
     }
   }
 
@@ -433,9 +471,12 @@ export class ThreadRepository {
     if (items.length === 0) return;
     const serverLrs = new Map<number, number | null>();
     const serverUnread = new Map<number, number>();
+    const serverMentions = new Map<number, 'none' | 'all' | 'me'>();
     for (const i of items) {
       serverLrs.set(i.threadId, i.lastReadSeq);
+      this.serverLastReadSeq.set(i.threadId, i.lastReadSeq);
       serverUnread.set(i.threadId, i.unreadCount);
+      serverMentions.set(i.threadId, i.mentionUnread ?? 'none');
     }
     let changed = false;
     const updated = this._items().map((it) => {
@@ -445,11 +486,17 @@ export class ThreadRepository {
         ...it,
         lastReadSeq: serverLrs.get(it.threadId)!,
         unreadCount: serverUnread.get(it.threadId)!,
+        mentionUnread: serverMentions.get(it.threadId)!,
       });
-      if (next.lastReadSeq !== it.lastReadSeq || next.unreadCount !== it.unreadCount) changed = true;
+      if (
+        next.lastReadSeq !== it.lastReadSeq ||
+        next.unreadCount !== it.unreadCount ||
+        next.mentionUnread !== it.mentionUnread
+      )
+        changed = true;
       return next;
     });
-    this.pruneOptimistic(serverLrs); // drop overrides the server just confirmed
+    this.pruneLocalStableReads(serverLrs);
     if (changed) {
       this._items.set(updated);
       void this.persistThreads(updated);
@@ -462,14 +509,22 @@ export class ThreadRepository {
    *  to the caller's OTHER connections, so this is the cross-instance sync channel. */
   private onReadCursor(d: { threadId: number; lastReadSeq: number }): void {
     if (typeof d?.threadId !== 'number' || typeof d?.lastReadSeq !== 'number') return;
-    this.optimisticLastRead.delete(d.threadId);
+    this.serverLastReadSeq.set(d.threadId, d.lastReadSeq);
+    const local = this.localStableReadSeq.get(d.threadId);
+    if (local !== undefined && d.lastReadSeq >= local)
+      this.localStableReadSeq.delete(d.threadId);
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
       const found = list.find((t) => t.threadId === d.threadId);
       if (!found) return list;
       const cur = found.lastReadSeq ?? -1;
       if (d.lastReadSeq <= cur) return list; // never regress
-      changed = { ...found, lastReadSeq: d.lastReadSeq, unreadCount: 0 };
+      changed = {
+        ...found,
+        lastReadSeq: d.lastReadSeq,
+        unreadCount: 0,
+        mentionUnread: 'none',
+      };
       return list.map((t) => (t.threadId === d.threadId ? changed! : t));
     });
     if (changed) void this.persistThread(changed);
@@ -478,6 +533,7 @@ export class ThreadRepository {
   /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(item: ConversationItem): void {
+    this.serverLastReadSeq.set(item.threadId, item.lastReadSeq ?? null);
     let reconciled = this.reconcileItem(item);
     if (typeof reconciled.lastMessageSeq === 'number')
       this.advanceThreadSeq(reconciled.threadId, reconciled.lastMessageSeq);
@@ -572,8 +628,8 @@ export class ThreadRepository {
   /**
    * Apply an inbound NEW_MESSAGE identity signal `{ threadId, seq, ts }` (no body — the body is pulled by
    * the chat-box via queryMessages; the threadlist carries no preview). Advances the missed-summary walk
-   * bound `to` + the thread's `lastMessageAt` (re-sort) and, for the open thread, emits so the facade can
-   * advance the read watermark. Does NOT touch `unreadCount`: the count is server-authoritative, applied by
+   * bound `to` + the thread's `lastMessageAt` (re-sort). Does NOT touch `unreadCount`: the count is
+   * server-authoritative, applied by
    * {@link mergeSummaryReadState} when the debounced missed-summary pull lands (the summary carries the
    * correct per-thread unread — 0 for the caller's own messages, since the send tx advanced `lastReadSeq`;
    * the real count for incoming). A redelivered/out-of-order seq is discarded by the per-thread HWM guard.
@@ -587,7 +643,6 @@ export class ThreadRepository {
     // re-sort below is instant from the signal itself.
     this.setToAndPull({ threadId: msg.threadId, seq: msg.seq });
 
-    const open = this._openThreadId();
     let existed = false;
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
@@ -605,9 +660,6 @@ export class ThreadRepository {
     });
     if (changed) void this.persistThread(changed);
     if (!existed) this.load();
-    // B1: the open thread received a new message — emit so the facade can advance the server read watermark
-    // (debounced + coalesced to the max seq). The repo emits; the facade owns the markRead write.
-    if (open === msg.threadId) this._openThreadMessage.next({ threadId: msg.threadId, seq: msg.seq });
   }
 
   private advanceThreadSeq(threadId: number, seq: number): boolean {
@@ -1000,7 +1052,7 @@ interface ThreadMetaPayload {
 export function rawPreview(contentType: string, content: string): string {
   switch (contentType) {
     case 'PURE_TEXT':
-      return content.replace(/\s+/g, ' ').trim().slice(0, 200);
+      return toDisplayText(content).replace(/\s+/g, ' ').trim().slice(0, 200);
     case 'IMAGE':
       return '[Photo]';
     case 'INVITE':

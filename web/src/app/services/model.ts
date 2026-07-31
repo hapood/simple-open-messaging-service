@@ -49,6 +49,8 @@ export type ConversationItem = Omit<
   // messages; the bare preview otherwise.
   lastMessagePreview?: string | null
   lastMessageSenderId?: number | null
+  /** Highest-priority mention among messages still unread by this user. */
+  mentionUnread?: 'none' | 'all' | 'me'
   // The newest message's per-thread seq (the denormalized thread.lastMessageSeq). Carried so opening a
   // conversation can pass it as the mark-read `lastReadSeq` (mark all current). Mirrors the backend
   // ConversationItemDto.lastMessageSeq — also present in the generated type after the next `gen:api` run.

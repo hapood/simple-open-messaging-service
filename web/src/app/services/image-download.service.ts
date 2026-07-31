@@ -5,12 +5,7 @@ import {
   MediaSaveCancelledError,
   MediaSaveService,
 } from './media-save.service';
-import {
-  assetUrl,
-  chatThumbnailUrl,
-  isTauri,
-  listenEvent,
-} from './runtime';
+import { assetUrl, chatThumbnailUrl, isTauri, listenEvent } from './runtime';
 import {
   IMAGE_DOWNLOAD_ADAPTER,
   type ImageDownloadArtifact,
@@ -45,6 +40,7 @@ export interface ImageDownloadTask {
  */
 @Injectable({ providedIn: 'root' })
 export class ImageDownloadService {
+  private static readonly PROGRESS_PAINT_INTERVAL_MS = 100;
   private readonly adapter = inject(IMAGE_DOWNLOAD_ADAPTER);
   private readonly mediaSave = inject(MediaSaveService);
   private readonly taskMap = signal<ReadonlyMap<string, ImageDownloadTask>>(
@@ -52,6 +48,15 @@ export class ImageDownloadService {
   );
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly artifacts = new Map<string, ImageDownloadArtifact>();
+  private readonly progressTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly pendingProgress = new Map<
+    string,
+    { loaded: number; total: number | null }
+  >();
+  private readonly lastProgressPaint = new Map<string, number>();
   private readonly thumbnailRevisions = signal<ReadonlyMap<string, number>>(
     new Map(),
   );
@@ -147,12 +152,9 @@ export class ImageDownloadService {
         const live = this.taskMap().get(key);
         if (!live || live.status !== 'downloading') return;
         if (event.type === 'progress') {
-          this.patch(key, {
-            ...live,
-            loaded: Math.max(live.loaded, event.loaded),
-            total: event.total ?? live.total,
-          });
+          this.publishProgress(key, event.loaded, event.total);
         } else if (event.type === 'completed') {
+          this.clearProgressThrottle(key);
           this.artifacts.get(key)?.release();
           this.artifacts.set(key, event.artifact);
           const completed: ImageDownloadTask = {
@@ -168,6 +170,7 @@ export class ImageDownloadService {
         }
       },
       error: () => {
+        this.clearProgressThrottle(key);
         const live = this.taskMap().get(key);
         if (live) this.patch(key, { ...live, status: 'failed' });
         this.subscriptions.delete(key);
@@ -185,6 +188,7 @@ export class ImageDownloadService {
     // abort synchronously during teardown; the error callback must not be able to resurrect that benign
     // cancellation as a failed task (or retain its save-after-load intent).
     this.subscriptions.delete(key);
+    this.clearProgressThrottle(key);
     this.remove(key);
     subscription?.unsubscribe();
   }
@@ -219,6 +223,58 @@ export class ImageDownloadService {
 
   private defaultFilename(media: AlbumImage): string {
     return `image-${media.msgId ?? Date.now()}.jpg`;
+  }
+
+  private publishProgress(
+    key: string,
+    loaded: number,
+    total: number | null,
+  ): void {
+    const now = Date.now();
+    const lastPaint = this.lastProgressPaint.get(key) ?? 0;
+    const elapsed = now - lastPaint;
+    if (elapsed >= ImageDownloadService.PROGRESS_PAINT_INTERVAL_MS) {
+      this.paintProgress(key, loaded, total);
+      return;
+    }
+
+    const pending = this.pendingProgress.get(key);
+    this.pendingProgress.set(key, {
+      loaded: Math.max(pending?.loaded ?? 0, loaded),
+      total: total ?? pending?.total ?? null,
+    });
+    if (this.progressTimers.has(key)) return;
+
+    const timer = setTimeout(() => {
+      this.progressTimers.delete(key);
+      const next = this.pendingProgress.get(key);
+      this.pendingProgress.delete(key);
+      if (next) this.paintProgress(key, next.loaded, next.total);
+    }, ImageDownloadService.PROGRESS_PAINT_INTERVAL_MS - elapsed);
+    this.progressTimers.set(key, timer);
+  }
+
+  private paintProgress(
+    key: string,
+    loaded: number,
+    total: number | null,
+  ): void {
+    const live = this.taskMap().get(key);
+    if (!live || live.status !== 'downloading') return;
+    this.lastProgressPaint.set(key, Date.now());
+    this.patch(key, {
+      ...live,
+      loaded: Math.max(live.loaded, loaded),
+      total: total ?? live.total,
+    });
+  }
+
+  private clearProgressThrottle(key: string): void {
+    const timer = this.progressTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.progressTimers.delete(key);
+    this.pendingProgress.delete(key);
+    this.lastProgressPaint.delete(key);
   }
 
   private patch(key: string, task: ImageDownloadTask): void {

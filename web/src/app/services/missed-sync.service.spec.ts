@@ -53,7 +53,7 @@ describe('MissedSyncService', () => {
       },
     };
     const p = svc.fetchMissedSummary(null, { threadId: 9, seq: 9 });
-    const req = httpMock.expectOne('/api/v1/notifications/missed-summary');
+    const req = httpMock.expectOne('/api/v1/thread-sync/catch-up');
     expect(req.request.body).toEqual({ to: { threadId: 9, seq: 9 }, take: 200 }); // no `from` key (null)
     req.flush(res);
     const result = await p;
@@ -67,7 +67,7 @@ describe('MissedSyncService', () => {
 
   it('fetchMissedSummary: POSTs {from, to, take} when from is set', async () => {
     const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
-    const req = httpMock.expectOne('/api/v1/notifications/missed-summary');
+    const req = httpMock.expectOne('/api/v1/thread-sync/catch-up');
     expect(req.request.body).toEqual({ from: { threadId: 1, seq: 4 }, to: { threadId: 9, seq: 9 }, take: 200 });
     req.flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null } });
     const result = await p;
@@ -80,13 +80,13 @@ describe('MissedSyncService', () => {
     const p1 = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
     const p2 = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
     expect((await p2).items).toEqual([]);
-    httpMock.expectOne('/api/v1/notifications/missed-summary').flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null } });
+    httpMock.expectOne('/api/v1/thread-sync/catch-up').flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null } });
     await p1;
   });
 
   it('fetchMissedSummary: a non-zero / network-failed response degrades to empty (applyMissed not called)', async () => {
     const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
-    httpMock.expectOne('/api/v1/notifications/missed-summary').flush({ code: 1, message: 'err', data: null });
+    httpMock.expectOne('/api/v1/thread-sync/catch-up').flush({ code: 1, message: 'err', data: null });
     const result = await p;
     expect(result.items).toEqual([]);
     expect(applyMissedSpy).not.toHaveBeenCalled();
@@ -94,7 +94,7 @@ describe('MissedSyncService', () => {
 
   it('fetchAwayNotifications: POSTs {since, grouping} to /notifications/missed → returns the descriptors', async () => {
     const p = svc.fetchAwayNotifications({ threadId: 1, seq: 4 });
-    const req = httpMock.expectOne('/api/v1/notifications/missed');
+    const req = httpMock.expectOne('/api/v1/notification-feed/query');
     // grouping defaults to 'thread' (always sent); threadHwms omitted when not passed.
     expect(req.request.body).toEqual({ since: { threadId: 1, seq: 4 }, grouping: 'thread' });
     req.flush({ code: 0, message: 'ok', data: { notifications: [{ tag: 'soms-away', kind: 'message-summary', body: 'x' }] } });
@@ -106,7 +106,7 @@ describe('MissedSyncService', () => {
 
   it('fetchAwayNotifications: since null → POSTs {grouping} (no since key)', async () => {
     const p = svc.fetchAwayNotifications(null);
-    const req = httpMock.expectOne('/api/v1/notifications/missed');
+    const req = httpMock.expectOne('/api/v1/notification-feed/query');
     expect(req.request.body).toEqual({ grouping: 'thread' });
     req.flush({ code: 0, message: 'ok', data: { notifications: [] } });
     expect(await p).toEqual([]);

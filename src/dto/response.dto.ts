@@ -222,6 +222,12 @@ export class ConversationItemDto {
   unreadCount!: number;
 
   @ApiProperty({
+    enum: ['none', 'all', 'me'],
+    description: 'Highest-priority semantic mention in the caller’s unread range.',
+  })
+  mentionUnread!: 'none' | 'all' | 'me';
+
+  @ApiProperty({
     type: Number,
     example: 1_700_000_000_000,
     nullable: true,

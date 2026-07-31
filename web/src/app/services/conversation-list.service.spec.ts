@@ -1,25 +1,23 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
-import { Subject, of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { ConversationListService } from './conversation-list.service';
 import { ThreadRepository } from './thread-store.service';
 import { UserService } from './user.service';
 import { GroupService } from './group.service';
 
 /**
- * ConversationListService markRead flush (B1) — the debounce + coalesce + flush-on-close of the open-thread
- * new-message → markRead path. The repo is STUBBED (a Subject for `openThreadMessage$` the test drives + spies
- * for the repo mutations), so this tests the facade's write-orchestration in isolation — no IDB / SSE / HELLO.
+ * Stable viewport reads are persisted locally first, then debounce/coalesce their maximum into markRead.
  */
-describe('ConversationListService markRead flush (B1)', () => {
+describe('ConversationListService stable markRead flush', () => {
   let convList: ConversationListService;
-  let openMsg$: Subject<{ threadId: number; seq: number }>;
-  let noteOptimisticRead: jasmine.Spy;
+  let commitLocalRead: jasmine.Spy;
   let markRead: jasmine.Spy;
 
   beforeEach(() => {
-    openMsg$ = new Subject();
-    noteOptimisticRead = jasmine.createSpy('noteOptimisticRead');
+    commitLocalRead = jasmine
+      .createSpy('commitLocalRead')
+      .and.returnValue(true);
     markRead = jasmine.createSpy('markRead').and.returnValue(of({ code: 0 }));
     TestBed.configureTestingModule({
       providers: [
@@ -28,8 +26,7 @@ describe('ConversationListService markRead flush (B1)', () => {
         {
           provide: ThreadRepository,
           useValue: {
-            openThreadMessage$: openMsg$.asObservable(),
-            noteOptimisticRead,
+            commitLocalRead,
             setOpenThread: jasmine.createSpy('setOpenThread'),
             openThreadId: signal<number | undefined>(undefined).asReadonly(),
             items: signal([]).asReadonly(),
@@ -48,29 +45,28 @@ describe('ConversationListService markRead flush (B1)', () => {
     convList = TestBed.inject(ConversationListService);
   });
 
-  it('coalesces a burst of open-thread new messages into ONE markRead POST with the max seq', async () => {
-    // A 3-message burst for the open thread, fired inside the 500ms debounce window.
-    openMsg$.next({ threadId: 7, seq: 1 });
-    openMsg$.next({ threadId: 7, seq: 2 });
-    openMsg$.next({ threadId: 7, seq: 3 });
-    // Each emission records the optimistic watermark immediately (so the UI doesn't wait on the POST).
-    expect(noteOptimisticRead).toHaveBeenCalledTimes(3);
-    expect(noteOptimisticRead).toHaveBeenCalledWith(7, 3);
-    expect(markRead).not.toHaveBeenCalled(); // no POST yet — debounced
-
-    await new Promise((r) => setTimeout(r, 600)); // past the 500ms trailing debounce
-    // One POST, advancing to the max seq (the backend's advanceReadCursor is monotonic — only the max matters).
+  it('sends a stable read immediately and coalesces later positions while it is in flight', () => {
+    const first = new Subject<{ code: number }>();
+    markRead.and.returnValues(first.asObservable(), of({ code: 0 }));
+    convList.markReadStable(7, 1);
+    convList.markReadStable(7, 2);
+    convList.markReadStable(7, 3);
+    expect(commitLocalRead).toHaveBeenCalledTimes(3);
+    expect(commitLocalRead).toHaveBeenCalledWith(7, 3);
     expect(markRead).toHaveBeenCalledTimes(1);
+    expect(markRead).toHaveBeenCalledWith({ threadId: 7, lastReadSeq: 1 });
+
+    first.next({ code: 0 });
+    first.complete();
+
+    expect(markRead).toHaveBeenCalledTimes(2);
     expect(markRead).toHaveBeenCalledWith({ threadId: 7, lastReadSeq: 3 });
   });
 
-  it('flush-on-close fires the pending markRead immediately (navigate away mid-burst)', () => {
-    openMsg$.next({ threadId: 7, seq: 5 });
-    expect(markRead).not.toHaveBeenCalled(); // still within the debounce window
-    convList.close();
-    // close() flushes before clearing the open thread, so a burst cut short by navigation is still recorded.
-    expect(markRead).toHaveBeenCalledTimes(1);
-    expect(markRead).toHaveBeenCalledWith({ threadId: 7, lastReadSeq: 5 });
+  it('ignores a repeated/stale stable position', () => {
+    commitLocalRead.and.returnValue(false);
+    convList.markReadStable(7, 5);
+    expect(markRead).not.toHaveBeenCalled();
   });
 });
 
@@ -99,7 +95,6 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
         {
           provide: ThreadRepository,
           useValue: {
-            openThreadMessage$: new Subject().asObservable(),
             items: signal([]).asReadonly(),
             status: signal('LOADING').asReadonly(),
             error: signal('').asReadonly(),
