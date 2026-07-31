@@ -246,6 +246,7 @@ app-chat-input {
   align-items: flex-end;
   gap: 2px;
   min-height: 48px;
+  box-sizing: border-box;
   padding: 4px 4px 4px 10px;
   background: var(--im-composer-input-bg);
   border: 1px solid transparent;
@@ -309,21 +310,16 @@ app-chat-input {
   }
 }
 
-// The composer height is width-deterministic: one line in compact containers, two lines in wide ones.
-// Additional draft content scrolls inside the editor, so tail-cap geometry never changes while typing.
+// Grow with the editor from one line to five. Once the editor reaches its five-line cap, ProseMirror owns
+// the vertical overflow so its native selection scrolling keeps the caret visible.
 .ci-input {
   flex: 1 1 auto;
   min-width: 0;
-  height: 36px;
   min-height: 36px;
-  max-height: 36px;
+  max-height: 119px; // 5 × 21px line boxes + 14px vertical padding
   box-sizing: border-box;
   padding: 7px 6px;
-  overflow-y: auto;
-  scrollbar-width: none;
-  &::-webkit-scrollbar {
-    display: none;
-  }
+  overflow: hidden;
 }
 
 // Native parity: the action key keeps the brand surface for both mic and send states.

@@ -20,6 +20,7 @@ import { ForwardRowComponent } from './forward-row/forward-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
 import { MessagePressGesture } from './message-press-gesture';
+import { parseForwardCard } from './forward-row/forward-card';
 
 /**
  * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
@@ -109,6 +110,7 @@ export function createMsgCbElement(
     pointer?: { x: number; y: number },
     memberId?: number,
   ) => void,
+  onOpenForward?: (bundleId: string) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -197,6 +199,26 @@ export function createMsgCbElement(
   );
   selectionHost = el.el;
   applySelectionMetadata(el.el, item);
+  if (data.contentType === 'FORWARD' && onOpenForward) {
+    const openForward = (event: MouseEvent): void => {
+      if (
+        el.el.classList.contains('cb-message--selection-mode') ||
+        !(event.target as Element | null)?.closest(
+          '.forward-card:not(:disabled)',
+        )
+      )
+        return;
+      const current = interactionItem.data as ChatMsgData;
+      const bundleId = parseForwardCard(current.text)?.bundleId;
+      if (bundleId) onOpenForward(bundleId);
+    };
+    el.el.addEventListener('click', openForward);
+    const baseDestroy = el.destroy;
+    el.destroy = () => {
+      el.el.removeEventListener('click', openForward);
+      baseDestroy();
+    };
+  }
   if (onInteraction) {
     let longPressTimer: ReturnType<typeof setTimeout> | undefined;
     const pressGesture = new MessagePressGesture();

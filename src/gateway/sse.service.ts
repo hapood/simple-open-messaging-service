@@ -254,19 +254,8 @@ export class SseService implements OnModuleDestroy {
   }
 
   /**
-   * Read-cursor advance (mark-read). Tells the caller's OTHER online connections to drop the unread
-   * badge for a thread — multi-device/tab consistency for the same per-user state that send-message
-   * already syncs by fanning NEW_MESSAGE to the sender. Fanned to the user's OWN connections only:
-   * this is NOT a read receipt to peers (the app deliberately surfaces no read receipts). No
-   * message-cursor id (a read watermark is not a resumable history cursor).
-   */
-  onReadCursor(userId: number, data: unknown) {
-    this.pushToUser(userId, 'READ_CURSOR', data);
-  }
-
-  /**
    * Per-user thread metadata change (mute / pin / clear-history). Fanned to the caller's OWN connections
-   * only — these are per-user display settings, not shared state, so (like onReadCursor) this is NOT a
+   * only — these are per-user display settings, not shared state, so this is NOT a
    * peer broadcast. It carries whichever fields just changed so each of the user's other online
    * tabs/devices patches its conversation-list row + re-sorts without a full reload.
    */

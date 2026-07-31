@@ -117,8 +117,9 @@ describe('MessageService.countUnreadByThread', () => {
       ...unknown[],
     ];
     const sql = strings.join('?');
-    expect(sql).toContain('m.seq > COALESCE(tp."lastReadSeq", -1)');
-    expect(sql).toContain('m.creator <>');
+    expect(sql).toContain('msg.seq > COALESCE(tp."lastReadSeq", -1)');
+    expect(sql).toContain('msg.creator <>');
+    expect(sql).toContain('LIMIT 1000');
     expect(values.filter((value) => value === 42)).toHaveLength(2);
   });
 
@@ -132,7 +133,7 @@ describe('MessageService.countUnreadByThread', () => {
 });
 
 describe('MessageService.unreadMentionStates', () => {
-  it('uses semantic entities, ignores escaped protocol text, and gives @me priority over @all', async () => {
+  it('uses semantic entities, ignores escaped protocol text, and preserves both mention kinds', async () => {
     const queryRaw = vi.fn().mockResolvedValue([
       {
         threadId: 7,
@@ -151,14 +152,37 @@ describe('MessageService.unreadMentionStates', () => {
 
     await expect(svc.unreadMentionStates(42, 'SELF', [7, 8])).resolves.toEqual(
       new Map([
-        [7, 'me'],
-        [8, 'none'],
+        [7, ['all', 'me']],
+        [8, []],
       ]),
     );
   });
 });
 
 describe('MessageService unified attention queries', () => {
+  it('commits the max read HWM and returns one capped authoritative state', async () => {
+    const queryRaw = vi.fn().mockResolvedValue([{
+      lastReadSeq: 9,
+      unread: 1000,
+      mentionContents: [
+        '[@所有人](soms://audience/all?v=1)',
+        '[@我](soms://user/self?v=1)',
+      ],
+      account: 'self',
+    }]);
+    const svc = new MessageService({ $queryRaw: queryRaw } as never, {} as never);
+
+    await expect(svc.commitReadState(42, 7, 9)).resolves.toEqual({
+      lastReadSeq: 9,
+      count: 1000,
+      mention: ['all', 'me'],
+    });
+    const [strings] = queryRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const sql = strings.join('?');
+    expect(sql).toContain('GREATEST(COALESCE("lastReadSeq", -1)');
+    expect(sql).toContain('LIMIT 1000');
+  });
+
   it('returns unread count and semantic mention from one PostgreSQL result set', async () => {
     const queryRaw = vi.fn().mockResolvedValue([
       {
@@ -179,8 +203,8 @@ describe('MessageService unified attention queries', () => {
 
     await expect(svc.unreadAttentionByThread(42, 'SELF', [7, 8])).resolves.toEqual(
       new Map([
-        [7, { count: 3, mention: 'me' }],
-        [8, { count: 1, mention: 'none' }],
+        [7, { count: 3, mention: ['all', 'me'] }],
+        [8, { count: 1, mention: [] }],
       ]),
     );
     expect(queryRaw).toHaveBeenCalledTimes(1);
@@ -200,7 +224,7 @@ describe('MessageService unified attention queries', () => {
     await expect(
       svc.awayAttentionByThread(42, 'self', 100n, 30, { 7: 10 }, [42]),
     ).resolves.toEqual(
-      new Map([[7, { count: 2, latestSeq: 12, mention: 'me' }]]),
+      new Map([[7, { count: 2, latestSeq: 12, mention: ['me'] }]]),
     );
 
     const [strings] = queryRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];

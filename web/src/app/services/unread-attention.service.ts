@@ -46,7 +46,7 @@ export class UnreadAttentionService {
   /** Total unread across ALL conversations — drives the document "(N)" title prefix, shown only while the
    *  window is unfocused (you aren't viewing any thread, so the global total is the right attention signal).
    *  This intentionally does NOT exclude the open thread: while a thread is open its unread is held at 0
-   *  (clearUnread on open + the markRead-on-new-message path), so in practice this coincides with the
+   *  (the exit-time read commit refreshes it), so in practice this coincides with the
    *  exclude-open total used by {@link MessageHeaderComponent.otherUnreadCount}. The two are kept as
    *  separate, purpose-fit signals rather than unified — the title serves the unfocused window, the badge
    *  serves the in-conversation back button. */

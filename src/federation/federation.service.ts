@@ -28,7 +28,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { InviteService } from '../invite/invite.service.js';
-import { SseService } from '../gateway/sse.service.js';
+import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import {
   ContentType,
@@ -577,6 +577,12 @@ export class FederationService implements OnModuleDestroy {
     const trd = await this.findGroupThread(groupAccount);
     if (!trd || !this.isOriginThread(trd) || trd.groupUserId == null)
       return null;
+    if (trd.groupUser?.group?.dissolvedAt != null) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
     const grp = await this.prisma.group.findUnique({
       where: { groupUserId: trd.groupUserId },
       select: { rosterRev: true },
@@ -1305,7 +1311,11 @@ export class FederationService implements OnModuleDestroy {
     id: number;
     type: MessageThreadType;
     groupUserId: number | null;
-    groupUser: { account: string; domain: string } | null;
+    groupUser: {
+      account: string;
+      domain: string;
+      group: { dissolvedAt: Date | null } | null;
+    } | null;
   } | null> {
     return this.prisma.messageThread.findFirst({
       where: {
@@ -1315,7 +1325,13 @@ export class FederationService implements OnModuleDestroy {
         id: true,
         type: true,
         groupUserId: true,
-        groupUser: { select: { account: true, domain: true } },
+        groupUser: {
+          select: {
+            account: true,
+            domain: true,
+            group: { select: { dissolvedAt: true } },
+          },
+        },
       },
     });
   }
@@ -1749,8 +1765,113 @@ export class FederationService implements OnModuleDestroy {
     if (!gu || gu.domain === 'local') return;
     try {
       await this.pullGroupWhole(threadId, gu.domain, gu.account, true);
-    } catch {
+    } catch (e) {
+      if (
+        e instanceof S2sResponseError &&
+        e.code === BusinessCode.GROUP_DISSOLVED
+      ) {
+        await this.markGroupDissolved(threadId);
+        return;
+      }
       // Best-effort — keep the cached thread; the next open / push retries.
+    }
+  }
+
+  /** Synchronous write gate for a federated GROUP mirror. A cheap signed revision probe lets the
+   * origin return GROUP_DISSOLVED before the mirror persists a new message. Local-origin groups and
+   * P2P threads are no-ops; their local guards remain authoritative. */
+  async assertGroupWritable(threadId: number): Promise<void> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: {
+        groupUser: { select: { account: true, domain: true } },
+      },
+    });
+    const group = trd?.groupUser;
+    if (!group || group.domain === 'local') return;
+    try {
+      await this.withTrustedPeer(group.domain, () =>
+        this.fetchRemoteRosterRevision({
+          account: group.account,
+          domain: group.domain,
+        }),
+      );
+    } catch (error) {
+      if (
+        error instanceof S2sResponseError &&
+        error.code === BusinessCode.GROUP_DISSOLVED
+      ) {
+        await this.markGroupDissolved(threadId);
+        throw new BusinessException(
+          BusinessCode.GROUP_DISSOLVED,
+          'group has been dissolved',
+        );
+      }
+      // Preserve the existing offline-first send path for transient/unreachable peers. The outbound
+      // hint remains buffered and will retry; only the authoritative terminal code blocks the write.
+      return;
+    }
+  }
+
+  /** Synchronous federated P2P write gate. Local friendships are already authoritative in the access
+   * guard; a foreign peer is probed through the existing messages endpoint so its normal not-friends
+   * business response converges this retained conversation to read-only before a new message is stored. */
+  async assertP2PWritable(
+    threadId: number,
+    localUserId: number,
+  ): Promise<void> {
+    const participants = await this.prisma.threadParticipant.findMany({
+      where: { threadId },
+      include: {
+        user: { select: { account: true, domain: true, isForeigner: true } },
+      },
+    });
+    const local = participants.find((p) => p.userId === localUserId);
+    const peer = participants.find((p) => p.userId !== localUserId);
+    if (!local || local.leftAt !== null || !peer || peer.leftAt !== null) {
+      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
+    }
+    if (!peer.user.isForeigner) return;
+    try {
+      await this.withTrustedPeer(peer.user.domain, () =>
+        this.getSigned(
+          `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(peer.user.account)}` +
+            `&fromDomain=${encodeURIComponent(peer.user.domain)}` +
+            `&toAccount=${encodeURIComponent(local.user.account)}` +
+            `&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${Number.MAX_SAFE_INTEGER}&take=1`,
+          peer.user.domain,
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof S2sResponseError &&
+        (error.code === BusinessCode.FRIEND_NOT_FOUND ||
+          error.code === BusinessCode.FORBIDDEN)
+      ) {
+        await this.markP2PFriendshipEnded(threadId, localUserId);
+        throw new BusinessException(
+          BusinessCode.FRIEND_NOT_FOUND,
+          'not friends',
+        );
+      }
+      // Preserve offline-first behavior for transport failures. Only an authoritative business response
+      // changes friendship state; the ordinary outbound hint remains retryable.
+    }
+  }
+
+  /** Apply the lazy cross-server unfriend result without deleting the retained conversation. The existing
+   * thread revision stream makes the caller's other devices re-hydrate friendshipActive=false. */
+  private async markP2PFriendshipEnded(
+    threadId: number,
+    localUserId: number,
+  ): Promise<void> {
+    const wasHidden = await this.threadRevisionService.isThreadHidden(
+      localUserId,
+      threadId,
+    );
+    await this.participantService.softLeaveP2PBoth(threadId);
+    if (!wasHidden) {
+      await this.threadRevisionService.recordThreadAdd(localUserId, threadId);
     }
   }
 
@@ -2115,6 +2236,12 @@ export class FederationService implements OnModuleDestroy {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `group ${groupAccount} not found`,
+      );
+    }
+    if (trd.groupUser?.group?.dissolvedAt != null) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
       );
     }
     const participants = await this.prisma.threadParticipant.findMany({
@@ -2565,7 +2692,7 @@ export class FederationService implements OnModuleDestroy {
     if (threadId === null) {
       // Gate 2 failed: no active P2P thread (not friends — e.g. after a local-only unfriend). The 403
       // is also the rejection that teaches the peer about the severed edge (§9.4).
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
+      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
     }
     return { fromId, threadId };
   }
@@ -2696,14 +2823,16 @@ export class FederationService implements OnModuleDestroy {
    *  fetchedFromDomain = the peer (a pulled P2P message's only foreign participant is the author, so
    *  signalOutbound signals nobody — the receiver never re-propagates a 1:1 message). */
   private async pullP2P(domain: string, e: NewMsgMapEntry): Promise<boolean> {
+    let threadId: number | null = null;
+    let toLocalUserId: number | null = null;
     try {
       const creatorId = await this.ensureForeignUser(
         e.fromAccount,
         e.fromDomain,
       );
-      const toLocalUserId = await this.findLocalUserId(e.toAccount);
+      toLocalUserId = await this.findLocalUserId(e.toAccount);
       if (toLocalUserId === null) return true; // local user gone → drop
-      const threadId = await this.participantService.findP2PThreadBetween(
+      threadId = await this.participantService.findP2PThreadBetween(
         creatorId,
         toLocalUserId,
       );
@@ -2753,7 +2882,17 @@ export class FederationService implements OnModuleDestroy {
         }
         if (!res.hasMore) return true;
       }
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof S2sResponseError &&
+        (error.code === BusinessCode.FRIEND_NOT_FOUND ||
+          error.code === BusinessCode.FORBIDDEN)
+      ) {
+        if (threadId !== null && toLocalUserId !== null) {
+          await this.markP2PFriendshipEnded(threadId, toLocalUserId);
+        }
+        return true;
+      }
       return false; // peer down — leave for the sweep
     }
   }
@@ -2765,11 +2904,45 @@ export class FederationService implements OnModuleDestroy {
     try {
       const trd = await this.findGroupThread(e.toAccount);
       if (!trd) return true; // not a member here → drop
+      // The canonical group is terminal. Do not pull/store a message authored after dissolution. A
+      // mirror converges when its next whole-thread pull receives GROUP_DISSOLVED from this origin.
+      if (trd.groupUser?.group?.dissolvedAt != null) return true;
       if (this.isOriginThread(trd))
         return this.pullGroupFromAuthor(domain, trd.id, e);
       return this.pullGroupWhole(trd.id, trd.groupUser!.domain, e.toAccount);
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof S2sResponseError &&
+        error.code === BusinessCode.GROUP_DISSOLVED
+      ) {
+        const trd = await this.findGroupThread(e.toAccount);
+        if (trd) await this.markGroupDissolved(trd.id);
+        return true;
+      }
       return false;
+    }
+  }
+
+  /** Converge a federated mirror after the origin reports GROUP_DISSOLVED from either a pull caused by
+   * a send hint or the chat-open history pull. Former members keep the thread/history; clients receive
+   * GROUP_UPDATED and remove their composer. */
+  private async markGroupDissolved(threadId: number): Promise<void> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { groupUserId: true },
+    });
+    if (trd?.groupUserId == null) return;
+    await this.prisma.group.update({
+      where: { groupUserId: trd.groupUserId },
+      data: { dissolvedAt: new Date() },
+    });
+    const localMembers = await this.localActiveMemberIds(threadId);
+    for (const userId of localMembers) {
+      this.sse.onGroupEvent(userId, GROUP_SSE.GROUP_UPDATED, {
+        groupId: threadId,
+        threadId,
+        dissolved: true,
+      });
     }
   }
 
@@ -3123,6 +3296,7 @@ export class FederationService implements OnModuleDestroy {
         lastMessageAt: arrival,
       },
     });
+    await this.threadRevisionService.restoreHiddenThreads(threadId, recipients);
     // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
     // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
     // the OTHER member-domains. See plan "Hub loop-safety".

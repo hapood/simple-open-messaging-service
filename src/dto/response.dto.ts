@@ -57,7 +57,8 @@ export class UserResponseDto {
 
   @ApiProperty({
     example: 3,
-    description: 'Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.',
+    description:
+      'Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.',
   })
   profileRev!: number;
 
@@ -70,19 +71,33 @@ export class UserResponseDto {
   // `friendReqRev` (MAX(createdAt) over incoming FRIEND invites) vs friendReqAckRev (server-state).
 }
 
-/** Authoritative per-thread read state returned by mark-read and broadcast to the caller's other clients. */
+/** Server-authoritative read state returned after committing a viewport read HWM. */
 export class ThreadReadStateDto {
   @ApiProperty({ example: 12, description: 'Conversation id' })
   threadId!: number;
 
-  @ApiProperty({ example: 42, description: 'Server-confirmed read cursor' })
+  @ApiProperty({
+    example: 42,
+    description: 'Server-confirmed monotonic read HWM',
+  })
   lastReadSeq!: number;
 
-  @ApiProperty({ example: 3, description: 'Server-counted unread messages remaining after the cursor' })
+  @ApiProperty({
+    example: 3,
+    maximum: 1000,
+    description:
+      'Unread count; 1000 means 1000 or more and is rendered as 999+.',
+  })
   unreadCount!: number;
 
-  @ApiProperty({ enum: ['none', 'all', 'me'] })
-  mentionUnread!: 'none' | 'all' | 'me';
+  @ApiProperty({
+    type: [String],
+    enum: ['all', 'me'],
+    example: ['all', 'me'],
+    description:
+      'Distinct semantic mention kinds in the same bounded unread sample.',
+  })
+  mentionUnread!: Array<'all' | 'me'>;
 }
 
 export class MessageResponseDto {
@@ -128,7 +143,7 @@ export class MessageResponseDto {
     enum: [MEDIA_STATUS.READY, MEDIA_STATUS.DOWNLOADING, MEDIA_STATUS.FAILED],
     example: MEDIA_STATUS.READY,
     description:
-      "Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). " +
+      'Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). ' +
       "'ready' = bytes local + authz written (the URL serves 200); 'failed' = localize failed (URL 4xx, " +
       "retryable from the detail view); 'downloading' = localize in flight (carried only on a freshly-pulled " +
       "NEW_MESSAGE frame — the backend stores/pushes the 'ready'|'failed' terminals; the client infers " +
@@ -155,6 +170,14 @@ export class GroupResponseDto {
 
   @ApiProperty({ example: 1, description: 'Owner userId' })
   ownerId!: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: null,
+    description: 'Terminal dissolution timestamp; history remains readable',
+  })
+  dissolvedAt!: number | null;
 
   @ApiProperty({
     example: 'https://.../g.png',
@@ -200,6 +223,13 @@ export class GroupResponseDto {
  */
 export class ConversationItemDto {
   @ApiProperty({
+    enum: ['ACTIVE', 'READ_ONLY'],
+    description:
+      'Rendered state for a visible conversation. Hidden/deleted rows are not returned.',
+  })
+  conversationState!: 'ACTIVE' | 'READ_ONLY';
+
+  @ApiProperty({
     example: 1,
     description: "This user's ThreadParticipant row id",
   })
@@ -236,11 +266,8 @@ export class ConversationItemDto {
   })
   unreadCount!: number;
 
-  @ApiProperty({
-    enum: ['none', 'all', 'me'],
-    description: 'Highest-priority semantic mention in the caller’s unread range.',
-  })
-  mentionUnread!: 'none' | 'all' | 'me';
+  @ApiProperty({ type: [String], enum: ['all', 'me'] })
+  mentionUnread!: Array<'all' | 'me'>;
 
   @ApiProperty({
     type: Number,
@@ -302,6 +329,14 @@ export class ConversationItemDto {
   blocked?: boolean;
 
   @ApiProperty({
+    required: false,
+    example: true,
+    description:
+      'Whether the P2P friendship is active. False keeps the historical conversation readable but read-only; absent on GROUP.',
+  })
+  friendshipActive?: boolean;
+
+  @ApiProperty({
     type: String,
     required: false,
     example: 'Alice (work)',
@@ -323,7 +358,6 @@ export class ConversationItemDto {
   })
   group?: GroupResponseDto;
 }
-
 
 /**
  * One entry of the create/invite `skipped` list — a friend who could not be invited (not a friend,
@@ -372,10 +406,16 @@ export class GroupMemberDto {
   @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
   avatar!: string;
 
-  @ApiProperty({ example: false, description: 'Whether this member is an external (federated) user' })
+  @ApiProperty({
+    example: false,
+    description: 'Whether this member is an external (federated) user',
+  })
   isForeigner!: boolean;
 
-  @ApiProperty({ example: 'example.com', description: 'Domain (empty for a local member)' })
+  @ApiProperty({
+    example: 'example.com',
+    description: 'Domain (empty for a local member)',
+  })
   domain!: string;
 
   @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })

@@ -161,12 +161,6 @@ export class HomeHeaderComponent {
     },
     {
       kind: 'action',
-      key: 'folders',
-      labelKey: 'nav.folders',
-      icon: AppIconType.FOLDERS,
-    },
-    {
-      kind: 'action',
       key: 'theme',
       labelKey: 'nav.themeLabel',
       icon: this.themeIcon(),
@@ -271,10 +265,6 @@ export class HomeHeaderComponent {
         this.routeService.popupDlg(PopupType.NEW_GROUP, undefined, (r) => {
           if (r) this.onThreadListChanged()?.();
         });
-        this.closeMoreMenu();
-        break;
-      case 'folders':
-        this.routeService.popupDlg(PopupType.FOLDER_EDITOR);
         this.closeMoreMenu();
         break;
       case 'theme':

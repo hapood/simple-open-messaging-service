@@ -21,6 +21,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/send-forward': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Snapshot visible messages into a bundle and send a FORWARD card */
+    post: operations['MessageController_sendForward'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/forward-bundles/{bundleId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read a visible FORWARD bundle and every nested child bundle */
+    get: operations['MessageController_getForwardBundle'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/send-media': {
     parameters: {
       query?: never;
@@ -32,6 +66,23 @@ export interface paths {
     put?: never;
     /** Stage a media message (before upload); promoted on POST /upload* */
     post: operations['MessageController_sendMedia'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/query-media-stages': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Query the current user’s uncommitted media-send states in a conversation */
+    post: operations['MessageController_queryMediaStages'];
     delete?: never;
     options?: never;
     head?: never;
@@ -81,7 +132,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Mark a conversation read (advances the per-user read cursor) */
+    /** Commit a local read HWM and return the authoritative unread state */
     post: operations['MessageController_markRead'];
     delete?: never;
     options?: never;
@@ -134,6 +185,23 @@ export interface paths {
     put?: never;
     /** Clear chat history for me (hides all messages up to now; peer copy untouched) */
     post: operations['MessageController_clearHistory'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/thread/delete': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Delete this conversation for the current user only */
+    post: operations['MessageController_deleteThread'];
     delete?: never;
     options?: never;
     head?: never;
@@ -276,6 +344,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/auth/set-password': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Set the user's own password (forced first-time set after an initial password; clears mustChangePassword) */
+    post: operations['AuthController_setPassword'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/auth/sessions': {
     parameters: {
       query?: never;
@@ -378,23 +463,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/user/query-thread/valid': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** List active conversations (includes peer user/group info) */
-    post: operations['UserController_queryValidThread'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/user/query-thread/delta': {
     parameters: {
       query?: never;
@@ -404,7 +472,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Fetch thread-list ADD/DELETE deltas (from excl, to incl) */
+    /** Fetch the thread-list delta (from excl, to incl): ADD ops returned hydrated (peer/group/unread), DELETE ops id-only */
     post: operations['UserController_queryThreadDelta'];
     delete?: never;
     options?: never;
@@ -574,7 +642,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create a group and invite the given friends (invite token per friend) */
+    /** Create a group and invite the given friends (Invite row + card per friend) */
     post: operations['GroupController_createNewGroup'];
     delete?: never;
     options?: never;
@@ -591,7 +659,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Invite friends to the group (invite token written to each P2P thread) */
+    /** Invite friends to an existing group (Invite row + card per friend) */
     post: operations['GroupController_inviteUsers'];
     delete?: never;
     options?: never;
@@ -661,6 +729,23 @@ export interface paths {
     put?: never;
     /** Leave a group (owner must transfer first) */
     post: operations['GroupController_leaveGroup'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/group/dissolve': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Dissolve a group (owner only) */
+    post: operations['GroupController_dissolveGroup'];
     delete?: never;
     options?: never;
     head?: never;
@@ -837,6 +922,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/invite/friend-status': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Get authoritative friend/invite status for up to 50 users */
+    post: operations['InviteController_friendStatus'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/invite/detail': {
     parameters: {
       query?: never;
@@ -922,6 +1024,57 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/thread-sync/catch-up': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Threadlist body pre-warm: per-thread latest body in the (from, to] range (double-boundary walk) */
+    post: operations['NotificationController_missedSummary[0]'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/missed-summary': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Threadlist body pre-warm: per-thread latest body in the (from, to] range (double-boundary walk) */
+    post: operations['NotificationController_missedSummary[1]'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notification-feed/query': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Away-notification summary: per-sender aggregation of messages since the high-water mark */
+    post: operations['NotificationController_missed[0]'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/notifications/missed': {
     parameters: {
       query?: never;
@@ -931,8 +1084,25 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Catch up on missed messages since a high-water-mark (paginated), or the unread-thread summary */
-    post: operations['NotificationController_missed'];
+    /** Away-notification summary: per-sender aggregation of messages since the high-water mark */
+    post: operations['NotificationController_missed[1]'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/action': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Report a notification action (button tap / inline reply) */
+    post: operations['NotificationController_reportAction'];
     delete?: never;
     options?: never;
     head?: never;
@@ -946,7 +1116,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Public liveness probe (unauthenticated): status, version, server time. */
+    /** Public liveness probe (unauthenticated): status, DB reachability, version, server time. */
     get: operations['HealthController_health'];
     put?: never;
     post?: never;
@@ -956,15 +1126,15 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/logs/stream': {
+  '/api/v1/config': {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Admin live log tail (SSE) */
-    get: operations['LogViewerController_stream'];
+    /** Public site configuration (registration flag + enabled login methods). */
+    get: operations['ConfigController_config'];
     put?: never;
     post?: never;
     delete?: never;
@@ -973,7 +1143,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/logs/history': {
+  '/api/v1/auth/otp/login': {
     parameters: {
       query?: never;
       header?: never;
@@ -982,8 +1152,314 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Admin historical log search */
-    post: operations['LogViewerController_history'];
+    /** Login with an admin-issued one-time code (Android → long-term app session) */
+    post: operations['AuthOtpController_otpLogin'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/auth/qr/create': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Begin QR sign-in: mint a token (the client renders it as a QR) */
+    post: operations['AuthQrController_create'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/auth/qr/poll': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Poll a QR token status (receives the session token once confirmed) */
+    post: operations['AuthQrController_poll'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/auth/qr/scan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Phone scans a QR token (→ desktop shows "confirm on phone") */
+    post: operations['AuthQrController_scan'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/auth/qr/confirm': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Phone confirms a scanned QR token (desktop receives a 2-week session) */
+    post: operations['AuthQrController_confirm'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/shell/compat': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config). */
+    get: operations['ShellController_compat'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/shell/web-manifest': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch. */
+    get: operations['ShellController_manifest'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/shell/web-bundle': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Streamed application/gzip tarball of the web SPA browser build. NOT enveloped in ApiResult (raw bytes). */
+    get: operations['ShellController_bundle'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/initiate': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Initiate a 1:1 call (rings the callee in-band + to all devices) */
+    post: operations['CallsController_initiate'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/accept': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Accept an incoming call (callee) */
+    post: operations['CallsController_accept'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/ringing': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Acknowledge the incoming ring is alerting the callee (callee device) */
+    post: operations['CallsController_ringing'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/connected': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Report the media leg is up (either party) — the real connect marker */
+    post: operations['CallsController_connected'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/upgrade-video': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Permanently upgrade an established audio call to video */
+    post: operations['CallsController_upgradeVideo'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/decline': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Decline an incoming call (callee) */
+    post: operations['CallsController_decline'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/cancel': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Cancel a ringing call before the callee answers (caller) */
+    post: operations['CallsController_cancel'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/end': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** End a connected call (either party) */
+    post: operations['CallsController_end'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/signal': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Relay one WebRTC signaling frame (offer/answer/ICE) to the peer */
+    post: operations['CallsController_signal'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/ice-servers': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** WebRTC ICE servers (STUN + time-limited TURN REST credentials) */
+    get: operations['CallsController_iceServers'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/calls/{callSid}/signaling': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Fetch the staged setup signaling (offer/ICE) — for a peer that was offline when it trickled */
+    get: operations['CallsController_signaling'];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1000,6 +1476,23 @@ export interface paths {
     get: operations['EventsController_stream'];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/link-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Resolve a URL into a link card (OpenGraph preview) */
+    post: operations['LinkPreviewController_preview'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1100,7 +1593,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Admin login (separate admin JWT + family-based refresh) */
+    /** Admin login (password → session, or 2FA challenge when enrolled) */
     post: operations['AdminController_login'];
     delete?: never;
     options?: never;
@@ -1108,7 +1601,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/renew-access': {
+  '/api/v1/admin/login/verify': {
     parameters: {
       query?: never;
       header?: never;
@@ -1117,8 +1610,42 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Admin refresh rotation (family-based + reuse detection) */
-    post: operations['AdminController_renewAccess'];
+    /** Admin 2FA login verify (TOTP or backup code) → session */
+    post: operations['AdminController_loginVerify'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/login/begin': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Admin passkey login begin (challenge token → assertion options) */
+    post: operations['AdminController_webauthnLoginBegin'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/login/finish': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Admin passkey login finish (assertion) → session */
+    post: operations['AdminController_webauthnLoginFinish'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1170,6 +1697,74 @@ export interface paths {
     put?: never;
     /** User list (paginated + searchable) */
     post: operations['AdminController_listUsers'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/users/create': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create a user account (admin-provisioned) */
+    post: operations['AdminController_createUser'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/users/{id}/issue-login-code': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Issue a one-time login code for a user (plaintext returned once) */
+    post: operations['AdminController_issueLoginCode'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/users/{id}/login-codes': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Audit list of a user's one-time login codes (never the code/token value) */
+    post: operations['AdminController_listLoginCodes'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/login-codes/{id}/revoke': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Revoke an unused one-time login code */
+    post: operations['AdminController_revokeLoginCode'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1312,7 +1907,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/users/{id}/reset-password': {
+  '/api/v1/admin/users/{id}/generate-initial-password': {
     parameters: {
       query?: never;
       header?: never;
@@ -1321,8 +1916,8 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Reset a user's password (revokes all sessions) */
-    post: operations['AdminController_resetPassword'];
+    /** (Re-)generate the user's initial password (random, reveal-once; forces a set on next login) */
+    post: operations['AdminController_generateInitialPassword'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1355,7 +1950,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** List active login bans (IP / account) */
+    /** List active login bans (IP / account — password + OTP) */
     post: operations['AdminController_listBans'];
     delete?: never;
     options?: never;
@@ -1372,7 +1967,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Unban (IP and/or account) */
+    /** Unban (IP and/or account — clears every account-keyed dimension: password + OTP) */
     post: operations['AdminController_unban'];
     delete?: never;
     options?: never;
@@ -1414,6 +2009,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/admin/sessions/{id}/revoke': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Revoke a single active user session (kicks only that device; the user stays online on every other device) */
+    post: operations['AdminController_revokeSession'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/admin/connections': {
     parameters: {
       query?: never;
@@ -1448,7 +2060,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/admin/admin-sessions/{jti}/revoke': {
+  '/api/v1/admin/admin-sessions/{id}/revoke': {
     parameters: {
       query?: never;
       header?: never;
@@ -1457,7 +2069,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Revoke a given admin session (by jti; its access token stays valid for up to 15m) */
+    /** Revoke an opaque admin session immediately */
     post: operations['AdminController_revokeAdminSession'];
     delete?: never;
     options?: never;
@@ -1527,6 +2139,23 @@ export interface paths {
     put?: never;
     /** Remove the VAPID keypair — disables Web Push */
     post: operations['AdminSettingsController_clearVapid'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/settings/otp-ttl': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Set the one-time-code validity window (minutes, clamped 1-1440) */
+    post: operations['AdminSettingsController_setOtpTtl'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1729,8 +2358,42 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Reap orphaned avatars (no longer any User/Group current avatar) from uploads/avatars + legacy flat */
+    /** Reap orphaned avatars (no longer any User current avatar) from uploads/avatars */
     post: operations['MediaAssetGcController_gcAvatars'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/media/forward-bundles/inspect': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Inspect unreachable forward bundles (read-only) */
+    post: operations['MediaAssetGcController_inspectForwardBundles'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/media/forward-bundles/gc': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Delete unreachable forward bundles and release their CAS refs */
+    post: operations['MediaAssetGcController_gcForwardBundles'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1873,6 +2536,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/admin/admins/{id}/reset-2fa': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reset (disable) an admin's 2FA — lockout recovery when a device is lost */
+    post: operations['AdminManageController_reset2fa'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/admin/groups': {
     parameters: {
       query?: never;
@@ -1884,6 +2564,312 @@ export interface paths {
     put?: never;
     /** Group threads list (member count + owner + federation origin) */
     post: operations['GroupManageController_list'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/2fa/status': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Current admin's 2FA status (enabled + remaining backup codes) */
+    post: operations['TwoFactorController_status'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/2fa/setup': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Begin 2FA enrollment (otpauth URI + secret + pending token) */
+    post: operations['TwoFactorController_setup'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/2fa/setup/verify': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Confirm 2FA enrollment (verify first code) → enables + returns backup codes once */
+    post: operations['TwoFactorController_setupVerify'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/2fa/disable': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Disable 2FA (requires current password + a live 2FA factor) */
+    post: operations['TwoFactorController_disable'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/2fa/backup/regenerate': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Regenerate backup codes (requires a live 2FA factor) → new codes returned once */
+    post: operations['TwoFactorController_regenerate'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/status': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Current admin's passkey status (availability + enabled + credential count) */
+    post: operations['WebAuthnController_status'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/registration/begin': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Begin passkey enrollment (re-auth required) → options + pending token */
+    post: operations['WebAuthnController_registrationBegin'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/registration/finish': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Confirm passkey enrollment → persists the credential */
+    post: operations['WebAuthnController_registrationFinish'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/credentials': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** List the current admin's saved passkeys */
+    post: operations['WebAuthnController_list'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/credentials/{id}/rename': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Rename a saved passkey */
+    post: operations['WebAuthnController_rename'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/webauthn/credentials/{id}/delete': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Delete a saved passkey */
+    post: operations['WebAuthnController_delete'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/diagnostics': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** List diagnostic reports (with reporter identity) */
+    post: operations['AdminDiagnosticsController_list'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/diagnostics/{id}/download': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download a diagnostic bundle (.tar.gz) */
+    get: operations['AdminDiagnosticsController_download'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/diagnostics/gc': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Garbage-collect expired/orphaned diagnostic bundles */
+    post: operations['AdminDiagnosticsController_triggerGc'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/diagnostics/{id}/delete': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Soft-delete one diagnostic report (+ unlink its bundle if unreferenced) */
+    post: operations['AdminDiagnosticsController_delete'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/logs/stream': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Admin live log tail (SSE) */
+    get: operations['LogViewerController_stream'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/logs/history': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Admin historical log search */
+    post: operations['LogViewerController_history'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/diagnostics/report': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Upload a diagnostic log bundle for field support */
+    post: operations['DiagnosticsController_report'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1932,6 +2918,38 @@ export interface paths {
     get?: never;
     put?: never;
     post: operations['S2sController_postInviteAccept'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/s2s/invite-revoke': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['S2sController_postInviteRevoke'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/s2s/call': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations['S2sController_postCall'];
     delete?: never;
     options?: never;
     head?: never;
@@ -2082,6 +3100,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/s2s/forward-bundles/{bundleId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations['S2sController_getForwardBundle'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/s2s/init': {
     parameters: {
       query?: never;
@@ -2139,8 +3173,8 @@ export interface components {
         | 'FILE'
         | 'AUDIO'
         | 'LINK'
-        | 'CALL'
-        | 'FORWARD';
+        | 'FORWARD'
+        | 'CALL';
       /**
        * @description Message content
        * @example hello
@@ -2202,13 +3236,35 @@ export interface components {
         | 'FILE'
         | 'AUDIO'
         | 'LINK'
-        | 'CALL'
-        | 'FORWARD';
+        | 'FORWARD'
+        | 'CALL';
       /**
        * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.
        * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
        */
       clientMessageId?: string;
+    };
+    ForwardSourceMessageDto: {
+      /**
+       * @description Source conversation id
+       * @example 8
+       */
+      threadId: number;
+      /**
+       * @description Source message seq within the conversation
+       * @example 31
+       */
+      seq: number;
+    };
+    SendForwardDto: {
+      /**
+       * @description Destination conversation id
+       * @example 12
+       */
+      threadId: number;
+      sourceMessages: components['schemas']['ForwardSourceMessageDto'][];
+      /** @description Client send-idempotency UUID */
+      clientMessageId: string;
     };
     SendMediaMetaDto: {
       /** @description Image/video pixel width (client-probed) */
@@ -2231,8 +3287,20 @@ export interface components {
       contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO';
       /** @description Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent. */
       clientMessageId: string;
+      /**
+       * @description Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.
+       * @default false
+       */
+      retry: boolean;
       /** @description Client-probed display metadata (w/h, duration). Omitted fields are not staged. */
       meta?: components['schemas']['SendMediaMetaDto'];
+    };
+    QueryMediaStagesDto: {
+      /**
+       * @description Conversation (MessageThread) id
+       * @example 12
+       */
+      threadId: number;
     };
     QueryMessagesDto: {
       /**
@@ -2269,6 +3337,31 @@ export interface components {
        */
       userId: number;
     };
+    ThreadReadStateDto: {
+      /**
+       * @description Conversation id
+       * @example 12
+       */
+      threadId: number;
+      /**
+       * @description Server-confirmed monotonic read HWM
+       * @example 42
+       */
+      lastReadSeq: number;
+      /**
+       * @description Unread count; 1000 means 1000 or more and is rendered as 999+.
+       * @example 3
+       */
+      unreadCount: number;
+      /**
+       * @description Distinct semantic mention kinds in the same bounded unread sample.
+       * @example [
+       *       "all",
+       *       "me"
+       *     ]
+       */
+      mentionUnread: ('all' | 'me')[];
+    };
     MarkReadDto: {
       /**
        * @description Conversation (MessageThread) id
@@ -2276,10 +3369,10 @@ export interface components {
        */
       threadId: number;
       /**
-       * @description Mark read up to (and including) this message seq. Omit to mark all current messages read.
+       * @description Highest message seq the viewport has confirmed read locally.
        * @example 42
        */
-      lastReadSeq?: number;
+      localReadHwm: number;
     };
     SetMutedDto: {
       /**
@@ -2390,16 +3483,21 @@ export interface components {
        */
       device?: string;
       /**
-       * @description Client kind, selects the session-token lifetime policy: 'app' (native, stored in OS secure storage) → no-expiry, revocation-only; 'web' (browser) / 'desktop' (Tauri, JS memory) → sliding 30-day. Persisted on the row for the device list. Omitted → 'web'.
+       * @description Client kind = device platform: 'app' (native), 'web' (browser), or 'desktop' (Tauri). Informational — persisted on the row for the device-list icon/label; the lifetime is driven by `trusted`, not `client`. Omitted → 'web'.
        * @default web
        * @enum {string}
        */
       client: 'app' | 'web' | 'desktop';
       /**
-       * @description Cookie persistence for the pure-httpOnly browser path: true (default) → 30-day cookie; false → session cookie (dropped when the browser closes, honoring "don't keep me logged in"). Native clients ignore the cookie and this flag.
+       * @description Cookie persistence for the pure-httpOnly browser path: true (default) → 14-day sliding cookie; false → session cookie (dropped when the browser closes, honoring "don't keep me logged in"). Native clients ignore the cookie and this flag.
        * @default true
        */
       persistent: boolean;
+      /**
+       * @description Trust this device: request a permanent (revocation-only) session whose token the client will keep in OS secure storage. Honored only for the 'desktop' client (OS keyring); ignored for 'web' (a browser can't store a bearer token securely) and implicit-true for 'app' (the native app is always trusted).
+       * @default false
+       */
+      trusted: boolean;
     };
     LogoutDto: {
       /** @description Session token to revoke (the per-device credential). */
@@ -2414,6 +3512,13 @@ export interface components {
       /**
        * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
        * @example NewP@ss2
+       */
+      newPassword: string;
+    };
+    SetPasswordDto: {
+      /**
+       * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+       * @example MyOwnP@ss1
        */
       newPassword: string;
     };
@@ -2474,11 +3579,13 @@ export interface components {
       profileRev: number;
       /** @example false */
       isDeleted: boolean;
+    };
+    SyncSelfProfileDto: {
       /**
-       * @description Thread-list revision (self only — the thread-sync cursor)
-       * @example 5
+       * @description Caller's cached self profileRev. When older than the live row, the server pushes PROFILE_REV_UPDATED.
+       * @example 3
        */
-      threadRevision?: number;
+      sinceProfileRev: number;
     };
     UpdateProfileDto: {
       /**
@@ -2492,142 +3599,6 @@ export interface components {
        */
       bio?: string;
     };
-    GroupResponseDto: {
-      /** @example 12 */
-      id: number;
-      /**
-       * @description Group name
-       * @example dev-team
-       */
-      name: string;
-      /**
-       * @description Owner userId
-       * @example 1
-       */
-      ownerId: number;
-      /**
-       * @description Group avatar URL
-       * @example https://.../g.png
-       */
-      avatar: string;
-      /**
-       * @description Group description / intro
-       * @example Frontend team sync
-       */
-      description: string;
-      /**
-       * @description The group's home (origin) domain. Empty for a locally-originated group (this server is the origin); a peer domain for a federated mirror. Drives the federated-badge the way UserResponseDto.domain does for a P2P peer — empty self-hides the badge.
-       * @example soms.io
-       */
-      domain: string;
-      /**
-       * @description Group message thread id
-       * @example 12
-       */
-      threadId: number;
-      /** @example 1700000000000 */
-      createdAt: number;
-      /** @example 1700000000000 */
-      updatedAt: number;
-    };
-    ConversationItemDto: {
-      /**
-       * @description This user's ThreadParticipant row id
-       * @example 1
-       */
-      id: number;
-      /**
-       * @description Conversation (MessageThread) id — the key for send-message / query-messages
-       * @example 12
-       */
-      threadId: number;
-      /**
-       * @description Conversation type
-       * @enum {string}
-       */
-      type: 'P2P' | 'GROUP';
-      /**
-       * @description Last-read message seq (nullable)
-       * @example 42
-       */
-      lastReadSeq: number | null;
-      /**
-       * @description Member role for GROUP conversations; null for P2P
-       * @enum {string|null}
-       */
-      role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-      /**
-       * @description Unread message count for the caller (messages newer than their lastReadSeq). 0 when caught up.
-       * @example 3
-       */
-      unreadCount: number;
-      /**
-       * @description When the last message was sent (ms timestamp). Null on empty threads.
-       * @example 1700000000000
-       */
-      lastMessageAt: number | null;
-      /**
-       * @description Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).
-       * @example false
-       */
-      muted: boolean;
-      /**
-       * @description Whether the caller has pinned this conversation to the top of their list.
-       * @example false
-       */
-      pinned: boolean;
-      /**
-       * @description Most-recently-pinned timestamp (ms). Drives pinned-tier ordering (desc). Null when not pinned.
-       * @example 1700000000000
-       */
-      pinnedAt: number | null;
-      /**
-       * @description Per-user "clear chat history" watermark (ms). query-messages hides rows older than this for THIS user only; the peer copy is untouched. Null when history has not been cleared.
-       * @example 1700000000000
-       */
-      clearedAt: number | null;
-      /**
-       * @description Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.
-       * @example false
-       */
-      blocked?: boolean;
-      /**
-       * @description Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).
-       * @example Alice (work)
-       */
-      alias?: string | null;
-      /** @description Peer user (P2P conversations only) */
-      peerUser: components['schemas']['UserResponseDto'];
-      /** @description Group (GROUP conversations only) */
-      group: components['schemas']['GroupResponseDto'];
-    };
-    QueryValidThreadDto: {
-      /**
-       * @description Number of records to skip (pagination)
-       * @example 0
-       */
-      skip: number;
-      /**
-       * @description Number of records to take (1-50)
-       * @example 20
-       */
-      take: number;
-      /**
-       * @description Last id of the previous page (cursor, optional)
-       * @example 100
-       */
-      lastId?: number;
-      /**
-       * @description Conversation type P2P|GROUP (optional filter)
-       * @enum {string}
-       */
-      type?: 'P2P' | 'GROUP';
-      /**
-       * @description Snapshot revision pin. The page returns threads that were ACTIVE at this revision (added, not since-deleted per the ThreadRevision log) — pinning membership so offset pagination stays consistent across pages and the snapshot composes cleanly with query-thread/delta from this revision forward. The client passes its threadRevision cursor (from /user/my-profile).
-       * @example 5
-       */
-      revision: number;
-    };
     ThreadDeltaDto: {
       /**
        * @description From revision (exclusive)
@@ -2639,6 +3610,18 @@ export interface components {
        * @example 5
        */
       toRevision: number;
+    };
+    DeleteFriendDto: {
+      /**
+       * @description User id
+       * @example 1
+       */
+      userId: number;
+      /**
+       * @description Also delete this chat for the caller
+       * @default false
+       */
+      deleteData: boolean;
     };
     BlockDto: {
       /**
@@ -2699,13 +3682,6 @@ export interface components {
        */
       take?: number;
     };
-    SyncSelfProfileDto: {
-      /**
-       * @description Caller's cached self profileRev. When older than the live row, the server pushes PROFILE_REV_UPDATED.
-       * @example 3
-       */
-      sinceProfileRev: number;
-    };
     SyncPeerProfileDto: {
       /**
        * @description User id
@@ -2717,6 +3693,138 @@ export interface components {
        * @example 3
        */
       sinceProfileRev?: number;
+    };
+    GroupResponseDto: {
+      /** @example 12 */
+      id: number;
+      /**
+       * @description Group name
+       * @example dev-team
+       */
+      name: string;
+      /**
+       * @description Owner userId
+       * @example 1
+       */
+      ownerId: number;
+      /**
+       * @description Terminal dissolution timestamp; history remains readable
+       * @example null
+       */
+      dissolvedAt: number | null;
+      /**
+       * @description Group avatar URL
+       * @example https://.../g.png
+       */
+      avatar: string;
+      /**
+       * @description Monotonic group identity revision (name/avatar/description).
+       * @example 7
+       */
+      profileRev: number;
+      /**
+       * @description Group description / intro
+       * @example Frontend team sync
+       */
+      description: string;
+      /**
+       * @description The group's home (origin) domain. Empty for a locally-originated group (this server is the origin); a peer domain for a federated mirror. Drives the federated-badge the way UserResponseDto.domain does for a P2P peer — empty self-hides the badge.
+       * @example soms.io
+       */
+      domain: string;
+      /**
+       * @description Group message thread id
+       * @example 12
+       */
+      threadId: number;
+      /** @example 1700000000000 */
+      createdAt: number;
+      /** @example 1700000000000 */
+      updatedAt: number;
+    };
+    ConversationItemDto: {
+      /**
+       * @description Rendered state for a visible conversation. Hidden/deleted rows are not returned.
+       * @enum {string}
+       */
+      conversationState: 'ACTIVE' | 'READ_ONLY';
+      /**
+       * @description This user's ThreadParticipant row id
+       * @example 1
+       */
+      id: number;
+      /**
+       * @description Conversation (MessageThread) id — the key for send-message / query-messages
+       * @example 12
+       */
+      threadId: number;
+      /**
+       * @description Conversation type
+       * @enum {string}
+       */
+      type: 'P2P' | 'GROUP';
+      /**
+       * @description Last-read message seq (nullable)
+       * @example 42
+       */
+      lastReadSeq: number | null;
+      /**
+       * @description Member role for GROUP conversations; null for P2P
+       * @enum {string|null}
+       */
+      role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
+      /**
+       * @description Unread message count for the caller (messages newer than their lastReadSeq). 0 when caught up.
+       * @example 3
+       */
+      unreadCount: number;
+      mentionUnread: ('all' | 'me')[];
+      /**
+       * @description When the last message was sent (ms timestamp). Null on empty threads.
+       * @example 1700000000000
+       */
+      lastMessageAt: number | null;
+      /** @description Per-thread seq of the newest message (the denormalized MessageThread.lastMessageSeq). Null on empty threads. The client passes this as the mark-read `lastReadSeq` when opening a conversation (mark all current up to this seq) — so mark-read ALWAYS carries a seq, never the no-seq "mark all" mode. */
+      lastMessageSeq: number | null;
+      /**
+       * @description Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).
+       * @example false
+       */
+      muted: boolean;
+      /**
+       * @description Whether the caller has pinned this conversation to the top of their list.
+       * @example false
+       */
+      pinned: boolean;
+      /**
+       * @description Most-recently-pinned timestamp (ms). Drives pinned-tier ordering (desc). Null when not pinned.
+       * @example 1700000000000
+       */
+      pinnedAt: number | null;
+      /**
+       * @description Per-user "clear chat history" watermark (ms). query-messages hides rows older than this for THIS user only; the peer copy is untouched. Null when history has not been cleared.
+       * @example 1700000000000
+       */
+      clearedAt: number | null;
+      /**
+       * @description Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.
+       * @example false
+       */
+      blocked?: boolean;
+      /**
+       * @description Whether the P2P friendship is active. False keeps the historical conversation readable but read-only; absent on GROUP.
+       * @example true
+       */
+      friendshipActive?: boolean;
+      /**
+       * @description Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).
+       * @example Alice (work)
+       */
+      alias?: string | null;
+      /** @description Peer user (P2P conversations only) */
+      peerUser: components['schemas']['UserResponseDto'];
+      /** @description Group (GROUP conversations only) */
+      group: components['schemas']['GroupResponseDto'];
     };
     ThreadIdDto: {
       /**
@@ -2818,12 +3926,17 @@ export interface components {
        */
       threadIds: number[];
     };
-    GroupIdDto: {
+    GroupTerminalActionDto: {
       /**
        * @description Group id
        * @example 12
        */
       groupId: number;
+      /**
+       * @description Also delete this chat for the caller
+       * @default false
+       */
+      deleteData: boolean;
     };
     KickGroupDto: {
       /**
@@ -2930,6 +4043,23 @@ export interface components {
       expiresAt: number;
       createdAt: number;
     };
+    FriendRelationshipStateDto: {
+      userId: number;
+      /** @enum {string} */
+      status: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
+      /** @description Pending invite id, when applicable */
+      inviteId?: string;
+    };
+    FriendRelationshipStatusDto: {
+      /**
+       * @description Target user ids (≤50)
+       * @example [
+       *       2,
+       *       3
+       *     ]
+       */
+      userIds: number[];
+    };
     InviteDetailDto: {
       id: string;
       /** @enum {string} */
@@ -2968,41 +4098,172 @@ export interface components {
       /** @description Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps. */
       deviceId?: string;
     };
-    MissedDto: {
-      /** @description High-water-mark: epoch-ms `createdAt` of the newest message the client has. Absent (with no cursor) → init seed. */
-      since?: Record<string, never>;
-      /** @description Opaque pagination cursor returned by the previous page (takes precedence over `since`). */
-      cursor?: string;
-      /**
-       * @description Page size (messages).
-       * @default 50
-       */
-      take: number;
-      /**
-       * @description Legacy unread-thread summary (FCM/WorkManager coalescing) instead of paginated messages.
-       * @default false
-       */
-      summary: boolean;
+    MissedCursorDto: {
+      /** @description The cursor message thread id. */
+      threadId: number;
+      /** @description The cursor message per-thread seq. */
+      seq: number;
     };
-    AdminLogHistoryDto: {
+    MissedSummaryDto: {
+      /** @description High-water mark (threadId, seq), exclusive lower bound. Absent on first boot. */
+      from?: components['schemas']['MissedCursorDto'];
+      /** @description The newest SSE signal (threadId, seq), inclusive upper bound — pinned for this walk. */
+      to: components['schemas']['MissedCursorDto'];
       /**
-       * @description Offset for pagination (newest-first)
-       * @default 0
+       * @description Page size (threads).
+       * @default 200
        */
-      skip: number;
-      /** @default 50 */
       take: number;
+    };
+    MissedDto: {
+      /** @description High-water mark (threadId, seq): the newest message accounted before backgrounding. Absent on first-ever → clear (no notification). */
+      since?: components['schemas']['MissedCursorDto'];
       /**
-       * @description Inclusive minimum level
+       * @description "message" returns a bounded recent-message sample for MessagingStyle. "private" returns counts and routing only; message content never leaves the server.
+       * @default message
        * @enum {string}
        */
-      level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
-      /** @description Lower time bound, ms epoch */
-      from?: number;
-      /** @description Upper time bound, ms epoch */
-      to?: number;
-      /** @description Case-insensitive substring over msg + context */
-      search?: string;
+      previewMode: 'message' | 'private';
+      /** @description The client's per-thread dismiss HWM map { threadId: seq }. For a thread present here, its notification starts after that seq; other threads start after the global cursor. */
+      threadHwms?: Record<string, never>;
+    };
+    ReportActionDto: {
+      /** @description The notification's tag (which notification's action fired). */
+      tag: string;
+      /** @description The action id ('reply' | 'open' | …; 'dismiss' is handled client-side). */
+      actionId: string;
+      /** @description reply: the target thread. */
+      threadId?: number;
+      /** @description reply: the target message seq (routing). */
+      seq?: number;
+      /** @description reply: the inline-typed reply text. */
+      replyText?: string;
+    };
+    OtpLoginDto: {
+      /**
+       * @description Account the one-time code was issued for.
+       * @example alice
+       */
+      account: string;
+      /**
+       * @description The 6-digit one-time login code (admin-issued).
+       * @example 123456
+       */
+      code: string;
+      /**
+       * @description Client kind for the issued session: 'app' (Android), 'desktop' (Tauri), or 'web' (browser). Defaults to 'app'. Trusted native clients (app/desktop) get a permanent session; web gets a 14-day sliding one.
+       * @default app
+       * @enum {string}
+       */
+      client: 'app' | 'web' | 'desktop';
+      /** @description Human-readable device label (shown in the device list). */
+      device?: string;
+    };
+    QrCreateDto: {
+      /**
+       * @description Client kind for the issued session: 'app' (Android), 'web' (browser), or 'desktop' (Tauri). Defaults to 'web'.
+       * @default web
+       * @enum {string}
+       */
+      client: 'app' | 'web' | 'desktop';
+      /**
+       * @description Trust this desktop: mint a permanent (revocation-only) session whose token the desktop keeps in OS keyring. Honored only for 'desktop' when its keyring is available; 'app' is always trusted, 'web' is never trusted.
+       * @default false
+       */
+      trusted: boolean;
+    };
+    QrPollDto: {
+      /** @description The QR sign-in token returned by /auth/qr/create. */
+      qrToken: string;
+      /** @description Human-readable device label (shown in the device list). */
+      device?: string;
+    };
+    QrTokenDto: {
+      /** @description The QR sign-in token scanned from the desktop QR. */
+      qrToken: string;
+    };
+    InitiateCallDto: {
+      /** @description Client-generated ULID/UUID — the call idempotency key + the address every signaling frame carries. */
+      callSid: string;
+      /**
+       * @description The callee userId (must be a friend — share an active P2P thread).
+       * @example 7
+       */
+      calleeUserId: number;
+      /**
+       * @description Call media direction.
+       * @enum {string}
+       */
+      callType: 'AUDIO' | 'VIDEO';
+    };
+    AnswerCallDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+    };
+    RingingCallDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+    };
+    ConnectedCallDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+    };
+    UpgradeCallVideoDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+    };
+    DeclineCallDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+    };
+    CancelCallDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+    };
+    EndCallDto: {
+      /** @description The callSid addressing the call. */
+      callSid: string;
+      /**
+       * @description Why the call ended (advisory). "completed" is a normal hangup; "failed"/"timeout" mark a connect/answer failure (persisted as the `failed` call outcome).
+       * @enum {string}
+       */
+      endReason?: 'completed' | 'timeout' | 'failed';
+    };
+    SignalCallDto: {
+      /** @description The callSid this frame belongs to. */
+      callSid: string;
+      /**
+       * @description The peer userId to relay to (must be the OTHER call participant).
+       * @example 7
+       */
+      toUserId: number;
+      /**
+       * @description Signaling frame kind.
+       * @enum {string}
+       */
+      kind:
+        | 'offer'
+        | 'answer'
+        | 'ice'
+        | 'renegotiate'
+        | 'media-state'
+        | 'video-state';
+      /** @description Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted. */
+      payload: string;
+    };
+    LinkCardDto: {
+      url: string;
+      title?: string;
+      description?: string;
+      siteName?: string;
+      image?: string;
+    };
+    LinkPreviewDto: {
+      /**
+       * @description The page URL to preview
+       * @example https://github.com/nestjs/nest
+       */
+      url: string;
     };
     AdminLoginDto: {
       /**
@@ -3016,12 +4277,31 @@ export interface components {
        */
       password: string;
     };
-    AdminRefreshDto: {
+    AdminLoginVerifyDto: {
+      /** @description Challenge token from POST admin/login (twoFactorRequired response) */
+      challengeToken: string;
       /**
-       * @description refresh token
-       * @example eyJhbGciOiJIUzI1NiIs...
+       * @description 6-digit TOTP from the authenticator app
+       * @example 123456
        */
-      refreshToken: string;
+      code?: string;
+      /**
+       * @description A single-use backup (recovery) code
+       * @example ABCD-EFGH
+       */
+      backupCode?: string;
+    };
+    WebAuthnLoginBeginDto: {
+      /** @description Challenge token from POST admin/login (twoFactorRequired response) */
+      challengeToken: string;
+    };
+    WebAuthnLoginFinishDto: {
+      /** @description Challenge token from POST admin/login */
+      challengeToken: string;
+      /** @description Pending token from POST admin/webauthn/login/begin */
+      pendingToken: string;
+      /** @description AuthenticationResponseJSON returned by startAuthentication (browser) */
+      assertionResponse: Record<string, never>;
     };
     AdminListUsersDto: {
       /**
@@ -3039,6 +4319,23 @@ export interface components {
        * @example alice
        */
       search?: string;
+    };
+    AdminCreateUserDto: {
+      /**
+       * @description Login unique name: 3-31 chars, letters + digits + dots, start with a letter, case-insensitive
+       * @example alice
+       */
+      account: string;
+      /**
+       * @description Display name (1-30 chars; unicode/emoji allowed)
+       * @example Alice
+       */
+      name: string;
+      /**
+       * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
+       * @example P@ssw0rd
+       */
+      password?: string;
     };
     AdminListPushTokensDto: {
       /**
@@ -3073,13 +4370,6 @@ export interface components {
        * @example sent from admin console
        */
       body?: string;
-    };
-    AdminResetPasswordDto: {
-      /**
-       * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
-       * @example NewP@ss2
-       */
-      newPassword: string;
     };
     AdminUserBatchDto: {
       /**
@@ -3144,6 +4434,13 @@ export interface components {
       publicKey: string;
       /** @description Base64url P-256 private key scalar (32 bytes) */
       privateKey: string;
+    };
+    OtpTtlDto: {
+      /**
+       * @description One-time-code validity window in minutes (1-1440).
+       * @example 10
+       */
+      ttlMinutes: number;
     };
     AdminListFederationPeersDto: {
       /**
@@ -3269,6 +4566,103 @@ export interface components {
       /** @description Fuzzy search by group account / name */
       search?: string;
     };
+    TwoFactorSetupVerifyDto: {
+      /** @description Pending setup token from POST admin/2fa/setup */
+      pendingToken: string;
+      /**
+       * @description 6-digit TOTP shown by the authenticator after scanning
+       * @example 123456
+       */
+      code: string;
+    };
+    TwoFactorDisableDto: {
+      /**
+       * @description Current password
+       * @example P@ssw0rd
+       */
+      password: string;
+      /**
+       * @description 6-digit TOTP
+       * @example 123456
+       */
+      code?: string;
+      /**
+       * @description A single-use backup code
+       * @example ABCD-EFGH
+       */
+      backupCode?: string;
+    };
+    TwoFactorRegenerateDto: {
+      /**
+       * @description 6-digit TOTP
+       * @example 123456
+       */
+      code?: string;
+      /**
+       * @description A single-use backup code
+       * @example ABCD-EFGH
+       */
+      backupCode?: string;
+    };
+    WebAuthnRegBeginDto: {
+      /**
+       * @description Current password (re-auth required to enroll a passkey)
+       * @example P@ssw0rd
+       */
+      password: string;
+      /**
+       * @description Optional label for this passkey (≤64)
+       * @example MacBook Touch ID
+       */
+      nickname?: string;
+    };
+    WebAuthnRegFinishDto: {
+      /** @description Pending token from POST admin/webauthn/registration/begin */
+      pendingToken: string;
+      /** @description RegistrationResponseJSON returned by startRegistration (browser) */
+      registrationResponse: Record<string, never>;
+    };
+    WebAuthnRenameDto: {
+      /** @example MacBook Touch ID */
+      nickname: string;
+    };
+    AdminListDiagnosticsDto: {
+      /**
+       * @description Number of records to skip (optional)
+       * @example 0
+       */
+      skip?: number;
+      /**
+       * @description Number of records to take (optional)
+       * @example 20
+       */
+      take?: number;
+      /**
+       * @description Fuzzy search by reporter account/display name (optional)
+       * @example alice
+       */
+      search?: string;
+    };
+    AdminLogHistoryDto: {
+      /**
+       * @description Offset for pagination (newest-first)
+       * @default 0
+       */
+      skip: number;
+      /** @default 50 */
+      take: number;
+      /**
+       * @description Inclusive minimum level
+       * @enum {string}
+       */
+      level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+      /** @description Lower time bound, ms epoch */
+      from?: number;
+      /** @description Upper time bound, ms epoch */
+      to?: number;
+      /** @description Case-insensitive substring over msg + context */
+      search?: string;
+    };
   };
   responses: never;
   parameters: never;
@@ -3303,6 +4697,50 @@ export interface operations {
       };
     };
   };
+  MessageController_sendForward: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SendForwardDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ApiResult'] & {
+            data?: components['schemas']['MessageResponseDto'];
+          };
+        };
+      };
+    };
+  };
+  MessageController_getForwardBundle: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        bundleId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   MessageController_sendMedia: {
     parameters: {
       query?: never;
@@ -3325,6 +4763,27 @@ export interface operations {
             data?: components['schemas']['MessageResponseDto'];
           };
         };
+      };
+    };
+  };
+  MessageController_queryMediaStages: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['QueryMediaStagesDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -3391,7 +4850,11 @@ export interface operations {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          'application/json': components['schemas']['ApiResult'] & {
+            data?: components['schemas']['ThreadReadStateDto'];
+          };
+        };
       };
     };
   };
@@ -3438,6 +4901,27 @@ export interface operations {
     };
   };
   MessageController_clearHistory: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ClearHistoryDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  MessageController_deleteThread: {
     parameters: {
       query?: never;
       header?: never;
@@ -3624,6 +5108,27 @@ export interface operations {
       };
     };
   };
+  AuthController_setPassword: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SetPasswordDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   AuthController_sessions: {
     parameters: {
       query?: never;
@@ -3746,31 +5251,6 @@ export interface operations {
       };
     };
   };
-  UserController_queryValidThread: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['QueryValidThreadDto'];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['ConversationItemDto'][];
-          };
-        };
-      };
-    };
-  };
   UserController_queryThreadDelta: {
     parameters: {
       query?: never;
@@ -3801,7 +5281,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['UserIdDto'];
+        'application/json': components['schemas']['DeleteFriendDto'];
       };
     };
     responses: {
@@ -4111,7 +5591,28 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['GroupIdDto'];
+        'application/json': components['schemas']['GroupTerminalActionDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  GroupController_dissolveGroup: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GroupTerminalActionDto'];
       };
     };
     responses: {
@@ -4333,6 +5834,31 @@ export interface operations {
       };
     };
   };
+  InviteController_friendStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['FriendRelationshipStatusDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ApiResult'] & {
+            data?: components['schemas']['FriendRelationshipStateDto'][];
+          };
+        };
+      };
+    };
+  };
   InviteController_getInviteDetail: {
     parameters: {
       query?: never;
@@ -4432,7 +5958,49 @@ export interface operations {
       };
     };
   };
-  NotificationController_missed: {
+  'NotificationController_missedSummary[0]': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MissedSummaryDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  'NotificationController_missedSummary[1]': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MissedSummaryDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  'NotificationController_missed[0]': {
     parameters: {
       query?: never;
       header?: never;
@@ -4442,6 +6010,48 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['MissedDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  'NotificationController_missed[1]': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MissedDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  NotificationController_reportAction: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ReportActionDto'];
       };
     };
     responses: {
@@ -4470,11 +6080,9 @@ export interface operations {
       };
     };
   };
-  LogViewerController_stream: {
+  ConfigController_config: {
     parameters: {
-      query: {
-        level: string;
-      };
+      query?: never;
       header?: never;
       path?: never;
       cookie?: never;
@@ -4489,7 +6097,30 @@ export interface operations {
       };
     };
   };
-  LogViewerController_history: {
+  AuthOtpController_otpLogin: {
+    parameters: {
+      query?: never;
+      header: {
+        'user-agent': string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['OtpLoginDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AuthQrController_create: {
     parameters: {
       query?: never;
       header?: never;
@@ -4498,11 +6129,352 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['AdminLogHistoryDto'];
+        'application/json': components['schemas']['QrCreateDto'];
       };
     };
     responses: {
-      201: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AuthQrController_poll: {
+    parameters: {
+      query?: never;
+      header: {
+        'user-agent': string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['QrPollDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AuthQrController_scan: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['QrTokenDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AuthQrController_confirm: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['QrTokenDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  ShellController_compat: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  ShellController_manifest: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  ShellController_bundle: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_initiate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['InitiateCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_accept: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AnswerCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_ringing: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RingingCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_connected: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ConnectedCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_upgradeVideo: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UpgradeCallVideoDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_decline: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DeclineCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_cancel: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CancelCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_end: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['EndCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_signal: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SignalCallDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_iceServers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  CallsController_signaling: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        callSid: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
         headers: {
           [name: string]: unknown;
         };
@@ -4524,6 +6496,31 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+    };
+  };
+  LinkPreviewController_preview: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LinkPreviewDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ApiResult'] & {
+            data?: components['schemas']['LinkCardDto'];
+          };
+        };
       };
     };
   };
@@ -4635,7 +6632,7 @@ export interface operations {
       };
     };
   };
-  AdminController_renewAccess: {
+  AdminController_loginVerify: {
     parameters: {
       query?: never;
       header: {
@@ -4646,7 +6643,51 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['AdminRefreshDto'];
+        'application/json': components['schemas']['AdminLoginVerifyDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminController_webauthnLoginBegin: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WebAuthnLoginBeginDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminController_webauthnLoginFinish: {
+    parameters: {
+      query?: never;
+      header: {
+        'user-agent': string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WebAuthnLoginFinishDto'];
       };
     };
     responses: {
@@ -4665,11 +6706,7 @@ export interface operations {
       path?: never;
       cookie?: never;
     };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminRefreshDto'];
-      };
-    };
+    requestBody?: never;
     responses: {
       200: {
         headers: {
@@ -4708,6 +6745,84 @@ export interface operations {
         'application/json': components['schemas']['AdminListUsersDto'];
       };
     };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminController_createUser: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AdminCreateUserDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminController_issueLoginCode: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminController_listLoginCodes: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminController_revokeLoginCode: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
     responses: {
       200: {
         headers: {
@@ -4873,7 +6988,7 @@ export interface operations {
       };
     };
   };
-  AdminController_resetPassword: {
+  AdminController_generateInitialPassword: {
     parameters: {
       query?: never;
       header?: never;
@@ -4882,11 +6997,7 @@ export interface operations {
       };
       cookie?: never;
     };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AdminResetPasswordDto'];
-      };
-    };
+    requestBody?: never;
     responses: {
       200: {
         headers: {
@@ -4993,6 +7104,25 @@ export interface operations {
       };
     };
   };
+  AdminController_revokeSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   AdminController_listConnections: {
     parameters: {
       query?: never;
@@ -5036,7 +7166,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        jti: string;
+        id: string;
       };
       cookie?: never;
     };
@@ -5117,6 +7247,27 @@ export interface operations {
       cookie?: never;
     };
     requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminSettingsController_setOtpTtl: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['OtpTtlDto'];
+      };
+    };
     responses: {
       200: {
         headers: {
@@ -5360,6 +7511,40 @@ export interface operations {
       };
     };
   };
+  MediaAssetGcController_inspectForwardBundles: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  MediaAssetGcController_gcForwardBundles: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   DashboardController_summary: {
     parameters: {
       query?: never;
@@ -5518,6 +7703,25 @@ export interface operations {
       };
     };
   };
+  AdminManageController_reset2fa: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   GroupManageController_list: {
     parameters: {
       query?: never;
@@ -5530,6 +7734,354 @@ export interface operations {
         'application/json': components['schemas']['AdminGroupsListDto'];
       };
     };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  TwoFactorController_status: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  TwoFactorController_setup: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  TwoFactorController_setupVerify: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TwoFactorSetupVerifyDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  TwoFactorController_disable: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TwoFactorDisableDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  TwoFactorController_regenerate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TwoFactorRegenerateDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  WebAuthnController_status: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  WebAuthnController_registrationBegin: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WebAuthnRegBeginDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  WebAuthnController_registrationFinish: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WebAuthnRegFinishDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  WebAuthnController_list: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  WebAuthnController_rename: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WebAuthnRenameDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  WebAuthnController_delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminDiagnosticsController_list: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AdminListDiagnosticsDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminDiagnosticsController_download: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminDiagnosticsController_triggerGc: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  AdminDiagnosticsController_delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  LogViewerController_stream: {
+    parameters: {
+      query: {
+        level: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  LogViewerController_history: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AdminLogHistoryDto'];
+      };
+    };
+    responses: {
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  DiagnosticsController_report: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
     responses: {
       200: {
         headers: {
@@ -5574,6 +8126,40 @@ export interface operations {
     };
   };
   S2sController_postInviteAccept: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_postInviteRevoke: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_postCall: {
     parameters: {
       query?: never;
       header?: never;
@@ -5776,9 +8362,29 @@ export interface operations {
         fromDomain: string;
         toAccount: string;
         toDomain: string;
+        bundleId: string;
       };
       header?: never;
       path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  S2sController_getForwardBundle: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        bundleId: string;
+      };
       cookie?: never;
     };
     requestBody?: never;

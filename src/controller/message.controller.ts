@@ -55,6 +55,7 @@ import {
   transformMessageEntities,
 } from '../common/message-entity.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 
 @ApiTags('message')
 @Controller()
@@ -69,6 +70,7 @@ export class MessageController {
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
+    private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -83,6 +85,29 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: SendMessageDto,
   ) {
+    if (
+      req.threadAccess.threadType === 'P2P' &&
+      !req.threadAccess.friendshipActive
+    ) {
+      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
+    }
+    if (
+      req.threadAccess.threadType === 'GROUP' &&
+      !req.threadAccess.membershipActive
+    ) {
+      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'not a member');
+    }
+    if (req.threadAccess.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
+    if (req.threadAccess.threadType === 'GROUP') {
+      await this.federation.assertGroupWritable(dto.threadId);
+    } else {
+      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+    }
     // Membership is resolved by ThreadAccessGuard (throws THREAD_NOT_FOUND for non-participants);
     // req.threadAccess.participant is the caller's row. A missing/empty content string is already
     // rejected by SendMessageDto's @IsNotEmpty/@MaxLength via ValidationPipe (HTTP 200 + code 10000);
@@ -177,6 +202,29 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: SendForwardDto,
   ) {
+    if (
+      req.threadAccess.threadType === 'P2P' &&
+      !req.threadAccess.friendshipActive
+    ) {
+      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
+    }
+    if (
+      req.threadAccess.threadType === 'GROUP' &&
+      !req.threadAccess.membershipActive
+    ) {
+      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'not a member');
+    }
+    if (req.threadAccess.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
+    if (req.threadAccess.threadType === 'GROUP') {
+      await this.federation.assertGroupWritable(dto.threadId);
+    } else {
+      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+    }
     const prior = await this.messageService.findByClientMessageId(
       dto.clientMessageId,
     );
@@ -311,6 +359,25 @@ export class MessageController {
   })
   @ApiResultResponse(MessageResponseDto)
   async sendMedia(@Request() req: FastifyRequest, @Body() dto: SendMediaDto) {
+    if (!req.threadAccess.membershipActive) {
+      throw new BusinessException(
+        req.threadAccess.threadType === 'P2P'
+          ? BusinessCode.FRIEND_NOT_FOUND
+          : BusinessCode.GROUP_FORBIDDEN,
+        'conversation is read-only',
+      );
+    }
+    if (req.threadAccess.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
+    if (req.threadAccess.threadType === 'GROUP') {
+      await this.federation.assertGroupWritable(dto.threadId);
+    } else {
+      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+    }
     const meta: Record<string, unknown> = {};
     if (dto.meta?.w !== undefined) meta.w = dto.meta.w;
     if (dto.meta?.h !== undefined) meta.h = dto.meta.h;
@@ -424,70 +491,37 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('thread/mark-read')
   @ApiOperation({
-    summary: 'Mark a conversation read (advances the per-user read cursor)',
+    summary:
+      'Commit a local read HWM and return the authoritative unread state',
   })
   @ApiResultResponse(ThreadReadStateDto)
   async markRead(
     @Request() req: FastifyRequest,
     @Body() dto: MarkReadDto,
-  ): Promise<ThreadReadStateDto | void> {
+  ): Promise<ThreadReadStateDto> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
     // participant row is on req.threadAccess.participant.
-    // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
-    // (prevents pointing the cursor at a message from another conversation). Without one, mark all
-    // current messages read by using the thread's denormalized lastMessageSeq. The numeric-string
-    // shape of lastReadMessageId is enforced by MarkReadDto's @Matches.
-    let cursor: number;
-    if (dto.lastReadSeq !== undefined) {
-      const msg = await this.messageService.findMessageBySeq(
-        dto.threadId,
-        Number(dto.lastReadSeq),
+    const msg = await this.messageService.findMessageBySeq(
+      dto.threadId,
+      dto.localReadHwm,
+    );
+    if (msg === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `no such message in thread [${dto.threadId}]`,
       );
-      // findMessageBySeq is scoped by (threadId, seq), so null means no such message in THIS thread.
-      if (msg === null) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          `no such message in thread [${dto.threadId}]`,
-        );
-      }
-      cursor = msg.seq;
-    } else {
-      const thread = await this.messageService.findThread(dto.threadId);
-      const last = thread?.lastMessageSeq ?? null;
-      if (last === null) {
-        // Empty thread — nothing to mark read.
-        return;
-      }
-      cursor = last;
     }
-    const moved = await this.participantService.advanceReadCursor(
+    const state = await this.messageService.commitReadState(
       req.user.userId,
       dto.threadId,
-      cursor,
+      msg.seq,
     );
-    const participant = await this.participantService.findActiveParticipant(
-      req.user.userId,
-      dto.threadId,
-    );
-    const lastReadSeq = participant?.lastReadSeq ?? cursor;
-    const attention = await this.messageService.unreadAttentionForThread(
-      req.user.userId,
-      dto.threadId,
-    );
-    const state: ThreadReadStateDto = {
+    return {
       threadId: dto.threadId,
-      lastReadSeq,
-      unreadCount: attention.count,
-      mentionUnread: attention.mention,
+      lastReadSeq: state?.lastReadSeq ?? msg.seq,
+      unreadCount: state?.count ?? 0,
+      mentionUnread: state?.mention ?? [],
     };
-    if (moved) {
-      // Sync the caller's OTHER online devices/tabs so their unread badge for this thread clears
-      // immediately — the same multi-device consistency send-message already provides by fanning
-      // NEW_MESSAGE to the sender. advanceReadCursor's "did it move?" return suppresses the frame
-      // for an idempotent/stale mark-read (cursor already ≥ this id).
-      this.sseService.onReadCursor(req.user.userId, state);
-    }
-    return state;
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -568,6 +602,42 @@ export class MessageController {
       threadId: dto.threadId,
       clearedAt: updated.clearedAt,
     });
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(10, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/delete')
+  @ApiOperation({
+    summary: 'Delete this conversation for the current user only',
+  })
+  async deleteThread(
+    @Request() req: FastifyRequest,
+    @Body() dto: ClearHistoryDto,
+  ): Promise<void> {
+    const participant = await this.participantService.findParticipant(
+      req.user.userId,
+      dto.threadId,
+    );
+    if (!participant) {
+      throw new BusinessException(BusinessCode.THREAD_NOT_FOUND, 'no thread');
+    }
+    if (
+      await this.threadRevisionService.isThreadHidden(
+        req.user.userId,
+        dto.threadId,
+      )
+    )
+      return;
+    await this.participantService.deleteThreadForUser(
+      req.user.userId,
+      dto.threadId,
+    );
+    await this.threadRevisionService.recordThreadDelete(
+      req.user.userId,
+      dto.threadId,
+    );
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

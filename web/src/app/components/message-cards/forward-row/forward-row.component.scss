@@ -5,6 +5,19 @@
   display: block;
   padding: 10px 12px 8px;
   transition: opacity 0.2s ease-out;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.forward-card:disabled {
+  cursor: default;
+}
+.forward-card:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
 }
 
 .forward-card.msg-sending {

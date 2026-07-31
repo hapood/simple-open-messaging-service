@@ -62,6 +62,7 @@ describe('ThreadListComponent', () => {
             items, status,
             error: signal(''),
             openThreadId: signal(undefined),
+            readCommitPending: signal<ReadonlySet<number>>(new Set()),
             topInserted: signal(null),
             load: loadSpy,
             clearTopInserted: () => { /* no-op — the FLIP effect calls this on a rAF; irrelevant here */ },
@@ -149,7 +150,7 @@ describe('ThreadListComponent', () => {
   it('renders each conversation as a native button with current and accessible state', async () => {
     const thread = {
       ...p2p(1, 11, 'A very long conversation name'),
-      unreadCount: 120,
+      unreadCount: 1000,
       muted: true,
       pinned: true,
       blocked: true,
@@ -173,8 +174,8 @@ describe('ThreadListComponent', () => {
     expect(row.getAttribute('aria-label')).toContain('A very long conversation name');
     expect(row.getAttribute('aria-label')).toContain('remote.example');
     expect(row.getAttribute('aria-label')).toContain(blockedLabel);
-    expect(row.getAttribute('aria-label')).toContain('120');
-    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('99+');
+    expect(row.getAttribute('aria-label')).toContain('999+');
+    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('999+');
     expect(row.querySelector('.thread-blocked')?.textContent?.trim()).toContain(blockedLabel);
     expect(row.querySelector('.thread-msg')).toBeNull();
     const rows = row.querySelectorAll('.thread-row');
@@ -201,7 +202,7 @@ describe('ThreadListComponent', () => {
       {
         ...p2p(1, 11),
         unreadCount: 2,
-        mentionUnread: 'me',
+        mentionUnread: ['me'],
       },
     ]);
     status.set(ConversationLoadStatus.READY);

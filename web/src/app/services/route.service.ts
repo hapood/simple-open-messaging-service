@@ -4,7 +4,6 @@ import { Subject } from 'rxjs';
 import { AvatarEditorComponent } from '../components/avatar-editor/avatar-editor.component';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
 import { NewGroupComponent } from '../components/new-group/new-group.component';
-import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
 import { ShellIncompatibleDialogComponent } from '../components/shell-incompatible-dialog/shell-incompatible-dialog.component';
@@ -29,6 +28,7 @@ import {
   NavStateMachineService,
 } from './nav-state.service';
 import { LayoutService } from './layout.service';
+import { ForwardDetailComponent } from '../components/forward-detail/forward-detail.component';
 
 export enum RoutePage {
   HOME,
@@ -50,39 +50,39 @@ export enum PopupType {
   FRIEND_REQUESTS,
   FRIEND_INVITE,
   NEW_GROUP,
-  FOLDER_EDITOR,
   EDIT_PROFILE,
   AVATAR_EDITOR,
   CONFIRM,
   SHELL_INCOMPATIBLE,
   UPLOAD_DETAIL,
   FORWARD,
+  FORWARD_DETAIL,
 }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
   [PopupType.FRIEND_INVITE]: FriendInviteDialogComponent,
   [PopupType.NEW_GROUP]: NewGroupComponent,
-  [PopupType.FOLDER_EDITOR]: FolderEditorComponent,
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
   [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
   [PopupType.CONFIRM]: ConfirmDialogComponent,
   [PopupType.SHELL_INCOMPATIBLE]: ShellIncompatibleDialogComponent,
   [PopupType.UPLOAD_DETAIL]: UploadDetailDialogComponent,
   [PopupType.FORWARD]: ForwardDialogComponent,
+  [PopupType.FORWARD_DETAIL]: ForwardDetailComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FRIEND_REQUESTS]: 'page',
   [PopupType.FRIEND_INVITE]: 'page',
   [PopupType.NEW_GROUP]: 'page',
-  [PopupType.FOLDER_EDITOR]: 'page',
   [PopupType.EDIT_PROFILE]: 'page',
   [PopupType.AVATAR_EDITOR]: 'viewer',
   [PopupType.CONFIRM]: 'modal',
   [PopupType.SHELL_INCOMPATIBLE]: 'modal',
   [PopupType.UPLOAD_DETAIL]: 'page',
   [PopupType.FORWARD]: 'page',
+  [PopupType.FORWARD_DETAIL]: 'viewer',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -93,7 +93,6 @@ export interface PopupInput {
   };
   [PopupType.FRIEND_INVITE]: { user: User };
   [PopupType.NEW_GROUP]: undefined;
-  [PopupType.FOLDER_EDITOR]: { folderId?: string };
   [PopupType.EDIT_PROFILE]: undefined;
   [PopupType.AVATAR_EDITOR]: { file: File };
   /** Generic confirm dialog. `messageKey` is required; the rest are optional presentation knobs. */
@@ -105,6 +104,7 @@ export interface PopupInput {
     cancelKey?: string;
     danger?: boolean;
     icon?: AppIconType;
+    checkboxKey?: string;
   };
   /** Once-per-launch shell↔backend incompatibility notice. `serverVersion` is interpolated into the copy. */
   [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string };
@@ -113,6 +113,7 @@ export interface PopupInput {
     messages: readonly ForwardMessageItem[];
     recordKind: ForwardRecordKind;
   };
+  [PopupType.FORWARD_DETAIL]: { bundleId: string };
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -125,16 +126,19 @@ export interface PopupResult {
       }
     | undefined;
   [PopupType.NEW_GROUP]: { groupId: number };
-  [PopupType.FOLDER_EDITOR]: boolean;
   [PopupType.EDIT_PROFILE]: boolean;
   // cropped File on Save; undefined on Cancel/back.
   [PopupType.AVATAR_EDITOR]: { file: File } | undefined;
   // true on confirm; undefined on cancel / system-back (treated identically by the caller).
-  [PopupType.CONFIRM]: boolean | undefined;
+  [PopupType.CONFIRM]:
+    | boolean
+    | { confirmed: true; checked: boolean }
+    | undefined;
   // acknowledge-only — no meaningful result (undefined on dismiss).
   [PopupType.SHELL_INCOMPATIBLE]: undefined;
   [PopupType.UPLOAD_DETAIL]: undefined;
   [PopupType.FORWARD]: ForwardDialogResult | undefined;
+  [PopupType.FORWARD_DETAIL]: undefined;
 }
 
 export interface DlgInfo {

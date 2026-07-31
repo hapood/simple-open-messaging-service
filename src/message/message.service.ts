@@ -1,6 +1,11 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
+import {
+  ContentType,
+  Message,
+  MessageThreadType,
+  Prisma,
+} from '../prisma/generated/client.js';
 import { extractDigests } from '../upload/file-content.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
@@ -12,11 +17,15 @@ import {
   toDisplayText,
 } from '../common/message-entity.js';
 
-export type UnreadMentionState = 'none' | 'all' | 'me';
+export type UnreadMentionState = Array<'all' | 'me'>;
 
 export interface ThreadAttentionState {
   count: number;
   mention: UnreadMentionState;
+}
+
+export interface CommittedThreadReadState extends ThreadAttentionState {
+  lastReadSeq: number;
 }
 
 export interface AwayThreadAttentionState extends ThreadAttentionState {
@@ -87,10 +96,10 @@ export function derivePreview(type: ContentType, content: string): string {
         const c = JSON.parse(content) as { summaryLines?: string[] };
         const first = c.summaryLines?.[0]?.replace(/\s+/g, ' ').trim();
         return first
-          ? `[聊天记录] ${first}`.slice(0, PREVIEW_TEXT_MAX)
-          : '[聊天记录]';
+          ? `[Chat history] ${first}`.slice(0, PREVIEW_TEXT_MAX)
+          : '[Chat history]';
       } catch {
-        return '[聊天记录]';
+        return '[Chat history]';
       }
     }
     case ContentType.CALL: {
@@ -440,6 +449,38 @@ export class MessageService implements OnModuleInit {
     let created: Omit<Message, 'id'>;
     try {
       created = await this.prisma.$transaction(async (tx) => {
+        const participant = await tx.threadParticipant.findUnique({
+          where: {
+            userId_threadId: {
+              userId: stage.creatorId,
+              threadId: stage.threadId,
+            },
+          },
+          include: {
+            thread: {
+              select: {
+                type: true,
+                groupUser: {
+                  select: { group: { select: { dissolvedAt: true } } },
+                },
+              },
+            },
+          },
+        });
+        if (!participant || participant.leftAt !== null) {
+          throw new BusinessException(
+            participant?.thread.type === MessageThreadType.P2P
+              ? BusinessCode.FRIEND_NOT_FOUND
+              : BusinessCode.GROUP_FORBIDDEN,
+            'conversation is read-only',
+          );
+        }
+        if (participant.thread.groupUser?.group?.dissolvedAt != null) {
+          throw new BusinessException(
+            BusinessCode.GROUP_DISSOLVED,
+            'group has been dissolved',
+          );
+        }
         const { curSeq: seq } = await tx.messageThread.update({
           where: { id: stage.threadId },
           data: { curSeq: { increment: 1 } },
@@ -957,10 +998,15 @@ export class MessageService implements OnModuleInit {
     >`
       SELECT tp."threadId" AS "threadId", COUNT(m.seq)::int AS "unread"
       FROM "ThreadParticipant" tp
-      LEFT JOIN "Message" m
-        ON m."threadId" = tp."threadId"
-       AND m.seq > COALESCE(tp."lastReadSeq", -1)
-       AND m.creator <> ${userId}
+      LEFT JOIN LATERAL (
+        SELECT msg.seq
+        FROM "Message" msg
+        WHERE msg."threadId" = tp."threadId"
+          AND msg.seq > COALESCE(tp."lastReadSeq", -1)
+          AND msg.creator <> ${userId}
+        ORDER BY msg.seq ASC
+        LIMIT 1000
+      ) m ON TRUE
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL
         AND tp."threadId" IN (${Prisma.join(threadIds)})
@@ -997,10 +1043,15 @@ export class MessageService implements OnModuleInit {
           ARRAY[]::text[]
         ) AS "mentionContents"
       FROM "ThreadParticipant" tp
-      LEFT JOIN "Message" m
-        ON m."threadId" = tp."threadId"
-       AND m.seq > COALESCE(tp."lastReadSeq", -1)
-       AND m.creator <> ${userId}
+      LEFT JOIN LATERAL (
+        SELECT msg.seq, msg.content, msg."contentType"
+        FROM "Message" msg
+        WHERE msg."threadId" = tp."threadId"
+          AND msg.seq > COALESCE(tp."lastReadSeq", -1)
+          AND msg.creator <> ${userId}
+        ORDER BY msg.seq ASC
+        LIMIT 1000
+      ) m ON TRUE
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL
         AND tp."threadId" IN (${Prisma.join(threadIds)})
@@ -1017,19 +1068,62 @@ export class MessageService implements OnModuleInit {
     );
   }
 
-  /** Authoritative read badge state for one thread. Used immediately after mark-read so HTTP and SSE
-   *  clients apply the exact same server-derived count/mention instead of inferring them from seq gaps. */
-  async unreadAttentionForThread(
+  /** Monotonically merge a viewport HWM and derive its capped badge from the same PostgreSQL statement. */
+  async commitReadState(
     userId: number,
     threadId: number,
-  ): Promise<ThreadAttentionState> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { account: true },
-    });
-    if (!user) return { count: 0, mention: 'none' };
-    const states = await this.unreadAttentionByThread(userId, user.account, [threadId]);
-    return states.get(threadId) ?? { count: 0, mention: 'none' };
+    localReadHwm: number,
+  ): Promise<CommittedThreadReadState | null> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        lastReadSeq: number;
+        unread: number;
+        mentionContents: string[];
+        account: string;
+      }>
+    >`
+      WITH advanced AS (
+        UPDATE "ThreadParticipant"
+        SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", -1), ${localReadHwm})
+        WHERE "userId" = ${userId}
+          AND "threadId" = ${threadId}
+          AND "leftAt" IS NULL
+        RETURNING "lastReadSeq"
+      ), sample AS (
+        SELECT m.seq, m.content, m."contentType"
+        FROM "Message" m, advanced a
+        WHERE m."threadId" = ${threadId}
+          AND m.seq > a."lastReadSeq"
+          AND m.creator <> ${userId}
+        ORDER BY m.seq ASC
+        LIMIT 1000
+      )
+      SELECT
+        a."lastReadSeq" AS "lastReadSeq",
+        COUNT(s.seq)::int AS unread,
+        COALESCE(
+          ARRAY_AGG(s.content) FILTER (
+            WHERE s."contentType" = 'PURE_TEXT'
+              AND (
+                strpos(s.content, '](soms://user/') > 0
+                OR strpos(s.content, '](soms://audience/all?v=1)') > 0
+              )
+          ),
+          ARRAY[]::text[]
+        ) AS "mentionContents",
+        u.account
+      FROM advanced a
+      JOIN "User" u ON u.id = ${userId}
+      LEFT JOIN sample s ON TRUE
+      GROUP BY a."lastReadSeq", u.account
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      lastReadSeq: row.lastReadSeq,
+      count: row.unread,
+      mention: this.mentionState(row.mentionContents ?? [], row.account),
+    };
   }
 
   /**
@@ -1177,8 +1271,9 @@ export class MessageService implements OnModuleInit {
     selfAccount: string,
   ): UnreadMentionState {
     const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
-    if (!normalizedSelf) return 'none';
-    let state: UnreadMentionState = 'none';
+    if (!normalizedSelf) return [];
+    let all = false;
+    let me = false;
     for (const content of contents) {
       for (const segment of parseMessageEntities(content)) {
         if (
@@ -1191,13 +1286,13 @@ export class MessageService implements OnModuleInit {
           segment.entityType === 'user' &&
           segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
         ) {
-          return 'me';
+          me = true;
         }
         if (segment.entityType === 'audience' && segment.entityId === 'all')
-          state = 'all';
+          all = true;
       }
     }
-    return state;
+    return [...(all ? ['all' as const] : []), ...(me ? ['me' as const] : [])];
   }
 
   /**
@@ -1229,35 +1324,18 @@ export class MessageService implements OnModuleInit {
           OR strpos(m.content, '](soms://audience/all?v=1)') > 0
         )
     `;
-    const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
-    const states = new Map<number, UnreadMentionState>();
+    const contents = new Map<number, string[]>();
     for (const row of rows) {
-      let state = states.get(row.threadId) ?? 'none';
-      for (const segment of parseMessageEntities(row.content)) {
-        if (
-          segment.kind !== 'entity' ||
-          segment.version !== 1 ||
-          segment.sigil !== '@'
-        )
-          continue;
-        if (
-          segment.entityType === 'user' &&
-          segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
-        ) {
-          state = 'me';
-          break;
-        }
-        if (
-          state === 'none' &&
-          segment.entityType === 'audience' &&
-          segment.entityId === 'all'
-        ) {
-          state = 'all';
-        }
-      }
-      states.set(row.threadId, state);
+      const list = contents.get(row.threadId) ?? [];
+      list.push(row.content);
+      contents.set(row.threadId, list);
     }
-    return states;
+    return new Map(
+      [...contents].map(([threadId, values]) => [
+        threadId,
+        this.mentionState(values, selfAccount),
+      ]),
+    );
   }
 
   /** Mention state among messages newer than an internal away-notification HWM. */
@@ -1295,34 +1373,17 @@ export class MessageService implements OnModuleInit {
           OR strpos(m.content, '](soms://audience/all?v=1)') > 0
         )
     `;
-    const normalizedSelf = selfAccount.trim().toLocaleLowerCase();
-    const states = new Map<number, UnreadMentionState>();
+    const contents = new Map<number, string[]>();
     for (const row of rows) {
-      let state = states.get(row.threadId) ?? 'none';
-      for (const segment of parseMessageEntities(row.content)) {
-        if (
-          segment.kind !== 'entity' ||
-          segment.version !== 1 ||
-          segment.sigil !== '@'
-        )
-          continue;
-        if (
-          segment.entityType === 'user' &&
-          segment.entityId.trim().toLocaleLowerCase() === normalizedSelf
-        ) {
-          state = 'me';
-          break;
-        }
-        if (
-          state === 'none' &&
-          segment.entityType === 'audience' &&
-          segment.entityId === 'all'
-        ) {
-          state = 'all';
-        }
-      }
-      states.set(row.threadId, state);
+      const list = contents.get(row.threadId) ?? [];
+      list.push(row.content);
+      contents.set(row.threadId, list);
     }
-    return states;
+    return new Map(
+      [...contents].map(([threadId, values]) => [
+        threadId,
+        this.mentionState(values, selfAccount),
+      ]),
+    );
   }
 }

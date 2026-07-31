@@ -10,8 +10,8 @@ import type { MissedCursor, NotificationDescriptor } from './notification-descri
 const SUMMARY_TAKE = 200;
 
 /** One thread's row in POST /notifications/missed-summary. Mirrors the backend MissedThreadItem. The
- *  threadlist reads `latestMessage` (the body for preview pre-warm) + `lastReadSeq` (merged with the local
- *  optimistic value to derive the displayed unread); the other fields are carried for parity but unused here
+ *  threadlist reads `latestMessage` (the body for preview pre-warm) + the authoritative read state; the
+ *  other fields are carried for parity but unused here
  *  (avatars come from the conversation snapshot). */
 export interface MissedThreadItem {
   threadId: number;
@@ -19,9 +19,9 @@ export interface MissedThreadItem {
   displayName: string;
   unreadCount: number;
   /** Optional for compatibility with an older server during rolling upgrades. */
-  mentionUnread?: 'none' | 'all' | 'me';
+  mentionUnread?: Array<'all' | 'me'>;
   muted: boolean;
-  /** The caller's per-thread read watermark (null = never read); merged with the optimistic value (B6). */
+  /** The caller's server-confirmed per-thread read watermark (null = never read). */
   lastReadSeq: number | null;
   senderAvatarUrl: string;
   senderUserId: number;

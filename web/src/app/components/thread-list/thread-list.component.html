@@ -29,6 +29,7 @@
             [attr.data-flip-key]="thread.threadId"
             [class.active]="thread.threadId === openThreadId()"
             [class.unread]="thread.unreadCount > 0"
+            [class.unread-syncing]="readCommitPending().has(thread.threadId)"
             [class.muted]="thread.muted"
             [attr.aria-current]="thread.threadId === openThreadId() ? 'true' : null"
             [attr.aria-label]="accessibleLabel(thread)"
@@ -64,14 +65,14 @@
                     <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
                   </span>
                 }
-                @if (thread.unreadCount > 0 && (thread.mentionUnread === 'me' || thread.mentionUnread === 'all')) {
+                @if (thread.unreadCount > 0 && (thread.mentionUnread?.length ?? 0) > 0) {
                   <span class="mention-unread-badge"
                     [title]="'threadList.mentionedYou' | transloco"
                     aria-hidden="true">@</span>
                 }
                 @if (thread.unreadCount > 0) {
                   <span class="unread-badge" aria-hidden="true">
-                    {{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}
+                    {{ thread.unreadCount >= 1000 ? '999+' : thread.unreadCount }}
                   </span>
                 }
               </span>

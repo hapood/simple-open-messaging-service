@@ -1,5 +1,9 @@
 import { TestBed } from '@angular/core/testing';
-import { provideZonelessChangeDetection, signal, WritableSignal } from '@angular/core';
+import {
+  provideZonelessChangeDetection,
+  signal,
+  WritableSignal,
+} from '@angular/core';
 import { provideTransloco } from '@jsverse/transloco';
 import { of } from 'rxjs';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
@@ -18,7 +22,9 @@ import { ConversationItem, User } from '../../services/model';
  * the panel + confirm visible so the error is observable. Drives component signals directly (no template
  * render) like user-avatar.spec — zoneless CD is provided for the constructor's revision probe effect.
  */
-function makeItem(over: { blocked?: boolean; threadId?: number; userId?: number } = {}): { item: ConversationItem; peer: User } {
+function makeItem(
+  over: { blocked?: boolean; threadId?: number; userId?: number } = {},
+): { item: ConversationItem; peer: User } {
   const peer = {
     id: over.userId ?? 42,
     name: 'Alice',
@@ -56,7 +62,9 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
 
     deleteFriend = jasmine.createSpy('deleteFriend');
     setBlock = jasmine.createSpy('setBlock');
-    syncPeerProfile = jasmine.createSpy('syncPeerProfile').and.returnValue(of({ code: 0, data: null }));
+    syncPeerProfile = jasmine
+      .createSpy('syncPeerProfile')
+      .and.returnValue(of({ code: 0, data: null }));
     applyThreadMeta = jasmine.createSpy('applyThreadMeta');
     removeThread = jasmine.createSpy('removeThread');
     closeChat = jasmine.createSpy('closeChat');
@@ -66,19 +74,42 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
         provideZonelessChangeDetection(),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: '简体中文' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
           loader: InlineTranslocoLoader,
         }),
         PeerProfileComponent,
-        { provide: UserService, useValue: { deleteFriend, setBlock, syncPeerProfile } as unknown as UserService },
+        {
+          provide: UserService,
+          useValue: {
+            deleteFriend,
+            setBlock,
+            syncPeerProfile,
+          } as unknown as UserService,
+        },
         {
           provide: ConversationListService,
-          useValue: { openThreadId, items, applyThreadMeta, removeThread, updatePeerUser: jasmine.createSpy() } as unknown as ConversationListService,
+          useValue: {
+            openThreadId,
+            items,
+            applyThreadMeta,
+            removeThread,
+            load: jasmine.createSpy('load'),
+            updatePeerUser: jasmine.createSpy(),
+          } as unknown as ConversationListService,
         },
-        { provide: NavStateMachineService, useValue: { closeChat, closeAside: jasmine.createSpy() } as unknown as NavStateMachineService },
+        {
+          provide: NavStateMachineService,
+          useValue: {
+            closeChat,
+            closeAside: jasmine.createSpy(),
+          } as unknown as NavStateMachineService,
+        },
       ],
     })
       // These tests assert the component's class logic (signals + service calls), not the DOM. Blank the
@@ -95,12 +126,21 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
     expect(comp.peer()?.id).toBe(42);
     expect(comp.blocked()).toBe(false);
     const { peer } = makeItem({ blocked: true });
-    items.set([{ threadId: 5, peerUser: peer, blocked: true } as unknown as ConversationItem]);
+    items.set([
+      {
+        threadId: 5,
+        peerUser: peer,
+        blocked: true,
+      } as unknown as ConversationItem,
+    ]);
     expect(comp.blocked()).toBe(true);
   });
 
   it('probes the cached profile revision when the profile panel opens', () => {
-    expect(syncPeerProfile).toHaveBeenCalledWith({ userId: 42, sinceProfileRev: 7 });
+    expect(syncPeerProfile).toHaveBeenCalledWith({
+      userId: 42,
+      sinceProfileRev: 7,
+    });
   });
 
   it('askBlock enters the block confirm and cancels an open unfriend confirm (mutually exclusive)', () => {
@@ -129,7 +169,10 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
     setBlock.and.returnValue(of({ code: 0 }));
     comp.askBlock();
     comp.doBlock();
-    expect(setBlock.calls.mostRecent().args[0]).toEqual({ userId: 42, block: true });
+    expect(setBlock.calls.mostRecent().args[0]).toEqual({
+      userId: 42,
+      block: true,
+    });
     expect(applyThreadMeta).toHaveBeenCalledWith(5, { blocked: true });
     expect(comp.confirmBlock()).toBe(false);
   });
@@ -146,16 +189,26 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
   it('doUnblock unblocks the peer in a single tap (no confirm) and patches the item', () => {
     setBlock.and.returnValue(of({ code: 0 }));
     comp.doUnblock();
-    expect(setBlock.calls.mostRecent().args[0]).toEqual({ userId: 42, block: false });
+    expect(setBlock.calls.mostRecent().args[0]).toEqual({
+      userId: 42,
+      block: false,
+    });
     expect(applyThreadMeta).toHaveBeenCalledWith(5, { blocked: false });
   });
 
-  it('doUnfriend deletes the friend, drops the thread, and closes the chat', () => {
+  it('doUnfriend ends the friendship but retains readable history by default', async () => {
     deleteFriend.and.returnValue(of({ code: 0 }));
-    comp.doUnfriend();
-    expect(deleteFriend.calls.mostRecent().args[0]).toEqual({ userId: 42 });
-    expect(removeThread).toHaveBeenCalledWith(5);
-    expect(closeChat).toHaveBeenCalled();
+    await comp.doUnfriend();
+    expect(deleteFriend.calls.mostRecent().args[0]).toEqual({
+      userId: 42,
+      deleteData: false,
+    });
+    expect(applyThreadMeta).toHaveBeenCalledWith(5, {
+      friendshipActive: false,
+      conversationState: 'READ_ONLY',
+    });
+    expect(removeThread).not.toHaveBeenCalled();
+    expect(closeChat).not.toHaveBeenCalled();
   });
 
   it('guards: with no peer resolved, doBlock/doUnblock/doUnfriend are all no-ops', () => {

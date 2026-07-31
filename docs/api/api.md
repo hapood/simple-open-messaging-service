@@ -196,6 +196,20 @@ Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP
 
 - Per-`ThreadParticipant` mutations: the P2P thread lookup, read watermark advance, mute, pin, clear-history, and per-thread alias. `search-messages` does in-chat search.
 
+`mark-read` commits a viewport-dwelled HWM on chat close/switch:
+
+- **Body**: `{ threadId, localReadHwm }`.
+- The server stores `max(ThreadParticipant.lastReadSeq, localReadHwm)` and returns
+  `{ threadId, lastReadSeq, unreadCount, mentionUnread }`.
+- `unreadCount` is capped at `1000`; `1000` means 1000 or more and clients render it as `999+`.
+- `mentionUnread` is an unordered, duplicate-free set encoded as an array containing zero or more of
+  `"all"` and `"me"`. Empty means no mention; the legacy `"none"` value is not valid. Clients must not
+  attach meaning to array order.
+- Both count and mentions are derived from the same first 1000 unread, non-self-authored messages after the
+  committed HWM.
+- This contract is intentionally incompatible with the retired `lastReadSeq` request and scalar mention
+  response; callers and servers must be deployed together.
+
 ---
 
 ## Group API

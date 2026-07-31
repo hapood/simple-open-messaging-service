@@ -13,12 +13,14 @@ describe('ConversationListService stable markRead flush', () => {
   let convList: ConversationListService;
   let commitLocalRead: jasmine.Spy;
   let markRead: jasmine.Spy;
+  let applyReadState: jasmine.Spy;
 
   beforeEach(() => {
     commitLocalRead = jasmine
       .createSpy('commitLocalRead')
       .and.returnValue(true);
     markRead = jasmine.createSpy('markRead').and.returnValue(of({ code: 0 }));
+    applyReadState = jasmine.createSpy('applyReadState');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -27,10 +29,13 @@ describe('ConversationListService stable markRead flush', () => {
           provide: ThreadRepository,
           useValue: {
             commitLocalRead,
+            applyReadState,
+            beginReadCommit: jasmine.createSpy('beginReadCommit'),
+            finishReadCommit: jasmine.createSpy('finishReadCommit'),
+            readCommitPending: signal<ReadonlySet<number>>(new Set()).asReadonly(),
             setOpenThread: jasmine.createSpy('setOpenThread'),
-            openThreadId: signal<number | undefined>(undefined).asReadonly(),
+            openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
-            clearUnread: jasmine.createSpy('clearUnread'),
             refreshPeerOnOpen: jasmine.createSpy('refreshPeerOnOpen'),
             missedCursor: signal(null).asReadonly(),
             advanceMissedCursor: jasmine.createSpy('advanceMissedCursor'),
@@ -45,28 +50,46 @@ describe('ConversationListService stable markRead flush', () => {
     convList = TestBed.inject(ConversationListService);
   });
 
-  it('sends a stable read immediately and coalesces later positions while it is in flight', () => {
+  it('waits for close, then sends and coalesces later positions while the request is in flight', () => {
     const first = new Subject<{ code: number }>();
     markRead.and.returnValues(first.asObservable(), of({ code: 0 }));
     convList.markReadStable(7, 1);
+    expect(markRead).not.toHaveBeenCalled();
+    convList.close();
     convList.markReadStable(7, 2);
     convList.markReadStable(7, 3);
     expect(commitLocalRead).toHaveBeenCalledTimes(3);
     expect(commitLocalRead).toHaveBeenCalledWith(7, 3);
     expect(markRead).toHaveBeenCalledTimes(1);
-    expect(markRead).toHaveBeenCalledWith({ threadId: 7, lastReadSeq: 1 });
+    expect(markRead).toHaveBeenCalledWith({ threadId: 7, localReadHwm: 1 });
 
     first.next({ code: 0 });
     first.complete();
 
     expect(markRead).toHaveBeenCalledTimes(2);
-    expect(markRead).toHaveBeenCalledWith({ threadId: 7, lastReadSeq: 3 });
+    expect(markRead).toHaveBeenCalledWith({ threadId: 7, localReadHwm: 3 });
   });
 
   it('ignores a repeated/stale stable position', () => {
     commitLocalRead.and.returnValue(false);
     convList.markReadStable(7, 5);
+    convList.close();
     expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it('applies the server-authoritative badge returned on close', () => {
+    const state = {
+      threadId: 7,
+      lastReadSeq: 5,
+      unreadCount: 2,
+      mentionUnread: ['all'] as Array<'all' | 'me'>,
+    };
+    markRead.and.returnValue(of({ code: 0, data: state }));
+
+    convList.markReadStable(7, 5);
+    convList.close();
+
+    expect(applyReadState).toHaveBeenCalledOnceWith(state);
   });
 });
 
@@ -99,6 +122,7 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
             status: signal('LOADING').asReadonly(),
             error: signal('').asReadonly(),
             openThreadId: signal(undefined).asReadonly(),
+            readCommitPending: signal<ReadonlySet<number>>(new Set()).asReadonly(),
             topInserted: signal(null).asReadonly(),
             setOpenThread: jasmine.createSpy('setOpenThread'),
             missedCursor,

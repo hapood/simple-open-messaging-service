@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import { GroupRole, MessageThreadType, Prisma } from '../prisma/generated/client.js';
+import {
+  GroupRole,
+  MessageThreadType,
+  Prisma,
+} from '../prisma/generated/client.js';
 
 /**
  * ThreadParticipant data layer.
@@ -9,8 +13,8 @@ import { GroupRole, MessageThreadType, Prisma } from '../prisma/generated/client
  * state (read position, mute, role). It replaces both the participation half of UserMessageThread and
  * the whole GroupMember table. P2P and GROUP share it; role is null for P2P.
  *
- * Authorization invariant used across the app: a user may interact with a conversation iff they have an
- * ACTIVE participant row (leftAt IS NULL) on that thread — one check for both P2P and GROUP.
+ * GROUP access requires an active participant. P2P keeps a participant row readable after unfriend:
+ * `leftAt` ends the friendship/write capability, while the retained row continues to authorize history.
  */
 @Injectable()
 export class ThreadParticipantService {
@@ -40,14 +44,21 @@ export class ThreadParticipantService {
     });
   }
 
-  /** The caller's participant row with the thread's type, only if still active. Used by ThreadAccessGuard
-   *  to attach `threadType` so message routes can branch on P2P vs GROUP (e.g. block-filter scoping). */
+  /** Resolve a history-readable participant with the thread type. GROUP rows must still be active;
+   *  P2P rows remain readable after unfriend so the old conversation can be opened without a composer. */
   async findActiveParticipantWithThread(userId: number, threadId: number) {
     const p = await this.prisma.threadParticipant.findUnique({
       where: { userId_threadId: { userId, threadId } },
-      include: { thread: { select: { type: true } } },
+      include: {
+        thread: {
+          select: {
+            type: true,
+            groupUser: { select: { group: { select: { dissolvedAt: true } } } },
+          },
+        },
+      },
     });
-    return p && p.leftAt === null ? p : null;
+    return p;
   }
 
   /** Toggle mute for the caller's row. Idempotent (writing the same value is a no-op write). */
@@ -66,7 +77,9 @@ export class ThreadParticipantService {
   setPinned(userId: number, threadId: number, pinned: boolean) {
     return this.prisma.threadParticipant.update({
       where: { userId_threadId: { userId, threadId } },
-      data: pinned ? { pinned: true, pinnedAt: new Date() } : { pinned: false, pinnedAt: null },
+      data: pinned
+        ? { pinned: true, pinnedAt: new Date() }
+        : { pinned: false, pinnedAt: null },
     });
   }
 
@@ -80,6 +93,14 @@ export class ThreadParticipantService {
     return this.prisma.threadParticipant.update({
       where: { userId_threadId: { userId, threadId } },
       data: { clearedAt: new Date() },
+    });
+  }
+
+  /** Permanently hide a thread for one participant. The peer/member copies and Message rows are untouched. */
+  deleteThreadForUser(userId: number, threadId: number) {
+    return this.prisma.threadParticipant.update({
+      where: { userId_threadId: { userId, threadId } },
+      data: { clearedAt: new Date(), pinned: false, pinnedAt: null },
     });
   }
 
@@ -133,14 +154,14 @@ export class ThreadParticipantService {
   }
 
   /**
-   * For each P2P thread id, the OTHER active participant (the peer). Used to hydrate peerUser on the
+   * For each P2P thread id, the OTHER participant (the peer). Rows remain available after unfriend so
+   * retained history can still render the peer identity. Used to hydrate peerUser on the
    * conversation list. Returns at most one peer per thread (P2P threads have exactly two participants).
    */
   findP2PPeers(threadIds: number[], notUserId: number) {
     return this.prisma.threadParticipant.findMany({
       where: {
         threadId: { in: threadIds },
-        leftAt: null,
         userId: { not: notUserId },
       },
     });
@@ -160,9 +181,16 @@ export class ThreadParticipantService {
    * pair (the stale soft-left one + the new active one). Filtering leftAt:null on both sides selects
    * only the live edge. This is the S2S message/file serving authz gate after unfriend.
    */
-  async findP2PThreadBetween(userX: number, userY: number): Promise<number | null> {
+  async findP2PThreadBetween(
+    userX: number,
+    userY: number,
+  ): Promise<number | null> {
     const mine = await this.prisma.threadParticipant.findMany({
-      where: { userId: userX, leftAt: null, thread: { type: MessageThreadType.P2P } },
+      where: {
+        userId: userX,
+        leftAt: null,
+        thread: { type: MessageThreadType.P2P },
+      },
       select: { threadId: true },
     });
     if (mine.length === 0) return null;
@@ -177,6 +205,26 @@ export class ThreadParticipantService {
     return peer?.threadId ?? null;
   }
 
+  /** Most recent retained P2P thread for a pair, including an already-ended relationship. Used only
+   *  to make a repeated unfriend request idempotent and to apply a late `deleteData` choice. */
+  async findLatestP2PThreadBetween(
+    userX: number,
+    userY: number,
+  ): Promise<number | null> {
+    const row = await this.prisma.threadParticipant.findFirst({
+      where: {
+        userId: userX,
+        thread: {
+          type: MessageThreadType.P2P,
+          ThreadParticipant: { some: { userId: userY } },
+        },
+      },
+      orderBy: { threadId: 'desc' },
+      select: { threadId: true },
+    });
+    return row?.threadId ?? null;
+  }
+
   /**
    * End a P2P friendship: soft-leave BOTH active participants of the thread (leftAt=now). The thread
    * row + participants are kept (history); findP2PThreadBetween now returns null for the pair, and
@@ -187,6 +235,28 @@ export class ThreadParticipantService {
     await this.prisma.threadParticipant.updateMany({
       where: { threadId, leftAt: null },
       data: { leftAt: new Date() },
+    });
+  }
+
+  /** Atomically end both sides of a P2P relation and optionally clear the caller's history boundary. */
+  async endP2P(
+    threadId: number,
+    callerUserId: number,
+    deleteData: boolean,
+  ): Promise<{ transitioned: boolean }> {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const ended = await tx.threadParticipant.updateMany({
+        where: { threadId, leftAt: null },
+        data: { leftAt: now },
+      });
+      if (deleteData) {
+        await tx.threadParticipant.update({
+          where: { userId_threadId: { userId: callerUserId, threadId } },
+          data: { clearedAt: now, pinned: false, pinnedAt: null },
+        });
+      }
+      return { transitioned: ended.count > 0 };
     });
   }
 
@@ -220,7 +290,11 @@ export class ThreadParticipantService {
   }
 
   /** Non-tx convenience wrapper around {@link upsertMemberInTx} (uses the shared pool client). */
-  upsertMember(threadId: number, userId: number, role: GroupRole): Promise<void> {
+  upsertMember(
+    threadId: number,
+    userId: number,
+    role: GroupRole,
+  ): Promise<void> {
     return this.upsertMemberInTx(this.prisma, threadId, userId, role);
   }
 
@@ -233,7 +307,11 @@ export class ThreadParticipantService {
   }
 
   /** Set a member's role (raw — the origin authorized it). */
-  async setMemberRole(threadId: number, userId: number, role: GroupRole): Promise<void> {
+  async setMemberRole(
+    threadId: number,
+    userId: number,
+    role: GroupRole,
+  ): Promise<void> {
     await this.prisma.threadParticipant.updateMany({
       where: { threadId, userId },
       data: { role },
@@ -281,19 +359,4 @@ export class ThreadParticipantService {
    * cursor and let the later write regress it. The WHERE clause matches only when the new id is
    * strictly greater than the current watermark (or the watermark is NULL); count>0 means it moved.
    */
-  async advanceReadCursor(
-    userId: number,
-    threadId: number,
-    lastReadSeq: number,
-  ): Promise<boolean> {
-    const result = await this.prisma.threadParticipant.updateMany({
-      where: {
-        userId,
-        threadId,
-        OR: [{ lastReadSeq: null }, { lastReadSeq: { lt: lastReadSeq } }],
-      },
-      data: { lastReadSeq },
-    });
-    return result.count > 0;
-  }
 }

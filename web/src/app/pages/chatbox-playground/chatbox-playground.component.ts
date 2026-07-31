@@ -1,29 +1,68 @@
 import {
-  Component, ElementRef, OnDestroy, inject, isDevMode,
-  signal, viewChild, ChangeDetectionStrategy, ViewEncapsulation,
+  Component,
+  ElementRef,
+  OnDestroy,
+  inject,
+  isDevMode,
+  signal,
+  viewChild,
+  ChangeDetectionStrategy,
+  ViewEncapsulation,
   EnvironmentInjector,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ChatBoxScroller, ScrollerApi, CbElement, CbItem, CbConfig, CbOptions, CbScrollInfo, CbDebugStats } from '../../lib/chat-box/chat-box-scroller';
+import {
+  ChatBoxScroller,
+  ScrollerApi,
+  CbElement,
+  CbItem,
+  CbConfig,
+  CbOptions,
+  CbScrollInfo,
+  CbDebugStats,
+} from '../../lib/chat-box/chat-box-scroller';
 import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
-import { pickStickyDateLabel, stickyDateRowOpacity, isViewportTransformEnd } from '../../lib/sticky-date';
+import {
+  pickStickyDateLabel,
+  stickyDateRowOpacity,
+  isViewportTransformEnd,
+} from '../../lib/sticky-date';
 import { ActivatedRoute } from '@angular/router';
 import { LayoutService } from '../../services/layout.service';
 import { ThemeService } from '../../services/theme.service';
-import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../../components/message-cards/create-item';
-import { mergeAlbumItems, absorbAlbumTail } from '../../components/message-cards/merge-items';
-import { VOICE_BAR_W, VOICE_BAR_H } from '../../components/message-cards/media-row/layout';
+import {
+  createMsgCbElement,
+  createGhostCbElement,
+  computeRowFlags,
+} from '../../components/message-cards/create-item';
+import {
+  mergeAlbumItems,
+  absorbAlbumTail,
+} from '../../components/message-cards/merge-items';
+import {
+  VOICE_BAR_W,
+  VOICE_BAR_H,
+} from '../../components/message-cards/media-row/layout';
 import { GalleryViewerService } from '../../components/gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../../components/file-detail-viewer/file-detail-viewer.service';
+import { PopupType, RouteService } from '../../services/route.service';
 import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
 import { UpdateBannerComponent } from '../../components/update-banner/update-banner.component';
 import { IndicatorSlotComponent } from '../../components/indicator-slot/indicator-slot.component';
 import type { ConnectionState } from '../../services/websocket.service';
-import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../../components/message-cards/chat-item';
+import type {
+  AlbumImage,
+  ChatItemData,
+  ChatMsgData,
+  FileInfo,
+} from '../../components/message-cards/chat-item';
 import { MockItemSource, MockUserService } from './http-item-source.mock';
 import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
 import { ChatMember } from '../../components/chat-editor/chat-editor.component';
-import { ChatInputComponent, ChatSendIntent } from '../../lib/chat-input/chat-input.component';
+import {
+  ChatInputComponent,
+  ChatSendIntent,
+} from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { StickyDateOverlayComponent } from '../../components/message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
@@ -55,7 +94,16 @@ const CB_DEFAULTS: Required<CbConfig> = {
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, ConnectionBannerComponent, UpdateBannerComponent, IndicatorSlotComponent],
+  imports: [
+    FormsModule,
+    UserAvatarComponent,
+    ChatInputComponent,
+    KbdOffsetDirective,
+    StickyDateOverlayComponent,
+    ConnectionBannerComponent,
+    UpdateBannerComponent,
+    IndicatorSlotComponent,
+  ],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -70,8 +118,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly galleryViewer = inject(GalleryViewerService);
   /** File-card click → fullscreen file-detail overlay (same transient-overlay pattern as the gallery). */
   private readonly fileDetail = inject(FileDetailService);
+  private readonly popupRoute = inject(RouteService);
   /** Plan A (browser overflow-anchor) is selected by route data.useNativeAnchor: the -a route sets it true; -b (default) uses Plan B (manual compensation). */
-  readonly useNativeAnchor = (this.route.snapshot.data as { useNativeAnchor?: boolean }).useNativeAnchor === true;
+  readonly useNativeAnchor =
+    (this.route.snapshot.data as { useNativeAnchor?: boolean })
+      .useNativeAnchor === true;
   /** Desktop-class viewport (wide screen ≥1280px, width-only): true = persistent side rail; false = mobile drawer + FAB. */
   readonly isDesktop = this.layout.isDesktop;
   /** Mobile control-panel drawer toggle. */
@@ -85,15 +136,22 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly toast = signal<string | null>(null);
   private toastTimer?: ReturnType<typeof setTimeout>;
 
-  private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
-  private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly viewportRef =
+    viewChild<ElementRef<HTMLDivElement>>('viewport');
+  private readonly contentRef =
+    viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date pill
    *  (the viewport's own top slides under the header while the keyboard-lift transform is active). */
-  private readonly headerRef = viewChild('pgHeader', { read: ElementRef<HTMLElement> });
-  private readonly jumpInput = viewChild<ElementRef<HTMLInputElement>>('jumpInput');
-  private readonly insertInput = viewChild<ElementRef<HTMLInputElement>>('insertInput');
-  private readonly removeInput = viewChild<ElementRef<HTMLInputElement>>('removeInput');
+  private readonly headerRef = viewChild('pgHeader', {
+    read: ElementRef<HTMLElement>,
+  });
+  private readonly jumpInput =
+    viewChild<ElementRef<HTMLInputElement>>('jumpInput');
+  private readonly insertInput =
+    viewChild<ElementRef<HTMLInputElement>>('insertInput');
+  private readonly removeInput =
+    viewChild<ElementRef<HTMLInputElement>>('removeInput');
 
   private scroller?: ScrollerApi<ChatItemData>;
 
@@ -155,7 +213,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** App-wide light/dark controller — the SAME ThemeService production uses (it writes <html data-theme>).
    *  No local theme signal or matchMedia: the playground's theme behavior is identical to the rest of the app. */
   readonly theme = inject(ThemeService);
-  cycleTheme(): void { this.theme.cycleMode(); }
+  cycleTheme(): void {
+    this.theme.cycleMode();
+  }
 
   // Controls
   /** Data-volume input (the Set button builds the source with this count and inits the kernel). Default 100. */
@@ -165,8 +225,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** @mention candidates (mock group members; production swaps in GroupService.getMembers()). */
   readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
 
-  togglePanel() { this.panelOpen.update(v => !v); }
-  closePanel() { this.panelOpen.set(false); }
+  togglePanel() {
+    this.panelOpen.update((v) => !v);
+  }
+  closePanel() {
+    this.panelOpen.set(false);
+  }
 
   // FAB: drag to reposition; on release it snaps to the nearest horizontal edge. Movement below the threshold counts as a click (toggles the panel).
   onFabDown(e: PointerEvent) {
@@ -199,10 +263,17 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const dy = e.clientY - this.fabStartY;
     if (!this.fabMoved && Math.hypot(dx, dy) < 5) return; // activation threshold — protects the click
     this.fabMoved = true;
-    const w = fab.offsetWidth, h = fab.offsetHeight;
+    const w = fab.offsetWidth,
+      h = fab.offsetHeight;
     // Boundary clamp: keep the whole button inside the viewport with an 8px margin.
-    const left = Math.max(8, Math.min(window.innerWidth - w - 8, this.fabStartLeft + dx));
-    const top = Math.max(8, Math.min(window.innerHeight - h - 8, this.fabStartTop + dy));
+    const left = Math.max(
+      8,
+      Math.min(window.innerWidth - w - 8, this.fabStartLeft + dx),
+    );
+    const top = Math.max(
+      8,
+      Math.min(window.innerHeight - h - 8, this.fabStartTop + dy),
+    );
     fab.style.left = `${left}px`;
     fab.style.top = `${top}px`;
   };
@@ -215,10 +286,16 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const wasMoved = this.fabMoved;
     this.fabDragging = false;
     this.fabMoved = false;
-    if (!wasMoved) { this.togglePanel(); return; } // click → toggle the panel
+    if (!wasMoved) {
+      this.togglePanel();
+      return;
+    } // click → toggle the panel
     // Drag end: snap to the nearest horizontal edge (vertical position preserved).
     if (fab) {
-      const targetLeft = e.clientX < window.innerWidth / 2 ? 16 : window.innerWidth - fab.offsetWidth - 16;
+      const targetLeft =
+        e.clientX < window.innerWidth / 2
+          ? 16
+          : window.innerWidth - fab.offsetWidth - 16;
       fab.style.left = `${targetLeft}px`;
     }
   };
@@ -238,14 +315,29 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private setup(viewport: HTMLDivElement, content: HTMLDivElement): void {
     try {
       this.scroller?.destroy();
-      this.source = new MockItemSource(this.countInput(), this.sourceLatency(), new MockUserService(), 1);
+      this.source = new MockItemSource(
+        this.countInput(),
+        this.sourceLatency(),
+        new MockUserService(),
+        1,
+      );
       // Pick the kernel implementation from route data: Plan A (browser overflow-anchor) or Plan B (manual compensation); both conform to ScrollerApi.
-      const Ctor: new (opts: CbOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
-        this.useNativeAnchor ? ChatBoxScrollerAnchor : ChatBoxScroller;
+      const Ctor: new (
+        opts: CbOptions<ChatItemData>,
+      ) => ScrollerApi<ChatItemData> = this.useNativeAnchor
+        ? ChatBoxScrollerAnchor
+        : ChatBoxScroller;
       this.scroller = new Ctor({
-        viewport, content, source: this.source,
+        viewport,
+        content,
+        source: this.source,
         config: this.config(),
-        hooks: { createItem: (item, prev) => this.createItemEl(item, prev), createSkeleton: () => createGhostCbElement(), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
+        hooks: {
+          createItem: (item, prev) => this.createItemEl(item, prev),
+          createSkeleton: () => createGhostCbElement(),
+          mergeItems: mergeAlbumItems,
+          absorbTail: absorbAlbumTail,
+        },
         onScroll: (info) => this.onScroll(info),
         onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
@@ -259,7 +351,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   /** Apply the closeCheckpoint toggle to the kernel (cast to set the closeCheckpoint field; re-applied at the end of setup after a Set rebuild). */
   applyCloseCheckpoint(): void {
-    const s = this.scroller as unknown as { closeCheckpoint?: boolean } | undefined;
+    const s = this.scroller as unknown as
+      | { closeCheckpoint?: boolean }
+      | undefined;
     if (s) s.closeCheckpoint = this.closeCheckpoint();
   }
 
@@ -269,23 +363,41 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     if (this.source) this.source.latency = ms;
   }
   /** Set the mock server-echo delay (read live by the confirm timer — no rebuild needed). */
-  setConfirmDelay(ms: number): void { this.confirmDelay.set(ms); }
+  setConfirmDelay(ms: number): void {
+    this.confirmDelay.set(ms);
+  }
   /** Set the mock WS reply delay (read live by the reply timer — no rebuild needed). */
-  setReplyDelay(ms: number): void { this.replyDelay.set(ms); }
+  setReplyDelay(ms: number): void {
+    this.replyDelay.set(ms);
+  }
   /** Set the mock WS push-signal delay (read live by the confirm timer — no rebuild needed). */
-  setPushSignalDelay(ms: number): void { this.pushSignalDelay.set(ms); }
+  setPushSignalDelay(ms: number): void {
+    this.pushSignalDelay.set(ms);
+  }
   /** Toggle the opponent-interleave-before-mine scenario. */
-  toggleOpponentInterleave(): void { this.opponentInterleave.update(v => !v); }
+  toggleOpponentInterleave(): void {
+    this.opponentInterleave.update((v) => !v);
+  }
   /** Set how many opponent messages are pushed per send (read live by the confirm path — no rebuild needed). */
-  setOpponentPushCount(n: number): void { this.opponentPushCount.set(n); }
+  setOpponentPushCount(n: number): void {
+    this.opponentPushCount.set(n);
+  }
   /** Toggle the persistent "mock send error" setting (every send fails while on). */
-  toggleMockSendError(): void { this.mockSendError.update(v => !v); }
+  toggleMockSendError(): void {
+    this.mockSendError.update((v) => !v);
+  }
   /** Set the connection chip's demo state (bound to `<app-connection-banner [demoState]>`). */
-  setConnStatus(s: ConnectionState): void { this.connStatus.set(s); }
+  setConnStatus(s: ConnectionState): void {
+    this.connStatus.set(s);
+  }
   /** Set the update banner's demo availability (bound to `<app-update-banner [demoAvailable]>`). */
-  setUpdateDemo(v: boolean): void { this.updateDemo.set(v); }
+  setUpdateDemo(v: boolean): void {
+    this.updateDemo.set(v);
+  }
   /** Set the skeleton preview mode (bound to the panel's Auto/On buttons). */
-  setSkeletonDemo(v: boolean): void { this.skeletonDemo.set(v); }
+  setSkeletonDemo(v: boolean): void {
+    this.skeletonDemo.set(v);
+  }
   /** Replay the recover flourish: a `reconnecting → open` transition through `demoState`, which the chip's
    *  effect reads exactly like a real recovery (auto-expanded pill, then the green-check flourish + fade-out). */
   playConnRecover(): void {
@@ -298,10 +410,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.configDraft.set({ ...this.config() });
     this.configModalOpen.set(true);
   }
-  cancelConfigModal(): void { this.configModalOpen.set(false); }
+  cancelConfigModal(): void {
+    this.configModalOpen.set(false);
+  }
   /** Edit the draft field (applied only on confirm). The template does NOT call signal.update directly — strict template type-checking can't infer the signature of a signal method bound in the template → TS2345 fails the whole build and no new code enters the bundle. */
   setConfigDraft(field: keyof CbConfig, value: number): void {
-    this.configDraft.update(d => ({ ...d, [field]: value }));
+    this.configDraft.update((d) => ({ ...d, [field]: value }));
   }
   /** Confirm the edit: config ← draft + setup rebuild (new params take effect) + close. */
   applyConfig(): void {
@@ -339,7 +453,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   // --- Kernel hooks ---
 
-  private createItemEl(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
+  private createItemEl(
+    item: CbItem<ChatItemData>,
+    prev: CbItem<ChatItemData> | null,
+  ): CbElement<ChatItemData> {
     // Real items only — the topmost skeleton-slot decision (prev/boundary/noOlder) lives in the kernel's createVs,
     // rendered via the createSkeleton hook supplied in setup. createItemEl never branches on ghost-vs-real.
     // Grouping + date-separator flags are derived from the OLDER neighbor `prev` (computeRowFlags — the same logic
@@ -347,10 +464,19 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     // derive the same flags).
     const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
     const vs = createMsgCbElement(
-      item, isShowHead, isGroupStart, showDate, this.envInjector,
-      id => this.retrySend(id),
+      item,
+      isShowHead,
+      isGroupStart,
+      showDate,
+      this.envInjector,
+      (id) => this.retrySend(id),
       (images, index) => this.galleryViewer.open(images, index, 0),
       (data) => this.fileDetail.open(data, 0),
+      undefined,
+      undefined,
+      undefined,
+      (bundleId) =>
+        this.popupRoute.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
     );
     // Dev badge (head/body + message id): injected into the row by the playground; isDevMode()-guarded → production AOT creates none.
     if (isDevMode()) this.attachDevBadge(vs.el, item, isShowHead);
@@ -358,13 +484,18 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /** Inject a dev badge into .msg-row: head (green) / body (orange) + message id (+ PENDING/FAKE tag when kind is set). Dev-only (isDevMode()); destroyed with the component. */
-  private attachDevBadge(host: HTMLElement, item: CbItem<ChatItemData>, isHead: boolean): void {
+  private attachDevBadge(
+    host: HTMLElement,
+    item: CbItem<ChatItemData>,
+    isHead: boolean,
+  ): void {
     const d = item.data;
     if (d.type !== 'msg') return; // message rows only (date rows have no grouping concept)
     const row = host.querySelector('.msg-row');
     if (!row) return;
     const badge = document.createElement('span');
-    badge.className = 'pg-dev-badge' + (isHead ? ' pg-dev-badge--head' : ' pg-dev-badge--body');
+    badge.className =
+      'pg-dev-badge' + (isHead ? ' pg-dev-badge--head' : ' pg-dev-badge--body');
     const label = this.devIdLabel(d);
     badge.textContent = d.kind ? `${label}·${d.kind.toUpperCase()}` : label;
     row.appendChild(badge);
@@ -377,7 +508,13 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    */
   private devIdLabel(d: ChatMsgData): string {
     if (d.contentType === 'IMAGE' && d.images) {
-      const ids = [...new Set(d.images.map(i => i.msgId).filter((x): x is number => typeof x === 'number'))];
+      const ids = [
+        ...new Set(
+          d.images
+            .map((i) => i.msgId)
+            .filter((x): x is number => typeof x === 'number'),
+        ),
+      ];
       if (ids.length > 1) {
         ids.sort((a, b) => a - b);
         return `[${ids[0]}-${ids[ids.length - 1]}]`;
@@ -404,7 +541,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     if (info.noNewer && this.pendingOptimistic.length > 0) {
       const queue = this.pendingOptimistic;
       this.pendingOptimistic = [];
-      for (const item of queue) this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
+      for (const item of queue)
+        this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
     }
     this.atBottom.set(info.atBottom);
     this.updateStickyDate();
@@ -414,7 +552,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.lastEmit = now;
     // Position of the viewport within content (= the mounted window): remaining height above/below (< edge=1000 triggers a load in that direction).
     this.viewportAbove.set(Math.round(info.scrollTop));
-    this.viewportBelow.set(Math.max(0, Math.round(info.scrollHeight - info.viewportHeight - info.scrollTop)));
+    this.viewportBelow.set(
+      Math.max(
+        0,
+        Math.round(info.scrollHeight - info.viewportHeight - info.scrollTop),
+      ),
+    );
   }
 
   /**
@@ -426,13 +569,17 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private updateStickyDate() {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
-    if (!vp || !ct) { this.stickyDate.set(null); return; }
+    if (!vp || !ct) {
+      this.stickyDate.set(null);
+      return;
+    }
     // The visible top is the header's bottom edge (stable — the header does NOT carry the keyboard-lift
     // transform), NOT the viewport's getBoundingClientRect().top (which slides under the header while the
     // keyboard is up, so a vTop-relative threshold/fade would anchor to a hidden message). Falls back to
     // the viewport top before the header ref is available (early init).
-    const visibleTop = this.headerRef()?.nativeElement.getBoundingClientRect().bottom
-      ?? vp.getBoundingClientRect().top;
+    const visibleTop =
+      this.headerRef()?.nativeElement.getBoundingClientRect().bottom ??
+      vp.getBoundingClientRect().top;
     // Fade band (px, from the visible top) tracks the floating sticky pill — its SCSS `top` is
     // calc(var(--sd-top) + 6px), so it sits ~6px below this visible top. The inline date pill fades out
     // exactly as it passes behind the float: lo = fully transparent, hi = fade start. The overlay's +6px gap
@@ -440,18 +587,29 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const STICKY_DATE_FADE_PX = { lo: 20, hi: 66 };
     const fadeLo = visibleTop + STICKY_DATE_FADE_PX.lo;
     const fadeHi = visibleTop + STICKY_DATE_FADE_PX.hi;
-    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))
-      .map((d) => ({ d, top: d.getBoundingClientRect().top, label: d.textContent?.trim() ?? null }));
+    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
+      (d) => ({
+        d,
+        top: d.getBoundingClientRect().top,
+        label: d.textContent?.trim() ?? null,
+      }),
+    );
     let current = pickStickyDateLabel(rows, visibleTop, STICKY_DATE_FADE_PX.lo);
     // When the top ghost loading spinner (.cb-ghost-loading, centered) is visible it overlaps the centered date overlay →
     // hide the overlay while the spinner sits at the visible top (its bottom crosses it); it restores
     // naturally once the spinner is gone (the inline date row is still there).
     const ghost = ct.querySelector('.cb-ghost-loading');
-    if (ghost && ghost.getBoundingClientRect().bottom > visibleTop) current = null;
+    if (ghost && ghost.getBoundingClientRect().bottom > visibleTop)
+      current = null;
     this.stickyDate.set(current);
     const hasFloat = current !== null;
     for (const { d, top } of rows) {
-      d.style.opacity = stickyDateRowOpacity(top, fadeLo, fadeHi, hasFloat).toFixed(2);
+      d.style.opacity = stickyDateRowOpacity(
+        top,
+        fadeLo,
+        fadeHi,
+        hasFloat,
+      ).toFixed(2);
     }
   }
 
@@ -460,7 +618,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  a keyboard open/close; this closes that gap. {@link isViewportTransformEnd} filters to the viewport's
    *  own `transform` (ignoring bubbled item transitions like cb-move). */
   onViewportTransitionEnd(event: TransitionEvent): void {
-    if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement)) return;
+    if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement))
+      return;
     this.updateStickyDate();
   }
 
@@ -495,9 +654,15 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const input = this.jumpInput()?.nativeElement;
     const s = (v ?? '').trim();
     if (!s || !scroller) return;
-    if (!/^-?\d+$/.test(s)) { this.showToast('Jump supports seq numbers only'); return; }
+    if (!/^-?\d+$/.test(s)) {
+      this.showToast('Jump supports seq numbers only');
+      return;
+    }
     const n = parseInt(s, 10);
-    if (n < 0) { this.showToast('seq must be non-negative'); return; }
+    if (n < 0) {
+      this.showToast('seq must be non-negative');
+      return;
+    }
     scroller.scrollToIndex(n, 'center', true);
     if (input) input.value = '';
   }
@@ -513,13 +678,23 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const input = this.insertInput()?.nativeElement;
     const s = (v ?? '').trim();
     if (!s || !scroller) return;
-    if (!/^-?\d+$/.test(s)) { this.showToast('Insert supports seq numbers only'); return; }
+    if (!/^-?\d+$/.test(s)) {
+      this.showToast('Insert supports seq numbers only');
+      return;
+    }
     const n = parseInt(s, 10);
-    if (n < 0) { this.showToast('seq must be non-negative'); return; }
+    if (n < 0) {
+      this.showToast('seq must be non-negative');
+      return;
+    }
     const item = this.makeInsertItem();
     const ok = this.insertMsg('FAKE_MSG', n, item);
     if (input) input.value = '';
-    this.showToast(ok ? `Inserted ${item.id} (after ${n})` : `${n} not mounted, insert ignored`);
+    this.showToast(
+      ok
+        ? `Inserted ${item.id} (after ${n})`
+        : `${n} not mounted, insert ignored`,
+    );
   }
 
   /**
@@ -531,13 +706,20 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   removeById(v: string): void {
     const scroller = this.scroller;
     const input = this.removeInput()?.nativeElement;
-    const parts = (v ?? '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    const parts = (v ?? '')
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (parts.length === 0 || !scroller) return;
-    const ids = parts.map(p => parseInt(p, 10)).filter(n => Number.isInteger(n));
+    const ids = parts
+      .map((p) => parseInt(p, 10))
+      .filter((n) => Number.isInteger(n));
     if (ids.length === 0) return;
     const removed = scroller.removeItem(ids);
     if (input) input.value = '';
-    this.showToast(removed > 0 ? `Removed ${removed} item(s)` : 'Not mounted, ignored');
+    this.showToast(
+      removed > 0 ? `Removed ${removed} item(s)` : 'Not mounted, ignored',
+    );
   }
 
   /** Build a mock debug-insert message (creator alternates 1=me/isSelf / 2=Alice; name/isSelf filled directly since
@@ -572,8 +754,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.toastTimer = setTimeout(() => this.toast.set(null), 1800);
   }
 
-  toTop() { this.scroller?.scrollToTop(); }
-  toBottom() { this.scroller?.scrollToBottom(); }
+  toTop() {
+    this.scroller?.scrollToTop();
+  }
+  toBottom() {
+    this.scroller?.scrollToBottom();
+  }
 
   /**
    * ChatInputComponent send intent → dispatch. The composer owns presentation only; this switches on the
@@ -582,10 +768,18 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    */
   onSendIntent(intent: ChatSendIntent): void {
     switch (intent.kind) {
-      case 'text': void this.sendText(intent.text); return;
-      case 'image': void this.sendMediaFromFile(intent.files); return;
-      case 'file': void this.sendFileFromFile(intent.files); return;
-      case 'audio': this.sendVoiceMock(intent.blob, intent.duration); return;
+      case 'text':
+        void this.sendText(intent.text);
+        return;
+      case 'image':
+        void this.sendMediaFromFile(intent.files);
+        return;
+      case 'file':
+        void this.sendFileFromFile(intent.files);
+        return;
+      case 'audio':
+        this.sendVoiceMock(intent.blob, intent.duration);
+        return;
     }
   }
 
@@ -609,7 +803,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const scroller = this.scroller;
     if (!scroller || count <= 0) return;
     const items = Array.from({ length: count }, () => {
-      const phrase = REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
+      const phrase =
+        REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
       return this.makeMockItem(phrase, false, 'PURE_TEXT', null);
     });
     this.source?.pushLive(items);
@@ -623,7 +818,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   async sendMediaFromFile(files: readonly File[] | null): Promise<void> {
     const scroller = this.scroller;
     if (!files || files.length === 0 || !scroller) return;
-    const list = Array.from(files).filter(f => f.type.startsWith('image/'));
+    const list = Array.from(files).filter((f) => f.type.startsWith('image/'));
     if (list.length === 0) return;
     const imgs = await readImages(list);
     if (imgs.length === 0) return;
@@ -658,7 +853,17 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const scroller = this.scroller;
     if (!scroller) return;
     const url = URL.createObjectURL(blob);
-    const imgs: AlbumImage[] = [{ kind: 'audio', src: url, w: VOICE_BAR_W, h: VOICE_BAR_H, size: blob.size, duration, name: 'voice' }];
+    const imgs: AlbumImage[] = [
+      {
+        kind: 'audio',
+        src: url,
+        w: VOICE_BAR_W,
+        h: VOICE_BAR_H,
+        size: blob.size,
+        duration,
+        name: 'voice',
+      },
+    ];
     this.dispatchPending(this.makeOptimisticItem('', 'AUDIO', imgs));
   }
 
@@ -696,7 +901,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    * PENDING_POST_MSG additionally registers with the source pending area, ensures the newest end is mounted, and schedules
    * a mock confirm; FAKE_MSG is a pure viewport insert (the "insert message" debug action).
    */
-  private insertMsg(type: 'PENDING_POST_MSG' | 'FAKE_MSG', afterId: number, item: CbItem<ChatItemData>): boolean {
+  private insertMsg(
+    type: 'PENDING_POST_MSG' | 'FAKE_MSG',
+    afterId: number,
+    item: CbItem<ChatItemData>,
+  ): boolean {
     const scroller = this.scroller;
     if (!scroller) return false;
     // afterId is -1 on the first send into an empty thread (tailAnchorId() = -1 when nothing is mounted); the kernel's
@@ -709,14 +918,19 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       // insertAfter always finds its anchor — there is nothing to mount first. The follow that reveals the bubble
       // runs AFTER insertAfter (below) and is synchronous when pinned (noNewer → pinToBottom only, no source I/O).
     }
-    const ok = scroller.insertAfter(afterId, item, { optimistic: type === 'PENDING_POST_MSG' });
+    const ok = scroller.insertAfter(afterId, item, {
+      optimistic: type === 'PENDING_POST_MSG',
+    });
     if (ok && type === 'PENDING_POST_MSG') {
       // insertAfter is viewport-stable (it only compensates scrollTop for above-viewport growth), so a sent message —
       // which lands at the newer end, below the fold when pinned — must be explicitly pinned to reveal the optimistic
       // bubble. Mirrors appendLive/loadNewer's wasAtBottom follow. (A send always means "show my message".)
       scroller.scrollToBottom();
       const optimistic = item;
-      const t = setTimeout(() => this.confirmPending(optimistic), this.confirmDelay());
+      const t = setTimeout(
+        () => this.confirmPending(optimistic),
+        this.confirmDelay(),
+      );
       this.confirmTimers.push(t);
     }
     return ok;
@@ -748,7 +962,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const realMsgId = this.source.allocateMsgId();
     const realItem: CbItem<ChatItemData> = {
       id: realMsgId,
-      data: { ...optimistic.data, msgId: realMsgId, status: 'sent', kind: undefined },
+      data: {
+        ...optimistic.data,
+        msgId: realMsgId,
+        status: 'sent',
+        kind: undefined,
+      },
       clientMessageId: optimistic.clientMessageId,
     };
 
@@ -759,21 +978,28 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     // mounts above the optimistic bubble. Consumes one slot of the budget; the rest go to the below batch.
     let above = 0;
     if (count > 0 && this.opponentInterleave()) {
-      const phrase = REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
-      this.source?.pushLive([this.makeMockItem(phrase, false, 'PURE_TEXT', null)]);
+      const phrase =
+        REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
+      this.source?.pushLive([
+        this.makeMockItem(phrase, false, 'PURE_TEXT', null),
+      ]);
       above = 1;
     }
     this.source?.pushLive([realItem]);
 
     // WS push delivery, optionally delayed to model broadcast latency. On a non-zero delay the optimistic bubble keeps
     // showing the 'sending' spinner until the signal arrives and reconcile reveals the real (check → CSS fade).
-    const signalTimer = setTimeout(() => { void scroller.onMessageSignal(); }, this.pushSignalDelay());
+    const signalTimer = setTimeout(() => {
+      void scroller.onMessageSignal();
+    }, this.pushSignalDelay());
     this.confirmTimers.push(signalTimer);
 
     // Remaining opponent budget delivered as one below-batch after replyDelay (atomic pushLive + single signal).
     const below = count - above;
     if (below > 0) {
-      const replyTimer = setTimeout(() => { void this.receiveMany(below); }, this.replyDelay());
+      const replyTimer = setTimeout(() => {
+        void this.receiveMany(below);
+      }, this.replyDelay());
       this.confirmTimers.push(replyTimer);
     }
   }
@@ -787,7 +1013,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    */
   private async failPending(optimistic: CbItem<ChatItemData>): Promise<void> {
     const scroller = this.scroller;
-    if (!scroller || !this.source || optimistic.clientMessageId === undefined) return;
+    if (!scroller || !this.source || optimistic.clientMessageId === undefined)
+      return;
     this.source.failPending(optimistic.clientMessageId);
     await scroller.reconcilePending();
   }
@@ -814,11 +1041,18 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  so the bubble cannot carry the clientMessageId as its id); negative ids never collide with server-assigned seqs
    *  (always positive). insertAfter bypasses source.shape, so name/isSelf are filled directly (mirrors MockItemSource.shape
    *  for creator 1). Any album cell's msgId is stamped to the same placeholder so the dev-badge range stays self-consistent. */
-  private makeOptimisticItem(text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, file: FileInfo | null = null, rich = false): CbItem<ChatItemData> {
+  private makeOptimisticItem(
+    text: string,
+    contentType: ChatMsgData['contentType'],
+    images: AlbumImage[] | null,
+    file: FileInfo | null = null,
+    rich = false,
+  ): CbItem<ChatItemData> {
     const now = new Date();
     const clientMessageId = newClientMessageId();
     const placeholderId = this.nextOptimisticId--;
-    const stampedImages = images?.map(im => ({ ...im, msgId: placeholderId })) ?? null;
+    const stampedImages =
+      images?.map((im) => ({ ...im, msgId: placeholderId })) ?? null;
     const data: ChatMsgData = {
       type: 'msg',
       msgId: placeholderId,
@@ -828,7 +1062,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       text,
       rich,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images: stampedImages, file, createdAtMs: now.getTime(),
+      contentType,
+      images: stampedImages,
+      file,
+      createdAtMs: now.getTime(),
       status: 'sending',
       kind: 'pending',
     };
@@ -841,16 +1078,26 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  counter — the same path a confirmed self-send takes (`source.allocateMsgId()` → the next seq), mirroring a
    *  server-assigned Message.seq — so incoming messages carry a real id, not a synthetic placeholder. A negative
    *  placeholder is a fallback only for the impossible case where the source is unbound while the scroller is live. */
-  private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, file: FileInfo | null = null): CbItem<ChatItemData> {
+  private makeMockItem(
+    text: string,
+    isSelf: boolean,
+    contentType: ChatMsgData['contentType'],
+    images: AlbumImage[] | null,
+    file: FileInfo | null = null,
+  ): CbItem<ChatItemData> {
     const now = new Date();
     const data: ChatMsgData = {
       type: 'msg',
       msgId: this.source?.allocateMsgId() ?? this.nextMockId--,
       creator: isSelf ? 1 : 2,
-      isSelf: false, name: '',  // placeholder: source.appendLive's shape fills name from profiles by creator (mirrors production toMsgData)
+      isSelf: false,
+      name: '', // placeholder: source.appendLive's shape fills name from profiles by creator (mirrors production toMsgData)
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images, file, createdAtMs: now.getTime(),
+      contentType,
+      images,
+      file,
+      createdAtMs: now.getTime(),
     };
     return { id: data.msgId, data };
   }
@@ -865,7 +1112,14 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 }
 
 /** Opponent reply phrases (mock). */
-const REPLY_PHRASES = ['You there?', 'Got it', 'Haha', 'OK', 'Is virtual scroll stable?', 'Check the mount count'];
+const REPLY_PHRASES = [
+  'You there?',
+  'Got it',
+  'Haha',
+  'OK',
+  'Is virtual scroll stable?',
+  'Check the mount count',
+];
 
 /** @mention candidate members (mock; production swaps in GroupService.getMembers() returning GroupMember[]). */
 const MOCK_MEMBERS: ChatMember[] = [
@@ -888,17 +1142,33 @@ function newClientMessageId(): string {
 
 /** Read images locally into AlbumImage (dataURL + real dimensions; falls back to 400×300 on read failure). */
 function readImages(files: File[]): Promise<AlbumImage[]> {
-  return Promise.all(files.map(f => new Promise<AlbumImage>(resolve => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const src = typeof reader.result === 'string' ? reader.result : '';
-      if (!src) { resolve({ kind: 'image', src: '', w: 400, h: 300 }); return; }
-      const probe = new Image();
-      probe.onload = () => resolve({ kind: 'image', src, w: probe.naturalWidth || 400, h: probe.naturalHeight || 300 });
-      probe.onerror = () => resolve({ kind: 'image', src, w: 400, h: 300 });
-      probe.src = src;
-    };
-    reader.onerror = () => resolve({ kind: 'image', src: '', w: 400, h: 300 });
-    reader.readAsDataURL(f);
-  })));
+  return Promise.all(
+    files.map(
+      (f) =>
+        new Promise<AlbumImage>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const src = typeof reader.result === 'string' ? reader.result : '';
+            if (!src) {
+              resolve({ kind: 'image', src: '', w: 400, h: 300 });
+              return;
+            }
+            const probe = new Image();
+            probe.onload = () =>
+              resolve({
+                kind: 'image',
+                src,
+                w: probe.naturalWidth || 400,
+                h: probe.naturalHeight || 300,
+              });
+            probe.onerror = () =>
+              resolve({ kind: 'image', src, w: 400, h: 300 });
+            probe.src = src;
+          };
+          reader.onerror = () =>
+            resolve({ kind: 'image', src: '', w: 400, h: 300 });
+          reader.readAsDataURL(f);
+        }),
+    ),
+  );
 }

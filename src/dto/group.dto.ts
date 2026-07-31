@@ -1,8 +1,9 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -27,8 +28,7 @@ export class CreateGroupDto {
   @MaxLength(31, { message: 'group name must less than 32 characters' })
   name!: string;
 
-  @ApiProperty({
-    required: false,
+  @ApiPropertyOptional({
     example: 'https://.../g.webp',
     description: 'Group avatar URL (optional)',
   })
@@ -44,7 +44,9 @@ export class CreateGroupDto {
   })
   @IsString()
   @IsOptional()
-  @MaxLength(240, { message: 'group description must be at most 240 characters' })
+  @MaxLength(240, {
+    message: 'group description must be at most 240 characters',
+  })
   description?: string;
 
   /**
@@ -57,7 +59,8 @@ export class CreateGroupDto {
     required: false,
     type: [Number],
     example: [3, 7],
-    description: 'Friend user ids to invite at creation (each must be a friend with a P2P thread)',
+    description:
+      'Friend user ids to invite at creation (each must be a friend with a P2P thread)',
   })
   @IsOptional()
   @IsArray()
@@ -75,7 +78,8 @@ export class InviteGroupDto {
   @ApiProperty({
     type: [Number],
     example: [3, 7],
-    description: 'Friend user ids to invite (each must be a friend with an existing P2P thread)',
+    description:
+      'Friend user ids to invite (each must be a friend with an existing P2P thread)',
   })
   @IsArray()
   @ArrayMinSize(1)
@@ -99,10 +103,24 @@ export class GroupIdDto {
   groupId!: number;
 }
 
+export class GroupTerminalActionDto extends GroupIdDto {
+  @ApiPropertyOptional({
+    default: false,
+    description: 'Also delete this chat for the caller',
+  })
+  @IsOptional()
+  @IsBoolean()
+  deleteData?: boolean;
+}
+
 /** Body for /group/members (batch) — fetch rosters for multiple group threads in one request. The
  *  server returns rosters only for threads the caller is an active member of. */
 export class GroupMembersBatchDto {
-  @ApiProperty({ type: [Number], example: [12, 13], description: 'Group thread ids' })
+  @ApiProperty({
+    type: [Number],
+    example: [12, 13],
+    description: 'Group thread ids',
+  })
   @Type(() => Number)
   @IsArray()
   @IsInt({ each: true })
@@ -152,7 +170,11 @@ export class SetRoleGroupDto {
   userId!: number;
 
   /** ADMIN or MEMBER only — ownership changes go through group/transfer. OWNER is rejected. */
-  @ApiProperty({ enum: GroupRole, example: GroupRole.ADMIN, description: 'New role (ADMIN | MEMBER)' })
+  @ApiProperty({
+    enum: GroupRole,
+    example: GroupRole.ADMIN,
+    description: 'New role (ADMIN | MEMBER)',
+  })
   @IsEnum(GroupRole)
   role!: GroupRole;
 }
@@ -164,7 +186,11 @@ export class UpdateGroupDto {
   @Min(1)
   groupId!: number;
 
-  @ApiProperty({ required: false, example: 'dev-team', description: 'New group name (≤31 chars)' })
+  @ApiProperty({
+    required: false,
+    example: 'dev-team',
+    description: 'New group name (≤31 chars)',
+  })
   @IsString()
   @MaxLength(31, { message: 'group name must less than 32 characters' })
   @IsOptional()
@@ -187,6 +213,8 @@ export class UpdateGroupDto {
   })
   @IsString()
   @IsOptional()
-  @MaxLength(240, { message: 'group description must be at most 240 characters' })
+  @MaxLength(240, {
+    message: 'group description must be at most 240 characters',
+  })
   description?: string;
 }

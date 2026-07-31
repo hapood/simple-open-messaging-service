@@ -20,37 +20,93 @@ export class ThreadRevisionService {
 
   /** Record a thread ADD: bump threadRevision, upsert the ADD row (reactivate on re-add), push signal. */
   async recordThreadAdd(userId: number, threadId: number): Promise<void> {
-    const u = await this.prisma.user.update({
-      where: { id: userId },
-      data: { threadRevision: { increment: 1 } },
-      select: { threadRevision: true },
+    const revision = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.update({
+        where: { id: userId },
+        data: { threadRevision: { increment: 1 } },
+        select: { threadRevision: true },
+      });
+      await tx.threadRevision.upsert({
+        where: {
+          userId_threadId_direction: { userId, threadId, direction: 'ADD' },
+        },
+        create: {
+          userId,
+          threadId,
+          direction: 'ADD',
+          revision: u.threadRevision,
+          isDelete: false,
+        },
+        update: { revision: u.threadRevision, isDelete: false },
+      });
+      return u.threadRevision;
     });
-    await this.prisma.threadRevision.upsert({
-      where: { userId_threadId_direction: { userId, threadId, direction: 'ADD' } },
-      create: { userId, threadId, direction: 'ADD', revision: u.threadRevision, isDelete: false },
-      update: { revision: u.threadRevision, isDelete: false },
+    this.sse.onThreadRevisionUpdated(userId, {
+      threadRevision: revision,
     });
-    this.sse.onThreadRevisionUpdated(userId, { threadRevision: u.threadRevision });
   }
 
   /** Record a thread DELETE: bump threadRevision, upsert the DELETE row, mark the ADD row soft-deleted,
    *  push signal. */
   async recordThreadDelete(userId: number, threadId: number): Promise<void> {
-    const u = await this.prisma.user.update({
-      where: { id: userId },
-      data: { threadRevision: { increment: 1 } },
-      select: { threadRevision: true },
+    const revision = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.update({
+        where: { id: userId },
+        data: { threadRevision: { increment: 1 } },
+        select: { threadRevision: true },
+      });
+      await tx.threadRevision.upsert({
+        where: {
+          userId_threadId_direction: { userId, threadId, direction: 'DELETE' },
+        },
+        create: {
+          userId,
+          threadId,
+          direction: 'DELETE',
+          revision: u.threadRevision,
+        },
+        update: { revision: u.threadRevision },
+      });
+      await tx.threadRevision.updateMany({
+        where: { userId, threadId, direction: 'ADD' },
+        data: { isDelete: true },
+      });
+      return u.threadRevision;
     });
-    await this.prisma.threadRevision.upsert({
-      where: { userId_threadId_direction: { userId, threadId, direction: 'DELETE' } },
-      create: { userId, threadId, direction: 'DELETE', revision: u.threadRevision },
-      update: { revision: u.threadRevision },
+    this.sse.onThreadRevisionUpdated(userId, {
+      threadRevision: revision,
     });
-    await this.prisma.threadRevision.updateMany({
-      where: { userId, threadId, direction: 'ADD' },
-      data: { isDelete: true },
+  }
+
+  async isThreadHidden(userId: number, threadId: number): Promise<boolean> {
+    const add = await this.prisma.threadRevision.findUnique({
+      where: {
+        userId_threadId_direction: { userId, threadId, direction: 'ADD' },
+      },
+      select: { isDelete: true },
     });
-    this.sse.onThreadRevisionUpdated(userId, { threadRevision: u.threadRevision });
+    return add?.isDelete === true;
+  }
+
+  /** Re-add only participants whose current list state is DELETE. This makes a fresh message restore an
+   * active chat without bumping every recipient's thread revision for every ordinary message. */
+  async restoreHiddenThreads(
+    threadId: number,
+    activeUserIds: number[],
+  ): Promise<void> {
+    if (activeUserIds.length === 0) return;
+    const hidden = await this.prisma.threadRevision.findMany({
+      where: {
+        threadId,
+        userId: { in: activeUserIds },
+        direction: 'ADD',
+        isDelete: true,
+      },
+      select: { userId: true },
+    });
+    await Promise.all(
+      hidden.map((row) => this.recordThreadAdd(row.userId, threadId)),
+    );
   }
 
   /** Pull ADD/DELETE deltas in (fromRevision, toRevision] (from exclusive, to inclusive). The client
@@ -59,12 +115,18 @@ export class ThreadRevisionService {
     userId: number,
     fromRevision: number,
     toRevision: number,
-  ): Promise<{ threadId: number; direction: 'ADD' | 'DELETE'; revision: number }[]> {
+  ): Promise<
+    { threadId: number; direction: 'ADD' | 'DELETE'; revision: number }[]
+  > {
     const rows = await this.prisma.threadRevision.findMany({
       where: { userId, revision: { gt: fromRevision, lte: toRevision } },
       orderBy: { revision: 'asc' },
       select: { threadId: true, direction: true, revision: true },
     });
-    return rows as { threadId: number; direction: 'ADD' | 'DELETE'; revision: number }[];
+    return rows as {
+      threadId: number;
+      direction: 'ADD' | 'DELETE';
+      revision: number;
+    }[];
   }
 }

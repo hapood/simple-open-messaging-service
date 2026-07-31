@@ -170,6 +170,9 @@ model Group {
   // Mirror's cursor: the origin rosterRev last pulled. Null for the local origin (its own rosterRev is
   // authoritative). Symmetric with User.remoteProfileRev.
   remoteRosterRev Int?
+  // Terminal lifecycle marker. Participants remain attached so every former member can open locally
+  // cached/server history, but no new messages, invites, joins, or management mutations are allowed.
+  dissolvedAt     DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

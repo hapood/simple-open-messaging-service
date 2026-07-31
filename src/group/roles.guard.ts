@@ -1,8 +1,4 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { ROLES_KEY } from './roles.decorator.js';
@@ -31,6 +27,15 @@ export class RolesGuard implements CanActivate {
     if (!required || required.length === 0) return true;
 
     const req = ctx.switchToHttp().getRequest<FastifyRequest>();
+    if (!req.threadAccess?.membershipActive) {
+      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'not a member');
+    }
+    if (req.threadAccess?.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
     const role = req.threadAccess?.participant?.role;
     if (role === undefined || role === null || !required.includes(role)) {
       throw new BusinessException(

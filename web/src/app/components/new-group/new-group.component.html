@@ -1,12 +1,14 @@
 <div [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="onBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
+    <button class="icon-btn" [disabled]="submitting()" (click)="onBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
     <span class="title">{{ 'newGroup.title' | transloco }}</span>
     @if (step() === 1) {
-      <button mat-button (click)="goStep2()">{{ 'common.next' | transloco }}</button>
+      <button mat-button [disabled]="submitting()" (click)="goStep2()">{{ 'common.next' | transloco }}</button>
     } @else {
-      <button mat-button [disabled]="!name().trim()" (click)="confirm()">{{ 'newGroup.create' | transloco }}</button>
+      <button mat-button [disabled]="submitting() || avatarUploading() || !name().trim()" (click)="confirm()">
+        {{ (submitting() ? 'newGroup.creating' : 'newGroup.create') | transloco }}
+      </button>
     }
   </div>
 
@@ -45,9 +47,9 @@
       <div class="avatar">
         <app-user-avatar [type]="UserAvatarType.GROUP" [name]="name() || '?'"
           [src]="pendingAvatar()"></app-user-avatar>
-        <button class="avatar-edit" type="button" (click)="fileInput.click()" [disabled]="busy()"
+        <button class="avatar-edit" type="button" (click)="fileInput.click()" [disabled]="avatarUploading() || submitting()"
           [attr.aria-label]="'newGroup.setPhotoAria' | transloco">
-          @if (busy()) {
+          @if (avatarUploading()) {
             <span class="spin"></span>
           } @else {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -60,7 +62,7 @@
       </div>
       <div class="name-field">
         <input class="name-input" type="text" [placeholder]="'newGroup.groupNamePlaceholder' | transloco" [maxlength]="NAME_MAX"
-          [ngModel]="name()" (ngModelChange)="onNameInput($event)" (keydown.enter)="confirm()" />
+          [disabled]="submitting()" [ngModel]="name()" (ngModelChange)="onNameInput($event)" (keydown.enter)="confirm()" />
         <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
       </div>
     </div>
@@ -68,7 +70,7 @@
     <label class="desc-field">
       <textarea class="desc-input" rows="2" [maxlength]="DESC_MAX"
         [placeholder]="'newGroup.groupDescPlaceholder' | transloco"
-        [ngModel]="description()" (ngModelChange)="onDescInput($event)"></textarea>
+        [disabled]="submitting()" [ngModel]="description()" (ngModelChange)="onDescInput($event)"></textarea>
       <span class="counter">{{ description().length }} / {{ DESC_MAX }}</span>
     </label>
   </div>

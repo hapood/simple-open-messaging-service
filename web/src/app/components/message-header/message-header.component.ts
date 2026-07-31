@@ -1,8 +1,18 @@
-import { Component, computed, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  input,
+  output,
+  signal,
+} from '@angular/core';
 import { OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { ChatActionMenuComponent, ChatMenuEntry } from '../chat-action-menu/chat-action-menu.component';
+import {
+  ChatActionMenuComponent,
+  ChatMenuEntry,
+} from '../chat-action-menu/chat-action-menu.component';
 import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ConversationItem, displayUserName } from '../../services/model';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
@@ -16,6 +26,11 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { AvatarRepository } from '../../services/avatar-cache.service';
 import { uuid } from '../../lib/uuid';
+import { TranslocoService } from '@jsverse/transloco';
+import { translateBizResult } from '../../services/biz-code';
+import { ToastService } from '../../services/toast.service';
+import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
+import { firstValueFrom } from 'rxjs';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -64,10 +79,20 @@ export class MessageHeaderComponent {
   private readonly routeService = inject(RouteService);
   private readonly callAdapter = inject(CallAdapterService);
   private readonly avatarRepo = inject(AvatarRepository);
+  private readonly transloco = inject(TranslocoService);
+  private readonly toast = inject(ToastService);
+  private readonly deletionLock = inject(ThreadDeletionLockService);
 
   /** Whether the call button shows: 1:1 calling is supported (Android native only — web/desktop calling is
    *  deferred) AND this is a P2P thread (groups can't be called 1:1). */
-  readonly canCall = computed(() => this.callAdapter.supported && this.userMsgTrd()?.type === 'P2P');
+  readonly canCall = computed(() => {
+    const trd = this.userMsgTrd();
+    return (
+      this.callAdapter.supported &&
+      trd?.type === 'P2P' &&
+      trd.friendshipActive !== false
+    );
+  });
 
   /** Place an outgoing audio-first call to the P2P peer. Video is enabled from the shared in-call UI instead
    *  of being a second chat-header entry point. Mints a client-side callSid (the call's idempotency
@@ -79,7 +104,14 @@ export class MessageHeaderComponent {
     const peer = this.userMsgTrd()?.peerUser;
     if (peer?.id === undefined) return;
     const avatarDataUrl = await this.avatarRepo.getCachedDataUrl(`u${peer.id}`);
-    this.callAdapter.initiate(peer.id, uuid(), 'AUDIO', peer.name ?? '', peer.avatar ?? '', avatarDataUrl);
+    this.callAdapter.initiate(
+      peer.id,
+      uuid(),
+      'AUDIO',
+      peer.name ?? '',
+      peer.avatar ?? '',
+      avatarDataUrl,
+    );
   }
 
   /** Unread messages in every conversation except the one currently open. Compact chat headers surface
@@ -88,10 +120,14 @@ export class MessageHeaderComponent {
    *  this total) and excludes the canonical open-thread signal (not the input — robust to input staleness). */
   readonly otherUnreadCount = computed(() => {
     const openId = this.convList.openThreadId();
-    return this.convList.items().reduce(
-      (sum, item) => sum + (item.threadId === openId ? 0 : Math.max(0, item.unreadCount ?? 0)),
-      0,
-    );
+    return this.convList
+      .items()
+      .reduce(
+        (sum, item) =>
+          sum +
+          (item.threadId === openId ? 0 : Math.max(0, item.unreadCount ?? 0)),
+        0,
+      );
   });
 
   readonly otherUnreadLabel = computed(() => {
@@ -128,7 +164,8 @@ export class MessageHeaderComponent {
   readonly federatedDomain = computed(() => {
     const trd = this.userMsgTrd();
     if (!trd) return null;
-    if (trd.type === 'P2P') return trd.peerUser.isForeigner ? trd.peerUser.domain : null;
+    if (trd.type === 'P2P')
+      return trd.peerUser.isForeigner ? trd.peerUser.domain : null;
     return trd.group.domain || null;
   });
 
@@ -137,7 +174,9 @@ export class MessageHeaderComponent {
   readonly subtitle = computed(() => {
     const trd = this.userMsgTrd();
     if (!trd) return '';
-    return trd.type === 'P2P' ? (trd.peerUser.bio ?? '') : (trd.group.description ?? '');
+    return trd.type === 'P2P'
+      ? (trd.peerUser.bio ?? '')
+      : (trd.group.description ?? '');
   });
 
   /** Whether the action menu overlay is open. */
@@ -160,8 +199,18 @@ export class MessageHeaderComponent {
     const list: ChatMenuEntry[] = [
       // Label mirrors the panel title it opens: "Contact info" for P2P, "Group Info" for groups — so
       // the menu item and the popup (aside panel) header read the same (chat.menuViewInfo / group.title).
-      { kind: 'action', key: 'viewInfo', labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title', icon: AppIconType.EYE },
-      { kind: 'action', key: 'search', labelKey: 'chat.menuSearch', icon: AppIconType.SEARCH },
+      {
+        kind: 'action',
+        key: 'viewInfo',
+        labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title',
+        icon: AppIconType.EYE,
+      },
+      {
+        kind: 'action',
+        key: 'search',
+        labelKey: 'chat.menuSearch',
+        icon: AppIconType.SEARCH,
+      },
       { kind: 'divider' },
       {
         kind: 'action',
@@ -186,23 +235,27 @@ export class MessageHeaderComponent {
       { kind: 'divider' },
     ];
     if (isP2P) {
-      list.push(
-        {
-          kind: 'action',
-          key: 'block',
-          labelKey: trd.blocked ? 'chat.menuUnblock' : 'chat.menuBlock',
-          icon: AppIconType.BLOCK,
-          danger: !trd.blocked,
-        },
-        {
+      list.push({
+        kind: 'action',
+        key: 'block',
+        labelKey: trd.blocked ? 'chat.menuUnblock' : 'chat.menuBlock',
+        icon: AppIconType.BLOCK,
+        danger: !trd.blocked,
+      });
+      if (trd.friendshipActive !== false) {
+        list.push({
           kind: 'action',
           key: 'deleteChat',
-          labelKey: 'chat.menuDeleteChat',
+          labelKey: 'chat.menuUnfriend',
           icon: AppIconType.TRASH,
           danger: true,
-        },
-      );
-    } else {
+        });
+      }
+    } else if (
+      trd.role !== 'OWNER' &&
+      trd.group?.dissolvedAt == null &&
+      trd.conversationState !== 'READ_ONLY'
+    ) {
       list.push({
         kind: 'action',
         key: 'leaveGroup',
@@ -211,6 +264,14 @@ export class MessageHeaderComponent {
         danger: true,
       });
     }
+    list.push({ kind: 'divider' });
+    list.push({
+      kind: 'action',
+      key: 'deleteData',
+      labelKey: 'chat.menuDeleteData',
+      icon: AppIconType.TRASH,
+      danger: true,
+    });
     return list;
   }
 
@@ -222,7 +283,12 @@ export class MessageHeaderComponent {
       leaveGroup: 'chat.menuLeaveGroupConfirm',
     };
     return [
-      { kind: 'action', key: '__confirm__', labelKey: confirmLabel[pending] ?? '', danger: true },
+      {
+        kind: 'action',
+        key: '__confirm__',
+        labelKey: confirmLabel[pending] ?? '',
+        danger: true,
+      },
       { kind: 'divider' },
       { kind: 'action', key: '__back__', labelKey: 'chat.menuCancel' },
     ];
@@ -253,7 +319,7 @@ export class MessageHeaderComponent {
     }
     // Destructive actions stage the inline two-tap confirm first. (clearHistory is excluded — it pops
     // the app-level modal instead, via runAction.)
-    if (key === 'block' || key === 'deleteChat' || key === 'leaveGroup') {
+    if (key === 'block') {
       this.confirmKey.set(key);
       return;
     }
@@ -291,6 +357,9 @@ export class MessageHeaderComponent {
       case 'leaveGroup':
         this.leaveGroup(trd);
         return;
+      case 'deleteData':
+        this.confirmDeleteData(trd.threadId);
+        return;
     }
   }
 
@@ -307,9 +376,16 @@ export class MessageHeaderComponent {
     const next = !pinned;
     // pinnedAt is resolved server-side; optimistically set a provisional now so the row re-sorts into
     // the pinned tier immediately. The THREAD_META frame overwrites it with the authoritative value.
-    this.convList.applyThreadMeta(threadId, { pinned: next, pinnedAt: next ? Date.now() : null });
+    this.convList.applyThreadMeta(threadId, {
+      pinned: next,
+      pinnedAt: next ? Date.now() : null,
+    });
     this.msgService.setPinned({ threadId, pinned: next }).subscribe({
-      error: () => this.convList.applyThreadMeta(threadId, { pinned, pinnedAt: pinned ? Date.now() : null }),
+      error: () =>
+        this.convList.applyThreadMeta(threadId, {
+          pinned,
+          pinnedAt: pinned ? Date.now() : null,
+        }),
     });
   }
 
@@ -354,25 +430,118 @@ export class MessageHeaderComponent {
     });
   }
 
-  /** Delete-friend (P2P): the server soft-leaves both participants; drop the thread and go home. */
+  /** Unfriend ends write capability but retains this conversation and its history. */
   private deleteChat(trd: ConversationItem): void {
     const peerId = trd.peerUser?.id;
     if (peerId === undefined) return;
-    this.userService.deleteFriend({ userId: peerId }).subscribe((res) => {
-      if (res.code !== 0) return;
-      this.convList.removeThread(trd.threadId);
-      this.nav.closeChat();
-    });
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'chat.unfriendConfirmTitle',
+        messageKey: 'chat.unfriendConfirmBody',
+        confirmKey: 'chat.menuUnfriend',
+        cancelKey: 'common.cancel',
+        checkboxKey: 'chat.alsoDeleteData',
+        danger: true,
+      },
+      (result) => {
+        if (!result) return;
+        const deleteData = typeof result === 'object' && result.checked;
+        void this.runLockedDelete(
+          trd.threadId,
+          () =>
+            firstValueFrom(
+              this.userService.deleteFriend({ userId: peerId, deleteData }),
+            ),
+          deleteData,
+          () =>
+            this.convList.applyThreadMeta(trd.threadId, {
+              friendshipActive: false,
+              conversationState: 'READ_ONLY',
+            }),
+        );
+      },
+    );
   }
 
   /** Leave group: reload the list (the row drops) and go home. */
   private leaveGroup(trd: ConversationItem): void {
     const groupId = trd.group?.id;
     if (groupId === undefined) return;
-    this.groupService.leaveGroup({ groupId }).subscribe(() => {
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'chat.leaveConfirmTitle',
+        messageKey: 'chat.menuLeaveGroupConfirm',
+        confirmKey: 'chat.menuLeaveGroup',
+        cancelKey: 'common.cancel',
+        checkboxKey: 'chat.alsoDeleteData',
+        danger: true,
+      },
+      (result) => {
+        if (!result) return;
+        const deleteData = typeof result === 'object' && result.checked;
+        void this.runLockedDelete(
+          trd.threadId,
+          () =>
+            firstValueFrom(
+              this.groupService.leaveGroup({ groupId, deleteData }),
+            ),
+          deleteData,
+          () =>
+            this.convList.applyThreadMeta(trd.threadId, {
+              conversationState: 'READ_ONLY',
+            }),
+        );
+      },
+    );
+  }
+
+  private confirmDeleteData(threadId: number): void {
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'chat.deleteDataConfirmTitle',
+        messageKey: 'chat.deleteDataConfirmBody',
+        confirmKey: 'chat.menuDeleteData',
+        cancelKey: 'common.cancel',
+        danger: true,
+      },
+      (ok) => {
+        if (ok)
+          void this.runLockedDelete(
+            threadId,
+            () => firstValueFrom(this.msgService.deleteThread({ threadId })),
+            true,
+            () => undefined,
+          );
+      },
+    );
+  }
+
+  private async runLockedDelete(
+    threadId: number,
+    request: () => Promise<{ code: number; message: string }>,
+    deleteData: boolean,
+    onRetain: () => void,
+  ): Promise<void> {
+    if (!this.deletionLock.begin(threadId)) return;
+    try {
+      const res = await request();
+      if (res.code !== 0) {
+        this.toast.warn(translateBizResult(res, this.transloco));
+        return;
+      }
+      if (deleteData) {
+        await this.convList.removeThread(threadId);
+        this.nav.closeChat();
+      } else onRetain();
+    } catch {
+      this.toast.warn(this.transloco.translate('errors.networkError'));
+    } finally {
+      this.deletionLock.end(threadId);
       this.convList.load();
-      this.nav.closeChat();
-    });
+    }
   }
 
   /** Mobile back arrow: delegate to the nav stack's `back`, which peels layers in priority order

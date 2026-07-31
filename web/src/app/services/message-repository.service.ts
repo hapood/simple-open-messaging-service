@@ -4,10 +4,19 @@ import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import { MsgService } from './message.service';
 import { UserService } from './user.service';
-import { Message, QueryMessageLogParams, MEDIA_STATUS, MediaStatus } from './model';
+import {
+  Message,
+  QueryMessageLogParams,
+  MEDIA_STATUS,
+  MediaStatus,
+} from './model';
+import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 /** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
-export type MessageQuery = Pick<QueryMessageLogParams, 'skip' | 'take' | 'lastSeq' | 'orderBy'>;
+export type MessageQuery = Pick<
+  QueryMessageLogParams,
+  'skip' | 'take' | 'lastSeq' | 'orderBy'
+>;
 
 /** The client's stored media-status state for one message: its current status + the monotonic version of
  *  the event that last set it. 'downloading' is a client-only optimistic state (set directly on a manual
@@ -30,7 +39,10 @@ export interface StoredMediaStatus {
  * {@link MessageRepository.setMediaDownloading} (which keeps sv), so any later backend terminal (greater
  * sv) overrides it.
  */
-export function reduceMediaStatus(cur: StoredMediaStatus | undefined, ev: { status: 'ready' | 'failed'; sv: number }): StoredMediaStatus | null {
+export function reduceMediaStatus(
+  cur: StoredMediaStatus | undefined,
+  ev: { status: 'ready' | 'failed'; sv: number },
+): StoredMediaStatus | null {
   if (cur && ev.sv <= cur.sv) return null; // stale / out-of-order → drop
   if (cur && cur.status === ev.status && cur.sv === ev.sv) return null; // idempotent
   return { status: ev.status, sv: ev.sv };
@@ -64,6 +76,7 @@ export function reduceMediaStatus(cur: StoredMediaStatus | undefined, ev: { stat
  */
 @Injectable({ providedIn: 'root' })
 export class MessageRepository {
+  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly webdb = inject(WebdbService);
   private readonly ws = inject(WebsocketService);
   private readonly msg = inject(MsgService);
@@ -101,22 +114,50 @@ export class MessageRepository {
     // Own the NEW_MESSAGE SSE: identity-only {threadId, seq, ts} (no body — single data source = pull).
     // Advance the per-thread ceiling + emit the live signal so the open chat-box pulls the body via
     // getNewer; nothing is cached here (the body arrives via the missed-summary pull / query-messages).
-    this.ws.eventSubject.pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined)).subscribe((m) => this.onNewMessage(m.data as { threadId: number; seq: number; ts: number }));
+    this.ws.eventSubject
+      .pipe(
+        filter(
+          (m) =>
+            m.event === 'NEW_MESSAGE' &&
+            m.status === 0 &&
+            m.data !== undefined &&
+            !this.deletionLock.has((m.data as { threadId: number }).threadId),
+        ),
+      )
+      .subscribe((m) =>
+        this.onNewMessage(
+          m.data as { threadId: number; seq: number; ts: number },
+        ),
+      );
 
     // Own the MEDIA_STATUS SSE: a federated media message finished localizing ('ready') or failed
     // ('failed'). Flow it through the reducer (anti-regression by sv) + IDB write + the mediaStatus signal
     // so the card flips off its optimistic 'downloading'. The frame is {threadId, seq, status, v}.
-    this.ws.eventSubject.pipe(filter((m) => m.event === 'MEDIA_STATUS' && m.status === 0 && m.data !== undefined)).subscribe((m) => {
-      const d = m.data as unknown as {
-        threadId: number;
-        seq: number;
-        status: 'ready' | 'failed';
-        v: number;
-      };
-      if (typeof d?.threadId === 'number' && typeof d?.seq === 'number' && (d.status === 'ready' || d.status === 'failed')) {
-        void this.applyMediaStatus(d.threadId, d.seq, d.status, d.v, 'sse');
-      }
-    });
+    this.ws.eventSubject
+      .pipe(
+        filter(
+          (m) =>
+            m.event === 'MEDIA_STATUS' &&
+            m.status === 0 &&
+            m.data !== undefined,
+        ),
+      )
+      .subscribe((m) => {
+        const d = m.data as unknown as {
+          threadId: number;
+          seq: number;
+          status: 'ready' | 'failed';
+          v: number;
+        };
+        if (this.deletionLock.has(d.threadId)) return;
+        if (
+          typeof d?.threadId === 'number' &&
+          typeof d?.seq === 'number' &&
+          (d.status === 'ready' || d.status === 'failed')
+        ) {
+          void this.applyMediaStatus(d.threadId, d.seq, d.status, d.v, 'sse');
+        }
+      });
 
     // Session-end reset: maxSeenSeq is documented "in-memory only — re-established by the init
     // backend-probe each session", so it must not survive an account switch (a stale ceiling from the
@@ -156,8 +197,7 @@ export class MessageRepository {
     if (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined) {
       const cached = await this.latestPage(threadId, q.take, clearedAfter);
       if (cached.length > 0) {
-        if (!localOnly)
-          void this.refreshLatest(threadId, q, cached[0]?.seq);
+        if (!localOnly) void this.refreshLatest(threadId, q, cached[0]?.seq);
         const oldestSeq = cached[cached.length - 1].seq;
         return {
           data: cached,
@@ -170,8 +210,17 @@ export class MessageRepository {
     // skip === 1 → getOlder (desc, below lastSeq) / getNewer (asc, above lastSeq): cache-first.
     const anchor = q.lastSeq;
     if (anchor === undefined) return this.backend(threadId, q); // no cursor → can't range the cache
-    const cached = q.orderBy === 'desc' ? await this.rangeDesc(threadId, anchor, q.take, clearedAfter) : await this.rangeAsc(threadId, anchor, q.take, clearedAfter);
-    const verdict = this.cacheVerdict(cached, anchor, q.take, q.orderBy, threadId);
+    const cached =
+      q.orderBy === 'desc'
+        ? await this.rangeDesc(threadId, anchor, q.take, clearedAfter)
+        : await this.rangeAsc(threadId, anchor, q.take, clearedAfter);
+    const verdict = this.cacheVerdict(
+      cached,
+      anchor,
+      q.take,
+      q.orderBy,
+      threadId,
+    );
     if (verdict.hit) return { data: cached, hasMore: verdict.hasMore };
     if (localOnly) return { data: [], hasMore: false };
     return this.backend(threadId, q); // gap-fill: the cache lacks a contiguous held range here
@@ -202,9 +251,14 @@ export class MessageRepository {
   }
 
   /** Backend read + write-through cache. Returns the page in `orderBy` order + the authoritative hasMore. */
-  private async backend(threadId: number, q: MessageQuery): Promise<{ data: Message[]; hasMore: boolean }> {
+  private async backend(
+    threadId: number,
+    q: MessageQuery,
+  ): Promise<{ data: Message[]; hasMore: boolean }> {
     try {
-      const res = await firstValueFrom(this.msg.queryMessageLog({ threadId, ...q }));
+      const res = await firstValueFrom(
+        this.msg.queryMessageLog({ threadId, ...q }),
+      );
       const data = res.code === 0 ? (res.data ?? []) : [];
       if (data.length > 0) {
         await this.putMany(data);
@@ -261,12 +315,14 @@ export class MessageRepository {
     await this.putMany(messages);
     const topSeqByThread = new Map<number, number>();
     for (const m of messages) {
-      if (typeof m?.seq !== 'number' || typeof m?.threadId !== 'number') continue;
+      if (typeof m?.seq !== 'number' || typeof m?.threadId !== 'number')
+        continue;
       this.advanceCeiling(m.threadId, m.seq);
       const prev = topSeqByThread.get(m.threadId) ?? -1;
       if (m.seq > prev) topSeqByThread.set(m.threadId, m.seq);
     }
-    for (const [threadId, seq] of topSeqByThread) this.signal$.next({ threadId, seq });
+    for (const [threadId, seq] of topSeqByThread)
+      this.signal$.next({ threadId, seq });
   }
 
   /** Advance the per-thread seq ceiling (drives the getNewer cache-hit test) if `seq` is newer. */
@@ -298,11 +354,18 @@ export class MessageRepository {
    * anchor; asc: lowest-first above it). Contiguity is required because multiple jump-to-message windows
    * can fragment the cached set; a gapped range must be backfilled from the API (the contiguous truth).
    */
-  private cacheVerdict(cached: Message[], anchor: number, take: number, orderBy: 'desc' | 'asc', threadId: number): { hit: boolean; hasMore: boolean } {
+  private cacheVerdict(
+    cached: Message[],
+    anchor: number,
+    take: number,
+    orderBy: 'desc' | 'asc',
+    threadId: number,
+  ): { hit: boolean; hasMore: boolean } {
     if (cached.length === 0) return { hit: false, hasMore: true };
     const step = orderBy === 'desc' ? -1 : 1;
     for (let i = 0; i < cached.length; i++) {
-      if (cached[i].seq !== anchor + step * (i + 1)) return { hit: false, hasMore: true }; // gap
+      if (cached[i].seq !== anchor + step * (i + 1))
+        return { hit: false, hasMore: true }; // gap
     }
     const lastSeq = cached[cached.length - 1].seq;
     if (orderBy === 'desc') {
@@ -325,18 +388,27 @@ export class MessageRepository {
 
   /** Latest cached page, newest-first. Message seq is monotonic but not required to be contiguous, so gaps
    *  are valid and must never be interpreted as cache corruption. */
-  private async latestPage(threadId: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
+  private async latestPage(
+    threadId: number,
+    take: number,
+    clearedAfter?: number | null,
+  ): Promise<Message[]> {
     try {
-      return (await this.webdb.queryCachedMessages(threadId, 'desc', take)).filter(
-        (m) => clearedAfter == null || m.createdAt > clearedAfter,
-      );
+      return (
+        await this.webdb.queryCachedMessages(threadId, 'desc', take)
+      ).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
     } catch {
       return [];
     }
   }
 
   /** The `take` messages with seq < `belowSeq`, highest-first (desc). */
-  private async rangeDesc(threadId: number, belowSeq: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
+  private async rangeDesc(
+    threadId: number,
+    belowSeq: number,
+    take: number,
+    clearedAfter?: number | null,
+  ): Promise<Message[]> {
     try {
       return (
         await this.webdb.queryCachedMessages(threadId, 'desc', take, belowSeq)
@@ -347,7 +419,12 @@ export class MessageRepository {
   }
 
   /** The `take` messages with seq > `aboveSeq`, lowest-first (asc). */
-  private async rangeAsc(threadId: number, aboveSeq: number, take: number, clearedAfter?: number | null): Promise<Message[]> {
+  private async rangeAsc(
+    threadId: number,
+    aboveSeq: number,
+    take: number,
+    clearedAfter?: number | null,
+  ): Promise<Message[]> {
     try {
       return (
         await this.webdb.queryCachedMessages(threadId, 'asc', take, aboveSeq)
@@ -376,7 +453,10 @@ export class MessageRepository {
 
   /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is
    *  unavailable or the message was never cached). */
-  private async getOne(threadId: number, seq: number): Promise<Message | undefined> {
+  private async getOne(
+    threadId: number,
+    seq: number,
+  ): Promise<Message | undefined> {
     try {
       return await this.webdb.getMessage(threadId, seq);
     } catch {
@@ -392,10 +472,19 @@ export class MessageRepository {
    * Best-effort: a not-cached message (never pulled) is a no-op (the next query-messages carries the
    * authoritative status from the backend).
    */
-  async applyMediaStatus(threadId: number, seq: number, status: 'ready' | 'failed', sv: number, _source: 'sse' | 'probe' | 'retry' = 'sse'): Promise<boolean> {
+  async applyMediaStatus(
+    threadId: number,
+    seq: number,
+    status: 'ready' | 'failed',
+    sv: number,
+    _source: 'sse' | 'probe' | 'retry' = 'sse',
+  ): Promise<boolean> {
     const cur = await this.getOne(threadId, seq);
     if (!cur) return false;
-    const curState: StoredMediaStatus | undefined = cur.mediaStatus !== undefined ? { status: cur.mediaStatus, sv: cur.sv ?? 0 } : undefined;
+    const curState: StoredMediaStatus | undefined =
+      cur.mediaStatus !== undefined
+        ? { status: cur.mediaStatus, sv: cur.sv ?? 0 }
+        : undefined;
     const next = reduceMediaStatus(curState, { status, sv });
     if (!next) return false;
     await this.put({ ...cur, mediaStatus: next.status, sv: next.sv });
@@ -425,7 +514,10 @@ export class MessageRepository {
    * emitting a signal per changed row so each card flips as its row resolves (no batch latency). The
    * scroll probe is the SSE backstop — it corrects statuses the client missed while disconnected.
    */
-  async markMediaStatusBatch(threadId: number, entries: Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>): Promise<void> {
+  async markMediaStatusBatch(
+    threadId: number,
+    entries: Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>,
+  ): Promise<void> {
     for (const e of entries) {
       await this.applyMediaStatus(threadId, e.seq, e.status, e.sv, 'probe');
     }

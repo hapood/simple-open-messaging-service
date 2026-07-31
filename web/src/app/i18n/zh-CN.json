@@ -101,8 +101,7 @@
     "editProfileAria": "编辑个人资料",
     "friendRequests": "好友请求",
     "newFriendRequestsAria": "新的好友请求",
-    "newGroup": "新建群组",
-    "folders": "分组",
+    "newGroup": "新建群聊",
     "logout": "退出登录",
     "settings": "设置",
     "themeLabel": "主题",
@@ -233,29 +232,6 @@
     "scanDenied": "相机权限未开启，请在设置中开启后再扫码。",
     "scanOpenSettings": "打开设置"
   },
-  "folder": {
-    "title": "分组",
-    "newBtn": "新建",
-    "empty": "暂无分组。点击“新建”创建分组来整理你的聊天。",
-    "editTitle": "编辑分组",
-    "newTitle": "新建分组",
-    "namePlaceholder": "例如：工作、家人",
-    "autoIncludeTypes": "自动包含类型",
-    "specificChats": "指定聊天（可选）",
-    "noChats": "暂无聊天",
-    "deleteFolder": "删除分组",
-    "selected": "{count, plural, other {已选 # 项}}",
-    "statusRule": "状态",
-    "status": {
-      "none": "不限",
-      "unread": "仅未读"
-    },
-    "type": {
-      "all": "全部类型",
-      "direct": "单聊",
-      "group": "群聊"
-    }
-  },
   "friend": {
     "title": "添加好友",
     "searchPlaceholder": "输入昵称、账号或完整跨站账号",
@@ -321,11 +297,14 @@
     "makeRole": "设为{{role}}",
     "makeOwner": "设为群主",
     "kick": "移除",
-    "addMembers": "添加成员",
+    "inviteMembers": "邀请成员",
     "invite": "邀请 {{count}}",
     "leaveOwnerHint": "退出（请先转让群主）",
     "leave": "退出群组",
     "leaveOwnerNote": "群主必须先转让群主身份才能退出。",
+    "dissolve": "解散群聊",
+    "dissolveConfirm": "确定为所有成员解散此群聊吗？此操作无法撤销。",
+    "dissolvedNote": "该群聊已解散，历史消息仍可查看。",
     "confirmPrompt": "确认{{action}} {{name}}？",
     "action": {
       "kick": "移除",
@@ -338,12 +317,13 @@
     }
   },
   "newGroup": {
-    "title": "新建群组",
+    "title": "新建群聊",
     "searchPlaceholder": "搜索",
     "groupNamePlaceholder": "群名称",
     "groupDescPlaceholder": "群简介（选填）",
     "setPhotoAria": "设置群头像",
-    "create": "创建"
+    "create": "创建",
+    "creating": "创建中…"
   },
   "forward": {
     "title": "转发消息",
@@ -365,13 +345,16 @@
     "sent": "已转发到 {{count}} 个聊天",
     "partiallySent": "已转发 {{sent}} 个，共 {{total}} 个聊天",
     "sendFailed": "消息转发失败，请重试",
-    "unavailable": "该聊天记录暂不可用"
+    "unavailable": "该聊天记录暂不可用",
+    "loadFailed": "聊天记录加载失败",
+    "openRecord": "查看聊天记录",
+    "previewLabel": "[聊天记录]",
+    "nestedLevel": "第 {{level}} 层"
   },
   "chat": {
     "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
     "messageListAria": "对话消息",
-    "folderFilterAria": "会话文件夹筛选",
     "emptyP2PHint": "打个招呼，开始你们的对话",
     "emptyGroupHint": "还没有消息，发送第一条吧",
     "emptyBlockedHint": "取消拉黑后即可开始对话",
@@ -481,12 +464,23 @@
     "menuUnblock": "取消拉黑",
     "menuBlockConfirm": "确定拉黑？对方将无法向你发送消息。",
     "menuDeleteChat": "删除聊天",
+    "menuUnfriend": "解除好友关系",
+    "menuDeleteData": "删除聊天数据",
+    "alsoDeleteData": "同时删除聊天数据",
+    "unfriendConfirmTitle": "解除好友关系？",
+    "unfriendConfirmBody": "解除后仍可查看历史消息，但不能继续发送消息。",
+    "leaveConfirmTitle": "退出群聊？",
+    "deleteDataConfirmTitle": "删除聊天数据？",
+    "deleteDataConfirmBody": "该会话及其历史记录将从你的账户中删除，此操作无法撤销。",
     "menuDeleteChatConfirm": "删除此聊天并移除好友？",
     "menuLeaveGroup": "退出群聊",
     "menuLeaveGroupConfirm": "退出此群聊？",
     "menuConfirm": "确认",
     "menuCancel": "取消",
     "blockedBanner": "你已拉黑该联系人。点击取消拉黑。",
+    "groupDissolvedBanner": "群聊已解散。",
+    "notFriendsBanner": "对方不是你的好友。",
+    "leftGroupBanner": "你已退出群聊。",
     "searchInChatPlaceholder": "在此聊天中搜索",
     "searchNoResult": "无结果",
     "searchCount": "{{i}} / {{n}}",
@@ -583,6 +577,7 @@
       "groupInvalidToken": "邀请无效或已过期",
       "groupForbidden": "你没有权限进行此操作",
       "groupTargetNotMember": "该成员已不在群中",
+      "groupDissolved": "该群聊已解散",
       "inviteNotFound": "好友申请不存在或已失效",
       "inviteExpired": "好友申请已过期",
       "inviteNotYours": "你无权处理这条好友申请",

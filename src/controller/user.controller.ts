@@ -34,13 +34,11 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { normalizeAccount } from '../common/account.js';
-import {
-  ConversationItemDto,
-  UserResponseDto,
-} from '../dto/response.dto.js';
+import { ConversationItemDto, UserResponseDto } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
+  DeleteFriendDto,
   SyncPeerProfileDto,
   SyncSelfProfileDto,
   ThreadIdDto,
@@ -53,7 +51,10 @@ import {
   BlockDto,
 } from '../dto/user.dto.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
-import { FederationService, type S2SProfile } from '../federation/federation.service.js';
+import {
+  FederationService,
+  type S2SProfile,
+} from '../federation/federation.service.js';
 
 /**
  * One entry of the hydrated thread-list delta (`POST /user/query-thread/delta`). ADD entries carry the fully
@@ -99,10 +100,15 @@ export class UserController {
     summary:
       'ACK-only self-profile revision probe. Pushes PROFILE_REV_UPDATED when the caller cache is stale.',
   })
-  async syncSelfProfile(@Request() req: FastifyRequest, @Body() dto: SyncSelfProfileDto): Promise<void> {
+  async syncSelfProfile(
+    @Request() req: FastifyRequest,
+    @Body() dto: SyncSelfProfileDto,
+  ): Promise<void> {
     const data = await this.userService.findUniqueUser({ id: req.user.userId });
     if (data && data.profileRev > dto.sinceProfileRev) {
-      this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: data.profileRev });
+      this.sseService.onProfileRevUpdated(req.user.userId, {
+        profileRev: data.profileRev,
+      });
     }
   }
 
@@ -128,7 +134,10 @@ export class UserController {
     }
     // Magic-number check first: quickly reject non-images with a forged mimetype (sharp re-validates in saveAvatars).
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid image',
+      );
     }
     // Write new multi-size avatar → update DB. The previous avatar files are intentionally LEFT on
     // disk: gcOrphanedAvatars reaps them once they are no longer any User/Group's current avatar, so
@@ -138,7 +147,10 @@ export class UserController {
       url = await this.uploadService.saveAvatars(img.buffer);
     } catch {
       // sharp decode failure (corrupt / pixel-bomb / non-image) → always rejected as invalid image; nothing written to disk or DB.
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid image');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid image',
+      );
     }
     const updated = await this.userService.updateAvatar(req.user.userId, url);
     // Fan the fresh avatar to every P2P friend so their conversation list (and open chat header)
@@ -146,22 +158,32 @@ export class UserController {
     void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     // Self-profile-rev push so the editor's OTHER tabs/devices learn their own profile changed and re-
     // fetch (multi-device self refresh); the native HELLO cache also merges it for a fresh webview replay.
-    void this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: updated.profileRev });
+    void this.sseService.onProfileRevUpdated(req.user.userId, {
+      profileRev: updated.profileRev,
+    });
     return { avatar: url };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
-  @ApiOperation({ summary: 'Update the current user display name / bio (account is immutable)' })
+  @ApiOperation({
+    summary:
+      'Update the current user display name / bio (account is immutable)',
+  })
   @ApiResultResponse(UserResponseDto)
-  async updateProfile(@Request() req: FastifyRequest, @Body() dto: UpdateProfileDto) {
+  async updateProfile(
+    @Request() req: FastifyRequest,
+    @Body() dto: UpdateProfileDto,
+  ) {
     const data = await this.userService.updateProfile(req.user.userId, dto);
     // Fan the fresh profile to every P2P friend so their conversation list (and open chat header)
     // refreshes in real time. Fire-and-forget — never blocks the edit response.
     void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     // Self-profile-rev push (multi-device self refresh + native HELLO-cache merge). See updateAvatar.
-    void this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: data.profileRev });
+    void this.sseService.onProfileRevUpdated(req.user.userId, {
+      profileRev: data.profileRev,
+    });
     return data;
   }
 
@@ -206,6 +228,9 @@ export class UserController {
       .map((p) => p.threadId);
     const peers = await this.participantService.findP2PPeers(p2pThreadIds, me);
     const peerByThread = new Map(peers.map((p) => [p.threadId, p.userId]));
+    const peerActiveByThread = new Map(
+      peers.map((p) => [p.threadId, p.leftAt === null]),
+    );
     const peerUsers = await this.userService.queryUsers({
       where: {
         id: { in: peers.map((p) => p.userId) },
@@ -236,7 +261,7 @@ export class UserController {
         lastReadSeq: p.lastReadSeq ?? undefined,
         role: p.role ?? undefined,
         unreadCount: attention.get(p.threadId)?.count ?? 0,
-        mentionUnread: attention.get(p.threadId)?.mention ?? 'none',
+        mentionUnread: attention.get(p.threadId)?.mention ?? [],
         // The list preview is NOT embedded — the client derives it from its local message store
         // (local-first). lastMessageAt stays (cheap, needed for sort). lastMessageSeq is the mark-read target
         // the client passes when opening the thread (mark all current up to this seq).
@@ -249,6 +274,7 @@ export class UserController {
         pinnedAt: p.pinnedAt ?? null,
         clearedAt: p.clearedAt ?? null,
         alias: p.alias ?? null,
+        conversationState: p.leftAt === null ? 'ACTIVE' : 'READ_ONLY',
       } as {
         id: number;
         threadId: number;
@@ -262,11 +288,18 @@ export class UserController {
         pinnedAt: Date | null;
         clearedAt: Date | null;
         blocked?: boolean;
+        friendshipActive?: boolean;
+        conversationState: 'ACTIVE' | 'READ_ONLY';
         alias: string | null;
         peerUser?: unknown;
         group?: unknown;
       };
       if (p.thread.type === 'P2P') {
+        item.friendshipActive =
+          p.leftAt === null && peerActiveByThread.get(p.threadId) === true;
+        item.conversationState = item.friendshipActive
+          ? 'ACTIVE'
+          : 'READ_ONLY';
         const peerId = peerByThread.get(p.threadId);
         if (peerId !== undefined) {
           item.peerUser = userDict[peerId];
@@ -284,10 +317,15 @@ export class UserController {
               description: gu.bio,
               domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,
+              dissolvedAt: gu.group?.dissolvedAt ?? null,
               createdAt: gu.group?.createdAt ?? p.thread.createdAt,
               updatedAt: gu.group?.updatedAt ?? p.thread.updatedAt,
             }
           : undefined;
+        item.conversationState =
+          p.leftAt === null && gu?.group?.dissolvedAt == null
+            ? 'ACTIVE'
+            : 'READ_ONLY';
       }
       return item;
     });
@@ -300,11 +338,18 @@ export class UserController {
     summary:
       'Fetch the thread-list delta (from excl, to incl): ADD ops returned hydrated (peer/group/unread), DELETE ops id-only',
   })
-  async queryThreadDelta(@Request() req: FastifyRequest, @Body() dto: ThreadDeltaDto) {
+  async queryThreadDelta(
+    @Request() req: FastifyRequest,
+    @Body() dto: ThreadDeltaDto,
+  ) {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const ops = await this.threadRevisionService.queryDelta(me, dto.fromRevision, dto.toRevision);
+    const ops = await this.threadRevisionService.queryDelta(
+      me,
+      dto.fromRevision,
+      dto.toRevision,
+    );
     const { addIds, removeIds } = planThreadDelta(ops);
     // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
     // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
@@ -312,16 +357,29 @@ export class UserController {
     let adds: ConversationItemDto[] = [];
     if (addIds.length > 0) {
       const rows = await this.participantService.queryParticipants({
-        where: { userId: me, threadId: { in: addIds }, leftAt: null },
+        where: {
+          userId: me,
+          threadId: { in: addIds },
+        },
         include: { thread: true },
       });
       // hydrateConversationItems is the ConversationItem pipeline (peer/group/unread) shared with
       // /user/thread-info; its inferred return carries `unknown` peer/group, so assert the contract here.
-      adds = (await this.hydrateConversationItems(me, rows)) as ConversationItemDto[];
+      adds = (await this.hydrateConversationItems(
+        me,
+        rows,
+      )) as ConversationItemDto[];
     }
     return [
-      ...adds.map((item) => ({ threadId: item.threadId, direction: 'ADD' as const, item })),
-      ...removeIds.map((threadId) => ({ threadId, direction: 'DELETE' as const })),
+      ...adds.map((item) => ({
+        threadId: item.threadId,
+        direction: 'ADD' as const,
+        item,
+      })),
+      ...removeIds.map((threadId) => ({
+        threadId,
+        direction: 'DELETE' as const,
+      })),
     ] satisfies HydratedThreadDeltaOp[];
   }
 
@@ -329,29 +387,55 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/delete-friend')
   @ApiOperation({ summary: 'Unfriend — end a P2P conversation (mutual)' })
-  async deleteFriend(@Request() req: FastifyRequest, @Body() dto: UserIdDto) {
+  async deleteFriend(
+    @Request() req: FastifyRequest,
+    @Body() dto: DeleteFriendDto,
+  ) {
     const me = req.user.userId;
     if (me === dto.userId) {
-      throw new BusinessException(BusinessCode.FRIEND_SELF, 'can not unfriend self');
+      throw new BusinessException(
+        BusinessCode.FRIEND_SELF,
+        'can not unfriend self',
+      );
     }
     const peer = await this.userService.findUniqueUser({ id: dto.userId });
-    // A friend relationship == an active P2P thread shared by both. No thread → nothing to end
-    // (idempotent). FRIEND_NOT_FOUND signals the caller has no friendship edge to end (distinct from the
-    // generic THREAD_NOT_FOUND the read paths use for a missing conversation).
-    const threadId = await this.participantService.findP2PThreadBetween(me, dto.userId);
+    // Prefer the active edge. If it has already ended, retain the latest historical edge so a retry is
+    // successful and may still apply the caller's `deleteData` choice.
+    const activeThreadId = await this.participantService.findP2PThreadBetween(
+      me,
+      dto.userId,
+    );
+    const threadId =
+      activeThreadId ??
+      (await this.participantService.findLatestP2PThreadBetween(me, dto.userId));
     if (threadId === null) {
-      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, `not friends with [${dto.userId}]`);
+      throw new BusinessException(
+        BusinessCode.FRIEND_NOT_FOUND,
+        `not friends with [${dto.userId}]`,
+      );
     }
-    // Soft-leave BOTH participants in one shot. The thread row + participants stay (history), but the
-    // edge is severed (findP2PThreadBetween now returns null); re-friending later mints a fresh thread.
-    await this.participantService.softLeaveP2PBoth(threadId);
-    // Record the thread delete (bump threadRevision + push THREAD_REVISION_UPDATED) — replaces the
-    // former FRIEND_DELETED NOTIFY. Local peer: both users' lists drop it; federated peer: only me
-    // (the peer's thread list lives on their origin server; they discover the severance lazily via a
-    // 403 on the next /messages pull).
-    await this.threadRevisionService.recordThreadDelete(me, threadId);
-    if (!peer?.isForeigner) {
-      await this.threadRevisionService.recordThreadDelete(dto.userId, threadId);
+    const wasHidden = await this.threadRevisionService.isThreadHidden(
+      me,
+      threadId,
+    );
+    const peerWasHidden = !peer?.isForeigner
+      ? await this.threadRevisionService.isThreadHidden(dto.userId, threadId)
+      : false;
+    const shouldDelete = (dto.deleteData ?? false) && !wasHidden;
+    // End the friendship but retain both participant rows + the thread as a readable history item.
+    const { transitioned } = await this.participantService.endP2P(
+      threadId,
+      me,
+      shouldDelete,
+    );
+    // Reuse the existing thread revision stream to make other devices re-hydrate this same row with
+    // friendshipActive=false. It is deliberately ADD (upsert), not DELETE: history stays in the list.
+    if (shouldDelete)
+      await this.threadRevisionService.recordThreadDelete(me, threadId);
+    else if (transitioned && !wasHidden)
+      await this.threadRevisionService.recordThreadAdd(me, threadId);
+    if (transitioned && !peer?.isForeigner && !peerWasHidden) {
+      await this.threadRevisionService.recordThreadAdd(dto.userId, threadId);
     }
     return envelope(undefined, { message: 'friend removed' });
   }
@@ -365,7 +449,10 @@ export class UserController {
   })
   async setBlock(@Request() req: FastifyRequest, @Body() dto: BlockDto) {
     if (req.user.userId === dto.userId) {
-      throw new BusinessException(BusinessCode.FRIEND_SELF, 'can not block self');
+      throw new BusinessException(
+        BusinessCode.FRIEND_SELF,
+        'can not block self',
+      );
     }
     if (dto.block) {
       await this.userBlockService.block(req.user.userId, dto.userId);
@@ -410,7 +497,10 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
-  @ApiOperation({ summary: 'Resolve a user by {account, domain} (local lookup, or federated via S2S)' })
+  @ApiOperation({
+    summary:
+      'Resolve a user by {account, domain} (local lookup, or federated via S2S)',
+  })
   @ApiResultResponse(UserResponseDto)
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
@@ -426,7 +516,10 @@ export class UserController {
         // already trusted). The peer auto-accepts us via the init handshake.
         await this.federationService.ensurePeerTrusted(domain);
       } catch (e) {
-        if (e instanceof BusinessException && e.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED) {
+        if (
+          e instanceof BusinessException &&
+          e.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
+        ) {
           // Admin intent — distinct from an unreachable peer so the client can show "blocked by admin".
           throw new BusinessException(
             BusinessCode.FEDERATION_PEER_BLOCKED,
@@ -440,14 +533,20 @@ export class UserController {
       }
       let profile: S2SProfile;
       try {
-        profile = await this.federationService.fetchRemoteUser({ account, domain });
+        profile = await this.federationService.fetchRemoteUser({
+          account,
+          domain,
+        });
       } catch (e) {
         throw new BusinessException(
           BusinessCode.FEDERATION_DELIVERY_FAILED,
           `could not reach ${domain}: ${(e as Error).message}`,
         );
       }
-      const foreignId = await this.federationService.ensureForeignUser(account, domain);
+      const foreignId = await this.federationService.ensureForeignUser(
+        account,
+        domain,
+      );
       await this.federationService.localizeForeignProfile(foreignId, profile);
       // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
       return this.userService.findUniqueUser({ id: foreignId });
@@ -459,18 +558,25 @@ export class UserController {
     });
     if (user !== null) {
       if (user.isGroup) {
-        throw new BusinessException(BusinessCode.FRIEND_INVALID_TARGET, 'cannot add a group as a friend');
+        throw new BusinessException(
+          BusinessCode.FRIEND_INVALID_TARGET,
+          'cannot add a group as a friend',
+        );
       }
       return user;
     }
-    throw new BusinessException(BusinessCode.NOT_FOUND, `can not find user [${account}]`);
+    throw new BusinessException(
+      BusinessCode.NOT_FOUND,
+      `can not find user [${account}]`,
+    );
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/search')
   @ApiOperation({
-    summary: 'Fuzzy local user discovery by account OR display name (local users only)',
+    summary:
+      'Fuzzy local user discovery by account OR display name (local users only)',
   })
   async searchUsers(@Body() dto: UserSearchDto) {
     // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
@@ -478,7 +584,10 @@ export class UserController {
     // discoverable: resolve those by exact account + domain via /user/resolve. Only local,
     // non-deleted accounts are returned.
     const take = Math.min(dto.take ?? 20, 20);
-    return this.userService.searchUsers(dto.q.trim(), { skip: dto.skip ?? 0, take });
+    return this.userService.searchUsers(dto.q.trim(), {
+      skip: dto.skip ?? 0,
+      take,
+    });
   }
 
   @ApiBearerAuth()
@@ -489,20 +598,32 @@ export class UserController {
       'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. ACK-only — returns no payload; pass sinceProfileRev so a stale local peer is pushed a PEER_PROFILE_UPDATED signal to pull.',
   })
   @ApiResultResponse(UserResponseDto)
-  async syncPeerProfile(@Request() req: FastifyRequest, @Body() dto: SyncPeerProfileDto): Promise<void> {
+  async syncPeerProfile(
+    @Request() req: FastifyRequest,
+    @Body() dto: SyncPeerProfileDto,
+  ): Promise<void> {
     // Chat-open / profile-panel-open staleness hook. Federated: probe the peer's /revision; if newer than
     // the stub's remoteProfileRev, re-pull + re-localize avatar/name/bio (no-op for local users). Runs
     // ASYNC — the response returns immediately; a re-localized stub fans a PEER_PROFILE_UPDATED signal on
     // completion, so the caller pulls then. Best-effort — a transient peer outage keeps the cached profile.
     void this.federationService.syncForeignUserIfStale(dto.userId);
     // Message catch-up (§4.4): recover any hint dropped by the debounce / a lost push. Fire-and-forget.
-    void this.federationService.syncMessagesWithPeerByStubId(dto.userId, req.user.userId);
+    void this.federationService.syncMessagesWithPeerByStubId(
+      dto.userId,
+      req.user.userId,
+    );
     // Local comparison: if the caller's cached profileRev is stale, push a signal so it pulls. Federated
     // stale is covered by syncForeignUserIfStale's notify above; this covers the local case (and is a
     // harmless duplicate for federated — the pull is idempotent).
     const data = await this.userService.findUniqueUser({ id: dto.userId });
-    if (data && dto.sinceProfileRev !== undefined && data.profileRev > dto.sinceProfileRev) {
-      this.sseService.onPeerProfileUpdated(req.user.userId, { userId: dto.userId });
+    if (
+      data &&
+      dto.sinceProfileRev !== undefined &&
+      data.profileRev > dto.sinceProfileRev
+    ) {
+      this.sseService.onPeerProfileUpdated(req.user.userId, {
+        userId: dto.userId,
+      });
     }
     // ACK-only — no profile payload. The client pulls on receipt of the signal.
   }
@@ -510,12 +631,20 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('/user/thread-info')
-  @ApiOperation({ summary: 'Get conversation details (includes peer user/group)' })
+  @ApiOperation({
+    summary: 'Get conversation details (includes peer user/group)',
+  })
   @ApiResultResponse(ConversationItemDto)
-  async queryUserThreadInfo(@Request() req: FastifyRequest, @Body() dto: ThreadIdDto) {
+  async queryUserThreadInfo(
+    @Request() req: FastifyRequest,
+    @Body() dto: ThreadIdDto,
+  ) {
     const me = req.user.userId;
     const [p] = await this.participantService.queryParticipants({
-      where: { userId: me, threadId: dto.threadId, leftAt: null },
+      where: {
+        userId: me,
+        threadId: dto.threadId,
+      },
       include: { thread: true },
       take: 1,
     });
@@ -523,7 +652,10 @@ export class UserController {
       // Non-membership / no-such-thread collapse to THREAD_NOT_FOUND — the same code the message
       // routes return via ThreadAccessGuard, so a client gets one consistent "no conversation"
       // signal across thread-info / send / query / mark-read.
-      throw new BusinessException(BusinessCode.THREAD_NOT_FOUND, `no thread [${dto.threadId}]`);
+      throw new BusinessException(
+        BusinessCode.THREAD_NOT_FOUND,
+        `no thread [${dto.threadId}]`,
+      );
     }
     const [data] = await this.hydrateConversationItems(me, [p]);
     return data;
@@ -539,7 +671,10 @@ export class UserController {
     // register endpoint refuses up front — accounts come from POST admin/users/create instead. The
     // registration logic below is untouched; only this switch is added.
     if (!PUBLIC_CONFIG.registrationOpen) {
-      throw new BusinessException(BusinessCode.REGISTRATION_DISABLED, 'registration is closed');
+      throw new BusinessException(
+        BusinessCode.REGISTRATION_DISABLED,
+        'registration is closed',
+      );
     }
     /* Format validation (regex) for account/password has moved into RegisterDto's @Matches → failures
        go through ValidationPipe → 200/10000. Business validation (account duplicate) stays in the
@@ -550,7 +685,10 @@ export class UserController {
       hashPwd: await this.authService.hashPassword(dto.password),
     });
     if (res.status === 2) {
-      throw new BusinessException(BusinessCode.ALREADY_EXISTS, `User ${dto.account} already exists`);
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        `User ${dto.account} already exists`,
+      );
     }
     return envelope(res.data, { message: 'successfuly registered' });
   }

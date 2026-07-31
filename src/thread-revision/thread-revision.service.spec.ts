@@ -7,24 +7,39 @@ import { planThreadDelta, type ThreadDeltaOp } from './thread-delta.js';
  *  Only `threadRevision.findMany` is exercised by the read path under test (queryDelta);
  *  `user.update` / `sse` are inert stubs for the write paths. The findMany fake HONORS the `revision`
  *  filter (lte/gt) from the query args so queryDelta behaves as it would against a real DB. */
-function makeService(rows: Array<{ threadId: number; direction: 'ADD' | 'DELETE'; revision: number }>) {
-  const findMany = vi.fn(async (args: {
-    where: { userId: number; revision?: { lte?: number; gt?: number } };
-  }) => {
-    const rev = args.where.revision;
-    return rows.filter((r) => {
-      let ok = true;
-      if (rev?.lte !== undefined) ok = ok && r.revision <= rev.lte;
-      if (rev?.gt !== undefined) ok = ok && r.revision > rev.gt;
-      return ok;
-    });
-  });
+function makeService(
+  rows: Array<{
+    threadId: number;
+    direction: 'ADD' | 'DELETE';
+    revision: number;
+  }>,
+) {
+  const findMany = vi.fn(
+    async (args: {
+      where: { userId: number; revision?: { lte?: number; gt?: number } };
+    }) => {
+      const rev = args.where.revision;
+      return rows.filter((r) => {
+        let ok = true;
+        if (rev?.lte !== undefined) ok = ok && r.revision <= rev.lte;
+        if (rev?.gt !== undefined) ok = ok && r.revision > rev.gt;
+        return ok;
+      });
+    },
+  );
   const prisma = {
     threadRevision: { findMany },
-    user: { update: vi.fn(async (args: { where: { id: number }; data: { threadRevision: { increment: number } } }) => ({
-      threadRevision: 0, // unused by the read paths
-      ...args,
-    })) },
+    user: {
+      update: vi.fn(
+        async (args: {
+          where: { id: number };
+          data: { threadRevision: { increment: number } };
+        }) => ({
+          threadRevision: 0, // unused by the read paths
+          ...args,
+        }),
+      ),
+    },
   };
   const sse = { onThreadRevisionUpdated: vi.fn() };
   const svc = new ThreadRevisionService(prisma as never, sse as never);
@@ -62,8 +77,39 @@ describe('ThreadRevisionService.queryDelta — (from excl, to incl]', () => {
   });
 });
 
+describe('ThreadRevisionService hidden-thread restoration', () => {
+  it('re-adds only active recipients whose current ADD row is marked deleted', async () => {
+    const findMany = vi.fn().mockResolvedValue([{ userId: 2 }]);
+    const svc = new ThreadRevisionService(
+      { threadRevision: { findMany } } as never,
+      {} as never,
+    );
+    const recordAdd = vi
+      .spyOn(svc, 'recordThreadAdd')
+      .mockResolvedValue(undefined);
+
+    await svc.restoreHiddenThreads(10, [1, 2, 3]);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        threadId: 10,
+        userId: { in: [1, 2, 3] },
+        direction: 'ADD',
+        isDelete: true,
+      },
+      select: { userId: true },
+    });
+    expect(recordAdd).toHaveBeenCalledTimes(1);
+    expect(recordAdd).toHaveBeenCalledWith(2, 10);
+  });
+});
+
 describe('planThreadDelta — last-op-wins net add/delete', () => {
-  const op = (threadId: number, direction: 'ADD' | 'DELETE', revision: number): ThreadDeltaOp => ({
+  const op = (
+    threadId: number,
+    direction: 'ADD' | 'DELETE',
+    revision: number,
+  ): ThreadDeltaOp => ({
     threadId,
     direction,
     revision,

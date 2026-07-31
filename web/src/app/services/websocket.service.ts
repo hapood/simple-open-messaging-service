@@ -1,5 +1,13 @@
-import { Injectable, signal, effect, untracked, OnDestroy, isDevMode } from '@angular/core';
+import {
+  Injectable,
+  signal,
+  effect,
+  untracked,
+  OnDestroy,
+  isDevMode,
+} from '@angular/core';
 import { Subject } from 'rxjs';
+import type { Subscription } from 'rxjs';
 import { AuthService } from './auth.service';
 import { apiOrigin, isAndroidNative, isTauri } from './runtime';
 import {
@@ -12,6 +20,7 @@ import { WorkerSseTransport } from './worker-sse.transport';
 import { NativeEventTransport } from './native-event.transport';
 import { RustChannelSseTransport } from './rust-channel-sse.transport';
 import { isFullConsoleLoggingEnabled } from './log-buffer';
+import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 // Re-exported for downstream consumers (HttpItemSource, GroupEventService, ConnectionBanner, …) that
 // already import these from here — the canonical home is now realtime-transport.ts.
@@ -43,13 +52,13 @@ export class WebsocketService implements OnDestroy {
    *  disconnect via the newestMsgId cursor. */
   readonly reconnect$ = new Subject<void>();
   /** Connection state for the shell's connection-lost banner. See {@link ConnectionState}. */
-  readonly state = signal<ConnectionState>('closed')
+  readonly state = signal<ConnectionState>('closed');
   /** Milliseconds remaining until the next reconnect attempt, or null when not in a scheduled backoff.
    *  Driven by the transports' one-shot {@link RealtimeSink.onReconnectIn} deadline (each transport emits a
    *  single scheduled delay when it enters backoff); this facade owns the live countdown clock and
    *  decrements this signal on a 250ms ticker. The ConnectionBanner reads it to render "reconnecting in Ns".
    *  Cleared on any state that leaves `reconnecting` (see the sink's `onState` wiring). */
-  readonly reconnectIn = signal<number | null>(null)
+  readonly reconnectIn = signal<number | null>(null);
 
   private readonly transport: RealtimeTransport;
   /** Wall-clock deadline (ms epoch) of the current backoff sleep; 0 when none scheduled. */
@@ -68,12 +77,31 @@ export class WebsocketService implements OnDestroy {
    *  hang the threadlist forever. */
   private static readonly HELLO_TIMEOUT_MS = 10_000;
   private helloTimeout?: ReturnType<typeof setTimeout>;
+  private deferredRevision?: StandardMessage;
+  private readonly deletionReleaseSub: Subscription;
 
-  constructor(private authService: AuthService) {
+  constructor(
+    private authService: AuthService,
+    private readonly deletionLock: ThreadDeletionLockService,
+  ) {
+    this.deletionReleaseSub = this.deletionLock.released$.subscribe(() => {
+      if (!this.deletionLock.any && this.deferredRevision) {
+        const revision = this.deferredRevision;
+        this.deferredRevision = undefined;
+        this.eventSubject.next(revision);
+      }
+    });
     // The sink funnels every transport's outputs onto this facade's single subjects/signal (+ the dev
     // trace + the FORCE_LOGOUT re-login side-effect).
     const sink: RealtimeSink = {
       onEvent: (m) => {
+        const threadId = (m.data as { threadId?: number } | undefined)
+          ?.threadId;
+        if (threadId !== undefined && this.deletionLock.has(threadId)) return;
+        if (m.event === 'THREAD_REVISION_UPDATED' && this.deletionLock.any) {
+          this.deferredRevision = m;
+          return;
+        }
         // Dev-only: trace every realtime business event, so signal reception is visible under `ng serve`.
         // Gated by isDevMode() → stripped in prod AOT.
         if (isDevMode()) console.log('[sse] recv', m.event, m.data);
@@ -119,7 +147,9 @@ export class WebsocketService implements OnDestroy {
     // AuthService.loggedIn is the reactive source (true on login/restore, false on logout/expiry).
     effect(() => {
       const online = this.authService.loggedIn();
-      untracked(() => { online ? this.connect() : this.disconnect(); });
+      untracked(() => {
+        online ? this.connect() : this.disconnect();
+      });
     });
     // A backend-origin swap (server-config save) repoints every URL live via the apiOrigin signal. The
     // transport captured the OLD sseUrl at its `start`, so reconnect it against the new host: the first
@@ -128,12 +158,18 @@ export class WebsocketService implements OnDestroy {
     // Android this is a harmless hook re-register — Kotlin picks up the new origin on its next
     // reconnect.) untracked so the connect()/disconnect() calls don't themselves get wired into the
     // reactive graph.
-    let booted = false
+    let booted = false;
     effect(() => {
-      apiOrigin()
-      if (!booted) { booted = true; return }
-      untracked(() => { this.disconnect(); this.connect() })
-    })
+      apiOrigin();
+      if (!booted) {
+        booted = true;
+        return;
+      }
+      untracked(() => {
+        this.disconnect();
+        this.connect();
+      });
+    });
   }
 
   /** Begin receiving (idempotent). On mobile this is called on every visible transition.
@@ -150,18 +186,18 @@ export class WebsocketService implements OnDestroy {
    *  `NativeEventTransport` is driven by Kotlin after login.) */
   public connect() {
     if (!this.authService.isLoggedIn()) return;
-    this.transport.start()
+    this.transport.start();
   }
 
   /** Logout / force-login / origin swap: stop the transport and let it clear its state. */
   public disconnect() {
-    this.transport.stop()
+    this.transport.stop();
   }
 
   /** User-initiated retry (the disconnected chip clicked while `reconnecting`). No-op on platforms whose
    *  transport owns its own backoff (Android). */
   public retryNow(): void {
-    this.transport.retryNow()
+    this.transport.retryNow();
   }
 
   /** A transport announced its next reconnect is scheduled in `ms` (emitted once on entering backoff).
@@ -169,31 +205,31 @@ export class WebsocketService implements OnDestroy {
    *  {@link reconnectIn}. A non-positive/null value clears it. */
   private onReconnectIn(ms: number | null): void {
     if (ms == null || ms <= 0) {
-      this.clearReconnectIn()
-      return
+      this.clearReconnectIn();
+      return;
     }
-    this.reconnectDeadline = Date.now() + ms
-    this.reconnectIn.set(ms)
-    if (this.reconnectTicker) return
+    this.reconnectDeadline = Date.now() + ms;
+    this.reconnectIn.set(ms);
+    if (this.reconnectTicker) return;
     this.reconnectTicker = setInterval(() => {
-      const remaining = Math.max(0, this.reconnectDeadline - Date.now())
-      this.reconnectIn.set(remaining)
+      const remaining = Math.max(0, this.reconnectDeadline - Date.now());
+      this.reconnectIn.set(remaining);
       if (remaining <= 0) {
-        clearInterval(this.reconnectTicker)
-        this.reconnectTicker = undefined
+        clearInterval(this.reconnectTicker);
+        this.reconnectTicker = undefined;
       }
-    }, 250)
+    }, 250);
   }
 
   /** Drop the countdown: stop the ticker, forget the deadline, null the signal. Called when the state
    *  leaves `reconnecting` and on a non-positive `onReconnectIn` (so a stale deadline can't keep ticking). */
   private clearReconnectIn(): void {
     if (this.reconnectTicker) {
-      clearInterval(this.reconnectTicker)
-      this.reconnectTicker = undefined
+      clearInterval(this.reconnectTicker);
+      this.reconnectTicker = undefined;
     }
-    this.reconnectDeadline = 0
-    this.reconnectIn.set(null)
+    this.reconnectDeadline = 0;
+    this.reconnectIn.set(null);
   }
 
   /** Arm the HELLO-handshake deadline — the server must push HELLO within {@link HELLO_TIMEOUT_MS} of the
@@ -226,14 +262,15 @@ export class WebsocketService implements OnDestroy {
   }
 
   ngOnDestroy(): void {
-    this.clearReconnectIn()
-    this.clearHelloTimeout()
+    this.deletionReleaseSub.unsubscribe();
+    this.clearReconnectIn();
+    this.clearHelloTimeout();
   }
 
   /** Server-initiated kick (all-device logout / password change / app-session replaced): drop the transport
    *  + re-run login. `reason` (the revoke reason) is threaded to the login page as a one-shot notice. */
   private onForceLogout(reason?: string): void {
-    this.disconnect()
-    this.authService.redoLoginAuth(reason)
+    this.disconnect();
+    this.authService.redoLoginAuth(reason);
   }
 }

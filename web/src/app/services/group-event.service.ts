@@ -5,6 +5,7 @@ import { TranslocoService } from '@jsverse/transloco';
 import { WebsocketService } from './websocket.service';
 import { ThreadRepository } from './thread-store.service';
 import { UserService } from './user.service';
+import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 /**
  * Shared payload shape of every GROUP_* SSE frame. The backend's `fanoutGroup` always carries
@@ -23,6 +24,7 @@ interface GroupEventPayload {
   name?: string;
   description?: string;
   avatar?: string;
+  dissolved?: boolean;
 }
 
 /** The five group-lifecycle events the backend fans (sse.service.ts GROUP_SSE). */
@@ -62,6 +64,7 @@ export class GroupEventService implements OnDestroy {
   private readonly userService = inject(UserService);
   private readonly snackBar = inject(MatSnackBar);
   private readonly transloco = inject(TranslocoService);
+  private readonly deletionLock = inject(ThreadDeletionLockService);
 
   /** Fired (with the groupId) whenever a roster change lands while someone else joined / left / was
    *  kicked / promoted. GroupInfoComponent filters to its own groupId and reloads its roster. */
@@ -76,16 +79,22 @@ export class GroupEventService implements OnDestroy {
   }
 
   private handle(event: string, p: GroupEventPayload): void {
+    if (this.deletionLock.has(p.threadId)) return;
     if (event === 'GROUP_UPDATED') {
-      this.threadRepo.applyGroupUpdate(p.threadId, { name: p.name, description: p.description, avatar: p.avatar });
+      this.threadRepo.applyGroupUpdate(p.threadId, {
+        name: p.name,
+        description: p.description,
+        avatar: p.avatar,
+        dissolvedAt: p.dissolved ? Date.now() : undefined,
+      });
       return;
     }
     const me = this.userService.sessionProfile()?.id;
     const targetsMe = p.userId != null && p.userId === me;
     // Resolve the display name BEFORE any toast, so a self-kick / role-change toast can read it.
     const groupName =
-      this.threadRepo.items().find((t) => t.threadId === p.threadId)?.group?.name
-      ?? this.transloco.translate('errors.theGroup');
+      this.threadRepo.items().find((t) => t.threadId === p.threadId)?.group
+        ?.name ?? this.transloco.translate('errors.theGroup');
     if (targetsMe) {
       // Thread-list add/delete on MY list is driven by the THREAD_REVISION_UPDATED delta
       // (recordThreadAdd on join, recordThreadDelete on kick/leave) — NOT here. The cases below are
@@ -93,13 +102,24 @@ export class GroupEventService implements OnDestroy {
       // not fire for a role change, so the role still rides this event).
       switch (event) {
         case 'GROUP_MEMBER_KICKED':
-          this.toast(this.transloco.translate('errors.removedFromGroup', { group: groupName }));
+          this.toast(
+            this.transloco.translate('errors.removedFromGroup', {
+              group: groupName,
+            }),
+          );
           break;
         case 'GROUP_ROLE_CHANGED':
           if (p.role) {
             this.threadRepo.applyRole(p.threadId, p.role);
-            const roleLabel = this.transloco.translate('errors.role.' + p.role.toLowerCase());
-            this.toast(this.transloco.translate('errors.nowRole', { role: roleLabel, group: groupName }));
+            const roleLabel = this.transloco.translate(
+              'errors.role.' + p.role.toLowerCase(),
+            );
+            this.toast(
+              this.transloco.translate('errors.nowRole', {
+                role: roleLabel,
+                group: groupName,
+              }),
+            );
           }
           break;
       }
@@ -110,7 +130,9 @@ export class GroupEventService implements OnDestroy {
   }
 
   private toast(message: string): void {
-    this.snackBar.open(message, this.transloco.translate('common.ok'), { duration: 4000 });
+    this.snackBar.open(message, this.transloco.translate('common.ok'), {
+      duration: 4000,
+    });
   }
 
   ngOnDestroy(): void {

@@ -83,6 +83,7 @@ export enum BusinessCode {
   GROUP_OWNER_MUST_TRANSFER = 40004, // owner must transfer before leaving
   GROUP_FORBIDDEN = 40005, // role permission denied (cannot kick/modify/transfer this target)
   GROUP_TARGET_NOT_MEMBER = 40006, // target is not an active member of the group
+  GROUP_DISSOLVED = 40007, // terminal group state: history remains readable, sending/membership changes stop
 
   // 50xxx federation (S2S) — protocol/system-tier; HTTP status drives sender retry, code is detail.
   //       Exception: GET /s2s/messages returns business outcomes at HTTP 200 (the pull itself succeeded; the

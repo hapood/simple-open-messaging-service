@@ -117,20 +117,18 @@ describe('UserService profile refresh', () => {
   });
 
   // Regression guard for the account-switch bug: clearSession() (logout) must wipe the user-scoped
-  // localStorage keys (client-only folders / emoji recents — no server copy) so a second account on the
+  // account preferences (emoji recents — no server copy) so a second account on the
   // same browser never sees the previous one's, while leaving device-level preferences (theme, language,
   // list-width, device_id) intact. The DB-layer in-memory caches are reset by each repo's own
   // session-end effect (watching sessionProfile) — covered in their specs.
   it('clearSession() clears account preferences but keeps device preferences', async () => {
     const preferences = TestBed.inject(PreferenceStore);
     svc.sessionProfile.set(profile({ id: 1 }).data);
-    await preferences.set('account:1', 'soms.chatFolders', [{ id: 'x' }]);
     await preferences.set('account:1', 'soms.chat.emojiRecents', ['😀']);
     await preferences.set('device', 'theme', 'dark');
     svc.clearSession();
     await flush(50);
     expect(svc.sessionProfile()).toBeUndefined();
-    expect(await preferences.get('account:1', 'soms.chatFolders')).toBeUndefined();
     expect(await preferences.get('account:1', 'soms.chat.emojiRecents')).toBeUndefined();
     expect(await preferences.get('device', 'theme')).toBe('dark');
     await preferences.remove('device', 'theme');

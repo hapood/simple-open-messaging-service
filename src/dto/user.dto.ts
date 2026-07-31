@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -27,6 +27,16 @@ export class UserIdDto {
   @IsInt()
   @Min(1)
   userId!: number;
+}
+
+export class DeleteFriendDto extends UserIdDto {
+  @ApiPropertyOptional({
+    default: false,
+    description: 'Also delete this chat for the caller',
+  })
+  @IsOptional()
+  @IsBoolean()
+  deleteData?: boolean;
 }
 
 /** Body for /user/sync-peer-profile (chat-open + profile-panel-open staleness probe). `sinceProfileRev`
@@ -87,12 +97,19 @@ export class ThreadIdDto {
  *  UI input aid ONLY — the client splits a typed `alice@bbb.com` into these two fields; the API never
  *  carries an @-joined string. */
 export class UserResolveDto {
-  @ApiProperty({ example: 'alice', description: "Account (a local account, or the peer user's account)" })
+  @ApiProperty({
+    example: 'alice',
+    description: "Account (a local account, or the peer user's account)",
+  })
   @IsString()
   @IsNotEmpty()
   account!: string;
 
-  @ApiProperty({ required: false, example: 'bbb.com', description: 'Peer domain. Omitted/empty = local lookup.' })
+  @ApiProperty({
+    required: false,
+    example: 'bbb.com',
+    description: 'Peer domain. Omitted/empty = local lookup.',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(63)
@@ -103,20 +120,31 @@ export class UserResolveDto {
  *  single keystroke can't enumerate the user base. take is clamped server-side (see POST /user/search).
  *  Federated users are NOT discoverable here — resolve those by exact account + domain via UserResolveDto. */
 export class UserSearchDto {
-  @ApiProperty({ example: 'ali', description: 'Search query (≥2 chars; matches account OR display name)' })
+  @ApiProperty({
+    example: 'ali',
+    description: 'Search query (≥2 chars; matches account OR display name)',
+  })
   @IsString()
   @IsNotEmpty()
   @MinLength(2, { message: 'q must be at least 2 chars' })
   q!: string;
 
-  @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Records to skip (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
   skip?: number;
 
-  @ApiProperty({ required: false, example: 20, description: 'Records to take (1-20; clamped server-side)' })
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Records to take (1-20; clamped server-side)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

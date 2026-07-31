@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   MessageService,
   type AwayNotificationMessage,
+  type UnreadMentionState,
 } from '../message/message.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { UserService } from '../user/user.service.js';
@@ -29,12 +30,11 @@ export interface MissedThreadItem {
   type: 'P2P' | 'GROUP';
   displayName: string;
   unreadCount: number;
-  /** Highest-priority semantic mention in the caller's unread range (`me` outranks group-wide `all`). */
-  mentionUnread: 'none' | 'all' | 'me';
+  /** Distinct semantic mention kinds in the caller's unread range. */
+  mentionUnread: UnreadMentionState;
   /** Per-user mute flag (the snapshot carries it for parity). */
   muted: boolean;
-  /** The caller's per-thread read watermark (ThreadParticipant.lastReadSeq; null = never read). The
-   *  threadlist merges this with its optimistic value (max) to derive the displayed unread count. */
+  /** The caller's server-confirmed per-thread read watermark (null = never read). */
   lastReadSeq: number | null;
   /** The sender's avatar URL (P2P peer avatar / GROUP group avatar); '' when none. */
   senderAvatarUrl: string;
@@ -246,7 +246,7 @@ export class NotificationQueryService {
     return items.map((it) => {
       const count = counts.get(it.threadId) ?? 0;
       const latestSeq = buckets.get(it.threadId)?.latestSeq ?? it.latestMessage?.seq ?? 0;
-      const hasMention = (buckets.get(it.threadId)?.mention ?? 'none') !== 'none';
+      const hasMention = (buckets.get(it.threadId)?.mention.length ?? 0) > 0;
       return {
         tag: `soms-thread-${it.threadId}`,
         kind: 'thread-message',
@@ -373,7 +373,7 @@ export class NotificationQueryService {
     }>,
     unread: Map<number, number>,
     attachedByThread: Map<number, AttachedMessage>,
-    mentions: Map<number, 'none' | 'all' | 'me'> = new Map(),
+    mentions: Map<number, UnreadMentionState> = new Map(),
   ): Promise<MissedThreadItem[]> {
     // P2P display name + sender = the peer user (id carries for the icon color hash + cache key).
     const p2pThreadIds = rows.filter((p) => p.thread.type === 'P2P').map((p) => p.threadId);
@@ -408,7 +408,7 @@ export class NotificationQueryService {
         senderAvatarUrl: p.thread.type === 'P2P' ? (peer?.avatar ?? '') : (group?.avatar ?? ''),
         senderUserId: p.thread.type === 'P2P' ? (peer?.id ?? p.threadId) : (group?.id ?? p.threadId),
         unreadCount: unread.get(p.threadId) ?? 0,
-        mentionUnread: mentions.get(p.threadId) ?? 'none',
+        mentionUnread: mentions.get(p.threadId) ?? [],
         latestMessage: m
           ? {
               threadId: p.threadId,

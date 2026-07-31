@@ -31,8 +31,7 @@ export class ForwardMessageCardComponent {
 
   shownMessages(): readonly ForwardMessageItem[] {
     const limit = Math.max(1, this.visibleMessages());
-    const shown = this.messages().length > limit ? limit - 1 : limit;
-    return this.messages().slice(0, shown);
+    return this.messages().slice(0, limit);
   }
 
   remainingCount(): number {

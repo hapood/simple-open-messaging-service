@@ -13,6 +13,7 @@ export interface NativeComposerContext {
   sending: boolean;
   canRecord: boolean;
   canUpload: boolean;
+  mentionsEnabled: boolean;
   theme: 'light' | 'dark' | 'system';
 }
 

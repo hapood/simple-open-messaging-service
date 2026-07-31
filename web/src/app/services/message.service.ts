@@ -11,6 +11,7 @@ import { Message, QueryMessageLogParams, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import { REPLAY_SAFE } from '../request-context';
+import type { ForwardWireClosure } from '../components/forward-detail/forward-bundle.model';
 
 export type UploadProgressHandler = (loaded: number, total: number) => void;
 
@@ -64,6 +65,12 @@ export class MsgService {
       `${apiPrefix()}/send-forward`,
       params,
       { context: new HttpContext().set(REPLAY_SAFE, true) },
+    );
+  }
+
+  getForwardBundle(bundleId: string) {
+    return this.http.get<StandardResponse<ForwardWireClosure>>(
+      `${apiPrefix()}/forward-bundles/${encodeURIComponent(bundleId)}`,
     );
   }
 
@@ -387,6 +394,14 @@ export class MsgService {
   clearHistory(params: { threadId: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/thread/clear-history`,
+      params,
+    );
+  }
+
+  /** Permanently remove this conversation from the current user's roster and localizable history. */
+  deleteThread(params: { threadId: number }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/thread/delete`,
       params,
     );
   }

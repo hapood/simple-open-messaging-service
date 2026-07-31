@@ -24,9 +24,11 @@
         {{ data().name || ('common.unknown' | transloco) }}
       </div>
     }
-    <div
+    <button
+      type="button"
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }} forward-card"
       [class.msg-sending]="isSending()"
+      [disabled]="!card()"
     >
       @if (card(); as forward) {
         <div class="forward-title">{{ 'forward.chatHistory' | transloco }}</div>
@@ -54,7 +56,7 @@
           aria-hidden="true"
         ></span>
       }
-    </div>
+    </button>
   </div>
 
   @if (showAvatar() && side() === 'self') {

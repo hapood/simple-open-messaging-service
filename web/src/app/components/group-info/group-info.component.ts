@@ -8,7 +8,7 @@ import {
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { Subscription, filter } from 'rxjs';
+import { Subscription, filter, firstValueFrom } from 'rxjs';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -28,6 +28,10 @@ import {
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { apiPrefix } from '../../services/constants';
+import { finalize } from 'rxjs';
+import { translateBizResult } from '../../services/biz-code';
+import { ToastService } from '../../services/toast.service';
+import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -66,9 +70,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly convList = inject(ConversationListService);
   private readonly groupEvents = inject(GroupEventService);
   private readonly routeService = inject(RouteService);
+  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly snackBar = inject(MatSnackBar);
   private readonly http = inject(HttpClient);
   private readonly transloco = inject(TranslocoService);
+  private readonly toast = inject(ToastService);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -121,8 +127,20 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly isAdmin = computed(
     () => this.myRole() === 'OWNER' || this.myRole() === 'ADMIN',
   );
+  readonly existingMemberIds = computed(
+    () => new Set(this.roster().map((member) => member.userId)),
+  );
+  readonly canLeave = computed(
+    () => !this.isOwner() || this.roster().length <= 1,
+  );
+  readonly confirmDissolve = signal(false);
 
   readonly group = computed(() => this.userMsgTrd()?.group);
+  readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
+  readonly readOnly = computed(
+    () =>
+      this.dissolved() || this.userMsgTrd()?.conversationState === 'READ_ONLY',
+  );
   readonly groupId = computed(() => this.group()?.id);
   /** The avatar currently shown: the staged edit, else the persisted one. */
   readonly avatarUrl = computed(
@@ -146,9 +164,29 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const id = this.groupId();
     if (id === undefined) return;
     this.loading.set(true);
-    this.groupService.getThreadMembers(id).subscribe((res) => {
-      if (res.code === 0) this.roster.set(res.data ?? []);
-      this.loading.set(false);
+    this.groupService.getThreadMembers(id).subscribe({
+      next: (res) => {
+        if (res.code === 0) {
+          const members = res.data ?? [];
+          this.roster.set(members);
+          const memberIds = new Set(members.map((member) => member.userId));
+          this.selectedList.update((list) =>
+            list.filter((item) => !memberIds.has(item.peerUser.id)),
+          );
+          this.selectedDict.update((dict) => {
+            const next = { ...dict };
+            for (const item of this.convList.items()) {
+              if (memberIds.has(item.peerUser?.id)) next[item.id] = false;
+            }
+            return next;
+          });
+        } else this.showBusinessError(res);
+        this.loading.set(false);
+      },
+      error: () => {
+        this.loading.set(false);
+        this.showNetworkError();
+      },
     });
   }
 
@@ -189,10 +227,14 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.busy.set(true);
     this.groupService
       .setRole({ groupId: id, userId: m.userId, role })
-      .subscribe(() => {
-        this.busy.set(false);
-        this.openMenuFor.set(undefined);
-        this.loadMembers();
+      .pipe(finalize(() => this.busy.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          this.openMenuFor.set(undefined);
+          this.loadMembers();
+        },
+        error: () => this.showNetworkError(),
       });
   }
 
@@ -220,11 +262,15 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.busy.set(true);
     this.groupService
       .kickMember({ groupId: id, userId: m.userId })
-      .subscribe(() => {
-        this.busy.set(false);
-        this.openMenuFor.set(undefined);
-        this.confirmAction.set(null);
-        this.loadMembers();
+      .pipe(finalize(() => this.busy.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          this.openMenuFor.set(undefined);
+          this.confirmAction.set(null);
+          this.loadMembers();
+        },
+        error: () => this.showNetworkError(),
       });
   }
 
@@ -234,31 +280,112 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.busy.set(true);
     this.groupService
       .transferOwnership({ groupId: id, toUserId: m.userId })
-      .subscribe(() => {
-        this.busy.set(false);
-        this.openMenuFor.set(undefined);
-        this.confirmAction.set(null);
-        this.loadMembers();
+      .pipe(finalize(() => this.busy.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          this.openMenuFor.set(undefined);
+          this.confirmAction.set(null);
+          this.loadMembers();
+        },
+        error: () => this.showNetworkError(),
       });
   }
 
-  leave() {
+  confirmLeave() {
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'chat.leaveConfirmTitle',
+        messageKey: 'chat.menuLeaveGroupConfirm',
+        confirmKey: 'group.leave',
+        cancelKey: 'common.cancel',
+        checkboxKey: 'chat.alsoDeleteData',
+        danger: true,
+      },
+      (result) => {
+        if (!result) return;
+        void this.leave(typeof result === 'object' && result.checked);
+      },
+    );
+  }
+
+  private async leave(deleteData: boolean) {
     const id = this.groupId();
-    if (id === undefined) return;
+    if (id === undefined || !this.canLeave()) return;
+    if (!this.deletionLock.begin(id)) return;
     this.busy.set(true);
-    this.groupService.leaveGroup({ groupId: id }).subscribe(() => {
+    try {
+      const res = await firstValueFrom(
+        this.groupService.leaveGroup({ groupId: id, deleteData }),
+      );
+      if (res.code !== 0) return this.showBusinessError(res);
+      if (deleteData) {
+        await this.convList.removeThread(id);
+        this.nav.closeChat();
+      } else {
+        this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
+        this.nav.closeAside();
+      }
+    } catch {
+      this.showNetworkError();
+    } finally {
       this.busy.set(false);
-      // the conversation is gone from the caller's list; refresh the shared store, then return to the
-      // list — navigating to '/' closes both the chat (primary outlet) and this panel (aside outlet).
+      this.deletionLock.end(id);
       this.convList.load();
-      this.nav.closeChat();
-    });
+    }
+  }
+
+  confirmDissolveAction() {
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'group.dissolve',
+        messageKey: 'group.dissolveConfirm',
+        confirmKey: 'group.dissolve',
+        cancelKey: 'common.cancel',
+        checkboxKey: 'chat.alsoDeleteData',
+        danger: true,
+      },
+      (result) => {
+        if (!result) return;
+        void this.dissolve(typeof result === 'object' && result.checked);
+      },
+    );
+  }
+
+  private async dissolve(deleteData: boolean) {
+    const id = this.groupId();
+    if (id === undefined || !this.isOwner() || this.readOnly()) return;
+    if (!this.deletionLock.begin(id)) return;
+    this.busy.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.groupService.dissolveGroup({ groupId: id, deleteData }),
+      );
+      if (res.code !== 0) return this.showBusinessError(res);
+      if (deleteData) {
+        await this.convList.removeThread(id);
+        this.nav.closeChat();
+      } else {
+        this.convList.applyGroupUpdate(id, { dissolvedAt: Date.now() });
+        this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
+        this.nav.closeAside();
+      }
+    } catch {
+      this.showNetworkError();
+    } finally {
+      this.busy.set(false);
+      this.deletionLock.end(id);
+      this.convList.load();
+    }
   }
 
   // ── identity editing (admin+) ──
 
   beginEdit() {
-    if (!this.isAdmin() || this.group() === undefined) return;
+    if (!this.isAdmin() || this.readOnly() || this.group() === undefined)
+      return;
     this.nameEdit.set(this.group()!.name);
     this.descEdit.set(this.group()!.description ?? '');
     this.pendingAvatar.set(undefined);
@@ -309,15 +436,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.busy.set(true);
     this.groupService
       .updateGroup({ groupId: id, name, description: this.descEdit(), avatar })
-      .subscribe(() => {
-        this.busy.set(false);
-        this.editing.set(false);
-        // The persisted group name/avatar changed; refresh the shared conversation list so the chat
-        // list + the open chat header re-render with the new identity.
-        this.convList.load();
-        // Update the input's group object in place so this panel flips to the new identity instantly
-        // (inputs are readonly; reflect via the roster reload + the conversation-list refresh above).
-        this.loadMembers();
+      .pipe(finalize(() => this.busy.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          this.editing.set(false);
+          // The persisted group name/avatar changed; refresh the shared conversation list so the chat
+          // list + the open chat header re-render with the new identity.
+          this.convList.load();
+          // Update the input's group object in place so this panel flips to the new identity instantly
+          // (inputs are readonly; reflect via the roster reload + the conversation-list refresh above).
+          this.loadMembers();
+        },
+        error: () => this.showNetworkError(),
       });
   }
 
@@ -345,28 +476,50 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     // the button; the response carries invited/skipped counts surfaced via a snackbar. The roster is
     // NOT reloaded here — invitees are not members until they accept; they appear live via
     // GROUP_MEMBER_JOINED once they join (GroupEventService → rosterChanged$).
+    const existing = this.existingMemberIds();
+    const userIds = list
+      .map((item) => item.peerUser.id)
+      .filter((userId) => !existing.has(userId));
+    if (userIds.length === 0) return;
     this.busy.set(true);
-    const userIds = list.map((item) => item.peerUser.id);
-    this.groupService.inviteUsers({ groupId: id, userIds }).subscribe((res) => {
-      this.busy.set(false);
-      const invited = res.data?.invited?.length ?? 0;
-      const skipped = res.data?.skipped?.length ?? 0;
-      const msg =
-        skipped > 0
-          ? this.transloco.translate('errors.invitedPartial', {
-              n: invited,
-              skipped,
-            })
-          : invited > 0
-            ? this.transloco.translate('errors.invited', { n: invited })
-            : this.transloco.translate('errors.noInvites');
-      this.snackBar.open(msg, this.transloco.translate('common.ok'), {
-        duration: 4000,
+    this.groupService
+      .inviteUsers({ groupId: id, userIds })
+      .pipe(finalize(() => this.busy.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          const invited = res.data?.invited?.length ?? 0;
+          const skipped = res.data?.skipped?.length ?? 0;
+          const msg =
+            skipped > 0
+              ? this.transloco.translate('errors.invitedPartial', {
+                  n: invited,
+                  skipped,
+                })
+              : invited > 0
+                ? this.transloco.translate('errors.invited', { n: invited })
+                : this.transloco.translate('errors.noInvites');
+          this.snackBar.open(msg, this.transloco.translate('common.ok'), {
+            duration: 4000,
+          });
+          this.selectedDict.set({});
+          this.selectedList.set([]);
+          this.showInvite.set(false);
+        },
+        error: () => this.showNetworkError(),
       });
-      this.selectedDict.set({});
-      this.selectedList.set([]);
-      this.showInvite.set(false);
-    });
+  }
+
+  private showBusinessError(res: {
+    code: number;
+    message: string;
+    messageKey?: string;
+  }) {
+    this.toast.warn(translateBizResult(res, this.transloco));
+  }
+
+  private showNetworkError() {
+    this.toast.warn(this.transloco.translate('errors.networkError'));
   }
 
   /** Close the aside (back to the chat). Clears the aside signal — back won't re-open it. */

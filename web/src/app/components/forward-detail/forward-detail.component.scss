@@ -1,0 +1,108 @@
+@use '../../lib/chat-box/cb';
+
+:host {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--soms-safe-top, 0) 0 var(--soms-safe-bottom, 0);
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--app-bg) 94%, transparent);
+}
+.forward-viewer {
+  // This surface reuses ChatBox rendering but has no composer. Do not inherit the
+  // application's floating-composer reserve into the kernel-managed tail cap.
+  --soms-content-bottom-reserve: 0px;
+  width: min(760px, 100%);
+  height: min(900px, 100dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--app-surface);
+  color: var(--app-text);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+}
+.msg-header {
+  height: 56px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--app-border);
+  box-sizing: border-box;
+  z-index: 2;
+}
+.msg-header .title {
+  flex: 1 1 auto;
+  color: var(--app-text);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.msg-header .level {
+  margin-left: 6px;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: var(--app-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background: var(--app-hover);
+}
+.header-spacer {
+  flex: 0 0 40px;
+}
+.forward-state {
+  flex: 1 1 auto;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  color: var(--app-text-muted);
+}
+.msg-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
+  outline: none;
+  scrollbar-width: none;
+  // A neutral page layer separates incoming surface-coloured bubbles/cards from
+  // the record viewer without bringing back the user's chat wallpaper.
+  background: var(--app-bg);
+}
+.msg-viewport::-webkit-scrollbar {
+  display: none;
+}
+.msg-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 100%;
+  width: min(680px, 100%);
+  margin: 0 auto;
+  padding: 16px 0 20px;
+  box-sizing: border-box;
+}
+.msg-content > * {
+  flex-shrink: 0;
+}
+@media (min-width: 761px) {
+  .forward-viewer {
+    border-radius: 14px;
+  }
+}

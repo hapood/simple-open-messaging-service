@@ -5,6 +5,7 @@ import { PushService } from '../push/push.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 
 /**
  * Unified NEW_MESSAGE fan-out for every locally-authored message, shared by the text send path
@@ -39,6 +40,7 @@ export class MessageFanoutService {
     private readonly userBlockService: UserBlockService,
     private readonly federation: FederationService,
     private readonly participantService: ThreadParticipantService,
+    private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
   async dispatch(message: Omit<Message, 'id'>): Promise<void> {
@@ -47,7 +49,9 @@ export class MessageFanoutService {
     } catch (e) {
       // Best-effort delivery: never reject. The message is already committed; a fan-out failure just
       // means recipients pick it up on their next poll/chat-open instead of via this live push.
-      this.logger.warn(`message fan-out failed (seq ${message.seq}): ${(e as Error).message}`);
+      this.logger.warn(
+        `message fan-out failed (seq ${message.seq}): ${(e as Error).message}`,
+      );
     }
   }
 
@@ -60,6 +64,10 @@ export class MessageFanoutService {
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const participants =
       await this.participantService.getActiveParticipantUserIds(threadId);
+    await this.threadRevisionService.restoreHiddenThreads(
+      threadId,
+      participants.map((p) => p.userId),
+    );
     // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push —
     // the blocked user is invisible to the blocker's message stream).
     const blockers = await this.userBlockService.blockersOf(senderUserId);
@@ -72,12 +80,20 @@ export class MessageFanoutService {
     const notifTargets = sseTargets.filter(
       (p) => !p.muted && p.userId !== senderUserId,
     );
-    void this.pushService.dispatchForMessage(notifTargets, threadId, message.seq);
+    void this.pushService.dispatchForMessage(
+      notifTargets,
+      threadId,
+      message.seq,
+    );
     // Federation Step 2: if the thread has a foreign (federated) participant, mark the conversation
     // dirty — a debounced /new-msg-map push tells the peer to pull. No-op for local-only threads.
     // message.originSeq is always set on a fresh locally-authored insert.
     if (message.originSeq != null) {
-      void this.federation.notifyOnSend(senderUserId, threadId, message.originSeq);
+      void this.federation.notifyOnSend(
+        senderUserId,
+        threadId,
+        message.originSeq,
+      );
     }
   }
 }

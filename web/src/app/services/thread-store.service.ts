@@ -5,10 +5,14 @@ import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
-import { MissedSyncService, type MissedThreadItem } from './missed-sync.service';
+import {
+  MissedSyncService,
+  type MissedThreadItem,
+} from './missed-sync.service';
 import { toDisplayText } from '../lib/message-entity';
 import type { MissedCursor } from './notification-descriptor.model';
-import { ConversationItem, User } from './model';
+import { ConversationItem, ThreadReadState, User } from './model';
+import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 /** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
 export const ConversationLoadStatus = {
@@ -45,6 +49,7 @@ export type ConversationLoadStatus =
  */
 @Injectable({ providedIn: 'root' })
 export class ThreadRepository {
+  private readonly deletionLock = inject(ThreadDeletionLockService);
   private readonly webdb = inject(WebdbService);
   private readonly userService = inject(UserService);
   private readonly ws = inject(WebsocketService);
@@ -71,6 +76,12 @@ export class ThreadRepository {
    *  the effective projection consumed by existing views; these maps keep the two meanings explicit. */
   private readonly serverLastReadSeq = new Map<number, number | null>();
   private readonly localStableReadSeq = new Map<number, number>();
+  private readonly _readCommitPending = signal<ReadonlySet<number>>(new Set());
+  readonly readCommitPending = this._readCommitPending.asReadonly();
+  private readonly bufferedNewMessage = new Map<
+    number,
+    { threadId: number; seq: number; ts: number }
+  >();
 
   /** A thread promoted to index 0 on the most recent update (to be FLIP-animated by the list), or null.
    *  Set in {@link applyItems} / {@link upsertThread} when a top-insert was requested; the list clears it
@@ -92,7 +103,10 @@ export class ThreadRepository {
    *  event's seq isn't strictly newer than the last one applied for that thread, it's discarded before
    *  touching the list. It is deliberately not seeded from or persisted with the cached thread row. */
   private readonly lastSeenSeq = new Map<number, number>();
-  private readonly _threadSeq = new Subject<{ threadId: number; seq: number }>();
+  private readonly _threadSeq = new Subject<{
+    threadId: number;
+    seq: number;
+  }>();
   readonly threadSeq$ = this._threadSeq.asObservable();
 
   latestSeq(threadId: number): number | undefined {
@@ -110,8 +124,33 @@ export class ThreadRepository {
       serverLastReadSeq: server,
       localStableReadSeq: local,
       effectiveLastReadSeq:
-        server === null ? local : local === null ? server : Math.max(server, local),
+        server === null
+          ? local
+          : local === null
+            ? server
+            : Math.max(server, local),
     };
+  }
+
+  beginReadCommit(threadId: number): void {
+    if (this._readCommitPending().has(threadId)) return;
+    this._readCommitPending.update(
+      (current) => new Set([...current, threadId]),
+    );
+  }
+
+  /** Drop the merge barrier, then replay only the newest message signal captured behind it. */
+  finishReadCommit(threadId: number): void {
+    if (this._readCommitPending().has(threadId)) {
+      this._readCommitPending.update((current) => {
+        const next = new Set(current);
+        next.delete(threadId);
+        return next;
+      });
+    }
+    const buffered = this.bufferedNewMessage.get(threadId);
+    this.bufferedNewMessage.delete(threadId);
+    if (buffered) this.onNewMessage(buffered);
   }
 
   /** Previous sessionUserId seen by the session-end effect (null = no logged-in user). */
@@ -141,38 +180,58 @@ export class ThreadRepository {
   constructor() {
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
+      const eventThreadId = (m.data as { threadId?: number } | undefined)
+        ?.threadId;
+      if (
+        (eventThreadId !== undefined && this.deletionLock.has(eventThreadId)) ||
+        (m.event === 'THREAD_REVISION_UPDATED' && this.deletionLock.any)
+      )
+        return;
       switch (m.event) {
         case 'HELLO':
           void this.onHello(m.data as HelloPayload | undefined);
           break;
         case 'NEW_MESSAGE':
-          if (m.data !== undefined) this.onNewMessage(m.data as { threadId: number; seq: number; ts: number });
+          if (m.data !== undefined)
+            this.onNewMessage(
+              m.data as { threadId: number; seq: number; ts: number },
+            );
           break;
         case 'THREAD_META':
           this.onThreadMeta(m.data as ThreadMetaPayload | undefined);
           break;
         case 'THREAD_REVISION_UPDATED':
-          if (m.data !== undefined) this.onThreadRevisionUpdated((m.data as { threadRevision: number }).threadRevision);
+          if (m.data !== undefined)
+            this.onThreadRevisionUpdated(
+              (m.data as { threadRevision: number }).threadRevision,
+            );
           break;
         case 'PROFILE_REV_UPDATED':
           // Self-profile changed (another device/tab's edit — this device's own edit echoes back too, but
           // invalidateSelfProfile skips the echo since updateSessionProfile already applied it).
-          if (m.data !== undefined) this.userService.invalidateSelfProfile((m.data as { profileRev: number }).profileRev);
+          if (m.data !== undefined)
+            this.userService.invalidateSelfProfile(
+              (m.data as { profileRev: number }).profileRev,
+            );
           break;
         case 'FRIEND_REQ_REV_UPDATED':
           // The friend-request state changed (new/accepted/declined invite, OR a markRead ack on another
           // device) → apply the server-state pair (badge = friendReqRev > friendReqAckRev). The native layer
           // merges this too.
           if (m.data !== undefined) {
-            const d = m.data as { friendReqRev: number | null; friendReqAckRev: number };
-            this.userService.applyFriendReqRev(d.friendReqRev, d.friendReqAckRev);
+            const d = m.data as {
+              friendReqRev: number | null;
+              friendReqAckRev: number;
+            };
+            this.userService.applyFriendReqRev(
+              d.friendReqRev,
+              d.friendReqAckRev,
+            );
           }
           break;
         case 'PEER_PROFILE_UPDATED':
-          if (m.data !== undefined) this.onPeerProfileUpdated(m.data as unknown as User);
-          break;
-        case 'READ_CURSOR':
-          if (m.data !== undefined) this.onReadCursor(m.data as { threadId: number; lastReadSeq: number });
+          if (m.data !== undefined)
+            this.onPeerProfileUpdated(m.data as unknown as User);
           break;
       }
     });
@@ -209,6 +268,8 @@ export class ThreadRepository {
     this.lastSeenSeq.clear();
     this.serverLastReadSeq.clear();
     this.localStableReadSeq.clear();
+    this._readCommitPending.set(new Set());
+    this.bufferedNewMessage.clear();
     this._missedCursor.set(null);
     this._threadHwms.set({});
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
@@ -268,7 +329,10 @@ export class ThreadRepository {
 
   /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is not
    *  yet in the list (up to `timeoutMs`). Used by the join hero transition. */
-  async ensureThread(threadId: number, timeoutMs = 2000): Promise<ConversationItem | undefined> {
+  async ensureThread(
+    threadId: number,
+    timeoutMs = 2000,
+  ): Promise<ConversationItem | undefined> {
     const found = this._items().find((t) => t.threadId === threadId);
     if (found) return found;
     if (this._status() === 'READY') this.load();
@@ -294,6 +358,8 @@ export class ThreadRepository {
       pinnedAt?: number | null;
       clearedAt?: number | null;
       blocked?: boolean;
+      friendshipActive?: boolean;
+      conversationState?: 'ACTIVE' | 'READ_ONLY';
       alias?: string | null;
     },
   ): void {
@@ -315,10 +381,14 @@ export class ThreadRepository {
   updatePeerUser(threadId: number, user: User): void {
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
-      const found = list.find((t) => t.threadId === threadId && t.type === 'P2P');
+      const found = list.find(
+        (t) => t.threadId === threadId && t.type === 'P2P',
+      );
       if (!found) return list;
       changed = { ...found, peerUser: user };
-      return list.map((t) => (t.threadId === threadId && t.type === 'P2P' ? changed! : t));
+      return list.map((t) =>
+        t.threadId === threadId && t.type === 'P2P' ? changed! : t,
+      );
     });
     if (changed) {
       void this.persistThread(changed);
@@ -333,10 +403,14 @@ export class ThreadRepository {
     const item = this._items().find((t) => t.threadId === threadId);
     if (!item || item.type !== 'P2P' || !item.peerUser) return;
     this.userService
-      .syncPeerProfile({ userId: item.peerUser.id, sinceProfileRev: item.peerUser.profileRev })
+      .syncPeerProfile({
+        userId: item.peerUser.id,
+        sinceProfileRev: item.peerUser.profileRev,
+      })
       .subscribe({
         next: (res) => {
-          if (res.code === 0 && res.data) this.updatePeerUser(threadId, res.data);
+          if (res.code === 0 && res.data)
+            this.updatePeerUser(threadId, res.data);
         },
         error: () => {
           /* best-effort — keep the cached profile on a transient outage */
@@ -345,15 +419,26 @@ export class ThreadRepository {
   }
 
   /** Apply a rename / avatar / description change from a GROUP_UPDATED event (live list refresh). */
-  applyGroupUpdate(threadId: number, patch: { name?: string; description?: string; avatar?: string }): void {
+  applyGroupUpdate(
+    threadId: number,
+    patch: {
+      name?: string;
+      description?: string;
+      avatar?: string;
+      dissolvedAt?: number | null;
+    },
+  ): void {
     let changed: ConversationItem | undefined;
     this._items.update((list) =>
       list.map((t) => {
         if (t.threadId !== threadId || !t.group) return t;
         const group = { ...t.group };
         if (patch.name !== undefined) group.name = patch.name;
-        if (patch.description !== undefined) group.description = patch.description;
+        if (patch.description !== undefined)
+          group.description = patch.description;
         if (patch.avatar !== undefined) group.avatar = patch.avatar;
+        if (patch.dissolvedAt !== undefined)
+          group.dissolvedAt = patch.dissolvedAt;
         changed = { ...t, group };
         return changed;
       }),
@@ -383,26 +468,24 @@ export class ThreadRepository {
    *  stale {@link lastSeenSeq} residue, AND purge the cached message bodies via the message repo (the
    *  threadId is dead: the backend mints a fresh one on re-friend / re-join, so the orphaned bytes would
    *  otherwise linger until logout). Both IDB writes are best-effort + fire-and-forget. */
-  removeThread(threadId: number): void {
+  async removeThread(threadId: number): Promise<void> {
     this._items.update((list) => list.filter((t) => t.threadId !== threadId));
     if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
     this.lastSeenSeq.delete(threadId);
     this.serverLastReadSeq.delete(threadId);
     this.localStableReadSeq.delete(threadId);
-    void this.deleteThreadFromDb(threadId);
-    void this.messageRepo.deleteByThread(threadId);
-  }
-
-  /** Optimistically clear the unread badge on a thread (UI open → mark-read). */
-  clearUnread(threadId: number): void {
-    let changed: ConversationItem | undefined;
-    this._items.update((list) => {
-      const found = list.find((t) => t.threadId === threadId);
-      if (!found) return list;
-      changed = { ...found, unreadCount: 0, mentionUnread: 'none' };
-      return list.map((t) => (t.threadId === threadId ? changed! : t));
-    });
-    if (changed) void this.persistThread(changed);
+    if (this._readCommitPending().has(threadId)) {
+      this._readCommitPending.update((current) => {
+        const next = new Set(current);
+        next.delete(threadId);
+        return next;
+      });
+    }
+    this.bufferedNewMessage.delete(threadId);
+    await Promise.all([
+      this.deleteThreadFromDb(threadId),
+      this.messageRepo.deleteByThread(threadId),
+    ]);
   }
 
   /** Record the locally-dwelled cursor independently from the server-confirmed cursor. */
@@ -412,115 +495,69 @@ export class ThreadRepository {
       this.localStableReadSeq.set(threadId, seq);
   }
 
-  /** Persist a locally-observed stable read position before the server echo/summary catches up. The cursor
-   *  is monotonic and doubles as the optimistic lower bound used by reconcileItem. Returns false for a
-   *  stale/repeated position so callers do not issue redundant mark-read requests. */
+  /** Record a viewport-dwelled HWM without changing the server-owned unread badge. */
   commitLocalRead(threadId: number, seq: number): boolean {
-    let changed: ConversationItem | undefined;
-    this._items.update((list) => {
-      const found = list.find((t) => t.threadId === threadId);
-      if (!found) return list;
-      const currentReadSeq = found.lastReadSeq ?? -1;
-      const knownLatestSeq = Math.max(
-        found.lastMessageSeq ?? -1,
-        this.lastSeenSeq.get(threadId) ?? -1,
-      );
-      if (seq < currentReadSeq) return list;
-      if (seq === currentReadSeq) {
-        // Normally a repeated cursor is a no-op. Repair the legacy/in-flight contradictory state where the
-        // cursor already covers the known tail but a stale summary left a positive badge behind. Requiring a
-        // known HWM prevents viewing an older message from clearing genuinely newer unread messages.
-        if (found.unreadCount === 0 || knownLatestSeq < 0 || seq < knownLatestSeq)
-          return list;
-      }
-      const unreadCount =
-        knownLatestSeq >= 0
-          ? Math.max(0, knownLatestSeq - seq)
-          : found.unreadCount;
-      changed = {
-        ...found,
-        lastReadSeq: seq,
-        lastMessageSeq:
-          knownLatestSeq >= 0 ? knownLatestSeq : found.lastMessageSeq,
-        unreadCount,
-        mentionUnread:
-          unreadCount === 0 ? 'none' : found.mentionUnread,
-      };
-      return list.map((t) => (t.threadId === threadId ? changed! : t));
-    });
-    if (!changed) return false;
+    const found = this._items().find((t) => t.threadId === threadId);
+    if (!found) return false;
+    const current = Math.max(
+      found.lastReadSeq ?? -1,
+      this.localStableReadSeq.get(threadId) ?? -1,
+    );
+    if (seq <= current) return false;
     this.noteLocalStableRead(threadId, seq);
-    void this.persistThread(changed);
     return true;
   }
 
-  /** Project server + local cursors into the effective ConversationItem consumed by existing views. */
-  private reconcileItem(it: ConversationItem): ConversationItem {
-    const opt = this.localStableReadSeq.get(it.threadId);
-    if (opt === undefined) return it;
-    const server = it.lastReadSeq ?? -1;
-    if (server >= opt) return it; // server caught up — caller prunes the override
-    return { ...it, lastReadSeq: opt, unreadCount: 0, mentionUnread: 'none' };
-  }
-
-  /** Drop local lower bounds once the authoritative server cursor has caught up. */
-  private pruneLocalStableReads(
-    serverByThread: Map<number, number | null>,
-  ): void {
-    for (const [tid, lrs] of serverByThread) {
-      const local = this.localStableReadSeq.get(tid);
-      if (local !== undefined && (lrs ?? -1) >= local)
-        this.localStableReadSeq.delete(tid);
-    }
-  }
-
-  /** Merge the missed-summary's authoritative per-thread `lastReadSeq` AND `unreadCount` into the list items
-   *  (reconciled with the optimistic override). The summary is the freshest per-thread read state (it runs on
+  /** Merge the missed-summary's authoritative per-thread read state into closed list items. The summary is
+   *  the freshest server state (it runs on
    *  every SSE signal), so this keeps each item's `lastReadSeq` + `unreadCount` current without a full snapshot
-   *  refresh. `unreadCount` is owned here: 0 for the caller's own messages (the send tx advanced `lastReadSeq`)
-   *  and the real count for incoming; {@link reconcileItem} masks it to 0 while an optimistic read leads. */
+   *  refresh. The open item stays frozen until its exit-time commit response arrives. */
   private mergeSummaryReadState(items: MissedThreadItem[]): void {
     if (items.length === 0) return;
     const serverLrs = new Map<number, number | null>();
     const serverUnread = new Map<number, number>();
-    const serverMentions = new Map<number, 'none' | 'all' | 'me'>();
+    const serverMentions = new Map<number, Array<'all' | 'me'>>();
     for (const i of items) {
       serverLrs.set(i.threadId, i.lastReadSeq);
       this.serverLastReadSeq.set(i.threadId, i.lastReadSeq);
       serverUnread.set(i.threadId, i.unreadCount);
-      serverMentions.set(i.threadId, i.mentionUnread ?? 'none');
+      serverMentions.set(i.threadId, i.mentionUnread ?? []);
     }
     let changed = false;
     const updated = this._items().map((it) => {
       if (!serverLrs.has(it.threadId)) return it;
-      // Route through reconcileItem so an in-flight optimistic read still masks the badge to 0.
-      const next = this.reconcileItem({
+      // The open conversation is committed on close; do not repaint its list badge while reading.
+      if (
+        it.threadId === this._openThreadId() ||
+        this._readCommitPending().has(it.threadId)
+      )
+        return it;
+      const next = {
         ...it,
         lastReadSeq: serverLrs.get(it.threadId)!,
         unreadCount: serverUnread.get(it.threadId)!,
         mentionUnread: serverMentions.get(it.threadId)!,
-      });
+      };
       if (
         next.lastReadSeq !== it.lastReadSeq ||
         next.unreadCount !== it.unreadCount ||
-        next.mentionUnread !== it.mentionUnread
+        !sameMentions(next.mentionUnread, it.mentionUnread)
       )
         changed = true;
       return next;
     });
-    this.pruneLocalStableReads(serverLrs);
     if (changed) {
       this._items.set(updated);
       void this.persistThreads(updated);
     }
   }
 
-  /** READ_CURSOR (cross-tab / cross-device): another of the caller's connections marked `threadId` read up to
-   *  `lastReadSeq`. Apply it authoritatively — advance the item's lastReadSeq (monotonic) + clear that thread's
-   *  badge, and drop any optimistic override (the server has confirmed the read). The backend echoes this only
-   *  to the caller's OTHER connections, so this is the cross-instance sync channel. */
-  private onReadCursor(d: { threadId: number; lastReadSeq: number }): void {
-    if (typeof d?.threadId !== 'number' || typeof d?.lastReadSeq !== 'number') return;
+  /** Apply the atomic read-commit response; this is the only in-session writer of the open row's badge. */
+  applyReadState(d: ThreadReadState): void {
+    if (typeof d?.threadId !== 'number' || typeof d?.lastReadSeq !== 'number')
+      return;
+    const confirmed = this.serverLastReadSeq.get(d.threadId) ?? -1;
+    if (d.lastReadSeq < confirmed) return;
     this.serverLastReadSeq.set(d.threadId, d.lastReadSeq);
     const local = this.localStableReadSeq.get(d.threadId);
     if (local !== undefined && d.lastReadSeq >= local)
@@ -529,13 +566,11 @@ export class ThreadRepository {
     this._items.update((list) => {
       const found = list.find((t) => t.threadId === d.threadId);
       if (!found) return list;
-      const cur = found.lastReadSeq ?? -1;
-      if (d.lastReadSeq <= cur) return list; // never regress
       changed = {
         ...found,
         lastReadSeq: d.lastReadSeq,
-        unreadCount: 0,
-        mentionUnread: 'none',
+        unreadCount: d.unreadCount,
+        mentionUnread: d.mentionUnread,
       };
       return list.map((t) => (t.threadId === d.threadId ? changed! : t));
     });
@@ -546,7 +581,7 @@ export class ThreadRepository {
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(item: ConversationItem): void {
     this.serverLastReadSeq.set(item.threadId, item.lastReadSeq ?? null);
-    let reconciled = this.reconcileItem(item);
+    let reconciled = item;
     if (typeof reconciled.lastMessageSeq === 'number')
       this.advanceThreadSeq(reconciled.threadId, reconciled.lastMessageSeq);
     this._items.update((list) => {
@@ -574,7 +609,9 @@ export class ThreadRepository {
         base[idx] = reconciled;
       }
       const sorted = base.sort(byPinRank);
-      return this._pendingTopId === reconciled.threadId ? moveToTop(sorted, reconciled.threadId) : sorted;
+      return this._pendingTopId === reconciled.threadId
+        ? moveToTop(sorted, reconciled.threadId)
+        : sorted;
     });
     if (this._pendingTopId === reconciled.threadId) {
       this._topInserted.set(reconciled.threadId);
@@ -584,11 +621,12 @@ export class ThreadRepository {
     void this.persistThread(reconciled);
     // A fresh item carries an embedded peer/group profile — write it through too (avatar freshness).
     if (reconciled.type === 'P2P') this.writePeerProfile(reconciled.peerUser);
-    else if (reconciled.type === 'GROUP') this.writeGroupProfile(reconciled.group);
+    else if (reconciled.type === 'GROUP')
+      this.writeGroupProfile(reconciled.group);
   }
 
   private applyItems(items: ConversationItem[]): void {
-    const reconciled = items.map((it) => this.reconcileItem(it));
+    const reconciled = items;
     const sorted = [...reconciled].sort(byPinRank);
     const topId = this.resolveTopId(reconciled);
     const ordered = topId != null ? moveToTop(sorted, topId) : sorted;
@@ -600,7 +638,10 @@ export class ThreadRepository {
   /** Determine which thread (if any) to promote to index 0 on this update, consuming the pending flag. */
   private resolveTopId(items: ConversationItem[]): number | undefined {
     let topId: number | undefined;
-    if (this._pendingTopId != null && items.some((t) => t.threadId === this._pendingTopId)) {
+    if (
+      this._pendingTopId != null &&
+      items.some((t) => t.threadId === this._pendingTopId)
+    ) {
       topId = this._pendingTopId;
     }
     this._pendingTopId = null;
@@ -626,10 +667,14 @@ export class ThreadRepository {
     if (typeof u?.id !== 'number') return;
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
-      const found = list.find((t) => t.type === 'P2P' && t.peerUser?.id === u.id);
+      const found = list.find(
+        (t) => t.type === 'P2P' && t.peerUser?.id === u.id,
+      );
       if (!found) return list;
       changed = { ...found, peerUser: u };
-      return list.map((t) => (t.type === 'P2P' && t.peerUser?.id === u.id ? changed! : t));
+      return list.map((t) =>
+        t.type === 'P2P' && t.peerUser?.id === u.id ? changed! : t,
+      );
     });
     if (changed) {
       void this.persistThread(changed);
@@ -648,6 +693,12 @@ export class ThreadRepository {
    * If the thread isn't in the list yet (a brand-new conversation), reloads to fetch it.
    */
   onNewMessage(msg: { threadId: number; seq: number; ts: number }): void {
+    if (this._readCommitPending().has(msg.threadId)) {
+      const buffered = this.bufferedNewMessage.get(msg.threadId);
+      if (!buffered || msg.seq > buffered.seq)
+        this.bufferedNewMessage.set(msg.threadId, msg);
+      return;
+    }
     // Session-only global HWM: cached thread rows do not seed it.
     if (!this.advanceThreadSeq(msg.threadId, msg.seq)) return;
     // The body isn't in the identity signal — advance `to` to this signal + schedule a debounced missed-
@@ -701,7 +752,10 @@ export class ThreadRepository {
   /** Load the persisted per-thread dismiss-HWM map from IDB. Malformed/absent → empty (defensive — never
    *  blocks the away path). The numeric keys are JSON-encoded as strings, so coerce + validate on read. */
   private async loadThreadHwms(): Promise<void> {
-    const raw = (await this.webdb.getMeta('threadHwms')) as Record<string, unknown> | null | undefined;
+    const raw = (await this.webdb.getMeta('threadHwms')) as
+      | Record<string, unknown>
+      | null
+      | undefined;
     if (!raw || typeof raw !== 'object') {
       this._threadHwms.set({});
       return;
@@ -709,7 +763,8 @@ export class ThreadRepository {
     const out: Record<number, number> = {};
     for (const [k, v] of Object.entries(raw)) {
       const tid = Number(k);
-      if (Number.isInteger(tid) && typeof v === 'number' && Number.isFinite(v)) out[tid] = v;
+      if (Number.isInteger(tid) && typeof v === 'number' && Number.isFinite(v))
+        out[tid] = v;
     }
     this._threadHwms.set(out);
   }
@@ -744,14 +799,21 @@ export class ThreadRepository {
     if (this.pullArmedAt === 0) {
       // Leading edge of a fresh window → arm the standard trailing debounce.
       this.pullArmedAt = now;
-      this.pullTimer = setTimeout(() => this.firePull(), ThreadRepository.PULL_DEBOUNCE_MS);
+      this.pullTimer = setTimeout(
+        () => this.firePull(),
+        ThreadRepository.PULL_DEBOUNCE_MS,
+      );
       return;
     }
     // Mid-window: never push the fire past leading-edge + PULL_MAX_WAIT_MS. If the budget is spent, fire
     // now (the burst is too long to keep coalescing); otherwise wait the smaller of the trailing debounce
     // and the remaining budget.
-    const remaining = ThreadRepository.PULL_MAX_WAIT_MS - (now - this.pullArmedAt);
-    const delay = remaining <= 0 ? 0 : Math.min(ThreadRepository.PULL_DEBOUNCE_MS, remaining);
+    const remaining =
+      ThreadRepository.PULL_MAX_WAIT_MS - (now - this.pullArmedAt);
+    const delay =
+      remaining <= 0
+        ? 0
+        : Math.min(ThreadRepository.PULL_DEBOUNCE_MS, remaining);
     this.pullTimer = setTimeout(() => this.firePull(), delay);
   }
 
@@ -778,7 +840,12 @@ export class ThreadRepository {
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
-    await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.friendReqRev ?? null, d.friendReqAckRev ?? 0);
+    await this.userService.establishSession(
+      d.userId,
+      d.profileRev ?? 0,
+      d.friendReqRev ?? null,
+      d.friendReqAckRev ?? 0,
+    );
     // 2. Load the persisted missed-summary cursor (the walk's `from`) + the per-thread dismiss-HWM map.
     await this.loadMissedCursor();
     await this.loadThreadHwms();
@@ -870,11 +937,15 @@ export class ThreadRepository {
           walkedAny = true;
           this.mergeSummaryReadState(res.items); // merge the authoritative lastReadSeq (reconciled w/ optimistic)
         }
-        if (!res.hasMore) { from = to; break; } // walked the full (from, to] → caught up to `to`
+        if (!res.hasMore) {
+          from = to;
+          break;
+        } // walked the full (from, to] → caught up to `to`
         if (!res.nextCursor) break;
         from = res.nextCursor; // page max → advance `from`, continue
       }
-      if (walkedAny && from) { // don't advance on an empty/stale walk (no HWM regression); from is non-null here
+      if (walkedAny && from) {
+        // don't advance on an empty/stale walk (no HWM regression); from is non-null here
         this._missedCursor.set(from);
         this.saveMissedCursor(from);
       }
@@ -915,7 +986,10 @@ export class ThreadRepository {
     this._deltaInFlight = true;
     try {
       const res = await firstValueFrom(
-        this.userService.queryThreadDelta({ fromRevision: cursor, toRevision: toRev }),
+        this.userService.queryThreadDelta({
+          fromRevision: cursor,
+          toRevision: toRev,
+        }),
       );
       if (res.code === 0) {
         const delta = res.data ?? [];
@@ -944,7 +1018,10 @@ export class ThreadRepository {
       this._deltaInFlight = false;
       const tail = this._pendingTailRev;
       this._pendingTailRev = undefined;
-      if (tail !== undefined && tail > (this.userService.threadRevCursor() ?? -Infinity)) {
+      if (
+        tail !== undefined &&
+        tail > (this.userService.threadRevCursor() ?? -Infinity)
+      ) {
         void this.pullDelta(tail);
       }
     }
@@ -964,9 +1041,14 @@ export class ThreadRepository {
     const items = this._items();
     if (items.length === 0) return;
     // One batched read (a single transaction, one reverse cursor per thread) — never N independent lookups.
-    const newest = await this.messageRepo.getNewestMessages(items.map((it) => it.threadId));
+    const newest = await this.messageRepo.getNewestMessages(
+      items.map((it) => it.threadId),
+    );
     if (newest.size === 0) return; // nothing cached locally yet — leave the items' previews as-is
-    const byThread = new Map<number, { lastMessagePreview: string; lastMessageSenderId: number }>();
+    const byThread = new Map<
+      number,
+      { lastMessagePreview: string; lastMessageSenderId: number }
+    >();
     for (const it of items) {
       const m = newest.get(it.threadId);
       if (!m) continue;
@@ -978,17 +1060,17 @@ export class ThreadRepository {
     if (byThread.size === 0) return;
     let changed = false;
     const hydrated = this._items().map((it) => {
-        const patch = byThread.get(it.threadId);
-        if (
-          !patch ||
-          (it.lastMessagePreview === patch.lastMessagePreview &&
-            it.lastMessageSenderId === patch.lastMessageSenderId)
-        ) {
-          return it;
-        }
-        changed = true;
-        return { ...it, ...patch };
-      });
+      const patch = byThread.get(it.threadId);
+      if (
+        !patch ||
+        (it.lastMessagePreview === patch.lastMessagePreview &&
+          it.lastMessageSenderId === patch.lastMessageSenderId)
+      ) {
+        return it;
+      }
+      changed = true;
+      return { ...it, ...patch };
+    });
     // Boot can request hydration from cache-paint, HELLO and the missed walk. Do not emit an identical
     // array for each request: on Android every emission rebinds the WebView rows and makes previews flicker.
     if (!changed) return;
@@ -1038,11 +1120,20 @@ export class ThreadRepository {
   /** Write an embedded peer/group profile through the profile store (drives avatar refresh on path change). */
   private writePeerProfile(u: User): void {
     void this.profileRepo.putProfile(`u${u.id}`, 'user', {
-      id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
+      id: u.id,
+      name: u.name,
+      avatar: u.avatar,
+      bio: u.bio,
+      domain: u.domain,
       profileRev: u.profileRev,
     });
   }
-  private writeGroupProfile(g: { id: number; name: string; avatar: string; profileRev: number }): void {
+  private writeGroupProfile(g: {
+    id: number;
+    name: string;
+    avatar: string;
+    profileRev: number;
+  }): void {
     void this.profileRepo.putProfile(`g${g.id}`, 'group', {
       id: g.id,
       name: g.name,
@@ -1095,6 +1186,22 @@ export function rawPreview(contentType: string, content: string): string {
       return '[File]';
     case 'AUDIO':
       return '[Voice message]';
+    case 'FORWARD': {
+      try {
+        const value = JSON.parse(content) as { summaryLines?: unknown };
+        const first = Array.isArray(value.summaryLines)
+          ? value.summaryLines.find(
+              (line): line is string => typeof line === 'string',
+            )
+          : undefined;
+        const summary = first?.replace(/\s+/g, ' ').trim();
+        return summary
+          ? `[Chat history] ${summary}`.slice(0, 200)
+          : '[Chat history]';
+      } catch {
+        return '[Chat history]';
+      }
+    }
     case 'CALL': {
       // Status-aware label mirroring the backend's callPreviewLabel (call-content.ts) so the conversation
       // list shows "[Missed call]" / "[Call failed]" / … exactly as the server-derived preview.
@@ -1123,13 +1230,28 @@ export function rawPreview(contentType: string, content: string): string {
 }
 
 /** Return a new array with the first item matching `threadId` moved to index 0 (no-op if absent/first). */
-function moveToTop<T extends { threadId: number }>(items: T[], threadId: number): T[] {
+function moveToTop<T extends { threadId: number }>(
+  items: T[],
+  threadId: number,
+): T[] {
   const idx = items.findIndex((t) => t.threadId === threadId);
   if (idx <= 0) return items;
   const next = items.slice();
   const [moved] = next.splice(idx, 1);
   next.unshift(moved);
   return next;
+}
+
+function sameMentions(
+  a: Array<'all' | 'me'> | undefined,
+  b: Array<'all' | 'me'> | undefined,
+): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 /** Pin-aware conversation-list rank comparator — the SINGLE source of truth for client-side ordering,

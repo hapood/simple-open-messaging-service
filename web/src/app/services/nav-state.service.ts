@@ -1,4 +1,11 @@
-import { computed, effect, inject, Injectable, signal, type Type } from '@angular/core';
+import {
+  computed,
+  effect,
+  inject,
+  Injectable,
+  signal,
+  type Type,
+} from '@angular/core';
 import { UserService } from './user.service';
 
 /** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. Single-depth
@@ -121,7 +128,9 @@ export class NavStateMachineService {
   readonly paneStack = signal<readonly PaneEntry[]>([]);
 
   /** Dialog entries (derived) — RootPopup reads this (Phase 3 rewire; today RouteService.dlgList still drives it). */
-  readonly dialogs = computed(() => this.paneStack().filter((p) => p.kind === 'dialog'));
+  readonly dialogs = computed(() =>
+    this.paneStack().filter((p) => p.kind === 'dialog'),
+  );
 
   constructor() {
     // URL mirror — one-way (state → URL), `replaceState` only (never `push`), so the history stays a
@@ -129,7 +138,8 @@ export class NavStateMachineService {
     // shell only: page routes (playground, auth, config, forbidden) own their URLs — mirroring here would
     // clobber them (e.g. rewrite `/playground/...` → `/` at boot).
     effect(() => {
-      if (typeof location === 'undefined' || typeof history === 'undefined') return;
+      if (typeof location === 'undefined' || typeof history === 'undefined')
+        return;
       const p = location.pathname;
       if (p !== '/' && !p.startsWith('/chat/')) return;
       const tid = this.chatThreadId();
@@ -155,7 +165,10 @@ export class NavStateMachineService {
    *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
    *  Also clears the pane stack and the in-chat search — a thread switch scopes away any open
    *  dialog/overlay/search. */
-  openChat(threadId: number, transition: ChatOpenTransition = 'standard'): void {
+  openChat(
+    threadId: number,
+    transition: ChatOpenTransition = 'standard',
+  ): void {
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
@@ -231,7 +244,8 @@ export class NavStateMachineService {
     if (idx === -1) return;
     const removed = stack.slice(idx); // target + everything above
     this.paneStack.set(stack.slice(0, idx));
-    for (let i = removed.length - 1; i >= 0; i--) removed[i].onResult?.(i === 0 ? result : undefined);
+    for (let i = removed.length - 1; i >= 0; i--)
+      removed[i].onResult?.(i === 0 ? result : undefined);
   }
 
   /** Clear the entire pane stack (each onResult gets `undefined` = cancel). Called by openChat/closeChat
@@ -276,7 +290,10 @@ export class NavStateMachineService {
     const stack = this.paneStack();
     if (stack.length > 0) {
       const removed = stack[stack.length - 1];
-      if (removed.settingsDrilldown && this.settingsCategoryStack().length > 0) {
+      if (
+        removed.settingsDrilldown &&
+        this.settingsCategoryStack().length > 0
+      ) {
         this.settingsCategoryStack.update((s) => s.slice(0, -1));
         return true;
       }

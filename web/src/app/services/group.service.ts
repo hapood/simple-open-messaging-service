@@ -95,9 +95,16 @@ export class GroupService {
     );
   }
 
-  leaveGroup(params: { groupId: number }) {
+  leaveGroup(params: { groupId: number; deleteData?: boolean }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/leave`,
+      params,
+    );
+  }
+
+  dissolveGroup(params: { groupId: number; deleteData?: boolean }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/group/dissolve`,
       params,
     );
   }

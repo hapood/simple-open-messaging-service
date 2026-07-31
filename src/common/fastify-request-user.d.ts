@@ -2,7 +2,10 @@
 // the request after a successful auth guard (SessionAuthGuard / LocalAuthGuard / AdminAuthGuard).
 // Augmenting the interface here gives the whole codebase type-safe access to `req.user`
 // (userId for the C-end auth, adminId for the admin console) without scattering casts.
-import type { MessageThreadType, ThreadParticipant } from '../prisma/generated/client.js';
+import type {
+  MessageThreadType,
+  ThreadParticipant,
+} from '../prisma/generated/client.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -37,6 +40,12 @@ declare module 'fastify' {
        *  applies to P2P only; group threads leave blocked members' messages visible). */
       threadType: MessageThreadType;
       participant: ThreadParticipant;
+      /** P2P friendship/write state. False for a retained historical conversation after unfriend. */
+      friendshipActive: boolean;
+      /** Whether this participant is still active in the conversation (P2P friend / current group member). */
+      membershipActive: boolean;
+      /** Terminal group state. History reads remain allowed; mutation controllers reject with GROUP_DISSOLVED. */
+      groupDissolved: boolean;
     };
     /**
      * Captured by the S2S preParsing hook (scoped to /api/v1/s2s/*): the exact request body bytes as

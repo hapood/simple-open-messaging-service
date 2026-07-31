@@ -16,8 +16,7 @@ app-chat-editor {
 }
 
 // The contenteditable (Tiptap v3 adds .ProseMirror to a child div inside .cb-editor). Auto-grows like a
-// textarea: one line by default, up to five; wide chat-input containers raise this to two/six via inherited
-// custom properties. Integer px line-height (per the CSS integer-pixel
+// textarea: one line by default, up to five on every viewport size. Integer px line-height (per the CSS integer-pixel
 // rule — unitless 1.4 made the per-line box fractional): 15px font × 1.4 → 21px line box; min/max are exact
 // multiples of it so every wrap count yields an integer offsetHeight.
 .cb-editor .ProseMirror {
@@ -36,12 +35,6 @@ app-chat-editor {
   &::-webkit-scrollbar { display: none; }
 }
 
-@container (min-width: 720px) {
-  .ci-input {
-    --ci-editor-min-height: 42px;
-    --ci-editor-max-height: 126px;
-  }
-}
 .cb-editor .ProseMirror p {
   margin: 0;
 }

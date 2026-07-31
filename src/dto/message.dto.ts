@@ -248,10 +248,7 @@ export class QueryMessagesDto {
   orderBy!: 'desc' | 'asc';
 }
 
-/**
- * Mark a conversation read up to a given message. Omit lastReadSeq to mark ALL current messages
- * read (uses the thread's denormalized lastMessageSeq).
- */
+/** Commit the viewport-dwelled local read HWM. The server merges it monotonically with its cursor. */
 export class MarkReadDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
@@ -260,15 +257,12 @@ export class MarkReadDto {
   threadId!: number;
 
   @ApiProperty({
-    required: false,
     example: 42,
-    description:
-      'Mark read up to (and including) this message seq. Omit to mark all current messages read.',
+    description: 'Highest message seq the viewport has confirmed read locally.',
   })
-  @IsOptional()
   @Type(() => Number)
   @IsInt()
-  lastReadSeq?: number;
+  localReadHwm!: number;
 }
 
 /** Toggle mute for a conversation (the caller's ThreadParticipant row). */

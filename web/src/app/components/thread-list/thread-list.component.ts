@@ -1,10 +1,26 @@
-import { Component, input, computed, EventEmitter, Output, inject, OnInit, ElementRef, effect } from '@angular/core';
+import {
+  Component,
+  input,
+  computed,
+  EventEmitter,
+  Output,
+  inject,
+  OnInit,
+  ElementRef,
+  effect,
+} from '@angular/core';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { RouteService, PopupType } from '../../services/route.service'
-import { ConversationListService, ConversationLoadStatus } from '../../services/conversation-list.service'
-import { UserService } from '../../services/user.service'
-import { ConversationItem, displayThreadName } from '../../services/model'
-import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { RouteService, PopupType } from '../../services/route.service';
+import {
+  ConversationListService,
+  ConversationLoadStatus,
+} from '../../services/conversation-list.service';
+import { UserService } from '../../services/user.service';
+import { ConversationItem, displayThreadName } from '../../services/model';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarType,
   conversationAvatarIdentityId,
@@ -13,10 +29,9 @@ import {
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
-import { ChatFolder, inFolder } from '../../services/folder.service'
-import { LanguageService } from '../../services/language.service'
-import { formatListTime } from '../message-cards/date-format'
-import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
+import { LanguageService } from '../../services/language.service';
+import { formatListTime } from '../message-cards/date-format';
+import { playFlipList, snapshotFlipRects } from '../../lib/flip-list';
 
 /**
  * Conversation list view. A thin view over the shared ConversationListService (the client-side source
@@ -24,29 +39,33 @@ import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
  * computeds over the shared items; the active row is the store's openThreadId.
  */
 @Component({
-    selector: 'app-thread-list',
-    imports: [UserAvatarComponent, IconComponent, EmptyStateComponent, TranslocoPipe, FederatedBadgeComponent],
-    templateUrl: './thread-list.component.html',
-    styleUrl: './thread-list.component.scss'
+  selector: 'app-thread-list',
+  imports: [
+    UserAvatarComponent,
+    IconComponent,
+    EmptyStateComponent,
+    TranslocoPipe,
+    FederatedBadgeComponent,
+  ],
+  templateUrl: './thread-list.component.html',
+  styleUrl: './thread-list.component.scss',
 })
 export class ThreadListComponent implements OnInit {
-  readonly UserAvatarType = UserAvatarType
+  readonly UserAvatarType = UserAvatarType;
   /** exposes the icon enum to the template (mute indicator on muted threads). */
-  readonly AppIconType = AppIconType
-  /** active folder; undefined = no folder filter (show all) */
-  readonly folder = input<ChatFolder | undefined>(undefined)
+  readonly AppIconType = AppIconType;
   /** local name search; '' = no filter. */
-  readonly searchText = input('')
+  readonly searchText = input('');
 
-  private readonly routeService = inject(RouteService)
-  private readonly convList = inject(ConversationListService)
-  private readonly userService = inject(UserService)
-  private readonly transloco = inject(TranslocoService)
-  private readonly language = inject(LanguageService)
-  private readonly host = inject(ElementRef)
+  private readonly routeService = inject(RouteService);
+  private readonly convList = inject(ConversationListService);
+  private readonly userService = inject(UserService);
+  private readonly transloco = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
+  private readonly host = inject(ElementRef);
   /** Last-known row rects — the "before" snapshot the next top-insert FLIPs against. Refreshed on
    *  every render that doesn't itself animate, so a later insert measures against current positions. */
-  private prevRects = new Map<string, DOMRect>()
+  private prevRects = new Map<string, DOMRect>();
 
   constructor() {
     // FLIP list animation: re-runs whenever the shared list mutates (read items() reactively). The
@@ -55,53 +74,56 @@ export class ThreadListComponent implements OnInit {
     // "before" snapshot so routine reloads / message bumps / filter changes keep the map current
     // without animating.
     effect(() => {
-      this.convList.items()
+      this.convList.items();
       requestAnimationFrame(() => {
-        const container = (this.host.nativeElement as HTMLElement | null)
-          ?.querySelector('.thread-list') as HTMLElement | null
-        if (!container) return
-        const tid = this.convList.topInserted()
+        const container = (
+          this.host.nativeElement as HTMLElement | null
+        )?.querySelector('.thread-list') as HTMLElement | null;
+        if (!container) return;
+        const tid = this.convList.topInserted();
         if (tid != null) {
-          this.prevRects = playFlipList(container, this.prevRects)
-          this.convList.clearTopInserted()
+          this.prevRects = playFlipList(container, this.prevRects);
+          this.convList.clearTopInserted();
         } else {
-          this.prevRects = snapshotFlipRects(container)
+          this.prevRects = snapshotFlipRects(container);
         }
-      })
-    })
+      });
+    });
   }
 
-  readonly items = this.convList.items
-  readonly status = this.convList.status
-  readonly errorMsg = this.convList.error
-  readonly openThreadId = this.convList.openThreadId
+  readonly items = this.convList.items;
+  readonly status = this.convList.status;
+  readonly errorMsg = this.convList.error;
+  readonly openThreadId = this.convList.openThreadId;
+  readonly readCommitPending = this.convList.readCommitPending;
   /** exposes the enum to the template's @switch */
-  readonly LoadStatus: typeof ConversationLoadStatus = ConversationLoadStatus
+  readonly LoadStatus: typeof ConversationLoadStatus = ConversationLoadStatus;
 
-  /** view model after applying the folder + search filters. */
+  /** View model after applying the local search filter. */
   readonly filteredThreadList = computed(() => {
-    const folder = this.folder(), q = this.searchText().trim().toLowerCase()
-    return this.items().filter(t => {
-      if (folder && !inFolder(t, folder)) return false
+    const q = this.searchText().trim().toLowerCase();
+    return this.items().filter((t) => {
       if (q) {
-        const name = displayThreadName(t)
-        if (!name.toLowerCase().includes(q)) return false
+        const name = displayThreadName(t);
+        if (!name.toLowerCase().includes(q)) return false;
       }
-      return true
-    })
-  })
+      return true;
+    });
+  });
 
   /** A search term is set but the filter yields nothing → "no search results" state (distinct from the true
    *  empty state; carries no CTA). */
-  readonly isSearchEmpty = computed(() =>
-    this.searchText().trim().length > 0 && this.filteredThreadList().length === 0
-  )
+  readonly isSearchEmpty = computed(
+    () =>
+      this.searchText().trim().length > 0 &&
+      this.filteredThreadList().length === 0,
+  );
 
-  @Output() onSelect = new EventEmitter<ConversationItem>()
+  @Output() onSelect = new EventEmitter<ConversationItem>();
 
   /** Display name for a thread — alias overrides the real name. */
   displayName(t: ConversationItem): string {
-    return displayThreadName(t)
+    return displayThreadName(t);
   }
 
   /** Backend denormalizes `lastMessagePreview` as an English marker for non-text messages ("[Photo]",
@@ -115,14 +137,28 @@ export class ThreadListComponent implements OnInit {
     '[Video]': 'chat.preview.video',
     '[File]': 'chat.preview.file',
     '[Voice message]': 'chat.preview.voice',
+    '[Chat history]': 'forward.previewLabel',
+    '[聊天记录]': 'forward.previewLabel',
   };
 
   previewText(t: ConversationItem): string {
     this.language.lang();
     const raw = t.lastMessagePreview;
-    const markerKey = raw ? ThreadListComponent.PREVIEW_MARKERS[raw] : undefined;
-    const base = (markerKey ? this.transloco.translate(markerKey) : raw)
-      ?? this.transloco.translate('common.noMessagesYet') ?? '';
+    const marker = raw
+      ? Object.keys(ThreadListComponent.PREVIEW_MARKERS).find(
+          (candidate) => raw === candidate || raw.startsWith(`${candidate} `),
+        )
+      : undefined;
+    const markerKey = marker
+      ? ThreadListComponent.PREVIEW_MARKERS[marker]
+      : undefined;
+    const markerSuffix = marker && raw ? raw.slice(marker.length) : '';
+    const base =
+      (markerKey
+        ? `${this.transloco.translate(markerKey)}${markerSuffix}`
+        : raw) ??
+      this.transloco.translate('common.noMessagesYet') ??
+      '';
     if (t.lastMessageSenderId == null) return base;
     if (t.lastMessageSenderId === this.userService.sessionProfile()?.id)
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
@@ -131,27 +167,28 @@ export class ThreadListComponent implements OnInit {
 
   /** Conversation-list timestamp; reads the language signal so it re-evaluates on a language switch. */
   fmtTime = (ms: number | null | undefined): string => {
-    this.language.lang()
-    return formatListTime(ms, this.transloco)
-  }
+    this.language.lang();
+    return formatListTime(ms, this.transloco);
+  };
 
   // Conversation→avatar derivation lives in the shared conversation-avatar util (single source of truth,
   // shared with the empty-thread hero). These delegate to it so the logic is not duplicated across surfaces.
   avatarType(t: ConversationItem): UserAvatarType {
-    return conversationAvatarType(t)
+    return conversationAvatarType(t);
   }
 
   avatarIdentityId(t: ConversationItem): number {
-    return conversationAvatarIdentityId(t)
+    return conversationAvatarIdentityId(t);
   }
 
   avatarSrc(t: ConversationItem): string | null | undefined {
-    return conversationAvatarSrc(t)
+    return conversationAvatarSrc(t);
   }
 
   federatedDomain(t: ConversationItem): string | undefined {
-    if (t.type === 'P2P') return t.peerUser.isForeigner ? t.peerUser.domain : undefined
-    return t.group.domain ?? undefined
+    if (t.type === 'P2P')
+      return t.peerUser.isForeigner ? t.peerUser.domain : undefined;
+    return t.group.domain ?? undefined;
   }
 
   /** One concise announcement for screen readers; visible badges/icons remain aria-hidden to avoid repetition. */
@@ -159,35 +196,44 @@ export class ThreadListComponent implements OnInit {
     const parts = [
       this.displayName(t),
       this.federatedDomain(t),
-      t.blocked ? this.transloco.translate('threadList.blocked') : this.previewText(t),
+      t.blocked
+        ? this.transloco.translate('threadList.blocked')
+        : this.previewText(t),
       this.fmtTime(t.lastMessageAt),
-    ]
+    ];
     if (t.unreadCount > 0) {
-      parts.push(this.transloco.translate('threadList.unreadCount', { count: t.unreadCount }))
+      const count = t.unreadCount >= 1000 ? '999+' : t.unreadCount;
+      parts.push(this.transloco.translate('threadList.unreadCount', { count }));
     }
-    if (t.mentionUnread === 'me' || t.mentionUnread === 'all') {
-      parts.push(this.transloco.translate('threadList.mentionedYou'))
+    if ((t.mentionUnread?.length ?? 0) > 0) {
+      parts.push(this.transloco.translate('threadList.mentionedYou'));
     }
-    if (t.muted) parts.push(this.transloco.translate('threadList.muted'))
-    if (t.pinned) parts.push(this.transloco.translate('threadList.pinned'))
-    return parts.filter(Boolean).join(', ')
+    if (t.muted) parts.push(this.transloco.translate('threadList.muted'));
+    if (t.pinned) parts.push(this.transloco.translate('threadList.pinned'));
+    return parts.filter(Boolean).join(', ');
   }
 
   genThreadList() {
-    this.convList.load()
+    this.convList.load();
   }
 
   /** True-empty-state CTA: open the friend-requests popup (same path as the icon rail). */
   openFriendRequests() {
-    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS, { initialTab: 'add' })
+    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS, {
+      initialTab: 'add',
+    });
   }
 
   onUsrTrdClick(userMsgTrd: ConversationItem) {
-    this.onSelect.emit(userMsgTrd)
+    this.onSelect.emit(userMsgTrd);
   }
 
   ngOnInit() {
     // Load only if we don't already have data (the store is shared across layout switches).
-    if (this.status() === ConversationLoadStatus.LOADING && this.items().length === 0) this.convList.load()
+    if (
+      this.status() === ConversationLoadStatus.LOADING &&
+      this.items().length === 0
+    )
+      this.convList.load();
   }
 }

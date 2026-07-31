@@ -320,6 +320,22 @@ export class MessageThreadComponent implements OnDestroy {
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
+  readonly friendshipEnded = computed(
+    () =>
+      this.userMsgTrd()?.type === 'P2P' &&
+      this.userMsgTrd()?.friendshipActive === false,
+  );
+  readonly leftGroup = computed(
+    () =>
+      this.userMsgTrd()?.type === 'GROUP' &&
+      this.userMsgTrd()?.group?.dissolvedAt == null &&
+      this.userMsgTrd()?.conversationState === 'READ_ONLY',
+  );
+  readonly dissolvedGroup = computed(
+    () =>
+      this.userMsgTrd()?.type === 'GROUP' &&
+      this.userMsgTrd()?.group?.dissolvedAt != null,
+  );
   /** The media viewer must also suppress the native sibling composer, which otherwise sits outside the
    *  WebView DOM and can remain visible above a CDK overlay. The browser composer uses the same flag. */
   readonly mediaViewerOpen = computed(() =>
@@ -525,6 +541,9 @@ export class MessageThreadComponent implements OnDestroy {
         threadId !== undefined &&
         !this.initialLoading() &&
         !this.blockedPeer() &&
+        !this.friendshipEnded() &&
+        !this.leftGroup() &&
+        !this.dissolvedGroup() &&
         !this.nativeComposerOccluded() &&
         !this.selectionMode();
       if (!shouldShow) {
@@ -550,6 +569,7 @@ export class MessageThreadComponent implements OnDestroy {
         sending: false,
         canRecord: true,
         canUpload: true,
+        mentionsEnabled: this.userMsgTrd()?.type === 'GROUP',
         theme,
       });
       this.observeNativeComposerBounds(contextId);
@@ -970,6 +990,7 @@ export class MessageThreadComponent implements OnDestroy {
         : undefined,
       (event, selectedItem, pointer, memberId) =>
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
+      (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
     );
     const selection = this.messageSelectionState(item);
     rendered.el.classList.toggle(
@@ -1247,6 +1268,15 @@ export class MessageThreadComponent implements OnDestroy {
                 clientMessageId: this.newClientMessageId(),
               }),
             );
+            if (response.code === BusinessCode.GROUP_DISSOLVED) {
+              this.convList.applyGroupUpdate(threadId, {
+                dissolvedAt: Date.now(),
+              });
+            } else if (response.code === BusinessCode.FRIEND_NOT_FOUND) {
+              this.convList.applyThreadMeta(threadId, {
+                friendshipActive: false,
+              });
+            }
             return { ok: response.code === 0, response };
           } catch {
             return { ok: false };
@@ -1874,7 +1904,7 @@ export class MessageThreadComponent implements OnDestroy {
     )
       .then((res) => {
         if (res.code !== 0) {
-          this.surfaceSendQuota(res);
+          this.surfaceSendFailure(res, tid);
           void this.failPending(item);
         } else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
       })
@@ -1897,7 +1927,7 @@ export class MessageThreadComponent implements OnDestroy {
     )
       .then((res) => {
         if (res.code !== 0) {
-          this.surfaceSendQuota(res);
+          this.surfaceSendFailure(res, tid);
           void this.failPending(item);
         } else void this.markSent(item);
       })
@@ -1906,13 +1936,30 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Daily quota failures are business responses (HTTP 200), so the HTTP error interceptor never sees
    * them. Keep the failed bubble/retry affordance and also explain why retrying today cannot succeed. */
-  private surfaceSendQuota(res: StandardResponse<unknown>): void {
+  private surfaceSendFailure(
+    res: StandardResponse<unknown>,
+    threadId: number,
+  ): void {
+    if (res.code === BusinessCode.FRIEND_NOT_FOUND) {
+      this.convList.applyThreadMeta(threadId, { friendshipActive: false });
+      this.toast.warn(translateBizResult(res, this.transloco));
+      return;
+    }
+    if (res.code === BusinessCode.GROUP_DISSOLVED) {
+      this.convList.applyGroupUpdate(threadId, { dissolvedAt: Date.now() });
+      this.toast.warn(translateBizResult(res, this.transloco));
+      return;
+    }
     if (
       res.code === BusinessCode.QUOTA_EXCEEDED ||
       res.code === BusinessCode.FEDERATION_QUOTA_EXCEEDED
     ) {
       this.toast.warn(translateBizResult(res, this.transloco));
     }
+  }
+
+  private surfaceSendQuota(res: StandardResponse<unknown>): void {
+    this.surfaceSendFailure(res, this.threadId() ?? 0);
   }
 
   /** Append one non-audio upload to the component-wide FIFO. The returned promise represents this

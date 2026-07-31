@@ -90,7 +90,7 @@ describe('NotificationQueryService', () => {
     });
     countUnread.mockResolvedValue(new Map(Object.entries(unread).map(([k, v]) => [Number(k), v])));
     unreadAttentionByThread.mockResolvedValue(
-      new Map(Object.entries(unread).map(([k, v]) => [Number(k), { count: v, mention: 'none' }])),
+      new Map(Object.entries(unread).map(([k, v]) => [Number(k), { count: v, mention: [] }])),
     );
     findPeers.mockResolvedValue(peers);
     queryUsers.mockResolvedValue(users);
@@ -197,7 +197,7 @@ describe('NotificationQueryService', () => {
     });
     senderAttentionSince.mockResolvedValue({
       counts: opts.counts ?? new Map<number, number>(),
-      mention: 'none',
+      mention: [],
       overflow: opts.overflow ?? false,
     });
     queryUsers.mockResolvedValue(opts.senders ?? []);
@@ -223,7 +223,7 @@ describe('NotificationQueryService', () => {
   it('grouping:thread → one descriptor per new conversation, newest first; kind:thread-message', async () => {
     blockedByMe.mockResolvedValue(new Set<number>());
     awayAttentionByThread.mockResolvedValue(
-      new Map([[1, { count: 2, latestSeq: 7, mention: 'none' }], [2, { count: 1, latestSeq: 8, mention: 'none' }], [3, { count: 5, latestSeq: 9, mention: 'none' }]]),
+      new Map([[1, { count: 2, latestSeq: 7, mention: [] }], [2, { count: 1, latestSeq: 8, mention: [] }], [3, { count: 5, latestSeq: 9, mention: [] }]]),
     );
     wire(
       [row(1, 'P2P', { lastMessageSeq: 7 }), row(2, 'P2P', { lastMessageSeq: 8 }), row(3, 'P2P', { lastMessageSeq: 9 })],
@@ -273,7 +273,7 @@ describe('NotificationQueryService', () => {
 
   it('grouping:thread → count ≥1000 → "999+" body', async () => {
     blockedByMe.mockResolvedValue(new Set<number>());
-    awayAttentionByThread.mockResolvedValue(new Map([[1, { count: 1000, latestSeq: 1000, mention: 'none' }]]));
+    awayAttentionByThread.mockResolvedValue(new Map([[1, { count: 1000, latestSeq: 1000, mention: [] }]]));
     wire(
       [row(1, 'P2P', { lastMessageSeq: 1000 })],
       { 1: 1000 },
@@ -293,7 +293,7 @@ describe('NotificationQueryService', () => {
     blockedByMe.mockResolvedValue(new Set<number>());
     // Query A: 3 threads new since globalHWM (1: 5, 2: 3, 3: 4).
     awayAttentionByThread.mockResolvedValue(
-      new Map([[1, { count: 2, latestSeq: 9, mention: 'none' }], [2, { count: 3, latestSeq: 8, mention: 'none' }]]),
+      new Map([[1, { count: 2, latestSeq: 9, mention: [] }], [2, { count: 3, latestSeq: 8, mention: [] }]]),
     );
     wire(
       [row(1, 'P2P', { lastMessageSeq: 9 }), row(2, 'P2P', { lastMessageSeq: 8 }), row(3, 'P2P', { lastMessageSeq: 11 })],

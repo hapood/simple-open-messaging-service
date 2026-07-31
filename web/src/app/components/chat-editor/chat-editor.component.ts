@@ -125,6 +125,9 @@ export class ChatEditorComponent {
           suggestion: {
             char: '@',
             allowSpaces: false,
+            // P2P conversations deliberately pass no candidates. Do not start a suggestion session at
+            // all there: showing an empty popup makes a literal @ look like a supported P2P mention.
+            allow: () => this.membersRef.length > 0,
             items: ({ query }) => this.filterMembers(query),
             render: () => suggestionPopup(),
           },
@@ -332,8 +335,23 @@ function suggestionPopup() {
     if (!popup || !rect) return;
     const r = rect();
     if (!r) return;
-    popup.style.left = `${Math.round(r.left)}px`;
-    popup.style.top = `${Math.round(r.bottom + 6)}px`;
+    const gap = 6;
+    const margin = 8;
+    const popupRect = popup.getBoundingClientRect();
+    const width = popupRect.width;
+    const height = popupRect.height;
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const left = Math.min(
+      Math.max(r.left, margin),
+      Math.max(margin, viewportWidth - width - margin),
+    );
+    const fitsBelow = r.bottom + gap + height <= viewportHeight - margin;
+    const top = fitsBelow
+      ? r.bottom + gap
+      : Math.max(margin, r.top - gap - height);
+    popup.style.left = `${Math.round(left)}px`;
+    popup.style.top = `${Math.round(top)}px`;
   };
 
   const close = (): void => {
@@ -356,15 +374,15 @@ function suggestionPopup() {
       popup = document.createElement('div');
       popup.className = 'cb-mention-popup';
       document.body.appendChild(popup);
-      position(props.clientRect);
       renderList();
+      position(props.clientRect);
     },
     onUpdate: (props: RenderProps) => {
       items = props.items;
       selected = 0;
       command = props.command;
-      position(props.clientRect);
       renderList();
+      position(props.clientRect);
     },
     onKeyDown: (props: { event: KeyboardEvent }) => {
       if (items.length === 0) return false;

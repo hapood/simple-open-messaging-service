@@ -18,11 +18,16 @@ export class UserListComponent {
     readonly selectedDict = input<Record<number, boolean | undefined>>()
     /** Optional client-side filter text (case-insensitive over display name + handle). */
     readonly filterText = input<string>('')
+    /** User ids hidden from the picker (for example, existing members of a group). */
+    readonly excludedUserIds = input<ReadonlySet<number>>(new Set<number>())
     private readonly convList = inject(ConversationListService)
 
     /** The P2P conversations (the friend picker's source) — derived from the live conversation list (the
      *  delta-replay list), no fetch. */
-    readonly threadList = computed(() => this.convList.items().filter((t) => t.type === 'P2P'))
+    readonly threadList = computed(() => {
+        const excluded = this.excludedUserIds()
+        return this.convList.items().filter((t) => t.type === 'P2P' && !excluded.has(t.peerUser.id))
+    })
 
     readonly dispThreadList = computed(() => {
         const q = (this.filterText() ?? '').trim().toLowerCase()

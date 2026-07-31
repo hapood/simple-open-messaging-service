@@ -13,6 +13,9 @@ import { ConversationItem } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { apiPrefix } from '../../services/constants';
+import { finalize } from 'rxjs';
+import { translateBizResult } from '../../services/biz-code';
+import { ToastService } from '../../services/toast.service';
 
 type Step = 1 | 2;
 
@@ -45,7 +48,9 @@ export class NewGroupComponent {
   /** Staged group avatar URL (uploaded before creation), if any. */
   readonly pendingAvatar = signal<string | undefined>(undefined)
   /** True while an avatar crop is uploading. */
-  readonly busy = signal(false)
+  readonly avatarUploading = signal(false)
+  /** True from the first create attempt until its response settles; guards clicks and Enter. */
+  readonly submitting = signal(false)
 
   /** Group name — user-entered on step 2 (never prefilled); required, must be non-empty. */
   readonly name = signal('')
@@ -61,6 +66,7 @@ export class NewGroupComponent {
   private readonly snackBar = inject(MatSnackBar)
   private readonly transloco = inject(TranslocoService)
   private readonly convList = inject(ConversationListService)
+  private readonly toast = inject(ToastService)
 
   /** User typed into the name field. */
   onNameInput(v: string) {
@@ -109,6 +115,7 @@ export class NewGroupComponent {
 
   /** Header back: step 2 → step 1 (keep state); step 1 → close the dialog. */
   onBack() {
+    if (this.submitting()) return
     if (this.step() === 2) this.goStep1()
     else this.routeService.closeDlg()
   }
@@ -124,30 +131,33 @@ export class NewGroupComponent {
   }
 
   private uploadAvatar(file: File) {
-    this.busy.set(true)
+    this.avatarUploading.set(true)
     // /upload/avatar runs the server-side sharp cover-crop, so it needs only the file (no w/h —
     // avatars are square). Returns { avatar } (a /uploads/avatars/ url) staged until group creation.
     const fd = new FormData()
     fd.append('file', file)
     this.http.post<{ code: number; data?: { avatar: string } }>(`${apiPrefix()}/upload/avatar`, fd).subscribe({
       next: (res) => {
-        this.busy.set(false)
         if (res?.code === 0 && res.data?.avatar) this.pendingAvatar.set(res.data.avatar)
       },
-      error: () => this.busy.set(false),
-    })
+      error: () => this.toast.warn(this.transloco.translate('errors.networkError')),
+    }).add(() => this.avatarUploading.set(false))
   }
 
   /** Create the group, invite the selected friends, surface the result, then close the dialog. */
   confirm() {
+    if (this.submitting() || this.avatarUploading()) return
     const name = this.name().trim()
     if (!name) return
+    this.submitting.set(true)
     // Invite the selected friends at creation — each receives a GROUP_INVITE in their P2P thread
     // and must accept via group/join (same path as group-info's "Invite" button). They are all
     // friends by construction (the picker lists conversations), so `skipped` is normally empty.
     const inviteUserIds = this.selectedList().map((item) => item.peerUser.id)
     const avatar = this.pendingAvatar()
-    this.groupService.createGroup({ name, avatar, description: this.description().trim() || undefined, inviteUserIds }).subscribe((res) => {
+    this.groupService.createGroup({ name, avatar, description: this.description().trim() || undefined, inviteUserIds }).pipe(
+      finalize(() => this.submitting.set(false)),
+    ).subscribe({ next: (res) => {
       if (res.code === 0 && res.data) {
         // Reuse the same toast copy/keys as group-info's invite flow for consistency.
         const invited = res.data.invited?.length ?? 0
@@ -163,7 +173,9 @@ export class NewGroupComponent {
         // so it animates in via the FLIP enter rather than sinking to the bottom (empty lastMessageAt).
         this.convList.markTopOnNextUpdate(res.data.threadId)
         this.routeService.closeDlg({ groupId: res.data.groupId })
+      } else {
+        this.toast.warn(translateBizResult(res, this.transloco))
       }
-    })
+    }, error: () => this.toast.warn(this.transloco.translate('errors.networkError')) })
   }
 }

@@ -36,7 +36,10 @@ describe('ThreadAccessGuard', () => {
   });
 
   /** Build a fake ExecutionContext around a request with the given (optional) userId + body. */
-  function makeCtx(userId: number | undefined, body: unknown): ExecutionContext {
+  function makeCtx(
+    userId: number | undefined,
+    body: unknown,
+  ): ExecutionContext {
     const req = {
       user: userId === undefined ? undefined : { userId },
       body,
@@ -49,20 +52,66 @@ describe('ThreadAccessGuard', () => {
   }
 
   it('attaches req.threadAccess and allows an ACTIVE member', async () => {
-    const participant = { id: 9, userId: 7, threadId: 12, leftAt: null, thread: { type: "P2P" } };
-    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(participant);
+    const participant = {
+      id: 9,
+      userId: 7,
+      threadId: 12,
+      leftAt: null,
+      thread: { type: 'P2P' },
+    };
+    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
+      participant,
+    );
     const ctx = makeCtx(7, { threadId: 12 });
 
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
-    expect(reflector.get).toHaveBeenCalledWith(RESOURCE_ID_KEY, expect.anything());
-    expect(participantService.findActiveParticipantWithThread).toHaveBeenCalledWith(7, 12);
+    expect(reflector.get).toHaveBeenCalledWith(
+      RESOURCE_ID_KEY,
+      expect.anything(),
+    );
     expect(
-      (ctx.switchToHttp().getRequest() as { threadAccess: unknown }).threadAccess,
-    ).toEqual({ threadId: 12, threadType: "P2P", participant });
+      participantService.findActiveParticipantWithThread,
+    ).toHaveBeenCalledWith(7, 12);
+    expect(
+      (ctx.switchToHttp().getRequest() as { threadAccess: unknown })
+        .threadAccess,
+    ).toEqual({
+      threadId: 12,
+      threadType: 'P2P',
+      participant,
+      friendshipActive: true,
+      membershipActive: true,
+      groupDissolved: false,
+    });
+  });
+
+  it('allows retained P2P history after unfriend but marks it read-only', async () => {
+    const participant = {
+      id: 9,
+      userId: 7,
+      threadId: 12,
+      leftAt: new Date(),
+      thread: { type: 'P2P' },
+    };
+    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
+      participant,
+    );
+    const ctx = makeCtx(7, { threadId: 12 });
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(
+      (
+        ctx.switchToHttp().getRequest() as {
+          threadAccess: { friendshipActive: boolean };
+        }
+      ).threadAccess.friendshipActive,
+    ).toBe(false);
   });
 
   it('throws THREAD_NOT_FOUND (non-leaking) when the caller is not an active member', async () => {
-    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(null);
+    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(
+      null,
+    );
     const ctx = makeCtx(7, { threadId: 12 });
 
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
@@ -77,7 +126,9 @@ describe('ThreadAccessGuard', () => {
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
       bizCode: BusinessCode.VALIDATION_FAILED,
     });
-    expect(participantService.findActiveParticipantWithThread).not.toHaveBeenCalled();
+    expect(
+      participantService.findActiveParticipantWithThread,
+    ).not.toHaveBeenCalled();
   });
 
   it('throws INTERNAL when the route is missing @ResourceId (wiring bug, not a client error)', async () => {
@@ -86,6 +137,8 @@ describe('ThreadAccessGuard', () => {
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
       bizCode: BusinessCode.INTERNAL,
     });
-    expect(participantService.findActiveParticipantWithThread).not.toHaveBeenCalled();
+    expect(
+      participantService.findActiveParticipantWithThread,
+    ).not.toHaveBeenCalled();
   });
 });

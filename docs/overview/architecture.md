@@ -233,6 +233,23 @@ Every roster mutation (friend approve, group join/leave/kick, unfriend) bumps th
 
 1. `ThreadAccessGuard` validates membership (P2P additionally that the peer is an active participant).
 2. Allocates a per-thread `seq` atomically (`UPDATE curSeq = curSeq + 1 RETURNING`) inside the create tx — gapless, no retry loop.
+
+### Read HWM and unread badges
+
+The message viewport records a monotonically increasing local read HWM only after a message is fully visible
+and the viewport has been stable for 500 ms. It does not calculate or optimistically clear unread badges.
+On chat close or thread switch, the client submits that HWM to `POST /thread/mark-read`; one PostgreSQL
+statement takes the maximum with the stored cursor and returns the authoritative capped count and mention set.
+
+While that request is in flight, the thread-list badge breathes and the client buffers only the newest
+`NEW_MESSAGE` SSE for that thread. After the response (or failure), it replays the buffered signal through the
+normal missed-summary pull, so the server remains the only unread-count authority.
+
+Two consistency boundaries are deliberate:
+
+- A crash or OS kill before normal chat close may lose the in-memory local HWM; restart uses server state.
+- Read state is not broadcast by a dedicated SSE. Other devices converge on their next existing unread pull,
+  reconnect, or restart rather than clearing immediately.
 3. `MessageFanoutService` pushes `NEW_MESSAGE` to all participants via SSE (full body) + fires push for offline recipients.
 4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
 

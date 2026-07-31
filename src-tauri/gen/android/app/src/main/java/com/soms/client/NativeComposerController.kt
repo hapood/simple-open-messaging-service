@@ -55,8 +55,6 @@ class NativeComposerController(
     private val density = activity.resources.displayMetrics.density
     private fun dp(value: Int) = Math.round(value * density)
     private val enterInterpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
-    private val isExpandedWindow =
-        activity.resources.configuration.smallestScreenWidthDp >= TABLET_MIN_WIDTH_DP
     private val isDark =
         activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
             Configuration.UI_MODE_NIGHT_YES
@@ -100,7 +98,7 @@ class NativeComposerController(
     private val input = MentionEditText(activity).apply {
         hint = "Message"
         textSize = 16f
-        maxLines = if (isExpandedWindow) TABLET_MAX_LINES else PHONE_MAX_LINES
+        maxLines = COMPOSER_MAX_LINES
         minLines = 1
         minHeight = dp(48)
         gravity = Gravity.CENTER_VERTICAL
@@ -132,6 +130,7 @@ class NativeComposerController(
     private var mentionQueryStart = -1
     private var mentionRequestId = 0L
     private var latestMentionRequestId = 0L
+    private var mentionsEnabled = false
     private val requestedMedia = mutableSetOf<String>()
     private val mediaRequestUrls = mutableMapOf<Long, String>()
     private val avatarCache = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
@@ -511,6 +510,9 @@ class NativeComposerController(
         lastEmittedComposerHeightCss = null
         lastEmittedKeyboardHeightCss = null
         pendingSend = null
+        mentionsEnabled = context.optBoolean("mentionsEnabled", false)
+        mentionQueryStart = -1
+        mentionPopup.dismiss()
         hasBounds = false
         setSending(false)
         applyTheme(
@@ -957,7 +959,8 @@ class NativeComposerController(
     }
 
     private fun queryMentionsAtCursor() {
-        if (!visible || input.selectionStart != input.selectionEnd) {
+        if (!mentionsEnabled || !visible || input.selectionStart != input.selectionEnd) {
+            mentionQueryStart = -1
             mentionPopup.dismiss()
             return
         }
@@ -1251,9 +1254,7 @@ class NativeComposerController(
 
     companion object {
         private const val MAX_COMPOSER_WIDTH_DP = 720
-        private const val TABLET_MIN_WIDTH_DP = 600
-        private const val PHONE_MAX_LINES = 5
-        private const val TABLET_MAX_LINES = 8
+        private const val COMPOSER_MAX_LINES = 5
         private const val DEFAULT_EMOJI_HEIGHT_DP = 280
         private const val EMOJI_GAP_DP = 8
         private const val IME_HANDOFF_FALLBACK_MS = 420L

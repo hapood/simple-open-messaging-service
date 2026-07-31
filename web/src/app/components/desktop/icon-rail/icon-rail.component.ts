@@ -9,7 +9,7 @@ import { LanguageService } from '../../../services/language.service';
 
 /**
  * Telegram-style left rail (desktop): account avatar + navigation actions (friend requests / new group /
- * folders) at the top, and the system controls (settings / theme) pinned to the bottom — mirroring
+ * new-group) at the top, and the system controls (settings / theme) pinned to the bottom — mirroring
  * Telegram's drawer footer (Settings + night-mode toggle). Mobile/tablet reach these actions via the
  * account avatar menu (including the inline settings/profile sections); the rail is the desktop
  * equivalent, exposed as icon-only buttons with translated tooltips. Log out lives in the profile dialog
@@ -36,10 +36,6 @@ import { LanguageService } from '../../../services/language.service';
         <button class="rail-btn" (click)="newGroup()"
           [title]="'nav.newGroup' | transloco" [attr.aria-label]="'nav.newGroup' | transloco">
           <app-icon [type]="AppIconType.NEW_GROUP" [style]="{ width: '24px', height: '24px' }" />
-        </button>
-        <button class="rail-btn" (click)="folderEditor()"
-          [title]="'nav.folders' | transloco" [attr.aria-label]="'nav.folders' | transloco">
-          <app-icon [type]="AppIconType.FOLDERS" [style]="{ width: '24px', height: '24px' }" />
         </button>
       </div>
       <div class="bottom">
@@ -140,10 +136,6 @@ export class IconRailComponent {
       // only refresh when a group was actually created, not on cancel/back
       if (result) this.onThreadListChanged()?.()
     })
-  }
-
-  folderEditor() {
-    this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
   }
 
   /** Open Settings as a wide two-column dialog. icon-rail is desktop-only, so this is always the dialog

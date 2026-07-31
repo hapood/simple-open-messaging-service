@@ -32,6 +32,7 @@ import {
   CreateGroupDto,
   InviteGroupDto,
   GroupIdDto,
+  GroupTerminalActionDto,
   GroupMembersBatchDto,
   KickGroupDto,
   TransferGroupDto,
@@ -77,7 +78,8 @@ export class GroupController {
     payload: Record<string, unknown>,
     extraUserIds: number[] = [],
   ) {
-    const members = await this.participantService.getActiveParticipantUserIds(threadId);
+    const members =
+      await this.participantService.getActiveParticipantUserIds(threadId);
     const ids = new Set<number>([
       ...members.map((m) => m.userId),
       ...extraUserIds,
@@ -91,9 +93,15 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/create')
-  @ApiOperation({ summary: 'Create a group and invite the given friends (Invite row + card per friend)' })
+  @ApiOperation({
+    summary:
+      'Create a group and invite the given friends (Invite row + card per friend)',
+  })
   @ApiResultResponse(CreateGroupResponseDto)
-  async createNewGroup(@Request() req: FastifyRequest, @Body() dto: CreateGroupDto) {
+  async createNewGroup(
+    @Request() req: FastifyRequest,
+    @Body() dto: CreateGroupDto,
+  ) {
     const owner = req.user.userId;
     const grp = await this.groupService.createNewGroup({
       name: dto.name,
@@ -106,7 +114,13 @@ export class GroupController {
     // still succeeds for the owner and the rest.
     const { invited, skipped } = await this.writeInvites(
       owner,
-      { threadId: grp.threadId, groupUserId: grp.id, name: grp.name, avatar: grp.avatar, profileRev: 0 },
+      {
+        threadId: grp.threadId,
+        groupUserId: grp.id,
+        name: grp.name,
+        avatar: grp.avatar,
+        profileRev: 0,
+      },
       dto.inviteUserIds ?? [],
     );
     // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
@@ -125,9 +139,18 @@ export class GroupController {
    */
   private async writeInvites(
     inviter: number,
-    group: { threadId: number; groupUserId: number; name: string; avatar: string; profileRev: number },
+    group: {
+      threadId: number;
+      groupUserId: number;
+      name: string;
+      avatar: string;
+      profileRev: number;
+    },
     userIds: number[],
-  ): Promise<{ invited: number[]; skipped: { userId: number; reason: string }[] }> {
+  ): Promise<{
+    invited: number[];
+    skipped: { userId: number; reason: string }[];
+  }> {
     const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
     const skipped: { userId: number; reason: string }[] = [];
@@ -135,25 +158,40 @@ export class GroupController {
     // first federated invite mints it; for a purely-local group it is just the groupUser account). Both
     // resolve the invite cross-server via the @@unique-backed (toUser, thread) lookup.
     const [inviterRow, groupUserRow] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: inviter }, select: { account: true } }),
-      this.prisma.user.findUnique({ where: { id: group.groupUserId }, select: { account: true, domain: true } }),
+      this.prisma.user.findUnique({
+        where: { id: inviter },
+        select: { account: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: group.groupUserId },
+        select: { account: true, domain: true },
+      }),
     ]);
     const inviterAccount = inviterRow?.account;
     const groupAccount = groupUserRow?.account;
     if (!inviterAccount || !groupAccount) {
       // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
-      return { invited, skipped: deduped.map((userId) => ({ userId, reason: 'inviter or group missing' })) };
+      return {
+        invited,
+        skipped: deduped.map((userId) => ({
+          userId,
+          reason: 'inviter or group missing',
+        })),
+      };
     }
     // groupUser.domain: 'local' = we are the origin; <peer> = a federated mirror. The card carries the
     // group's home domain so it renders on BOTH the inviter's + invitee's side without a fetch
     // (/invite/detail is invitee-only — it 404s for the inviter's own copy of the card). The avatar path is
     // same-origin for a local group; a federated viewer's row falls back to a letter avatar and the dialog
     // resolves the authoritative localized avatar via /invite/detail(group).
-    const groupIsLocal = !groupUserRow?.domain || groupUserRow.domain === 'local';
+    const groupIsLocal =
+      !groupUserRow?.domain || groupUserRow.domain === 'local';
     const groupDomain = groupIsLocal
       ? this.federationService.ourDomain
       : (groupUserRow!.domain as string);
-    const targets = deduped.length ? await this.userService.queryUsers({ where: { id: { in: deduped } } }) : [];
+    const targets = deduped.length
+      ? await this.userService.queryUsers({ where: { id: { in: deduped } } })
+      : [];
     const byId = new Map(targets.map((u) => [u.id, u]));
     for (const userId of deduped) {
       const target = byId.get(userId);
@@ -162,7 +200,10 @@ export class GroupController {
         continue;
       }
       // The inviter's P2P thread with the target (shared for local; the inviter's mirror for federated).
-      const p2pThreadId = await this.participantService.findP2PThreadBetween(inviter, userId);
+      const p2pThreadId = await this.participantService.findP2PThreadBetween(
+        inviter,
+        userId,
+      );
       if (p2pThreadId === null) {
         skipped.push({ userId, reason: 'not a friend or no conversation' });
         continue;
@@ -182,7 +223,11 @@ export class GroupController {
           });
         } else {
           // Local: the Invite row the invitee will accept.
-          await this.inviteService.createGroupInvite(inviter, group.threadId, userId);
+          await this.inviteService.createGroupInvite(
+            inviter,
+            group.threadId,
+            userId,
+          );
         }
         // Card identity = accounts only (`from` = inviter account, `group` = the `!account`); the invitee
         // resolves + accepts by `group` (/invite/detail + /invite/accept take a group account). The display
@@ -226,8 +271,14 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @ResourceId<InviteGroupDto>('groupId')
   @Post('group/invite')
-  @ApiOperation({ summary: 'Invite friends to an existing group (Invite row + card per friend)' })
-  async inviteUsers(@Request() req: FastifyRequest, @Body() dto: InviteGroupDto) {
+  @ApiOperation({
+    summary:
+      'Invite friends to an existing group (Invite row + card per friend)',
+  })
+  async inviteUsers(
+    @Request() req: FastifyRequest,
+    @Body() dto: InviteGroupDto,
+  ) {
     const threadId = req.threadAccess!.threadId;
     const inviter = req.user.userId;
     // Load the group's `!`-User for name/avatar to embed in the invite cards.
@@ -252,16 +303,23 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
   @Post('group/sync-meta')
-  @ApiOperation({ summary: 'Refresh a federated group meta (roster + identity) if stale (chat-open hook)' })
+  @ApiOperation({
+    summary:
+      'Refresh a federated group meta (roster + identity) if stale (chat-open hook)',
+  })
   async syncGroupMeta(@Request() req: FastifyRequest): Promise<void> {
     // Chat-open hook: lazily pull the group meta from the origin when the mirror's revision is stale
     // (same shape as sync-peer-profile). A local group / when we are the origin is a no-op.
-    void this.federationService.syncGroupMetaIfStale(req.threadAccess!.threadId);
+    void this.federationService.syncGroupMetaIfStale(
+      req.threadAccess!.threadId,
+    );
     // Chat-open MESSAGE catch-up (the group twin of /user/sync-peer-profile's pull-on-open): if this is a
     // federated mirror, pull the whole thread from the origin NOW (force — bypass the receiver debounce) so
     // any hint dropped by the debounce / a transiently-lost push is recovered on open. Fire-and-forget so
     // opening never blocks on a slow origin; storePulledMessage SSE-fans the new messages. No-op for origin/local.
-    void this.federationService.syncGroupMessagesOnOpen(req.threadAccess!.threadId);
+    void this.federationService.syncGroupMessagesOnOpen(
+      req.threadAccess!.threadId,
+    );
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -300,8 +358,14 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/members')
-  @ApiOperation({ summary: 'Batch fetch group rosters (members only; caller membership filtered)' })
-  async getMembers(@Request() req: FastifyRequest, @Body() dto: GroupMembersBatchDto) {
+  @ApiOperation({
+    summary:
+      'Batch fetch group rosters (members only; caller membership filtered)',
+  })
+  async getMembers(
+    @Request() req: FastifyRequest,
+    @Body() dto: GroupMembersBatchDto,
+  ) {
     const me = req.user.userId;
     const rows = await this.participantService.getRosters(dto.threadIds);
     // Group by threadId; keep only threads where the caller is an active member (roster contains me).
@@ -342,24 +406,66 @@ export class GroupController {
   @Throttle(20, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ResourceId<GroupIdDto>('groupId')
+  @ResourceId<GroupTerminalActionDto>('groupId')
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
-  async leaveGroup(@Request() req: FastifyRequest, @Body() _dto: GroupIdDto): Promise<void> {
+  async leaveGroup(
+    @Request() req: FastifyRequest,
+    @Body() dto: GroupTerminalActionDto,
+  ): Promise<void> {
+    if (req.threadAccess!.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
     const threadId = req.threadAccess!.threadId;
     const { participant } = req.threadAccess!;
-    await this.groupService.leaveGroup({
+    const result = await this.groupService.leaveGroup({
       userId: req.user.userId,
       threadId,
       role: participant.role,
+      deleteData: dto.deleteData ?? false,
     });
     // Fans to all still-active members (= remaining after the soft-leave); the leaver is excluded.
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
+    if (result.transitioned) {
+      await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
+    }
     // Federation: if this is a MIRROR thread, nudge the origin so it discovers the leave (a normal per-author
     // hint → the origin pulls → this server answers HTTP 200 FEDERATION_GROUP_AUTHOR_LEFT → the origin
     // dissolves the leaver from its canonical roster). No-op for a local group / when we ARE the origin.
     // Best-effort + fire-and-forget (mirrors notifyOnSend on the send path).
-    void this.federationService.notifyGroupLeave(threadId, req.user.userId);
+    if (result.transitioned) {
+      void this.federationService.notifyGroupLeave(threadId, req.user.userId);
+    }
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @Throttle(10, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<GroupTerminalActionDto>('groupId')
+  @Post('group/dissolve')
+  @ApiOperation({ summary: 'Dissolve a group (owner only)' })
+  async dissolveGroup(
+    @Request() req: FastifyRequest,
+    @Body() dto: GroupTerminalActionDto,
+  ): Promise<void> {
+    // Kept outside RolesGuard so a retry after a lost success response stays idempotent even though
+    // RolesGuard rejects other mutations once dissolved. Ownership still comes from the guarded row.
+    if (req.threadAccess.participant.role !== GroupRole.OWNER) {
+      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
+    }
+    const threadId = req.threadAccess!.threadId;
+    const result = await this.groupService.dissolveGroup({
+      threadId,
+      deleteForUserId: dto.deleteData ? req.user.userId : undefined,
+    });
+    if (result.transitioned) {
+      await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {
+        dissolved: true,
+      });
+    }
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -370,20 +476,25 @@ export class GroupController {
   @ResourceId<KickGroupDto>('groupId')
   @Post('group/kick')
   @ApiOperation({ summary: 'Kick a member (owner/admin, must outrank target)' })
-  async kickMember(@Request() req: FastifyRequest, @Body() dto: KickGroupDto): Promise<void> {
+  async kickMember(
+    @Request() req: FastifyRequest,
+    @Body() dto: KickGroupDto,
+  ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     const { participant } = req.threadAccess!;
-    await this.groupService.kickMember({
+    const result = await this.groupService.kickMember({
       threadId,
       operatorRole: participant.role as GroupRole,
       targetUserId: dto.userId,
     });
-    await this.fanoutGroup(
-      threadId,
-      GROUP_SSE.GROUP_ROSTER_UPDATED,
-      {},
-      [dto.userId], // the kicked user may no longer be "active" after the soft-leave
-    );
+    if (result.transitioned) {
+      await this.fanoutGroup(
+        threadId,
+        GROUP_SSE.GROUP_ROSTER_UPDATED,
+        {},
+        [dto.userId], // the kicked user may no longer be "active" after the soft-leave
+      );
+    }
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -394,7 +505,10 @@ export class GroupController {
   @ResourceId<TransferGroupDto>('groupId')
   @Post('group/transfer')
   @ApiOperation({ summary: 'Transfer ownership to a member (owner only)' })
-  async transferOwnership(@Request() req: FastifyRequest, @Body() dto: TransferGroupDto): Promise<void> {
+  async transferOwnership(
+    @Request() req: FastifyRequest,
+    @Body() dto: TransferGroupDto,
+  ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     await this.groupService.transferOwnership({
       threadId,
@@ -414,7 +528,10 @@ export class GroupController {
   @ResourceId<SetRoleGroupDto>('groupId')
   @Post('group/set-role')
   @ApiOperation({ summary: "Set a member's role to ADMIN/MEMBER (owner only)" })
-  async setRole(@Request() req: FastifyRequest, @Body() dto: SetRoleGroupDto): Promise<void> {
+  async setRole(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetRoleGroupDto,
+  ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     await this.groupService.setRole({
       threadId,
@@ -433,7 +550,10 @@ export class GroupController {
   @ResourceId<UpdateGroupDto>('groupId')
   @Post('group/update')
   @ApiOperation({ summary: 'Update group name/avatar (admin+)' })
-  async updateGroup(@Request() req: FastifyRequest, @Body() dto: UpdateGroupDto): Promise<void> {
+  async updateGroup(
+    @Request() req: FastifyRequest,
+    @Body() dto: UpdateGroupDto,
+  ): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     await this.groupService.updateGroup({
       threadId,

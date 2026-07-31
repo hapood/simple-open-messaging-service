@@ -35,11 +35,13 @@ export class ConversationListService {
   private readonly userService = inject(UserService);
   private readonly groupService = inject(GroupService);
 
-  /** Pending mark-read per thread. The message viewport owns the 500ms dwell; this layer sends immediately
-   *  after that stable commit, but keeps one request in flight per thread and folds later commits to MAX. */
+  /** Viewport-dwelled HWM pending until the conversation closes; later positions fold to MAX. */
   private readonly pendingMarkRead = new Map<number, number>();
   private readonly markReadInFlight = new Set<number>();
-  private readonly unreadEntryBoundaries = new Map<number, UnreadEntryBoundary>();
+  private readonly unreadEntryBoundaries = new Map<
+    number,
+    UnreadEntryBoundary
+  >();
 
   constructor() {}
 
@@ -51,17 +53,23 @@ export class ConversationListService {
     if (seq === undefined) return;
     this.pendingMarkRead.delete(threadId);
     this.markReadInFlight.add(threadId);
-    this.userService.markRead({ threadId, lastReadSeq: seq }).subscribe({
+    this.repo.beginReadCommit(threadId);
+    this.userService.markRead({ threadId, localReadHwm: seq }).subscribe({
+      next: (res) => {
+        if (res.code === 0 && res.data) this.repo.applyReadState(res.data);
+      },
       error: () => {
         this.markReadInFlight.delete(threadId);
         this.pendingMarkRead.set(
           threadId,
           Math.max(this.pendingMarkRead.get(threadId) ?? -1, seq),
         );
+        this.repo.finishReadCommit(threadId);
       },
       complete: () => {
         this.markReadInFlight.delete(threadId);
-        this.flushMarkRead(threadId);
+        if (this.pendingMarkRead.has(threadId)) this.flushMarkRead(threadId);
+        else this.repo.finishReadCommit(threadId);
       },
     });
   }
@@ -75,6 +83,7 @@ export class ConversationListService {
   readonly status = this.repo.status;
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;
+  readonly readCommitPending = this.repo.readCommitPending;
   readonly topInserted = this.repo.topInserted;
   /** The persisted high-water mark (the away-notification `since`). A METHOD delegator, NOT a `readonly =`
    *  field like the signal delegations above — the repo exposes `missedCursor` as a method (not a bound
@@ -117,7 +126,10 @@ export class ConversationListService {
   open(threadId: number) {
     const prev = this.repo.openThreadId();
     if (threadId === prev) return;
-    if (prev !== undefined) this.unreadEntryBoundaries.delete(prev);
+    if (prev !== undefined) {
+      this.flushMarkRead(prev);
+      this.unreadEntryBoundaries.delete(prev);
+    }
     const item = this.repo.items().find((t) => t.threadId === threadId);
     const latestSeq = item?.lastMessageSeq;
     const unreadCount = item?.unreadCount ?? 0;
@@ -125,12 +137,10 @@ export class ConversationListService {
       const cursor = this.repo.readCursorState(threadId);
       const effectiveLastReadSeq =
         cursor.effectiveLastReadSeq ?? item?.lastReadSeq ?? null;
-      // Both terms normally agree (thread seq is contiguous). The count-derived floor also survives a
-      // per-user cleared-history boundary where the earliest visible message may be newer than seq 0.
-      const firstUnreadSeq = Math.max(
-        effectiveLastReadSeq === null ? 0 : effectiveLastReadSeq + 1,
-        latestSeq - unreadCount + 1,
-      );
+      // unreadCount is capped and excludes the caller's own messages, so it cannot locate the boundary.
+      // The read HWM is the sole boundary authority; the scroller repairs a cleared-history miss.
+      const firstUnreadSeq =
+        effectiveLastReadSeq === null ? 0 : effectiveLastReadSeq + 1;
       if (firstUnreadSeq <= latestSeq) {
         this.unreadEntryBoundaries.set(threadId, {
           threadId,
@@ -164,6 +174,7 @@ export class ConversationListService {
    *  candidate lives only in MessageThread and is deliberately not flushed by navigation. */
   close() {
     const threadId = this.repo.openThreadId();
+    if (threadId !== undefined) this.flushMarkRead(threadId);
     this.repo.setOpenThread(undefined);
     if (threadId !== undefined) this.unreadEntryBoundaries.delete(threadId);
   }
@@ -173,9 +184,7 @@ export class ConversationListService {
     return this.unreadEntryBoundaries.get(threadId);
   }
 
-  /** Commit a read position only after the message viewport has remained stable for its dwell window.
-   *  Repeated/older positions are ignored; newer positions are persisted locally first, then coalesced into
-   *  the existing bounded mark-read writer. */
+  /** Record a stable viewport HWM locally. It is sent only when this conversation closes/switches. */
   markReadStable(threadId: number, seq: number): void {
     if (this.repo.commitLocalRead(threadId, seq)) {
       this.pendingMarkRead.set(
@@ -183,7 +192,6 @@ export class ConversationListService {
         Math.max(this.pendingMarkRead.get(threadId) ?? -1, seq),
       );
     }
-    this.flushMarkRead(threadId);
   }
 
   // ── delegated data mutations (the repo owns IDB write-through + SSE-derived ordering) ──
@@ -207,6 +215,8 @@ export class ConversationListService {
       pinnedAt?: number | null;
       clearedAt?: number | null;
       blocked?: boolean;
+      friendshipActive?: boolean;
+      conversationState?: 'ACTIVE' | 'READ_ONLY';
       alias?: string | null;
     },
   ): void {
@@ -219,7 +229,15 @@ export class ConversationListService {
   }
 
   /** Apply a rename / avatar / description change from a GROUP_UPDATED event. */
-  applyGroupUpdate(threadId: number, patch: { name?: string; description?: string; avatar?: string }): void {
+  applyGroupUpdate(
+    threadId: number,
+    patch: {
+      name?: string;
+      description?: string;
+      avatar?: string;
+      dissolvedAt?: number | null;
+    },
+  ): void {
     this.repo.applyGroupUpdate(threadId, patch);
   }
 
@@ -229,7 +247,7 @@ export class ConversationListService {
   }
 
   /** Drop a thread (self-kick / self-left / unfriend). */
-  removeThread(threadId: number): void {
-    this.repo.removeThread(threadId);
+  removeThread(threadId: number): Promise<void> {
+    return this.repo.removeThread(threadId);
   }
 }

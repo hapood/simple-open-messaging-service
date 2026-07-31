@@ -1,12 +1,24 @@
 <div class="panel">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
-        [style]="{width:'32px',height:'32px'}"></app-icon></button>
+    <button
+      class="icon-btn"
+      (click)="goBack()"
+      [attr.aria-label]="'common.back' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.BACK"
+        [style]="{ width: '32px', height: '32px' }"
+      ></app-icon>
+    </button>
     <span class="title">{{ 'group.title' | transloco }}</span>
-    @if (isAdmin() && !editing()) {
-      <button mat-button (click)="beginEdit()">{{ 'common.edit' | transloco }}</button>
+    @if (isAdmin() && !readOnly() && !editing()) {
+      <button mat-button (click)="beginEdit()">
+        {{ 'common.edit' | transloco }}
+      </button>
     } @else if (editing()) {
-      <button mat-button (click)="cancelEdit()">{{ 'common.cancel' | transloco }}</button>
+      <button mat-button (click)="cancelEdit()">
+        {{ 'common.cancel' | transloco }}
+      </button>
     } @else {
       <span></span>
     }
@@ -17,16 +29,45 @@
     <div class="identity">
       @if (editing()) {
         <label class="avatar-edit">
-          <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [identityId]="group()?.id" [src]="avatarUrl()"></app-user-avatar>
-          <span class="avatar-hint">{{ 'group.changeAvatarHint' | transloco }}</span>
-          <input type="file" accept="image/*" hidden (change)="pickAvatar($any($event.target))" />
+          <app-user-avatar
+            [type]="UserAvatarType.GROUP"
+            name="?"
+            [identityId]="group()?.id"
+            [src]="avatarUrl()"
+          ></app-user-avatar>
+          <span class="avatar-hint">{{
+            'group.changeAvatarHint' | transloco
+          }}</span>
+          <input
+            type="file"
+            accept="image/*"
+            hidden
+            (change)="pickAvatar($any($event.target))"
+          />
         </label>
-        <input class="name-input" [ngModel]="nameEdit()" (ngModelChange)="nameEdit.set($event)"
-          maxlength="31" [placeholder]="'group.groupNamePlaceholder' | transloco" (keydown.enter)="saveEdit()" />
-        <textarea class="desc-input" rows="2" [maxlength]="DESC_MAX" [ngModel]="descEdit()"
-          (ngModelChange)="descEdit.set($event)" [placeholder]="'group.groupDescPlaceholder' | transloco"></textarea>
+        <input
+          class="name-input"
+          [ngModel]="nameEdit()"
+          (ngModelChange)="nameEdit.set($event)"
+          maxlength="31"
+          [placeholder]="'group.groupNamePlaceholder' | transloco"
+          (keydown.enter)="saveEdit()"
+        />
+        <textarea
+          class="desc-input"
+          rows="2"
+          [maxlength]="DESC_MAX"
+          [ngModel]="descEdit()"
+          (ngModelChange)="descEdit.set($event)"
+          [placeholder]="'group.groupDescPlaceholder' | transloco"
+        ></textarea>
       } @else {
-        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="group()?.name ?? ''" [identityId]="group()?.id" [src]="avatarUrl()"></app-user-avatar>
+        <app-user-avatar
+          [type]="UserAvatarType.GROUP"
+          [name]="group()?.name ?? ''"
+          [identityId]="group()?.id"
+          [src]="avatarUrl()"
+        ></app-user-avatar>
         <div class="name">{{ group()?.name }}</div>
         @if (group()?.description) {
           <div class="group-desc">{{ group()?.description }}</div>
@@ -35,7 +76,14 @@
     </div>
     @if (editing()) {
       <div class="edit-actions">
-        <button mat-flat-button color="primary" [disabled]="busy() || !nameEdit().trim()" (click)="saveEdit()">{{ 'common.save' | transloco }}</button>
+        <button
+          mat-flat-button
+          color="primary"
+          [disabled]="busy() || !nameEdit().trim()"
+          (click)="saveEdit()"
+        >
+          {{ 'common.save' | transloco }}
+        </button>
       </div>
     }
 
@@ -46,39 +94,97 @@
     }
 
     <!-- Roster -->
-    <div class="section-label">{{ 'group.members' | transloco:{ count: roster().length } }}</div>
+    <div class="section-label">
+      {{ 'group.members' | transloco: { count: roster().length } }}
+    </div>
     @if (loading()) {
       <div class="muted center">{{ 'common.loading' | transloco }}</div>
     } @else {
       @for (m of roster(); track m.userId) {
         <div class="member">
           <div class="member-main">
-            <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.name" [identityId]="m.userId" [src]="m.avatar"></app-user-avatar>
+            <app-user-avatar
+              [type]="UserAvatarType.OTHER"
+              [name]="m.name"
+              [identityId]="m.userId"
+              [src]="m.avatar"
+            ></app-user-avatar>
             <div class="member-info">
-              <span class="member-name">{{ m.name }}@if (m.userId === myUserId()) { {{ 'common.you' | transloco }}}</span>
+              <span class="member-name"
+                >{{ m.name }}
+                @if (m.userId === myUserId()) {
+                  {{ 'common.you' | transloco }}
+                }
+              </span>
               @if (m.domain) {
                 <app-federated-badge [domain]="m.domain"></app-federated-badge>
               }
-              <span class="role-badge" [class.owner]="m.role === 'OWNER'" [class.admin]="m.role === 'ADMIN'">{{ roleName(m.role) }}</span>
+              <span
+                class="role-badge"
+                [class.owner]="m.role === 'OWNER'"
+                [class.admin]="m.role === 'ADMIN'"
+                >{{ roleName(m.role) }}</span
+              >
             </div>
           </div>
-          @if (canActOn(m)) {
-            <button class="more-btn" [class.active]="openMenuFor() === m.userId" (click)="toggleMenu(m.userId)" [attr.aria-label]="'group.actionsAria' | transloco">⋯</button>
+          @if (!readOnly() && canActOn(m)) {
+            <button
+              class="more-btn"
+              [class.active]="openMenuFor() === m.userId"
+              (click)="toggleMenu(m.userId)"
+              [attr.aria-label]="'group.actionsAria' | transloco"
+            >
+              ⋯
+            </button>
           }
         </div>
         @if (openMenuFor() === m.userId) {
           <div class="action-sheet">
             @if (confirmAction()?.userId === m.userId) {
               <div class="confirm-row">
-                <span>{{ 'group.confirmPrompt' | transloco:{ action: actionLabel(confirmAction()!.action), name: m.name } }}</span>
-                <button mat-stroked-button (click)="cancelConfirm()">{{ 'common.cancel' | transloco }}</button>
-                <button mat-flat-button color="warn" [disabled]="busy()" (click)="doConfirm()">{{ 'common.confirm' | transloco }}</button>
+                <span>{{
+                  'group.confirmPrompt'
+                    | transloco
+                      : {
+                          action: actionLabel(confirmAction()!.action),
+                          name: m.name,
+                        }
+                }}</span>
+                <button mat-stroked-button (click)="cancelConfirm()">
+                  {{ 'common.cancel' | transloco }}
+                </button>
+                <button
+                  mat-flat-button
+                  color="warn"
+                  [disabled]="busy()"
+                  (click)="doConfirm()"
+                >
+                  {{ 'common.confirm' | transloco }}
+                </button>
               </div>
             } @else {
               @if (isOwner() && m.role !== 'OWNER') {
-                <button mat-stroked-button (click)="doSetRole(m)">{{ 'group.makeRole' | transloco:{ role: roleName(toggleRoleLabel(m)) } }}</button>
-                <button mat-stroked-button [disabled]="busy()" (click)="askTransfer(m)">{{ 'group.makeOwner' | transloco }}</button>
-                <button mat-stroked-button color="warn" [disabled]="busy()" (click)="askKick(m)">{{ 'group.kick' | transloco }}</button>
+                <button mat-stroked-button (click)="doSetRole(m)">
+                  {{
+                    'group.makeRole'
+                      | transloco: { role: roleName(toggleRoleLabel(m)) }
+                  }}
+                </button>
+                <button
+                  mat-stroked-button
+                  [disabled]="busy()"
+                  (click)="askTransfer(m)"
+                >
+                  {{ 'group.makeOwner' | transloco }}
+                </button>
+                <button
+                  mat-stroked-button
+                  color="warn"
+                  [disabled]="busy()"
+                  (click)="askKick(m)"
+                >
+                  {{ 'group.kick' | transloco }}
+                </button>
               }
             }
           </div>
@@ -87,28 +193,70 @@
     }
 
     <!-- Add members -->
-    @if (showInvite()) {
+    @if (!readOnly() && showInvite()) {
       <div class="invite-pane">
-        <div class="section-label">{{ 'group.addMembers' | transloco }}</div>
-        <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
+        <div class="section-label">{{ 'group.inviteMembers' | transloco }}</div>
+        <app-user-list
+          (onSelect)="onTrdSelect($event)"
+          [selectedDict]="selectedDict()"
+          [excludedUserIds]="existingMemberIds()"
+        />
         <div class="invite-actions">
-          <button mat-button (click)="showInvite.set(false)">{{ 'common.cancel' | transloco }}</button>
-          <button mat-flat-button color="primary" [disabled]="busy() || selectedList().length === 0"
-            (click)="invite()">{{ 'group.invite' | transloco:{ count: selectedList().length } }}</button>
+          <button mat-button (click)="showInvite.set(false)">
+            {{ 'common.cancel' | transloco }}
+          </button>
+          <button
+            mat-flat-button
+            color="primary"
+            [disabled]="busy() || selectedList().length === 0"
+            (click)="invite()"
+          >
+            {{ 'group.invite' | transloco: { count: selectedList().length } }}
+          </button>
         </div>
       </div>
-    } @else {
+    } @else if (!readOnly()) {
       <button class="add-members" (click)="showInvite.set(true)">
-        <span class="plus">＋</span> {{ 'group.addMembers' | transloco }}
+        <span class="plus">＋</span> {{ 'group.inviteMembers' | transloco }}
       </button>
     }
 
     <!-- Leave -->
-    <button mat-button color="warn" class="leave-btn" [disabled]="busy()" (click)="leave()">
-      @if (isOwner()) { {{ 'group.leaveOwnerHint' | transloco }} } @else { {{ 'group.leave' | transloco }} }
-    </button>
-    @if (isOwner()) {
-      <div class="muted center hint">{{ 'group.leaveOwnerNote' | transloco }}</div>
+    @if (!readOnly()) {
+      <button
+        mat-button
+        color="warn"
+        class="leave-btn"
+        [disabled]="busy() || !canLeave()"
+        (click)="confirmLeave()"
+      >
+        {{ 'group.leave' | transloco }}
+      </button>
+    }
+    @if (!readOnly() && isOwner() && !canLeave()) {
+      <div class="muted center hint">
+        {{ 'group.leaveOwnerNote' | transloco }}
+      </div>
+    }
+    @if (!readOnly() && isOwner()) {
+      <button
+        mat-button
+        color="warn"
+        class="leave-btn"
+        [disabled]="busy()"
+        (click)="confirmDissolveAction()"
+      >
+        {{ 'group.dissolve' | transloco }}
+      </button>
+    }
+    @if (dissolved()) {
+      <div class="muted center hint">
+        {{ 'group.dissolvedNote' | transloco }}
+      </div>
+    } @else if (readOnly()) {
+      <div class="muted center hint">
+        {{ 'chat.leftGroupBanner' | transloco }}
+      </div>
     }
   </div>
 </div>

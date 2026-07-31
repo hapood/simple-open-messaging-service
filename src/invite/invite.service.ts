@@ -447,6 +447,16 @@ export class InviteService {
             'group invite has no target thread',
           );
         }
+        const groupState = await tx.messageThread.findUnique({
+          where: { id: invite.threadId },
+          select: { groupUser: { select: { group: { select: { dissolvedAt: true } } } } },
+        });
+        if (groupState?.groupUser?.group?.dissolvedAt != null) {
+          throw new BusinessException(
+            BusinessCode.GROUP_DISSOLVED,
+            'group has been dissolved',
+          );
+        }
         // NOTE: upsertMemberInTx(tx, threadId, userId, role) — threadId FIRST. (A swapped-arg bug here left
         // the group accept marking the Invite ACCEPTED but never adding the joiner to the mirror thread.)
         await this.participantService.upsertMemberInTx(

@@ -18,10 +18,8 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
  * carries no hard-coded field name: a DTO rename is a compile error at the use site, not a silent
  * drift. This mirrors the codebase's existing `RolesGuard` + `@Roles()` authorization convention.
  *
- * Resolves the caller's ACTIVE ThreadParticipant and rejects with THREAD_NOT_FOUND when they have no
- * live membership, then attaches both to `req.threadAccess` so the controller reads them without
- * re-querying. This is the single authorization check shared by every message-route handler
- * (send / query / mark-read), lifted out of the inline `findActiveParticipant` blocks.
+ * Resolves a history-readable ThreadParticipant. GROUP requires live membership; P2P retains read access
+ * after unfriend and exposes `friendshipActive=false` so write handlers can reject it.
  *
  * Both "thread does not exist" and "exists but caller is not an active member" collapse to the same
  * THREAD_NOT_FOUND outcome — deliberately non-leaking (a non-member cannot tell the thread exists).
@@ -60,10 +58,11 @@ export class ThreadAccessGuard implements CanActivate {
       field,
     );
 
-    const participant = await this.participantService.findActiveParticipantWithThread(
-      userId,
-      threadId,
-    );
+    const participant =
+      await this.participantService.findActiveParticipantWithThread(
+        userId,
+        threadId,
+      );
     if (participant === null) {
       throw new BusinessException(
         BusinessCode.THREAD_NOT_FOUND,
@@ -75,6 +74,9 @@ export class ThreadAccessGuard implements CanActivate {
       threadId,
       threadType: participant.thread.type,
       participant,
+      friendshipActive: participant.leftAt === null,
+      membershipActive: participant.leftAt === null,
+      groupDissolved: participant.thread.groupUser?.group?.dissolvedAt != null,
     };
     return true;
   }

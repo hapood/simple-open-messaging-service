@@ -1,0 +1,50 @@
+<section
+  class="forward-viewer"
+  role="dialog"
+  aria-modal="true"
+  [attr.aria-label]="'forward.chatHistory' | transloco"
+>
+  <header class="msg-header">
+    <button
+      class="icon-btn"
+      type="button"
+      (click)="back()"
+      [attr.aria-label]="'common.back' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.BACK"
+        [style]="{ width: '32px', height: '32px' }"
+      ></app-icon>
+    </button>
+    <span class="title">
+      {{ 'forward.chatHistory' | transloco }}
+      @if (currentLevel() > 1) {
+        <span class="level">
+          {{ 'forward.nestedLevel' | transloco: { level: currentLevel() } }}
+        </span>
+      }
+    </span>
+    <span class="header-spacer" aria-hidden="true"></span>
+  </header>
+
+  @if (loading()) {
+    <div class="forward-state">{{ 'common.loading' | transloco }}</div>
+  } @else if (failed()) {
+    <div class="forward-state">
+      <p>{{ 'forward.loadFailed' | transloco }}</p>
+      <button type="button" (click)="load()">
+        {{ 'common.retry' | transloco }}
+      </button>
+    </div>
+  } @else {
+    <div
+      class="msg-viewport"
+      #viewport
+      tabindex="0"
+      role="region"
+      [attr.aria-label]="'chat.messageListAria' | transloco"
+    >
+      <div class="msg-content" #content role="list"></div>
+    </div>
+  }
+</section>

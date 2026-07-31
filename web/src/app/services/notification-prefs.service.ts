@@ -13,7 +13,7 @@ const PREVIEW_MODE_KEY = 'notificationPreviewMode';
  * each pref domain owns its own wrapper, with a try/catch for private mode).
  *
  * These are DEVICE-level (like theme/language): they survive logout. `UserService.clearSession()` only
- * wipes user-scoped keys (`soms.chatFolders`, `soms.chat.emojiRecents`), so these are preserved.
+ * wipes user-scoped keys such as `soms.chat.emojiRecents`, so these are preserved.
  *
  *  - `enabled` — app-level master for posting the system notification. When `false`, no notification is
  *    created even if the browser permission is `'granted'`. The browser permission itself is terminal
