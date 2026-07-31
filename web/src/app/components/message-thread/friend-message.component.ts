@@ -74,6 +74,7 @@ import {
 } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
+import { InputDeviceService } from '../../services/input-device.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
@@ -108,7 +109,11 @@ import { ThemeService } from '../../services/theme.service';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
-import { fileExt, type FileCategory } from '../message-cards/file-meta.util';
+import {
+  categorizeFilename,
+  fileExt,
+  type FileCategory,
+} from '../message-cards/file-meta.util';
 import { PopupType, RouteService } from '../../services/route.service';
 import { GroupService } from '../../services/group.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
@@ -122,6 +127,27 @@ import {
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
 import { messageOpenOptions } from './message-open-position';
+import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
+
+type PreparedWebAttachment =
+  | {
+      file: File;
+      cid: string;
+      kind: 'image';
+      probeMeta: () => Promise<{ w: number; h: number }>;
+    }
+  | {
+      file: File;
+      cid: string;
+      kind: 'video';
+      probeMeta: () => Promise<{ w: number; h: number; duration: number }>;
+    }
+  | {
+      file: File;
+      cid: string;
+      kind: 'file';
+      probeMeta: null;
+    };
 
 let nativeComposerContextSequence = Date.now() * 1000;
 
@@ -194,6 +220,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly profileRepo = inject(ProfileRepository);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
+  readonly inputDevice = inject(InputDeviceService);
   private readonly galleryViewer = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
   private readonly nav = inject(NavStateMachineService);
@@ -257,6 +284,15 @@ export class MessageThreadComponent implements OnDestroy {
   /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Used only to
    *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
   readonly initialLoading = signal(true);
+  readonly selectionMode = signal(false);
+  readonly selectedMessageIds = signal<ReadonlySet<number>>(new Set());
+  readonly selectedCount = computed(() => this.selectedMessageIds().size);
+  private readonly selectedMessageItems = new Map<number, CbItem<ChatItemData>>();
+  readonly messageContextMenu = signal<{
+    item: CbItem<ChatItemData>;
+    x: number;
+    y: number;
+  } | null>(null);
 
   /** True when the kernel's mounted window is empty — the thread is open but has no messages (a fresh P2P
    *  friendship, a newly-created group, or after clear-history). Maintained from onScroll's `mounted` count:
@@ -296,8 +332,8 @@ export class MessageThreadComponent implements OnDestroy {
           task.status === 'uploading',
       );
   });
-  /** Pending attachments shown in the aggregate send box. Completed tasks leave this view as soon as
-   * their real message arrives, preventing the box and a standalone message from showing the same file. */
+  /** Only actively uploading attachments are shown in the aggregate send box. A completed upload leaves
+   * immediately; when the last upload completes Angular removes the whole tail-cap card. */
   readonly sendingTransfers = computed(() => {
     const threadId = this.threadId();
     return this.transfers
@@ -306,7 +342,7 @@ export class MessageThreadComponent implements OnDestroy {
         (task) =>
           task.threadId === threadId &&
           task.kind !== 'audio' &&
-          (task.status === 'uploading' || task.status === 'completed'),
+          task.status === 'uploading',
       );
   });
   readonly failedTransfers = computed(() => {
@@ -320,6 +356,9 @@ export class MessageThreadComponent implements OnDestroy {
           task.status === 'failed',
       );
   });
+  readonly retryableFailedTransfers = computed(() =>
+    this.failedTransfers().filter((task) => task.retryable !== false),
+  );
   /** The per-thread queue uploads attachments serially. Highlight only the task currently moving bytes;
    * before its first progress event, the first queued task is the active one. */
   readonly currentUploadingTransferId = computed(() => {
@@ -341,16 +380,8 @@ export class MessageThreadComponent implements OnDestroy {
       : tasks;
   });
   readonly transferExt = (name: string): string => fileExt(name);
-  readonly transferCategory = (name: string): FileCategory => {
-    const ext = fileExt(name).toLowerCase();
-    if (ext === 'pdf') return 'pdf';
-    if (['doc', 'docx', 'rtf'].includes(ext)) return 'doc';
-    if (['xls', 'xlsx', 'csv'].includes(ext)) return 'sheet';
-    if (['ppt', 'pptx'].includes(ext)) return 'slides';
-    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
-    if (['txt', 'md', 'json', 'xml', 'log'].includes(ext)) return 'text';
-    return 'file';
-  };
+  readonly transferCategory = (name: string): FileCategory =>
+    categorizeFilename(name);
   readonly transferProgress = (loaded: number, size: number): number =>
     size > 0
       ? Math.min(100, Math.max(0, Math.round((loaded / size) * 100)))
@@ -367,16 +398,6 @@ export class MessageThreadComponent implements OnDestroy {
   readonly uploadCountLabel = computed(() => {
     return String(this.sendingTransfers().length);
   });
-  readonly uploadBytesLabel = computed(() => {
-    const tasks = this.sendingTransfers();
-    const loaded = tasks.reduce(
-      (sum, task) => sum + Math.min(Math.max(0, task.loaded), task.size),
-      0,
-    );
-    const total = tasks.reduce((sum, task) => sum + Math.max(0, task.size), 0);
-    return `${formatTransferBytes(loaded)} / ${formatTransferBytes(total)}`;
-  });
-
   /** Hero-card content for the empty-thread placeholder. P2P shows the peer; GROUP shows the group. The name
    *  reuses displayThreadName (alias-aware) and the avatar reuses the same IDB-backed identity the conversation
    *  list uses, so an alias / cached avatar renders identically here and in the list. */
@@ -494,7 +515,8 @@ export class MessageThreadComponent implements OnDestroy {
         threadId !== undefined &&
         !this.initialLoading() &&
         !this.blockedPeer() &&
-        !this.nativeComposerOccluded();
+        !this.nativeComposerOccluded() &&
+        !this.selectionMode();
       if (!shouldShow) {
         this.hideNativeComposer();
         return;
@@ -918,7 +940,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.firstUnreadSeq !== null &&
       (item.id === this.firstUnreadSeq ||
         item.ids?.includes(this.firstUnreadSeq) === true);
-    return createMsgCbElement(
+    const rendered = createMsgCbElement(
       item,
       isShowHead,
       isGroupStart,
@@ -932,7 +954,248 @@ export class MessageThreadComponent implements OnDestroy {
       isUnreadStart
         ? String(this.transloco.translate('chat.unreadDivider'))
         : undefined,
+      (event, selectedItem, pointer, memberId) =>
+        this.onMessageInteraction(event, selectedItem, pointer, memberId),
     );
+    const selection = this.messageSelectionState(item);
+    rendered.el.classList.toggle('cb-message--selection-mode', this.selectionMode());
+    rendered.el.classList.toggle('cb-message--selected', selection === 'all');
+    rendered.el.classList.toggle('cb-message--partially-selected', selection === 'some');
+    rendered.el.setAttribute('aria-selected', String(selection === 'all'));
+    rendered.el
+      .querySelectorAll<HTMLElement>('[data-media-message-id]')
+      .forEach((cell) => {
+        const memberId = Number(cell.dataset['mediaMessageId']);
+        cell.classList.toggle(
+          'msg-media-cell--selected',
+          this.selectionMode() && this.selectedMessageIds().has(memberId),
+        );
+      });
+    return rendered;
+  }
+
+  private onMessageInteraction(
+    event: 'activate' | 'contextmenu',
+    item: CbItem<ChatItemData>,
+    pointer?: { x: number; y: number },
+    memberId?: number,
+  ): void {
+    if (event === 'contextmenu' && this.inputDevice.hasPhysicalKeyboard()) {
+      const menuWidth = 192;
+      const menuHeight = 132;
+      const viewportInset = 8;
+      this.messageContextMenu.set({
+        item,
+        x: Math.max(
+          viewportInset,
+          Math.min(
+            pointer?.x ?? viewportInset,
+            window.innerWidth - menuWidth - viewportInset,
+          ),
+        ),
+        y: Math.max(
+          viewportInset,
+          Math.min(
+            pointer?.y ?? viewportInset,
+            window.innerHeight - menuHeight - viewportInset,
+          ),
+        ),
+      });
+      this.syncMountedSelectionState();
+      return;
+    }
+    this.messageContextMenu.set(null);
+    if (!this.selectionMode()) this.selectionMode.set(true);
+    if (memberId !== undefined) this.toggleAlbumMemberSelection(item, memberId);
+    else this.toggleMessageSelection(item);
+  }
+
+  selectContextMessage(): void {
+    const context = this.messageContextMenu();
+    if (!context) return;
+    this.messageContextMenu.set(null);
+    this.selectionMode.set(true);
+    if (this.messageSelectionState(context.item) !== 'all')
+      this.toggleMessageSelection(context.item);
+  }
+
+  dismissContextMenu(): void {
+    this.messageContextMenu.set(null);
+    this.syncMountedSelectionState();
+  }
+
+  dismissContextMenuOnOutside(event: PointerEvent): void {
+    if (
+      !this.messageContextMenu() ||
+      (event.target instanceof Element &&
+        event.target.closest('.msg-context-menu'))
+    )
+      return;
+    this.dismissContextMenu();
+  }
+
+  exitSelectionMode(): void {
+    this.selectionMode.set(false);
+    this.selectedMessageIds.set(new Set());
+    this.selectedMessageItems.clear();
+    this.syncMountedSelectionState();
+  }
+
+  private toggleMessageSelection(item: CbItem<ChatItemData>): void {
+    const memberIds = this.messageMemberIds(item);
+    const next = new Set(this.selectedMessageIds());
+    const remove = memberIds.every((id) => next.has(id));
+    for (const id of memberIds) {
+      if (remove) {
+        next.delete(id);
+        this.selectedMessageItems.delete(id);
+      } else {
+        next.add(id);
+        this.selectedMessageItems.set(id, this.albumMemberItem(item, id));
+      }
+    }
+    this.selectedMessageIds.set(next);
+    this.syncMountedSelectionState();
+  }
+
+  private toggleAlbumMemberSelection(
+    item: CbItem<ChatItemData>,
+    memberId: number,
+  ): void {
+    if (!this.messageMemberIds(item).includes(memberId)) return;
+    const next = new Set(this.selectedMessageIds());
+    if (next.has(memberId)) {
+      next.delete(memberId);
+      this.selectedMessageItems.delete(memberId);
+    } else {
+      next.add(memberId);
+      this.selectedMessageItems.set(
+        memberId,
+        this.albumMemberItem(item, memberId),
+      );
+    }
+    this.selectedMessageIds.set(next);
+    this.syncMountedSelectionState();
+  }
+
+  private messageMemberIds(item: CbItem<ChatItemData>): number[] {
+    if ((item.ids?.length ?? 0) > 1) return [...item.ids!];
+    return [item.id];
+  }
+
+  private messageSelectionState(
+    item: CbItem<ChatItemData>,
+  ): 'none' | 'some' | 'all' {
+    const ids = this.messageMemberIds(item);
+    const count = ids.filter((id) => this.selectedMessageIds().has(id)).length;
+    return count === 0 ? 'none' : count === ids.length ? 'all' : 'some';
+  }
+
+  private albumMemberItem(
+    item: CbItem<ChatItemData>,
+    memberId: number,
+  ): CbItem<ChatItemData> {
+    if ((item.ids?.length ?? 0) < 2) return item;
+    const media = item.data.images?.find((entry) => entry.msgId === memberId);
+    return {
+      ...item,
+      id: memberId,
+      ids: undefined,
+      data: {
+        ...item.data,
+        msgId: memberId,
+        images: media ? [media] : item.data.images,
+      },
+    };
+  }
+
+  openContextForwardDialog(): void {
+    const context = this.messageContextMenu();
+    if (!context) return;
+    this.messageContextMenu.set(null);
+    this.openForwardDialog([context.item]);
+  }
+
+  openSelectedForwardDialog(): void {
+    const items = [...this.selectedMessageIds()]
+      .map((id) => this.selectedMessageItems.get(id))
+      .filter((item): item is CbItem<ChatItemData> => item !== undefined);
+    if (items.length) this.openForwardDialog(items);
+  }
+
+  private openForwardDialog(items: readonly CbItem<ChatItemData>[]): void {
+    const messages = items
+      .slice()
+      .sort((a, b) => a.data.createdAtMs - b.data.createdAtMs)
+      .map((item): ForwardMessageItem => ({
+        id: item.id,
+        name: item.data.name,
+        summary: this.forwardSummary(item.data),
+        original: item.data,
+      }));
+    const source = this.convList
+      .items()
+      .find((thread) => thread.threadId === this.threadId());
+    this.route.popupDlg(PopupType.FORWARD, {
+      messages,
+      recordKind: source?.type === 'GROUP' ? 'group' : 'chat',
+    });
+  }
+
+  private forwardSummary(message: ChatMsgData): string {
+    if (message.contentType === 'PURE_TEXT' || message.contentType === 'LINK')
+      return message.text.trim() || this.transloco.translate('forward.emptyMessage');
+    if (message.contentType === 'FILE')
+      return message.file?.name || this.transloco.translate('chat.preview.file');
+    const keys: Partial<Record<ChatMsgData['contentType'], string>> = {
+      IMAGE: 'chat.preview.photo',
+      VIDEO: 'chat.preview.video',
+      AUDIO: 'chat.preview.voice',
+      INVITE: 'chat.preview.invite',
+      CALL: 'forward.call',
+    };
+    return this.transloco.translate(keys[message.contentType] ?? 'forward.message');
+  }
+
+  private syncMountedSelectionState(): void {
+    const active = this.selectionMode();
+    const selected = this.selectedMessageIds();
+    const contextId = this.messageContextMenu()?.item.id;
+    this.contentRef()
+      ?.nativeElement.querySelectorAll<HTMLElement>('[data-message-id]')
+      .forEach((host) => {
+        const id = Number(host.dataset['messageId']);
+        const memberIds = (host.dataset['messageMemberIds'] ?? String(id))
+          .split(',')
+          .map(Number)
+          .filter(Number.isFinite);
+        const selectedMembers = memberIds.filter((memberId) =>
+          selected.has(memberId),
+        ).length;
+        const state =
+          selectedMembers === 0
+            ? 'none'
+            : selectedMembers === memberIds.length
+              ? 'all'
+              : 'some';
+        host.classList.toggle('cb-message--selection-mode', active);
+        host.classList.toggle('cb-message--selected', active && state === 'all');
+        host.classList.toggle(
+          'cb-message--partially-selected',
+          active && state === 'some',
+        );
+        host.classList.toggle('cb-message--context-active', id === contextId);
+        host.setAttribute('aria-selected', String(active && state === 'all'));
+        host
+          .querySelectorAll<HTMLElement>('[data-media-message-id]')
+          .forEach((cell) => {
+            const memberId = Number(cell.dataset['mediaMessageId']);
+            cell.classList.toggle(
+              'msg-media-cell--selected',
+              active && selected.has(memberId),
+            );
+          });
+      });
   }
 
   private onScroll(info: CbScrollInfo): void {
@@ -1056,7 +1319,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   retryFailedTransfers(): void {
-    for (const task of this.failedTransfers()) {
+    for (const task of this.retryableFailedTransfers()) {
       this.transfers.retry(task.clientMessageId);
     }
   }
@@ -1140,39 +1403,35 @@ export class MessageThreadComponent implements OnDestroy {
     this.dispatchHttpSendLink(item, url);
   }
 
-  /** Prepare the complete user selection first, then register every transfer synchronously. Consequently
-   * the aggregate card's file count and total bytes are fixed on its first rendered frame — image/video
-   * metadata probing can no longer make later tasks join an already-visible batch. */
+  /** Register the complete selection synchronously, then probe media metadata in parallel. Decoding a
+   * large image or locating video metadata can delay that file's upload, but never the pending UI. */
   private async sendAttachments(
     files: ArrayLike<File>,
     waitForUploads = false,
   ): Promise<void> {
-    if (!this.threadId()) return;
-    const prepared = await Promise.all(
-      Array.from(files).map(async (file) => {
-        const cid = this.newClientMessageId();
-        if (file.type.startsWith('image/')) {
-          return {
-            file,
-            cid,
-            kind: 'image' as const,
-            meta: await readImageDims(file),
-          };
-        }
-        if (file.type.startsWith('video/')) {
-          return {
-            file,
-            cid,
-            kind: 'video' as const,
-            meta: await readVideoMeta(file),
-          };
-        }
-        return { file, cid, kind: 'file' as const, meta: null };
-      }),
-    );
+    const threadId = this.threadId();
+    if (!threadId) return;
+    const prepared: PreparedWebAttachment[] = Array.from(files).map((file) => {
+      const cid = this.newClientMessageId();
+      if (file.type.startsWith('image/'))
+        return {
+          file,
+          cid,
+          kind: 'image',
+          probeMeta: () => readImageDims(file),
+        };
+      if (file.type.startsWith('video/'))
+        return {
+          file,
+          cid,
+          kind: 'video',
+          probeMeta: () => readVideoMeta(file),
+        };
+      return { file, cid, kind: 'file', probeMeta: null };
+    });
     const uploads: Promise<void>[] = [];
     const pendingUploads: Array<{
-      entry: (typeof prepared)[number];
+      entry: PreparedWebAttachment;
       item: CbItem<ChatItemData>;
     }> = [];
     for (const entry of prepared) {
@@ -1195,25 +1454,73 @@ export class MessageThreadComponent implements OnDestroy {
         mediaKind: entry.kind,
       });
       this.registerPending(item);
+      this.trackTransfer(entry.cid, threadId, entry.kind, entry.file, () =>
+        this.startPreparedWebAttachment(entry, item, true),
+      );
       pendingUploads.push({ entry, item });
     }
-    // Install the complete optimistic batch before starting any transfer. queue* synchronously
-    // publishes transfer state before its first await; interleaving that state with later pending
-    // inserts can change card layout midway through the kernel's normal pin-to-bottom flow.
+    // Zoneless rendering happens on a later frame. Starting createImageBitmap/<video> in this same
+    // browser task can still touch a large file before that frame is painted, so explicitly cross a
+    // paint boundary after publishing the complete pending batch.
+    await afterNextPaint();
+    // Every task is visible before probe/upload completion can mutate the aggregate card.
     for (const { entry, item } of pendingUploads) {
-      if (entry.kind === 'image') {
-        uploads.push(
-          this.queueImageUpload(entry.cid, entry.file, item, entry.meta),
-        );
-      } else if (entry.kind === 'video') {
-        uploads.push(
-          this.queueVideoUpload(entry.cid, entry.file, item, entry.meta),
-        );
-      } else {
-        uploads.push(this.queueFileUpload(entry.cid, entry.file, item));
-      }
+      uploads.push(this.startPreparedWebAttachment(entry, item));
     }
     if (waitForUploads) await Promise.all(uploads);
+  }
+
+  private async startPreparedWebAttachment(
+    entry: PreparedWebAttachment,
+    item: CbItem<ChatItemData>,
+    retry = false,
+  ): Promise<void> {
+    const limitMb =
+      entry.kind === 'image' ? 10 : entry.kind === 'video' ? 100 : 50;
+    if (
+      await this.rejectOversizedUpload(
+        entry.cid,
+        item,
+        entry.file,
+        limitMb,
+      )
+    )
+      return;
+    if (entry.kind === 'image') {
+      const meta = await entry.probeMeta();
+      return this.enqueueAttachmentUpload(entry.cid, () =>
+        this.uploadAndSendImage(
+          entry.cid,
+          entry.file,
+          item,
+          meta,
+          retry,
+          true,
+        ),
+      );
+    }
+    if (entry.kind === 'video') {
+      const meta = await entry.probeMeta();
+      return this.enqueueAttachmentUpload(entry.cid, () =>
+        this.uploadAndSendVideo(
+          entry.cid,
+          entry.file,
+          item,
+          meta,
+          retry,
+          true,
+        ),
+      );
+    }
+    return this.enqueueAttachmentUpload(entry.cid, () =>
+      this.uploadAndSendFile(
+        entry.cid,
+        entry.file,
+        item,
+        retry,
+        true,
+      ),
+    );
   }
 
   private async sendNativeAttachments(
@@ -1561,6 +1868,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.trackTransfer(cid, tid, 'image', f, () =>
         this.queueImageUpload(cid, f, item, dims, true),
       );
+    if (await this.rejectOversizedUpload(cid, item, f, 10)) return;
     try {
       const staged = await firstValueFrom(
         this.msgService
@@ -1612,6 +1920,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.trackTransfer(cid, tid, 'file', f, () =>
         this.queueFileUpload(cid, f, item, true),
       );
+    if (await this.rejectOversizedUpload(cid, item, f, 50)) return;
     try {
       const staged = await firstValueFrom(
         this.msgService
@@ -1660,6 +1969,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.trackTransfer(cid, tid, 'video', f, () =>
         this.queueVideoUpload(cid, f, item, meta, true),
       );
+    if (await this.rejectOversizedUpload(cid, item, f, 100)) return;
     try {
       const staged = await firstValueFrom(
         this.msgService
@@ -1711,6 +2021,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.trackTransfer(cid, tid, 'audio', f, () =>
       this.uploadAndSendAudio(cid, f, item, meta, true),
     );
+    if (await this.rejectOversizedUpload(cid, item, f, 50)) return;
     try {
       const staged = await firstValueFrom(
         this.msgService
@@ -1772,6 +2083,22 @@ export class MessageThreadComponent implements OnDestroy {
     return error instanceof Error && error.message
       ? error.message
       : this.transloco.translate('transfer.uploadFailed');
+  }
+
+  private async rejectOversizedUpload(
+    clientMessageId: string,
+    item: CbItem<ChatItemData>,
+    file: File,
+    limitMb: number,
+  ): Promise<boolean> {
+    if (file.size <= limitMb * 1024 * 1024) return false;
+    this.transfers.fail(
+      clientMessageId,
+      this.transloco.translate('transfer.fileTooLarge', { limit: limitMb }),
+      false,
+    );
+    await this.failPending(item);
+    return true;
   }
 
   /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on
@@ -1984,6 +2311,9 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
+    this.selectionMode.set(false);
+    this.selectedMessageIds.set(new Set());
+    this.messageContextMenu.set(null);
     this.stableRead.reset();
     this.firstUnreadSeq = null;
     this.unreadBoundaryAbove.set(false);
@@ -2105,6 +2435,13 @@ async function readImageDims(f: File): Promise<{ w: number; h: number }> {
   }
 }
 
+/** Let Angular commit and the browser paint pending transfer state before any media decoder sees the file. */
+function afterNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
 /** Read a file as a data URL (the optimistic image bubble's src until the server-URL real mounts on confirm). */
 function readFileAsDataURL(f: File): Promise<string> {
   return new Promise((resolve) => {
@@ -2170,11 +2507,4 @@ function mimeTypeToExt(mime: string): string {
   if (m.includes('mp4') || m.includes('m4a')) return 'mp4';
   if (m.includes('ogg')) return 'ogg';
   return 'webm'; // default: the Chrome/Android/Tauri MediaRecorder output
-}
-
-function formatTransferBytes(bytes: number): string {
-  const value = Math.max(0, bytes);
-  if (value < 1024 * 1024)
-    return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }

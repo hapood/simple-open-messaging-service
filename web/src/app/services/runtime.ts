@@ -101,10 +101,12 @@ declare global {
       /** Away-notification grouping pref — "thread" (one card per conversation, default) or "all" (one folded
        *  card). Read by BackgroundSyncService to seed the Settings toggle; the native fetcher sends it as
        *  `grouping` on /notifications/missed. Android-only. */
-      getNotifGrouping: () => string;
+      getNotificationPreviewMode: () => string;
       /** Set the away-notification grouping pref ("thread" | "all"). Persists to SomsSecureStore; takes effect
        *  on the next background fetch. Android-only. */
-      setNotifGrouping: (grouping: string) => void;
+      setNotificationPreviewMode: (mode: string) => void;
+      getNotificationAlertPolicy: () => string;
+      setNotificationAlertPolicy: (policy: string) => void;
       /** Push the session token (POST /auth/login, app client) into Android encrypted storage so the
        *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
        *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to
@@ -118,7 +120,6 @@ declare global {
        *  webview owns + advances the HWM; native only reads. Passed as a JSON STRING (`{"threadId":..,"seq":..}`)
        *  because Android's @JavascriptInterface bridge doesn't reliably map JS objects to structured params
        *  (mirrors setFirebaseConfig). Pass null on logout. Android-only. */
-      setMissedCursor: (cursor: string | null) => void;
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when
@@ -536,36 +537,10 @@ const secureStore: SomsSecureStore =
   typeof window !== 'undefined' && window.SomsSecureStore
     ? window.SomsSecureStore
     : {
-        getApiOrigin: () => {
-          try {
-            return localStorage.getItem('api_origin');
-          } catch {
-            return null;
-          }
-        },
-        setApiOrigin: (o) => {
-          try {
-            if (o) localStorage.setItem('api_origin', o);
-            else localStorage.removeItem('api_origin');
-          } catch {
-            /* storage unavailable — best-effort */
-          }
-        },
-        getApiOriginSecondary: () => {
-          try {
-            return localStorage.getItem('api_origin_secondary');
-          } catch {
-            return null;
-          }
-        },
-        setApiOriginSecondary: (o) => {
-          try {
-            if (o) localStorage.setItem('api_origin_secondary', o);
-            else localStorage.removeItem('api_origin_secondary');
-          } catch {
-            /* storage unavailable — best-effort */
-          }
-        },
+        getApiOrigin: () => null,
+        setApiOrigin: () => {},
+        getApiOriginSecondary: () => null,
+        setApiOriginSecondary: () => {},
       };
 
 /** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser) /

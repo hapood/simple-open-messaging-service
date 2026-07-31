@@ -23,7 +23,7 @@ export interface NotifAction {
 export interface NotificationDescriptor {
   /** Stable id; posting the same tag REPLACES (coalesce). `'soms-away'` = the away-summary; unique = new. */
   tag: string;
-  /** Template/action discriminator: `'message-summary'` | `'clear'` | (extensible). */
+  /** Template/action discriminator: `'thread-message'` | `'clear'` | (extensible). */
   kind: string;
   title: string;
   body: string;
@@ -39,6 +39,14 @@ export interface NotificationDescriptor {
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]`. */
   actions: NotifAction[];
+  messages?: Array<{
+    seq: number;
+    senderId: number;
+    senderName: string;
+    text: string;
+    timestamp: number;
+  }>;
+  previewMode?: 'message' | 'private';
   /** Routing payload, opaque to the server. The `message-summary` carries the new away-HWM target
    *  `{threadId, seq}` (the global newest message it covered) — the pure-frontend `dismiss` advances the
    *  client's away-HWM to it + closes the shade (no POST, no read-watermark change), so the next background

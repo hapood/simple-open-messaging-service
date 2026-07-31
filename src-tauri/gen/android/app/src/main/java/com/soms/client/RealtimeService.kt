@@ -327,6 +327,23 @@ class RealtimeService : Service() {
             // HELLO — a retained open stream does not re-push HELLO on its own.
             cacheHelloFrame(type, data)
             if (type == "HELLO") reconcileActiveCall(data)
+            // The native notification engine owns its baseline. While foreground, every HELLO/NEW_MESSAGE
+            // is being presented to the WebView, so advancing here replaces the former JS→native cursor
+            // mirror. While background we deliberately keep the old baseline so the notification fetch
+            // still covers messages that arrived while away.
+            if (SomsMessagingService.appInForeground) {
+                try {
+                    val payload = org.json.JSONObject(data)
+                    val cursor = if (type == "HELLO") payload.optJSONObject("latestMessage") else payload
+                    if ((type == "HELLO" || type == "NEW_MESSAGE") && cursor != null) {
+                        val tid = cursor.optInt("threadId", -1)
+                        val seq = cursor.optInt("seq", -1)
+                        if (tid >= 0 && seq >= 0) ClientStateDb.setNotificationCursor(this@RealtimeService, tid, seq)
+                    }
+                } catch (_: org.json.JSONException) {
+                    // A malformed frame follows the normal downstream error path; never corrupt the cursor.
+                }
+            }
             // THE diagnostic line: `appInFg` here is the ground-truth branch selector. If a backgrounded
             // device shows appInFg=true, the foreground branch runs on a suspended WebView (frame vanishes,
             // no notification) — that's the bug. If appInFg=false + branch=background but no notification
@@ -497,7 +514,9 @@ class RealtimeService : Service() {
         // debounce timing; hop the fetch+render onto ioExecutor. NotificationManager.notify is thread-safe,
         // so rendering stays on the bg thread (no hop back to main). Shared entry point with FCM/WorkManager.
         SomsLog.d("Rt") { "awayCoalesceTask firing → renderAwayNotification (off-main)" }
-        ioExecutor.execute { SomsMessagingService.renderAwayNotification(this@RealtimeService) }
+        ioExecutor.execute {
+            SomsMessagingService.renderAwayNotification(this@RealtimeService, allowAlert = true)
+        }
     }
 
     /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY /

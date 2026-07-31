@@ -23,7 +23,7 @@ import type { ChatItemData } from './chat-item';
 
 /** Max images a single album item will hold. Shared by mergeAlbumItems (per-batch) and absorbAlbumTail (cross-batch) so a
  *  burst splits consistently regardless of how it arrives. Presentation-only — the source keeps every individual IMAGE msg. */
-export const ALBUM_MAX = 10;
+export const ALBUM_MAX = 6;
 
 /** Whether a content type participates in album aggregation (IMAGE + VIDEO; AUDIO is a standalone bubble). */
 function isAlbumMedia(t: ChatItemData['contentType']): boolean {

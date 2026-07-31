@@ -13,6 +13,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import kotlin.math.max
 
 /**
@@ -25,6 +26,9 @@ import kotlin.math.max
 object NativeUploadManager {
     private const val PREVIEW_MAX_PX = 384
     private const val PREVIEW_QUALITY = 74
+    private val selectionExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SomsUploadInspect").apply { isDaemon = true }
+    }
 
     private data class Selection(
         val uri: Uri,
@@ -46,28 +50,34 @@ object NativeUploadManager {
     private val calls = ConcurrentHashMap<String, ActiveUpload>()
 
     fun accept(context: Context, uris: List<Uri>, requestedKind: String, requestId: String) {
-        val items = JSONArray()
-        for (uri in uris) {
-            inspect(context, uri)?.let { selection ->
-                val id = UUID.randomUUID().toString()
-                selections[id] = selection
-                items.put(JSONObject().apply {
-                    put("uploadId", id)
-                    put("kind", classify(selection.mime, requestedKind))
-                    put("name", selection.name)
-                    put("mimeType", selection.mime)
-                    put("size", selection.size)
-                    put("w", selection.width)
-                    put("h", selection.height)
-                    put("preview", selection.preview ?: JSONObject.NULL)
-                    put("duration", selection.duration)
-                })
+        // Activity-result callbacks run on the main thread. ImageDecoder, MediaMetadataRetriever,
+        // first-frame extraction, WebP compression, and Base64 encoding can all block on a large or
+        // provider-backed URI, so keep the entire inspection batch off the UI thread.
+        val appContext = context.applicationContext
+        selectionExecutor.execute {
+            val items = JSONArray()
+            for (uri in uris) {
+                inspect(appContext, uri)?.let { selection ->
+                    val id = UUID.randomUUID().toString()
+                    selections[id] = selection
+                    items.put(JSONObject().apply {
+                        put("uploadId", id)
+                        put("kind", classify(selection.mime, requestedKind))
+                        put("name", selection.name)
+                        put("mimeType", selection.mime)
+                        put("size", selection.size)
+                        put("w", selection.width)
+                        put("h", selection.height)
+                        put("preview", selection.preview ?: JSONObject.NULL)
+                        put("duration", selection.duration)
+                    })
+                }
             }
+            emit(
+                "__SOMS_UPLOAD_PICKED__",
+                JSONObject().put("requestId", requestId).put("items", items),
+            )
         }
-        emit(
-            "__SOMS_UPLOAD_PICKED__",
-            JSONObject().put("requestId", requestId).put("items", items),
-        )
     }
 
     fun discard(uploadId: String) {

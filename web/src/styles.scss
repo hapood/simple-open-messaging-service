@@ -314,3 +314,185 @@ body {
     transform: rotate(360deg);
   }
 }
+/* Message selection belongs to the virtual-row host, outside each dynamically-created component's
+ * emulated style scope. Keep the highlight height-neutral so the scroller's measurements remain exact. */
+[data-message-id].cb-message--selection-mode {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: background var(--app-motion-fast) var(--app-ease-standard);
+}
+
+[data-message-id].cb-message--pressing,
+[data-message-id].cb-message--context-active {
+  background: var(--app-hover);
+}
+
+[data-message-id].cb-message--pressing .msg-row {
+  transform: scale(0.995);
+}
+
+[data-message-id][role='listitem'] .msg-row {
+  transition:
+    transform var(--app-motion-instant) var(--app-ease-standard),
+    opacity var(--app-motion-medium) ease;
+}
+
+/* Reserve a real leading selection gutter instead of painting the control over the message content.
+ * Incoming avatar + bubble move together; outgoing messages stay pinned to the trailing edge because
+ * their row remains justify-content:flex-end. Padding is on the measured .msg-row, so the virtual list's
+ * ResizeObserver sees any legitimate text reflow caused by the narrower content width. */
+[data-message-id].cb-message--selection-mode .msg-row {
+  padding-left: var(--app-space-10);
+}
+
+[data-message-id].cb-message--selection-mode::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  left: var(--app-space-2);
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--app-border-strong);
+  border-radius: 50%;
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  background: var(--app-surface);
+  pointer-events: none;
+  transition:
+    border-color var(--app-motion-fast) var(--app-ease-standard),
+    background var(--app-motion-fast) var(--app-ease-standard);
+}
+
+[data-message-id].cb-message--selection-mode::after {
+  content: '';
+  position: absolute;
+  z-index: 4;
+  left: 18px;
+  top: 50%;
+  width: 7px;
+  height: 4px;
+  border-left: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  transform: translate(-50%, -65%) rotate(-45deg);
+  pointer-events: none;
+}
+
+[data-message-id].cb-message--selected {
+  background: var(--app-selected);
+}
+
+[data-message-id].cb-message--selected.cb-message--pressing {
+  background: color-mix(in srgb, var(--app-selected) 78%, var(--app-pressed));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-message-id][role='listitem'] .msg-row { transition: none; }
+  [data-message-id].cb-message--pressing .msg-row { transform: none; }
+}
+
+[data-message-id].cb-message--selected::before {
+  border-color: var(--app-brand);
+  background: var(--app-brand);
+}
+
+[data-message-id].cb-message--selected::after {
+  border-color: var(--app-on-brand);
+}
+
+/* An album's row-level selector is tri-state. The short brand dash follows the familiar
+ * indeterminate-checkbox convention without changing the control's geometry. */
+[data-message-id].cb-message--partially-selected {
+  background: color-mix(in srgb, var(--app-selected) 58%, transparent);
+}
+
+[data-message-id].cb-message--partially-selected::before {
+  border-color: var(--app-brand);
+  background: var(--app-surface);
+}
+
+[data-message-id].cb-message--partially-selected::after {
+  width: 8px;
+  height: 0;
+  border-left: 0;
+  border-bottom: 2px solid var(--app-brand);
+  transform: translate(-50%, -50%);
+}
+
+/* In selection mode each album cell becomes an independent target. A compact top-end control keeps
+ * the media readable; the selected wash and check remain paint-only, preserving virtual-row height. */
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell {
+  cursor: pointer;
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-select-indicator {
+  position: absolute;
+  z-index: 8;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 50%;
+  background: rgba(24, 28, 36, 0.34);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  color: transparent;
+
+  svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell::after {
+  content: '';
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+  transition: background var(--app-motion-fast) var(--app-ease-standard);
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell--selected
+  .msg-media-select-indicator {
+  border-color: var(--app-brand);
+  background: var(--app-brand);
+  color: var(--app-on-brand);
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell--selected::after {
+  background: color-mix(in srgb, var(--app-brand) 18%, transparent);
+}
+// Selection is a paint-only composer swap: retain identical geometry/tail reservation while the action
+// toolbar overlays it, so entering multi-select cannot resize or re-anchor the message viewport.
+app-chat-input.msg-composer--selection-hidden {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+// The reusable composer owns global (ViewEncapsulation.None) `.ci-*` styles, so its production-host
+// override must also live globally. Keep only the controls surfaced: the full-width bar is transparent,
+// allowing the conversation wallpaper/messages to remain visually continuous behind the floating capsule.
+.msg-container .ci-input-bar {
+  background: transparent;
+  border-top: 0;
+}

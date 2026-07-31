@@ -25,6 +25,14 @@ data class NotifAction(
     val type: String? = null,
 )
 
+data class NotifMessage(
+    val seq: Int,
+    val senderId: Int,
+    val senderName: String,
+    val text: String,
+    val timestamp: Long,
+)
+
 data class NotifDescriptor(
     val tag: String,
     val kind: String,
@@ -39,6 +47,8 @@ data class NotifDescriptor(
     val attention: String?,
     val silent: Boolean?,
     val actions: List<NotifAction>,
+    val messages: List<NotifMessage>,
+    val previewMode: String,
     val data: JSONObject,
 ) {
     companion object {
@@ -71,6 +81,20 @@ data class NotifDescriptor(
                         ),
                     )
                 }
+                val messages = mutableListOf<NotifMessage>()
+                val messageArray = o.optJSONArray("messages")
+                if (messageArray != null) for (i in 0 until messageArray.length()) {
+                    val message = messageArray.optJSONObject(i) ?: continue
+                    messages.add(
+                        NotifMessage(
+                            seq = message.optInt("seq"),
+                            senderId = message.optInt("senderId"),
+                            senderName = message.optString("senderName"),
+                            text = message.optString("text"),
+                            timestamp = message.optLong("timestamp"),
+                        ),
+                    )
+                }
                 NotifDescriptor(
                     tag = o.optString("tag"),
                     kind = o.optString("kind"),
@@ -83,6 +107,8 @@ data class NotifDescriptor(
                     attention = o.optString("attention").takeIf { it.isNotEmpty() },
                     silent = if (o.has("silent") && !o.isNull("silent")) o.optBoolean("silent") else null,
                     actions = actions,
+                    messages = messages,
+                    previewMode = o.optString("previewMode", "message"),
                     data = o.optJSONObject("data") ?: JSONObject(),
                 )
             } catch (e: Exception) {

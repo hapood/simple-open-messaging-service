@@ -20,6 +20,16 @@ export interface AwayThreadAttentionState extends ThreadAttentionState {
   latestSeq: number;
 }
 
+export interface AwayNotificationMessage {
+  threadId: number;
+  seq: number;
+  creator: number;
+  senderName: string;
+  contentType: ContentType;
+  content: string;
+  createdAt: Date;
+}
+
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
 const PREVIEW_TEXT_MAX = 200;
 
@@ -1055,6 +1065,64 @@ export class MessageService implements OnModuleInit {
         },
       ]),
     );
+  }
+
+  /** Recent messages for MessagingStyle, bounded independently per conversation. */
+  async awayNotificationMessages(
+    userId: number,
+    globalSinceId: bigint,
+    threadIds: number[],
+    threadHwms: Record<number, number> = {},
+    hideCreatorIds: number[] = [],
+    perThreadLimit = 5,
+  ): Promise<Map<number, AwayNotificationMessage[]>> {
+    if (threadIds.length === 0) return new Map();
+    const hiddenClause = hideCreatorIds.length
+      ? Prisma.sql`AND m.creator NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const hwmEntries = Object.entries(threadHwms)
+      .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
+      .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
+    const hwmCte =
+      hwmEntries.length > 0
+        ? Prisma.sql`SELECT * FROM UNNEST(
+            ARRAY[${Prisma.join(hwmEntries.map((p) => p.threadId))}]::int[],
+            ARRAY[${Prisma.join(hwmEntries.map((p) => p.seq))}]::int[]
+          ) AS x(tid, since_seq)`
+        : Prisma.sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
+    const rows = await this.prisma.$queryRaw<
+      Array<AwayNotificationMessage & { rn: bigint }>
+    >`
+      WITH thread_hwm AS (${hwmCte}),
+      ranked AS (
+        SELECT m."threadId", m.seq, m.creator, u.name AS "senderName",
+               m."contentType", m.content, m."createdAt",
+               ROW_NUMBER() OVER (PARTITION BY m."threadId" ORDER BY m.seq DESC) AS rn
+        FROM "Message" m
+        JOIN "User" u ON u.id = m.creator AND u."isDeleted" = false
+        JOIN "ThreadParticipant" tp
+          ON tp."threadId" = m."threadId"
+         AND tp."userId" = ${userId}
+         AND tp."leftAt" IS NULL
+         AND tp.muted = false
+        LEFT JOIN thread_hwm h ON h.tid = m."threadId"
+        WHERE m."threadId" IN (${Prisma.join(threadIds)})
+          AND m.id > ${globalSinceId}
+          AND m.seq > COALESCE(h.since_seq, -1)
+          AND m.creator <> ${userId}
+          AND m."isDeleted" = false
+          ${hiddenClause}
+      )
+      SELECT * FROM ranked WHERE rn <= ${perThreadLimit}
+      ORDER BY "threadId", seq ASC
+    `;
+    const result = new Map<number, AwayNotificationMessage[]>();
+    for (const row of rows) {
+      const list = result.get(row.threadId) ?? [];
+      list.push(row);
+      result.set(row.threadId, list);
+    }
+    return result;
   }
 
   private mentionState(contents: string[], selfAccount: string): UnreadMentionState {

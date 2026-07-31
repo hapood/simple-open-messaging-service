@@ -84,11 +84,11 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
               <span matListItemLine class="hint">{{ 'settings.notifGroupingDesc' | transloco }}</span>
               <div matListItemMeta>
                 <mat-button-toggle-group
-                  [value]="prefs.grouping()"
-                  (change)="onGroupingChange($event)"
+                  [value]="prefs.previewMode()"
+                  (change)="onPreviewModeChange($event)"
                   [attr.aria-label]="'settings.notifGrouping' | transloco">
-                  <mat-button-toggle value="thread">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
-                  <mat-button-toggle value="all">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
+                  <mat-button-toggle value="message">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
+                  <mat-button-toggle value="private">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
                 </mat-button-toggle-group>
               </div>
             </mat-list-item>
@@ -147,7 +147,7 @@ export class SettingsNotificationsComponent {
   }
 
   /** Away-notification grouping — persists to localStorage; the next foreground pull sends it as `grouping`. */
-  onGroupingChange(e: MatButtonToggleChange): void {
-    this.prefs.setGrouping(e.value as 'all' | 'thread');
+  onPreviewModeChange(e: MatButtonToggleChange): void {
+    this.prefs.setPreviewMode(e.value as 'message' | 'private');
   }
 }

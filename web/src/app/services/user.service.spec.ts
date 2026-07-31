@@ -8,6 +8,7 @@ import { UserService } from './user.service';
 import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { User } from './model';
+import { PreferenceStore } from './preference-store.service';
 
 /** Flush microtasks + macrotasks so the cold HttpClient POST (subscribed inside updateSessionProfile)
  *  settles through to the sessionProfile signal. */
@@ -34,7 +35,7 @@ describe('UserService profile refresh', () => {
   let svc: UserService;
   let httpMock: HttpTestingController;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -76,7 +77,7 @@ describe('UserService profile refresh', () => {
   it('updateSessionProfile() forces a re-fetch even when sessionProfile is already set', async () => {
     // First refresh seeds sessionProfile with name = 'A'.
     svc.updateSessionProfile();
-    await flush();
+    await flush(50);
     httpMock.expectOne(isMyProfile).flush(profile({ name: 'A' }));
     await flush();
     expect(svc.sessionProfile()?.name).toBe('A');
@@ -120,20 +121,19 @@ describe('UserService profile refresh', () => {
   // same browser never sees the previous one's, while leaving device-level preferences (theme, language,
   // list-width, device_id) intact. The DB-layer in-memory caches are reset by each repo's own
   // session-end effect (watching sessionProfile) — covered in their specs.
-  it('clearSession() clears user-scoped localStorage but keeps device-level prefs', () => {
-    // Seed the previous account's client-only data + a device preference.
-    localStorage.setItem('soms.chatFolders', '[{"id":"x"}]');
-    localStorage.setItem('soms.chat.emojiRecents', '["😀"]');
-    localStorage.setItem('soms.theme', 'dark');
-    try {
-      svc.clearSession();
-      expect(svc.sessionProfile()).toBeUndefined();
-      expect(localStorage.getItem('soms.chatFolders')).toBeNull();
-      expect(localStorage.getItem('soms.chat.emojiRecents')).toBeNull();
-      expect(localStorage.getItem('soms.theme')).toBe('dark'); // device pref preserved
-    } finally {
-      localStorage.removeItem('soms.theme'); // don't pollute other test files
-    }
+  it('clearSession() clears account preferences but keeps device preferences', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
+    svc.sessionProfile.set(profile({ id: 1 }).data);
+    await preferences.set('account:1', 'soms.chatFolders', [{ id: 'x' }]);
+    await preferences.set('account:1', 'soms.chat.emojiRecents', ['😀']);
+    await preferences.set('device', 'theme', 'dark');
+    svc.clearSession();
+    await flush(50);
+    expect(svc.sessionProfile()).toBeUndefined();
+    expect(await preferences.get('account:1', 'soms.chatFolders')).toBeUndefined();
+    expect(await preferences.get('account:1', 'soms.chat.emojiRecents')).toBeUndefined();
+    expect(await preferences.get('device', 'theme')).toBe('dark');
+    await preferences.remove('device', 'theme');
   });
 
   // The friend-request badge is derived from SERVER-state: friendReqRev (latest incoming-FRIEND-invite
@@ -167,7 +167,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     putMeta: jasmine.Spy;
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -195,19 +195,19 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     svc = TestBed.inject(UserService);
     httpMock = TestBed.inject(HttpTestingController);
     webdb = TestBed.inject(WebdbService) as unknown as typeof webdb;
-    localStorage.removeItem('soms.lastUserId'); // clean slate between tests
+    await TestBed.inject(PreferenceStore).remove('device', 'soms.lastUserId');
   });
 
   afterEach(() => {
     httpMock.verify();
-    localStorage.removeItem('soms.lastUserId');
+    void TestBed.inject(PreferenceStore).remove('device', 'soms.lastUserId');
   });
 
   it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
     await svc.establishSession(1, 0, null, 0);
     expect(webdb.openForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
-    expect(localStorage.getItem('soms.lastUserId')).toBe('1'); // eager-paint bootstrap remembers it
+    expect(await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId')).toBe(1);
   });
 
   it('establishSession is idempotent for the same user (reconnect: no re-open, badge refreshed)', async () => {
@@ -233,7 +233,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1'); // previous user's DB torn down
     expect(webdb.openForUser).toHaveBeenCalledWith('2'); // new user's DB opened
     expect(svc.sessionUserId()).toBe(2);
-    expect(localStorage.getItem('soms.lastUserId')).toBe('2');
+    expect(await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId')).toBe(2);
   });
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
@@ -243,11 +243,12 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBeNull();
-    expect(localStorage.getItem('soms.lastUserId')).toBeNull(); // cleared with the user-scoped keys
+    await flush();
+    expect(await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId')).toBeUndefined();
   });
 
   it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
-    localStorage.setItem('soms.lastUserId', '7');
+    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     const cached = profile({ id: 7, name: 'Cached Alice', avatar: '/cached.webp' }).data;
     webdb.getMeta.and.resolveTo(cached);
     await svc.restoreWebdb();
@@ -259,7 +260,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('restoreWebdb ignores a self profile belonging to a different IDB partition owner', async () => {
-    localStorage.setItem('soms.lastUserId', '7');
+    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     webdb.getMeta.and.resolveTo(profile({ id: 8 }).data);
     await svc.restoreWebdb();
     expect(svc.sessionProfile()).toBeUndefined();

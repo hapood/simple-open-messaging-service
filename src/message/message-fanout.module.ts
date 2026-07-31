@@ -18,8 +18,8 @@ import { UploadModule } from '../upload/upload.module.js';
  * commit site can inject {@link MessageFanoutService} and run the unified NEW_MESSAGE fan-out.
  *
  * NotificationQueryService moves here from AppModule's providers (its dependencies — MessageService
- * (MessageModule), UserService, GroupService, ThreadParticipantService — are imported below; UploadModule
- * supplies AvatarStackService for the notification-icon composite). It stays injectable app-wide because
+ * (MessageModule), UserService, GroupService, ThreadParticipantService — are imported below). It stays
+ * injectable app-wide because
  * this module is @Global.
  *
  * FederationService is injected by MessageFanoutService WITHOUT importing FederationModule:

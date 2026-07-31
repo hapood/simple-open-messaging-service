@@ -5,11 +5,12 @@ import dayjs from 'dayjs';
 import 'dayjs/locale/en';
 import 'dayjs/locale/zh-cn';
 import { translations } from '../i18n/transloco.loader';
+import { PreferenceStore } from './preference-store.service';
 
 /** Languages the app ships with. Add an entry here + a dictionary to extend. */
 export type AppLang = 'en' | 'zh-CN';
 
-const LANG_KEY = 'soms.lang';
+const LANG_KEY = 'language';
 
 /**
  * Native-script display names for the switcher row. Deliberately NOT translated:
@@ -46,7 +47,7 @@ export class LanguageService {
   readonly availableLangs: readonly AppLang[] = ['en', 'zh-CN'];
 
   /** User's preference, restored from storage / browser language (default `'en'`). */
-  readonly lang = signal<AppLang>(this.resolveInitial());
+  readonly lang = signal<AppLang>(this.browserDefault());
 
   /** Native-script label for the switcher row (`'English'` / `'简体中文'`). */
   readonly langLabel = computed(() => this.langLabelOf(this.lang()));
@@ -59,6 +60,8 @@ export class LanguageService {
   }
 
   private readonly transloco = inject(TranslocoService);
+  private readonly preferences = inject(PreferenceStore);
+  private writeRevision = 0;
 
   constructor() {
     // Eagerly warm both dictionaries in the cache so the very first translate() call (e.g. the first
@@ -73,15 +76,13 @@ export class LanguageService {
     this.apply(this.lang());
     // Own runtime updates (cycle/set) and re-apply on every change.
     effect(() => this.apply(this.lang()));
+    void this.restore();
   }
 
   setLang(l: AppLang): void {
+    this.writeRevision++;
     this.lang.set(l);
-    try {
-      localStorage.setItem(LANG_KEY, l);
-    } catch {
-      // localStorage disabled (private mode) — keep the in-memory signal only.
-    }
+    void this.preferences.set('global', LANG_KEY, l).catch(() => {});
   }
 
   /** Reflect one language onto Transloco, `<html lang>`, and dayjs. */
@@ -91,14 +92,15 @@ export class LanguageService {
     dayjs.locale(DAYJS_LOCALE[l]);
   }
 
-  private resolveInitial(): AppLang {
-    try {
-      const stored = localStorage.getItem(LANG_KEY);
-      if (stored === 'en' || stored === 'zh-CN') return stored;
-    } catch {
-      // localStorage disabled — fall through to browser-language detection.
-    }
+  private browserDefault(): AppLang {
     const nav = typeof navigator !== 'undefined' ? navigator.language || '' : '';
     return nav.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+  }
+
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const stored = await this.preferences.get<AppLang>('global', LANG_KEY);
+    if (revision !== this.writeRevision) return;
+    if (stored === 'en' || stored === 'zh-CN') this.lang.set(stored);
   }
 }

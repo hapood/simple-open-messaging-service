@@ -83,8 +83,12 @@ describe('notifications/action (descriptor button round-trip)', () => {
       .set(auth())
       .send({ since: { threadId, seq: 0 } });
     const d = res.body.data.notifications[0];
-    expect(d.kind).toBe('message-summary');
+    expect(d.kind).toBe('thread-message');
+    expect(d.title).toBe('Alice');
     expect(d.body).toBe('Alice sent you a message');
+    expect(d.messages).toEqual([
+      expect.objectContaining({ seq: 1, senderId: peerId, senderName: 'Alice', text: 'hi' }),
+    ]);
     // The button is still authored by the server (each client renders it), but the tap is PURE frontend:
     // the client advances its away-HWM to this cursor + closes the shade — it never POSTs, never touches the
     // read watermark. `data` is the new HWM target (the global newest covered message = Alice's seq 1).

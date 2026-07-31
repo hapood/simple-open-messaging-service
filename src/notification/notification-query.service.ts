@@ -1,14 +1,18 @@
 import { Injectable } from '@nestjs/common';
-import { MessageService } from '../message/message.service.js';
+import {
+  MessageService,
+  type AwayNotificationMessage,
+} from '../message/message.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
-import { AvatarStackService } from '../upload/avatar-stack.service.js';
+import { derivePreview } from '../message/message.service.js';
 import { pickLocale, type SupportedLocale } from '../common/locale.js';
 import {
   buildSummaryBody,
   buildSummaryTitle,
+  buildPrivateBody,
   buildMentionTitle,
   actionLabel,
 } from './notif-i18n.js';
@@ -84,7 +88,6 @@ export class NotificationQueryService {
     private readonly userService: UserService,
     private readonly groupService: GroupService,
     private readonly userBlockService: UserBlockService,
-    private readonly avatarStack: AvatarStackService,
   ) {}
 
   /**
@@ -159,7 +162,7 @@ export class NotificationQueryService {
     userId: number,
     opts: {
       since?: MissedCursor | null;
-      grouping?: 'all' | 'thread';
+      previewMode?: 'message' | 'private';
       threadHwms?: Record<number, number>;
       acceptLanguage?: string | null;
     },
@@ -170,70 +173,14 @@ export class NotificationQueryService {
     const sinceId = await this.resolveId(opts.since);
     if (sinceId === null) return { notifications: [this.clearDescriptor(locale)] };
 
-    // "thread" grouping: ONE notification CARD per conversation with new messages since the HWM (each its own
-    // descriptor → client posts a separate grouped card). `threadHwms` carries the client's per-thread dismiss
-    // cursors so a dismissed thread's count resets. Absent / "all" selects the folded per-sender body below
-    // (a shipped user preference — the Settings toggle offers 'thread' vs 'all').
-    if (opts.grouping === 'thread') {
-      return { notifications: await this.threadDescriptors(userId, sinceId, locale, opts.threadHwms) };
-    }
-
-    const blocked = await this.userBlockService.blockedByMe(userId);
-    const hiddenCreators = [...blocked, userId];
-    const self = await this.userService.findUniqueUser({ id: userId });
-    const attention = self
-      ? await this.messageService.senderAttentionSince(
-          userId,
-          self.account,
-          sinceId,
-          1000,
-          hiddenCreators,
-        )
-      : { counts: new Map<number, number>(), mention: 'none' as const, overflow: false };
-    const { counts, overflow } = attention;
-    if (counts.size === 0) return { notifications: [this.clearDescriptor(locale)] }; // nothing new → clear
-
-    // Resolve sender display names + avatars (the icon + the folded body). Chronological order: the
-    // aggregation rows are ordered by message id ASC, so the Map's insertion order = who messaged first.
-    const orderedSenders = [...counts.keys()];
-    const senderUsers = await this.userService.queryUsers({
-      where: { id: { in: orderedSenders }, isDeleted: false },
-    });
-    const userById = new Map(senderUsers.map((u) => [u.id, u]));
-    const name = (id: number) => userById.get(id)?.name || 'Unknown';
-    const items = orderedSenders.map((id) => ({ displayName: name(id), unreadCount: counts.get(id) ?? 0 }));
-    const body = buildSummaryBody(items, locale, overflow);
-    const hasMention = attention.mention !== 'none';
-    const iconInputs = orderedSenders
-      .slice(0, AvatarStackService.MAX_TILES)
-      .map((id) => ({ avatarUrl: userById.get(id)?.avatar ?? '', displayName: name(id), userId: id }));
-    const iconUrl =
-      iconInputs.length > 0 ? await this.avatarStack.composeStackedAvatar(iconInputs) : null;
-    // The new HWM target: the globally-newest message this summary covered (the upper bound of everything
-    // aggregated above). `dismiss` is PURE frontend — it advances the client's away-HWM to this cursor + closes
-    // the shade, so the next background fetch (`since` = new HWM) doesn't re-fire for these same messages. No
-    // POST, no read-watermark change: lastReadSeq is untouched (the messages stay unread until the user opens
-    // the thread). findNewestForUser is non-null here (counts.size > 0 ⇒ the user has messages).
-    const newest = await this.messageService.findNewestForUser(userId);
-
     return {
-      notifications: [
-        {
-          tag: AWAY_SUMMARY_TAG,
-          kind: 'message-summary',
-          title: hasMention ? buildMentionTitle(locale) : buildSummaryTitle(locale),
-          body,
-          lang: locale,
-          icon: iconUrl,
-          renotify: true,
-          ...(hasMention ? { attention: 'mention' as const } : {}),
-          // One summary-level action: dismiss (PURE frontend — advances the away-HWM to `data` + closes the
-          // shade; never POSTed, never touches the read watermark). One action stays within Web Push's 2-action
-          // mobile-Chrome cap; per-thread reply belongs to a future kind.
-          actions: [{ id: 'dismiss', title: actionLabel('dismiss', locale) }],
-          data: newest ? { threadId: newest.threadId, seq: newest.seq } : {},
-        },
-      ],
+      notifications: await this.threadDescriptors(
+        userId,
+        sinceId,
+        locale,
+        opts.previewMode ?? 'message',
+        opts.threadHwms,
+      ),
     };
   }
 
@@ -255,6 +202,7 @@ export class NotificationQueryService {
     userId: number,
     sinceId: bigint,
     locale: SupportedLocale,
+    previewMode: 'message' | 'private',
     threadHwms?: Record<number, number>,
   ): Promise<NotificationDescriptor[]> {
     const blocked = await this.userBlockService.blockedByMe(userId);
@@ -284,6 +232,17 @@ export class NotificationQueryService {
     const ctx = await this.loadThreadContext(userId, visibleIds);
     const rows = ctx.active.sort((a, b) => ctx.cmpByIdAsc(b, a)); // newest conversation first
     const items = await this.hydrateItems(userId, rows, counts, ctx.attachedByThread);
+    const previews: Map<number, AwayNotificationMessage[]> =
+      previewMode === 'message'
+        ? await this.messageService.awayNotificationMessages(
+            userId,
+            sinceId,
+            visibleIds,
+            threadHwms ?? {},
+            hiddenCreators,
+            NOTIFICATION_MESSAGE_CAP,
+          )
+        : new Map();
     return items.map((it) => {
       const count = counts.get(it.threadId) ?? 0;
       const latestSeq = buckets.get(it.threadId)?.latestSeq ?? it.latestMessage?.seq ?? 0;
@@ -291,13 +250,37 @@ export class NotificationQueryService {
       return {
         tag: `soms-thread-${it.threadId}`,
         kind: 'thread-message',
-        title: hasMention ? buildMentionTitle(locale) : buildSummaryTitle(locale),
-        body: buildSummaryBody([{ displayName: it.displayName, unreadCount: count }], locale, count >= 1000),
+        title:
+          previewMode === 'private'
+            ? buildSummaryTitle(locale)
+            : hasMention
+              ? buildMentionTitle(locale)
+              : it.displayName,
+        body:
+          previewMode === 'private'
+            ? buildPrivateBody(locale)
+            : buildSummaryBody(
+                [{ displayName: it.displayName, unreadCount: count }],
+                locale,
+                count >= 1000,
+              ),
         lang: locale,
         icon: null,
         renotify: true,
         ...(hasMention ? { attention: 'mention' as const } : {}),
         actions: [{ id: 'dismiss', title: actionLabel('dismiss', locale) }],
+        ...(previewMode === 'message'
+          ? {
+              messages: (previews.get(it.threadId) ?? []).map((message) => ({
+                seq: message.seq,
+                senderId: message.creator,
+                senderName: message.senderName,
+                text: derivePreview(message.contentType, message.content),
+                timestamp: message.createdAt.getTime(),
+              })),
+            }
+          : {}),
+        previewMode,
         data: { threadId: it.threadId, seq: latestSeq },
       };
     });
@@ -447,6 +430,7 @@ export class NotificationQueryService {
  *  card (rare — 30+ simultaneous unread conversations). Android bundles whatever is posted; the client owns
  *  the group summary. */
 const THREAD_NOTIF_CAP = 30;
+const NOTIFICATION_MESSAGE_CAP = 5;
 
 /** The id-stripped, mediaStatus-attached message row (the output of `MessageService.attachMediaStatus`).
  *  Only the fields hydrate reads are named; the real object (Omit<Message,'id'> & {mediaStatus,sv}) carries

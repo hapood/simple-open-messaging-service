@@ -1,9 +1,10 @@
-import { Injectable, signal } from '@angular/core';
+import { inject, Injectable, signal } from '@angular/core';
+import { PreferenceStore } from './preference-store.service';
 
-const ENABLED_KEY = 'soms.notifEnabled';
-const SOUND_KEY = 'soms.notifSound';
+const ENABLED_KEY = 'notificationEnabled';
+const SOUND_KEY = 'notificationSound';
 /** Away-notification grouping pref key (localStorage) — "thread" (default) or "all". */
-const GROUPING_KEY = 'soms.notifGrouping';
+const PREVIEW_MODE_KEY = 'notificationPreviewMode';
 
 /**
  * App-level notification preferences for the browser in-tab attention path ({@link UnreadAttentionService}).
@@ -23,65 +24,52 @@ const GROUPING_KEY = 'soms.notifGrouping';
  */
 @Injectable({ providedIn: 'root' })
 export class NotificationPrefsService {
-  private readonly _enabled = signal<boolean>(this.readBool(ENABLED_KEY, true));
-  private readonly _sound = signal<boolean>(this.readBool(SOUND_KEY, true));
-  private readonly _grouping = signal<'all' | 'thread'>(this.readGrouping());
+  private readonly preferences = inject(PreferenceStore);
+  private writeRevision = 0;
+  private readonly _enabled = signal(true);
+  private readonly _sound = signal(true);
+  private readonly _previewMode = signal<'message' | 'private'>('message');
 
   /** Whether to post the system notification at all (app-level master; browser permission still required). */
   readonly enabled = this._enabled.asReadonly();
   /** Whether the notification plays the system sound (false → `silent: true`). */
   readonly sound = this._sound.asReadonly();
   /** Away-notification grouping — "thread" (one card per conversation, default) or "all" (one folded card). */
-  readonly grouping = this._grouping.asReadonly();
+  readonly previewMode = this._previewMode.asReadonly();
+
+  constructor() {
+    void this.restore();
+  }
 
   setEnabled(enabled: boolean): void {
+    this.writeRevision++;
     this._enabled.set(enabled);
-    this.writeBool(ENABLED_KEY, enabled);
+    void this.preferences.set('device', ENABLED_KEY, enabled).catch(() => {});
   }
 
   setSound(sound: boolean): void {
+    this.writeRevision++;
     this._sound.set(sound);
-    this.writeBool(SOUND_KEY, sound);
+    void this.preferences.set('device', SOUND_KEY, sound).catch(() => {});
   }
 
   /** Set the away-notification grouping pref. The next foreground pull sends it as `grouping`. */
-  setGrouping(grouping: 'all' | 'thread'): void {
-    this._grouping.set(grouping);
-    this.writeStr(GROUPING_KEY, grouping);
+  setPreviewMode(mode: 'message' | 'private'): void {
+    this.writeRevision++;
+    this._previewMode.set(mode);
+    void this.preferences.set('device', PREVIEW_MODE_KEY, mode).catch(() => {});
   }
 
-  private readBool(key: string, fallback: boolean): boolean {
-    try {
-      const v = localStorage.getItem(key);
-      if (v === null) return fallback;
-      return v === '1';
-    } catch {
-      // localStorage disabled (private mode) — keep the in-memory signal only.
-      return fallback;
-    }
-  }
-
-  private writeBool(key: string, value: boolean): void {
-    try {
-      localStorage.setItem(key, value ? '1' : '0');
-    } catch {
-      // localStorage disabled (private mode) — keep the in-memory signal only.
-    }
-  }
-
-  private readGrouping(): 'all' | 'thread' {
-    try {
-      return localStorage.getItem(GROUPING_KEY) === 'all' ? 'all' : 'thread';
-    } catch {
-      return 'thread';
-    }
-  }
-
-  private writeStr(key: string, value: string): void {
-    try {
-      localStorage.setItem(key, value);
-    } catch {
-      // localStorage disabled (private mode) — keep the in-memory signal only.
-    }
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const [enabled, sound, previewMode] = await Promise.all([
+      this.preferences.get<boolean>('device', ENABLED_KEY),
+      this.preferences.get<boolean>('device', SOUND_KEY),
+      this.preferences.get<'message' | 'private'>('device', PREVIEW_MODE_KEY),
+    ]);
+    if (revision !== this.writeRevision) return;
+    if (typeof enabled === 'boolean') this._enabled.set(enabled);
+    if (typeof sound === 'boolean') this._sound.set(sound);
+    if (previewMode === 'message' || previewMode === 'private') this._previewMode.set(previewMode);
   }
 }

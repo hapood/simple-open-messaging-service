@@ -39,7 +39,7 @@ class NotificationSyncWorker(
         // point shared with the FCM + RealtimeService paths). fetchDescriptors checks token/origin/auth and
         // returns null on any failure → no-op (WorkManager retries on the next period).
         try {
-            SomsMessagingService.renderAwayNotification(ctx)
+            SomsMessagingService.renderAwayNotification(ctx, allowAlert = true)
         } catch (e: Exception) {
             // Network failure / parse error — don't surface.
         }

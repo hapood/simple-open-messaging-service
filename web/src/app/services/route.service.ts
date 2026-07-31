@@ -12,6 +12,14 @@ import { SettingsDialogComponent } from '../components/settings/settings-dialog.
 import { SettingsComponent } from '../components/settings/settings.component';
 import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/friend-invite-dialog.component';
 import { UploadDetailDialogComponent } from '../components/upload-detail-dialog/upload-detail-dialog.component';
+import {
+  ForwardDialogComponent,
+  type ForwardDialogResult,
+} from '../components/forward-dialog/forward-dialog.component';
+import type {
+  ForwardMessageItem,
+  ForwardRecordKind,
+} from '../components/forward-message-card/forward-message-card.component';
 import type { User } from './user.service';
 import type { SettingsCategoryId } from '../components/settings/settings-categories';
 import { AppIconType } from '../components/icon/model';
@@ -48,6 +56,7 @@ export enum PopupType {
   CONFIRM,
   SHELL_INCOMPATIBLE,
   UPLOAD_DETAIL,
+  FORWARD,
 }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
@@ -60,6 +69,7 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.CONFIRM]: ConfirmDialogComponent,
   [PopupType.SHELL_INCOMPATIBLE]: ShellIncompatibleDialogComponent,
   [PopupType.UPLOAD_DETAIL]: UploadDetailDialogComponent,
+  [PopupType.FORWARD]: ForwardDialogComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
@@ -72,6 +82,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.CONFIRM]: 'modal',
   [PopupType.SHELL_INCOMPATIBLE]: 'modal',
   [PopupType.UPLOAD_DETAIL]: 'page',
+  [PopupType.FORWARD]: 'page',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -98,6 +109,10 @@ export interface PopupInput {
   /** Once-per-launch shell↔backend incompatibility notice. `serverVersion` is interpolated into the copy. */
   [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string };
   [PopupType.UPLOAD_DETAIL]: { threadId?: number };
+  [PopupType.FORWARD]: {
+    messages: readonly ForwardMessageItem[];
+    recordKind: ForwardRecordKind;
+  };
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -119,6 +134,7 @@ export interface PopupResult {
   // acknowledge-only — no meaningful result (undefined on dismiss).
   [PopupType.SHELL_INCOMPATIBLE]: undefined;
   [PopupType.UPLOAD_DETAIL]: undefined;
+  [PopupType.FORWARD]: ForwardDialogResult | undefined;
 }
 
 export interface DlgInfo {

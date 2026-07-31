@@ -43,6 +43,7 @@ import {
   nextVoiceCancelState,
 } from './voice-recording-state';
 import { escapePlainText } from '../message-entity';
+import { PreferenceStore } from '../../services/preference-store.service';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -52,8 +53,8 @@ import { escapePlainText } from '../message-entity';
  */
 export type ChatSendIntent =
   | { kind: 'text'; text: string }
-  | { kind: 'image'; files: FileList }
-  | { kind: 'file'; files: FileList }
+  | { kind: 'image'; files: readonly File[] }
+  | { kind: 'file'; files: readonly File[] }
   | { kind: 'native-files'; files: readonly NativeUploadSelection[] }
   | { kind: 'link'; url: string }
   | { kind: 'paste'; text: string; files: readonly File[] }
@@ -114,30 +115,6 @@ function pickRecorderMime(): string {
 
 /** Hard cap on a single voice clip (seconds). On reach, recording auto-stops and sends. */
 const MAX_RECORD_SECS = 60;
-/** Load the persisted recents list (SSR/private-mode safe). */
-function loadRecents(): string[] {
-  if (typeof localStorage === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(RECENTS_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
-    return Array.isArray(parsed)
-      ? parsed.filter((x): x is string => typeof x === 'string')
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-/** Persist the recents list (best-effort; swallow quota / private-mode errors). */
-function saveRecents(list: string[]): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(list));
-  } catch {
-    /* quota exceeded or private mode — ignore */
-  }
-}
-
 /**
  * Reusable chat composer (WhatsApp-style capsule + round send key), shared by the chatbox playground and the
  * production message thread.
@@ -197,6 +174,8 @@ export class ChatInputComponent implements OnDestroy {
   private readonly inputDevice = inject(InputDeviceService);
   readonly desktopRecordingControls = this.inputDevice.hasPhysicalKeyboard;
   private readonly keyboardInset = inject(KeyboardInsetService);
+  private readonly preferences = inject(PreferenceStore);
+  private recentsWriteRevision = 0;
 
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
@@ -217,7 +196,7 @@ export class ChatInputComponent implements OnDestroy {
   private previewTimer?: ReturnType<typeof setTimeout>;
 
   /** Recently-used emojis (persisted across sessions via localStorage). */
-  readonly recents = signal<string[]>(loadRecents());
+  readonly recents = signal<string[]>([]);
   /** Active tab id ('recent' for the Recents tab, else a category id). */
   readonly activeCategory = signal<string>(
     this.recents().length ? 'recent' : (EMOJI_CATEGORIES[0]?.id ?? ''),
@@ -237,6 +216,10 @@ export class ChatInputComponent implements OnDestroy {
     }));
     return [...recentsTab, ...categoryTabs];
   });
+
+  constructor() {
+    void this.restoreRecents();
+  }
   /** Delegated click on the prerendered grids wrapper: read the glyph from the clicked button's `data-emoji`
    *  and insert it. One handler for every category's buttons — far cheaper than a `(click)` binding + directive
    *  instance per emoji button across ~440 glyphs, and it stays valid as the active grid toggles (the buttons
@@ -467,7 +450,10 @@ export class ChatInputComponent implements OnDestroy {
   onAttachChange(e: Event): void {
     const input = e.target as HTMLInputElement;
     if (input.files && input.files.length > 0)
-      this.send.emit({ kind: 'image', files: input.files });
+      this.send.emit({
+        kind: 'image',
+        files: Array.from(input.files),
+      });
     input.value = ''; // reset so the same file can be picked again
   }
 
@@ -483,7 +469,10 @@ export class ChatInputComponent implements OnDestroy {
   onFileChange(e: Event): void {
     const input = e.target as HTMLInputElement;
     if (input.files && input.files.length > 0)
-      this.send.emit({ kind: 'file', files: input.files });
+      this.send.emit({
+        kind: 'file',
+        files: Array.from(input.files),
+      });
     input.value = '';
   }
 
@@ -820,6 +809,17 @@ export class ChatInputComponent implements OnDestroy {
       RECENTS_MAX,
     );
     this.recents.set(next);
-    saveRecents(next);
+    this.recentsWriteRevision++;
+    void this.preferences.set('device', RECENTS_KEY, next).catch(() => {});
+  }
+
+  private async restoreRecents(): Promise<void> {
+    const revision = this.recentsWriteRevision;
+    const stored = await this.preferences.get<unknown>('device', RECENTS_KEY);
+    if (revision !== this.recentsWriteRevision) return;
+    if (!Array.isArray(stored)) return;
+    const values = stored.filter((value): value is string => typeof value === 'string');
+    this.recents.set(values.slice(0, RECENTS_MAX));
+    if (values.length > 0 && !this.activeCategory()) this.activeCategory.set('recent');
   }
 }

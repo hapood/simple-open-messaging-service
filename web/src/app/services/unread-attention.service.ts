@@ -167,7 +167,7 @@ export class UnreadAttentionService {
     try {
       const notifications = await this.missedSync.fetchAwayNotifications(
         this.convList.missedCursor(),
-        this.prefs.grouping(),
+        this.prefs.previewMode(),
         this.convList.threadHwms(),
       );
       await Promise.all(notifications.map((d) => this.adapter.showDescriptor(d)));

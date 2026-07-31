@@ -6,10 +6,10 @@ import {
 } from '../../services/media-transfer.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { RouteService } from '../../services/route.service';
-import { LayoutService } from '../../services/layout.service';
 import { displayThreadName } from '../../services/model';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import {
+  categorizeFilename,
   fileExt,
   formatBytes,
   type FileCategory,
@@ -31,7 +31,6 @@ interface UploadGroup {
 export class UploadDetailDialogComponent {
   readonly AppIconType = AppIconType;
   readonly threadId = input<number>();
-  readonly isCard = inject(LayoutService).isAtLeastMedium;
   private readonly route = inject(RouteService);
   private readonly transfers = inject(MediaTransferService);
   private readonly conversations = inject(ConversationListService);
@@ -85,14 +84,7 @@ export class UploadDetailDialogComponent {
   }
 
   category(name: string): FileCategory {
-    const ext = fileExt(name).toLowerCase();
-    if (ext === 'pdf') return 'pdf';
-    if (['doc', 'docx', 'rtf'].includes(ext)) return 'doc';
-    if (['xls', 'xlsx', 'csv'].includes(ext)) return 'sheet';
-    if (['ppt', 'pptx'].includes(ext)) return 'slides';
-    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
-    if (['txt', 'md', 'json', 'xml', 'log'].includes(ext)) return 'text';
-    return 'file';
+    return categorizeFilename(name);
   }
 
   private threadName(threadId: number): string {

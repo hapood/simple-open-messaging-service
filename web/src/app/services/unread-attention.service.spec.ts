@@ -49,7 +49,7 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
         },
         { provide: WebsocketService, useValue: { eventSubject } },
         { provide: MissedSyncService, useValue: { fetchAwayNotifications: fetchAway } },
-        { provide: NotificationPrefsService, useValue: { enabled: () => true, grouping: () => 'thread', sound: () => true } },
+        { provide: NotificationPrefsService, useValue: { enabled: () => true, previewMode: () => 'message', sound: () => true } },
         { provide: NavStateMachineService, useValue: { openChat } },
       ],
     });
@@ -86,6 +86,6 @@ describe('UnreadAttentionService (SW message routing + threadHwms wiring)', () =
     eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 7, seq: 11, ts: 1 } });
     await new Promise((r) => setTimeout(r, 350)); // past the 300ms debounce
     expect(fetchAway).toHaveBeenCalledTimes(1);
-    expect(fetchAway).toHaveBeenCalledWith({ threadId: 1, seq: 10 }, 'thread', { 7: 3 });
+    expect(fetchAway).toHaveBeenCalledWith({ threadId: 1, seq: 10 }, 'message', { 7: 3 });
   });
 });

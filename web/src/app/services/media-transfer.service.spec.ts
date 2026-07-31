@@ -145,4 +145,21 @@ describe('MediaTransferService', () => {
     service.retry('a');
     expect(retry).toHaveBeenCalledTimes(1);
   });
+
+  it('does not retry a permanent validation failure', () => {
+    const retry = jasmine.createSpy('retry');
+    service.start({
+      clientMessageId: 'oversized',
+      threadId: 10,
+      kind: 'file',
+      file: file('large.bin', 3),
+    });
+    service.registerRetry('oversized', retry);
+    service.fail('oversized', 'too large', false);
+
+    service.retry('oversized');
+
+    expect(retry).not.toHaveBeenCalled();
+    expect(service.tasks()[0].retryable).toBeFalse();
+  });
 });

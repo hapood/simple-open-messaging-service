@@ -133,7 +133,7 @@ export class MissedSyncService {
    */
   async fetchAwayNotifications(
     since: MissedCursor | null,
-    grouping: 'all' | 'thread' = 'thread',
+    previewMode: 'message' | 'private' = 'message',
     threadHwms?: Record<number, number>,
   ): Promise<NotificationDescriptor[]> {
     if (this.awayInFlight) return [];
@@ -145,7 +145,7 @@ export class MissedSyncService {
           // threadHwms: the client's per-thread dismiss cursors (Android, in-memory). Web omits it (in-page
           // Notifications have no per-card dismiss — only clear-all-on-focus), so the server counts every
           // thread since `since` (cumulative since foreground). Declared on MissedDto.
-          { ...(since ? { since } : {}), grouping, ...(threadHwms ? { threadHwms } : {}) },
+          { ...(since ? { since } : {}), previewMode, ...(threadHwms ? { threadHwms } : {}) },
           { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
         ),
       ).catch(() => null);

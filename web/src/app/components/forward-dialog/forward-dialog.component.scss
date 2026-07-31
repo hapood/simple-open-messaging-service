@@ -1,0 +1,274 @@
+.forward-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.forward-dialog__header {
+  display: grid;
+  flex: 0 0 56px;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: 56px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--app-border);
+
+  h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+    white-space: nowrap;
+  }
+
+  > :first-child {
+    justify-self: start;
+  }
+
+  > :last-child {
+    justify-self: end;
+  }
+}
+
+.forward-dialog__header-action {
+  min-width: 52px;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--app-radius-sm);
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 1px;
+  }
+
+  &--primary {
+    color: var(--app-brand);
+    font-weight: 600;
+  }
+
+  &:disabled {
+    color: var(--app-text-disabled);
+    cursor: default;
+    opacity: var(--app-disabled-opacity);
+  }
+}
+
+.forward-dialog__preview {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 12px 16px;
+  background: var(--app-bg);
+}
+
+.forward-dialog__directory {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--app-border);
+}
+
+.forward-dialog__recent {
+  flex: 0 0 auto;
+  padding: 2px 12px 8px;
+
+  h3,
+  .forward-dialog__section-title {
+    margin: 0;
+  }
+}
+
+.forward-dialog__recent h3,
+.forward-dialog__section-title {
+  color: var(--app-text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.forward-dialog__recent h3 {
+  padding: 0 4px 6px;
+}
+
+.forward-dialog__recent-list {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.forward-dialog__recent-item {
+  display: flex;
+  flex: 0 0 72px;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 2px;
+  border: 0;
+  border-radius: var(--app-radius-md);
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--app-hover);
+  }
+
+  > span:last-child {
+    width: 100%;
+    overflow: hidden;
+    font-size: 12px;
+    line-height: 16px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.forward-dialog__recent-avatar {
+  position: relative;
+  display: block;
+  width: 46px;
+  height: 46px;
+}
+
+.forward-dialog__recent-check {
+  position: absolute;
+  right: -2px;
+  bottom: -1px;
+  display: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 2px solid var(--app-surface);
+  border-radius: 50%;
+  background: var(--app-brand);
+  color: var(--app-on-brand);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.forward-dialog__recent-item--selected .forward-dialog__recent-check {
+  display: block;
+}
+
+.forward-dialog__section-title {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 4px 16px 5px;
+}
+
+.forward-dialog__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 2px 8px 12px;
+  overflow-y: auto;
+}
+
+.forward-dialog__recipient {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--app-radius-md);
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--app-hover);
+  }
+}
+
+.forward-dialog__recipient--selected {
+  background: var(--app-brand-soft);
+}
+
+.forward-dialog__avatar {
+  width: 42px;
+  height: 42px;
+}
+
+.forward-dialog__recipient-name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-dialog__check {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--app-border-strong);
+  border-radius: 50%;
+  color: transparent;
+  place-items: center;
+
+  .forward-dialog__recipient--selected & {
+    border-color: var(--app-brand);
+    background: var(--app-brand);
+    color: var(--app-on-brand);
+  }
+
+  svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.2;
+  }
+}
+
+.forward-dialog__empty {
+  padding: 36px 16px;
+  color: var(--app-text-faint);
+  font-size: 14px;
+  text-align: center;
+}
+
+@media (min-width: 600px) {
+  .forward-dialog {
+    height: min(680px, 80dvh);
+  }
+}

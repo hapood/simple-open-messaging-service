@@ -16,6 +16,7 @@ export interface MediaTransferTask {
   startedAt: number;
   previewUrl: string | null;
   errorReason?: string;
+  retryable?: boolean;
   completedAt?: number;
 }
 
@@ -136,6 +137,7 @@ export class MediaTransferService {
           ? URL.createObjectURL(params.file)
           : null),
       errorReason: undefined,
+      retryable: true,
       completedAt: undefined,
     });
     this.cancelSignals.get(params.clientMessageId)?.complete();
@@ -154,13 +156,18 @@ export class MediaTransferService {
     this.scheduleCompletedCleanup(current.threadId);
   }
 
-  fail(clientMessageId: string, errorReason?: string): void {
+  fail(
+    clientMessageId: string,
+    errorReason?: string,
+    retryable = true,
+  ): void {
     const current = this.taskMap().get(clientMessageId);
     if (!current) return;
     this.patch(clientMessageId, {
       ...current,
       status: 'failed',
       errorReason,
+      retryable,
       completedAt: undefined,
     });
   }
@@ -218,6 +225,8 @@ export class MediaTransferService {
   }
 
   retry(clientMessageId: string): void {
+    const task = this.taskMap().get(clientMessageId);
+    if (!task || task.status !== 'failed' || task.retryable === false) return;
     this.retryActions.get(clientMessageId)?.();
   }
 

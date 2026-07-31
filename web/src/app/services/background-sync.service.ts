@@ -52,10 +52,19 @@ export class BackgroundSyncService {
 
   /** Away-notification grouping — "thread" (one card per conversation, Kotlin default) or "all" (one folded
    *  card). Read from native at boot; written through [setGrouping] (the next background fetch sends it). */
-  readonly grouping = signal<'all' | 'thread'>(
+  readonly previewMode = signal<'message' | 'private'>(
     typeof window !== 'undefined'
-      ? ((window.SomsFcm?.getNotifGrouping?.() as 'all' | 'thread') ?? 'thread')
-      : 'thread',
+      ? ((window.SomsFcm?.getNotificationPreviewMode?.() as 'message' | 'private') ?? 'message')
+      : 'message',
+  );
+
+  readonly alertPolicy = signal<'cooldown_2s' | 'cooldown_5s' | 'once_per_thread'>(
+    typeof window !== 'undefined'
+      ? ((window.SomsFcm?.getNotificationAlertPolicy?.() as
+          | 'cooldown_2s'
+          | 'cooldown_5s'
+          | 'once_per_thread') ?? 'cooldown_5s')
+      : 'cooldown_5s',
   );
 
   setEnabled(enabled: boolean): void {
@@ -64,9 +73,14 @@ export class BackgroundSyncService {
   }
 
   /** Set the away-notification grouping pref — persists to SomsSecureStore; takes effect on the next fetch. */
-  setGrouping(grouping: 'all' | 'thread'): void {
-    this.grouping.set(grouping);
-    window.SomsFcm?.setNotifGrouping?.(grouping);
+  setPreviewMode(mode: 'message' | 'private'): void {
+    this.previewMode.set(mode);
+    window.SomsFcm?.setNotificationPreviewMode?.(mode);
+  }
+
+  setAlertPolicy(policy: 'cooldown_2s' | 'cooldown_5s' | 'once_per_thread'): void {
+    this.alertPolicy.set(policy);
+    window.SomsFcm?.setNotificationAlertPolicy?.(policy);
   }
 
   setFgsEnabled(enabled: boolean): void {

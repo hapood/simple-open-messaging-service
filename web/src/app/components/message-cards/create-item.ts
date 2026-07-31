@@ -1,4 +1,10 @@
-import { createComponent, EnvironmentInjector, InputSignal, Type } from '@angular/core';
+import {
+  ApplicationRef,
+  createComponent,
+  EnvironmentInjector,
+  InputSignal,
+  Type,
+} from '@angular/core';
 import type { CbElement, CbItem } from '../../lib/chat-box/chat-box-scroller';
 import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
 import { shouldShowDateSeparator } from './date-format';
@@ -9,6 +15,7 @@ import { LinkRowComponent } from './link-row/link-row.component';
 import { CallRowComponent } from './call-row/call-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
+import { MessagePressGesture } from './message-press-gesture';
 
 /**
  * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
@@ -83,6 +90,12 @@ export function createMsgCbElement(
   onOpenFile?: (data: ChatMsgData) => void,
   onCancel?: (clientMessageId: string) => void,
   unreadDividerLabel?: string,
+  onInteraction?: (
+    event: 'activate' | 'contextmenu',
+    item: CbItem<ChatItemData>,
+    pointer?: { x: number; y: number },
+    memberId?: number,
+  ) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -102,6 +115,12 @@ export function createMsgCbElement(
               : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
+  // createComponent() only constructs the view; it does not enroll it in Angular's application view
+  // tree. Message rows contain async, signal-driven children (notably UserAvatarComponent, whose IDB
+  // blob resolves after the first render), so leaving the host view detached freezes those children at
+  // their initial fallback until some unrelated scroller update happens to call detectChanges().
+  const appRef = envInjector.get(ApplicationRef);
+  appRef.attachView(ref.hostView);
   ref.setInput('data', data);
   ref.setInput('isShowHead', isShowHead);
   ref.setInput('isGroupStart', isGroupStart);
@@ -115,6 +134,21 @@ export function createMsgCbElement(
   // signal inputs on the SAME component instance + DOM node, then drive change detection synchronously so the kernel's
   // immediate offsetHeight read reflects the new content. Used by reconcilePending to morph a pending send's status
   // (sending→failed) and to re-group after a reorder — without remounting (which would break a FLIP move animation).
+  let selectionHost: HTMLElement | undefined;
+  let interactionItem = item;
+  const applySelectionMetadata = (
+    host: HTMLElement,
+    nextItem: CbItem<ChatItemData>,
+  ): void => {
+    host.dataset['messageId'] = String(nextItem.id);
+    host.dataset['messageMemberIds'] = (
+      nextItem.ids?.length ? nextItem.ids : [nextItem.id]
+    ).join(',');
+    host.classList.toggle(
+      'cb-message--album',
+      (nextItem.ids?.length ?? 0) > 1,
+    );
+  };
   const update = (nextItem: CbItem<ChatItemData>, nextPrev: CbItem<ChatItemData> | null): void => {
     const flags = computeRowFlags(nextItem, nextPrev);
     ref.setInput('data', nextItem.data as ChatMsgData);
@@ -125,6 +159,8 @@ export function createMsgCbElement(
       ref.setInput('clientMessageId', nextItem.clientMessageId ?? '');
     }
     ref.changeDetectorRef.detectChanges();
+    interactionItem = nextItem;
+    if (selectionHost) applySelectionMetadata(selectionHost, nextItem);
   };
 
   let measuredHost: HTMLElement | undefined;
@@ -141,7 +177,107 @@ export function createMsgCbElement(
     wrapper.append(divider, ref.location.nativeElement);
     measuredHost = wrapper;
   }
-  const el = wrapEl(ref, update, measuredHost);
+  const el = wrapEl(ref, update, measuredHost, () =>
+    appRef.detachView(ref.hostView),
+  );
+  selectionHost = el.el;
+  applySelectionMetadata(el.el, item);
+  if (onInteraction) {
+    let longPressTimer: ReturnType<typeof setTimeout> | undefined;
+    const pressGesture = new MessagePressGesture();
+    let pointerStart: { x: number; y: number } | undefined;
+    const clearPressVisual = (): void => {
+      if (longPressTimer !== undefined) clearTimeout(longPressTimer);
+      longPressTimer = undefined;
+      el.el.classList.remove('cb-message--pressing');
+    };
+    const onPointerDown = (event: PointerEvent): void => {
+      if (!(event.target as Element | null)?.closest('.msg-bubble')) return;
+      pressGesture.beginPointer(event.button === 0);
+      if (event.button !== 0) {
+        if (event.button === 2) el.el.classList.add('cb-message--pressing');
+        return;
+      }
+      pointerStart = { x: event.clientX, y: event.clientY };
+      el.el.classList.add('cb-message--pressing');
+      if (event.pointerType === 'mouse') return;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = undefined;
+        if (pressGesture.commitLongPress())
+          onInteraction('activate', interactionItem);
+      }, 500);
+    };
+    const onPointerMove = (event: PointerEvent): void => {
+      if (
+        pointerStart &&
+        Math.hypot(
+          event.clientX - pointerStart.x,
+          event.clientY - pointerStart.y,
+        ) > 8
+      ) {
+        clearPressVisual();
+        pressGesture.cancelPointer();
+      }
+    };
+    const onPointerEnd = (): void => {
+      clearPressVisual();
+      pressGesture.endPointer();
+    };
+    const onClick = (event: MouseEvent): void => {
+      if (pressGesture.shouldSuppressSynthetic()) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (el.el.classList.contains('cb-message--selection-mode')) {
+        event.preventDefault();
+        event.stopPropagation();
+        const cell = (event.target as Element | null)?.closest<HTMLElement>(
+          '.msg-media-cell[data-media-message-id]',
+        );
+        const memberId =
+          (interactionItem.ids?.length ?? 0) > 1 && cell
+            ? Number(cell.dataset['mediaMessageId'])
+            : undefined;
+        onInteraction(
+          'activate',
+          interactionItem,
+          undefined,
+          Number.isFinite(memberId) ? memberId : undefined,
+        );
+      }
+    };
+    const onContextMenu = (event: MouseEvent): void => {
+      clearPressVisual();
+      if (!(event.target as Element | null)?.closest('.msg-bubble')) return;
+      event.preventDefault();
+      if (pressGesture.shouldSuppressSynthetic()) {
+        event.stopPropagation();
+        return;
+      }
+      onInteraction('contextmenu', interactionItem, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+    };
+    el.el.addEventListener('pointerdown', onPointerDown);
+    el.el.addEventListener('pointerup', onPointerEnd);
+    el.el.addEventListener('pointercancel', onPointerEnd);
+    el.el.addEventListener('pointermove', onPointerMove);
+    el.el.addEventListener('click', onClick, true);
+    el.el.addEventListener('contextmenu', onContextMenu);
+    const baseDestroy = el.destroy;
+    el.destroy = () => {
+      clearPressVisual();
+      el.el.removeEventListener('pointerdown', onPointerDown);
+      el.el.removeEventListener('pointerup', onPointerEnd);
+      el.el.removeEventListener('pointercancel', onPointerEnd);
+      el.el.removeEventListener('pointermove', onPointerMove);
+      el.el.removeEventListener('click', onClick, true);
+      el.el.removeEventListener('contextmenu', onContextMenu);
+      baseDestroy();
+    };
+  }
   // Wire optional row outputs (failed-send retry on TextRow; open-image on MediaRow). Each subscription is released on
   // destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler. Several outputs may compose
   // on one entry — wrapDestroy chains them LIFO into a single destroy().
@@ -215,6 +351,7 @@ function wrapEl<T>(
   ref: { location: { nativeElement: HTMLElement }; destroy: () => void },
   update: (item: CbItem<T>, prev: CbItem<T> | null) => void,
   measuredHost?: HTMLElement,
+  beforeDestroy?: () => void,
 ): CbElement<T> {
   const el = measuredHost ?? ref.location.nativeElement;
   applyMessageListItemSemantics(el);
@@ -240,6 +377,7 @@ function wrapEl<T>(
       ro?.disconnect();
       ro = null;
       live = null;
+      beforeDestroy?.();
       ref.destroy();
     },
   };

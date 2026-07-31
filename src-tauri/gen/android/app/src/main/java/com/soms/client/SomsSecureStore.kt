@@ -42,16 +42,9 @@ object SomsSecureStore {
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
     private const val KEY_FIREBASE_CONFIG = "firebase_config"
     private const val KEY_NOTIF_PERM_REQUESTED = "notif_perm_requested"
-    /** Away-notification grouping pref — "thread" (one card per conversation, default) or "all" (one folded
-     *  card). Device-local (like polling/FGS); the client sends it on each /missed pull as the `grouping`
-     *  field. Default "thread" (the app's shipping default). */
-    private const val KEY_NOTIF_GROUPING = "notif_grouping"
     /** Persisted per-thread dismiss-HWM map (threadId → seq) as a JSON object string. Survives process death
      *  so a dismiss holds even when the OS kills + restarts the app mid-background-session; cleared on
      *  foreground. In-memory cached by SomsMessagingService (the working copy); this is the durable backing. */
-    private const val KEY_NOTIF_THREAD_HWMS = "notif_thread_hwms"
-    private const val KEY_MISSED_CURSOR_THREAD = "missed_cursor_thread"
-    private const val KEY_MISSED_CURSOR_SEQ = "missed_cursor_seq"
 
     @Volatile
     private var cachedOrigin: String? = null
@@ -94,11 +87,7 @@ object SomsSecureStore {
         val ed = prefs(ctx).edit()
         if (token.isNullOrEmpty()) {
             ed.remove(KEY_SESSION_TOKEN)
-            // Session-scoped: drop the away-notification HWM with the session so a different account starts
-            // clean (mirrors the web reset() clearing its native cursor copy). Without this, account B's
-            // away-summary would be gated by account A's last-seen message.
-            ed.remove(KEY_MISSED_CURSOR_THREAD)
-            ed.remove(KEY_MISSED_CURSOR_SEQ)
+            ClientStateDb.clearNotificationState(ctx)
         } else {
             ed.putString(KEY_SESSION_TOKEN, token)
         }
@@ -106,31 +95,6 @@ object SomsSecureStore {
     }
 
     fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
-
-    /** The away-notification high-water mark `{threadId, seq}` the web layer pushes via
-     *  `SomsFcm.setMissedCursor` — the `since` cursor the background fetchers (RealtimeService /
-     *  SomsMessagingService) send on POST /notifications/missed while the WebView is suspended (the IDB copy
-     *  the web keeps dies with the WebView). Absent → first-ever fetch → the server returns a `clear`
-     *  descriptor. Cleared with the session token on logout / account switch ([setSessionToken]). */
-    fun setMissedCursor(ctx: Context, threadId: Int?, seq: Int?) {
-        val ed = prefs(ctx).edit()
-        if (threadId != null && seq != null && threadId >= 0 && seq >= 0) {
-            ed.putInt(KEY_MISSED_CURSOR_THREAD, threadId)
-            ed.putInt(KEY_MISSED_CURSOR_SEQ, seq)
-        } else {
-            ed.remove(KEY_MISSED_CURSOR_THREAD)
-            ed.remove(KEY_MISSED_CURSOR_SEQ)
-        }
-        ed.apply()
-    }
-
-    /** The persisted HWM cursor, or null when unset (first-ever fetch). */
-    fun getMissedCursor(ctx: Context): Pair<Int, Int>? {
-        val p = prefs(ctx)
-        return if (p.contains(KEY_MISSED_CURSOR_THREAD) && p.contains(KEY_MISSED_CURSOR_SEQ))
-            Pair(p.getInt(KEY_MISSED_CURSOR_THREAD, -1), p.getInt(KEY_MISSED_CURSOR_SEQ, -1))
-        else null
-    }
 
     /** Whether the 6-hour background poller is enabled (default true). The WorkManager worker reads this
      *  on every fire to self-gate, so a toggle-off takes effect even for a process woken in the background
@@ -160,41 +124,6 @@ object SomsSecureStore {
 
     fun setNotifPermRequested(ctx: Context, requested: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_NOTIF_PERM_REQUESTED, requested).apply()
-    }
-
-    /** The away-notification grouping pref — "thread" (one card per conversation) or "all" (one folded card).
-     *  Default "thread". JS flips it via SomsFcm.setNotifGrouping; fetchDescriptors sends it as `grouping`. */
-    fun getNotifGrouping(ctx: Context): String =
-        prefs(ctx).getString(KEY_NOTIF_GROUPING, "thread") ?: "thread"
-
-    fun setNotifGrouping(ctx: Context, grouping: String) {
-        prefs(ctx).edit().putString(KEY_NOTIF_GROUPING, if (grouping == "all") "all" else "thread").apply()
-    }
-
-    /** The persisted per-thread dismiss-HWM map (threadId → seq), or empty when none (cleared on foreground).
-     *  Malformed JSON → empty (defensive — never blocks the notification path). */
-    fun getNotifThreadHwms(ctx: Context): Map<Int, Int> {
-        val raw = prefs(ctx).getString(KEY_NOTIF_THREAD_HWMS, null) ?: return emptyMap()
-        return try {
-            val obj = JSONObject(raw)
-            val out = HashMap<Int, Int>()
-            for (key in obj.keys()) out[key.toInt()] = obj.getInt(key)
-            out
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
-
-    /** Persist the full dismiss-HWM map (overwrites). Called on each dismiss (the working copy is kept in sync). */
-    fun setNotifThreadHwms(ctx: Context, hwms: Map<Int, Int>) {
-        val obj = JSONObject()
-        for ((tid, seq) in hwms) obj.put(tid.toString(), seq)
-        prefs(ctx).edit().putString(KEY_NOTIF_THREAD_HWMS, obj.toString()).apply()
-    }
-
-    /** Clear the persisted dismiss-HWM map (foreground reset). */
-    fun clearNotifThreadHwms(ctx: Context) {
-        prefs(ctx).edit().remove(KEY_NOTIF_THREAD_HWMS).apply()
     }
 
     /** Epoch ms of the last FCM availability check (token fetch). 0 = never. The Settings "FCM status"

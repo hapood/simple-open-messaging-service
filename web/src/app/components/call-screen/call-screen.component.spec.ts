@@ -10,6 +10,7 @@ import {
 } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { CallScreenComponent } from './call-screen.component';
+import { UserService } from '../../services/user.service';
 
 describe('CallScreenComponent', () => {
   const callState = signal<CallSnapshot>({ ...IDLE_CALL });
@@ -58,6 +59,7 @@ describe('CallScreenComponent', () => {
         }),
         { provide: CallEventService, useValue: { callState } },
         { provide: CallAdapterService, useValue: adapter },
+        { provide: UserService, useValue: { sessionProfile: signal(undefined) } },
         {
           provide: AvatarRepository,
           useValue: {

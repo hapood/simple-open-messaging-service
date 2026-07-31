@@ -49,7 +49,7 @@ importScripts('./sw-config.js');
             // existing gap, not introduced here). The foreground (UnreadAttentionService) path DOES send
             // `since` + `grouping` and is the working web away-surface today. Never send undeclared fields
             // (e.g. the old `take`) — MissedDto runs under forbidNonWhitelisted → a hard HTTP 400.
-            body: JSON.stringify({ grouping: 'thread' }),
+            body: JSON.stringify({ previewMode: 'message' }),
             credentials: 'include', // same-origin httpOnly session cookie
           });
           if (!res.ok) return;

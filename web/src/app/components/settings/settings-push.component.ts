@@ -39,6 +39,21 @@ import { LanguageService } from '../../services/language.service';
             </div>
           </mat-list-item>
 
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.notifAlertFrequency' | transloco }}</span>
+            <span matListItemLine class="hint">{{ 'settings.notifAlertFrequencyDesc' | transloco }}</span>
+            <div matListItemMeta>
+              <mat-button-toggle-group
+                [value]="bgSync.alertPolicy()"
+                (change)="onAlertPolicyChange($event)"
+                [attr.aria-label]="'settings.notifAlertFrequency' | transloco">
+                <mat-button-toggle value="cooldown_2s">{{ 'settings.notifAlert2s' | transloco }}</mat-button-toggle>
+                <mat-button-toggle value="cooldown_5s">{{ 'settings.notifAlert5s' | transloco }}</mat-button-toggle>
+                <mat-button-toggle value="once_per_thread">{{ 'settings.notifAlertOnce' | transloco }}</mat-button-toggle>
+              </mat-button-toggle-group>
+            </div>
+          </mat-list-item>
+
           <!-- FCM status (read-only) + manual "check now" -->
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.fcm' | transloco }}</span>
@@ -94,11 +109,11 @@ import { LanguageService } from '../../services/language.service';
             <span matListItemLine class="hint">{{ 'settings.notifGroupingDesc' | transloco }}</span>
             <div matListItemMeta>
               <mat-button-toggle-group
-                [value]="bgSync.grouping()"
-                (change)="onGroupingChange($event)"
+                [value]="bgSync.previewMode()"
+                (change)="onPreviewModeChange($event)"
                 [attr.aria-label]="'settings.notifGrouping' | transloco">
-                <mat-button-toggle value="thread">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
-                <mat-button-toggle value="all">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
+                <mat-button-toggle value="message">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
+                <mat-button-toggle value="private">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
               </mat-button-toggle-group>
             </div>
           </mat-list-item>
@@ -179,8 +194,14 @@ export class SettingsPushComponent implements OnInit, OnDestroy {
 
   /** Away-notification grouping — per-conversation ("thread") vs one folded card ("all"). Persists to
    *  SomsSecureStore; the next background fetch sends it as `grouping`. */
-  onGroupingChange(e: MatButtonToggleChange): void {
-    this.bgSync.setGrouping(e.value as 'all' | 'thread');
+  onPreviewModeChange(e: MatButtonToggleChange): void {
+    this.bgSync.setPreviewMode(e.value as 'message' | 'private');
+  }
+
+  onAlertPolicyChange(e: MatButtonToggleChange): void {
+    this.bgSync.setAlertPolicy(
+      e.value as 'cooldown_2s' | 'cooldown_5s' | 'once_per_thread',
+    );
   }
 
   /** Manual FCM availability check — force a token fetch + show a checking state until it settles. */

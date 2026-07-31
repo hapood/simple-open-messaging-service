@@ -26,11 +26,11 @@ describe('NotificationQueryService', () => {
   let threadAwayBuckets: ReturnType<typeof vi.fn>;
   let threadCountsSinceBounds: ReturnType<typeof vi.fn>;
   let awayAttentionByThread: ReturnType<typeof vi.fn>;
+  let awayNotificationMessages: ReturnType<typeof vi.fn>;
   let findNewest: ReturnType<typeof vi.fn>;
   let findPeers: ReturnType<typeof vi.fn>;
   let queryUsers: ReturnType<typeof vi.fn>;
   let resolveGroups: ReturnType<typeof vi.fn>;
-  let composeStack: ReturnType<typeof vi.fn>;
   let blockedByMe: ReturnType<typeof vi.fn>;
 
   /** A participant row shape (the subset the service reads). */
@@ -58,20 +58,19 @@ describe('NotificationQueryService', () => {
     senderAttentionSince = vi.fn();
     threadAwayBuckets = vi.fn();
     threadCountsSinceBounds = vi.fn();
-    awayAttentionByThread = vi.fn();
+    awayAttentionByThread = vi.fn().mockResolvedValue(new Map());
+    awayNotificationMessages = vi.fn().mockResolvedValue(new Map());
     findNewest = vi.fn();
     findPeers = vi.fn();
     queryUsers = vi.fn();
     resolveGroups = vi.fn();
-    composeStack = vi.fn().mockResolvedValue('/uploads/notif-icons/abc.png');
     blockedByMe = vi.fn().mockResolvedValue(new Set<number>());
     svc = new NotificationQueryService(
       { queryParticipants: participants, findP2PPeers: findPeers } as never,
-      { countUnreadByThread: countUnread, unreadAttentionByThread, unreadMentionStates, mentionStatesSinceId, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, senderAttentionSince, threadAwayBuckets, threadCountsSinceBounds, awayAttentionByThread, findNewestForUser: findNewest } as never,
+      { countUnreadByThread: countUnread, unreadAttentionByThread, unreadMentionStates, mentionStatesSinceId, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, senderAttentionSince, threadAwayBuckets, threadCountsSinceBounds, awayAttentionByThread, awayNotificationMessages, findNewestForUser: findNewest } as never,
       { queryUsers, findUniqueUser: vi.fn().mockResolvedValue({ id: 1, account: 'self' }) } as never,
       { resolveGroupUsersByThreadIds: resolveGroups } as never,
       { blockedByMe } as never,
-      { composeStackedAvatar: composeStack } as never,
     );
   });
 
@@ -213,76 +212,10 @@ describe('NotificationQueryService', () => {
     expect(res.notifications[0].kind).toBe('clear');
   });
 
-  it('buildNotifyResponse: nothing new since HWM → clear', async () => {
+  it('buildNotifyResponse: nothing new since HWM → empty conversation list', async () => {
     wireAway({ counts: new Map() });
     const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'en' });
-    expect(res.notifications[0].kind).toBe('clear');
-  });
-
-  it('buildNotifyResponse: folds senders + total count into the body + feeds the icon', async () => {
-    wireAway({
-      counts: new Map([[11, 2], [22, 3]]),
-      senders: [{ id: 11, name: 'Alice', avatar: '/a.webp' }, { id: 22, name: 'Bob', avatar: '/b.webp' }],
-    });
-    const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'en' });
-    const d = res.notifications[0];
-    expect(d.kind).toBe('message-summary');
-    expect(d.body).toBe('Alice, Bob sent you 5 messages');
-    expect(d.icon).toBe('/uploads/notif-icons/abc.png');
-    // The `dismiss` action is pure frontend — `data` carries the new HWM target (the global newest covered
-    // message), which the client advances its away-HWM to on dismiss (no POST, no read-watermark change).
-    expect(d.data).toEqual({ threadId: 2, seq: 9 });
-    expect(composeStack).toHaveBeenCalledWith([
-      { avatarUrl: '/a.webp', displayName: 'Alice', userId: 11 },
-      { avatarUrl: '/b.webp', displayName: 'Bob', userId: 22 },
-    ]);
-    expect(senderAttentionSince).toHaveBeenCalledWith(1, 'self', 100n, 1000, [1]);
-  });
-
-  it('buildNotifyResponse: excludes the caller together with blocked senders', async () => {
-    wireAway({
-      counts: new Map([[11, 1]]),
-      blocked: [22],
-      senders: [{ id: 11, name: 'Alice', avatar: '' }],
-    });
-    await svc.buildNotifyResponse(1, {
-      since: { threadId: 1, seq: 5 },
-      acceptLanguage: 'en',
-    });
-    expect(senderAttentionSince).toHaveBeenCalledWith(1, 'self', 100n, 1000, [22, 1]);
-  });
-
-  it('buildNotifyResponse: uses privacy-safe mention copy when a covered message mentions the user', async () => {
-    wireAway({
-      counts: new Map([[11, 1]]),
-      senders: [{ id: 11, name: 'Alice', avatar: '' }],
-    });
-    senderAttentionSince.mockResolvedValue({
-      counts: new Map([[11, 1]]),
-      mention: 'me',
-      overflow: false,
-    });
-
-    const res = await svc.buildNotifyResponse(1, {
-      since: { threadId: 1, seq: 5 },
-      acceptLanguage: 'zh-CN',
-    });
-
-    expect(res.notifications[0]).toMatchObject({
-      title: '有人提到了你',
-      attention: 'mention',
-      body: 'Alice 给你发了 1 条消息',
-    });
-  });
-
-  it('buildNotifyResponse: overflow (≥1000 sampled) → "999+" capped body', async () => {
-    wireAway({
-      counts: new Map([[11, 1000]]),
-      overflow: true,
-      senders: [{ id: 11, name: 'Alice', avatar: '' }],
-    });
-    const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'zh-CN' });
-    expect(res.notifications[0].body).toBe('Alice 给你发了 999+ 条消息');
+    expect(res.notifications).toEqual([]);
   });
 
   // ── buildNotifyResponse: "thread" grouping (one notification CARD per conversation) ───────────
@@ -304,7 +237,10 @@ describe('NotificationQueryService', () => {
       [{ threadId: 1, userId: 11 }, { threadId: 2, userId: 22 }, { threadId: 3, userId: 33 }],
       [{ id: 11, name: 'Alice', avatar: '' }, { id: 22, name: 'Bob', avatar: '' }, { id: 33, name: 'Carol', avatar: '' }],
     );
-    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, grouping: 'thread', acceptLanguage: 'en' });
+    awayNotificationMessages.mockResolvedValue(new Map([
+      [3, [{ threadId: 3, seq: 9, creator: 33, senderName: 'Carol', contentType: 'PURE_TEXT', content: 'hello', createdAt: new Date(123) }]],
+    ]));
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, previewMode: 'message', acceptLanguage: 'en' });
     expect(res.notifications).toHaveLength(3);
     // newest conversation (highest latest-id) first: thread 3 (30) → 2 (20) → 1 (10).
     expect(res.notifications.map((d) => d.tag)).toEqual(['soms-thread-3', 'soms-thread-2', 'soms-thread-1']);
@@ -313,6 +249,7 @@ describe('NotificationQueryService', () => {
     expect(carol.body).toBe('Carol sent you 5 messages'); // single-sender all-mode template
     expect(carol.icon).toBeNull(); // no per-thread avatar composition
     expect(carol.data).toEqual({ threadId: 3, seq: 9 }); // dismiss target = latest seq (from Query A)
+    expect(carol.messages?.[0]).toMatchObject({ senderName: 'Carol', text: 'hello', timestamp: 123 });
     expect(res.notifications[1].body).toBe('Bob sent you a message'); // count 1 → the "one" template
     expect(awayAttentionByThread).toHaveBeenCalledWith(1, 'self', 5n, 30, {}, [1]);
   });
@@ -330,7 +267,7 @@ describe('NotificationQueryService', () => {
       [{ threadId: 1, userId: 11 }],
       [{ id: 11, name: 'Alice', avatar: '' }],
     );
-    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, grouping: 'thread', acceptLanguage: 'en' });
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, previewMode: 'message', acceptLanguage: 'en' });
     expect(res.notifications).toEqual([]); // NOT a clear descriptor — empty list; the client clears all soms-thread-*
   });
 
@@ -347,8 +284,9 @@ describe('NotificationQueryService', () => {
       [{ threadId: 1, userId: 11 }],
       [{ id: 11, name: 'Alice', avatar: '' }],
     );
-    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, grouping: 'thread', acceptLanguage: 'en' });
-    expect(res.notifications[0].body).toBe('Alice sent you 999+ messages');
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, previewMode: 'private', acceptLanguage: 'en' });
+    expect(res.notifications[0].body).toBe('You have new messages');
+    expect(res.notifications[0].messages).toBeUndefined();
   });
 
   it('grouping:thread → threadHwms (dismissed) overrides the count via Query B; a 0-count dismissed thread is dropped', async () => {
@@ -371,14 +309,14 @@ describe('NotificationQueryService', () => {
     );
     const res = await svc.buildNotifyResponse(1, {
       since: { threadId: 99, seq: 1 },
-      grouping: 'thread',
+      previewMode: 'private',
       threadHwms: { 1: 7, 3: 10 },
       acceptLanguage: 'en',
     });
     const byThread = new Map(res.notifications.map((d) => [d.data.threadId, d]));
     expect(res.notifications).toHaveLength(2); // thread 3 dropped (dismissed, 0 new)
-    expect(byThread.get(1)?.body).toBe('Alice sent you 2 messages'); // Query B (since dismiss seq 7)
-    expect(byThread.get(2)?.body).toBe('Bob sent you 3 messages'); // not dismissed → Query A count
+    expect(byThread.get(1)?.body).toBe('You have new messages');
+    expect(byThread.get(2)?.body).toBe('You have new messages');
     expect(byThread.has(3)).toBe(false); // dismissed with 0 new → dropped
     expect(awayAttentionByThread).toHaveBeenCalledWith(
       1,

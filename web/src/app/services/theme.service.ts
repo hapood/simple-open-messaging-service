@@ -1,11 +1,12 @@
-import { computed, effect, Injectable, OnDestroy, signal } from '@angular/core';
+import { computed, effect, inject, Injectable, OnDestroy, signal } from '@angular/core';
+import { PreferenceStore } from './preference-store.service';
 
 /** User-facing preference. `'system'` follows the OS `prefers-color-scheme`. */
 export type ThemeMode = 'system' | 'light' | 'dark';
 /** The concrete theme actually painted. */
 export type EffectiveTheme = 'light' | 'dark';
 
-const THEME_KEY = 'soms.theme';
+const THEME_KEY = 'theme';
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 /** Quick-toggle cycle order for the single-button affordance (icon rail, nav drawer, auth toolbar). */
@@ -36,11 +37,13 @@ const META_THEME_COLOR: Record<EffectiveTheme, string> = {
  */
 @Injectable({ providedIn: 'root' })
 export class ThemeService implements OnDestroy {
+  private readonly preferences = inject(PreferenceStore);
+  private writeRevision = 0;
   private readonly mq: MediaQueryList | null =
     typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(DARK_QUERY) : null;
 
   /** User's preference, restored from storage (default `'system'`). */
-  readonly mode = signal<ThemeMode>(this.readStored());
+  readonly mode = signal<ThemeMode>('system');
 
   /** Live OS preference; only consulted while `mode() === 'system'`. */
   private readonly systemDark = signal<boolean>(!!this.mq?.matches);
@@ -62,6 +65,7 @@ export class ThemeService implements OnDestroy {
       meta?.setAttribute('content', META_THEME_COLOR[t]);
       window.SomsShell?.setSystemBarTheme?.(t === 'dark');
     });
+    void this.restore();
   }
 
   ngOnDestroy(): void {
@@ -81,24 +85,19 @@ export class ThemeService implements OnDestroy {
   }
 
   setMode(m: ThemeMode): void {
+    this.writeRevision++;
     this.mode.set(m);
-    try {
-      localStorage.setItem(THEME_KEY, m);
-    } catch {
-      // localStorage disabled (private mode) — keep the in-memory signal only.
-    }
+    void this.preferences.set('global', THEME_KEY, m).catch(() => {});
   }
 
   private readonly onSystemChange = (e: MediaQueryListEvent): void => {
     this.systemDark.set(e.matches);
   };
 
-  private readStored(): ThemeMode {
-    try {
-      const v = localStorage.getItem(THEME_KEY);
-      return v === 'light' || v === 'dark' ? v : 'system';
-    } catch {
-      return 'system';
-    }
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const value = await this.preferences.get<ThemeMode>('global', THEME_KEY);
+    if (revision !== this.writeRevision) return;
+    if (value === 'system' || value === 'light' || value === 'dark') this.mode.set(value);
   }
 }

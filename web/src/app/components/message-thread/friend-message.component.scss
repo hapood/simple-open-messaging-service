@@ -105,12 +105,6 @@ app-chat-input {
   z-index: 4;
 }
 
-// Only the controls are surfaces; the floating full-width bar lets messages remain visible around them.
-.msg-container .ci-input-bar {
-  background: transparent;
-  border-top: 0;
-}
-
 // One stable transport row per state. Angular creates it beside the viewport, then the component moves it
 // into the kernel's measured tail cap so it scrolls with the mounted window and contributes to total height.
 // The card and its thumbnail rail have fixed dimensions: individual completions only change paint.
@@ -124,9 +118,17 @@ app-chat-input {
   pointer-events: none;
 }
 
+// Match ordinary self-message rows: when the "show my avatar" header is enabled, reserve its
+// 40px slot plus 8px gap instead of letting the tail-cap cards occupy that space.
+:host-context([data-show-self-avatar='true']) .msg-transfer-stack {
+  padding-inline-end: calc(
+    max(16px, calc((100% - 800px) / 2 + 16px)) + 48px
+  );
+}
+
 .msg-transfer-line {
   width: min(100%, 430px);
-  height: 96px;
+  height: 76px;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   align-items: stretch;
@@ -144,8 +146,8 @@ app-chat-input {
 
 .msg-transfer-btn {
   @include styless-button;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--app-brand) 38%, var(--app-border));
   border-radius: var(--app-radius-pill);
@@ -184,12 +186,12 @@ app-chat-input {
 }
 
 .msg-transfer-card {
-  height: 96px;
+  height: 76px;
   min-width: 0;
   box-sizing: border-box;
   display: grid;
-  grid-template-rows: 20px 40px 14px;
-  gap: 3px;
+  grid-template-rows: 18px 38px;
+  gap: 4px;
   padding: 8px 10px;
   border-radius: 14px 5px 14px 14px;
   background: var(--im-bubble-self);
@@ -222,7 +224,7 @@ app-chat-input {
   justify-content: space-between;
   gap: 12px;
   font-size: 13px;
-  line-height: 24px;
+  line-height: 18px;
   font-weight: 600;
 }
 
@@ -267,53 +269,6 @@ app-chat-input {
     .msg-transfer-file-icon {
       filter: brightness(0.58);
     }
-  }
-  &--completed {
-    animation: msg-transfer-completed-out 1.8s ease forwards;
-    img,
-    .msg-transfer-file-icon {
-      filter: brightness(0.64);
-    }
-  }
-}
-
-.msg-transfer-complete {
-  position: absolute;
-  inset: 7px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  color: #fff;
-  background: var(--app-success, #2e9d62);
-  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.24);
-  animation: msg-transfer-check-in 180ms ease-out;
-  svg {
-    width: 18px;
-    height: 18px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2.4;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-}
-
-@keyframes msg-transfer-check-in {
-  from {
-    transform: scale(0.65);
-    opacity: 0;
-  }
-}
-
-@keyframes msg-transfer-completed-out {
-  0%,
-  68% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: scale(0.9);
   }
 }
 
@@ -390,17 +345,6 @@ app-chat-input {
     text-anchor: middle;
     dominant-baseline: central;
   }
-}
-
-.msg-transfer-bytes {
-  min-width: 0;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--app-text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .msg-transfer-more {
@@ -555,6 +499,137 @@ app-chat-input {
   &:focus-visible {
     outline: 2px solid var(--app-focus-ring);
     outline-offset: -2px;
+  }
+}
+
+.msg-context-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.msg-context-menu {
+  position: fixed;
+  z-index: 21;
+  width: 192px;
+  box-sizing: border-box;
+  padding: 6px 0;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  background: var(--app-surface-elevated);
+  box-shadow: var(--app-shadow-2);
+  overflow: hidden;
+  button {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 40px;
+    padding: 0 16px;
+    border: 0;
+    background: transparent;
+    color: var(--app-text);
+    text-align: left;
+    font: inherit;
+    font-size: var(--app-font-size-body-small);
+    line-height: var(--app-line-height-body-small);
+    font-weight: var(--app-font-weight-regular);
+    cursor: pointer;
+    &:active { background: var(--app-pressed); }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: -2px;
+    }
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .msg-context-menu button:hover { background: var(--app-hover); }
+}
+
+.msg-selection-bar {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 5;
+  min-height: var(--app-header-expanded);
+  padding:
+    0 max(var(--app-space-3), calc((100% - 800px) / 2))
+    var(--soms-safe-bottom, 0px);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-1);
+  border-top: 1px solid var(--app-border);
+  background: var(--im-composer-bar-bg);
+  button {
+    min-width: var(--app-touch-target);
+    min-height: var(--app-touch-target);
+    padding: 0 var(--app-space-3);
+    border: 0;
+    border-radius: var(--app-radius-md);
+    background: transparent;
+    color: var(--app-text-muted);
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--app-space-0-5);
+    font: inherit;
+    font-size: var(--app-font-size-caption);
+    line-height: var(--app-line-height-caption);
+    font-weight: var(--app-font-weight-medium);
+    cursor: pointer;
+    transition:
+      color var(--app-motion-instant) var(--app-ease-standard),
+      background var(--app-motion-instant) var(--app-ease-standard);
+    svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    &:active:not(:disabled) {
+      color: var(--app-text);
+      background: var(--app-pressed);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: -2px;
+    }
+    &:disabled {
+      color: var(--app-text-disabled);
+      opacity: var(--app-disabled-opacity);
+      cursor: default;
+    }
+  }
+  .msg-selection-close {
+    width: var(--app-touch-target);
+    padding: 0;
+    border-radius: var(--app-radius-pill);
+  }
+}
+
+.msg-selection-count {
+  min-width: var(--app-space-6);
+  color: var(--app-text);
+  font-size: var(--app-font-size-list-title);
+  line-height: var(--app-line-height-list-title);
+  font-weight: var(--app-font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-selection-spacer { flex: 1 1 auto; }
+
+@media (hover: hover) and (pointer: fine) {
+  .msg-selection-bar button:hover:not(:disabled) {
+    color: var(--app-text);
+    background: var(--app-hover);
   }
 }
 

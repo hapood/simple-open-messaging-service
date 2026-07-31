@@ -92,22 +92,22 @@ describe('MissedSyncService', () => {
     expect(applyMissedSpy).not.toHaveBeenCalled();
   });
 
-  it('fetchAwayNotifications: POSTs {since, grouping} to /notifications/missed → returns the descriptors', async () => {
+  it('fetchAwayNotifications: POSTs {since, previewMode} → returns descriptors', async () => {
     const p = svc.fetchAwayNotifications({ threadId: 1, seq: 4 });
     const req = httpMock.expectOne('/api/v1/notification-feed/query');
     // grouping defaults to 'thread' (always sent); threadHwms omitted when not passed.
-    expect(req.request.body).toEqual({ since: { threadId: 1, seq: 4 }, grouping: 'thread' });
-    req.flush({ code: 0, message: 'ok', data: { notifications: [{ tag: 'soms-away', kind: 'message-summary', body: 'x' }] } });
+    expect(req.request.body).toEqual({ since: { threadId: 1, seq: 4 }, previewMode: 'message' });
+    req.flush({ code: 0, message: 'ok', data: { notifications: [{ tag: 'soms-thread-1', kind: 'thread-message', body: 'x' }] } });
     const result = await p;
     expect(result.length).toBe(1);
-    expect(result[0].kind).toBe('message-summary');
+    expect(result[0].kind).toBe('thread-message');
     expect(applyMissedSpy).not.toHaveBeenCalled(); // the away path does NOT cache bodies
   });
 
-  it('fetchAwayNotifications: since null → POSTs {grouping} (no since key)', async () => {
+  it('fetchAwayNotifications: since null → POSTs preview mode only', async () => {
     const p = svc.fetchAwayNotifications(null);
     const req = httpMock.expectOne('/api/v1/notification-feed/query');
-    expect(req.request.body).toEqual({ grouping: 'thread' });
+    expect(req.request.body).toEqual({ previewMode: 'message' });
     req.flush({ code: 0, message: 'ok', data: { notifications: [] } });
     expect(await p).toEqual([]);
   });

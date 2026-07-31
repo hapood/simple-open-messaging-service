@@ -41,6 +41,13 @@
   background-repeat: no-repeat;
 }
 
+// The selection check is always present in the cell markup because selection state belongs to the
+// virtual-row host outside this component. Keep it inert by default; the global selection-mode rule
+// promotes it to `display:grid` only while album selection is active.
+.msg-media-select-indicator {
+  display: none;
+}
+
 .msg-media-cell--image {
   // An explicit opaque canvas prevents both gated images and the fractional edge of a decoded image
   // from revealing the chat wallpaper.

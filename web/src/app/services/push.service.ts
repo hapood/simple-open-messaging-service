@@ -160,12 +160,10 @@ export class PushService {
   private register() {
     const token = this.currentToken;
     if (!token || token === this.registeredToken) return;
-    const deviceId = localStorage.getItem('device_id') ?? undefined;
     this.http
       .post<{ code: number }>(`${apiPrefix()}/devices/register`, {
         token,
         platform: 'ANDROID',
-        deviceId,
       })
       .subscribe({
         next: (r) => { if (r.code === 0) this.registeredToken = token; },

@@ -1,10 +1,9 @@
 import { Component, EventEmitter, Output, signal, computed, inject, viewChild } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ThreadListComponent } from '../../thread-list/thread-list.component';
 import { ConversationItem } from '../../../services/model';
 import { FolderService, ChatFolder } from '../../../services/folder.service';
-import { AppIconType, IconComponent } from '../../icon/icon.component';
+import { ThreadSearchInputComponent } from '../../thread-search-input/thread-search-input.component';
 
 /**
  * Conversation pane: search + optional folder tabs + the shared thread list.
@@ -15,26 +14,18 @@ import { AppIconType, IconComponent } from '../../icon/icon.component';
   selector: 'app-chat-list-pane',
   imports: [
     ThreadListComponent,
-    FormsModule,
     TranslocoPipe,
-    IconComponent,
+    ThreadSearchInputComponent,
   ],
   template: `
     <div class="chat-list-pane">
-      <div class="search">
-        <app-icon class="search-icon" [type]="AppIconType.SEARCH"
-          [style]="{ width: '18px', height: '18px' }" />
-        <input type="text" [placeholder]="'chat.searchPlaceholder' | transloco"
-          [attr.aria-label]="'common.search' | transloco"
-          [ngModel]="searchText()" (ngModelChange)="searchText.set($event)"
-          (keydown.escape)="clearSearch($event)" />
-        @if (searchText()) {
-          <button class="clear-search" (click)="clearSearch()"
-            [attr.aria-label]="'chat.clearSearch' | transloco">
-            <app-icon [type]="AppIconType.CLOSE" [style]="{ width: '16px', height: '16px' }" />
-          </button>
-        }
-      </div>
+      <app-thread-search-input
+        [value]="searchText()"
+        [placeholder]="'chat.searchPlaceholder' | transloco"
+        [ariaLabel]="'common.search' | transloco"
+        [clearAriaLabel]="'chat.clearSearch' | transloco"
+        (valueChange)="searchText.set($event)"
+      />
       @if (folders().length) {
         <div class="folder-tabs" role="group" [attr.aria-label]="'chat.folderFilterAria' | transloco">
           <button class="ftab" [class.active]="!activeFolder()"
@@ -69,56 +60,6 @@ import { AppIconType, IconComponent } from '../../icon/icon.component';
          it here doubled the desktop divider (this 1px + the 4px resizer) and offset the grip dots 0.5px
          from the composite strip's center — which is why the dots read as crooked. */
     }
-    .clear-search {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 0;
-      cursor: pointer;
-    }
-    .clear-search:focus-visible {
-      outline: 2px solid var(--app-focus-ring);
-      outline-offset: 2px;
-    }
-    .search {
-      position: relative;
-      padding: 8px 10px 10px;
-      box-sizing: border-box;
-    }
-    .search-icon {
-      position: absolute;
-      left: 22px;
-      top: 16px;
-      display: inline-flex;
-      color: var(--app-text-muted);
-      pointer-events: none;
-    }
-    .search input {
-      width: 100%;
-      box-sizing: border-box;
-      height: 34px;
-      padding: 0 38px 0 38px;
-      border-radius: var(--app-radius-md);
-      border: 1px solid var(--app-border-strong);
-      background: var(--app-bg-muted);
-      color: var(--app-text);
-      font-size: 14px;
-      outline: none;
-      &::placeholder { color: var(--app-text-faint); }
-      &:focus { border-color: var(--app-brand); }
-    }
-    .clear-search {
-      position: absolute;
-      right: 16px;
-      top: 13px;
-      width: 28px;
-      height: 28px;
-      padding: 0;
-      border-radius: var(--app-radius-pill);
-      color: var(--app-text-muted);
-      background: transparent;
-    }
-    .clear-search:hover { background: var(--app-hover); color: var(--app-text); }
     .folder-tabs {
       display: flex;
       gap: 6px;
@@ -145,7 +86,6 @@ import { AppIconType, IconComponent } from '../../icon/icon.component';
 export class ChatListPaneComponent {
   private readonly folderService = inject(FolderService)
 
-  readonly AppIconType = AppIconType
   /** undefined = "All" (no folder filter) */
   readonly activeFolderId = signal<string | undefined>(undefined)
   readonly searchText = signal('')
@@ -163,11 +103,6 @@ export class ChatListPaneComponent {
 
   refresh() {
     this.threadListCmp()?.genThreadList()
-  }
-
-  clearSearch(event?: Event) {
-    event?.preventDefault()
-    this.searchText.set('')
   }
 
 }

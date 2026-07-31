@@ -17,6 +17,10 @@ import type { AlbumImage, ChatItemData } from './chat-item';
  * (PURE_TEXT took the else branch and was pushed as-is, so text was never affected — only images duplicated.)
  */
 describe('mergeAlbumItems', () => {
+  it('caps albums at the six visible media cells so the layout never folds an album', () => {
+    expect(ALBUM_MAX).toBe(6);
+  });
+
   /** A single image (its msgId is the owning message's id). */
   const img = (msgId: number): AlbumImage => ({ kind: 'image', src: `data:,${msgId}`, w: 100, h: 100, msgId });
 
@@ -127,7 +131,7 @@ describe('mergeAlbumItems', () => {
     const batch: CbItem<ChatItemData>[] = [];
     for (let i = 0; i < n; i++) batch.push(imageItem(i));
     const out = mergeAlbumItems(batch);
-    expect(out.length).toBe(2);                        // 10 + 3
+    expect(out.length).toBe(2);                        // ALBUM_MAX + 3
     expect(out[0].data.images!.length).toBe(ALBUM_MAX);
     expect(out[1].data.images!.length).toBe(3);
   });

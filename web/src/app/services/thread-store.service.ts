@@ -7,7 +7,6 @@ import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
 import { MissedSyncService, type MissedThreadItem } from './missed-sync.service';
 import { toDisplayText } from '../lib/message-entity';
-import { isAndroidNative } from './runtime';
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, User } from './model';
 
@@ -214,7 +213,6 @@ export class ThreadRepository {
     this._missedCursor.set(null);
     this._threadHwms.set({});
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
-    if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(null);
     clearTimeout(this.pullTimer);
     this.pullArmedAt = 0;
   }
@@ -705,7 +703,6 @@ export class ThreadRepository {
   private saveMissedCursor(c: MissedCursor): void {
     void this.webdb.putMeta('missedCursor', c);
     // JSON string — the @JavascriptInterface bridge takes a string (mirrors setFirebaseConfig).
-    if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(JSON.stringify(c));
   }
 
   /** Debounce window for the missed-summary pull: a burst of NEW_MESSAGE signals collapses into one pull.

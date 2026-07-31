@@ -16,7 +16,7 @@ export class AwayNotificationService {
     userId: number,
     opts: {
       since?: MissedCursor | null;
-      grouping?: 'all' | 'thread';
+      previewMode?: 'message' | 'private';
       threadHwms?: Record<number, number>;
       acceptLanguage?: string | null;
     },

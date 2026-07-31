@@ -42,6 +42,26 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
           value_json TEXT NOT NULL,
           PRIMARY KEY (user_id, key)
         );
+        CREATE TABLE IF NOT EXISTS client_preferences (
+          scope TEXT NOT NULL,
+          key TEXT NOT NULL,
+          value_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (scope, key)
+        );
+        CREATE TABLE IF NOT EXISTS notification_global_state (
+          account_id INTEGER PRIMARY KEY,
+          cursor_thread_id INTEGER,
+          cursor_seq INTEGER,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS notification_thread_state (
+          account_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          dismissed_seq INTEGER,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (account_id, thread_id)
+        );
         CREATE TABLE IF NOT EXISTS avatars (
           user_id INTEGER NOT NULL,
           identity TEXT NOT NULL,
@@ -65,6 +85,70 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
     )
     .map_err(|e| format!("migrate native db: {e}"))?;
     Ok(conn)
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_get_preference(
+    app: tauri::AppHandle,
+    scope: String,
+    key: String,
+) -> Result<Option<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let value = open(&app)?
+            .query_row(
+                "SELECT value_json FROM client_preferences WHERE scope = ?1 AND key = ?2",
+                params![scope, key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("get preference: {e}"))?;
+        value.map(parse_json).transpose()
+    })
+    .await
+    .map_err(|e| format!("join preference read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_put_preference(
+    app: tauri::AppHandle,
+    scope: String,
+    key: String,
+    value: Value,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        open(&app)?
+            .execute(
+                "INSERT INTO client_preferences(scope, key, value_json, updated_at)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(scope, key) DO UPDATE SET
+                   value_json = excluded.value_json,
+                   updated_at = excluded.updated_at",
+                params![scope, key, json_text(&value)?, chrono_millis()],
+            )
+            .map_err(|e| format!("put preference: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join preference write: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_delete_preference(
+    app: tauri::AppHandle,
+    scope: String,
+    key: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        open(&app)?
+            .execute(
+                "DELETE FROM client_preferences WHERE scope = ?1 AND key = ?2",
+                params![scope, key],
+            )
+            .map_err(|e| format!("delete preference: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join preference delete: {e}"))?
 }
 
 fn json_text(value: &Value) -> Result<String, String> {

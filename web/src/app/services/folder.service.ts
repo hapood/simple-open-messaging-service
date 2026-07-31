@@ -1,5 +1,6 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
 import { UserService } from './user.service';
+import { PreferenceStore } from './preference-store.service';
 
 /** Folder type rule — reuses the thread type dimension. */
 export type FolderTypeFilter = 'ALL' | 'P2P' | 'GROUP'
@@ -11,7 +12,7 @@ export type FolderTypeFilter = 'ALL' | 'P2P' | 'GROUP'
  */
 export type FolderStatusFilter = 'NONE' | 'UNREAD'
 
-/** A user-defined chat folder. Persisted to localStorage (soms.chatFolders). */
+/** A user-defined chat folder. Persisted in the account-scoped client preference store. */
 export interface ChatFolder {
   id: string
   name: string
@@ -48,29 +49,29 @@ export function inFolder(
 
 /**
  * Holds the user's chat folders. Desktop-only feature; config lives in the
- * browser (localStorage), no backend involvement. Mirrors the signal+readonly
- * pattern of ConversationListService and the `soms.*` localStorage prefix of listWidth.
+ * client preference database, with no backend involvement.
  */
 @Injectable({ providedIn: 'root' })
 export class FolderService {
-  private readonly _folders = signal<ChatFolder[]>(this.load())
+  private readonly _folders = signal<ChatFolder[]>([])
   readonly folders = this._folders.asReadonly()
   private readonly userService = inject(UserService)
+  private readonly preferences = inject(PreferenceStore)
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null
 
   private seq = 0
+  private loadRevision = 0
 
   constructor() {
-    // Session-end reset: drop the in-memory folder list on logout so a second account on the same
-    // browser never sees the previous one's folders (which reference that account's threadIds). The
-    // `soms.chatFolders` localStorage key is cleared centrally by UserService.clearSession; this resets
-    // the in-memory signal that survives as root-singleton state across the live SPA.
+    // Drop the in-memory list on logout/account switch so thread ids never cross account boundaries.
     effect(() => {
       const id = this.userService.sessionProfile()?.id ?? null
       if (id === this.prevSessionId) return
       this.prevSessionId = id
+      this.loadRevision++
       if (id === null) this._folders.set([])
+      else void this.load(id, this.loadRevision)
     })
   }
 
@@ -108,15 +109,14 @@ export class FolderService {
     return 'f' + Date.now().toString(36) + (this.seq++).toString(36)
   }
 
-  private load(): ChatFolder[] {
-    if (typeof localStorage === 'undefined') return []
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return []
-      // Back-fill every field so folders persisted before a field was added
-      // (e.g. statusFilter) coerce to a valid ChatFolder instead of shipping undefined.
-      const parsed = JSON.parse(raw) as Partial<ChatFolder>[]
-      return parsed.map((f): ChatFolder => ({
+  private async load(userId: number, revision: number): Promise<void> {
+    const parsed =
+      (await this.preferences.get<Partial<ChatFolder>[]>(`account:${userId}`, STORAGE_KEY)) ?? []
+    if (
+      revision !== this.loadRevision ||
+      this.userService.sessionProfile()?.id !== userId
+    ) return
+    this._folders.set(parsed.map((f): ChatFolder => ({
         id: f.id ?? '',
         name: f.name ?? '',
         typeFilter: f.typeFilter ?? 'ALL',
@@ -124,14 +124,12 @@ export class FolderService {
         includedIds: f.includedIds ?? [],
         excludedIds: f.excludedIds ?? [],
         order: f.order ?? 0,
-      }))
-    } catch {
-      return []
-    }
+      })))
   }
 
   private persist() {
-    if (typeof localStorage === 'undefined') return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this._folders()))
+    const userId = this.userService.sessionProfile()?.id
+    if (userId == null) return
+    void this.preferences.set(`account:${userId}`, STORAGE_KEY, this._folders()).catch(() => {})
   }
 }

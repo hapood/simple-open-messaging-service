@@ -13,8 +13,8 @@ import { seedUser, seedSession } from './seed';
  * /notifications/missed-summary + /notifications/missed e2e — the two SEPARATED endpoints:
  *  - missed-summary (threadlist body pre-warm): the `(from, to]` double-boundary walk of per-thread latest
  *    bodies. `to ≤ from` (stale SSE) → empty no-op.
- *  - missed (away-notification renderers): per-sender aggregation of messages since `since` (the HWM) → ONE
- *    descriptor; `since` absent / nothing new → a `clear` descriptor.
+ *  - missed (away-notification renderers): one descriptor per conversation. Message mode includes a bounded
+ *    recent-message sample; private mode omits content entirely.
  *
  * The BigInt message `id` is NEVER exposed — only per-thread `seq` + time. Three P2P threads seeded in
  * insertion order (Alice → Bob → Carol) so message ids strictly increase → deterministic.
@@ -129,24 +129,45 @@ describe('notifications/missed-summary + notifications/missed', () => {
     expect(res.body.data.notifications[0].kind).toBe('clear');
   });
 
-  it('missed: aggregates per sender since the HWM into one descriptor (en)', async () => {
+  it('missed: returns one message-preview descriptor per conversation (en)', async () => {
     // since = Alice's seq 0 (the globally-oldest message) → everything after it: Alice 1,2 + Bob 0,1,2 +
     // Carol 0,1,2 = 8 messages across 3 senders → manyConv "Alice, Bob +1 sent you 8 messages".
     const res = await postMissed({ since: { threadId: tAlice, seq: 0 } }, { 'Accept-Language': 'en' });
-    const d = res.body.data.notifications[0];
-    expect(d.kind).toBe('message-summary');
-    expect(d.body).toBe('Alice, Bob +1 sent you 8 messages');
-    expect(d.lang).toBe('en');
-    // `dismiss` is pure frontend — `data` is the new HWM target (the global newest covered message = Carol's
-    // seq 2, the last seeded). The client advances its away-HWM to it on dismiss (no POST, no read change).
-    expect(d.data).toEqual({ threadId: tCarol, seq: 2 });
-    expect(d.icon === null || /^\/uploads\/notif-icons\/[0-9a-f]+\.png$/.test(d.icon)).toBe(true);
+    const descriptors = res.body.data.notifications;
+    expect(descriptors.map((d: { data: { threadId: number } }) => d.data.threadId)).toEqual([
+      tCarol,
+      tBob,
+      tAlice,
+    ]);
+    const alice = descriptors.find((d: { data: { threadId: number } }) => d.data.threadId === tAlice);
+    expect(alice).toMatchObject({
+      kind: 'thread-message',
+      title: 'Alice',
+      body: 'Alice sent you 2 messages',
+      lang: 'en',
+      previewMode: 'message',
+      data: { threadId: tAlice, seq: 2 },
+    });
+    expect(alice.messages.map((m: { text: string }) => m.text)).toEqual(['Alice-1', 'Alice-2']);
+    expect(alice.icon).toBeNull();
   });
 
-  it('missed: Accept-Language zh-CN → Chinese body', async () => {
-    const res = await postMissed({ since: { threadId: tAlice, seq: 0 } }, { 'Accept-Language': 'zh-CN,zh;q=0.9' });
-    expect(res.body.data.notifications[0].body).toBe('Alice、Bob 等 1 人给你发了 8 条消息');
-    expect(res.body.data.notifications[0].lang).toBe('zh-CN');
+  it('missed: private mode contains no sender or message content', async () => {
+    const res = await postMissed(
+      { since: { threadId: tAlice, seq: 0 }, previewMode: 'private' },
+      { 'Accept-Language': 'zh-CN,zh;q=0.9' },
+    );
+    expect(res.body.data.notifications).toHaveLength(3);
+    for (const descriptor of res.body.data.notifications) {
+      expect(descriptor).toMatchObject({
+        title: 'SOMS',
+        body: '你有新消息',
+        lang: 'zh-CN',
+        previewMode: 'private',
+      });
+      expect(descriptor).not.toHaveProperty('messages');
+      expect(JSON.stringify(descriptor)).not.toMatch(/Alice-|Bob-|Carol-/);
+    }
   });
 
   it('missed: a blocked sender is excluded from the aggregation', async () => {
@@ -156,7 +177,8 @@ describe('notifications/missed-summary + notifications/missed', () => {
     });
     await prisma.userBlock.create({ data: { blockerId: recipientId, blockedId: carolPeer!.userId } });
     const res = await postMissed({ since: { threadId: tAlice, seq: 0 } }, { 'Accept-Language': 'en' });
-    expect(res.body.data.notifications[0].body).toBe('Alice, Bob sent you 5 messages');
+    expect(res.body.data.notifications.map((d: { data: { threadId: number } }) => d.data.threadId))
+      .toEqual([tBob, tAlice]);
   });
 
   it('missed: a muted thread is excluded from the aggregation', async () => {
@@ -166,12 +188,12 @@ describe('notifications/missed-summary + notifications/missed', () => {
       data: { muted: true },
     });
     const res = await postMissed({ since: { threadId: tAlice, seq: 0 } }, { 'Accept-Language': 'en' });
-    expect(res.body.data.notifications[0].body).toBe('Alice, Carol sent you 5 messages');
+    expect(res.body.data.notifications.map((d: { data: { threadId: number } }) => d.data.threadId))
+      .toEqual([tCarol, tAlice]);
   });
 
-  it('missed: HWM at the global newest → nothing new → clear', async () => {
-    // since = Carol's seq 2 (the newest) → nothing after → clear.
+  it('missed: HWM at the global newest → no conversation descriptors', async () => {
     const res = await postMissed({ since: { threadId: tCarol, seq: 2 } });
-    expect(res.body.data.notifications[0].kind).toBe('clear');
+    expect(res.body.data.notifications).toEqual([]);
   });
 });

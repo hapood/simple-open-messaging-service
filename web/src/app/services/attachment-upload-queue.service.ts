@@ -1,4 +1,5 @@
-import { Injectable, signal } from '@angular/core';
+import { inject, Injectable, signal } from '@angular/core';
+import { PreferenceStore } from './preference-store.service';
 
 const STORAGE_KEY = 'soms.maxConcurrentUploads';
 const DEFAULT_MAX_CONCURRENT = 3;
@@ -21,12 +22,18 @@ interface UploadJob {
  */
 @Injectable({ providedIn: 'root' })
 export class AttachmentUploadQueueService {
+  private readonly preferences = inject(PreferenceStore);
+  private writeRevision = 0;
   private readonly pending: UploadJob[] = [];
   private readonly activeThreads = new Set<number>();
   private active = 0;
-  private readonly _maxConcurrent = signal(this.readStored());
+  private readonly _maxConcurrent = signal(DEFAULT_MAX_CONCURRENT);
 
   readonly maxConcurrent = this._maxConcurrent.asReadonly();
+
+  constructor() {
+    void this.restore();
+  }
 
   enqueue(threadId: number, run: () => Promise<void>): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -36,13 +43,10 @@ export class AttachmentUploadQueueService {
   }
 
   setMaxConcurrent(value: number): void {
+    this.writeRevision++;
     const normalized = this.normalize(value);
     this._maxConcurrent.set(normalized);
-    try {
-      localStorage.setItem(STORAGE_KEY, String(normalized));
-    } catch {
-      // localStorage disabled: retain the in-memory preference.
-    }
+    void this.preferences.set('device', STORAGE_KEY, normalized).catch(() => {});
     this.pump();
   }
 
@@ -66,12 +70,11 @@ export class AttachmentUploadQueueService {
     }
   }
 
-  private readStored(): number {
-    try {
-      return this.normalize(Number(localStorage.getItem(STORAGE_KEY)));
-    } catch {
-      return DEFAULT_MAX_CONCURRENT;
-    }
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const value = await this.preferences.get<number>('device', STORAGE_KEY);
+    if (revision !== this.writeRevision) return;
+    if (typeof value === 'number') this._maxConcurrent.set(this.normalize(value));
   }
 
   private normalize(value: number): number {

@@ -1,4 +1,5 @@
-import { effect, Injectable, signal } from '@angular/core';
+import { effect, inject, Injectable, signal } from '@angular/core';
+import { PreferenceStore } from './preference-store.service';
 
 const SHOW_SELF_AVATAR_KEY = 'soms.chat.showSelfAvatar';
 const OPEN_POSITION_KEY = 'soms.chat.openPosition';
@@ -11,10 +12,12 @@ export type ChatOpenPosition = 'latest' | 'last-read';
  */
 @Injectable({ providedIn: 'root' })
 export class ChatAppearanceService {
+  private readonly preferences = inject(PreferenceStore);
+  private writeRevision = 0;
   // Default ON: most users expect to see their own avatar alongside their messages. Only a stored preference
   // (a user who explicitly turned it off) overrides this — new users and cleared-storage starts show self avatars.
-  private readonly _showSelfAvatar = signal(this.readBoolean(SHOW_SELF_AVATAR_KEY, true));
-  private readonly _openPosition = signal<ChatOpenPosition>(this.readOpenPosition());
+  private readonly _showSelfAvatar = signal(true);
+  private readonly _openPosition = signal<ChatOpenPosition>('latest');
 
   readonly showSelfAvatar = this._showSelfAvatar.asReadonly();
   readonly openPosition = this._openPosition.asReadonly();
@@ -22,46 +25,33 @@ export class ChatAppearanceService {
   constructor() {
     this.applySelfAvatar(this._showSelfAvatar());
     effect(() => this.applySelfAvatar(this._showSelfAvatar()));
+    void this.restore();
   }
 
   setShowSelfAvatar(show: boolean): void {
+    this.writeRevision++;
     this._showSelfAvatar.set(show);
-    try {
-      localStorage.setItem(SHOW_SELF_AVATAR_KEY, String(show));
-    } catch {
-      // Storage may be unavailable in private mode; the in-memory preference still applies.
-    }
+    void this.preferences.set('device', SHOW_SELF_AVATAR_KEY, show).catch(() => {});
   }
 
   setOpenPosition(position: ChatOpenPosition): void {
+    this.writeRevision++;
     this._openPosition.set(position);
-    try {
-      localStorage.setItem(OPEN_POSITION_KEY, position);
-    } catch {
-      // Storage may be unavailable in private mode; the in-memory preference still applies.
-    }
+    void this.preferences.set('device', OPEN_POSITION_KEY, position).catch(() => {});
   }
 
   private applySelfAvatar(show: boolean): void {
     document.documentElement.setAttribute('data-show-self-avatar', String(show));
   }
 
-  private readBoolean(key: string, fallback: boolean): boolean {
-    try {
-      const value = localStorage.getItem(key);
-      return value === null ? fallback : value === 'true';
-    } catch {
-      return fallback;
-    }
-  }
-
-  private readOpenPosition(): ChatOpenPosition {
-    try {
-      return localStorage.getItem(OPEN_POSITION_KEY) === 'last-read'
-        ? 'last-read'
-        : 'latest';
-    } catch {
-      return 'latest';
-    }
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const [show, position] = await Promise.all([
+      this.preferences.get<boolean>('device', SHOW_SELF_AVATAR_KEY),
+      this.preferences.get<ChatOpenPosition>('device', OPEN_POSITION_KEY),
+    ]);
+    if (revision !== this.writeRevision) return;
+    if (typeof show === 'boolean') this._showSelfAvatar.set(show);
+    if (position === 'latest' || position === 'last-read') this._openPosition.set(position);
   }
 }

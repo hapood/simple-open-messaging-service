@@ -12,11 +12,10 @@ import { ToastService } from './toast.service';
 import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 
-const IS_KEEP_LOGIN = 'is_keep_login',
-  // Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
+// Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
   // (name mirrors src/auth/media-token.ts LOGGED_IN_COOKIE). On the pure-httpOnly browser build the
   // session token is JS-unreadable, so this flag is how the SPA tells whether a session exists.
-  LOGGED_IN_COOKIE = 'logged_in'
+const LOGGED_IN_COOKIE = 'logged_in'
 
 /** On-screen duration (ms) for important auth notices (forced-logout / persist-failure) — longer than the
  *  default toast so a user looking away still catches why they're back at the sign-in screen. */
@@ -57,7 +56,7 @@ type LogoutRes = { code: number, message: string }
   providedIn: 'root',
 })
 export class AuthService {
-  private _isKeep = localStorage.getItem(IS_KEEP_LOGIN) === '1' || false
+  private _isKeep = false
   /** Whether this session's token is durable — kept in OS secure storage (Android EncryptedSharedPreferences,
    *  or the desktop OS keyring) and therefore server-issued as permanent (revocation-only). False on web
    *  (cookie-only) and on an untrusted desktop (memory-only, sliding). */
@@ -206,8 +205,6 @@ export class AuthService {
   private async activateSession(token: string, opts: { isKeep: boolean, trusted: boolean }): Promise<void> {
     this._isKeep = opts.isKeep
     this._trusted = opts.trusted
-    if (opts.isKeep) localStorage.setItem(IS_KEEP_LOGIN, '1')
-    else localStorage.removeItem(IS_KEEP_LOGIN)
     if (isTauri()) await this.setSessionToken(token)
     // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
     // held in JS.

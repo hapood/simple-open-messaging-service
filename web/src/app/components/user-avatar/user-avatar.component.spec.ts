@@ -8,6 +8,7 @@ import { ProfileRepository } from '../../services/profile-store.service';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import type { User } from '../../services/model';
+import { PreferenceStore } from '../../services/preference-store.service';
 
 describe('UserAvatarComponent (imgSrc branching)', () => {
   let fixture: ComponentFixture<UserAvatarComponent>;
@@ -77,6 +78,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
 describe('UserAvatarComponent offline cold-start integration', () => {
   let webdb: WebdbService;
   let httpMock: HttpTestingController;
+  let preferences: PreferenceStore;
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
@@ -92,7 +94,8 @@ describe('UserAvatarComponent offline cold-start integration', () => {
     });
     webdb = TestBed.inject(WebdbService);
     httpMock = TestBed.inject(HttpTestingController);
-    localStorage.setItem('soms.lastUserId', '7');
+    preferences = TestBed.inject(PreferenceStore);
+    await preferences.set('device', 'soms.lastUserId', 7);
 
     await webdb.openForUser('7');
     await webdb.putMeta('selfProfile', {
@@ -123,7 +126,7 @@ describe('UserAvatarComponent offline cold-start integration', () => {
 
   afterEach(async () => {
     httpMock.verify();
-    localStorage.removeItem('soms.lastUserId');
+    await preferences.remove('device', 'soms.lastUserId');
     await webdb.closeAndDelete('7');
   });
 

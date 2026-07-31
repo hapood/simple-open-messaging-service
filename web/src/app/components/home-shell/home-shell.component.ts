@@ -28,6 +28,7 @@ import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { TranslocoPipe } from '@jsverse/transloco';
+import { PreferenceStore } from '../../services/preference-store.service';
 
 const LIST_WIDTH_KEY = 'soms.client.listWidth';
 const MIN_LIST = 280,
@@ -124,10 +125,12 @@ export class HomeShellComponent {
   private readonly convList = inject(ConversationListService);
   private readonly navState = inject(NavStateMachineService);
   private readonly chatListPane = viewChild(ChatListPaneComponent);
+  private readonly preferences = inject(PreferenceStore);
+  private widthWriteRevision = 0;
 
   readonly mode = this.layout.mode;
   /** Conversation-list width (expanded only), persisted across sessions. */
-  readonly listWidth = signal<number>(this.readListWidth());
+  readonly listWidth = signal<number>(DEFAULT_LIST);
 
   /** Chat/aside "open" classes position compact overlays and toggle medium/expanded drawers. */
   readonly chatActive = computed(
@@ -166,6 +169,7 @@ export class HomeShellComponent {
   private previousMode: LayoutMode | undefined;
 
   constructor() {
+    void this.restoreListWidth();
     // Nav state → openThreadId coordination. The state machine is the source of truth for which chat is
     // open; this effect is the single writer of openThreadId's OPEN edge (mark-read + active-row highlight
     // + the always-mounted ChatPane resolving the thread). The CLOSE edge is timing-aware: on mobile it
@@ -260,17 +264,19 @@ export class HomeShellComponent {
     this.listWidth.set(next);
     this.saveListWidth(next);
   }
-  private readListWidth(): number {
-    if (typeof localStorage === 'undefined') return DEFAULT_LIST;
-    const raw = localStorage.getItem(LIST_WIDTH_KEY);
-    const n = raw ? parseInt(raw, 10) : DEFAULT_LIST;
-    return Number.isFinite(n) ? this.clampListWidth(n) : DEFAULT_LIST;
+  private async restoreListWidth(): Promise<void> {
+    const revision = this.widthWriteRevision;
+    const value = await this.preferences.get<number>('device', LIST_WIDTH_KEY);
+    if (revision !== this.widthWriteRevision) return;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      this.listWidth.set(this.clampListWidth(value));
+    }
   }
   private clampListWidth(w: number) {
     return Math.min(MAX_LIST, Math.max(MIN_LIST, w));
   }
   private saveListWidth(w: number) {
-    if (typeof localStorage !== 'undefined')
-      localStorage.setItem(LIST_WIDTH_KEY, String(w));
+    this.widthWriteRevision++;
+    void this.preferences.set('device', LIST_WIDTH_KEY, w).catch(() => {});
   }
 }

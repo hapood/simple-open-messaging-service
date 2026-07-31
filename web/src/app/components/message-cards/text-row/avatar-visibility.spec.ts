@@ -28,6 +28,8 @@ import { TextRowComponent } from './text-row.component';
 class StubUserAvatarComponent {
   readonly type = input<unknown>(undefined);
   readonly name = input<string | undefined | null>('');
+  readonly identityId = input<number | undefined>(undefined);
+  readonly src = input<string | undefined | null>(undefined);
 }
 
 function buildMsg(overrides: Partial<ChatMsgData>): ChatMsgData {

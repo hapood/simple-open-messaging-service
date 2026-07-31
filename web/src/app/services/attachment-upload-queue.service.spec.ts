@@ -1,15 +1,16 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { AttachmentUploadQueueService } from './attachment-upload-queue.service';
+import { PreferenceStore } from './preference-store.service';
 
 describe('AttachmentUploadQueueService', () => {
   let service: AttachmentUploadQueueService;
 
-  beforeEach(() => {
-    localStorage.clear();
+  beforeEach(async () => {
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection()],
     });
+    await TestBed.inject(PreferenceStore).remove('device', 'soms.maxConcurrentUploads');
     service = TestBed.inject(AttachmentUploadQueueService);
   });
 
@@ -61,10 +62,11 @@ describe('AttachmentUploadQueueService', () => {
     expect(peak).toBe(2);
   });
 
-  it('persists and clamps the maximum concurrency', () => {
+  it('persists and clamps the maximum concurrency', async () => {
+    const preferences = TestBed.inject(PreferenceStore);
     service.setMaxConcurrent(6);
     expect(service.maxConcurrent()).toBe(6);
-    expect(localStorage.getItem('soms.maxConcurrentUploads')).toBe('6');
+    expect(await preferences.get('device', 'soms.maxConcurrentUploads')).toBe(6);
 
     service.setMaxConcurrent(99);
     expect(service.maxConcurrent()).toBe(8);

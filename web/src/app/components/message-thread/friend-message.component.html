@@ -9,6 +9,7 @@
     #container
     appKbdOffset
     appComposerWidthSource
+    (pointerdown)="dismissContextMenuOnOutside($event)"
   >
     <app-message-header
       #msgHeader
@@ -16,6 +17,26 @@
       (searchJump)="onSearchJump($event)"
       (historyCleared)="onHistoryCleared()"
     ></app-message-header>
+
+    @if (messageContextMenu(); as menu) {
+      <div class="msg-context-backdrop" aria-hidden="true"></div>
+      <div
+        class="msg-context-menu"
+        role="menu"
+        [style.left.px]="menu.x"
+        [style.top.px]="menu.y"
+      >
+        <button type="button" role="menuitem" (click)="dismissContextMenu()">
+          {{ 'chat.selection.copy' | transloco }}
+        </button>
+        <button type="button" role="menuitem" (click)="openContextForwardDialog()">
+          {{ 'chat.selection.forward' | transloco }}
+        </button>
+        <button type="button" role="menuitem" (click)="selectContextMessage()">
+          {{ 'chat.selection.multiSelect' | transloco }}
+        </button>
+      </div>
+    }
 
     <!-- (transitionend) recomputes the sticky-date pill when the keyboard-lift transform settles: the
          transform fires no scroll event, so without this the pill would keep its pre-lift label until the
@@ -163,9 +184,6 @@
                 ) {
                   <span
                     class="msg-transfer-thumb"
-                    [class.msg-transfer-thumb--completed]="
-                      task.status === 'completed'
-                    "
                     [class.msg-transfer-thumb--uploading]="
                       task.clientMessageId === currentUploadingTransferId()
                     "
@@ -187,10 +205,15 @@
                           stroke-linejoin="round"
                           aria-hidden="true"
                         >
-                          <path
-                            d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
-                          />
-                          <path d="M14 3v5h5" />
+                          @if (transferCategory(task.name) === 'unknown') {
+                            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 3v5h5" />
+                            <path d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2" />
+                            <path d="M12 18h.01" />
+                          } @else {
+                            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 3v5h5" />
+                          }
                         </svg>
                         <span>{{ transferExt(task.name) }}</span>
                       </span>
@@ -231,12 +254,6 @@
                           {{ transferProgress(task.loaded, task.size) }}
                         </text>
                       </svg>
-                    } @else if (task.status === 'completed') {
-                      <span class="msg-transfer-complete" aria-hidden="true">
-                        <svg viewBox="0 0 24 24">
-                          <path d="M6.5 12.5l3.5 3.5 7.5-8" />
-                        </svg>
-                      </span>
                     }
                   </span>
                 }
@@ -246,23 +263,24 @@
                   >
                 }
               </div>
-              <div class="msg-transfer-bytes">{{ uploadBytesLabel() }}</div>
             </div>
           </div>
         }
         @if (failedTransfers().length) {
           <div class="msg-transfer-line">
             <div class="msg-transfer-actions">
-              <button
-                type="button"
-                class="msg-transfer-btn msg-transfer-btn--retry"
-                (click)="retryFailedTransfers()"
-                [attr.aria-label]="'transfer.retry' | transloco"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
-                </svg>
-              </button>
+              @if (retryableFailedTransfers().length) {
+                <button
+                  type="button"
+                  class="msg-transfer-btn msg-transfer-btn--retry"
+                  (click)="retryFailedTransfers()"
+                  [attr.aria-label]="'transfer.retry' | transloco"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+                  </svg>
+                </button>
+              }
               <button
                 type="button"
                 class="msg-transfer-btn msg-transfer-btn--cancel"
@@ -299,7 +317,32 @@
                     @if (task.previewUrl) {
                       <img [src]="task.previewUrl" alt="" />
                     } @else {
-                      <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span>
+                      <span
+                        class="msg-transfer-file-icon msg-transfer-file-icon--{{
+                          transferCategory(task.name)
+                        }}"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.6"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          @if (transferCategory(task.name) === 'unknown') {
+                            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 3v5h5" />
+                            <path d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2" />
+                            <path d="M12 18h.01" />
+                          } @else {
+                            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 3v5h5" />
+                          }
+                        </svg>
+                        <span>{{ transferExt(task.name) }}</span>
+                      </span>
                     }
                   </span>
                 }
@@ -309,10 +352,27 @@
                   >
                 }
               </div>
-              <div class="msg-transfer-bytes">&nbsp;</div>
             </div>
           </div>
         }
+      </div>
+    }
+
+    @if (selectionMode()) {
+      <div class="msg-selection-bar" role="toolbar" [attr.aria-label]="'chat.selection.toolbar' | transloco">
+        <button type="button" class="msg-selection-close" (click)="exitSelectionMode()" [attr.aria-label]="'common.cancel' | transloco">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+        <span class="msg-selection-count">{{ selectedCount() }}</span>
+        <span class="msg-selection-spacer"></span>
+        <button type="button" [disabled]="selectedCount() === 0">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h11v11H8zM5 16V5h11" /></svg>
+          <span>{{ 'chat.selection.copy' | transloco }}</span>
+        </button>
+        <button type="button" [disabled]="selectedCount() === 0" (click)="openSelectedForwardDialog()">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5l7 7-7 7v-4c-5 0-8 1-11 4 1-6 4-10 11-10z" /></svg>
+          <span>{{ 'chat.selection.forward' | transloco }}</span>
+        </button>
       </div>
     }
 
@@ -326,6 +386,8 @@
     } @else {
       @if (!nativeComposer.supported) {
         <app-chat-input
+          [class.msg-composer--selection-hidden]="selectionMode()"
+          [attr.aria-hidden]="selectionMode()"
           [members]="mentionMembers()"
           (send)="onSendIntent($event)"
         ></app-chat-input>

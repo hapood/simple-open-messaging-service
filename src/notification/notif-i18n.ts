@@ -119,6 +119,10 @@ export function buildSummaryTitle(locale: SupportedLocale): string {
   return 'SOMS';
 }
 
+export function buildPrivateBody(locale: SupportedLocale): string {
+  return locale === 'zh-CN' ? '你有新消息' : 'You have new messages';
+}
+
 /** Privacy-safe title used when at least one covered message semantically mentions the recipient. */
 export function buildMentionTitle(locale: SupportedLocale): string {
   return locale === 'zh-CN' ? '有人提到了你' : 'You were mentioned';

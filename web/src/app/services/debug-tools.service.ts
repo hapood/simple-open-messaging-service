@@ -1,6 +1,7 @@
-import { Injectable, isDevMode, signal } from '@angular/core';
+import { inject, Injectable, isDevMode, signal } from '@angular/core';
 import { setFullConsoleLogging } from './log-buffer';
 import { isTauri, tauriInvoke } from './runtime';
+import { PreferenceStore } from './preference-store.service';
 
 const STORAGE_KEY = 'soms-debug';
 /** Number of quick taps on the app-version label that toggles the debug tools in production. */
@@ -24,8 +25,10 @@ const GESTURE_WINDOW_MS = 2000;
  */
 @Injectable({ providedIn: 'root' })
 export class DebugToolsService {
-  private readonly persisted = this.readPersisted();
-  readonly enabled = signal<boolean>(this.isDevBuild() || this.persisted);
+  private readonly preferences = inject(PreferenceStore);
+  private persisted = false;
+  private writeRevision = 0;
+  readonly enabled = signal<boolean>(this.isDevBuild());
 
   private gestureCount = 0;
   private gestureResetAt = 0;
@@ -42,11 +45,12 @@ export class DebugToolsService {
       // Non-browser / no `location` (e.g. a worker) — nothing to do.
     }
     this.applyLogging(this.enabled());
+    void this.restore();
   }
 
   /** Flip the persisted flag. Dev builds stay enabled regardless (the flag only governs production). */
   toggle(): void {
-    this.setPersisted(!this.readPersisted());
+    this.setPersisted(!this.persisted);
   }
 
   /** Wire to the app-version label: `GESTURE_TAPS` taps within the window → toggle. */
@@ -64,12 +68,12 @@ export class DebugToolsService {
   }
 
   private setPersisted(on: boolean): void {
-    try {
-      if (on) localStorage.setItem(STORAGE_KEY, '1');
-      else localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // Private mode / storage disabled — the in-memory signal still flips for this session.
-    }
+    this.writeRevision++;
+    this.persisted = on;
+    const write = on
+      ? this.preferences.set('device', STORAGE_KEY, true)
+      : this.preferences.remove('device', STORAGE_KEY);
+    void write.catch(() => {});
     this.enabled.set(this.isDevBuild() || on);
     this.applyLogging(this.enabled());
   }
@@ -83,12 +87,13 @@ export class DebugToolsService {
     }
   }
 
-  private readPersisted(): boolean {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === '1';
-    } catch {
-      return false;
-    }
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const stored = await this.preferences.get<boolean>('device', STORAGE_KEY);
+    if (revision !== this.writeRevision || stored !== true) return;
+    this.persisted = true;
+    this.enabled.set(true);
+    this.applyLogging(true);
   }
 
   private isDevBuild(): boolean {

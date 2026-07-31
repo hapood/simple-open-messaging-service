@@ -1,4 +1,5 @@
-import { computed, Injectable, signal } from '@angular/core';
+import { computed, inject, Injectable, signal } from '@angular/core';
+import { PreferenceStore } from './preference-store.service';
 
 const KEY = 'soms.mediaSizeThreshold';
 const DEFAULT_KB = 1024;
@@ -19,7 +20,9 @@ export const MEDIA_THRESHOLD_OPTIONS_KB = [512, 1024, 2048, 0] as const;
  */
 @Injectable({ providedIn: 'root' })
 export class MediaSizeThresholdService {
-  private readonly _kb = signal<number>(this.readStored());
+  private readonly preferences = inject(PreferenceStore);
+  private writeRevision = 0;
+  private readonly _kb = signal<number>(DEFAULT_KB);
   /** Session-scoped manual-load grants. Keeping these above the row component means opening and closing
    * the gallery (which remounts virtual rows) cannot turn an already loaded thumbnail back into a gate. */
   private readonly loadedMedia = signal<ReadonlySet<string>>(new Set());
@@ -33,13 +36,14 @@ export class MediaSizeThresholdService {
     return kb <= 0 ? 0 : kb * 1024;
   });
 
+  constructor() {
+    void this.restore();
+  }
+
   setKb(kb: number): void {
+    this.writeRevision++;
     this._kb.set(kb);
-    try {
-      localStorage.setItem(KEY, String(kb));
-    } catch {
-      // localStorage disabled (private mode) — keep the in-memory signal only.
-    }
+    void this.preferences.set('device', KEY, kb).catch(() => {});
   }
 
   isLoaded(key: string): boolean {
@@ -55,14 +59,10 @@ export class MediaSizeThresholdService {
     });
   }
 
-  private readStored(): number {
-    try {
-      const v = localStorage.getItem(KEY);
-      if (v === null) return DEFAULT_KB;
-      const n = Number(v);
-      return Number.isFinite(n) && n >= 0 ? n : DEFAULT_KB;
-    } catch {
-      return DEFAULT_KB;
-    }
+  private async restore(): Promise<void> {
+    const revision = this.writeRevision;
+    const value = await this.preferences.get<number>('device', KEY);
+    if (revision !== this.writeRevision) return;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) this._kb.set(value);
   }
 }

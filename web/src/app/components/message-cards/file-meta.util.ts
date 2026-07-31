@@ -5,7 +5,7 @@
  */
 
 /** Display category derived from mimeType (drives the icon tint). The backend accepts any file
- *  type (open model), so unknown MIMEs fall through to the generic 'file' category. */
+ *  type (open model), so unknown MIMEs fall through to a dedicated default category. */
 export type FileCategory =
   | 'pdf'
   | 'doc'
@@ -13,7 +13,7 @@ export type FileCategory =
   | 'slides'
   | 'archive'
   | 'text'
-  | 'file';
+  | 'unknown';
 
 export function categorize(mimeType: string): FileCategory {
   if (mimeType === 'application/pdf') return 'pdf';
@@ -60,7 +60,20 @@ export function categorize(mimeType: string): FileCategory {
   ) {
     return 'text';
   }
-  return 'file';
+  return 'unknown';
+}
+
+/** Upload-time category when only a local filename is available. Unknown extensions never inherit
+ * the archive treatment; only an explicit compressed-file suffix maps to `archive`. */
+export function categorizeFilename(name: string): FileCategory {
+  const ext = fileExt(name).toLowerCase();
+  if (ext === 'pdf') return 'pdf';
+  if (['doc', 'docx', 'rtf'].includes(ext)) return 'doc';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return 'sheet';
+  if (['ppt', 'pptx'].includes(ext)) return 'slides';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+  if (['txt', 'md', 'json', 'xml', 'log'].includes(ext)) return 'text';
+  return 'unknown';
 }
 
 /** Human-readable byte size (B / KB / MB / GB). Empty for 0/unknown. */
@@ -76,10 +89,14 @@ export function formatBytes(n: number): string {
   return `${i === 0 || v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
-/** Uppercased extension badge from the trusted server-sanitized filename; 'FILE' when there is no dot. */
+/** Uppercased extension badge from the trusted server-sanitized filename. Icon badges are intentionally
+ * capped at four characters; extension classification uses the same compact token. */
 export function fileExt(name: string): string {
   const i = name.lastIndexOf('.');
-  return i >= 0 ? name.slice(i + 1).toUpperCase() : 'FILE';
+  if (i < 0) return 'FILE';
+  const ext = name.slice(i + 1);
+  if (!/^[a-z0-9]+$/i.test(ext)) return '?';
+  return ext.slice(0, 4).toUpperCase();
 }
 
 /** Human-readable playback duration: <1h → "M:SS", ≥1h → "H:MM:SS". Empty for 0 / unknown / non-finite.

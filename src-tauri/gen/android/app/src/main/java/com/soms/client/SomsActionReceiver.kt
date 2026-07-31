@@ -68,7 +68,7 @@ class SomsActionReceiver : BroadcastReceiver() {
             } else {
                 // all-mode dismiss: advance the GLOBAL away-HWM (so the next fetch's `since` gates past
                 // everything) + cancel the away card.
-                if (tid >= 0 && seq >= 0) SomsSecureStore.setMissedCursor(context, tid, seq)
+                if (tid >= 0 && seq >= 0) ClientStateDb.setNotificationCursor(context, tid, seq)
             }
             NotificationManagerCompat.from(context).cancel(notifId)
             return

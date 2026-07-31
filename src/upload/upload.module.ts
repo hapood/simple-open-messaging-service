@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { UploadController } from './upload.controller.js';
 import { UploadService } from './upload.service.js';
-import { AvatarStackService } from './avatar-stack.service.js';
 import { MediaAssetService } from './media-asset.service.js';
 import { MediaAccessService } from './media-access.service.js';
 import { MessageModule } from '../message/message.module.js';
@@ -12,11 +11,11 @@ import { MessageModule } from '../message/message.module.js';
   // (MessageFanoutModule), so no import is needed for it.
   imports: [MessageModule],
   controllers: [UploadController],
-  providers: [UploadService, AvatarStackService, MediaAssetService, MediaAccessService],
+  providers: [UploadService, MediaAssetService, MediaAccessService],
   // MediaAccessService is exported so bootstrap.ts can resolve it via app.get() for the /uploads/
   // preHandler gate (the gate runs outside DI's request scope, on the Fastify root instance).
   // AvatarStackService is exported so NotificationQueryService (in MessageFanoutModule, which imports this
   // module) can inject it to composite the notification icon.
-  exports: [UploadService, AvatarStackService, MediaAccessService],
+  exports: [UploadService, MediaAccessService],
 })
 export class UploadModule {}

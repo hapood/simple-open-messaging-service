@@ -31,13 +31,21 @@ export interface NotifAction {
 
 /**
  * `kind` discriminators — select the client's render template + which `actions` apply. Open set; the
- * summary ships two concrete values today:
- *  - `'message-summary'` — the coalesced cross-thread "X sent you N messages" away notification.
+ * The message surface ships one per-conversation kind today:
+ *  - `'thread-message'`  — one stable notification per conversation.
  *  - `'clear'`           — tells the client to CANCEL the notification with this `tag` (server-driven
  *                          dismiss when nothing is unread+unmuted; replaces the client-side empty-cancel).
  * Future kinds (`'single-message'` with a per-thread reply action, `'friend-request'`, …) extend this union.
  */
-export type NotificationKind = 'message-summary' | 'thread-message' | 'clear' | (string & {});
+export type NotificationKind = 'thread-message' | 'clear' | (string & {});
+
+export interface NotificationMessage {
+  seq: number;
+  senderId: number;
+  senderName: string;
+  text: string;
+  timestamp: number;
+}
 
 /** One fully self-describing notification surface. The client renders it with zero composition logic. */
 export interface NotificationDescriptor {
@@ -64,6 +72,9 @@ export interface NotificationDescriptor {
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]` (actions land in a later phase). */
   actions: NotifAction[];
+  /** Present only in message-preview mode. Private mode deliberately omits this field. */
+  messages?: NotificationMessage[];
+  previewMode?: 'message' | 'private';
   /** Routing payload, opaque to the server. The away-summary carries none today — its `dismiss` button is a
    *  pure frontend op (closes the shade, no backend round-trip, no read-watermark change). A future
    *  `single-message` kind would carry one `threadId` + `seq` to identify its message (e.g. for a reply). */

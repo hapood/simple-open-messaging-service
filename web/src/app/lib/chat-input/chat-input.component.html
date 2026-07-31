@@ -271,7 +271,13 @@
     hidden
     (change)="onAttachChange($event)"
   />
-  <input #fileInput type="file" hidden (change)="onFileChange($event)" />
+  <input
+    #fileInput
+    type="file"
+    multiple
+    hidden
+    (change)="onFileChange($event)"
+  />
 </form>
 @if (pasteOpen()) {
   <app-paste-panel

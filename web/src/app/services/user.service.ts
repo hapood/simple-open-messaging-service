@@ -5,6 +5,7 @@ import { apiPrefix } from './constants';
 import { User, ConversationItem, Invite, InviteDetail, StandardResponse } from './model'
 import { WebdbService } from './webdb.service'
 import { ProfileRepository } from './profile-store.service'
+import { PreferenceStore } from './preference-store.service'
 
 export type { User } from './model'
 
@@ -56,6 +57,7 @@ export class UserService {
 
   private readonly webdb = inject(WebdbService)
   private readonly profileRepo = inject(ProfileRepository)
+  private readonly preferences = inject(PreferenceStore)
   /** The user key whose DB is currently open (or null) — tracks {@link establishSession} / {@link clearSession}. */
   private webdbUserKey: string | null = null
 
@@ -66,6 +68,7 @@ export class UserService {
    *  IDB is closed + deleted. Also wipes the user-scoped localStorage keys (client-only folders / emoji). */
   clearSession(): void {
     const prev = this.webdbUserKey
+    const previousUserId = this.sessionProfile()?.id
     this.webdbUserKey = null
     this.sessionUserId.set(null)
     this.sessionProfile.set(undefined)
@@ -73,7 +76,7 @@ export class UserService {
     this.friendReqRev.set(null)
     this.friendReqAckRev.set(null)
     this.profileFetch = undefined
-    clearUserScopedLocalStorage()
+    void this.clearClientPreferences(previousUserId)
     if (prev != null) void this.webdb.closeAndDelete(prev)
   }
 
@@ -171,7 +174,7 @@ export class UserService {
    *  HELLO-driven; {@link establishSession} reconciles on HELLO (idempotent `openForUser` reuse for the same
    *  user, close+reopen on a switch). No-op when no userId was ever persisted (first-ever launch). */
   async restoreWebdb(): Promise<void> {
-    const userId = this.readLastUserId();
+    const userId = await this.readLastUserId();
     if (userId === null) return;
     // Track the open user so clearSession can close it (a pre-HELLO logout) + establishSession can detect
     // a token-swap (close+reopen when HELLO's userId differs from the optimistic lastUserId).
@@ -183,22 +186,28 @@ export class UserService {
   }
 
   /** Read the persisted last-logged-in userId, or null when absent / unparseable / storage unavailable. */
-  private readLastUserId(): number | null {
-    if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(LAST_USER_ID_KEY);
-    if (!raw) return null;
+  private async readLastUserId(): Promise<number | null> {
+    const raw = await this.preferences.get<number>('device', LAST_USER_ID_KEY);
+    if (raw == null) return null;
     const userId = Number(raw);
     return Number.isFinite(userId) && userId > 0 ? userId : null;
   }
 
   /** Persist the userId so the next boot's restoreWebdb can open the per-user IDB pre-HELLO. SSR-safe. */
   private persistLastUserId(userId: number): void {
-    if (typeof localStorage === 'undefined') return;
-    try {
-      localStorage.setItem(LAST_USER_ID_KEY, String(userId));
-    } catch {
-      /* private mode / quota — best-effort; the next boot just awaits HELLO to open the DB */
-    }
+    void this.preferences.set('device', LAST_USER_ID_KEY, userId).catch(() => {});
+  }
+
+  private async clearClientPreferences(userId?: number): Promise<void> {
+    await Promise.all([
+      this.preferences.remove('device', LAST_USER_ID_KEY),
+      ...(userId == null
+        ? []
+        : [
+            this.preferences.remove(`account:${userId}`, 'soms.chatFolders'),
+            this.preferences.remove(`account:${userId}`, 'soms.chat.emojiRecents'),
+          ]),
+    ]).catch(() => {})
   }
 
   /** In-flight profile fetch (dedup): boot calls updateSessionProfile() AND ConversationListService
@@ -449,12 +458,3 @@ export function avatarUrl(base: string | undefined | null, size: AvatarSize): st
  * Deliberately NOT cleared (device-level preferences, shared across accounts on this browser): theme,
  * language, the desktop list-pane width, the media-size threshold, `device_id`, and `is_keep_login`.
  */
-const USER_SCOPED_LS_KEYS = ['soms.chatFolders', 'soms.chat.emojiRecents', LAST_USER_ID_KEY]
-
-/** Remove every user-scoped localStorage key (logout / account switch). SSR/prerender-safe. */
-export function clearUserScopedLocalStorage(): void {
-  if (typeof localStorage === 'undefined') return
-  for (const k of USER_SCOPED_LS_KEYS) {
-    try { localStorage.removeItem(k) } catch { /* private-mode / quota — best-effort */ }
-  }
-}

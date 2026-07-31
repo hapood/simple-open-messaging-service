@@ -620,7 +620,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    * Optimistic image send: read images locally -> show a "sending" album bubble (insertAfter, transient) -> mock confirm.
    * The real uploadMedia/sendMessage is skipped under mock (the bytes are already client-side).
    */
-  async sendMediaFromFile(files: FileList | null): Promise<void> {
+  async sendMediaFromFile(files: readonly File[] | null): Promise<void> {
     const scroller = this.scroller;
     if (!files || files.length === 0 || !scroller) return;
     const list = Array.from(files).filter(f => f.type.startsWith('image/'));
@@ -637,7 +637,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    * making the card fully functional in the sandbox. (Production uses MsgService.uploadFile → POST /upload/file
    * and stores the returned /uploads/<name> url; the optimistic card here is the same shape with a blob url.)
    */
-  async sendFileFromFile(files: FileList | null): Promise<void> {
+  async sendFileFromFile(files: readonly File[] | null): Promise<void> {
     const scroller = this.scroller;
     if (!files || files.length === 0 || !scroller) return;
     for (const f of Array.from(files)) {

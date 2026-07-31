@@ -1,0 +1,98 @@
+<div class="forward-dialog">
+  <header class="forward-dialog__header">
+    <button type="button" class="forward-dialog__header-action" (click)="close()">
+      {{ 'common.cancel' | transloco }}
+    </button>
+    <h2>{{ 'forward.title' | transloco }}</h2>
+    <button
+      type="button"
+      class="forward-dialog__header-action forward-dialog__header-action--primary"
+      [disabled]="selectedCount() === 0"
+      (click)="confirm()"
+    >
+      {{ 'forward.send' | transloco }}
+    </button>
+  </header>
+
+  <div class="forward-dialog__preview">
+    <app-forward-message-card
+      [messages]="messages()"
+      [recordKind]="recordKind()"
+      [compact]="true"
+    ></app-forward-message-card>
+  </div>
+
+  @if (recentConversations().length > 0 && !searchText()) {
+    <section class="forward-dialog__recent">
+      <h3>{{ 'forward.recent' | transloco }}</h3>
+      <div class="forward-dialog__recent-list">
+        @for (item of recentConversations(); track item.threadId) {
+          <button
+            type="button"
+            class="forward-dialog__recent-item"
+            [class.forward-dialog__recent-item--selected]="
+              selectedThreadIds().has(item.threadId)
+            "
+            (click)="toggleConversation(item)"
+          >
+            <span class="forward-dialog__recent-avatar">
+              <app-user-avatar
+                [type]="avatarType(item)"
+                [name]="displayName(item)"
+                [identityId]="avatarIdentityId(item)"
+                [src]="avatarSrc(item)"
+              ></app-user-avatar>
+              <span class="forward-dialog__recent-check" aria-hidden="true">✓</span>
+            </span>
+            <span>{{ displayName(item) }}</span>
+          </button>
+        }
+      </div>
+    </section>
+  }
+
+  <section class="forward-dialog__directory">
+    <app-thread-search-input
+      [value]="searchText()"
+      [placeholder]="'forward.searchPlaceholder' | transloco"
+      [ariaLabel]="'common.search' | transloco"
+      [clearAriaLabel]="'chat.clearSearch' | transloco"
+      (valueChange)="setSearchText($event)"
+    ></app-thread-search-input>
+
+    <h3 class="forward-dialog__section-title">
+      {{ 'forward.allChats' | transloco }}
+    </h3>
+
+    <div class="forward-dialog__list" role="listbox" aria-multiselectable="true">
+      @for (item of filteredConversations(); track item.threadId) {
+        <button
+          type="button"
+          class="forward-dialog__recipient"
+          [class.forward-dialog__recipient--selected]="
+            selectedThreadIds().has(item.threadId)
+          "
+          role="option"
+          [attr.aria-selected]="selectedThreadIds().has(item.threadId)"
+          (click)="toggleConversation(item)"
+        >
+          <span class="forward-dialog__avatar">
+            <app-user-avatar
+              [type]="avatarType(item)"
+              [name]="displayName(item)"
+              [identityId]="avatarIdentityId(item)"
+              [src]="avatarSrc(item)"
+            ></app-user-avatar>
+          </span>
+          <span class="forward-dialog__recipient-name">{{ displayName(item) }}</span>
+          <span class="forward-dialog__check" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" /></svg>
+          </span>
+        </button>
+      } @empty {
+        <div class="forward-dialog__empty">{{ 'forward.noResults' | transloco }}</div>
+      }
+    </div>
+  </section>
+
+</div>

@@ -97,7 +97,7 @@ export class NotificationController {
         : null;
     return this.awayNotifications.query(userId, {
       since,
-      grouping: dto.grouping,
+      previewMode: dto.previewMode,
       threadHwms: dto.threadHwms,
       acceptLanguage: (req.headers['accept-language'] as string | undefined) ?? null,
     });

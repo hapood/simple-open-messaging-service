@@ -139,6 +139,7 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
       // The source resolves the self id LIVE from sessionUserId() at shape time (not a constructor arg), so
       // the stub must expose it — user 1 is "Me" in the fixtures above.
       sessionUserId: () => 1,
+      sessionProfile: () => ({ id: 1, account: 'me@example.com' }),
     } as unknown as UserService;
     const ws = {
       reconnect$: new Subject<void>(),

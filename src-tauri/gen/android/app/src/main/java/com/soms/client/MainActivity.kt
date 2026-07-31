@@ -86,7 +86,7 @@ class MainActivity : TauriActivity() {
     private var nativeFileRequestId: String? = null
     private var pendingMediaSave: Pair<String, File>? = null
     private val nativePhotoPicker = registerForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(20),
+        ActivityResultContracts.PickMultipleVisualMedia(),
     ) { uris ->
         val requestId = nativePhotoRequestId.orEmpty()
         nativePhotoRequestId = null
@@ -1499,27 +1499,6 @@ class MainActivity : TauriActivity() {
             return SomsSecureStore.getSessionToken(a)
         }
 
-        /** The web threadlist pushes its away-notification high-water mark `{threadId, seq}` here as a JSON
-         *  string (the same shape [setFirebaseConfig] uses — JS objects don't bridge reliably), so the
-         *  background fetchers can send it as the `since` cursor on POST /notifications/missed while the
-         *  WebView is suspended (the IDB copy the web keeps dies with the WebView). Pass null/empty to clear
-         *  (logout / first boot). Persisted in [SomsSecureStore] (survives process death) + cleared with the
-         *  session token. */
-        @JavascriptInterface
-        fun setMissedCursor(cursorJson: String?) {
-            val a = activityRef.get() ?: return
-            if (cursorJson.isNullOrBlank()) {
-                SomsSecureStore.setMissedCursor(a, null, null)
-                return
-            }
-            try {
-                val o = JSONObject(cursorJson)
-                SomsSecureStore.setMissedCursor(a, o.optInt("threadId", -1), o.optInt("seq", -1))
-            } catch (e: org.json.JSONException) {
-                SomsSecureStore.setMissedCursor(a, null, null) // malformed → clear; never gate a fetch on garbage
-            }
-        }
-
         /** Synchronous read of the RealtimeService's last-pushed connection state
          *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
          *  connection-state signal before the next transition (Kotlin only pushes on transitions). */
@@ -1618,17 +1597,30 @@ class MainActivity : TauriActivity() {
          *  folded card). Device-local; the next background fetch sends it as `grouping`. Read by the Settings
          *  page to render the segmented control's initial state. */
         @JavascriptInterface
-        fun getNotifGrouping(): String {
-            val a = activityRef.get() ?: return "thread"
-            return SomsSecureStore.getNotifGrouping(a)
+        fun getNotificationPreviewMode(): String {
+            val a = activityRef.get() ?: return "message"
+            return ClientStateDb.getNotificationPreviewMode(a)
         }
 
         /** Set the away-notification grouping pref ("thread" | "all"). Persists immediately; takes effect on
          *  the next background fetch (no live notification to rebuild). */
         @JavascriptInterface
-        fun setNotifGrouping(grouping: String) {
+        fun setNotificationPreviewMode(mode: String) {
             val a = activityRef.get() ?: return
-            SomsSecureStore.setNotifGrouping(a, grouping)
+            ClientStateDb.setNotificationPreviewMode(a, mode)
+            SomsMessagingService.clearAllMessageNotifs(a)
+        }
+
+        @JavascriptInterface
+        fun getNotificationAlertPolicy(): String {
+            val a = activityRef.get() ?: return "cooldown_5s"
+            return ClientStateDb.getNotificationAlertPolicy(a)
+        }
+
+        @JavascriptInterface
+        fun setNotificationAlertPolicy(policy: String) {
+            val a = activityRef.get() ?: return
+            ClientStateDb.setNotificationAlertPolicy(a, policy)
         }
 
         /** Next scheduled WorkManager poll time (epoch ms), or -1 if not scheduled. For the Settings row. */
