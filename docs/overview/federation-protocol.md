@@ -502,87 +502,29 @@ SOMS semantics; only new delivery is blocked.)
 
 ---
 
-## 10. Schema (Prisma)
+## 10. Database schema
 
-```prisma
-// A remote user is a local User stub: domain = <peer-domain> (local users carry the "local" sentinel,
-// never exposed — display uses the real config.domain). The compound unique key enforces BOTH local
-// uniqueness and stub uniqueness (a local "bob" does not block "bob@bbb.com").
-model User {
-  // ... existing fields
-  domain       String   @default("local") @db.VarChar(63)   // "local" | <peer-domain>
-  @@unique([account, domain])
-}
+The executable schema is defined in [`src/database/schema.ts`](../../src/database/schema.ts), with
+the deployed PostgreSQL shape captured by
+[`database/migrations/0000_baseline.sql`](../../database/migrations/0000_baseline.sql).
 
-// MessageThread — Step 3 adds the federated GROUP identity: a `groupUser` (a `!`-sigil User — the
-// group's own `!account`, @unique, one local mirror per federated group) carrying the account + the
-// origin server's domain (groupUser.domain). NULL groupUserId for purely-local threads (all P2P,
-// local-only groups); 1:1 threads still have no shared id.
-// Message gains originServerTime (Step 2/3 — the sender clock, stored not shown; createdAt = arrival,
-// displayed). See docs/roadmap/federation-step3-design.md §3.
+- A remote user is a local `User` stub whose `domain` is the peer domain; local users carry the
+  internal `local` sentinel. The `(account, domain)` unique constraint keeps local and stub accounts
+  independent.
+- `MessageThread.groupUserId` identifies a federated group mirror and remains null for P2P and
+  local-only groups. `Message.originServerTime` stores the sender clock while `createdAt` records
+  arrival time.
+- `Friendship` has one normalized row per pair (`userAId=min`, `userBId=max`) and stores requester,
+  status, request message, and nullable P2P thread. `(userAId, userBId)` is unique.
+- `FederatedPeer` is keyed by domain and stores its trust lifecycle, timestamps, actor/reason
+  metadata, and demotion count. Trust level and last-success time are indexed.
+- `FederatedPeerEvent` is an append-only audit table without a peer foreign key, so history survives
+  peer deletion.
+- `S2SKeyCache` uses `(domain, keyId)` as its primary key; multiple keys per domain support rotation.
+- `S2SFriendOpSeen` uses `(origin, opId)` as its primary key to make inbound delivery idempotent.
 
-// Friendship: one normalized row per pair (userAId=min, userBId=max) + requesterId for direction.
-// reqMessage is the ≤255-char friend-request note (local + federated). threadId is the P2P
-// MessageThread, created on APPROVED — each server creates its OWN local thread.
-model Friendship {
-  // ... userAId, userBId, requesterId, status
-  reqMessage  String   @default("") @db.VarChar(255)
-  threadId    Int?
-  @@unique([userAId, userBId])
-}
-
-// Trusted-domain registry + lifecycle state (Gate 1). Keys are NOT stored here — fetched from
-// each peer's /.well-known/soms and cached in S2SKeyCache. See §5.2 for the state machine.
-model FederatedPeer {
-  domain        String   @id @db.VarChar(63)
-  trustLevel    String   @default("pending") @db.VarChar(15)  // pending | trusted | demoted | blocked
-  addedBy       String?  @db.VarChar(31)
-  createdAt     DateTime @default(now())
-  trustedAt     DateTime?
-  lastSuccessAt DateTime?
-  demotedAt     DateTime?
-  demoteReason  String?  @db.VarChar(255)
-  demotionCount Int      @default(0)
-  blockedAt     DateTime?
-  @@index([trustLevel])
-  @@index([lastSuccessAt])
-}
-
-// Append-only audit log of every trust transition (NO FK → FederatedPeer; decoupled). The admin
-// Federation page renders the per-peer timeline from this. See §5.2.
-model FederatedPeerEvent {
-  id        BigInt   @id @default(autoincrement())
-  domain    String   @db.VarChar(63)
-  type      String   @db.VarChar(15)   // discovered | trusted | demoted | blocked | unblocked
-  reason    String?  @db.VarChar(255)
-  createdAt DateTime @default(now())
-  @@index([domain, createdAt])
-  @@index([createdAt])
-}
-
-// Cached peer signing keys (fetched from /.well-known/soms, TTL'd; JWKS-style; multiple rows per
-// domain during rotation).
-model S2SKeyCache {
-  domain     String   @db.VarChar(63)
-  keyId      String   @db.VarChar(127)
-  publicKey  String   @db.VarChar(127)
-  fetchedAt  DateTime @default(now())
-  @@id([domain, keyId])
-  @@index([domain])
-}
-
-// Inbound dedup: at-least-once delivery, idempotent apply. Step 1 sync delivery still benefits —
-// a user retry of a friend op re-POSTs the same payload and is absorbed here.
-model S2SFriendOpSeen {
-  origin      String   @db.VarChar(63)
-  opId        String   @db.VarChar(127)
-  receivedAt  DateTime @default(now())
-  @@id([origin, opId])
-}
-
-// NOTE: there is NO S2SOutbox in Step 1 (sync delivery). It revives in Step 2 if durable
-// cross-server message retry is needed — see §6.2 for the planned shape.
-```
+There is no `S2SOutbox` in Step 1 because delivery is synchronous. See §6.2 if durable cross-server
+retry is introduced.
 
 ### Endpoints
 

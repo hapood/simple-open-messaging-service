@@ -34,7 +34,7 @@
 - 开始每个工作包前确认 `git status --short`，识别新的并行修改；
 - UI 改造不覆盖或回退不属于本计划的改动；
 - 每个工作包使用独立 Conventional Commit；
-- 不修改已部署 Prisma migration，也不需要数据库迁移。
+- 不修改已部署 SQL migration，也不需要数据库迁移。
 
 ### 2.2 基线
 

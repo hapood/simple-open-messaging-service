@@ -126,7 +126,7 @@ retreat:
 for (let attempt = 0; attempt < 3; attempt++) {
   const account = '!' + mintUlid();           // fresh random draw each attempt
   try { return await createGroupUser(account, /* … */); }
-  catch (e) { if (!isP2002(e)) throw e; }      // regenerate, never append a counter
+  catch (e) { if (!isUniqueViolation(e)) throw e; } // regenerate, never append a counter
 }
 throw new Error('ULID collision after 3 attempts (probabilistically impossible)');
 ```

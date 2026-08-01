@@ -137,8 +137,8 @@ interface ApiResult<T = unknown> {
 | --- | --- | --- |
 | Success / business failure | 200 | Business results (including DTO parameter validation failures) always 200 + business `code` |
 | Unauthenticated | 401 | token missing/expired (JwtAuthGuard) |
-| Resource not found | 404 | Prisma P2025 |
-| Conflict | 409 | Prisma P2002 (unique constraint) |
+| Resource not found | 404 | Missing database row or resource |
+| Conflict | 409 | PostgreSQL unique-constraint violation |
 | Server error | 500 | Caught by the global filter as a fallback; no stack leaked |
 
 > Design tradeoff (benchmarked against WhatsApp/Telegram, see §1/§3): the business code is the authoritative source of errors; HTTP codes only provide system-layer coarse categories.
@@ -160,20 +160,18 @@ interface ApiResult<T = unknown> {
 
 ### 5.3 Authentication and Security Contract
 
-**Persist refresh_token to DB** (Prisma draft, replacing `_refreshTokenDict`):
+**Persist refresh_token to DB** (schema sketch, replacing `_refreshTokenDict`):
 
-```prisma
-model RefreshToken {
-  id         BigInt   @id @default(autoincrement())
-  userId     Int
-  user       User     @relation(fields: [userId], references: [id])
-  tokenHash  String   @unique          // store a hash, not plaintext
-  device     String?                   // multi-device identifier
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime
-  revokedAt  DateTime?                 // soft revocation
-  @@index([userId])
-}
+```sql
+CREATE TABLE "SessionToken" (
+  "id" bigserial PRIMARY KEY,
+  "userId" integer NOT NULL REFERENCES "User"("id"),
+  "tokenHash" varchar(255) NOT NULL UNIQUE,
+  "device" varchar(255),
+  "createdAt" timestamptz NOT NULL DEFAULT now(),
+  "expiresAt" timestamptz,
+  "revokedAt" timestamptz
+);
 ```
 
 - Login: after issuance, `(userId, hash(token), device, expiresAt)` is written to the DB.
@@ -232,13 +230,13 @@ Each tier lists **content**, **affected files**, and **acceptance**.
 
 ### P0 — Correctness and Security ✅ Completed
 
-Global exception filter, ValidationPipe+DTO, refresh_token persisted to DB (fixing the logout/renew-access/renew-refresh bugs), externalized secrets, CORS allowlist + helmet have all landed and been verified end-to-end; backend dependency upgrades (NestJS 11 / Prisma 7 / TS 5.9, keeping CJS) are done. See git history for details.
+Global exception filter, ValidationPipe+DTO, refresh_token persisted to DB (fixing the logout/renew-access/renew-refresh bugs), externalized secrets, CORS allowlist + helmet have all landed and been verified end-to-end; backend dependency upgrades (NestJS 11 / TS 5.9, keeping CJS at that stage) are done. The database layer now uses Drizzle ORM. See git history for details.
 
 ### P1 — Contract and Integration ✅ Completed
 
 Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, full class-validator DTOs, full OpenAPI, frontend `openapi-typescript` type generation, serialization interceptor (removing the `Date.toJSON` hack), and business code segment rationalization have all landed. The request/response shape of each endpoint is governed by the **live OpenAPI** (`/api/v1/docs` + frontend generated types) as the single source of truth.
 
-> **P1 Side Task (Engineering Infrastructure) — Whole-backend ESM Conversion** ✅ **Completed** (2026-07, branch `refactor/cjs-to-esm`). What landed: `tsconfig` (`module/moduleResolution: NodeNext`, `target ES2022`, `esModuleInterop: true`, `useDefineForClassFields: false` — the latter must be explicitly false, otherwise ES2022 defaults to true and breaks Nest property injection + the `@nestjs/swagger` metadata plugin) + `package.json` `type:"module"` + repo-wide relative imports patched with `.js` (codemod 148 spots) + 5 CJS-isms converted to default imports (`compression`/`sharp`/`argon2`×2/`dayjs`). **Pre-flight test net added**: first built an auth e2e smoke (register→login→guarded, `soms_test` isolated DB), green under CJS as a regression anchor, still green after ESM. **Toolchain**: dev runs `tsx` (ts-node ESM is deprecated), tests switched to `Vitest` (native ESM). **Root-cause payoff**: Prisma 7 `generate` emits an ESM client under NodeNext; Node 24 module-detection no longer misjudges; the Dockerfile's `COPY tsconfig` ordering is preserved (`generate` still needs to read `module`), but the CJS-avoidance pin for node 24.16 was dropped to `node:24`. The `require("@nestjs/swagger")` injected by the `@nestjs/swagger` CLI plugin is emitted by tsc as a createRequire-based `__require`, which runs fine under ESM. See the memory `prisma-generate-tsconfig-order`.
+> **P1 Side Task (Engineering Infrastructure) — Whole-backend ESM Conversion** ✅ **Completed** (2026-07, branch `refactor/cjs-to-esm`). What landed: `tsconfig` (`module/moduleResolution: NodeNext`, `target ES2022`, `esModuleInterop: true`, `useDefineForClassFields: false` — the latter must be explicitly false, otherwise ES2022 defaults to true and breaks Nest property injection + the `@nestjs/swagger` metadata plugin) + `package.json` `type:"module"` + repo-wide relative imports patched with `.js` (codemod 148 spots) + 5 CJS-isms converted to default imports (`compression`/`sharp`/`argon2`×2/`dayjs`). **Pre-flight test net added**: first built an auth e2e smoke (register→login→guarded, `soms_test` isolated DB), green under CJS as a regression anchor, still green after ESM. **Toolchain**: dev runs `tsx` (ts-node ESM is deprecated), tests switched to `Vitest` (native ESM). Node 24 module detection and the `@nestjs/swagger` CLI plugin's createRequire-based `__require` output were verified under ESM. The database layer has since migrated to Drizzle and no longer has a client-generation step.
 
 
 ### P2 — Real-Time Experience and Reliability ✅ Completed
@@ -301,7 +299,7 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 | Exception filter | New `src/common/exception.filter.ts` |
 | DTOs and validation | [src/controller/*](../../src/controller/), new `src/common/dto/` |
 | Response envelope consolidation | [src/common/api-result.ts](../../src/common/api-result.ts), [src/common/serialize.interceptor.ts](../../src/common/serialize.interceptor.ts) |
-| Persist refresh to DB + bug fixes + secrets | [src/auth/auth.service.ts](../../src/auth/auth.service.ts), [src/auth/constants.ts](../../src/auth/constants.ts), [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts), [prisma/schema.prisma](../../prisma/schema.prisma) |
+| Persist refresh to DB + bug fixes + secrets | [src/auth/auth.service.ts](../../src/auth/auth.service.ts), [src/auth/constants.ts](../../src/auth/constants.ts), [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts), [src/database/schema.ts](../../src/database/schema.ts) |
 | SSE downstream (auth / heartbeat / push / liveness / forced logout) | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts) |
 | File upload | [src/upload/](../../src/upload/) (`upload.controller` + `upload.service`; chat image upload implemented; avatar `sharp` multi-size rewrite shares `src/upload/`) |
 | Frontend renewal single-flight + SSE reconnect backoff | [web/src/app/auth.interceptor.ts](../../web/src/app/auth.interceptor.ts), [web/src/app/services/auth.service.ts](../../web/src/app/services/auth.service.ts), [web/src/app/services/websocket.service.ts](../../web/src/app/services/websocket.service.ts) (filename kept; internals switched to `@microsoft/fetch-event-source`) |

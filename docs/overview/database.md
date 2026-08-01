@@ -138,7 +138,9 @@ Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId
 | `expiresAt` | DateTime | 7d; validated at accept time (background sweep deferred) |
 | `origin` / `originId` | VarChar | minting server domain / id — `(origin, originId)` delivery dedup |
 
-Rows never hard-deleted (kept as history). Unique: `@@unique([origin, originId])`. Upsert-on-P2002 dedupes: FRIEND on (from, to), GROUP on (to, thread) regardless of inviter.
+Rows are never hard-deleted (kept as history). The database has a unique constraint on
+`(origin, originId)`; unique-conflict handling deduplicates FRIEND on `(from, to)` and GROUP on
+`(to, thread)` regardless of inviter.
 
 ### Group — Group-exclusive state
 

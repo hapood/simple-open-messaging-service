@@ -100,7 +100,7 @@ int32 (≤ 2³¹−1 ≪ 2⁵³ → JSON number, never a string). The forward cu
 default `-1` = from seq 0); the backward twin `/messages/before` uses `beforeSeq` (`seq < beforeSeq`,
 default `-1` = from latest) — reserved for external federation implementations (SOMS is forward-only).
 The `@@unique([threadId, creator, originSeq])` catches the rare same-user concurrent-insert race (two
-devices sending at once) as a `P2002` → the caller retries the transaction (the existing
+devices sending at once) as a unique-constraint conflict → the caller retries the transaction (the existing
 `clientMessageId` pre-check already absorbs the common retried-send case; this handles the
 genuinely-concurrent case). Different users in the same thread never contend (different `creator`).
 
@@ -115,7 +115,7 @@ genuinely-concurrent case). Different users in the same thread never contend (di
 
 ### 2.3 In-memory delivery buffers (volatile — no migration, no persistence)
 
-These are **runtime state**, not Prisma models. They optimize notify delivery across transient
+These are **runtime state**, not database tables. They optimize notify delivery across transient
 outages; they are NOT a source of truth (the `Message` table is) and they do NOT survive a process
 restart (§4.4 — pull-on-open is the restart floor).
 
@@ -522,7 +522,7 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 ## 8. Implementation plan (ordered, verifiable)
 
 > **Progress (DONE, 2026-07-08):** items **1–11 ALL LIVE** and the federation e2e is **16/16 green**.
-> The full pipeline ships: `originSeq` allocation (MAX+1 in the write tx, P2002 retry on the
+> The full pipeline ships: `originSeq` allocation (MAX+1 in the write tx, unique-conflict retry on the
 > `(threadId, creator, originSeq)` race), `FederationBufferService` (`domainNewMsgMap` + debounced
 > ~500 ms flush + half-eviction at the 10 k cap), `POST/GET /new-msg-map`, `GET /messages` +
 > `serveOutboundMessages`, the inbound drainer (single-flight, progress-gated re-trigger), `GET
@@ -535,12 +535,13 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 > quotas — design ready at `docs/roadmap/federation-quotas.md`). Delete propagation is a non-goal (§9); federated groups
 > shipped in Step 3.
 
-1. **Schema migration** — add `Message.originSeq Int?` + `@@unique([threadId, creator, originSeq])` +
-   `@@index([threadId, creator, originSeq])`. Migration `20260709000000_message_origin_seq`. Apply via
-   the Prisma-7 dance (`db execute --file` → `migrate resolve --applied` → `generate`; see
-   [[prisma-migrate-shadow-db-p3006]]). No data backfill (NULL is correct for legacy rows).
+1. **Schema migration** — add nullable `Message.originSeq` plus a unique constraint and index on
+   `(threadId, creator, originSeq)`. The change originally landed in migration
+   `20260709000000_message_origin_seq` and is now represented by the consolidated SQL baseline and
+   `src/database/schema.ts`. No data backfill (NULL is correct for legacy rows).
 2. **`originSeq` allocation** — in `MessageService.writeMsgToThread`, allocate `MAX+1` inside the tx;
-   handle `P2002` (concurrent same-user send) by retrying the tx. Return `originSeq` on the saved msg.
+   retry unique-constraint conflicts caused by concurrent sends from the same user. Return `originSeq`
+   on the saved message.
 3. **Outbound buffer** — `domainNewMsgMap` (per-domain `Map<"from→to", {latestSeq,generatedAt}>`) +
    mark-dirty-on-send + debounced (~500 ms) flush + **half-eviction** on 10 k overflow (older half by
    `generatedAt`). Volatile (in-memory).

@@ -130,11 +130,11 @@ Nothing else changes structurally:
   creator, originSeq])` are **untouched** — group pull reuses them exactly. A group with members on
   three servers is merely three distinct `creator` values; the per-sender cursor falls out for free.
 
-**Migration.** A nullable `groupUserId @unique` + the `groupUser` `User` relation (the `!`-User
-carries the `!account` + the origin domain). No backfill: all existing rows stay `NULL` (they are
-local P2P / local-only groups). Apply per the project's manual migration discipline
-(`prisma migrate dev` writes SQL only → `db execute --file` → `migrate resolve --applied`
-→ `prisma generate`).
+**Migration.** A nullable, unique `groupUserId` plus the `groupUser` relation (the `!`-User carries
+the `!account` + the origin domain). No backfill: all existing rows stay `NULL` (they are local P2P /
+local-only groups). Apply through the project's SQL migration workflow: update
+`src/database/schema.ts`, add the corresponding SQL migration, run `npm run db:migrate`, and verify
+with `npm run db:status`.
 
 ---
 
@@ -144,7 +144,7 @@ local P2P / local-only groups). Apply per the project's manual migration discipl
 | --- | --- | --- |
 | Per-sender cursor | `MAX(originSeq) WHERE thread=T AND creator=sender` | **None.** `creator` is already per-sender. |
 | Pull query | `WHERE threadId AND creator AND originSeq > after` | **None.** |
-| Pull dedup | `@@unique([threadId, creator, originSeq])` → P2002 absorbed | **None.** |
+| Pull dedup | Unique `(threadId, creator, originSeq)` conflicts are absorbed | **None.** |
 | Send-side signal | `notifyOnSend` loops participants, marks dirty per foreign peer | **None** (already group-aware). |
 | Media authz | `get_file` 3-check gate keys off `ThreadParticipant` | **None** — roster gate (§8) makes group media work unchanged. |
 | Backfill endpoint | `GET /messages?after=0` | **None** — same endpoint, called per-sender. |

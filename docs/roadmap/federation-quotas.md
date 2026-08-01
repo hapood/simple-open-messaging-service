@@ -136,7 +136,7 @@ Call-sites in `src/federation/federation.service.ts`:
 | Category     | Where | Detail |
 |--------------|-------|--------|
 | `requests`   | `handleInvite`, `handleInviteAccept` | Order: `peek` (reject exhausted before dedup) → `isOpSeen` dedup → `tick` on non-duplicate. Replays never burn quota; exhausted rejections never burn a dedup slot. The peek→tick race is benign — `tick` is the authoritative check. |
-| `messages`   | `storePulledMessage` | `tick(fetchedFromDomain, 'messages', tx)` on the **same tx** as the `message.create` + seq increment → an over-limit pull rolls the seq back too (no gap). A dup-pull (P2002) returns before the tick, so it never counts. No 429 to the peer (we initiated the pull); the throw is caught and the message is simply not stored. |
+| `messages`   | `storePulledMessage` | `tick(fetchedFromDomain, 'messages', tx)` on the **same tx** as the message insert + seq increment → an over-limit pull rolls the seq back too (no gap). A duplicate pull returns on its unique conflict before the tick, so it never counts. No 429 to the peer (we initiated the pull); the throw is caught and the message is simply not stored. |
 | `images` / `largeFiles` | `fetchMediaChunks` (via `localizeMedia`) | After the byte size is known (the first 206 returns `Content-Range` total; the 200-fallback uses `Content-Length`), `assertUnderCap` (413) then `tick` run **before any chunk is yielded** → nothing is written if over cap/limit. `localizeMedia` classifies `IMAGE → images`, else `largeFiles` (MediaAsset stores no mime; classify by message contentType). The fetch path's catch is best-effort — a 413/413 leaves the message inert (no MediaAsset), does **not** block the text pull, does **not** demote the peer. |
 
 ### 4.2 Local path — handler-side (returns 200 + `QUOTA_EXCEEDED`)
@@ -196,7 +196,7 @@ own `AdminAuthGuard` runs; writes are `SUPER_ADMIN` only, mirroring the federati
   N+1.
 - `POST admin/quota/nodes/:domain` → `QuotaService.setLimits(domain, dto)`: routes local→`SystemSetting`
   KV, peer→`FederatedPeer` columns. DTO `AdminSetQuotaDto` = 6 `@IsOptional @IsInt @Min(0)` fields. An
-  unknown peer throws Prisma P2025 → the controller surfaces `200 + NOT_FOUND` (the local node is always
+  an unknown peer produces a not-found result → the controller surfaces `200 + NOT_FOUND` (the local node is always
   settable). Audited via `@Audit('quota.node.setLimits')`.
 
 **Frontend** — a dedicated **Quotas** page (`admin-web/src/routes/quota/quota-page.tsx`, nav key
