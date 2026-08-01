@@ -14,7 +14,7 @@ export const FALLBACK_LANG: AppLang = 'en'
 
 // localStorage key is prefixed with `admin_` to stay isolated from the C-end app
 // on the same origin (mirrors the `admin_refresh_token` convention).
-const LANG_STORAGE_KEY = 'admin_lang'
+export const LANG_STORAGE_KEY = 'admin_lang'
 
 const resources = {
   'zh-CN': { translation: zhCN },
@@ -27,14 +27,21 @@ function applyDayjsLocale(lng: string): void {
   dayjs.locale(lng === 'zh-CN' ? 'zh-cn' : 'en')
 }
 
-void i18next
+function normalizeLanguage(lng: string | undefined): AppLang {
+  return lng?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+}
+
+function applyDocumentLanguage(lng: string): void {
+  document.documentElement.lang = normalizeLanguage(lng)
+}
+
+export const i18nReady = i18next
   .use(initReactI18next)
   .use(LanguageDetector)
   .init({
     resources,
     fallbackLng: FALLBACK_LANG,
     supportedLngs: [...SUPPORTED_LANGS],
-    nonExplicitSupportedLngs: true,
     interpolation: { escapeValue: false }, // React already escapes by default
     detection: {
       order: ['localStorage', 'navigator'],
@@ -47,8 +54,22 @@ void i18next
     },
   })
 
-applyDayjsLocale(i18next.language || FALLBACK_LANG)
-i18next.on('languageChanged', (lng) => applyDayjsLocale(lng))
+i18next.on('languageChanged', (lng) => {
+  applyDayjsLocale(lng)
+  applyDocumentLanguage(lng)
+})
+
+void i18nReady.then(() => {
+  applyDayjsLocale(i18next.language || FALLBACK_LANG)
+  applyDocumentLanguage(i18next.language || FALLBACK_LANG)
+})
+
+/** Change and persist the UI language through one deterministic entry point. */
+export async function changeAppLanguage(lng: AppLang): Promise<void> {
+  await i18nReady
+  await i18next.changeLanguage(lng)
+  localStorage.setItem(LANG_STORAGE_KEY, lng)
+}
 
 export default i18next
 

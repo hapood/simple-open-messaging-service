@@ -6,16 +6,21 @@ import { ThemeProvider } from 'next-themes'
 import { Toaster } from '@/components/ui/sonner'
 import { queryClient } from '@/lib/query-client'
 import { router } from '@/routes/router'
-import '@/i18n'
+import { i18nReady } from '@/i18n'
 import './index.css'
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-        <Toaster richColors position="top-right" />
-      </QueryClientProvider>
-    </ThemeProvider>
-  </StrictMode>,
-)
+async function bootstrap() {
+  await i18nReady
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+          <Toaster richColors position="top-right" />
+        </QueryClientProvider>
+      </ThemeProvider>
+    </StrictMode>,
+  )
+}
+
+void bootstrap()

@@ -4,7 +4,6 @@ import { LogOut, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '@/auth/auth-context'
 import { Button } from '@/components/ui/button'
-import { LanguageSwitcher } from '@/components/layout/language-switcher'
 import { NAV_GROUPS, type NavItem } from '@/components/layout/nav-config'
 import { TopBar } from '@/components/layout/top-bar'
 import { CommandPalette } from '@/components/layout/command-palette'
@@ -77,7 +76,6 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           {NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items).map((item) => (
             <NavEntry key={item.to} item={item} />
           ))}
-          <LanguageSwitcher />
           <Button variant="ghost" className="w-full justify-start gap-2" onClick={logout}>
             <LogOut className="size-4" />
             {t('nav.logout')}
