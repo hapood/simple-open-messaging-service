@@ -49,7 +49,10 @@
     justify-content: center;
     box-sizing: border-box; // padding stays inside the grid-stretched size — no explicit height is set
     padding: 32px 24px;
-    background: var(--app-bg);
+    background:
+      radial-gradient(circle at 88% 10%, color-mix(in srgb, var(--app-brand) 7%, transparent), transparent 30%),
+      radial-gradient(circle at 12% 90%, color-mix(in srgb, var(--app-brand-accent) 6%, transparent), transparent 32%),
+      var(--app-bg);
   }
 
   // With the IME open, prioritize the focused form over decorative chrome. The scrollable pane keeps
@@ -88,8 +91,13 @@
   flex-direction: column;
   padding: 40px 32px 32px;
   background: var(--app-surface);
+  border: 1px solid color-mix(in srgb, var(--app-brand) 10%, var(--app-border));
   border-radius: var(--app-radius-lg);
-  box-shadow: 0 12px 40px rgba(15, 40, 80, 0.10);
+  box-shadow: 0 20px 56px rgba(15, 40, 80, 0.12), 0 2px 8px rgba(15, 40, 80, 0.04);
+
+  @media (max-width: 479px) {
+    padding: 32px 24px 24px;
+  }
 }
 
 // Borderless brand-colored text link — the shared link / CTA treatment across auth pages (method

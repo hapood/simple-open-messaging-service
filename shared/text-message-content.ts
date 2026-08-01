@@ -43,13 +43,15 @@ export function parseTextMessageContent(
   }
 }
 
+/** Parse a PURE_TEXT value that has already crossed an input-validation boundary. */
+export function requireTextMessageContent(content: string): TextMessageContent {
+  const parsed = parseTextMessageContent(content);
+  if (!parsed) throw new Error('invalid PURE_TEXT message envelope');
+  return parsed;
+}
+
 export function stringifyTextMessageContent(
   content: TextMessageContent,
 ): string {
   return JSON.stringify(content);
-}
-
-/** Extract the body used by bubbles, copy, search summaries and thread-list previews. */
-export function textMessageBody(content: string): string | null {
-  return parseTextMessageContent(content)?.text ?? null;
 }

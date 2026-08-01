@@ -43,7 +43,7 @@ import {
   toDisplayText,
   toRenderMessageEntities,
 } from '../../lib/message-entity';
-import { parseTextMessageContent } from '../../../../../shared/text-message-content';
+import { requireTextMessageContent } from '../../../../../shared/text-message-content';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -564,7 +564,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   ): ChatMsgData {
     const p = this.profiles.get(m.creator);
     const textContent =
-      m.contentType === 'PURE_TEXT' ? parseTextMessageContent(m.content) : null;
+      m.contentType === 'PURE_TEXT'
+        ? requireTextMessageContent(m.content)
+        : null;
     const renderedText = textContent
       ? toRenderMessageEntities(
           textContent.text,
@@ -579,7 +581,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       name: p?.name ?? '',
       avatar: p?.avatar ?? '',
       avatarIdentityId: m.creator,
-      text: textContent ? toDisplayText(textContent.text) : m.content,
+      text: textContent ? toDisplayText(textContent.text) : '',
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),

@@ -1,4 +1,10 @@
-import { afterNextRender, ApplicationRef, Component, inject } from '@angular/core';
+import {
+  afterNextRender,
+  ApplicationRef,
+  Component,
+  HostListener,
+  inject,
+} from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
 import { LanguageService } from './services/language.service';
@@ -23,11 +29,7 @@ import { AuthService } from './services/auth.service';
 import { ConfigService } from './services/config.service';
 @Component({
   selector: 'app-root',
-  imports: [
-    RouterOutlet,
-    DebugLogFabComponent,
-    UpdateBannerComponent,
-  ],
+  imports: [RouterOutlet, DebugLogFabComponent, UpdateBannerComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
@@ -109,6 +111,18 @@ export class AppComponent {
       void this.shellUpdate.check().then(() => this.maybePromptIncompatible());
       void this.finishNativeSplashWhenReady();
     });
+  }
+
+  /** The consumer clients provide their own contextual actions, except in editable controls where the
+   *  native menu remains useful for selection, clipboard and spellcheck actions. */
+  @HostListener('document:contextmenu', ['$event'])
+  preventNativeContextMenu(event: MouseEvent): void {
+    if (
+      event.target instanceof Element &&
+      event.target.closest('input, textarea, [contenteditable="true"]')
+    )
+      return;
+    event.preventDefault();
   }
 
   /**

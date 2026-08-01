@@ -6,7 +6,10 @@
   padding: 48px;
   overflow: hidden;
   color: #ffffff;
-  background: linear-gradient(135deg, var(--app-brand-accent) 0%, var(--app-brand) 100%);
+  background:
+    radial-gradient(circle at 18% 22%, rgba(103, 232, 249, 0.24), transparent 30%),
+    radial-gradient(circle at 82% 76%, rgba(147, 197, 253, 0.18), transparent 34%),
+    linear-gradient(145deg, #075985 0%, #0b6cb8 44%, #1d4ed8 100%);
 
   // soft decorative bubbles, low opacity so the wordmark keeps contrast
   &::before,
@@ -14,7 +17,8 @@
     content: "";
     position: absolute;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
   }
   &::before {
     width: 320px;
@@ -49,7 +53,10 @@
     --bl-tag: 16px;
     --bl-word-color: #ffffff;
     --bl-tag-color: rgba(255, 255, 255, 0.85);
-    --bl-mark-filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.18));
+    // Keep the original mark untouched. The hairline edge separates its blue silhouette from the
+    // darker panel without turning it into a badge, while the soft shadow supplies depth.
+    --bl-mark-radius: 22.222%;
+    --bl-mark-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22), 0 18px 40px rgba(3, 37, 76, 0.32);
   }
 }
 

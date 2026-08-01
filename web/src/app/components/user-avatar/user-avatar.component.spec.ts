@@ -143,7 +143,6 @@ describe('UserAvatarComponent offline cold-start integration', () => {
       updatedAt: 0,
       profileRev: 3,
       isDeleted: false,
-      threadRevision: 1,
     } satisfies User);
     await webdb.putAvatar({
       identity: 'u7',

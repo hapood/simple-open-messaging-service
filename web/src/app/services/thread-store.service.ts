@@ -10,7 +10,7 @@ import {
   type MissedThreadItem,
 } from './missed-sync.service';
 import { toDisplayText } from '../lib/message-entity';
-import { textMessageBody } from '../../../../shared/text-message-content';
+import { requireTextMessageContent } from '../../../../shared/text-message-content';
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, ThreadReadState, User } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
@@ -1176,7 +1176,7 @@ interface ThreadMetaPayload {
 export function rawPreview(contentType: string, content: string): string {
   switch (contentType) {
     case 'PURE_TEXT':
-      return toDisplayText(textMessageBody(content) ?? '')
+      return toDisplayText(requireTextMessageContent(content).text)
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 200);
