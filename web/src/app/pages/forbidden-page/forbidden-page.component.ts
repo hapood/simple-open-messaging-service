@@ -2,7 +2,6 @@ import { Component, inject, signal } from '@angular/core';
 import { Location } from '@angular/common';
 import { Router } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 
 /**
  * HTTP 403 destination, mounted at `/forbidden` (no guard). Reached when an access
@@ -13,7 +12,7 @@ import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.compo
  */
 @Component({
   selector: 'app-forbidden',
-  imports: [BrandLogoComponent, TranslocoPipe],
+  imports: [TranslocoPipe],
   templateUrl: './forbidden-page.component.html',
   styleUrl: './forbidden-page.component.scss',
 })

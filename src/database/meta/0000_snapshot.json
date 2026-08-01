@@ -582,9 +582,9 @@
           "primaryKey": false,
           "notNull": false
         },
-        "clearedAt": {
-          "name": "clearedAt",
-          "type": "timestamp(3)",
+        "clearedSeq": {
+          "name": "clearedSeq",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },
@@ -734,7 +734,12 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "ThreadParticipant_cleared_seq_check": {
+          "name": "ThreadParticipant_cleared_seq_check",
+          "value": "\"ThreadParticipant\".\"clearedSeq\" IS NULL OR \"ThreadParticipant\".\"clearedSeq\" >= -1"
+        }
+      },
       "policies": {},
       "isRLSEnabled": false
     },
@@ -3133,7 +3138,7 @@
       "columns": {
         "id": {
           "name": "id",
-          "type": "bigserial",
+          "type": "serial",
           "primaryKey": true,
           "notNull": true
         },
@@ -3216,7 +3221,7 @@
       "columns": {
         "id": {
           "name": "id",
-          "type": "bigserial",
+          "type": "serial",
           "primaryKey": true,
           "notNull": true
         },

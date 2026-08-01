@@ -26,12 +26,7 @@ import { SseService } from '../gateway/sse.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
-import {
-  parseAudioContent,
-  parseFileContent,
-  parseLinkContent,
-  parseVideoContent,
-} from '../upload/file-content.js';
+import { parseLinkContent } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { FederationService } from '../federation/federation.service.js';
@@ -149,29 +144,6 @@ export class MessageController {
     } else if (!dto.content?.trim()) {
       throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
     }
-    // Media content (FILE/VIDEO/AUDIO) is a server-trust contract: the client only forwards what
-    // the matching POST /upload/* route returned. parse{File,Video,Audio}Content reject any non-upload
-    // URL, disallowed mimetype, or bad shape so a forged `javascript:`/external/traversal URL or
-    // oversized value can never be stored (and later rendered into a link). PURE_TEXT/IMAGE keep
-    // their existing verbatim storage.
-    if (contentType === ContentType.FILE && !parseFileContent(dto.content)) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid file content',
-      );
-    }
-    if (contentType === ContentType.VIDEO && !parseVideoContent(dto.content)) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid video content',
-      );
-    }
-    if (contentType === ContentType.AUDIO && !parseAudioContent(dto.content)) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid audio content',
-      );
-    }
     // LINK: the client sends only the URL. The card is rebuilt server-side (SSRF-safe OG fetch +
     // og:image localization into CAS) so the metadata is server-authoritative and unforgable, then
     // the assembled JSON is form-validated by parseLinkContent (http(s) url; image must be a CAS shard).
@@ -204,9 +176,9 @@ export class MessageController {
       }
     }
     const quoteVisibility: {
-      clearedAfter?: Date | null;
+      clearedThroughSeq?: number | null;
       hideCreatorIds?: number[];
-    } = { clearedAfter: req.threadAccess.participant.clearedAt };
+    } = { clearedThroughSeq: req.threadAccess.participant.clearedSeq };
     const hasQuote =
       contentType === ContentType.PURE_TEXT &&
       parseTextMessageContent(dto.content)?.quote !== undefined;
@@ -466,6 +438,18 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: QueryMessagesDto,
   ) {
+    if (dto.truncate && dto.truncateSeq === undefined) {
+      return envelope([], { hasMore: false, truncated: true });
+    }
+    if (
+      dto.truncate &&
+      dto.truncateSeq !== undefined &&
+      dto.lastSeq !== undefined &&
+      ((dto.orderBy === 'asc' && dto.truncateSeq <= dto.lastSeq) ||
+        (dto.orderBy === 'desc' && dto.truncateSeq >= dto.lastSeq))
+    ) {
+      return envelope([], { hasMore: false, truncated: true });
+    }
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
     // IDOR fix as send, now declarative. The participant row is on req.threadAccess.participant.
     // take+1 trick: fetch one extra row to decide hasMore, then truncate `data` back to `take` rows.
@@ -476,17 +460,20 @@ export class MessageController {
       take: dto.take + 1,
       orderBy: { seq: dto.orderBy },
     };
-    if (dto.lastSeq) {
+    if (dto.lastSeq !== undefined) {
       // seq is unique only within a thread, so the keyset cursor uses the compound (threadId, seq) unique.
       newParams.cursor = {
         threadId_seq: { threadId: dto.threadId, seq: Number(dto.lastSeq) },
       };
     }
-    // Per-viewer filters: clearedAt hides the caller's "clear history" tail (P2P + GROUP), and on P2P
+    if (dto.truncate && dto.truncateSeq !== undefined) {
+      newParams.truncateSeq = dto.truncateSeq;
+    }
+    // Per-viewer filters: clearedSeq hides the caller's "clear history" prefix (P2P + GROUP), and on P2P
     // threads a blocked peer's messages are hidden (group threads leave blocked members visible —
     // WhatsApp neutral-ground). blockedByMe is empty for ~all users, so the creator filter is skipped.
-    const filters: { clearedAfter?: Date | null; hideCreatorIds?: number[] } = {
-      clearedAfter: req.threadAccess.participant.clearedAt,
+    const filters: { clearedThroughSeq?: number | null; hideCreatorIds?: number[] } = {
+      clearedThroughSeq: req.threadAccess.participant.clearedSeq,
     };
     if (req.threadAccess.threadType === 'P2P') {
       const blocked = await this.userBlockService.blockedByMe(req.user.userId);
@@ -498,8 +485,11 @@ export class MessageController {
       filters,
     );
     const hasMore = rows.length > dto.take;
+    // The truncate row is deliberately EXCLUDED: it already exists locally. take+1 makes exhaustion of
+    // the bounded interval unambiguous, including the exact-multiple case.
+    const truncated = dto.truncate === true && !hasMore;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
-    return envelope(data, { hasMore });
+    return envelope(data, { hasMore, truncated });
   }
 
   @ApiBearerAuth()
@@ -644,7 +634,7 @@ export class MessageController {
     this.sseService.onThreadMeta(req.user.userId, {
       event: 'THREAD_META',
       threadId: dto.threadId,
-      clearedAt: updated.clearedAt,
+      clearedSeq: updated.clearedSeq,
     });
   }
 
@@ -724,9 +714,9 @@ export class MessageController {
   async searchMessages(@Body() dto: SearchMessagesDto) {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants). The match
     // list excludes blocked/muted indirectly: blocked creators' messages are already hidden at the
-    // source by the send fan-out, and clearedAt only affects the user's own view — search returns the
+    // source by the send fan-out, and clearedSeq only affects the user's own view — search returns the
     // raw id matches; the client jumps the kernel, which loads each via query-messages (re-applying
-    // clearedAt/block). take+1 hasMore trick.
+    // clearedSeq/block). take+1 hasMore trick.
     const lastSeq = dto.lastSeq !== undefined ? Number(dto.lastSeq) : undefined;
     const rows = await this.messageService.searchMessages(
       dto.threadId,

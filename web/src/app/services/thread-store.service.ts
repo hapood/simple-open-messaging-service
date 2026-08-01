@@ -357,7 +357,7 @@ export class ThreadRepository {
       muted?: boolean;
       pinned?: boolean;
       pinnedAt?: number | null;
-      clearedAt?: number | null;
+      clearedSeq?: number | null;
       blocked?: boolean;
       friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';
@@ -518,11 +518,18 @@ export class ThreadRepository {
     const serverLrs = new Map<number, number | null>();
     const serverUnread = new Map<number, number>();
     const serverMentions = new Map<number, Array<'all' | 'me'>>();
+    const previews = new Map<number, { text: string; creator: number }>();
     for (const i of items) {
       serverLrs.set(i.threadId, i.lastReadSeq);
       this.serverLastReadSeq.set(i.threadId, i.lastReadSeq);
       serverUnread.set(i.threadId, i.unreadCount);
       serverMentions.set(i.threadId, i.mentionUnread ?? []);
+      if (i.latestMessage) {
+        previews.set(i.threadId, {
+          text: rawPreview(i.latestMessage.contentType, i.latestMessage.content),
+          creator: i.latestMessage.creator,
+        });
+      }
     }
     let changed = false;
     const updated = this._items().map((it) => {
@@ -538,10 +545,18 @@ export class ThreadRepository {
         lastReadSeq: serverLrs.get(it.threadId)!,
         unreadCount: serverUnread.get(it.threadId)!,
         mentionUnread: serverMentions.get(it.threadId)!,
+        ...(previews.has(it.threadId)
+          ? {
+              lastMessagePreview: previews.get(it.threadId)!.text,
+              lastMessageSenderId: previews.get(it.threadId)!.creator,
+            }
+          : {}),
       };
       if (
         next.lastReadSeq !== it.lastReadSeq ||
         next.unreadCount !== it.unreadCount ||
+        next.lastMessagePreview !== it.lastMessagePreview ||
+        next.lastMessageSenderId !== it.lastMessageSenderId ||
         !sameMentions(next.mentionUnread, it.mentionUnread)
       )
         changed = true;
@@ -658,7 +673,7 @@ export class ThreadRepository {
       muted: d.muted,
       pinned: d.pinned,
       pinnedAt: d.pinnedAt,
-      clearedAt: d.clearedAt,
+      clearedSeq: d.clearedSeq,
       alias: d.alias,
     });
   }
@@ -916,7 +931,7 @@ export class ThreadRepository {
     void this.webdb.putMeta('threadHwms', {});
   }
 
-  /** Catch up the local message store + previews: walk the `(from, to]` double-boundary range — `from` is the
+  /** Catch up thread-list state and previews: walk the `(from, to]` double-boundary range — `from` is the
    *  persisted HWM (the last walked `to`), `to` is {@link _to} (the HELLO latestMessage, advanced by live
    *  NEW_MESSAGE signals). Pages advance `from` toward `to`; on a NON-empty walk the HWM advances to `to` (it
    *  never regresses on a stale `to ≤ from` — an empty walk leaves the HWM). Fire-and-forget from HELLO +
@@ -950,7 +965,6 @@ export class ThreadRepository {
         this._missedCursor.set(from);
         this.saveMissedCursor(from);
       }
-      await this.hydratePreviews();
     } catch {
       /* best-effort — the next HELLO/NEW_MESSAGE retries */
     } finally {
@@ -1035,7 +1049,8 @@ export class ThreadRepository {
    *  (not just the missed-summary page of the newest `take`), and on a cold start the local store is already
    *  populated from the prior session → previews paint instantly from the cached-paint items with no network
    *  round-trip and no "暂无消息" flash. Runs on boot (right after the snapshot, before the network pull) +
-   *  after each missed pull (which pre-warms the local store). Leaves `lastMessageAt` untouched (the
+   *  on boot only. Catch-up previews are applied directly to thread rows and never touch this store. Leaves
+   *  `lastMessageAt` untouched (the
    *  snapshot's value is the authoritative sort key); a thread with no cached message yet keeps its prior
    *  preview. */
   private async hydratePreviews(): Promise<void> {
@@ -1165,7 +1180,7 @@ interface ThreadMetaPayload {
   muted?: boolean;
   pinned?: boolean;
   pinnedAt?: number | null;
-  clearedAt?: number | null;
+  clearedSeq?: number | null;
   alias?: string | null;
 }
 

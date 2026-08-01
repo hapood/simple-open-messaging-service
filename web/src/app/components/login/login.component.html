@@ -31,9 +31,13 @@
     <mat-checkbox class="keep-cb" [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">{{ 'auth.keepLoggedIn' | transloco }}</mat-checkbox>
   }
 
-  <div class="error" role="alert">{{resp()}}</div>
-
   <button mat-flat-button color="primary" type="submit" class="submit-btn" [disabled]="isLoginBtnDisabled()">{{ 'auth.loginBtn' | transloco }}</button>
+
+  <!-- Always reserve two lines below the primary action. A localized login error can appear without
+    changing the button's position; longer exceptional messages may still grow naturally. -->
+  <div class="error-slot">
+    <div class="error" role="alert">{{resp()}}</div>
+  </div>
 
   @if (config.registrationOpen()) {
   <div class="alt-action">

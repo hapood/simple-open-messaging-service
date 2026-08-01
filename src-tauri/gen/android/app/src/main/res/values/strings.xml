@@ -34,6 +34,7 @@
     <string name="composer_recording_permission_denied">Microphone permission is required</string>
     <string name="composer_recording_too_short">Recording is too short</string>
     <string name="composer_backspace">Delete</string>
+    <string name="composer_cancel_quote">Cancel quote</string>
     <string name="video_playback_failed">Unable to play this video</string>
     <string name="video_network_failed">Network unavailable. Check your connection and try again.</string>
     <string name="video_forbidden">This video is no longer available to this account.</string>

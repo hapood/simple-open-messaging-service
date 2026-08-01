@@ -269,11 +269,11 @@ export class UserController {
         lastMessageAt: p.thread.lastMessageAt ?? null,
         lastMessageSeq: p.thread.lastMessageSeq ?? null,
         // Per-user display state: mute (notification suppression), pin (top-tier ordering), and the
-        // per-user clear-history watermark (query-messages hides rows older than this for this user).
+        // Per-user clear-history watermark (query-messages hides rows through this seq for this user).
         muted: p.muted,
         pinned: p.pinned,
         pinnedAt: p.pinnedAt ?? null,
-        clearedAt: p.clearedAt ?? null,
+        clearedSeq: p.clearedSeq ?? null,
         alias: p.alias ?? null,
         conversationState: p.leftAt === null ? 'ACTIVE' : 'READ_ONLY',
       } as {
@@ -287,7 +287,7 @@ export class UserController {
         muted: boolean;
         pinned: boolean;
         pinnedAt: Date | null;
-        clearedAt: Date | null;
+        clearedSeq: number | null;
         blocked?: boolean;
         friendshipActive?: boolean;
         conversationState: 'ACTIVE' | 'READ_ONLY';
@@ -309,6 +309,7 @@ export class UserController {
         item.group = gu
           ? {
               id: p.threadId,
+              account: gu.account,
               threadId: p.threadId,
               name: gu.name,
               avatar: gu.avatar,

@@ -1149,7 +1149,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   // Before the fix, openAround's hasTarget check (item.id === targetId) failed because the album item only
   // carries the head's id → early return → empty viewport. itemHasId now matches any member in CbItem.ids.
   it('scrollToIndex to a non-head album member msgId → resolves to album item, window non-empty (ids member-resolution regression)', async () => {
-    const { hooks } = controllableHooks();
+    const { hooks: baseHooks } = controllableHooks();
     // mergeItems: collapse m-10,m-11,m-12 into one album item (id=head m-10, ids=all three) — mirrors mergeAlbumItems.
     const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
       const out: CbItem<number>[] = [];
@@ -1171,17 +1171,39 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
-      hooks: { ...hooks, mergeItems },
+      hooks: {
+        ...baseHooks,
+        mergeItems,
+        createItem: (item, prev) => {
+          const view = baseHooks.createItem(item, prev);
+          for (const id of item.ids ?? [item.id]) {
+            const cell = document.createElement('div');
+            cell.dataset['mediaMessageId'] = String(id);
+            view.el.appendChild(cell);
+          }
+          return view;
+        },
+      },
       source: fakeSource(5000),
     });
     await scroller.init();
-    scroller.scrollToIndex(11, 'center'); // non-head album member → pre-fix: hasTarget=false → empty
+    scroller.scrollToIndex(11, 'center', true); // non-head album member → pre-fix: hasTarget=false → empty
     await flush();
     const info = scroller.getInfo();
     expect(info.mounted).toBeGreaterThan(0); // regression: was 0 (empty viewport) before fix
     expect(info.oldestId!).toBeLessThanOrEqual(10); // window brackets the album (m-10..m-12)
     expect(info.newestId!).toBeGreaterThanOrEqual(12);
     expect(viewport.scrollTop).toBe(750); // album (idx 10 · topOf 1000 · h 100) centered
+    expect(
+      content
+        .querySelector('[data-cb-id="10"]')
+        ?.classList.contains('cb-jump-highlight'),
+    ).toBe(true);
+    expect(
+      content
+        .querySelector('[data-media-message-id="11"]')
+        ?.classList.contains('cb-jump-highlight-target'),
+    ).toBe(true);
   });
 
   it('uses the last member id of a merged album as the newer cursor', async () => {
@@ -1296,6 +1318,21 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     await scroller.init();
     scroller.scrollToIndex(450, 'top', true);
     const el = content.querySelector<HTMLElement>('[data-cb-id="450"]');
+    expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
+  });
+
+  it('scrollToBottom highlight → newest row gets cb-jump-highlight', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source: fakeSource(500),
+    });
+    await scroller.init();
+    scroller.scrollToBottom(true);
+    const newest = scroller.getInfo().newestId;
+    const el = content.querySelector<HTMLElement>(`[data-cb-id="${newest}"]`);
     expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
   });
 

@@ -48,7 +48,7 @@ describe('DebugLogFabComponent', () => {
     expect(fixture.componentInstance.open()).toBeTrue();
   });
 
-  it('never suppresses a click after dragging', () => {
+  it('suppresses the compatibility click immediately after dragging', () => {
     const component = fixture.componentInstance;
     const fab = fixture.nativeElement.querySelector(
       '.dbg-fab',
@@ -81,7 +81,40 @@ describe('DebugLogFabComponent', () => {
       }),
     );
 
-    component.onClick();
+    const click = new MouseEvent('click', { cancelable: true });
+    component.onClick(click);
+
+    expect(component.open()).toBeFalse();
+    expect(click.defaultPrevented).toBeTrue();
+  });
+
+  it('does not suppress a stationary long press', () => {
+    const component = fixture.componentInstance;
+    const fab = fixture.nativeElement.querySelector(
+      '.dbg-fab',
+    ) as HTMLButtonElement;
+    spyOn(fab, 'setPointerCapture');
+    spyOn(fab, 'releasePointerCapture');
+
+    component.onDown(
+      new PointerEvent('pointerdown', {
+        pointerId: 1,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+    window.dispatchEvent(
+      new PointerEvent('pointerup', {
+        pointerId: 1,
+        pointerType: 'mouse',
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+
+    component.onClick(new MouseEvent('click'));
 
     expect(component.open()).toBeTrue();
   });

@@ -50,6 +50,31 @@ object NativeUploadManager {
     private val calls = ConcurrentHashMap<String, ActiveUpload>()
 
     fun accept(context: Context, uris: List<Uri>, requestedKind: String, requestId: String) {
+        accept(context, uris, requestedKind) { items ->
+            emit(
+                "__SOMS_UPLOAD_PICKED__",
+                JSONObject().put("requestId", requestId).put("items", items),
+            )
+        }
+    }
+
+    /** Register URI grants received by the native composer (clipboard/IME rich content) in the same
+     * retryable upload store as picker selections, then return only safe metadata to the WebView. */
+    fun acceptForComposer(
+        context: Context,
+        uris: List<Uri>,
+        requestedKind: String,
+        deliver: (JSONArray) -> Unit,
+    ) {
+        accept(context, uris, requestedKind, deliver)
+    }
+
+    private fun accept(
+        context: Context,
+        uris: List<Uri>,
+        requestedKind: String,
+        deliver: (JSONArray) -> Unit,
+    ) {
         // Activity-result callbacks run on the main thread. ImageDecoder, MediaMetadataRetriever,
         // first-frame extraction, WebP compression, and Base64 encoding can all block on a large or
         // provider-backed URI, so keep the entire inspection batch off the UI thread.
@@ -73,10 +98,7 @@ object NativeUploadManager {
                     })
                 }
             }
-            emit(
-                "__SOMS_UPLOAD_PICKED__",
-                JSONObject().put("requestId", requestId).put("items", items),
-            )
+            deliver(items)
         }
     }
 
@@ -277,7 +299,7 @@ object NativeUploadManager {
     }.getOrNull()
 
     private fun classify(mime: String, requested: String): String = when {
-        requested == "image" && mime.startsWith("image/") -> "image"
+        (requested == "image" || requested == "auto") && mime.startsWith("image/") -> "image"
         mime.startsWith("video/") -> "video"
         else -> "file"
     }

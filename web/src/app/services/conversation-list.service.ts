@@ -213,7 +213,7 @@ export class ConversationListService {
       muted?: boolean;
       pinned?: boolean;
       pinnedAt?: number | null;
-      clearedAt?: number | null;
+      clearedSeq?: number | null;
       blocked?: boolean;
       friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';

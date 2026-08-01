@@ -38,7 +38,7 @@ export class MsgService {
   sendMessage(params: {
     threadId: number;
     content: string;
-    contentType?: string;
+    contentType?: 'PURE_TEXT' | 'LINK';
     clientMessageId?: string;
   }) {
     return this.http.post<StandardResponse<{ id: string; createAt: string }>>(

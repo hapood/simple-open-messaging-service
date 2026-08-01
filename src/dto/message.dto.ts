@@ -39,28 +39,23 @@ export class SendMessageDto {
   @MaxLength(32000, { message: 'content envelope is too large' })
   content!: string;
 
-  // Client-authorable content types ONLY. The other schema values are server-side and must never
-  // be settable by a client:
+  // Direct-send content types ONLY. Media is committed exclusively by the staged
+  // /send-media + /upload* promotion flow; the other schema values are server-side.
   //  - INVITE: a system message carrying a server-SIGNED invite token, created exclusively by
   //    group/invite. Letting a client set it would let them forge invite cards / malformed payloads
   //    in any thread they belong to.
-  // PURE_TEXT/IMAGE/FILE/VIDEO/AUDIO are allowed because each has a validated client-authoring path
-  // (POST /upload, /upload/file, /upload/video, /upload/audio), and the content shape is re-validated
-  // by parseFileContent / parseVideoContent / parseAudioContent in MessageController.sendMessage — a
-  // client cannot forge a non-upload URL or disallowed shape. Add a type here only when such a path
-  // exists.
   // LINK is client-authorable too: the client sends only the URL as `content`, and
   // MessageController.sendMessage rebuilds the card server-side via LinkPreviewService (SSRF-safe OG
   // fetch + og:image localization) then re-validates the assembled JSON with parseLinkContent — so a
   // client cannot forge the card metadata or a non-upload image URL.
   @ApiProperty({
-    enum: ContentType,
+    enum: ['PURE_TEXT', 'LINK'],
     required: false,
     description:
-      'Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only.',
+      'Direct-send content type (defaults to PURE_TEXT). Media uses /send-media + /upload*.',
   })
   @IsOptional()
-  @IsIn(['PURE_TEXT', 'IMAGE', 'FILE', 'VIDEO', 'AUDIO', 'LINK'])
+  @IsIn(['PURE_TEXT', 'LINK'])
   contentType?: ContentType;
 
   @ApiProperty({
@@ -246,6 +241,28 @@ export class QueryMessagesDto {
   lastSeq?: number;
 
   @ApiProperty({
+    required: false,
+    default: false,
+    description:
+      'Whether to stop this page before truncateSeq. The cached boundary row itself is excluded.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  truncate?: boolean;
+
+  @ApiProperty({
+    required: false,
+    example: 80,
+    description:
+      'Exclusive seq boundary when truncate=true. asc returns seq < truncateSeq; desc returns seq > truncateSeq.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  truncateSeq?: number;
+
+  @ApiProperty({
     enum: ['desc', 'asc'],
     example: 'desc',
     description: 'Sort direction',
@@ -334,10 +351,10 @@ export class SetAliasDto {
 }
 
 /**
- * Search a conversation's message history by substring. Returns lightweight {id, createdAt} matches
- * (no full bodies) paginated by message-id cursor — the client jumps the kernel to each match and the
- * server renders the bubble on demand via the normal query-messages path. Search extracts only the
- * PURE_TEXT envelope's `text` field; non-text types never carry searchable content.
+ * Search a conversation's message history by substring. Returns lightweight {seq, createdAt} matches
+ * (no full bodies) paginated by message-seq cursor — the client jumps the kernel to each match and the
+ * server renders the bubble on demand via the normal query-messages path. Search covers the
+ * PURE_TEXT envelope's `text` field and uploaded media's display filename (`name`).
  */
 export class SearchMessagesDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })

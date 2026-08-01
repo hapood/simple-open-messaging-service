@@ -3,6 +3,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
+import { AppIconType, IconComponent } from '../icon/icon.component';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { UserService } from '../../services/user.service';
@@ -29,11 +30,12 @@ type ViewState = 'loading' | 'valid' | 'joined' | 'expired' | 'invalid';
  */
 @Component({
   selector: 'app-invite-detail',
-  imports: [MatButtonModule, MatProgressSpinnerModule, UserAvatarComponent, FederatedBadgeComponent, TranslocoPipe],
+  imports: [MatButtonModule, MatProgressSpinnerModule, UserAvatarComponent, FederatedBadgeComponent, IconComponent, TranslocoPipe],
   templateUrl: './invite-detail.component.html',
   styleUrl: './invite-detail.component.scss',
 })
 export class InviteDetailComponent implements OnInit, OnDestroy {
+  readonly AppIconType = AppIconType;
   readonly UserAvatarType = UserAvatarType;
   /** Raw JSON body of the GROUP_INVITE message (set by InviteDetailService.open). */
   readonly raw = input<string>('');

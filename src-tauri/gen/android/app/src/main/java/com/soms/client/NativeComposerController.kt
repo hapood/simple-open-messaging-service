@@ -28,6 +28,7 @@ import android.view.ViewOutlineProvider
 import android.view.animation.PathInterpolator
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.ViewCompat
 import android.widget.BaseAdapter
 import android.widget.Chronometer
 import android.widget.EditText
@@ -106,9 +107,7 @@ class NativeComposerController(
         setTextColor(onSurface)
         setHintTextColor(hintColor)
         setPadding(dp(14), dp(11), dp(48), dp(11))
-        background = outlinedSurface(12)
-        clipToOutline = true
-        applySoftShadow(12, 2.5f)
+        background = null
         inputType = InputType.TYPE_CLASS_TEXT or
             InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
             InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -117,6 +116,64 @@ class NativeComposerController(
         overScrollMode = View.OVER_SCROLL_NEVER
         setHorizontallyScrolling(false)
         setSingleLine(false)
+    }
+
+    init {
+        // Android clipboard and modern IMEs expose pasted files as content:// URI grants, not filesystem
+        // paths. Consume only URI items here; any text portion is returned to EditText's normal paste path.
+        ViewCompat.setOnReceiveContentListener(input, arrayOf("*/*")) { _, payload ->
+            val split = payload.partition { item -> item.uri != null }
+            val uriContent = split.first
+            val remaining = split.second
+            val uris = uriContent?.clip?.let { clip ->
+                (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+            }.orEmpty()
+            if (uris.isNotEmpty()) acceptPastedFiles(uris)
+            remaining
+        }
+    }
+    private val quoteText = TextView(activity).apply {
+        textSize = 12f
+        setTextColor(secondary)
+        includeFontPadding = false
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    private val quoteClose = TextView(activity).apply {
+        text = "×"
+        textSize = 22f
+        setTextColor(secondary)
+        includeFontPadding = false
+        gravity = Gravity.CENTER
+        contentDescription = activity.getString(R.string.composer_cancel_quote)
+        isClickable = true
+        isFocusable = true
+        background = transparentRipple(16)
+    }
+    private val quoteBar = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        visibility = View.GONE
+        setPadding(dp(8), dp(2), dp(2), dp(2))
+        addView(
+            View(activity).apply { setBackgroundColor(PRIMARY) },
+            LinearLayout.LayoutParams(dp(3), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                rightMargin = dp(8)
+            },
+        )
+        addView(
+            quoteText,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f),
+        )
+        addView(quoteClose, LinearLayout.LayoutParams(dp(32), dp(30)))
+    }
+    private val inputSurface = LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        minimumHeight = dp(48)
+        clipToOutline = true
+        background = outlinedSurface(12)
+        applySoftShadow(12, 2.5f)
     }
     private data class MentionCandidate(
         val kind: String,
@@ -376,8 +433,22 @@ class NativeComposerController(
             },
         )
         input.setPadding(dp(14), dp(11), dp(48), dp(11))
-        row.addView(
+        inputSurface.addView(
+            quoteBar,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(34),
+            ),
+        )
+        inputSurface.addView(
             inputWrap,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        row.addView(
+            inputSurface,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 gravity = Gravity.BOTTOM
             },
@@ -438,6 +509,10 @@ class NativeComposerController(
             }
         }
         attachSlot.setOnClickListener { showAttachmentMenu() }
+        quoteClose.setOnClickListener {
+            setQuote(null)
+            emit(JSONObject().apply { put("kind", "cancelQuote") })
+        }
         action.setOnClickListener {
             if (input.text.toString().trim().isNotEmpty()) emitSend()
         }
@@ -525,6 +600,7 @@ class NativeComposerController(
         input.hint = context.optString("placeholder", "Message")
         input.setText(context.optString("initialDraft", ""))
         input.setSelection(input.length())
+        setQuote(context.optJSONObject("quote"))
         ensureAttached()
         visible = true
         root.animate().cancel()
@@ -571,6 +647,7 @@ class NativeComposerController(
         if (patch.optLong("contextId") != contextId) return
         if (patch.has("placeholder")) input.hint = patch.optString("placeholder")
         if (patch.has("sending")) setSending(patch.optBoolean("sending"))
+        if (patch.has("quote")) setQuote(patch.optJSONObject("quote"))
         if (patch.has("theme")) {
             applyTheme(
                 when (patch.optString("theme", "system")) {
@@ -1087,6 +1164,24 @@ class NativeComposerController(
         })
     }
 
+    private fun acceptPastedFiles(uris: List<android.net.Uri>) {
+        val pastedContextId = contextId
+        NativeUploadManager.acceptForComposer(activity.applicationContext, uris, "auto") { items ->
+            activity.runOnUiThread {
+                if (pastedContextId != contextId || !visible) {
+                    for (index in 0 until items.length()) {
+                        NativeUploadManager.discard(items.getJSONObject(index).getString("uploadId"))
+                    }
+                    return@runOnUiThread
+                }
+                emit(JSONObject().apply {
+                    put("kind", "pasteFiles")
+                    put("files", items)
+                })
+            }
+        }
+    }
+
     private fun emitGeometry() {
         // One geometry contract for every native keyboard surface: total bottom occupation in CSS px.
         // Derive every surface from the same composer base instead of root.height: root can still carry
@@ -1160,14 +1255,29 @@ class NativeComposerController(
         hintColor = if (dark) Color.rgb(151, 158, 163) else Color.rgb(121, 130, 135)
         input.setTextColor(onSurface)
         input.setHintTextColor(hintColor)
-        input.background = outlinedSurface(12)
+        inputSurface.background = outlinedSurface(12)
         attach.background = surfaceRipple(18)
         attach.setColorFilter(secondary)
         keyboard.setColorFilter(secondary)
         emojiGrid.background = rounded(surface, 14)
         recordingStatus.background = rounded(surface, 10)
         recordingClock.setTextColor(onSurface)
+        quoteText.setTextColor(secondary)
+        quoteClose.setTextColor(secondary)
+        quoteBar.background = rounded(
+            if (dark) Color.rgb(49, 53, 56) else Color.rgb(244, 246, 247),
+            4,
+        )
         if (!voiceCancelArmed) recordingHint.setTextColor(hintColor)
+    }
+
+    /** Quote context is deliberately outside MentionEditText: text deletion can never cancel it. */
+    private fun setQuote(quote: JSONObject?) {
+        val preview = quote?.optString("preview").orEmpty()
+        quoteText.text = preview
+        quoteBar.visibility = if (quote == null) View.GONE else View.VISIBLE
+        root.requestLayout()
+        root.post(::emitGeometry)
     }
 
     private fun emit(payload: JSONObject) {

@@ -145,41 +145,128 @@
   } // ring spinner rotates at constant speed
 }
 
-// .cb-jump-highlight: a one-shot highlight added to the target row after jumping to a specific message (triggered by the
-// highlight flag on scrollToIndex/openAround). The background starts at a semi-transparent --app-active (theme accent) and
-// fades to transparent; on animationend the kernel removes the class (flashHighlight). Before re-adding the class,
-// flashHighlight forces a reflow (void offsetWidth) → consecutive jumps to the same target restart the animation. Semantic
-// distinction from the .cb-ghost-loading ring spinner: spinner = "loading older messages" (animation = in progress);
-// jump-highlight = "pointing you at this one" (message already loaded, just drawing attention) → uses a Telegram/iMessage-style
-// background flash, not a spinner, to avoid misleading. Does not write inside the host (_row-base contract) — only the host
-// background changes; bubbles / avatars carry their own background on top, the highlight shows through the in-row whitespace.
-.cb-jump-highlight {
-  animation: cb-jump-flash 1.6s ease-out;
+// .cb-jump-highlight: a one-shot highlight added to the target host after jumping to a specific message (triggered by the
+// highlight flag on scrollToIndex/openAround). Paint the animation on the inner .msg-row rather than the host: the host may
+// also contain a date separator, which belongs to the day instead of the target message and must not glow. Theme-specific
+// brand tints keep the cue distinct against both the pale chat canvas and the deep dark canvas. The animation event bubbles
+// from .msg-row to the host, so the kernel's existing animationend cleanup remains valid.
+.cb-jump-highlight > .msg-row > .msg-highlight-layer {
+  animation: cb-jump-flash 0.9s ease-out;
+}
+
+// A merged album still flashes as one message, while the exact member that was requested briefly
+// contracts inside the grid. Transform is paint-only, so the virtual scroller's measured row height stays stable.
+.cb-jump-highlight-target {
+  z-index: 1;
+  animation: cb-jump-media-target 0.9s ease-out;
+}
+
+@keyframes cb-jump-media-target {
+  0%,
+  35% {
+    transform: scale(0.94);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 @keyframes cb-jump-flash {
   0% {
-    background-color: color-mix(in srgb, var(--app-active) 55%, transparent);
-  } // semi-transparent accent (not harsh)
-  55% {
-    background-color: color-mix(in srgb, var(--app-active) 55%, transparent);
+    background-color: color-mix(in srgb, var(--app-brand) 24%, transparent);
+  } // saturated enough to remain visible on the light chat canvas
+  35% {
+    background-color: color-mix(in srgb, var(--app-brand) 24%, transparent);
   } // brief hold for noticeability
   100% {
     background-color: transparent;
   } // fades back to normal
 }
 
+[data-theme='dark']
+  .cb-jump-highlight
+  > .msg-row
+  > .msg-highlight-layer {
+  animation-name: cb-jump-flash-dark;
+}
+
+@keyframes cb-jump-flash-dark {
+  0%,
+  35% {
+    background-color: color-mix(in srgb, var(--app-brand) 32%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+// A selected row already owns a persistent brand wash. On jump, reveal the normal canvas first and
+// then return to that selection wash over the same cadence as an ordinary jump flash.
+:is(.cb-message--selected, .cb-message--partially-selected).cb-jump-highlight
+  > .msg-row
+  > .msg-highlight-layer {
+  animation-name: cb-jump-flash-selected;
+}
+
+@keyframes cb-jump-flash-selected {
+  0%,
+  35% {
+    background-color: transparent;
+  }
+  100% {
+    background-color: var(--cb-selection-highlight);
+  }
+}
+
 // Accessibility: user prefers reduced motion → no flash (a very short fade-in to static is kept so the target is still noticeable).
 @media (prefers-reduced-motion: reduce) {
-  .cb-jump-highlight {
-    animation: cb-jump-flash-reduced 0.4s ease-out;
+  .cb-jump-highlight > .msg-row > .msg-highlight-layer {
+    animation: cb-jump-flash-reduced 0.25s ease-out;
+  }
+  .cb-jump-highlight-target {
+    animation: cb-jump-media-target-reduced 0.25s ease-out;
+  }
+  [data-theme='dark']
+    .cb-jump-highlight
+    > .msg-row
+    > .msg-highlight-layer {
+    animation-name: cb-jump-flash-reduced-dark;
+  }
+  :is(.cb-message--selected, .cb-message--partially-selected).cb-jump-highlight
+    > .msg-row
+    > .msg-highlight-layer {
+    animation-name: cb-jump-flash-selected-reduced;
   }
   @keyframes cb-jump-flash-reduced {
     from {
-      background-color: color-mix(in srgb, var(--app-active) 45%, transparent);
+      background-color: color-mix(in srgb, var(--app-brand) 20%, transparent);
     }
     to {
       background-color: transparent;
+    }
+  }
+  @keyframes cb-jump-flash-reduced-dark {
+    from {
+      background-color: color-mix(in srgb, var(--app-brand) 28%, transparent);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  @keyframes cb-jump-flash-selected-reduced {
+    from {
+      background-color: transparent;
+    }
+    to {
+      background-color: var(--cb-selection-highlight);
+    }
+  }
+  @keyframes cb-jump-media-target-reduced {
+    from {
+      transform: scale(0.97);
+    }
+    to {
+      transform: scale(1);
     }
   }
 }

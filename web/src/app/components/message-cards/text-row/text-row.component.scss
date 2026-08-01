@@ -1,23 +1,31 @@
 // Text message row: reuses only the shared rules (msg-row/avatar/col/name/bubble/time/tail).
 @use '../row-base' as *;
 
+// The shared bubble is a horizontal flex container because most message cards contain a single row.
+// Text bubbles can also contain a quote followed by the message body, so make that hierarchy explicit.
+.msg-bubble {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .msg-quote {
   display: grid;
+  gap: 2px;
   width: 100%;
-  margin: 0 0 5px;
-  padding: 6px 8px;
+  margin: 0 0 7px;
+  padding: 7px 9px 8px;
+  box-sizing: border-box;
   border: 0;
   border-left: 3px solid var(--app-primary);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--app-primary) 8%, transparent);
+  background: var(--app-hover);
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.msg-quote:disabled {
+.msg-quote:not(button) {
   cursor: default;
-  opacity: 0.72;
 }
 .msg-quote strong,
 .msg-quote span {
@@ -28,10 +36,11 @@
 .msg-quote strong {
   color: var(--app-primary);
   font-size: 12px;
+  font-weight: 650;
 }
 .msg-quote span {
   font-size: 12px;
-  opacity: 0.78;
+  opacity: 0.72;
 }
 
 .msg-mention {

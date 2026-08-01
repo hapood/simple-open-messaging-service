@@ -535,7 +535,7 @@ describe('ChatBoxScrollerAnchor (Plan A · array index)', () => {
   // Regression (mirror of B-kernel): jumping to a NON-HEAD member of a merged album must resolve to its
   // album item via CbItem.ids. Pre-fix the viewport ended up empty (hasTarget false → early return).
   it('scrollToIndex to a non-head album member msgId → resolves to album item, window non-empty (ids member-resolution regression)', async () => {
-    const { hooks } = controllableHooks();
+    const { hooks: baseHooks } = controllableHooks();
     const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
       const out: CbItem<number>[] = [];
       let i = 0;
@@ -556,17 +556,39 @@ describe('ChatBoxScrollerAnchor (Plan A · array index)', () => {
     scroller = new ChatBoxScrollerAnchor<number>({
       viewport,
       content,
-      hooks: { ...hooks, mergeItems },
+      hooks: {
+        ...baseHooks,
+        mergeItems,
+        createItem: (item, prev) => {
+          const view = baseHooks.createItem(item, prev);
+          for (const id of item.ids ?? [item.id]) {
+            const cell = document.createElement('div');
+            cell.dataset['mediaMessageId'] = String(id);
+            view.el.appendChild(cell);
+          }
+          return view;
+        },
+      },
       source: fakeSource(5000),
     });
     await scroller.init();
-    scroller.scrollToIndex(11, 'center'); // non-head album member
+    scroller.scrollToIndex(11, 'center', true); // non-head album member
     await flush();
     const info = scroller.getInfo();
     expect(info.mounted).toBeGreaterThan(0);
     expect(info.oldestId!).toBeLessThanOrEqual(10);
     expect(info.newestId!).toBeGreaterThanOrEqual(12);
     expect(viewport.scrollTop).toBe(750);
+    expect(
+      content
+        .querySelector('[data-cb-id="10"]')
+        ?.classList.contains('cb-jump-highlight'),
+    ).toBe(true);
+    expect(
+      content
+        .querySelector('[data-media-message-id="11"]')
+        ?.classList.contains('cb-jump-highlight-target'),
+    ).toBe(true);
   });
 
   it('jump near the oldest → noOlder; above-side under threshold/2 → below-side compensates up to threshold', async () => {
@@ -640,6 +662,21 @@ describe('ChatBoxScrollerAnchor (Plan A · array index)', () => {
     await scroller.init();
     scroller.scrollToIndex(450, 'top', true);
     const el = content.querySelector<HTMLElement>('[data-cb-id="450"]');
+    expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
+  });
+
+  it('scrollToBottom highlight → adds cb-jump-highlight to the newest row', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({
+      viewport,
+      content,
+      hooks,
+      source: fakeSource(500),
+    });
+    await scroller.init();
+    scroller.scrollToBottom(true);
+    const newest = scroller.getInfo().newestId;
+    const el = content.querySelector<HTMLElement>(`[data-cb-id="${newest}"]`);
     expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
   });
 

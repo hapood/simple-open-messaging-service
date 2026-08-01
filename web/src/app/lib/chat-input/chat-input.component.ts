@@ -33,16 +33,10 @@ import {
   NativeUploadService,
   type NativeUploadSelection,
 } from '../../services/native-upload.service';
-import { uuid } from '../uuid';
-import {
-  PastePanelComponent,
-  type PastePanelItem,
-} from './paste-panel.component';
 import {
   isVoiceRecordingTooShort,
   nextVoiceCancelState,
 } from './voice-recording-state';
-import { escapePlainText } from '../message-entity';
 import { PreferenceStore } from '../../services/preference-store.service';
 
 /**
@@ -143,7 +137,6 @@ const MAX_RECORD_SECS = 60;
     ChatEditorComponent,
     PreventFocusStealDirective,
     ChatActionMenuComponent,
-    PastePanelComponent,
     OverlayModule,
     TranslocoModule,
   ],
@@ -186,11 +179,6 @@ export class ChatInputComponent implements OnDestroy {
    *  server-side). Null when the draft isn't a bare URL or the fetch hasn't landed yet. The send path
    *  reuses the server's cache so the sent card builds instantly. */
   readonly previewCard = signal<LinkCardPreview | null>(null);
-  /** Ephemeral paste review state. This relationship is deliberately UI-only: confirmed entries become
-   *  ordinary independent messages and no batch identifier reaches the API. */
-  readonly pasteItems = signal<PastePanelItem[]>([]);
-  readonly pasteText = signal('');
-  readonly pasteOpen = signal(false);
   /** Monotonic token: a slow earlier URL's response must not overwrite a newer edit's preview. */
   private previewSeq = 0;
   private previewTimer?: ReturnType<typeof setTimeout>;
@@ -242,75 +230,19 @@ export class ChatInputComponent implements OnDestroy {
   onAttachmentPaste(event: ClipboardEvent): void {
     const data = event.clipboardData;
     if (!data) return;
-    this.appendPaste(Array.from(data.files), data.getData('text/plain'));
-  }
-
-  appendPanelPaste(event: ClipboardEvent): void {
-    const data = event.clipboardData;
-    if (!data) return;
-    this.appendPaste(Array.from(data.files), data.getData('text/plain'));
-  }
-
-  private appendPaste(files: readonly File[], text: string): void {
+    const files = Array.from(data.files);
     if (files.length === 0) return;
-    const existing = new Set(
-      this.pasteItems().map(({ file }) => this.fileFingerprint(file)),
-    );
-    const additions: PastePanelItem[] = [];
-    for (const file of files) {
-      const fingerprint = this.fileFingerprint(file);
-      if (existing.has(fingerprint)) continue;
-      existing.add(fingerprint);
-      additions.push({
-        id: `${fingerprint}:${uuid()}`,
-        file,
-        previewUrl: file.type.startsWith('image/')
-          ? URL.createObjectURL(file)
-          : undefined,
-      });
-    }
-    this.pasteItems.update((items) => [...items, ...additions]);
-    if (text) {
-      this.pasteText.update((current) =>
-        current ? `${current}\n${text}` : text,
-      );
-    }
     this.closeEmoji();
     this.closeAttach();
-    this.pasteOpen.set(true);
+    this.send.emit({
+      kind: 'paste',
+      text: data.getData('text/plain'),
+      files,
+    });
   }
 
-  removePasteItem(id: string): void {
-    const item = this.pasteItems().find((candidate) => candidate.id === id);
-    if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
-    this.pasteItems.update((items) =>
-      items.filter((candidate) => candidate.id !== id),
-    );
-  }
-
-  cancelPaste(): void {
-    this.clearPasteState();
-  }
-
-  confirmPaste(): void {
-    const files = this.pasteItems().map(({ file }) => file);
-    const text = this.pasteText().trim();
-    if (files.length === 0 && !text) return;
-    this.clearPasteState();
-    this.send.emit({ kind: 'paste', text: escapePlainText(text), files });
-  }
-
-  private clearPasteState(): void {
-    for (const item of this.pasteItems()) {
-      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-    }
-    this.pasteItems.set([]);
-    this.pasteText.set('');
-    this.pasteOpen.set(false);
-  }
-
-  private fileFingerprint(file: File): string {
-    return `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+  appendText(text: string): void {
+    this.editor()?.appendText(text);
   }
 
   /** Debounce: 400ms after the draft stops changing, if it is a single bare URL, ask the server to
@@ -792,7 +724,6 @@ export class ChatInputComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     this.destroyed = true;
-    this.clearPasteState();
     this.recordSession++; // invalidate any in-flight beginRecording (permission prompt resolved post-teardown)
     // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
     if (this.recorder) this.stopRecording(true);

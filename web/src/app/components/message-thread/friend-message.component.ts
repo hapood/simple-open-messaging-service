@@ -66,6 +66,10 @@ import {
   ChatInputComponent,
   type ChatSendIntent,
 } from '../../lib/chat-input/chat-input.component';
+import {
+  PastePanelComponent,
+  type PastePanelItem,
+} from '../../lib/chat-input/paste-panel.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { ComposerWidthSourceDirective } from '../../directives/composer-width-source.directive';
 import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
@@ -138,6 +142,13 @@ import {
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
 import { messageOpenOptions } from './message-open-position';
+import {
+  albumMemberItem,
+  applyMessageSelectionState,
+  messageMemberIds,
+  messageSelectionState,
+} from './message-selection';
+import { jumpToMessage } from './message-jump';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
 import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
 
@@ -160,6 +171,12 @@ type PreparedWebAttachment =
       kind: 'file';
       probeMeta: null;
     };
+
+type ThreadPasteItem = PastePanelItem &
+  (
+    | { source: 'web'; file: File; fingerprint: string }
+    | { source: 'native'; selection: NativeUploadSelection }
+  );
 
 let nativeComposerContextSequence = Date.now() * 1000;
 const MESSAGE_CONTEXT_MENU_WIDTH = 192;
@@ -193,6 +210,7 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
   imports: [
     MessageHeaderComponent,
     ChatInputComponent,
+    PastePanelComponent,
     KbdOffsetDirective,
     ComposerWidthSourceDirective,
     StickyDateOverlayComponent,
@@ -208,6 +226,10 @@ export class MessageThreadComponent implements OnDestroy {
   readonly userMsgTrd = input<ConversationItem>();
   /** The A/B host keeps two threads mounted; only the foreground layer may own the one native composer. */
   readonly nativeComposerActive = input(false);
+  private readonly chatInput = viewChild(ChatInputComponent);
+  readonly pasteItems = signal<ThreadPasteItem[]>([]);
+  readonly pasteOpen = computed(() => this.pasteItems().length > 0);
+  private readonly nativeComposerDraft = signal('');
 
   /** Emits the threadId once the kernel finishes `init()` on a thread open / re-init — the A/B buffer host
    *  awaits this before cross-fading a pane in, so the reveal never races a half-initialized kernel. Carries
@@ -360,7 +382,10 @@ export class MessageThreadComponent implements OnDestroy {
    *  Treat every chat aside/transient pane as a higher semantic layer and unmount the native surface
    *  while that layer is active. This covers peer profile/group info as well as dialogs and viewers. */
   readonly nativeComposerOccluded = computed(
-    () => this.nav.aside().length > 0 || this.nav.paneStack().length > 0,
+    () =>
+      this.nav.aside().length > 0 ||
+      this.nav.paneStack().length > 0 ||
+      this.pasteOpen(),
   );
   readonly uploadingTransfers = computed(() => {
     const threadId = this.threadId();
@@ -566,9 +591,17 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       const theme = this.theme.effective();
+      const composingQuote = this.composingQuote();
+      const quote =
+        composingQuote?.seq !== undefined
+          ? { seq: composingQuote.seq, preview: composingQuote.preview }
+          : undefined;
       if (this.nativeComposerThreadId === threadId) {
         if (this.nativeComposerContextId !== null)
-          this.nativeComposer.update(this.nativeComposerContextId, { theme });
+          this.nativeComposer.update(this.nativeComposerContextId, {
+            theme,
+            quote: quote ?? null,
+          });
         return;
       }
       this.hideNativeComposer();
@@ -580,11 +613,12 @@ export class MessageThreadComponent implements OnDestroy {
         contextId,
         threadId: String(threadId),
         placeholder: this.transloco.translate('chat.messagePlaceholder'),
-        initialDraft: '',
+        initialDraft: this.nativeComposerDraft(),
         sending: false,
         canRecord: true,
         canUpload: true,
         mentionsEnabled: this.userMsgTrd()?.type === 'GROUP',
+        quote,
         theme,
       });
       this.observeNativeComposerBounds(contextId);
@@ -698,6 +732,7 @@ export class MessageThreadComponent implements OnDestroy {
           );
         }
         this.nativeComposer.acknowledge(event.actionId, accepted);
+        if (accepted) this.nativeComposerDraft.set('');
         return;
       }
       case 'queryMentions': {
@@ -727,14 +762,22 @@ export class MessageThreadComponent implements OnDestroy {
         });
         return;
       }
+      case 'cancelQuote':
+        this.cancelQuote();
+        return;
       case 'resolveMedia':
         void this.resolveNativeMentionMedia(event);
         return;
       case 'pickAttachment':
         void this.pickNativeComposerAttachment(event);
         return;
-      case 'geometry':
+      case 'pasteFiles':
+        this.appendNativePaste(event.files);
+        return;
       case 'draft':
+        this.nativeComposerDraft.set(event.text);
+        return;
+      case 'geometry':
       case 'recording':
         return;
     }
@@ -1008,37 +1051,14 @@ export class MessageThreadComponent implements OnDestroy {
       (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
       (seq) => this.onSearchJump(seq),
     );
-    const selection = this.messageSelectionState(item);
-    rendered.el.classList.toggle(
-      'cb-message--selection-mode',
-      this.selectionMode(),
-    );
-    rendered.el.classList.toggle('cb-message--selected', selection === 'all');
-    rendered.el.classList.toggle(
-      'cb-message--partially-selected',
-      selection === 'some',
-    );
     const contextId = this.messageContextMenu()?.targetSeq;
-    const memberIds = this.messageMemberIds(item);
-    const hasContext = contextId !== undefined && memberIds.includes(contextId);
-    rendered.el.classList.toggle(
-      'cb-message--context-active',
-      hasContext && memberIds.length === 1,
+    applyMessageSelectionState(
+      rendered.el,
+      messageMemberIds(item),
+      this.selectionMode(),
+      this.selectedMessageIds(),
+      contextId,
     );
-    rendered.el.setAttribute('aria-selected', String(selection === 'all'));
-    rendered.el
-      .querySelectorAll<HTMLElement>('[data-media-message-id]')
-      .forEach((cell) => {
-        const memberId = Number(cell.dataset['mediaMessageId']);
-        cell.classList.toggle(
-          'msg-media-cell--selected',
-          this.selectionMode() && this.selectedMessageIds().has(memberId),
-        );
-        cell.classList.toggle(
-          'msg-media-cell--context-active',
-          hasContext && memberId === contextId,
-        );
-      });
     return rendered;
   }
 
@@ -1053,7 +1073,7 @@ export class MessageThreadComponent implements OnDestroy {
         MESSAGE_CONTEXT_MENU_ITEM_COUNT * MESSAGE_CONTEXT_MENU_ITEM_HEIGHT +
         MESSAGE_CONTEXT_MENU_CHROME_HEIGHT;
       const contextItem =
-        memberId === undefined ? item : this.albumMemberItem(item, memberId);
+        memberId === undefined ? item : albumMemberItem(item, memberId);
       const visualViewport = window.visualViewport;
       const messageViewport =
         this.viewportRef()?.nativeElement.getBoundingClientRect();
@@ -1104,7 +1124,10 @@ export class MessageThreadComponent implements OnDestroy {
     if (!context) return;
     this.closeContextMenu();
     this.selectionMode.set(true);
-    if (this.messageSelectionState(context.targetItem) !== 'all')
+    if (
+      messageSelectionState(context.targetItem, this.selectedMessageIds()) !==
+      'all'
+    )
       this.toggleMessageSelection(context.targetItem);
   }
 
@@ -1202,7 +1225,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private toggleMessageSelection(item: CbItem<ChatItemData>): void {
-    const memberIds = this.messageMemberIds(item);
+    const memberIds = messageMemberIds(item);
     const next = new Set(this.selectedMessageIds());
     const remove = memberIds.every((id) => next.has(id));
     for (const id of memberIds) {
@@ -1211,7 +1234,7 @@ export class MessageThreadComponent implements OnDestroy {
         this.selectedMessageItems.delete(id);
       } else {
         next.add(id);
-        this.selectedMessageItems.set(id, this.albumMemberItem(item, id));
+        this.selectedMessageItems.set(id, albumMemberItem(item, id));
       }
     }
     this.selectedMessageIds.set(next);
@@ -1222,7 +1245,7 @@ export class MessageThreadComponent implements OnDestroy {
     item: CbItem<ChatItemData>,
     memberId: number,
   ): void {
-    if (!this.messageMemberIds(item).includes(memberId)) return;
+    if (!messageMemberIds(item).includes(memberId)) return;
     const next = new Set(this.selectedMessageIds());
     if (next.has(memberId)) {
       next.delete(memberId);
@@ -1231,42 +1254,11 @@ export class MessageThreadComponent implements OnDestroy {
       next.add(memberId);
       this.selectedMessageItems.set(
         memberId,
-        this.albumMemberItem(item, memberId),
+        albumMemberItem(item, memberId),
       );
     }
     this.selectedMessageIds.set(next);
     this.syncMountedSelectionState();
-  }
-
-  private messageMemberIds(item: CbItem<ChatItemData>): number[] {
-    if ((item.ids?.length ?? 0) > 1) return [...item.ids!];
-    return [item.id];
-  }
-
-  private messageSelectionState(
-    item: CbItem<ChatItemData>,
-  ): 'none' | 'some' | 'all' {
-    const ids = this.messageMemberIds(item);
-    const count = ids.filter((id) => this.selectedMessageIds().has(id)).length;
-    return count === 0 ? 'none' : count === ids.length ? 'all' : 'some';
-  }
-
-  private albumMemberItem(
-    item: CbItem<ChatItemData>,
-    memberId: number,
-  ): CbItem<ChatItemData> {
-    if ((item.ids?.length ?? 0) < 2) return item;
-    const media = item.data.images?.find((entry) => entry.msgId === memberId);
-    return {
-      ...item,
-      id: memberId,
-      ids: undefined,
-      data: {
-        ...item.data,
-        msgId: memberId,
-        images: media ? [media] : item.data.images,
-      },
-    };
   }
 
   openContextForwardDialog(): void {
@@ -1413,44 +1405,13 @@ export class MessageThreadComponent implements OnDestroy {
           .split(',')
           .map(Number)
           .filter(Number.isFinite);
-        const selectedMembers = memberIds.filter((memberId) =>
-          selected.has(memberId),
-        ).length;
-        const state =
-          selectedMembers === 0
-            ? 'none'
-            : selectedMembers === memberIds.length
-              ? 'all'
-              : 'some';
-        host.classList.toggle('cb-message--selection-mode', active);
-        host.classList.toggle(
-          'cb-message--selected',
-          active && state === 'all',
+        applyMessageSelectionState(
+          host,
+          memberIds,
+          active,
+          selected,
+          contextId,
         );
-        host.classList.toggle(
-          'cb-message--partially-selected',
-          active && state === 'some',
-        );
-        const hasContext =
-          contextId !== undefined && memberIds.includes(contextId);
-        host.classList.toggle(
-          'cb-message--context-active',
-          hasContext && memberIds.length === 1,
-        );
-        host.setAttribute('aria-selected', String(active && state === 'all'));
-        host
-          .querySelectorAll<HTMLElement>('[data-media-message-id]')
-          .forEach((cell) => {
-            const memberId = Number(cell.dataset['mediaMessageId']);
-            cell.classList.toggle(
-              'msg-media-cell--selected',
-              active && selected.has(memberId),
-            );
-            cell.classList.toggle(
-              'msg-media-cell--context-active',
-              hasContext && memberId === contextId,
-            );
-          });
       });
   }
 
@@ -1586,12 +1547,12 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   scrollToLatest(): void {
-    this.scroller?.scrollToBottom();
+    this.scroller?.scrollToBottom(true);
   }
 
   scrollToUnread(): void {
     if (this.firstUnreadSeq !== null)
-      this.scroller?.scrollToIndex(this.firstUnreadSeq, 'top', true);
+      void jumpToMessage(this.scroller, this.firstUnreadSeq, 'top');
   }
 
   openUploadDetails(): void {
@@ -1643,7 +1604,7 @@ export class MessageThreadComponent implements OnDestroy {
         this.sendLink(intent.url);
         return;
       case 'paste':
-        void this.sendPaste(intent.files, intent.text);
+        this.appendWebPaste(intent.files, intent.text);
         return;
       case 'audio':
         this.sendVoice(intent.blob, intent.duration, intent.mimeType);
@@ -1955,11 +1916,102 @@ export class MessageThreadComponent implements OnDestroy {
     }
   }
 
-  /** Confirmed paste-panel contents are still ordinary independent messages. Send attachments in panel
-   *  order, then the optional text message; no batch identifier or compound-message protocol is involved. */
-  private async sendPaste(files: readonly File[], text: string): Promise<void> {
-    await this.sendAttachments(files, true);
-    if (text) this.sendText(text);
+  private appendWebPaste(files: readonly File[], text: string): void {
+    this.appendComposerText(text);
+    const existing = new Set(
+      this.pasteItems()
+        .filter((item) => item.source === 'web')
+        .map((item) => item.fingerprint),
+    );
+    const additions: ThreadPasteItem[] = [];
+    for (const file of files) {
+      const fingerprint = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+      if (existing.has(fingerprint)) continue;
+      existing.add(fingerprint);
+      additions.push({
+        id: `web:${fingerprint}:${uuid()}`,
+        source: 'web',
+        file,
+        fingerprint,
+        name: file.name,
+        size: file.size,
+        previewUrl: file.type.startsWith('image/')
+          ? URL.createObjectURL(file)
+          : undefined,
+      });
+    }
+    this.pasteItems.update((items) => [...items, ...additions]);
+  }
+
+  private appendNativePaste(files: readonly NativeUploadSelection[]): void {
+    const existing = new Set(
+      this.pasteItems()
+        .filter((item) => item.source === 'native')
+        .map((item) => item.selection.uploadId),
+    );
+    const additions = files
+      .filter((selection) => !existing.has(selection.uploadId))
+      .map(
+        (selection): ThreadPasteItem => ({
+          id: `native:${selection.uploadId}`,
+          source: 'native',
+          selection,
+          name: selection.name,
+          size: selection.size,
+          previewUrl: selection.preview ?? undefined,
+        }),
+      );
+    this.pasteItems.update((items) => [...items, ...additions]);
+  }
+
+  appendPanelPaste(event: ClipboardEvent): void {
+    const data = event.clipboardData;
+    if (!data) return;
+    this.appendWebPaste(Array.from(data.files), data.getData('text/plain'));
+  }
+
+  removePasteItem(id: string): void {
+    const item = this.pasteItems().find((candidate) => candidate.id === id);
+    if (!item) return;
+    this.releasePasteItem(item);
+    this.pasteItems.update((items) =>
+      items.filter((candidate) => candidate.id !== id),
+    );
+  }
+
+  cancelPaste(): void {
+    for (const item of this.pasteItems()) this.releasePasteItem(item);
+    this.pasteItems.set([]);
+  }
+
+  async confirmPaste(): Promise<void> {
+    const items = this.pasteItems();
+    if (items.length === 0) return;
+    this.pasteItems.set([]);
+    for (const item of items) {
+      if (item.source === 'web') {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        await this.sendAttachments([item.file], true);
+      } else {
+        await this.sendNativeAttachments([item.selection]);
+      }
+    }
+  }
+
+  private appendComposerText(text: string): void {
+    if (!text) return;
+    if (!this.nativeComposer.supported) {
+      this.chatInput()?.appendText(text);
+      return;
+    }
+    this.nativeComposerDraft.update((draft) =>
+      draft ? `${draft}\n${text}` : text,
+    );
+  }
+
+  private releasePasteItem(item: ThreadPasteItem): void {
+    if (item.source === 'native') this.nativeUploads.discard(item.selection.uploadId);
+    else if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
   }
 
   /** Send an in-app recording through the dedicated voice pending path. */
@@ -2001,7 +2053,9 @@ export class MessageThreadComponent implements OnDestroy {
         threadId: tid,
         content: stringifyTextMessageContent({
           text: item.data.wireText ?? item.data.text,
-          ...(item.data.quote ? { quote: { seq: item.data.quote.seq } } : {}),
+          ...(item.data.quote?.seq !== undefined
+            ? { quote: { seq: item.data.quote.seq } }
+            : {}),
         }),
         contentType: 'PURE_TEXT',
         clientMessageId: cid,
@@ -2594,6 +2648,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
+    this.cancelPaste();
+    this.nativeComposerDraft.set('');
     this.selectionMode.set(false);
     this.selectedMessageIds.set(new Set());
     this.messageContextMenu.set(null);
@@ -2670,13 +2726,13 @@ export class MessageThreadComponent implements OnDestroy {
   /** Jump the kernel to a search match seq (from the search bar's prev/next). The kernel re-seeds around
    *  an unmounted seq and flashes the row via the existing highlight path. */
   async onSearchJump(id: number): Promise<void> {
-    const found = await this.scroller?.scrollToIndex(id, 'center', true);
+    const found = await jumpToMessage(this.scroller, id);
     if (found === false) {
       this.toast.warn(this.transloco.translate('chat.messageNotFound'));
     }
   }
 
-  /** Clear-history landed on the server: the now-empty view (filtered by the caller's clearedAt watermark)
+  /** Clear-history landed on the server: the now-empty view (filtered by the caller's clearedSeq watermark)
    *  must reload from scratch. Data changed beneath a possibly-warm pane, so force a re-init regardless of
    *  warmth ({@link reinit}, not {@link reset}). */
   async onHistoryCleared(): Promise<void> {
@@ -2684,7 +2740,7 @@ export class MessageThreadComponent implements OnDestroy {
     if (threadId !== undefined) {
       // Clear-for-me is a server-side watermark, not a Message delete. Purge the local mirror before
       // re-init so cache-first startup cannot briefly remount pre-watermark rows while THREAD_META is
-      // still propagating the new clearedAt into the conversation item.
+      // still propagating the new clearedSeq into the conversation item.
       await this.msgRepo.deleteByThread(threadId);
     }
     this.reinit();

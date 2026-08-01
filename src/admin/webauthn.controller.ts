@@ -108,15 +108,22 @@ export class WebAuthnController {
     return id;
   }
 
-  private parseRowId(id: string): bigint {
-    try {
-      return BigInt(id);
-    } catch {
+  private parseRowId(id: string): number {
+    if (!/^\d+$/.test(id)) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'invalid credential id',
         HttpStatus.BAD_REQUEST,
       );
     }
+    const parsed = Number(id);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 2_147_483_647) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid credential id',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return parsed;
   }
 }

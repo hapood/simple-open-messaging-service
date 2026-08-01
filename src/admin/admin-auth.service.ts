@@ -618,7 +618,7 @@ export class AdminAuthService {
 
   async renameWebAuthnCredential(
     adminId: number,
-    rowId: bigint,
+    rowId: number,
     nickname: string,
   ): Promise<void> {
     await this.webAuthn.renameCredential(adminId, rowId, nickname);
@@ -628,7 +628,7 @@ export class AdminAuthService {
    *  enrollment; see completeWebAuthnRegistration). */
   async removeWebAuthnCredential(
     adminId: number,
-    rowId: bigint,
+    rowId: number,
   ): Promise<{ remaining: number }> {
     return this.webAuthn.removeCredential(adminId, rowId);
   }

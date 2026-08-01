@@ -77,6 +77,17 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.groupFill().from).not.toBe(color);
   });
 
+  it('uses a separate stable color identity without changing the avatar cache identity', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.GROUP);
+    fixture.componentRef.setInput('identityId', 12);
+    fixture.componentRef.setInput('colorIdentityId', '!group-account');
+    const color = fixture.componentInstance.groupFill().from;
+
+    fixture.componentRef.setInput('identityId', '!group-account');
+
+    expect(fixture.componentInstance.groupFill().from).toBe(color);
+  });
+
   it('passes a local-preview src (blob:/data:) straight through without the DB', () => {
     fixture.componentRef.setInput('identityId', 9);
     fixture.componentRef.setInput('src', 'blob:http://localhost/abc');

@@ -17,6 +17,12 @@ export function conversationAvatarIdentityId(t: ConversationItem): number {
   return t.type === 'P2P' ? t.peerUser.id : t.group.id;
 }
 
+/** Stable color seed. Group numeric ids are local to a server, whereas the `!account` is global and is
+ * also embedded in invite cards. */
+export function conversationAvatarColorIdentityId(t: ConversationItem): number | string {
+  return t.type === 'P2P' ? t.peerUser.id : t.group.account;
+}
+
 export function conversationAvatarSrc(t: ConversationItem): string | null | undefined {
   return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar;
 }

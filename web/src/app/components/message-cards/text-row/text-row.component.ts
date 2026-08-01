@@ -55,4 +55,16 @@ export class TextRowComponent {
   readonly retry = output<number>();
   readonly cancel = output<number>();
   readonly quoteJump = output<number>();
+
+  /** The server keeps quote previews as one compact `author：body` string. Split only the first
+   * separator so the author can form a clear visual header without changing the wire format. */
+  readonly quotePreview = computed(() => {
+    const preview = this.data().quote?.preview?.trim() ?? '';
+    const separator = preview.search(/[：:]/);
+    if (separator <= 0) return { author: '', body: preview };
+    return {
+      author: preview.slice(0, separator).trim(),
+      body: preview.slice(separator + 1).trim(),
+    };
+  });
 }

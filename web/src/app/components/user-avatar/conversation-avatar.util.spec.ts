@@ -16,12 +16,12 @@ describe('conversation-avatar util', () => {
   const p2p = {
     type: 'P2P',
     peerUser: { id: 7, avatar: '/uploads/u7.png' },
-    group: { id: 0, avatar: '' },
+    group: { id: 0, account: '!zero', avatar: '' },
   } as unknown as ConversationItem;
   const group = {
     type: 'GROUP',
     peerUser: { id: 0, avatar: '' },
-    group: { id: 12, avatar: '/uploads/g12.png' },
+    group: { id: 12, account: '!group-12', avatar: '/uploads/g12.png' },
   } as unknown as ConversationItem;
 
   it('maps P2P → OTHER and GROUP → GROUP', () => {

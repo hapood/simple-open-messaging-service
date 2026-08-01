@@ -1,4 +1,4 @@
-import { Injectable, inject, effect } from '@angular/core';
+import { Injectable, inject, effect, isDevMode } from '@angular/core';
 import { Subject, filter, firstValueFrom } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
@@ -15,8 +15,16 @@ import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 /** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
 export type MessageQuery = Pick<
   QueryMessageLogParams,
-  'skip' | 'take' | 'lastSeq' | 'orderBy'
+  'skip' | 'take' | 'lastSeq' | 'orderBy' | 'truncate' | 'truncateSeq'
 >;
+
+export interface MessagePage {
+  data: Message[];
+  hasMore: boolean;
+  truncated?: boolean;
+  /** Transport/business failure: never interpret an empty data array as a confirmed edge. */
+  failed?: boolean;
+}
 
 /** The client's stored media-status state for one message: its current status + the monotonic version of
  *  the event that last set it. 'downloading' is a client-only optimistic state (set directly on a manual
@@ -106,6 +114,8 @@ export class MessageRepository {
   /** Per-thread highest seq observed (via NEW_MESSAGE or a backend response body). In-memory only —
    *  re-established by the init backend-probe each session. Drives the getNewer cache-hit ceiling test. */
   private readonly maxSeenSeq = new Map<number, number>();
+  /** Complete seq intervals confirmed by successful server pages in this visibility session. */
+  private readonly completeRanges = new Map<number, Array<[number, number]>>();
 
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
@@ -175,13 +185,14 @@ export class MessageRepository {
   /** Drop in-memory session state (logout / account switch). IDB is wiped per-user by WebdbService. */
   private reset(): void {
     this.maxSeenSeq.clear();
+    this.completeRanges.clear();
   }
 
   /**
    * Read a message page — cache-first + gap-fill (mirrors `queryMessageLog` semantics so the source swaps
    * over unchanged). `data` is returned in `orderBy` order (desc = newest-first, asc = oldest-first), just
-   * like the backend. Errors degrade to `{ data: [], hasMore: false }` (the source treats an empty page as
-   * a boundary) — the cache survives a transient outage.
+   * like the backend. Transport/business failures carry `failed:true`; callers must not interpret their
+   * empty data as a confirmed boundary.
    *
    * - latest `skip: 0` (init): always return after the local IDB read, including a valid empty result;
    *   backend revalidation is background-only and wakes the mounted kernel when it discovers data.
@@ -191,13 +202,19 @@ export class MessageRepository {
   async queryMessages(
     threadId: number,
     q: MessageQuery,
-    clearedAfter?: number | null,
+    clearedThroughSeq?: number | null,
     localOnly = false,
-  ): Promise<{ data: Message[]; hasMore: boolean }> {
+  ): Promise<MessagePage> {
     if (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined) {
-      const cached = await this.latestPage(threadId, q.take, clearedAfter);
+      const cached = await this.latestPage(threadId, q.take, clearedThroughSeq);
       if (cached.length > 0) {
-        if (!localOnly) void this.refreshLatest(threadId, q, cached[0]?.seq);
+        if (!localOnly)
+          void this.refreshLatest(
+            threadId,
+            q,
+            cached[0]?.seq,
+            cached[cached.length - 1]?.seq,
+          );
         const oldestSeq = cached[cached.length - 1].seq;
         return {
           data: cached,
@@ -206,14 +223,45 @@ export class MessageRepository {
       }
       if (localOnly) return { data: [], hasMore: false };
     }
-    if (q.skip === 0) return this.backend(threadId, q);
+    if (q.skip === 0) {
+      const anchor = q.lastSeq;
+      if (anchor === undefined) return this.backend(threadId, q);
+      if (localOnly) {
+        const anchorRow = await this.getOne(threadId, anchor);
+        if (!anchorRow) return { data: [], hasMore: false };
+        const tail =
+          q.orderBy === 'desc'
+            ? await this.rangeDesc(
+                threadId,
+                anchor,
+                Math.max(0, q.take - 1),
+                clearedThroughSeq,
+              )
+            : await this.rangeAsc(
+                threadId,
+                anchor,
+                Math.max(0, q.take - 1),
+                clearedThroughSeq,
+              );
+        const last = tail[tail.length - 1] ?? anchorRow;
+        const hasMore =
+          q.orderBy === 'desc'
+            ? last.seq > 0
+            : this.maxSeenSeq.get(threadId) === undefined ||
+              last.seq < this.maxSeenSeq.get(threadId)!;
+        return { data: [anchorRow, ...tail], hasMore };
+      }
+      return this.queryAnchoredHybrid(threadId, q, anchor, clearedThroughSeq);
+    }
     // skip === 1 → getOlder (desc, below lastSeq) / getNewer (asc, above lastSeq): cache-first.
     const anchor = q.lastSeq;
     if (anchor === undefined) return this.backend(threadId, q); // no cursor → can't range the cache
+    if (!localOnly)
+      return this.queryHybrid(threadId, q, anchor, clearedThroughSeq);
     const cached =
       q.orderBy === 'desc'
-        ? await this.rangeDesc(threadId, anchor, q.take, clearedAfter)
-        : await this.rangeAsc(threadId, anchor, q.take, clearedAfter);
+        ? await this.rangeDesc(threadId, anchor, q.take, clearedThroughSeq)
+        : await this.rangeAsc(threadId, anchor, q.take, clearedThroughSeq);
     const verdict = this.cacheVerdict(
       cached,
       anchor,
@@ -222,8 +270,248 @@ export class MessageRepository {
       threadId,
     );
     if (verdict.hit) return { data: cached, hasMore: verdict.hasMore };
-    if (localOnly) return { data: [], hasMore: false };
-    return this.backend(threadId, q); // gap-fill: the cache lacks a contiguous held range here
+    return { data: [], hasMore: false };
+  }
+
+  /** Include the middle anchor exactly once, then use the normal exclusive-cursor hybrid walker. */
+  private async queryAnchoredHybrid(
+    threadId: number,
+    q: MessageQuery,
+    anchor: number,
+    clearedThroughSeq?: number | null,
+  ): Promise<MessagePage> {
+    const localAnchor = await this.getOne(threadId, anchor);
+    if (
+      localAnchor &&
+      (clearedThroughSeq == null || localAnchor.seq > clearedThroughSeq)
+    ) {
+      if (q.take === 1) return { data: [localAnchor], hasMore: true };
+      const tail = await this.queryHybrid(
+        threadId,
+        { ...q, skip: 1, take: q.take - 1 },
+        anchor,
+        clearedThroughSeq,
+      );
+      return {
+        data: [localAnchor, ...tail.data],
+        hasMore: tail.hasMore,
+        truncated: tail.truncated,
+        failed: tail.failed,
+      };
+    }
+
+    const cached =
+      q.orderBy === 'desc'
+        ? await this.rangeDesc(threadId, anchor, q.take, clearedThroughSeq)
+        : await this.rangeAsc(threadId, anchor, q.take, clearedThroughSeq);
+    const boundary = this.nearestBoundary(anchor, cached[0]?.seq, q);
+    const first = await this.backend(threadId, {
+      ...q,
+      truncate: boundary !== undefined,
+      truncateSeq: boundary,
+    });
+    if (first.failed) return first;
+    if (!first.truncated || first.data.length >= q.take || boundary === q.truncateSeq)
+      return first;
+
+    const step = q.orderBy === 'desc' ? -1 : 1;
+    const tail = await this.queryHybrid(
+      threadId,
+      { ...q, skip: 1, take: q.take - first.data.length },
+      boundary! - step,
+      clearedThroughSeq,
+    );
+    return {
+      data: [...first.data, ...tail.data],
+      hasMore: tail.hasMore,
+      truncated: tail.truncated,
+    };
+  }
+
+  /**
+   * Assemble one requested page from alternating local and remote contiguous segments. A remote segment
+   * is bounded at the nearest cached row in its direction, so it never re-downloads the cached tail. Once
+   * the backend reports that boundary reached (`truncated`), the next loop consumes local rows immediately;
+   * if those still do not fill `take`, the following gap is fetched with only the remaining count.
+   */
+  private async queryHybrid(
+    threadId: number,
+    q: MessageQuery,
+    anchor: number,
+    clearedThroughSeq?: number | null,
+  ): Promise<MessagePage> {
+    const out: Message[] = [];
+    let cursor = anchor;
+    let remaining = q.take;
+    let hasMore = true;
+    let reachedRequestedTruncate = false;
+    const step = q.orderBy === 'desc' ? -1 : 1;
+    let localTotal = 0;
+    let remoteTotal = 0;
+    let remoteRequests = 0;
+    let gapCount = 0;
+
+    while (remaining > 0 && hasMore) {
+      const cached =
+        q.orderBy === 'desc'
+          ? await this.rangeDesc(threadId, cursor, remaining, clearedThroughSeq)
+          : await this.rangeAsc(threadId, cursor, remaining, clearedThroughSeq);
+
+      // Consume the longest locally contiguous prefix adjacent to the current cursor.
+      let localCount = 0;
+      let localCursor = cursor;
+      while (
+        localCount < cached.length &&
+        this.isCompleteRange(threadId, localCursor, cached[localCount].seq) &&
+        this.withinRequestedTruncate(cached[localCount].seq, q)
+      ) {
+        localCursor = cached[localCount].seq;
+        localCount++;
+      }
+      if (localCount > 0) {
+        const local = cached.slice(0, localCount);
+        localTotal += local.length;
+        out.push(...local);
+        remaining -= local.length;
+        cursor = local[local.length - 1].seq;
+        if (q.truncate && cursor === q.truncateSeq) {
+          reachedRequestedTruncate = true;
+          hasMore = false;
+        } else if (q.orderBy === 'desc' && cursor === 0) {
+          hasMore = false;
+        } else if (
+          q.orderBy === 'asc' &&
+          this.maxSeenSeq.get(threadId) !== undefined &&
+          cursor >= this.maxSeenSeq.get(threadId)!
+        ) {
+          hasMore = false;
+        }
+        continue;
+      }
+
+      // The closest cached row marks the end of this remote gap. If the caller supplied a stricter
+      // boundary (post-init frozen newest seq), use whichever endpoint comes first in this direction.
+      const cachedBoundary = cached[0]?.seq;
+      const remoteBoundary = this.nearestBoundary(cursor, cachedBoundary, q);
+      remoteRequests++;
+      gapCount++;
+      const remote = await this.backend(threadId, {
+        ...q,
+        skip: 1,
+        take: remaining,
+        lastSeq: cursor,
+        truncate: remoteBoundary !== undefined,
+        truncateSeq: remoteBoundary,
+      });
+      if (remote.failed) {
+        return {
+          data: out,
+          hasMore: true,
+          failed: true,
+        };
+      }
+      const remoteData = remote.data.slice(0, remaining);
+      remoteTotal += remoteData.length;
+      if (remoteData.length === 0) {
+        if (remote.truncated && remoteBoundary !== q.truncateSeq) {
+          // The empty remote gap ended immediately before an existing cached row. Rebase the synthetic
+          // cursor one step before that row so the next pass consumes the row locally.
+          cursor = remoteBoundary! - step;
+          hasMore = true;
+          continue;
+        }
+        hasMore = false;
+        reachedRequestedTruncate = remote.truncated === true;
+        break;
+      }
+      out.push(...remoteData);
+      remaining -= remoteData.length;
+      cursor = remoteData[remoteData.length - 1].seq;
+      hasMore = remote.hasMore;
+      if (remote.truncated) {
+        // Clear the just-hit local cutoff by continuing from its row. If it was the caller's ultimate
+        // cutoff, this whole request is complete instead.
+        if (remoteBoundary === q.truncateSeq) {
+          reachedRequestedTruncate = true;
+          hasMore = false;
+        } else {
+          cursor = remoteBoundary! - step;
+          hasMore = true;
+        }
+      }
+    }
+
+    const result = {
+      data: out,
+      hasMore: remaining === 0 ? hasMore : false,
+      truncated: reachedRequestedTruncate,
+    };
+    if (isDevMode()) {
+      console.debug('[chat-cache] hybrid-page', {
+        threadId,
+        direction: q.orderBy,
+        anchor,
+        requested: q.take,
+        returned: out.length,
+        localCount: localTotal,
+        remoteCount: remoteTotal,
+        remoteRequests,
+        gapCount,
+        truncated: reachedRequestedTruncate,
+      });
+    }
+    return result;
+  }
+
+  private withinRequestedTruncate(seq: number, q: MessageQuery): boolean {
+    if (!q.truncate || q.truncateSeq === undefined) return true;
+    return q.orderBy === 'asc' ? seq < q.truncateSeq : seq > q.truncateSeq;
+  }
+
+  private nearestBoundary(
+    cursor: number,
+    cachedBoundary: number | undefined,
+    q: MessageQuery,
+  ): number | undefined {
+    const requested = q.truncate ? q.truncateSeq : undefined;
+    const candidates = [cachedBoundary, requested].filter(
+      (seq): seq is number =>
+        seq !== undefined &&
+        (q.orderBy === 'asc' ? seq > cursor : seq < cursor),
+    );
+    if (candidates.length === 0) return undefined;
+    return q.orderBy === 'asc'
+      ? Math.min(...candidates)
+      : Math.max(...candidates);
+  }
+
+  private isCompleteRange(threadId: number, a: number, b: number): boolean {
+    const from = Math.min(a, b);
+    const to = Math.max(a, b);
+    return (
+      // Migration fallback for rows cached before interval tracking existed. It is intentionally limited
+      // to a single seq step; any wider numeric gap requires a server-confirmed interval.
+      to - from === 1 ||
+      (this.completeRanges.get(threadId) ?? []).some(
+        ([knownFrom, knownTo]) => knownFrom <= from && knownTo >= to,
+      )
+    );
+  }
+
+  private recordCompleteRange(threadId: number, a: number, b: number): void {
+    let from = Math.min(a, b);
+    let to = Math.max(a, b);
+    const out: Array<[number, number]> = [];
+    for (const [knownFrom, knownTo] of this.completeRanges.get(threadId) ?? []) {
+      if (knownTo < from || knownFrom > to) out.push([knownFrom, knownTo]);
+      else {
+        from = Math.min(from, knownFrom);
+        to = Math.max(to, knownTo);
+      }
+    }
+    out.push([from, to]);
+    out.sort((x, y) => x[0] - y[0]);
+    this.completeRanges.set(threadId, out);
   }
 
   /**
@@ -243,6 +531,7 @@ export class MessageRepository {
    */
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);
+    this.completeRanges.delete(threadId);
     try {
       await this.webdb.deleteMessagesByThread(threadId);
     } catch {
@@ -254,21 +543,49 @@ export class MessageRepository {
   private async backend(
     threadId: number,
     q: MessageQuery,
-  ): Promise<{ data: Message[]; hasMore: boolean }> {
+  ): Promise<MessagePage> {
     try {
       const res = await firstValueFrom(
         this.msg.queryMessageLog({ threadId, ...q }),
       );
-      const data = res.code === 0 ? (res.data ?? []) : [];
+      if (res.code !== 0) return { data: [], hasMore: true, failed: true };
+      const data = res.data ?? [];
       if (data.length > 0) {
         await this.putMany(data);
-        const max = data.reduce((mx, m) => (m.seq > mx ? m.seq : mx), -1);
-        const cur = this.maxSeenSeq.get(threadId) ?? -1;
-        if (max > cur) this.maxSeenSeq.set(threadId, max);
+        // A local-gap cutoff is not a server ceiling. Only an unbounded response, or a newest-page
+        // revalidation (desc/no cursor, whose first row is globally newest), may advance maxSeenSeq.
+        if (
+          !q.truncate ||
+          (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined)
+        ) {
+          const max = data.reduce((mx, m) => (m.seq > mx ? m.seq : mx), -1);
+          const cur = this.maxSeenSeq.get(threadId) ?? -1;
+          if (max > cur) this.maxSeenSeq.set(threadId, max);
+        }
       }
-      return { data, hasMore: res.hasMore ?? data.length >= q.take };
+      const endpoint =
+        res.truncated && q.truncateSeq !== undefined
+          ? q.truncateSeq
+          : data[data.length - 1]?.seq;
+      if (q.lastSeq !== undefined && endpoint !== undefined) {
+        this.recordCompleteRange(threadId, q.lastSeq, endpoint);
+      } else if (data.length > 0) {
+        const seqs = data.map((m) => m.seq);
+        this.recordCompleteRange(
+          threadId,
+          Math.min(...seqs),
+          Math.max(...seqs),
+        );
+        if (res.truncated && q.truncateSeq !== undefined)
+          this.recordCompleteRange(threadId, q.truncateSeq, data[0].seq);
+      }
+      return {
+        data,
+        hasMore: res.hasMore ?? data.length >= q.take,
+        truncated: res.truncated,
+      };
     } catch {
-      return { data: [], hasMore: false };
+      return { data: [], hasMore: true, failed: true };
     }
   }
 
@@ -278,8 +595,13 @@ export class MessageRepository {
     threadId: number,
     q: MessageQuery,
     cachedNewestSeq: number | undefined,
+    cachedOldestSeq?: number,
   ): Promise<void> {
-    const fresh = await this.backend(threadId, q);
+    const fresh = await this.backend(threadId, {
+      ...q,
+      truncate: cachedOldestSeq !== undefined,
+      truncateSeq: cachedOldestSeq,
+    });
     const freshNewestSeq = fresh.data[0]?.seq;
     if (
       freshNewestSeq !== undefined &&
@@ -296,33 +618,6 @@ export class MessageRepository {
     if (typeof d?.seq !== 'number' || typeof d?.threadId !== 'number') return;
     this.advanceCeiling(d.threadId, d.seq);
     this.signal$.next({ threadId: d.threadId, seq: d.seq });
-  }
-
-  /** Cache a batch of missed messages (the latest-message-per-thread from the `POST /notifications/missed`
-   *  summary), advancing the per-thread ceiling and emitting ONE live signal per affected thread (its
-   *  highest seq in the batch) so each open {@link HttpItemSource} pulls once. Idempotent via the
-   *  `[threadId, seq]` keyPath — a re-put of the same message is a no-op overwrite. (The missed endpoint's
-   *  strict-total-order `id > cursor` cursor never re-fetches a row across pages, so this idempotency is
-   *  no longer load-bearing for pagination dedup — it remains a safety net for the SSE-echo-vs-missed
-   *  overlap: a message you sent is cached via the NEW_MESSAGE echo, and may ALSO appear in a missed pull.)
-   *
-   *  This is the SAME apply path a live SSE NEW_MESSAGE's pull takes, so realtime + catch-up populate the
-   *  store identically. It does NOT touch `eventSubject`, so {@link UnreadAttentionService} (subscribed to
-   *  NEW_MESSAGE there) is NOT triggered — the threadlist snapshot owns unread; this only hydrates message
-   *  bodies (so opening a thread is instant + recent history survives offline). */
-  async applyMissed(messages: Message[]): Promise<void> {
-    if (messages.length === 0) return;
-    await this.putMany(messages);
-    const topSeqByThread = new Map<number, number>();
-    for (const m of messages) {
-      if (typeof m?.seq !== 'number' || typeof m?.threadId !== 'number')
-        continue;
-      this.advanceCeiling(m.threadId, m.seq);
-      const prev = topSeqByThread.get(m.threadId) ?? -1;
-      if (m.seq > prev) topSeqByThread.set(m.threadId, m.seq);
-    }
-    for (const [threadId, seq] of topSeqByThread)
-      this.signal$.next({ threadId, seq });
   }
 
   /** Advance the per-thread seq ceiling (drives the getNewer cache-hit test) if `seq` is newer. */
@@ -349,10 +644,10 @@ export class MessageRepository {
   }
 
   /**
-   * Decide whether `cached` is a complete, contiguous held range for the query (→ cache hit) or whether
+   * Decide whether `cached` is inside a server-confirmed complete range (→ cache hit) or whether
    * the cache lacks data here (→ gap-fill). `cached` is in `orderBy` order (desc: highest-first below the
-   * anchor; asc: lowest-first above it). Contiguity is required because multiple jump-to-message windows
-   * can fragment the cached set; a gapped range must be backfilled from the API (the contiguous truth).
+   * anchor; asc: lowest-first above it). A numeric seq gap may be legitimate under viewer filtering, so
+   * completeness comes from successful server pages rather than arithmetic adjacency alone.
    */
   private cacheVerdict(
     cached: Message[],
@@ -362,10 +657,11 @@ export class MessageRepository {
     threadId: number,
   ): { hit: boolean; hasMore: boolean } {
     if (cached.length === 0) return { hit: false, hasMore: true };
-    const step = orderBy === 'desc' ? -1 : 1;
+    let cursor = anchor;
     for (let i = 0; i < cached.length; i++) {
-      if (cached[i].seq !== anchor + step * (i + 1))
+      if (!this.isCompleteRange(threadId, cursor, cached[i].seq))
         return { hit: false, hasMore: true }; // gap
+      cursor = cached[i].seq;
     }
     const lastSeq = cached[cached.length - 1].seq;
     if (orderBy === 'desc') {
@@ -391,12 +687,12 @@ export class MessageRepository {
   private async latestPage(
     threadId: number,
     take: number,
-    clearedAfter?: number | null,
+    clearedThroughSeq?: number | null,
   ): Promise<Message[]> {
     try {
       return (
         await this.webdb.queryCachedMessages(threadId, 'desc', take)
-      ).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
+      ).filter((m) => clearedThroughSeq == null || m.seq > clearedThroughSeq);
     } catch {
       return [];
     }
@@ -407,12 +703,12 @@ export class MessageRepository {
     threadId: number,
     belowSeq: number,
     take: number,
-    clearedAfter?: number | null,
+    clearedThroughSeq?: number | null,
   ): Promise<Message[]> {
     try {
       return (
         await this.webdb.queryCachedMessages(threadId, 'desc', take, belowSeq)
-      ).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
+      ).filter((m) => clearedThroughSeq == null || m.seq > clearedThroughSeq);
     } catch {
       return [];
     }
@@ -423,12 +719,12 @@ export class MessageRepository {
     threadId: number,
     aboveSeq: number,
     take: number,
-    clearedAfter?: number | null,
+    clearedThroughSeq?: number | null,
   ): Promise<Message[]> {
     try {
       return (
         await this.webdb.queryCachedMessages(threadId, 'asc', take, aboveSeq)
-      ).filter((m) => clearedAfter == null || m.createdAt > clearedAfter);
+      ).filter((m) => clearedThroughSeq == null || m.seq > clearedThroughSeq);
     } catch {
       return [];
     }

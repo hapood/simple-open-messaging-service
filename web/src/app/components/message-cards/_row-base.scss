@@ -46,6 +46,7 @@
 .msg-row {
   display: flex;
   position: relative;
+  isolation: isolate;
   padding: 6px var(--app-space-4) 0;
   box-sizing: border-box;
   transition: opacity 0.3s ease, transform 0.3s ease;
@@ -64,6 +65,31 @@
   &.msg-grp-body {
     padding-top: 3px;
   }
+}
+
+// Dedicated paint-only interaction layer. Its geometry deliberately begins after the incoming avatar
+// column (or at the message edge for self rows), so jump/selection feedback never tints the avatar.
+.msg-highlight-layer {
+  position: absolute;
+  z-index: -1;
+  top: var(--msg-highlight-top, 6px);
+  right: var(--app-space-4);
+  bottom: 0;
+  left: var(--app-space-4);
+  border-radius: var(--app-radius-md);
+  pointer-events: none;
+}
+
+.msg-row.msg-other .msg-highlight-layer {
+  left: calc(var(--app-space-4) + 48px);
+}
+
+.msg-row.msg-group-start {
+  --msg-highlight-top: 14px;
+}
+
+.msg-row.msg-grp-body {
+  --msg-highlight-top: 3px;
 }
 
 .msg-failed-actions {

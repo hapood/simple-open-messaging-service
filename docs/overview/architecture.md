@@ -214,7 +214,7 @@ The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, 
 
 ### Threads, Participants, and Invites
 
-All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). Membership is **`ThreadParticipant`** — one row per (user, thread) carrying `lastReadSeq`, `role` (GROUP only), `muted`, `pinned`, `clearedAt`, `alias`, `leftAt`. There is no longer a polymorphic `UserMessageThread` or a separate `GroupMember` table.
+All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). Membership is **`ThreadParticipant`** — one row per (user, thread) carrying `lastReadSeq`, `role` (GROUP only), `muted`, `pinned`, `clearedSeq`, `alias`, `leftAt`. There is no longer a polymorphic `UserMessageThread` or a separate `GroupMember` table.
 
 Friend-add and group-invite are unified in the **`Invite`** table (`kind` `FRIEND` or `GROUP`, 7-day TTL, `PENDING → ACCEPTED|REJECTED|REVOKED|EXPIRED`, rows never hard-deleted):
 

@@ -77,7 +77,8 @@ export interface ChatMsgData {
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
   wireText?: string;
   quote?: {
-    seq: number;
+    /** Jump target in the current message source; absent for a display-only snapshot. */
+    seq?: number;
     preview: string;
   };
   /** Parsed PURE_TEXT body. Stable mention identity is retained for recipient-relative rendering. */

@@ -45,7 +45,7 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
   return {
     seq,
     contentType: 'PURE_TEXT',
-    content: 'hi',
+    content: JSON.stringify({ text: 'hi' }),
     threadId: 42,
     creator,
     createdAt: 1700000000000,
@@ -223,6 +223,29 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(signals).toHaveBeenCalledOnceWith(12);
   });
 
+  it('bounds the post-init newer walk at the frozen message-db latest seq', async () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(11, 2)],
+      hasMore: false,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(undefined, 20);
+    await src.getNewer(11, 50);
+
+    expect(queryMessages.calls.mostRecent().args[1]).toEqual({
+      skip: 1,
+      take: 50,
+      lastSeq: 11,
+      orderBy: 'asc',
+      truncate: true,
+      truncateSeq: 21,
+    });
+  });
+
   it('does not signal when the local DB tail already reaches both remote ceilings', async () => {
     const { src, signals } = setup({
       code: 0,
@@ -281,6 +304,31 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
 
     expect(remounted.map((item) => item.id)).toEqual([11, 12]);
     expect(remounted[1].boundary).toBe('newest');
+  });
+
+  it('preserves a forward card descriptor when shaping a message', async () => {
+    const content = JSON.stringify({
+      version: 1,
+      bundleId: 'bundle-1',
+      summaryLines: ['Alice：hello'],
+      messageCount: 1,
+      assetCount: 0,
+    });
+    const forwarded = {
+      ...row(13, 2),
+      contentType: 'FORWARD',
+      content,
+    } as Message;
+    const { src } = setup({
+      code: 0,
+      message: 'ok',
+      data: [forwarded],
+      hasMore: false,
+    });
+
+    const items = await src.init(-1, 50, 0);
+
+    expect(items[0].data.text).toBe(content);
   });
 
   it('init(-1) returns the server echo confirming an optimistic send and drops the pending entry (empty-thread first message)', async () => {
@@ -406,6 +454,30 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(items.length).toBe(1);
     expect(items[0].id).toBe(200);
     expect(items[0].boundary).toBe('newest'); // reached the DB ceiling (hasMore false)
+  });
+
+  it('does not lock an edge when the repository reports a retryable page failure', async () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: true,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+    await src.init(-1, 50, 0);
+    queryMessages.and.resolveTo({ data: [], hasMore: true, failed: true });
+
+    await expectAsync(src.getOlder(10, 50)).toBeRejected();
+    await expectAsync(src.getOlder(10, 50)).toBeRejected();
+    expect(queryMessages.calls.count()).toBe(3); // init + both retries; noOlder was never poisoned
+  });
+
+  it('does not turn a failed cold init into an empty-thread boundary', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+    queryMessages.and.resolveTo({ data: [], hasMore: true, failed: true });
+
+    await expectAsync(src.init(-1, 50, 0)).toBeRejected();
   });
 
   it('pushLive is a no-op (signal-only path caches nothing; satisfies the CbSource interface)', () => {

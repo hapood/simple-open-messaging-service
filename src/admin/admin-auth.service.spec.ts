@@ -339,7 +339,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     // revokeSessionsByAdmin routes through adminSession.updateMany — pin that neither enroll nor remove
     // touches it (a passkey is an additive optional factor; enroll already required password re-auth).
     await svc.completeWebAuthnRegistration(7, 'pending-token', {} as never);
-    await svc.removeWebAuthnCredential(7, 1n);
+    await svc.removeWebAuthnCredential(7, 1);
     expect(prisma.adminSession.updateMany).not.toHaveBeenCalled();
   });
 });

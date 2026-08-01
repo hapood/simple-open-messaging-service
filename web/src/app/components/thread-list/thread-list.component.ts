@@ -24,6 +24,7 @@ import {
 import {
   conversationAvatarType,
   conversationAvatarIdentityId,
+  conversationAvatarColorIdentityId,
   conversationAvatarSrc,
 } from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -179,6 +180,10 @@ export class ThreadListComponent implements OnInit {
 
   avatarIdentityId(t: ConversationItem): number {
     return conversationAvatarIdentityId(t);
+  }
+
+  avatarColorIdentityId(t: ConversationItem): number | string {
+    return conversationAvatarColorIdentityId(t);
   }
 
   avatarSrc(t: ConversationItem): string | null | undefined {

@@ -51,6 +51,10 @@ export class UserAvatarComponent {
    *  `!account` (an invite card) the account string is accepted too. Required for a server-path avatar;
    *  unused for local previews. */
   readonly identityId = input<number | string | undefined | null>(undefined)
+  /** Optional stable seed used only for the generated fallback color. This is separate from `identityId`
+   *  because a group avatar is cached under its local numeric id, while its globally stable `!account`
+   *  is what lets invite cards and conversation rows choose the same color across servers. */
+  readonly colorIdentityId = input<number | string | undefined | null>(undefined)
   /** Unresolved identity → render the glass shimmer placeholder so no avatar content (and no
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
@@ -144,7 +148,7 @@ export class UserAvatarComponent {
   /** Deterministic 31× hash for fallback colors. Prefer the stable, namespaced identity (`u…` / `g…`);
    *  a not-yet-created identity falls back to its display name so previews still receive a color. */
   private hashColorKey(): number {
-    const id = this.effectiveIdentityId()
+    const id = this.colorIdentityId() ?? this.effectiveIdentityId()
     const n = id == null
       ? (this.effectiveName() ?? '').trim() || '?'
       : `${this.type() === UserAvatarType.GROUP ? 'g' : 'u'}${id}`

@@ -37,6 +37,7 @@
     <string name="composer_recording_permission_denied">需要麦克风权限</string>
     <string name="composer_recording_too_short">录音时间太短</string>
     <string name="composer_backspace">删除</string>
+    <string name="composer_cancel_quote">取消引用</string>
     <plurals name="notif_group_summary">
         <item quantity="other">"%d 个新会话"</item>
     </plurals>

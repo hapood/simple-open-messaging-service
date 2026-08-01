@@ -51,9 +51,14 @@
   color: var(--app-text-muted);
 }
 
+.error-slot {
+  min-height: 44px;
+  padding: 8px 2px 0;
+  box-sizing: border-box;
+}
+
 .error {
-  min-height: 18px;
-  margin: 8px 2px;
+  margin: 0;
   font-size: 12px;
   line-height: 18px;
   color: var(--mat-form-field-error-text-color);
@@ -66,7 +71,7 @@
 }
 
 .alt-action {
-  margin-top: 18px;
+  margin-top: 10px;
   text-align: center;
   font-size: 14px;
   color: var(--app-text-muted);

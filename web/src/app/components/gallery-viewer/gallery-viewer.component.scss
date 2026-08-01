@@ -507,25 +507,6 @@
   }
 }
 
-:host ::ng-deep .soms-gallery-pswp .pswp__img {
-  animation: gv-image-reveal 180ms ease-out both;
-}
-
-@keyframes gv-image-reveal {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :host ::ng-deep .soms-gallery-pswp .pswp__img {
-    animation: none;
-  }
-}
-
 .gv-status {
   position: absolute;
   inset: 0;

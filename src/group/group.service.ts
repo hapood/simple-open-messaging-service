@@ -99,6 +99,7 @@ export class GroupService implements OnModuleInit {
       number,
       {
         id: number;
+        account: string;
         name: string;
         avatar: string;
         bio: string;
@@ -121,6 +122,7 @@ export class GroupService implements OnModuleInit {
         user: {
           columns: {
             id: true,
+            account: true,
             name: true,
             avatar: true,
             bio: true,
@@ -144,6 +146,7 @@ export class GroupService implements OnModuleInit {
       number,
       {
         id: number;
+        account: string;
         name: string;
         avatar: string;
         bio: string;
@@ -309,7 +312,7 @@ export class GroupService implements OnModuleInit {
         await tx
           .update(threadParticipant)
           .set({
-            clearedAt: now,
+            clearedSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${params.threadId})`,
             pinned: false,
             pinnedAt: null,
             updatedAt: now,
@@ -432,7 +435,7 @@ export class GroupService implements OnModuleInit {
         await tx
           .update(threadParticipant)
           .set({
-            clearedAt: now,
+            clearedSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${params.threadId})`,
             pinned: false,
             pinnedAt: null,
             updatedAt: now,

@@ -342,8 +342,8 @@ export class NotificationQueryService {
       latestIdByThread.set(m.threadId, m.id);
       creatorByThread.set(m.threadId, m.creator);
     }
-    const attachedByThread = new Map(attached.map((m) => [m.threadId, m]));
     const blocked = await this.userBlockService.blockedByMe(userId);
+    const attachedByThread = new Map(attached.map((m) => [m.threadId, m]));
     // Active = threads with a latest message, minus P2P-blocked latest senders.
     const active = list.filter(
       (p) =>

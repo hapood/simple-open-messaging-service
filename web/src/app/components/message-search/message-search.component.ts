@@ -8,7 +8,8 @@ import { MsgService } from '../../services/message.service';
  * In-chat search field, rendered INSIDE the chat header when "Search" is picked from the action menu —
  * it replaces the title row in-place (same --msg-header-h height), so it adds no height and never
  * collides with the floating date pill. Debounced input drives a server-side substring search
- * (PURE_TEXT only); the lightweight {seq} matches are stored ascending (oldest-first) and the prev/next
+ * (message text and uploaded filenames); the lightweight {seq} matches are stored ascending
+ * (oldest-first) and the prev/next
  * arrows jump the parent kernel to each via `jumpTo`. The parent owns the kernel + calls
  * scrollToIndex(seq, 'center', true) — the kernel flashes the row.
  *
@@ -30,7 +31,13 @@ import { MsgService } from '../../services/message.service';
         [(ngModel)]="keyword"
         (ngModelChange)="onInput()"
       />
-      <span class="msg-search-count">{{ countLabel() }}</span>
+      <span class="msg-search-count">
+        @if (hasNoResult()) {
+          {{ 'chat.searchNoResult' | transloco }}
+        } @else {
+          {{ countLabel() }}
+        }
+      </span>
       <button type="button" class="msg-search-btn" (click)="prev()" [disabled]="!canPrev()" aria-label="Previous match">▲</button>
       <button type="button" class="msg-search-btn" (click)="next()" [disabled]="!canNext()" aria-label="Next match">▼</button>
       <button type="button" class="msg-search-btn" (click)="close.emit()" aria-label="Close search">
@@ -125,12 +132,14 @@ export class MessageSearchComponent {
   readonly countLabel = computed(() => {
     if (this.loading()) return '…';
     const n = this.matchCount();
-    if (n === 0) {
-      return this.keyword.trim() ? 'chat.searchNoResult' : '';
-    }
+    if (n === 0) return '';
     const plus = this.hasMore() ? '+' : '';
     return `${this.position()} / ${n}${plus}`;
   });
+
+  hasNoResult(): boolean {
+    return !this.loading() && this.matchCount() === 0 && !!this.keyword.trim();
+  }
 
   onInput(): void {
     clearTimeout(this.timer);

@@ -40,7 +40,7 @@ export class UserResponseDto {
   domain?: string;
 
   @ApiProperty({
-    example: 1_700_000_000_000,
+    example: 31,
     description: 'Created at (ms timestamp)',
   })
   createdAt!: number;
@@ -160,6 +160,12 @@ export class MessageResponseDto {
 export class GroupResponseDto {
   @ApiProperty({ example: 12 })
   id!: number;
+
+  @ApiProperty({
+    example: '!01JABCDEFGHJKMNPQRSTVWXYZ',
+    description: 'Globally stable group account used to identify the group across servers',
+  })
+  account!: string;
 
   @ApiProperty({ example: 'dev-team', description: 'Group name' })
   name!: string;
@@ -309,12 +315,12 @@ export class ConversationItemDto {
 
   @ApiProperty({
     type: Number,
-    example: 1_700_000_000_000,
+    example: 31,
     nullable: true,
     description:
-      'Per-user "clear chat history" watermark (ms). query-messages hides rows older than this for THIS user only; the peer copy is untouched. Null when history has not been cleared.',
+      'Per-user "clear chat history" sequence watermark. Messages at or below it are hidden for THIS user only; the peer copy is untouched. Null when history has not been cleared.',
   })
-  clearedAt?: number | null;
+  clearedSeq?: number | null;
 
   @ApiProperty({
     required: false,

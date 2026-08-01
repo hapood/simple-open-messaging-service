@@ -7,6 +7,7 @@
     isGroupStart() ? ' msg-group-start' : ''
   }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
   @if (showAvatar() && side() === 'other') {
     <div class="msg-avatar">
       <app-user-avatar
@@ -37,6 +38,7 @@
             [type]="UserAvatarType.GROUP"
             [name]="invite().groupName"
             [identityId]="invite().group"
+            [colorIdentityId]="invite().group"
             [src]="invite().groupAvatar"
           ></app-user-avatar>
           <span class="invite-name">{{ invite().groupName }}</span>

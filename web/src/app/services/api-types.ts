@@ -3154,6 +3154,8 @@ export interface components {
       messageKey?: string;
       /** @description Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints. */
       hasMore: boolean | null;
+      /** @description Populated by bounded pagination requests: whether this page actually reached the truncation boundary. */
+      truncated: boolean | null;
     };
     MessageResponseDto: {
       /**
@@ -3225,19 +3227,10 @@ export interface components {
        */
       content: string;
       /**
-       * @description Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only.
+       * @description Direct-send content type (defaults to PURE_TEXT). Media uses /send-media + /upload*.
        * @enum {string}
        */
-      contentType?:
-        | 'PURE_TEXT'
-        | 'INVITE'
-        | 'IMAGE'
-        | 'VIDEO'
-        | 'FILE'
-        | 'AUDIO'
-        | 'LINK'
-        | 'FORWARD'
-        | 'CALL';
+      contentType?: 'PURE_TEXT' | 'LINK';
       /**
        * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.
        * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
@@ -3323,6 +3316,16 @@ export interface components {
        * @example 42
        */
       lastSeq?: number;
+      /**
+       * @description Whether to stop this page before truncateSeq. The cached boundary row itself is excluded.
+       * @default false
+       */
+      truncate?: boolean;
+      /**
+       * @description Exclusive seq boundary when truncate=true. asc returns seq < truncateSeq; desc returns seq > truncateSeq.
+       * @example 80
+       */
+      truncateSeq?: number;
       /**
        * @description Sort direction
        * @example desc
@@ -3698,6 +3701,11 @@ export interface components {
       /** @example 12 */
       id: number;
       /**
+       * @description Globally stable group account used to identify the group across servers
+       * @example !01JABCDEFGHJKMNPQRSTVWXYZ
+       */
+      account: string;
+      /**
        * @description Group name
        * @example dev-team
        */
@@ -3802,10 +3810,10 @@ export interface components {
        */
       pinnedAt: number | null;
       /**
-       * @description Per-user "clear chat history" watermark (ms). query-messages hides rows older than this for THIS user only; the peer copy is untouched. Null when history has not been cleared.
-       * @example 1700000000000
+       * @description Per-user "clear chat history" sequence watermark. Messages at or below it are hidden for THIS user only; the peer copy is untouched. Null when history has not been cleared.
+       * @example 31
        */
-      clearedAt: number | null;
+      clearedSeq: number | null;
       /**
        * @description Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.
        * @example false

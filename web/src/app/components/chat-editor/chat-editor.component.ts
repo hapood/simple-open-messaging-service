@@ -225,6 +225,23 @@ export class ChatEditorComponent {
     chain.insertContent(content).run();
   }
 
+  /** Preserve the current draft and append plain text at the document end. Clipboard text accompanying
+   * files uses this instead of replacing the draft or becoming a separate paste-panel field. */
+  appendText(content: string, focus = true): void {
+    if (!content || !this.editor) return;
+    const inlineContent = content.split(/\r?\n/).flatMap((line, index) => [
+      ...(index ? [{ type: 'hardBreak' }] : []),
+      ...(line ? [{ type: 'text', text: line }] : []),
+    ]);
+    if (this.editor.getText()) inlineContent.unshift({ type: 'hardBreak' });
+    const chain = this.editor.chain();
+    if (focus) chain.focus();
+    chain
+      .setTextSelection(this.editor.state.doc.content.size)
+      .insertContent(inlineContent)
+      .run();
+  }
+
   /** Run ProseMirror's real Backspace command so selections, mentions and Unicode text are deleted with
    *  the same semantics as the native keyboard. */
   deleteBackward(focus = true): void {

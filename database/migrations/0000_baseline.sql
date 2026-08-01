@@ -868,7 +868,7 @@ ALTER TABLE "Admin" ADD COLUMN "twoFactorLastUsedCounter" INTEGER;
 -- Single-use argon2-hashed backup (recovery) codes — the lockout escape hatch when an admin loses their
 -- authenticator. Single-use is enforced at consume time via an updateMany(consumedAt IS NULL) guard.
 CREATE TABLE "TwoFactorBackupCode" (
-    "id"         BIGSERIAL NOT NULL,
+    "id"         SERIAL    NOT NULL,
     "adminId"    INTEGER   NOT NULL,
     "codeHash"   VARCHAR(127) NOT NULL,
     "consumedAt" TIMESTAMP(3),
@@ -922,7 +922,7 @@ ALTER TABLE "TwoFactorBackupCode" ALTER COLUMN "codeHash" TYPE VARCHAR(64);
 ALTER TABLE "Admin" ADD COLUMN "webauthnEnabled" BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE "WebAuthnCredential" (
-    "id"            BIGSERIAL    NOT NULL,
+    "id"            SERIAL       NOT NULL,
     "adminId"       INTEGER      NOT NULL,
     "credentialId"  VARCHAR(510) NOT NULL,
     "publicKey"     BYTEA        NOT NULL,

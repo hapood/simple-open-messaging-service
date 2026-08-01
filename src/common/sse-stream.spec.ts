@@ -134,13 +134,13 @@ describe('formatSseFrame', () => {
       payloadOf(
         formatSseFrame('THREAD_META', {
           pinnedAt: new Date(0),
-          clearedAt: null,
+          clearedSeq: null,
           rows: [{ id: 1n, at: new Date(1_700_000_000_000) }],
         }),
       ),
     ).toEqual({
       pinnedAt: 0,
-      clearedAt: null,
+      clearedSeq: null,
       rows: [{ id: '1', at: 1_700_000_000_000 }],
     });
   });

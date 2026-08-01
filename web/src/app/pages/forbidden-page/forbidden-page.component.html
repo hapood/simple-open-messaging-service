@@ -1,9 +1,4 @@
 <main class="pnf">
-  <!-- Tappable brand mark = an always-visible escape hatch back to the app root. -->
-  <button type="button" class="pnf-home" (click)="goHome()" [attr.aria-label]="'forbidden.homeAria' | transloco">
-    <app-brand-logo [size]="32" [wordmark]="false" />
-  </button>
-
   <!-- A closed padlock = the universal "access denied" symbol. Decorative, so aria-hidden
        keeps it out of the a11y tree; the 403 code + "Access denied" heading carry the meaning. -->
   <div class="pnf-art" aria-hidden="true">

@@ -14,6 +14,7 @@ export interface NativeComposerContext {
   canRecord: boolean;
   canUpload: boolean;
   mentionsEnabled: boolean;
+  quote?: { seq: number; preview: string };
   theme: 'light' | 'dark' | 'system';
 }
 
@@ -59,6 +60,12 @@ export type NativeComposerEvent =
       version: 1;
       contextId: number;
       sequence: number;
+      kind: 'cancelQuote';
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
       kind: 'queryMentions';
       requestId: number;
       query: string;
@@ -78,6 +85,13 @@ export type NativeComposerEvent =
       kind: 'pickAttachment';
       actionId: number;
       source: 'gallery' | 'file';
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
+      kind: 'pasteFiles';
+      files: import('./native-upload.service').NativeUploadSelection[];
     }
   | {
       version: 1;

@@ -53,6 +53,13 @@ import { requireTextMessageContent } from '../../../../../shared/text-message-co
  */
 const MAX_PAGE = 50;
 
+export class MessagePageLoadError extends Error {
+  constructor() {
+    super('message page load failed; edge remains retryable');
+    this.name = 'MessagePageLoadError';
+  }
+}
+
 export interface HttpItemSourceLiveOpts {
   /** Live-arrival signal: a NEW_MESSAGE SSE frame landed for this thread (or a reconnect backfill is due).
    *  Signal-only — the SSE body is NOT shaped/cached here. The conversation-list preview lives in a separate
@@ -113,6 +120,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly profileBacklog: Message[] = [];
   private initializingDb = true;
   private loadedSeq = -1;
+  /** Frozen upper bound for the current newer-than-cursor walk. A later signal may advance it. */
+  private newerTruncateSeq: number | undefined;
 
   constructor(
     private readonly conv: ConversationItem,
@@ -147,6 +156,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
         if (this.initializingDb || s.seq <= this.loadedSeq) return;
+        this.advanceNewerTruncate(s.seq);
         this.onSignal(s.seq);
       });
     // mediaStatus changes (MEDIA_STATUS SSE / scroll probe / manual-retry ack) → re-render that one card
@@ -156,9 +166,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       .subscribe((s) => this.onMediaStatus(s.seq, s.status));
     // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
     // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
-    this.reconnectSub = wsService.reconnect$.subscribe(() =>
-      this.onSignal(Number.MAX_SAFE_INTEGER),
-    );
+    this.reconnectSub = wsService.reconnect$.subscribe(() => {
+      // No exact remote ceiling accompanies reconnect$. Leave this recovery walk unbounded; the next
+      // concrete NEW_MESSAGE signal (or a future init) freezes a new exact ceiling again.
+      this.newerTruncateSeq = undefined;
+      this.onSignal(Number.MAX_SAFE_INTEGER);
+    });
   }
 
   /**
@@ -183,12 +196,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // heuristic would falsely signal exhaustion now that take is clamped below olderCount. init (skip:0)
       // returns a contiguous IDB page immediately when warm; the repo revalidates it in the background.
       const take = Math.min(olderCount, MAX_PAGE);
-      const { data, hasMore } = await this.repo.queryMessages(
+      const { data, hasMore, failed } = await this.repo.queryMessages(
         this.conv.threadId,
         { skip: 0, take, orderBy: 'desc' },
-        this.conv.clearedAt,
+        this.conv.clearedSeq,
         this.initializingDb,
       );
+      if (failed) throw new MessagePageLoadError();
       if (!data || data.length === 0) return [];
       const list = [...data].reverse(); // desc → ascending (old → new)
       this.noOlder = !hasMore;
@@ -223,16 +237,17 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.repo.queryMessages(
         this.conv.threadId,
         { skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' },
-        this.conv.clearedAt,
+        this.conv.clearedSeq,
         this.initializingDb,
       ),
       this.repo.queryMessages(
         this.conv.threadId,
         { skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' },
-        this.conv.clearedAt,
+        this.conv.clearedSeq,
         this.initializingDb,
       ),
     ]);
+    if (olderPage.failed || newerPage.failed) throw new MessagePageLoadError();
     if (!olderPage.data || olderPage.data.length === 0) return []; // target msgId not found
     const older = [...olderPage.data].reverse(); // desc → ascending: [older..anchorId] (includes anchorId)
     const newer = newerPage.data ?? []; // already ascending: (anchorId..newer]
@@ -286,12 +301,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   ): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const take = Math.min(count, MAX_PAGE);
-    const { data, hasMore } = await this.repo.queryMessages(
+    const { data, hasMore, failed } = await this.repo.queryMessages(
       this.conv.threadId,
       { skip: 1, take, lastSeq: cursorId, orderBy: 'desc' },
-      this.conv.clearedAt,
+      this.conv.clearedSeq,
       this.initializingDb,
     );
+    if (failed) throw new MessagePageLoadError();
     if (!data || data.length === 0) {
       this.noOlder = true;
       return [];
@@ -317,12 +333,24 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     count: number,
   ): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
-    const { data, hasMore } = await this.repo.queryMessages(
+    const { data, hasMore, failed } = await this.repo.queryMessages(
       this.conv.threadId,
-      { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' },
-      this.conv.clearedAt,
+      {
+        skip: 1,
+        take,
+        lastSeq: cursorId,
+        orderBy: 'asc',
+        truncate: this.newerTruncateSeq !== undefined,
+        // API cutoffs are exclusive; +1 makes the frozen newest seq itself part of this walk.
+        truncateSeq:
+          this.newerTruncateSeq === undefined
+            ? undefined
+            : this.newerTruncateSeq + 1,
+      },
+      this.conv.clearedSeq,
       this.initializingDb,
     );
+    if (failed) throw new MessagePageLoadError();
     if (!data || data.length === 0) {
       this.noNewer = true;
       return [];
@@ -482,7 +510,20 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.initializingDb = false;
     this.hydrateProfiles(this.profileBacklog.splice(0));
     const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
-    if (targetSeq > this.loadedSeq) this.onSignal(targetSeq);
+    if (targetSeq > this.loadedSeq) {
+      this.advanceNewerTruncate(targetSeq);
+      this.onSignal(targetSeq);
+    }
+  }
+
+  private advanceNewerTruncate(seq: number): void {
+    if (
+      Number.isSafeInteger(seq) &&
+      seq >= 0 &&
+      (this.newerTruncateSeq === undefined || seq > this.newerTruncateSeq)
+    ) {
+      this.newerTruncateSeq = seq;
+    }
   }
 
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
@@ -581,7 +622,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       name: p?.name ?? '',
       avatar: p?.avatar ?? '',
       avatarIdentityId: m.creator,
-      text: textContent ? toDisplayText(textContent.text) : '',
+      // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
+      // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
+      // forwarded bundle render as "unavailable".
+      text: textContent ? toDisplayText(textContent.text) : m.content,
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),

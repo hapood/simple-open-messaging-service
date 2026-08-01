@@ -86,6 +86,7 @@ function envelopeFor(data: unknown): unknown {
       data: carrier.data,
       messageKey: carrier.messageKey,
       hasMore: carrier.hasMore,
+      truncated: carrier.truncated,
     };
   }
   // Raw payload → wrap. A void return (undefined) wraps to { code, message } — JSON omits the undefined

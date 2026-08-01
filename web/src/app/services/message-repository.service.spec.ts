@@ -149,6 +149,37 @@ describe('MessageRepository', () => {
     expect(await dbCount(42)).toBe(4);
   });
 
+  it('latest-page revalidation stops before the locally cached oldest row', async () => {
+    await webdb.putMessages([msg(42, 15), msg(42, 14)]);
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 17), msg(42, 16)],
+        hasMore: false,
+        truncated: true,
+      }),
+    );
+
+    const warm = await repo.queryMessages(42, {
+      skip: 0,
+      take: 2,
+      orderBy: 'desc',
+    });
+    await flush(10);
+
+    expect(warm.data.map((m) => m.seq)).toEqual([15, 14]);
+    expect(queryMessageLogSpy.calls.first().args[0]).toEqual({
+      threadId: 42,
+      skip: 0,
+      take: 2,
+      orderBy: 'desc',
+      truncate: true,
+      truncateSeq: 14,
+    });
+    expect(await dbCount(42)).toBe(4); // the cutoff row 14 was never downloaded/written again
+  });
+
   it('warm init emits a live signal when background revalidation finds a newer tail', async () => {
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
@@ -197,10 +228,14 @@ describe('MessageRepository', () => {
         hasMore: false,
       }),
     );
-    const warm = await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' }, 2500);
+    const warm = await repo.queryMessages(
+      42,
+      { skip: 0, take: 3, orderBy: 'desc' },
+      2,
+    );
 
     expect(warm.data.map((m) => m.seq)).toEqual([3]);
-    expect(warm.data.every((m) => m.createdAt > 2500)).toBe(true);
+    expect(warm.data.every((m) => m.seq > 2)).toBe(true);
   });
 
   it('getOlder (skip:1) is a cache HIT for a contiguous held range → no backend call', async () => {
@@ -277,23 +312,15 @@ describe('MessageRepository', () => {
   it('getOlder with a fragmented cache (gap below cursor) gap-fills instead of serving a gapped range', async () => {
     // Seed only [5, 3] (missing 4 — e.g. a jump-to-message left a gap). getOlder(cursor=6, take=3) must NOT
     // serve the gapped [5, 3] — it backfills the contiguous truth from the API.
-    queryMessageLogSpy.and.returnValue(
-      of<StandardResponse<Message[]>>({
-        code: 0,
-        message: 'ok',
-        data: [5, 3].map((s) => msg(42, s)),
-        hasMore: true,
-      }),
-    );
-    await repo.queryMessages(42, { skip: 0, take: 2, orderBy: 'desc' });
-    queryMessageLogSpy.calls.reset();
+    await webdb.putMessages([msg(42, 5), msg(42, 3)]);
 
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
-        data: [5, 4, 3].map((s) => msg(42, s)),
-        hasMore: true,
+        data: [msg(42, 4)],
+        hasMore: false,
+        truncated: true,
       }),
     );
     const res = await repo.queryMessages(42, {
@@ -304,6 +331,245 @@ describe('MessageRepository', () => {
     });
     expect(res.data.map((m) => m.seq)).toEqual([5, 4, 3]); // contiguous, not the gapped [5, 3]
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses a server-confirmed local interval even when visibility creates a seq gap', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        // seq 4 is intentionally absent (e.g. hidden by the current visibility policy).
+        data: [5, 3].map((seq) => msg(42, seq)),
+        hasMore: false,
+      }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 5, orderBy: 'desc' });
+    queryMessageLogSpy.calls.reset();
+
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 2,
+      lastSeq: 6,
+      orderBy: 'desc',
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([5, 3]);
+    expect(queryMessageLogSpy).not.toHaveBeenCalled();
+  });
+
+  it('assembles asc remote-gap + local-tail without requesting or rewriting the cached cutoff row', async () => {
+    await webdb.putMessages([msg(42, 15), msg(42, 16)]);
+    queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) => {
+      expect(q.truncateSeq).toBe(15);
+      return of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [11, 12, 13, 14].map((seq) => msg(42, seq)),
+        hasMore: false,
+        truncated: true,
+      });
+    });
+
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 6,
+      lastSeq: 10,
+      orderBy: 'asc',
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([11, 12, 13, 14, 15, 16]);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+    expect(queryMessageLogSpy.calls.first().args[0]).toEqual({
+      threadId: 42,
+      skip: 1,
+      take: 6,
+      lastSeq: 10,
+      orderBy: 'asc',
+      truncate: true,
+      truncateSeq: 15,
+    });
+    expect(await dbCount(42)).toBe(6); // 2 existing + only the 4 missing rows
+  });
+
+  it('walks multiple asc gaps using only the remaining count for each remote request', async () => {
+    await webdb.putMessages([msg(42, 15), msg(42, 16), msg(42, 20)]);
+    queryMessageLogSpy.and.callFake(
+      (q: { truncateSeq?: number; take: number }) =>
+        of<StandardResponse<Message[]>>({
+          code: 0,
+          message: 'ok',
+          data:
+            q.truncateSeq === 15
+              ? [11, 12, 13, 14].map((seq) => msg(42, seq))
+              : [17, 18, 19].map((seq) => msg(42, seq)),
+          hasMore: false,
+          truncated: true,
+        }),
+    );
+
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 10,
+      lastSeq: 10,
+      orderBy: 'asc',
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    ]);
+    expect(queryMessageLogSpy.calls.allArgs().map((args) => args[0].take)).toEqual([
+      10, 4,
+    ]);
+    expect(queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq)).toEqual([
+      15, 20,
+    ]);
+    expect(await dbCount(42)).toBe(10);
+  });
+
+  it('assembles desc remote-gap + local-tail with the closest lower cached seq as cutoff', async () => {
+    await webdb.putMessages([msg(42, 15), msg(42, 14)]);
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [20, 19, 18, 17, 16].map((seq) => msg(42, seq)),
+        hasMore: false,
+        truncated: true,
+      }),
+    );
+
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 7,
+      lastSeq: 21,
+      orderBy: 'desc',
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([20, 19, 18, 17, 16, 15, 14]);
+    expect(queryMessageLogSpy.calls.first().args[0].truncateSeq).toBe(15);
+    expect(await dbCount(42)).toBe(7);
+  });
+
+  it('omits the local cutoff when no cached neighbor exists in the requested direction', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [11, 12].map((seq) => msg(42, seq)),
+        hasMore: false,
+      }),
+    );
+
+    await repo.queryMessages(42, {
+      skip: 1,
+      take: 5,
+      lastSeq: 10,
+      orderBy: 'asc',
+    });
+
+    expect(queryMessageLogSpy.calls.first().args[0]).toEqual({
+      threadId: 42,
+      skip: 1,
+      take: 5,
+      lastSeq: 10,
+      orderBy: 'asc',
+      truncate: false,
+      truncateSeq: undefined,
+    });
+  });
+
+  it('keeps the caller frozen ceiling after crossing a nearer local segment', async () => {
+    await webdb.putMessages([msg(42, 15)]);
+    queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) =>
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: (q.truncateSeq === 15 ? [11, 12, 13, 14] : [16, 17, 18, 19]).map(
+          (seq) => msg(42, seq),
+        ),
+        hasMore: false,
+        truncated: true,
+      }),
+    );
+
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 10,
+      lastSeq: 10,
+      orderBy: 'asc',
+      truncate: true,
+      truncateSeq: 20,
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([
+      11, 12, 13, 14, 15, 16, 17, 18, 19,
+    ]);
+    expect(res.hasMore).toBe(false);
+    expect(res.truncated).toBe(true);
+    expect(queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq)).toEqual([
+      15, 20,
+    ]);
+  });
+
+  it('middle-anchor init reuses a cached anchor and bounds the older gap at its nearest local neighbor', async () => {
+    await webdb.putMessages([msg(42, 10), msg(42, 5), msg(42, 4)]);
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [9, 8, 7, 6].map((seq) => msg(42, seq)),
+        hasMore: false,
+        truncated: true,
+      }),
+    );
+
+    const res = await repo.queryMessages(42, {
+      skip: 0,
+      take: 7,
+      lastSeq: 10,
+      orderBy: 'desc',
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([10, 9, 8, 7, 6, 5, 4]);
+    expect(queryMessageLogSpy.calls.first().args[0]).toEqual(
+      jasmine.objectContaining({
+        skip: 1,
+        take: 6,
+        lastSeq: 10,
+        truncate: true,
+        truncateSeq: 5,
+      }),
+    );
+  });
+
+  it('middle-anchor init fetches a missing anchor once, then switches to the nearest local neighbor', async () => {
+    await webdb.putMessages([msg(42, 5), msg(42, 4)]);
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [10, 9, 8, 7, 6].map((seq) => msg(42, seq)),
+        hasMore: false,
+        truncated: true,
+      }),
+    );
+
+    const res = await repo.queryMessages(42, {
+      skip: 0,
+      take: 7,
+      lastSeq: 10,
+      orderBy: 'desc',
+    });
+
+    expect(res.data.map((m) => m.seq)).toEqual([10, 9, 8, 7, 6, 5, 4]);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+    expect(queryMessageLogSpy.calls.first().args[0]).toEqual(
+      jasmine.objectContaining({
+        skip: 0,
+        truncate: true,
+        truncateSeq: 5,
+      }),
+    );
   });
 
   it('NEW_MESSAGE emits the live signal WITHOUT caching the body (identity-only — body is pulled)', async () => {
@@ -376,7 +642,7 @@ describe('MessageRepository', () => {
     expect(await dbCount(42)).toBe(1); // one record, not two
   });
 
-  it('a backend failure degrades to an empty page (the cache survives a transient outage)', async () => {
+  it('marks a backend failure retryable instead of reporting a false edge', async () => {
     queryMessageLogSpy.and.returnValue(throwError(() => new Error('net')));
     const res = await repo.queryMessages(42, {
       skip: 0,
@@ -384,7 +650,8 @@ describe('MessageRepository', () => {
       orderBy: 'desc',
     });
     expect(res.data).toEqual([]);
-    expect(res.hasMore).toBe(false);
+    expect(res.hasMore).toBe(true);
+    expect(res.failed).toBe(true);
   });
 
   it('deleteByThread purges the thread cache but leaves other threads untouched (cache GC)', async () => {
@@ -486,7 +753,7 @@ describe('MessageRepository', () => {
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
-        data: [5, 6, 7].map((s) => msg(42, s)),
+        data: [],
         hasMore: false,
       }),
     );
@@ -498,36 +765,7 @@ describe('MessageRepository', () => {
     });
     expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill after the ceiling was cleared
+    expect(queryMessageLogSpy.calls.first().args[0].lastSeq).toBe(7);
   });
 
-  // ── applyMissed: the missed-catch-up shared apply path (a paginated /notifications/missed page → batch
-  //    cache + HWM advance + one signal per thread). The SAME path a live NEW_MESSAGE takes; idempotent.
-  describe('applyMissed (missed catch-up shared path)', () => {
-    it('caches a batch across threads + is idempotent on re-apply (no duplicate rows)', async () => {
-      await repo.applyMissed([msg(42, 1), msg(42, 2), msg(99, 1)]);
-      expect(await dbCount(42)).toBe(2);
-      expect(await dbCount(99)).toBe(1);
-      await repo.applyMissed([msg(42, 1), msg(42, 2), msg(99, 1)]); // re-fetch → overwrite, not duplicate
-      expect(await dbCount(42)).toBe(2);
-      expect(await dbCount(99)).toBe(1);
-    });
-
-    it('emits ONE live signal per affected thread (its highest seq), not one per message', async () => {
-      const signals: { threadId: number; seq: number }[] = [];
-      repo.liveSignal$.subscribe((s) => signals.push(s));
-      await repo.applyMissed([msg(42, 1), msg(42, 5), msg(42, 3), msg(99, 2)]);
-      // thread 42 collapses to seq 5, thread 99 to seq 2 — exactly two signals, in first-seen order.
-      expect(signals).toEqual([
-        { threadId: 42, seq: 5 },
-        { threadId: 99, seq: 2 },
-      ]);
-    });
-
-    it('an empty page is a no-op (no signal)', async () => {
-      const signals: { threadId: number; seq: number }[] = [];
-      repo.liveSignal$.subscribe((s) => signals.push(s));
-      await repo.applyMissed([]);
-      expect(signals).toEqual([]);
-    });
-  });
 });

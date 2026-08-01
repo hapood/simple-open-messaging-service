@@ -22,6 +22,7 @@
  * Development diagnostics are guarded by Angular's public `isDevMode()` API.
  */
 import { isDevMode } from '@angular/core';
+import { applyJumpHighlight } from './jump-highlight';
 
 import type { CbSource } from './cb-source';
 
@@ -235,7 +236,8 @@ export interface ScrollerApi<T = unknown> {
   init(opts?: CbInitOpts): Promise<void>;
   /** Fetch and prepend one older page after a deferred first paint. Preserves the current viewport anchor. */
   backfillOlder?(): Promise<void>;
-  scrollToBottom(): void;
+  /** Pin to the global newest edge. highlight flashes the newest message once it is reached. */
+  scrollToBottom(highlight?: boolean): void;
   scrollToTop(): void;
   /** Jump to id: if mounted, position directly; if not, reset the window around the id (re-seed) then position. anchor defaults to 'center'. highlight adds a one-shot flash to the target. */
   scrollToIndex(
@@ -903,13 +905,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     });
   }
 
-  scrollToBottom(): void {
+  scrollToBottom(highlight = false): void {
     if (this.destroyed) return;
     this.pinToBottom();
     // Newest end trimmed (window moved back, noNewer=false) → load back to the global newest. The follow chain is
     // explicit go-to-bottom intent (followToNewest); balance-triggered loadNewer never follows, so scrolling to the
     // bottom edge only loads one batch and leaves the viewport put (symmetric to loadOlder).
-    if (!this.noNewer) void this.followToNewest();
+    if (!this.noNewer) void this.followToNewest(highlight);
+    else if (highlight && this.mounted.length > 0)
+      this.flashHighlight(this.mounted.length - 1);
   }
 
   /** Position the viewport at the content bottom — the bottom {@link Anchor}, applied via {@link applyAnchor}
@@ -1024,7 +1028,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * bottom until the global newest (noNewer). balance-triggered loadNewer does NOT come through here, so a user
    * scrolling to the bottom edge never chain-jumps to the newest. gen guard bails if a jump overtakes mid-chain.
    */
-  private async followToNewest(): Promise<void> {
+  private async followToNewest(highlight = false): Promise<void> {
     const g = this.gen;
     while (!this.noNewer && !this.destroyed && this.mounted.length > 0) {
       const n = await this.loadNewer(); // pure core: one batch, mount + trim, NO follow
@@ -1032,6 +1036,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (n === 0) break; // boundary / no data
       this.pinToBottom(); // follow to the new bottom; loop continues while !noNewer
     }
+    if (
+      highlight &&
+      this.noNewer &&
+      !this.destroyed &&
+      g === this.gen &&
+      this.mounted.length > 0
+    )
+      this.flashHighlight(this.mounted.length - 1);
   }
 
   scrollToTop(): void {
@@ -1057,7 +1069,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (idx >= 0) {
       // mounted: position directly
       this.positionMounted(idx, anchor);
-      if (highlight) this.flashHighlight(idx);
+      if (highlight) this.flashHighlight(idx, id);
       return true;
     }
     // Not mounted: reset the window around the id (re-seed), then position once done
@@ -1189,7 +1201,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const idx = this.indexOfId(id);
       if (idx >= 0) {
         this.positionMounted(idx, anchor);
-        if (highlight) this.flashHighlight(idx);
+        if (highlight) this.flashHighlight(idx, id);
       } else
         console.error(
           '[JUMP] openAround: target id=',
@@ -1407,17 +1419,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   /** Add a one-shot highlight flash to the target entry (animationend removes the class; a reflow guarantees the animation restarts on repeated jumps). */
-  private flashHighlight(idx: number): void {
+  private flashHighlight(idx: number, targetId?: number): void {
     const el = this.mounted[idx]?.el;
     if (!el) return;
-    el.classList.remove('cb-jump-highlight');
-    void el.offsetWidth; // force reflow → restart the animation
-    el.classList.add('cb-jump-highlight');
-    el.addEventListener(
-      'animationend',
-      () => el.classList.remove('cb-jump-highlight'),
-      { once: true },
-    );
+    applyJumpHighlight(el, targetId);
   }
 
   getInfo(): CbScrollInfo {
@@ -1958,13 +1963,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const atTop = st < this.cfg.edge;
     const atBottom = total - this.vh - st < this.cfg.edge;
 
-    if (atTop && dir !== 'down' && !this.noOlder) {
-      await this.loadOlder();
-      this.trimNewer();
-    } else if (atBottom && dir !== 'up' && !this.noNewer) {
-      await this.loadNewer();
-      await this.reconcileOptimistic();
-      this.trimOlder();
+    try {
+      if (atTop && dir !== 'down' && !this.noOlder) {
+        await this.loadOlder();
+        this.trimNewer();
+      } else if (atBottom && dir !== 'up' && !this.noNewer) {
+        await this.loadNewer();
+        await this.reconcileOptimistic();
+        this.trimOlder();
+      }
+    } catch (error) {
+      // A failed page is retryable. In particular, do not turn it into an empty batch: loadOlder/loadNewer
+      // have not changed noOlder/noNewer, and the next edge scroll may retry normally.
+      if (isDevMode()) console.warn('[chat-cache] retryable page load failed', error);
+      return;
     }
 
     if (isDevMode() && this.onDebug) {

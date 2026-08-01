@@ -204,9 +204,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         if (!this.currentIsVideo()) this.toggleChrome();
       },
       doubleTapAction: 'zoom',
-      showHideAnimationType: 'fade',
-      showAnimationDuration: 180,
-      hideAnimationDuration: 180,
+      showHideAnimationType: 'none',
+      showAnimationDuration: 0,
+      hideAnimationDuration: 0,
       zoomAnimationDuration: 280,
       maxZoomLevel: 5,
       secondaryZoomLevel: 2.5,

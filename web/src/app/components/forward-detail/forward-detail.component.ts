@@ -45,6 +45,7 @@ import type {
 } from './forward-bundle.model';
 import { ForwardSnapshotSource } from './forward-snapshot-source';
 import { AppIconType, IconComponent } from '../icon/icon.component';
+import { jumpToMessage } from '../message-thread/message-jump';
 
 const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
   'PURE_TEXT',
@@ -186,6 +187,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       undefined,
       undefined,
       (bundleId) => this.openChild(bundleId),
+      (id) => void jumpToMessage(this.scroller, id),
     );
   }
 
@@ -245,6 +247,14 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
           : null,
       file: contentType === 'FILE' ? media.file : null,
       createdAtMs: message.sentAt,
+      quote: message.quote
+        ? {
+            preview: message.quote.preview,
+            ...(message.quote.targetId !== undefined
+              ? { seq: message.quote.targetId }
+              : {}),
+          }
+        : undefined,
     };
   }
 

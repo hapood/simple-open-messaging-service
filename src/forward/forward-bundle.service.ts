@@ -5,7 +5,7 @@ import { dirname, extname, join } from 'node:path';
 import { mintUlid } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -25,11 +25,14 @@ import { ContentType } from '../database/enums.js';
 import { extractDigestEntries } from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
+import { MessageService } from '../message/message.service.js';
+import { UserBlockService } from '../user-block/user-block.service.js';
 
 export const FORWARD_MAX_DEPTH = 3;
 export const FORWARD_MAX_MESSAGES = 100;
 export const FORWARD_SUMMARY_LINES = 3;
 export const FORWARD_SUMMARY_CHARS = 100;
+export const FORWARD_QUOTE_PREVIEW_CHARS = 100;
 export const FORWARD_MAX_WIRE_JSON_BYTES = 2 * 1024 * 1024;
 export const FORWARD_MAX_CLOSURE_BUNDLES = 500;
 
@@ -48,6 +51,8 @@ export interface ForwardAssetDocument {
 }
 
 export interface ForwardManifestMessage {
+  /** Canonical 1-based Bundle-local id. Optional in the type only for pre-quote v1 bundles. */
+  id?: number;
   sender: {
     displayName: string;
     account: string;
@@ -58,6 +63,11 @@ export interface ForwardManifestMessage {
   content: string;
   sentAt: number;
   childBundleId?: string;
+  quote?: {
+    preview: string;
+    /** Bundle-local id of the quoted message; absent when it was not selected for this bundle. */
+    targetId?: number;
+  };
 }
 
 export interface ForwardManifest {
@@ -95,7 +105,11 @@ export interface PreparedForwardBundle {
 
 @Injectable()
 export class ForwardBundleService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly messagesService: MessageService,
+    private readonly userBlockService: UserBlockService,
+  ) {}
 
   async createFromMessages(
     userId: number,
@@ -122,18 +136,35 @@ export class ForwardBundleService {
         `forward must contain 1-${FORWARD_MAX_MESSAGES} messages`,
       );
     }
+    const sourceThreadId = sources[0].threadId;
+    for (let index = 1; index < sources.length; index++) {
+      const previous = sources[index - 1];
+      const current = sources[index];
+      if (
+        current.threadId !== sourceThreadId ||
+        current.seq <= previous.seq
+      ) {
+        throw new BusinessException(
+          BusinessCode.FORWARD_INVALID_BUNDLE,
+          'source messages must belong to one thread and be strictly ordered by seq',
+        );
+      }
+    }
     const uniqueThreads = [...new Set(sources.map((s) => s.threadId))];
-    const [{ value: memberships }] = await this.database.db
-      .select({ value: count() })
-      .from(threadParticipant)
-      .where(
-        and(
+    const memberships = await this.database.db.query.threadParticipant.findMany(
+      {
+        where: and(
           eq(threadParticipant.userId, userId),
           inArray(threadParticipant.threadId, uniqueThreads),
           isNull(threadParticipant.leftAt),
         ),
-      );
-    if (memberships !== uniqueThreads.length) {
+        columns: { threadId: true, clearedSeq: true },
+        with: {
+          messageThread: { columns: { type: true } },
+        },
+      },
+    );
+    if (memberships.length !== uniqueThreads.length) {
       throw new BusinessException(
         BusinessCode.FORWARD_INVALID_BUNDLE,
         'one or more source messages are inaccessible',
@@ -185,6 +216,39 @@ export class ForwardBundleService {
       );
     }
 
+    const blocked = await this.userBlockService.blockedByMe(userId);
+    const quoteFilters = new Map(
+      memberships.map((membership) => [
+        membership.threadId,
+        {
+          clearedThroughSeq: membership.clearedSeq,
+          ...(membership.messageThread.type === 'P2P' && blocked.size > 0
+            ? { hideCreatorIds: [...blocked] }
+            : {}),
+        },
+      ]),
+    );
+    if (
+      sourceRows.some((row) => {
+        const visibility = quoteFilters.get(row!.threadId);
+        return (
+          (visibility?.clearedThroughSeq !== null &&
+            visibility?.clearedThroughSeq !== undefined &&
+            row!.seq <= visibility.clearedThroughSeq) ||
+          visibility?.hideCreatorIds?.includes(row!.creator)
+        );
+      })
+    ) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_INVALID_BUNDLE,
+        'one or more source messages are inaccessible',
+      );
+    }
+    const enrichedRows = await this.messagesService.attachQuotePreviews(
+      sourceRows.map((row) => row!),
+      quoteFilters,
+    );
+
     const childBundles = sourceRows
       .map((row) => row!.forwardMessage?.bundle)
       .filter(
@@ -204,8 +268,14 @@ export class ForwardBundleService {
 
     const bundleId = mintUlid();
     const assets = new Map<string, ForwardAssetDocument>();
+    const selectedIndex = new Map(
+      sources.map((source, index) => [
+        `${source.threadId}:${source.seq}`,
+        index,
+      ]),
+    );
     const messages: ForwardManifestMessage[] = [];
-    for (const row of sourceRows) {
+    for (const [index, row] of sourceRows.entries()) {
       const message = row!;
       const avatar = await this.snapshotAvatar(message.creatorItem.avatar);
       if (avatar) assets.set(this.assetKey(avatar), avatar);
@@ -215,6 +285,7 @@ export class ForwardBundleService {
       );
       for (const asset of mediaAssets) assets.set(this.assetKey(asset), asset);
       messages.push({
+        id: index + 1,
         sender: {
           displayName: message.creatorItem.name,
           account: message.creatorItem.account,
@@ -229,6 +300,25 @@ export class ForwardBundleService {
         sentAt: message.createdAt.getTime(),
         ...(message.forwardMessage
           ? { childBundleId: message.forwardMessage.bundleId }
+          : {}),
+        ...(parseTextMessageContent(enrichedRows[index].content)?.quote
+          ? {
+              quote: {
+                preview:
+                  parseTextMessageContent(enrichedRows[index].content)?.quote
+                    ?.preview ?? '',
+                ...(selectedIndex.get(
+                  `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
+                ) !== undefined
+                  ? {
+                      targetId:
+                        selectedIndex.get(
+                          `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
+                        )! + 1,
+                    }
+                  : {}),
+              },
+            }
           : {}),
       });
     }
@@ -470,8 +560,14 @@ export class ForwardBundleService {
         throw this.invalidWire('forward manifest digest mismatch');
       }
       for (const asset of bundle.assets) this.validateWireAsset(asset);
-      for (const message of bundle.manifest.messages) {
+      // v1 bundles created before quote snapshots had no message ids. Continue accepting that legacy
+      // shape; once any id is present, the complete manifest must use the canonical 1-based sequence.
+      const usesMessageIds = bundle.manifest.messages.some(
+        (message) => message.id !== undefined,
+      );
+      for (const [messageIndex, message] of bundle.manifest.messages.entries()) {
         if (
+          (usesMessageIds && message.id !== messageIndex + 1) ||
           typeof message.content !== 'string' ||
           typeof message.contentType !== 'string' ||
           typeof message.sender?.displayName !== 'string' ||
@@ -483,6 +579,33 @@ export class ForwardBundleService {
         ) {
           throw this.invalidWire('invalid forward message descriptor');
         }
+      }
+      const messageIds = new Set(
+        bundle.manifest.messages.flatMap((message) =>
+          message.id === undefined ? [] : [message.id],
+        ),
+      );
+      if (
+        bundle.manifest.messages.some((message) => {
+          const quote = message.quote;
+          if (quote === undefined) return false;
+          if (
+            quote === null ||
+            typeof quote !== 'object' ||
+            Array.isArray(quote) ||
+            typeof quote.preview !== 'string' ||
+            truncateGraphemes(quote.preview, FORWARD_QUOTE_PREVIEW_CHARS) !==
+              quote.preview ||
+            (quote.targetId !== undefined &&
+              (!Number.isInteger(quote.targetId) ||
+                !messageIds.has(quote.targetId)))
+          ) {
+            return true;
+          }
+          return false;
+        })
+      ) {
+        throw this.invalidWire('invalid forward quote descriptor');
       }
       visiting.add(id);
       const childDepth = bundle.manifest.children.reduce(

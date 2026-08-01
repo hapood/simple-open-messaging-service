@@ -124,19 +124,29 @@ export class ThreadParticipantService {
   }
 
   /**
-   * Per-user "clear chat history": stamp clearedAt = now. query-messages then hides rows older than this
+   * Per-user "clear chat history": snapshot the thread's current seq. query-messages then hides rows at
    * watermark FOR THIS USER ONLY — the peer's copy is untouched (WhatsApp "clear for me"). Stamping
    * (not deleting) keeps the Message rows intact for the peer and for any future un-clear, and keeps
    * lastReadSeq untouched so the unread badge doesn't regress.
    */
-  clearHistory(userId: number, threadId: number) {
-    return this.updateParticipant(userId, threadId, { clearedAt: new Date() });
+  async clearHistory(userId: number, threadId: number) {
+    const thread = await this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+      columns: { curSeq: true },
+    });
+    return this.updateParticipant(userId, threadId, {
+      clearedSeq: thread?.curSeq ?? -1,
+    });
   }
 
   /** Permanently hide a thread for one participant. The peer/member copies and Message rows are untouched. */
-  deleteThreadForUser(userId: number, threadId: number) {
+  async deleteThreadForUser(userId: number, threadId: number) {
+    const thread = await this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+      columns: { curSeq: true },
+    });
     return this.updateParticipant(userId, threadId, {
-      clearedAt: new Date(),
+      clearedSeq: thread?.curSeq ?? -1,
       pinned: false,
       pinnedAt: null,
     });
@@ -337,7 +347,7 @@ export class ThreadParticipantService {
         await tx
           .update(threadParticipant)
           .set({
-            clearedAt: now,
+            clearedSeq: sql`(SELECT "curSeq" FROM "MessageThread" WHERE id = ${threadId})`,
             pinned: false,
             pinnedAt: null,
             updatedAt: now,

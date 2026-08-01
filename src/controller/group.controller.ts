@@ -343,6 +343,7 @@ export class GroupController {
     }
     return {
       id: threadId,
+      account: gu.account,
       name: gu.name,
       ownerId: gu.group?.ownerId ?? 0,
       avatar: gu.avatar,

@@ -1,9 +1,4 @@
 <main class="pnf">
-  <!-- Tappable brand mark = an always-visible escape hatch back to the app root. -->
-  <button type="button" class="pnf-home" (click)="goHome()" [attr.aria-label]="'notFound.homeAria' | transloco">
-    <app-brand-logo [size]="32" [wordmark]="false" />
-  </button>
-
   <!-- Hero: a delivered bubble ("?") beside a dashed "unsent" bubble — the lost-message
        metaphor for a chat app. Purely decorative, so aria-hidden keeps it out of the a11y tree. -->
   <div class="pnf-art" aria-hidden="true">

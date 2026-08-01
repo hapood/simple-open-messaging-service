@@ -12,7 +12,8 @@ import {
 
 export interface PastePanelItem {
   id: string;
-  file: File;
+  name: string;
+  size: number;
   previewUrl?: string;
 }
 
@@ -52,24 +53,15 @@ export interface PastePanelItem {
                   </div>
                 }
                 <div class="pp-item-copy">
-                  <strong [title]="item.file.name">{{ item.file.name }}</strong>
-                  <span>{{ formatBytes(item.file.size) }}</span>
+                  <strong [title]="item.name">{{ item.name }}</strong>
+                  <span>{{ formatBytes(item.size) }}</span>
                 </div>
                 <button type="button" class="pp-remove" (click)="remove.emit(item.id)"
-                        [attr.aria-label]="'chat.paste.removeItem' | transloco: { name: item.file.name }">×</button>
+                        [attr.aria-label]="'chat.paste.removeItem' | transloco: { name: item.name }">×</button>
               </article>
             }
           </div>
 
-          <label class="pp-caption">
-            <span>{{ 'chat.paste.textLabel' | transloco }}</span>
-            <textarea
-              rows="4"
-              [value]="text()"
-              [placeholder]="'chat.paste.textPlaceholder' | transloco"
-              (input)="textChange.emit($any($event.target).value)"
-            ></textarea>
-          </label>
         </div>
 
         <footer class="pp-actions">
@@ -77,8 +69,8 @@ export interface PastePanelItem {
             {{ 'common.cancel' | transloco }}
           </button>
           <button type="button" class="pp-button pp-button--primary"
-                  [disabled]="items().length === 0 && !text().trim()" (click)="confirm.emit()">
-            {{ 'chat.paste.send' | transloco: { count: items().length + (text().trim() ? 1 : 0) } }}
+                  [disabled]="items().length === 0" (click)="confirm.emit()">
+            {{ 'chat.paste.send' | transloco: { count: items().length } }}
           </button>
         </footer>
       </section>
@@ -89,8 +81,6 @@ export interface PastePanelItem {
 export class PastePanelComponent {
   readonly AppIconType = AppIconType;
   readonly items = input.required<readonly PastePanelItem[]>();
-  readonly text = input('');
-  readonly textChange = output<string>();
   readonly remove = output<string>();
   readonly cancel = output<void>();
   readonly confirm = output<void>();

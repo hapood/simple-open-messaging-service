@@ -31,14 +31,12 @@ const dialogAnim = trigger('dialogAnim', [
     style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.96)' }),
     animate(ENTER),
   ]),
-  transition('void => viewer', [style({ opacity: 0 }), animate('180ms ease-out')]),
   transition('desktop => void', [
     animate(LEAVE, style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.98)' })),
   ]),
   transition('modal => void', [
     animate(LEAVE, style({ opacity: 0, transform: 'translate(-50%, -50%) scale(0.98)' })),
   ]),
-  transition('viewer => void', [animate('140ms ease-in', style({ opacity: 0 }))]),
 ]);
 
 @Component({

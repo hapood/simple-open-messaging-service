@@ -21,6 +21,7 @@
  * compensation owns it exclusively.
  */
 import { isDevMode } from '@angular/core';
+import { applyJumpHighlight } from './jump-highlight';
 
 import type { CbSource } from './cb-source';
 import type {
@@ -525,12 +526,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     });
   }
 
-  scrollToBottom(): void {
+  scrollToBottom(highlight = false): void {
     if (this.destroyed) return;
     this.pinToBottom();
     // The newest end may be trimmed away by trimNewer (window moved back, noNewer=false) → load back to the global
     // newest (the followToNewest chain, looping until noNewer).
-    if (!this.noNewer) void this.followToNewest();
+    if (!this.noNewer) void this.followToNewest(highlight);
+    else if (highlight && this.mounted.length > 0)
+      this.flashHighlight(this.mounted.length - 1);
   }
 
   /** Position the viewport at the content bottom — the bottom {@link Anchor}, applied via {@link applyAnchor}. */
@@ -611,7 +614,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   /** Explicit go-to-bottom follow (started by scrollToBottom): keep loading one newer batch and re-pinning until the
    *  global newest (noNewer). Plan A re-pins explicitly (overflow-anchor also helps). gen guard bails if a jump overtakes. */
-  private async followToNewest(): Promise<void> {
+  private async followToNewest(highlight = false): Promise<void> {
     const g = this.gen;
     while (!this.noNewer && !this.destroyed && this.mounted.length > 0) {
       const n = await this.loadNewer();
@@ -619,6 +622,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       if (n === 0) break;
       this.pinToBottom();
     }
+    if (
+      highlight &&
+      this.noNewer &&
+      !this.destroyed &&
+      g === this.gen &&
+      this.mounted.length > 0
+    )
+      this.flashHighlight(this.mounted.length - 1);
   }
 
   scrollToTop(): void {
@@ -643,7 +654,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (idx >= 0) {
       // already mounted: position directly
       this.positionMounted(idx, anchor);
-      if (highlight) this.flashHighlight(idx);
+      if (highlight) this.flashHighlight(idx, id);
       return true;
     }
     // not mounted: re-seed the window around id, then position
@@ -739,7 +750,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       const idx = this.indexOfId(id);
       if (idx >= 0) {
         this.positionMounted(idx, anchor);
-        if (highlight) this.flashHighlight(idx);
+        if (highlight) this.flashHighlight(idx, id);
       } else if (isDevMode())
         console.log('[JUMP] target not found after fill (idx=-1)!');
       this.updateGhost();
@@ -951,17 +962,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   /** Add a one-shot highlight flash to the target entry (animationend removes the class; a forced reflow guarantees
    *  the animation restarts on repeated jumps). */
-  private flashHighlight(idx: number): void {
+  private flashHighlight(idx: number, targetId?: number): void {
     const el = this.mounted[idx]?.el;
     if (!el) return;
-    el.classList.remove('cb-jump-highlight');
-    void el.offsetWidth; // force reflow → restart the animation
-    el.classList.add('cb-jump-highlight');
-    el.addEventListener(
-      'animationend',
-      () => el.classList.remove('cb-jump-highlight'),
-      { once: true },
-    );
+    applyJumpHighlight(el, targetId);
   }
 
   getInfo(): CbScrollInfo {
@@ -1456,13 +1460,18 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     const atTop = st < this.cfg.edge;
     const atBottom = total - this.vh - st < this.cfg.edge;
 
-    if (atTop && dir !== 'down' && !this.noOlder) {
-      await this.loadOlder();
-      this.trimNewer();
-    } else if (atBottom && dir !== 'up' && !this.noNewer) {
-      await this.loadNewer();
-      await this.reconcileOptimistic();
-      this.trimOlder();
+    try {
+      if (atTop && dir !== 'down' && !this.noOlder) {
+        await this.loadOlder();
+        this.trimNewer();
+      } else if (atBottom && dir !== 'up' && !this.noNewer) {
+        await this.loadNewer();
+        await this.reconcileOptimistic();
+        this.trimOlder();
+      }
+    } catch (error) {
+      if (isDevMode()) console.warn('[chat-cache] retryable page load failed', error);
+      return;
     }
 
     if (isDevMode() && this.onDebug) {

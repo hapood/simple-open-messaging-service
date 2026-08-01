@@ -322,7 +322,7 @@ export class WebAuthnService {
   /** Rename a credential. Refused (NOT_FOUND) if it belongs to another admin. */
   async renameCredential(
     adminId: number,
-    rowId: bigint,
+    rowId: number,
     nickname: string,
   ): Promise<void> {
     const rows = await this.database.db
@@ -350,7 +350,7 @@ export class WebAuthnService {
    *  remaining count. Throws NOT_FOUND if the credential belongs to another admin. */
   async removeCredential(
     adminId: number,
-    rowId: bigint,
+    rowId: number,
   ): Promise<{ remaining: number }> {
     const remaining = await this.database.db.transaction(async (tx) => {
       const deleted = await tx

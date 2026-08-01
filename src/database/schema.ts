@@ -233,7 +233,7 @@ export const threadParticipant = pgTable(
     muted: boolean().default(false).notNull(),
     pinned: boolean().default(false).notNull(),
     pinnedAt: timestamp({ precision: 3, mode: 'date' }),
-    clearedAt: timestamp({ precision: 3, mode: 'date' }),
+    clearedSeq: integer(),
     alias: varchar({ length: 64 }),
     leftAt: timestamp({ precision: 3, mode: 'date' }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
@@ -277,6 +277,10 @@ export const threadParticipant = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
+    check(
+      'ThreadParticipant_cleared_seq_check',
+      sql`${table.clearedSeq} IS NULL OR ${table.clearedSeq} >= -1`,
+    ),
   ],
 );
 
@@ -966,7 +970,7 @@ export const sessionToken = pgTable(
 export const twoFactorBackupCode = pgTable(
   'TwoFactorBackupCode',
   {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    id: serial().primaryKey().notNull(),
     adminId: integer().notNull(),
     codeHash: varchar({ length: 64 }).notNull(),
     consumedAt: timestamp({ precision: 3, mode: 'date' }),
@@ -993,7 +997,7 @@ export const twoFactorBackupCode = pgTable(
 export const webAuthnCredential = pgTable(
   'WebAuthnCredential',
   {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    id: serial().primaryKey().notNull(),
     adminId: integer().notNull(),
     credentialId: varchar({ length: 510 }).notNull(),
     publicKey: bytea('publicKey').notNull(),

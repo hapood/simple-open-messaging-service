@@ -4,7 +4,8 @@ import { encode } from 'uqr';
 /**
  * Renders a value as a scannable QR code — one crisp SVG `<path>` (a sub-path per dark module) over a white
  * background rect. The matrix comes from `uqr` (tiny, dependency-free, ESM-native); `boostEcc` raises error
- * correction so a partially-obscured code still scans, and `border` bakes in a quiet zone.
+ * correction so a partially-obscured code still scans, and `border` provides a two-module quiet zone so
+ * the matrix remains visually balanced and camera decoders can distinguish it from its surroundings.
  *
  * Dark-on-white is hardcoded via `--qr-fg`/`--qr-bg` (defaulting to black/white) for SCAN RELIABILITY:
  * phone cameras + ML Kit decode dark-on-light most reliably, so the code deliberately does NOT follow the

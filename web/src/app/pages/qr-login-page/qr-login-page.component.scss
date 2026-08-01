@@ -11,14 +11,25 @@
   align-items: center;
 }
 
-// Countdown bar lives directly above the QR (in the stage flow), bound to the token's remaining lifetime —
-// not pinned to the card's top edge. The old top-edge placement clipped the bar into the card's rounded
-// corners and left a full-width track stripe that read as a stuck-on strip rather than part of the QR; up
-// here it sits over the code it expires. The slot is a fixed 4px (the MDC track height) so the QR square
-// never shifts when the bar mounts (pending/scanned) or is absent (loading/error); the bar fills the line.
+.qr-frame {
+  width: 240px;
+}
+
+// Countdown feedback is attached directly to the QR's lower edge. Its reserved height keeps state changes
+// stable while avoiding an overlay that could obscure modules and reduce scan reliability.
 .progress-slot {
   width: 240px;
   height: 4px;
+  margin: 0;
+  overflow: hidden;
+  line-height: 0;
+  border-radius: var(--app-radius-sm, 8px) var(--app-radius-sm, 8px) 0 0;
+
+  mat-progress-bar {
+    display: block;
+    width: 100%;
+    height: 4px;
+  }
 
   // Final stretch: flip the fill to the danger color so the user sees the code is about to refresh. With the
   // m:ss readout gone, the bar's color is the only expiry cue. The active-indicator token is set on the host
@@ -28,27 +39,50 @@
   }
 }
 
+.progress-time {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+// Material's default dark-theme track is too close to the surrounding auth surface. Give this compact QR
+// timer a brighter fill and a visible neutral track; the warning override above still wins near expiry.
+:host-context([data-theme='dark']) .progress-slot mat-progress-bar {
+  --mat-progress-bar-active-indicator-color: #90caf9;
+  --mat-progress-bar-track-color: rgba(255, 255, 255, 0.28);
+}
+
+:host-context([data-theme='dark']) .progress-slot mat-progress-bar.is-warning {
+  --mat-progress-bar-active-indicator-color: var(--app-danger);
+}
+
 // The scan instruction is the page's real heading — a full sentence, not a short label — so it reads as a
 // centered guidance line rather than a oversized title. Sized to stay clearly the heading (above the 14px
 // state line) while wrapping cleanly at the card width; integer-px line-height per the project rule.
 .qr-title {
-  margin: 0 0 20px;
+  margin: 0 0 16px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
   text-align: center;
 }
 
-// The phone-side path (what the user actually has to tap through) is the actionable emphasis, so it gets
-// its own line in the brand accent — the eye lands on "where to go" instead of re-reading the lead-in. The
-// block display also sidesteps the per-locale space-after-colon problem: the path starts a fresh line, so no
-// fragile trailing/leading space has to be baked into the i18n strings (English wants one, Chinese none).
+// Phone-side navigation hint below the QR, using the same quiet treatment as the page's former explanatory
+// notice so it supports the scan action without competing with the title or QR state.
 .qr-title-path {
-  display: block;
-  color: var(--app-brand);
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--app-text-muted);
 }
 
 .notice {
+  width: 100%;
+  box-sizing: border-box;
   margin: 0 0 16px;
   padding: 10px 12px;
   font-size: 13px;
@@ -63,20 +97,23 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .qr-image {
-  // Fixed integer-px box (project rule). White card: the QR is dark-on-white for scan reliability, and the
-  // padding adds quiet zone beyond uqr's built-in border. `position: relative` anchors the scanned-state
-  // green-check overlay.
+  // Fixed integer-px box (project rule). A neutral light-gray ground makes the generated quiet zone feel
+  // intentional without tinting a functional scanning surface with the product's brand color.
   position: relative;
   width: 240px;
   height: 240px;
-  padding: 16px;
   box-sizing: border-box;
-  background: #ffffff;
+  --qr-bg: #f5f5f5;
+  background: var(--qr-bg);
   border-radius: var(--app-radius-sm, 8px);
+}
+
+.qr-frame.has-progress .qr-image {
+  border-radius: 0 0 var(--app-radius-sm, 8px) var(--app-radius-sm, 8px);
 }
 
 // Wrapper that holds the QR matrix so the scan-consumed blur can transition independently of the card.
@@ -186,16 +223,6 @@
   // collapses to height 0 — line-height does NOT reserve a line box for truly empty content — so without
   // this floor the loading→pending flip (text → empty) would shrink the card by one line (~20px).
   min-height: 20px;
-  color: var(--app-text-muted);
-  text-align: center;
-}
-
-// Trust-mode notice under the QR: explains the permanence (trusted) or the 14-day inactivity logout
-// (untrusted). Muted + centered like the state line; integer-px metrics per the project rule.
-.trust-notice {
-  margin: 12px 0 0;
-  font-size: 13px;
-  line-height: 18px;
   color: var(--app-text-muted);
   text-align: center;
 }

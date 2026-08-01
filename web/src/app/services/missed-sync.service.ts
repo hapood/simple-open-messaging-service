@@ -1,16 +1,15 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
-import { MessageRepository } from './message-repository.service';
 import { apiPrefix } from './constants';
-import type { Message, StandardResponse } from './model';
+import type { StandardResponse } from './model';
 import type { MissedCursor, NotificationDescriptor } from './notification-descriptor.model';
 
 /** Page size for the threadlist body walk (the backend caps `take` at 200). */
 const SUMMARY_TAKE = 200;
 
 /** One thread's row in POST /notifications/missed-summary. Mirrors the backend MissedThreadItem. The
- *  threadlist reads `latestMessage` (the body for preview pre-warm) + the authoritative read state; the
+ *  threadlist reads `latestMessage` for its own preview + the authoritative read state; the
  *  other fields are carried for parity but unused here
  *  (avatars come from the conversation snapshot). */
 export interface MissedThreadItem {
@@ -51,9 +50,8 @@ const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null
 /**
  * Compatibility facade over the two separated domain endpoints, each with its OWN single-flight guard:
  * starve each other:
- *  - {@link fetchMissedSummary} — POST /thread-sync/catch-up (the threadlist body pre-warm). Used by
- *    ThreadRepository: walks the `(from, to]` double-boundary range of per-thread latest bodies, caching each
- *    into the local store.
+ *  - {@link fetchMissedSummary} — POST /thread-sync/catch-up. Used by ThreadRepository to walk the `(from,
+ *    to]` range and update thread-list state. It never writes the chatbox message store.
  *  - {@link fetchAwayNotifications} — POST /notification-feed/query (away notification descriptors). Used by
  *    UnreadAttentionService: per-sender aggregation since the HWM → the server-authored descriptors.
  *
@@ -63,42 +61,16 @@ const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null
  *
  * STATELESS beyond the guards: the caller owns the cursors + decides when to pull.
  *
- * The items-path apply is direct on MessageRepository — it does NOT re-emit on eventSubject, so
- * UnreadAttentionService (subscribed to NEW_MESSAGE there) is NOT triggered; the snapshot owns unread.
+ * The snapshot owns unread state and thread-list previews; chatbox messages have a separate data path.
  */
 @Injectable({ providedIn: 'root' })
 export class MissedSyncService {
   private readonly http = inject(HttpClient);
-  private readonly messageRepo = inject(MessageRepository);
 
   /** Single-flight for the threadlist body-walk path. */
   private summaryInFlight = false;
   /** Single-flight for the away-summary path — independent so it never starves on the summary path. */
   private awayInFlight = false;
-
-  /** Cache each thread's latest-message body (pre-warm so opening a thread is instant). The summary row is
-   *  the full message minus id; fill the storage-only defaults the IDB record carries. */
-  private async cacheBodies(items: MissedThreadItem[]): Promise<void> {
-    const bodies = items
-      .map((i) => i.latestMessage)
-      .filter((m): m is NonNullable<typeof m> => m != null)
-      .map(
-        (m): Message =>
-          ({
-            threadId: m.threadId,
-            seq: m.seq,
-            contentType: m.contentType as Message['contentType'],
-            content: m.content,
-            creator: m.creator,
-            createdAt: m.createdAt,
-            updatedAt: m.createdAt,
-            isDeleted: false,
-            mediaStatus: m.mediaStatus,
-            sv: m.sv,
-          }) as unknown as Message,
-      );
-    if (bodies.length > 0) await this.messageRepo.applyMissed(bodies);
-  }
 
   /**
    * Threadlist body walk: fetch ONE page of the `(from, to]` range, cache the bodies, return the result.
@@ -118,7 +90,6 @@ export class MissedSyncService {
         ),
       ).catch(() => null);
       if (!res || res.code !== 0 || !res.data) return EMPTY;
-      if (res.data.items.length > 0) await this.cacheBodies(res.data.items);
       return res.data;
     } finally {
       this.summaryInFlight = false;

@@ -115,4 +115,6 @@ export interface StandardResponse<T = unknown> {
   data?: T;
   /** Only paginated endpoints (query-messages) return this: whether an earlier page exists. */
   hasMore?: boolean;
+  /** True when this page actually reached the requested truncateSeq boundary. */
+  truncated?: boolean;
 }

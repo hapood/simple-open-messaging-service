@@ -41,24 +41,6 @@
   z-index: 1;
 }
 
-// ---- Brand-mark escape hatch ----------------------------------------------
-.pnf-home {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 32px;
-  padding: 4px;
-  border: 0;
-  background: transparent;
-  border-radius: var(--app-radius-md);
-  cursor: pointer;
-  transition: transform 0.15s ease, background-color 0.15s ease;
-
-  &:hover { background: var(--app-hover); }
-  &:active { transform: scale(0.96); }
-  &:focus-visible { outline: 2px solid var(--app-brand); outline-offset: 3px; }
-}
-
 // ---- Hero illustration -----------------------------------------------------
 .pnf-art {
   position: relative;

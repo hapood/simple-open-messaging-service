@@ -7,7 +7,9 @@ import {
   inArray,
   isNotNull,
   isNull,
+  gte,
   lt,
+  lte,
   ne,
   notInArray,
   or,
@@ -53,6 +55,7 @@ export interface MessageQueryParams {
   take?: number;
   orderBy?: { seq: 'asc' | 'desc' };
   cursor?: { threadId_seq: { threadId: number; seq: number } };
+  truncateSeq?: number;
 }
 
 export interface ThreadAttentionState {
@@ -218,7 +221,7 @@ export class MessageService implements OnModuleInit {
     clientMessageId?: string,
     forwardBundleId?: string,
     beforeMessageCreate?: (tx: DatabaseTransaction) => Promise<void>,
-    quoteVisibility?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
+    quoteVisibility?: { clearedThroughSeq?: number | null; hideCreatorIds?: number[] },
   ): Promise<Omit<Message, 'id'>> {
     if (clientMessageId !== undefined) {
       const existing = await this.findByClientMessageId(clientMessageId);
@@ -272,8 +275,9 @@ export class MessageService implements OnModuleInit {
         if (
           quoteTarget &&
           (quoteTarget.isDeleted ||
-            (quoteVisibility?.clearedAfter &&
-              quoteTarget.createdAt <= quoteVisibility.clearedAfter) ||
+            (quoteVisibility?.clearedThroughSeq !== null &&
+              quoteVisibility?.clearedThroughSeq !== undefined &&
+              quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
             quoteVisibility?.hideCreatorIds?.includes(quoteTarget.creator))
         ) {
           throw new BusinessException(
@@ -647,23 +651,34 @@ export class MessageService implements OnModuleInit {
   async queryMessages(
     threadId: number,
     params: MessageQueryParams,
-    filters?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
+    filters?: { clearedThroughSeq?: number | null; hideCreatorIds?: number[] },
   ) {
     // The viewer's per-thread filters, layered on top of the membership-resolved threadId:
-    //  - clearedAfter: per-user "clear history" watermark — hide rows older than it for THIS user only.
+    //  - clearedThroughSeq: per-user "clear history" watermark — hide rows through it for THIS user only.
     //  - hideCreatorIds: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
     //    by the controller (group threads leave blocked members visible).
     const conditions: SQL[] = [eq(message.threadId, threadId)];
-    if (filters?.clearedAfter)
-      conditions.push(gt(message.createdAt, filters.clearedAfter));
+    if (filters?.clearedThroughSeq !== null && filters?.clearedThroughSeq !== undefined)
+      conditions.push(gt(message.seq, filters.clearedThroughSeq));
     if (filters?.hideCreatorIds?.length)
       conditions.push(notInArray(message.creator, filters.hideCreatorIds));
     const cursorSeq = params.cursor?.threadId_seq.seq;
     if (cursorSeq !== undefined) {
       conditions.push(
         params.orderBy?.seq === 'asc'
-          ? gt(message.seq, cursorSeq)
-          : lt(message.seq, cursorSeq),
+          ? params.skip === 0
+            ? gte(message.seq, cursorSeq)
+            : gt(message.seq, cursorSeq)
+          : params.skip === 0
+            ? lte(message.seq, cursorSeq)
+            : lt(message.seq, cursorSeq),
+      );
+    }
+    if (params.truncateSeq !== undefined) {
+      conditions.push(
+        params.orderBy?.seq === 'asc'
+          ? lt(message.seq, params.truncateSeq)
+          : gt(message.seq, params.truncateSeq),
       );
     }
     // id is fetched here (not omitted) so attachMediaStatus can resolve MediaMessage authz by messageId;
@@ -683,10 +698,13 @@ export class MessageService implements OnModuleInit {
     );
   }
 
-  /** Batch-enrich stored `{text, quote:{seq}}` envelopes for the client without persisting a preview. */
-  private async attachQuotePreviews<T extends Message>(
+  /** Batch-enrich stored `{text, quote:{seq}}` envelopes without persisting a preview. Cross-thread
+   * callers may provide viewer visibility independently for each source thread. */
+  async attachQuotePreviews<T extends Message>(
     msgs: T[],
-    filters?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
+    filters?:
+      | { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }
+      | Map<number, { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }>,
   ): Promise<T[]> {
     const refs = new Map<number, Set<number>>();
     for (const message of msgs) {
@@ -707,18 +725,22 @@ export class MessageService implements OnModuleInit {
       )!,
       eq(message.isDeleted, false),
     ];
-    if (filters?.clearedAfter)
-      targetConditions.push(gt(message.createdAt, filters.clearedAfter));
-    if (filters?.hideCreatorIds?.length)
-      targetConditions.push(
-        notInArray(message.creator, filters.hideCreatorIds),
-      );
     const targets = await this.database.db.query.message.findMany({
       where: and(...targetConditions),
       with: { user: { columns: { name: true } } },
     });
+    const visibleTargets = targets.filter((target) => {
+      const viewerFilters =
+        filters instanceof Map ? filters.get(target.threadId) : filters;
+      return !(
+        (viewerFilters?.clearedThroughSeq !== null &&
+          viewerFilters?.clearedThroughSeq !== undefined &&
+          target.seq <= viewerFilters.clearedThroughSeq) ||
+        viewerFilters?.hideCreatorIds?.includes(target.creator)
+      );
+    });
     const byKey = new Map(
-      targets.map((target) => [
+      visibleTargets.map((target) => [
         `${target.threadId}:${target.seq}`,
         truncateText(
           `${target.user.name}：${derivePreview(
@@ -834,11 +856,11 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
-   * Substring search over a conversation's PURE_TEXT history. Returns lightweight {id, createdAt}
-   * matches (no full bodies) — the client jumps the kernel to each id and the server renders the bubble
-   * via the normal query-messages path on demand. Keyset-paginated by message id (descending): the
-   * client's lastId cursor asks for the next older page of matches. Search extracts only the envelope's
-   * text field so author names and quote previews never create false hits; non-text types are excluded.
+   * Substring search over a conversation's text and uploaded-media filenames. Returns lightweight
+   * {seq, createdAt} matches (no full bodies) — the client jumps the kernel to each seq and the server
+   * renders the bubble via the normal query-messages path on demand. Keyset-paginated by message seq
+   * (descending): the client's lastSeq cursor asks for the next older page. Only the text envelope and
+   * uploaded-media `name` field are searched, so author names and quote previews never create false hits.
    */
   async searchMessages(
     threadId: number,
@@ -852,9 +874,17 @@ export class MessageService implements OnModuleInit {
       SELECT seq, "createdAt"
       FROM "Message"
       WHERE "threadId" = ${threadId}
-        AND "contentType" = 'PURE_TEXT'
         ${cursor}
-        AND (content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
+        AND (
+          (
+            "contentType" = 'PURE_TEXT'
+            AND (content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
+          )
+          OR (
+            "contentType" IN ('IMAGE', 'FILE', 'VIDEO', 'AUDIO')
+            AND (content::jsonb ->> 'name') ILIKE ${`%${keyword}%`}
+          )
+        )
       ORDER BY seq DESC
       LIMIT ${take + 1}
     `;

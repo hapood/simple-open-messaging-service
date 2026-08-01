@@ -119,7 +119,7 @@ One row per (user, thread); P2P and GROUP share this table (`role` null for P2P)
 | `lastReadSeq` | Int? | read watermark; unread = `count(Message where seq > lastReadSeq)` |
 | `role` | GroupRole? | OWNER/ADMIN/MEMBER (GROUP only); null for P2P |
 | `muted` / `pinned` / `pinnedAt` | | mute / pin / pin-order |
-| `clearedAt` | DateTime? | per-user "clear history" watermark |
+| `clearedSeq` | Int? | per-user "clear history" sequence watermark |
 | `alias` | VarChar(64)? | per-user nickname for this thread |
 | `leftAt` | DateTime? | soft-leave / hidden (null = active) |
 | `joinedAt` / `createdAt` / `updatedAt` | | |

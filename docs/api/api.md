@@ -173,7 +173,7 @@ Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP
 
 ### POST `/send-message` — Send message
 
-- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'IMAGE'|'FILE'|'VIDEO'|'AUDIO'|'LINK', clientMessageId?: UUID }`.
+- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
 - **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` pushes `NEW_MESSAGE` (full body) to all participants + fires push for offline recipients. `clientMessageId` is the send-idempotency key (a retry returns the original message).
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 

@@ -152,7 +152,7 @@ describe('QuotaService (DB-backed)', () => {
         friendshipActive: true,
         membershipActive: true,
         groupDissolved: false,
-        participant: { clearedAt: null },
+        participant: { clearedSeq: null },
       },
     } as unknown as Parameters<
       InstanceType<typeof MessageController>['sendMessage']

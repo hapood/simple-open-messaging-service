@@ -63,7 +63,7 @@ export interface ForwardBundleGcResult {
  *
  * GC scans ONLY uploads/shards/. Avatars are never
  * touched — they have no MediaAsset row; avatar overwrite-delete is owned by UploadService.deleteByUrl.
- * `clearHistory` (per-user clearedAt watermark) does NOT decrement refs (confirmed it never touches
+ * `clearHistory` (per-user clearedSeq watermark) does NOT decrement refs (confirmed it never touches
  * Message rows or files), so clearing a conversation never reclaims its media.
  */
 @Injectable()

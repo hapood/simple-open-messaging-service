@@ -5,59 +5,68 @@
     <div class="qr-card">
       <h1 class="qr-title">
         <span class="qr-title-lead">{{ 'auth.qrTitleLead' | transloco }}</span>
-        <span class="qr-title-path">{{ 'auth.qrTitlePath' | transloco }}</span>
       </h1>
 
+      @if (qrTrusted) {
+        <p class="notice">{{ 'auth.qrTrustedNotice' | transloco }}</p>
+      } @else {
+        <p class="notice">{{ 'auth.webSessionNotice' | transloco }}</p>
+      }
+
       <div class="qr-stage">
-        <!-- Countdown bar bound to the QR token's remaining lifetime, directly above the code it expires.
-          The slot is always mounted at a fixed 4px so the QR square never shifts when the bar appears
-          (pending/scanned) or is absent (loading/error); the bar fills the reserved line. -->
-        <div class="progress-slot">
+        <div class="qr-frame" [class.has-progress]="view() === 'pending' || view() === 'scanned'">
           @if (view() === 'pending' || view() === 'scanned') {
-            <mat-progress-bar
-              mode="determinate"
-              [value]="qrRemainingPct()"
-              [class.is-warning]="qrRemainingSec() <= QR_WARN_SEC"
-            ></mat-progress-bar>
+            <p class="progress-time">
+              {{ 'auth.qrExpiresIn' | transloco: { time: qrRemainingText() } }}
+            </p>
           }
-        </div>
-        <!-- The 240×240 white square is ALWAYS mounted and owns EVERY state's content: the QR matrix
-          (pending/scanned), a spinner (loading), or the full error UI — icon + message + retry (error).
-          Because the recovery button lives INSIDE the square, flipping to the error state never grows the
-          card; the surrounding layout stays put when the QR renders, departs, or fails. -->
-        <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
-          @switch (view()) {
-            @case ('pending') {
-              <div class="qr-canvas">
-                <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
-              </div>
+
+          <!-- Keep expiry feedback attached to the QR without covering any modules. -->
+          <div class="progress-slot">
+            @if (view() === 'pending' || view() === 'scanned') {
+              <mat-progress-bar
+                mode="determinate"
+                [value]="qrRemainingPct()"
+                [class.is-warning]="qrRemainingSec() <= QR_WARN_SEC"
+              ></mat-progress-bar>
             }
-            @case ('scanned') {
-              <div class="qr-canvas">
-                <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
-              </div>
-              <span class="qr-scan-badge" aria-hidden="true">
-                <app-icon [type]="AppIcon.CHECK" [style]="{ width: '40px', height: '40px' }" />
-              </span>
+          </div>
+
+          <!-- The 240×240 white square is ALWAYS mounted and owns EVERY state's content: the QR matrix
+            (pending/scanned), a spinner (loading), or the full error UI — icon + message + retry (error). -->
+          <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
+            @switch (view()) {
+              @case ('pending') {
+                <div class="qr-canvas">
+                  <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+                </div>
+              }
+              @case ('scanned') {
+                <div class="qr-canvas">
+                  <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+                </div>
+                <span class="qr-scan-badge" aria-hidden="true">
+                  <app-icon [type]="AppIcon.CHECK" [style]="{ width: '40px', height: '40px' }" />
+                </span>
+              }
+              @case ('loading') {
+                <div class="qr-placeholder">
+                  <mat-progress-spinner mode="indeterminate" [diameter]="40" />
+                </div>
+              }
+              @case ('error') {
+                <div class="qr-error" role="alert">
+                  <app-icon class="qr-error__icon" [type]="AppIcon.REPORT" [style]="{ width: '28px', height: '28px' }" />
+                  <p class="qr-error__text">{{ 'auth.qrCreateError' | transloco }}</p>
+                  <button mat-flat-button color="primary" type="button" class="qr-retry-btn" (click)="retry()">
+                    <app-icon matButtonIcon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
+                    {{ 'auth.qrRetry' | transloco }}
+                  </button>
+                </div>
+              }
             }
-            @case ('loading') {
-              <div class="qr-placeholder">
-                <mat-progress-spinner mode="indeterminate" [diameter]="40" />
-              </div>
-            }
-            @case ('error') {
-              <!-- role=alert announces the failure in place the moment this block mounts; the button is the
-                recovery action, so the message + retry stay together where the QR used to be. -->
-              <div class="qr-error" role="alert">
-                <app-icon class="qr-error__icon" [type]="AppIcon.REPORT" [style]="{ width: '28px', height: '28px' }" />
-                <p class="qr-error__text">{{ 'auth.qrCreateError' | transloco }}</p>
-                <button mat-flat-button color="primary" type="button" class="qr-retry-btn" (click)="retry()">
-                  <app-icon matButtonIcon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
-                  {{ 'auth.qrRetry' | transloco }}
-                </button>
-              </div>
-            }
-          }
+          </div>
+
         </div>
 
         <!-- Persistent live region for the two in-flight states whose instruction belongs BELOW the square
@@ -67,19 +76,13 @@
         <p class="qr-state" role="status" aria-live="polite">
           @switch (view()) {
             @case ('loading') { {{ 'auth.qrLoading' | transloco }} }
-            @case ('pending') {
-              {{ 'auth.qrExpiresIn' | transloco: { time: qrRemainingText() } }}
-            }
             @case ('scanned') { {{ 'auth.qrScanned' | transloco }} }
           }
         </p>
       </div>
 
-      @if (qrTrusted) {
-        <p class="trust-notice">{{ 'auth.qrTrustedNotice' | transloco }}</p>
-      } @else {
-        <p class="trust-notice">{{ 'auth.webSessionNotice' | transloco }}</p>
-      }
+      <p class="qr-title-path">{{ 'auth.qrTitlePath' | transloco }}</p>
+
     </div>
 
     <!-- Footer row below the card: login-method switchers on the LEFT, server-config link on the RIGHT

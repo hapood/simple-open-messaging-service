@@ -1,11 +1,14 @@
 @use '../../lib/chat-box/cb';
 
 :host {
-  position: fixed;
+  // RootPopup owns viewport positioning and safe-area padding. Using `fixed`
+  // here escaped that content box on compact screens (leaving a second strip
+  // above the header) and gave the intrinsic-height desktop card no usable
+  // content size, so only its dark backdrop was visible.
+  position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  padding: var(--soms-safe-top, 0) 0 var(--soms-safe-bottom, 0);
   box-sizing: border-box;
   background: color-mix(in srgb, var(--app-bg) 94%, transparent);
 }
@@ -14,7 +17,7 @@
   // application's floating-composer reserve into the kernel-managed tail cap.
   --soms-content-bottom-reserve: 0px;
   width: min(760px, 100%);
-  height: min(900px, 100dvh);
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -106,5 +109,13 @@
 @media (min-width: 761px) {
   .forward-viewer {
     border-radius: 14px;
+  }
+
+  .msg-content {
+    // The base viewer centers records in a 680px column. On desktop that looks
+    // like horizontal padding inside the 760px card; let the records use the
+    // full card width while preserving each message row's normal small gutter.
+    width: 100%;
+    margin-inline: 0;
   }
 }

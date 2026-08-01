@@ -286,9 +286,15 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Keep the exact album cell that owns the context menu visibly anchored. Paint-only styles preserve row measurements. */
+/* Keep the exact album cell that owns the context menu visibly anchored with the same inset-thumbnail
+ * treatment used by selection. The transform does not affect virtual-row measurements. */
+[data-message-id] .msg-media-cell {
+  transition: transform var(--app-motion-fast) var(--app-ease-standard);
+}
+
 .msg-media-cell.msg-media-cell--context-active {
-  box-shadow: inset 0 0 0 3px var(--app-brand);
+  transform: scale(0.92);
+  border-radius: 6px;
 }
 
 .msg-media-cell.msg-media-cell--context-active::after {
@@ -296,7 +302,7 @@ body {
   position: absolute;
   z-index: 7;
   inset: 0;
-  background: color-mix(in srgb, var(--app-brand) 16%, transparent);
+  background: transparent;
   pointer-events: none;
 }
 
@@ -355,22 +361,21 @@ body {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
-  transition: background var(--app-motion-fast) var(--app-ease-standard);
 }
 
 [data-message-id].cb-message--pressing,
 [data-message-id].cb-message--context-active {
-  background: var(--app-hover);
+  background: transparent;
 }
 
-[data-message-id].cb-message--pressing .msg-row {
-  transform: scale(0.995);
+[data-message-id].cb-message--pressing .msg-bubble {
+  transform: scale(0.98);
 }
 
-[data-message-id][role='listitem'] .msg-row {
+[data-message-id].cb-message--pressing .msg-bubble,
+[data-message-id][role='listitem'] .msg-bubble {
   transition:
-    transform var(--app-motion-instant) var(--app-ease-standard),
-    opacity var(--app-motion-medium) ease;
+    transform var(--app-motion-instant) var(--app-ease-standard);
 }
 
 /* Reserve a real leading selection gutter instead of painting the control over the message content.
@@ -378,15 +383,46 @@ body {
  * their row remains justify-content:flex-end. Padding is on the measured .msg-row, so the virtual list's
  * ResizeObserver sees any legitimate text reflow caused by the narrower content width. */
 [data-message-id].cb-message--selection-mode .msg-row {
+  --msg-selection-center-offset: 3px;
+  position: relative;
   padding-left: var(--app-space-10);
 }
 
-[data-message-id].cb-message--selection-mode::before {
+[data-message-id].cb-message--selection-mode
+  .msg-row.msg-self
+  .msg-highlight-layer {
+  left: var(--app-space-10);
+}
+
+[data-message-id].cb-message--selection-mode
+  .msg-row.msg-other
+  .msg-highlight-layer {
+  left: calc(var(--app-space-10) + 48px);
+}
+
+[data-message-id].cb-message--selection-mode .msg-row.msg-group-start {
+  --msg-selection-center-offset: 7px;
+}
+
+[data-message-id].cb-message--selection-mode .msg-row.msg-grp-body {
+  --msg-selection-center-offset: 1.5px;
+}
+
+/* The sender label is 13px high with a 2px bottom margin. Half of that fixed block must be added
+ * to the row midpoint for the selector to land on the bubble midpoint. */
+[data-message-id].cb-message--selection-mode .msg-row:has(.msg-name) {
+  --msg-selection-name-offset: 7.5px;
+}
+
+[data-message-id].cb-message--selection-mode .msg-row::before {
   content: '';
   position: absolute;
   z-index: 3;
   left: var(--app-space-2);
-  top: 50%;
+  top: calc(
+    50% + var(--msg-selection-center-offset) +
+      var(--msg-selection-name-offset, 0px)
+  );
   width: 20px;
   height: 20px;
   border: 2px solid var(--app-border-strong);
@@ -400,12 +436,15 @@ body {
     background var(--app-motion-fast) var(--app-ease-standard);
 }
 
-[data-message-id].cb-message--selection-mode::after {
+[data-message-id].cb-message--selection-mode .msg-row::after {
   content: '';
   position: absolute;
   z-index: 4;
   left: 18px;
-  top: 50%;
+  top: calc(
+    50% + var(--msg-selection-center-offset) +
+      var(--msg-selection-name-offset, 0px)
+  );
   width: 7px;
   height: 4px;
   border-left: 2px solid transparent;
@@ -415,39 +454,78 @@ body {
 }
 
 [data-message-id].cb-message--selected {
-  background: var(--app-selected);
+  background: transparent;
+}
+
+/* Reuse the jump target's dedicated paint layer for persistent multi-selection. */
+[data-message-id].cb-message--selected .msg-highlight-layer {
+  --cb-selection-highlight: color-mix(
+    in srgb,
+    var(--app-brand) 18%,
+    transparent
+  );
+  background-color: var(--cb-selection-highlight);
+}
+
+[data-theme='dark']
+  [data-message-id].cb-message--selected
+  .msg-highlight-layer {
+  --cb-selection-highlight: color-mix(
+    in srgb,
+    var(--app-brand) 24%,
+    transparent
+  );
 }
 
 [data-message-id].cb-message--selected.cb-message--pressing {
-  background: color-mix(in srgb, var(--app-selected) 78%, var(--app-pressed));
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-message-id][role='listitem'] .msg-row { transition: none; }
-  [data-message-id].cb-message--pressing .msg-row { transform: none; }
+  [data-message-id] .msg-bubble { transition: none; }
+  [data-message-id].cb-message--pressing .msg-bubble { transform: none; }
 }
 
-[data-message-id].cb-message--selected::before {
+[data-message-id].cb-message--selected .msg-row::before {
   border-color: var(--app-brand);
   background: var(--app-brand);
 }
 
-[data-message-id].cb-message--selected::after {
+[data-message-id].cb-message--selected .msg-row::after {
   border-color: var(--app-on-brand);
 }
 
 /* An album's row-level selector is tri-state. The short brand dash follows the familiar
  * indeterminate-checkbox convention without changing the control's geometry. */
 [data-message-id].cb-message--partially-selected {
-  background: color-mix(in srgb, var(--app-selected) 58%, transparent);
+  background: transparent;
 }
 
-[data-message-id].cb-message--partially-selected::before {
+[data-message-id].cb-message--partially-selected .msg-highlight-layer {
+  --cb-selection-highlight: color-mix(
+    in srgb,
+    var(--app-brand) 10%,
+    transparent
+  );
+  background-color: var(--cb-selection-highlight);
+}
+
+[data-theme='dark']
+  [data-message-id].cb-message--partially-selected
+  .msg-highlight-layer {
+  --cb-selection-highlight: color-mix(
+    in srgb,
+    var(--app-brand) 15%,
+    transparent
+  );
+}
+
+[data-message-id].cb-message--partially-selected .msg-row::before {
   border-color: var(--app-brand);
   background: var(--app-surface);
 }
 
-[data-message-id].cb-message--partially-selected::after {
+[data-message-id].cb-message--partially-selected .msg-row::after {
   width: 8px;
   height: 0;
   border-left: 0;
@@ -455,8 +533,8 @@ body {
   transform: translate(-50%, -50%);
 }
 
-/* In selection mode each album cell becomes an independent target. A compact top-end control keeps
- * the media readable; the selected wash and check remain paint-only, preserving virtual-row height. */
+/* In selection mode each album cell becomes an independent target. Selected media uses Telegram's
+ * inset-thumbnail treatment instead of a color wash; transforms keep the virtual-row measurements stable. */
 [data-message-id].cb-message--selection-mode.cb-message--album
   .msg-media-cell {
   cursor: pointer;
@@ -512,7 +590,19 @@ body {
 
 [data-message-id].cb-message--selection-mode.cb-message--album
   .msg-media-cell--selected::after {
-  background: color-mix(in srgb, var(--app-brand) 18%, transparent);
+  background: transparent;
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell--selected {
+  transform: scale(0.92);
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-message-id] .msg-media-cell {
+    transition: none;
+  }
 }
 // Selection is a paint-only composer swap: retain identical geometry/tail reservation while the action
 // toolbar overlays it, so entering multi-select cannot resize or re-anchor the message viewport.

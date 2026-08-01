@@ -2,7 +2,6 @@ import { Component, inject, signal } from '@angular/core';
 import { Location } from '@angular/common';
 import { Router } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 
 /**
  * Wildcard-route fallback (`path: '**'`). A theme-aware, on-brand "page not found"
@@ -14,7 +13,7 @@ import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.compo
  */
 @Component({
   selector: 'app-page-not-found',
-  imports: [BrandLogoComponent, TranslocoPipe],
+  imports: [TranslocoPipe],
   templateUrl: './page-not-found.component.html',
   styleUrl: './page-not-found.component.scss',
 })

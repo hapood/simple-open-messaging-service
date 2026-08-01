@@ -54,6 +54,14 @@ export class ApiResult<T = unknown> {
       'Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints.',
   })
   hasMore?: boolean;
+
+  @ApiProperty({
+    type: 'boolean',
+    nullable: true,
+    description:
+      'Populated by bounded pagination requests: whether this page actually reached the truncation boundary.',
+  })
+  truncated?: boolean;
 }
 
 /**
@@ -97,13 +105,19 @@ export interface ApiEnvelope<T = unknown> {
   message?: string;
   messageKey?: string;
   hasMore?: boolean;
+  truncated?: boolean;
 }
 
 /** Wrap `data` for the interceptor, attaching optional envelope-level `message` / `messageKey` / `hasMore`
  *  (the few success outcomes that carry a custom status string or i18n key beyond `data`). */
 export function envelope<T>(
   data: T,
-  opts?: { message?: string; messageKey?: string; hasMore?: boolean },
+  opts?: {
+    message?: string;
+    messageKey?: string;
+    hasMore?: boolean;
+    truncated?: boolean;
+  },
 ): ApiEnvelope<T> {
   return { [API_ENVELOPE]: true, data, ...opts };
 }

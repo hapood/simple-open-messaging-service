@@ -3,30 +3,26 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { MissedSyncService } from './missed-sync.service';
-import { MessageRepository } from './message-repository.service';
 import type { StandardResponse } from './model';
 import type { MissedSummaryResult } from './missed-sync.service';
 
 /**
  * fetchMissedSummary (POST /notifications/missed-summary) + fetchAwayNotifications (POST /notifications/missed)
  * — the two separated endpoints. POSTs {from?, to, take} (the threadlist body walk) and {since?} (the away
- * summary); caches each latest-message body via MessageRepository.applyMissed (pre-warm). Stateless +
- * per-path single-flight (a concurrent call is a no-op → empty result).
+ * summary). Thread-list results never write the chatbox message store. Stateless + per-path single-flight
+ * (a concurrent call is a no-op → empty result).
  */
 describe('MissedSyncService', () => {
   let svc: MissedSyncService;
   let httpMock: HttpTestingController;
-  let applyMissedSpy: ReturnType<typeof jasmine.createSpy>;
 
   beforeEach(() => {
-    applyMissedSpy = jasmine.createSpy('applyMissed').and.resolveTo(undefined);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         provideHttpClient(),
         provideHttpClientTesting(),
         MissedSyncService,
-        { provide: MessageRepository, useValue: { applyMissed: applyMissedSpy } },
       ],
     });
     svc = TestBed.inject(MissedSyncService);
@@ -40,7 +36,7 @@ describe('MissedSyncService', () => {
     return { threadId, seq, contentType: 'PURE_TEXT', content, creator: 1, createdAt: seq * 1000, mediaStatus: 'ready' as const, sv: seq };
   }
 
-  it('fetchMissedSummary: POSTs {to, take} (from omitted when null) + caches bodies via applyMissed', async () => {
+  it('fetchMissedSummary: POSTs {to, take} and returns thread-list data without a chatbox write', async () => {
     const res: StandardResponse<MissedSummaryResult> = {
       code: 0, message: 'ok',
       data: {
@@ -60,9 +56,6 @@ describe('MissedSyncService', () => {
 
     expect(result.items.length).toBe(2);
     expect(result.nextCursor).toEqual({ threadId: 2, seq: 3 });
-    expect(applyMissedSpy).toHaveBeenCalledTimes(1);
-    const cached = applyMissedSpy.calls.mostRecent().args[0] as Array<{ threadId: number; seq: number; content: string }>;
-    expect(cached.map((m) => [m.threadId, m.seq, m.content])).toEqual([[1, 5, 'hi'], [2, 3, 'yo']]);
   });
 
   it('fetchMissedSummary: POSTs {from, to, take} when from is set', async () => {
@@ -73,7 +66,6 @@ describe('MissedSyncService', () => {
     const result = await p;
     expect(result.items).toEqual([]);
     expect(result.nextCursor).toBeNull();
-    expect(applyMissedSpy).not.toHaveBeenCalled(); // no bodies → no applyMissed
   });
 
   it('fetchMissedSummary: a concurrent call is a no-op (single-flight → empty, no second request)', async () => {
@@ -84,12 +76,11 @@ describe('MissedSyncService', () => {
     await p1;
   });
 
-  it('fetchMissedSummary: a non-zero / network-failed response degrades to empty (applyMissed not called)', async () => {
+  it('fetchMissedSummary: a non-zero / network-failed response degrades to empty', async () => {
     const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
     httpMock.expectOne('/api/v1/thread-sync/catch-up').flush({ code: 1, message: 'err', data: null });
     const result = await p;
     expect(result.items).toEqual([]);
-    expect(applyMissedSpy).not.toHaveBeenCalled();
   });
 
   it('fetchAwayNotifications: POSTs {since, previewMode} → returns descriptors', async () => {
@@ -101,7 +92,6 @@ describe('MissedSyncService', () => {
     const result = await p;
     expect(result.length).toBe(1);
     expect(result[0].kind).toBe('thread-message');
-    expect(applyMissedSpy).not.toHaveBeenCalled(); // the away path does NOT cache bodies
   });
 
   it('fetchAwayNotifications: since null → POSTs preview mode only', async () => {

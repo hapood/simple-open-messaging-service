@@ -8,6 +8,8 @@ export interface ForwardAssetDocument {
 }
 
 export interface ForwardManifestMessage {
+  /** Canonical 1-based Bundle-local id; absent only on legacy v1 snapshots. */
+  id?: number;
   sender: {
     displayName: string;
     account: string;
@@ -18,6 +20,10 @@ export interface ForwardManifestMessage {
   content: string;
   sentAt: number;
   childBundleId?: string;
+  quote?: {
+    preview: string;
+    targetId?: number;
+  };
 }
 
 export interface ForwardWireBundle {

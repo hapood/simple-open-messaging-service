@@ -242,9 +242,10 @@ app-chat-input {
 .ci-input-wrap {
   flex: 1 1 auto;
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-end;
-  gap: 2px;
+  column-gap: 2px;
   min-height: 48px;
   box-sizing: border-box;
   padding: 4px 4px 4px 10px;
@@ -263,6 +264,7 @@ app-chat-input {
 
 // Emoji icon inside the capsule.
 .ci-input-ico {
+  grid-column: 2;
   flex: 0 0 auto;
   width: 36px;
   height: 36px;
@@ -313,7 +315,7 @@ app-chat-input {
 // Grow with the editor from one line to five. Once the editor reaches its five-line cap, ProseMirror owns
 // the vertical overflow so its native selection scrolling keeps the caret visible.
 .ci-input {
-  flex: 1 1 auto;
+  grid-column: 1;
   min-width: 0;
   min-height: 36px;
   max-height: 119px; // 5 × 21px line boxes + 14px vertical padding

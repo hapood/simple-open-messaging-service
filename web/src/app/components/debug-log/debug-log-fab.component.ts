@@ -37,7 +37,7 @@ import { DebugLogOverlayComponent } from './debug-log-overlay.component';
         type="button"
         class="dbg-fab"
         (pointerdown)="onDown($event)"
-        (click)="onClick()"
+        (click)="onClick($event)"
         [attr.aria-pressed]="open()"
         aria-label="Debug logs"
         title="Debug logs (drag to move)"
@@ -136,6 +136,11 @@ export class DebugLogFabComponent implements OnDestroy {
   private rafId = 0;
   /** The pointerId captured on the FAB; -1 between gestures. */
   private pointerId = -1;
+  /** A mouse/pointer drag can still synthesize a click after pointerup. Keep this flag only until the
+   *  browser has had a chance to dispatch that compatibility click, mirroring vConsole's one-shot
+   *  document click suppressor. */
+  private suppressNextClick = false;
+  private suppressClickTimer = 0;
   onDown(e: PointerEvent): void {
     if (e.pointerType === 'mouse' && e.button !== 0) return; // left-button only for mouse
     const fab = this.fabEl()?.nativeElement;
@@ -195,6 +200,7 @@ export class DebugLogFabComponent implements OnDestroy {
   };
 
   private onUp = (): void => {
+    if (this.moved) this.armClickSuppression();
     this.endDrag();
     this.moved = false;
   };
@@ -229,13 +235,37 @@ export class DebugLogFabComponent implements OnDestroy {
     this.dragging = false;
   }
 
-  /** Click toggle. Keyboard activation (Enter/Space) routes here as well. */
-  onClick(): void {
+  /** Click toggle. A compatibility click immediately following a drag is swallowed once; keyboard
+   *  activation (Enter/Space) and stationary presses still route through normally. */
+  onClick(e: MouseEvent): void {
+    if (this.suppressNextClick) {
+      this.clearClickSuppression();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     this.toggle();
+  }
+
+  private armClickSuppression(): void {
+    this.suppressNextClick = true;
+    if (this.suppressClickTimer) window.clearTimeout(this.suppressClickTimer);
+    // Native click follows pointerup in the same event sequence. Expire at the next task so a later genuine
+    // click is never consumed when a platform already cancelled the compatibility click (notably touch).
+    this.suppressClickTimer = window.setTimeout(() => this.clearClickSuppression(), 0);
+  }
+
+  private clearClickSuppression(): void {
+    this.suppressNextClick = false;
+    if (this.suppressClickTimer) {
+      window.clearTimeout(this.suppressClickTimer);
+      this.suppressClickTimer = 0;
+    }
   }
 
   ngOnDestroy(): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.clearClickSuppression();
     if (this.dragging) {
       window.removeEventListener('pointermove', this.onMove);
       window.removeEventListener('pointerup', this.onUp);

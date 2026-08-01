@@ -7,6 +7,7 @@
     isGroupStart() ? ' msg-group-start' : ''
   }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
   @if (showAvatar() && side() === 'other') {
     <div class="msg-avatar">
       <app-user-avatar

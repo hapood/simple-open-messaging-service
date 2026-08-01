@@ -6,6 +6,9 @@
       !nativeComposerOccluded() &&
       (!nativeComposer.supported || nativeComposerActive())
     "
+    [class.msg-container--has-compose-quote]="
+      !nativeComposer.supported && !!composingQuote()
+    "
     #container
     appKbdOffset
     appComposerWidthSource
@@ -455,25 +458,36 @@
       </button>
     } @else {
       @if (!nativeComposer.supported) {
-        @if (composingQuote(); as quote) {
-          <div class="msg-compose-quote">
-            <span>{{ quote.preview }}</span>
-            <button
-              type="button"
-              (click)="cancelQuote()"
-              [attr.aria-label]="'common.cancel' | transloco"
-            >
-              ×
-            </button>
-          </div>
-        }
         <app-chat-input
           [class.msg-composer--selection-hidden]="selectionMode()"
           [attr.aria-hidden]="selectionMode()"
           [members]="mentionMembers()"
           (send)="onSendIntent($event)"
-        ></app-chat-input>
+        >
+          @if (composingQuote(); as quote) {
+            <div composer-prefix class="msg-compose-quote">
+              <span>{{ quote.preview }}</span>
+              <button
+                type="button"
+                (click)="cancelQuote()"
+                [attr.aria-label]="'common.cancel' | transloco"
+              >
+                ×
+              </button>
+            </div>
+          }
+        </app-chat-input>
       }
+    }
+
+    @if (pasteOpen()) {
+      <app-paste-panel
+        [items]="pasteItems()"
+        (remove)="removePasteItem($event)"
+        (morePaste)="appendPanelPaste($event)"
+        (cancel)="cancelPaste()"
+        (confirm)="confirmPaste()"
+      />
     }
   </div>
 </div>

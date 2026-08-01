@@ -36,7 +36,8 @@
             (click)="onUsrTrdClick(thread)">
             <span class="thread-avatar">
               <app-user-avatar [type]="avatarType(thread)" [name]="displayName(thread)"
-                [identityId]="avatarIdentityId(thread)" [src]="avatarSrc(thread)"></app-user-avatar>
+                [identityId]="avatarIdentityId(thread)" [colorIdentityId]="avatarColorIdentityId(thread)"
+                [src]="avatarSrc(thread)"></app-user-avatar>
             </span>
             <span class="thread-info">
               <span class="thread-row">

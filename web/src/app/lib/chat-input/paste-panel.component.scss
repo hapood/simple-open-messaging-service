@@ -139,36 +139,6 @@
   color: var(--app-text);
 }
 
-.pp-caption {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-top: 18px;
-  color: var(--app-text-muted);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.pp-caption textarea {
-  width: 100%;
-  min-height: 104px;
-  resize: vertical;
-  box-sizing: border-box;
-  padding: 11px 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  outline: none;
-  background: var(--app-bg);
-  color: var(--app-text);
-  font: inherit;
-  line-height: 20px;
-}
-
-.pp-caption textarea:focus {
-  border-color: var(--app-brand);
-  box-shadow: 0 0 0 2px var(--app-brand-soft);
-}
-
 .pp-actions {
   display: flex;
   justify-content: flex-end;

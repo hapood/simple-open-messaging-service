@@ -165,6 +165,9 @@
       </svg>
     </button>
     <div class="ci-input-wrap">
+      <!-- Host-owned context occupies the capsule's first row but stays outside the editor document, so
+           Backspace edits only the draft and the context's close control is its sole removal path. -->
+      <ng-content select="[composer-prefix]"></ng-content>
       <app-chat-editor
         class="ci-input"
         [members]="members()"
@@ -279,14 +282,3 @@
     (change)="onFileChange($event)"
   />
 </form>
-@if (pasteOpen()) {
-  <app-paste-panel
-    [items]="pasteItems()"
-    [text]="pasteText()"
-    (textChange)="pasteText.set($event)"
-    (remove)="removePasteItem($event)"
-    (morePaste)="appendPanelPaste($event)"
-    (cancel)="cancelPaste()"
-    (confirm)="confirmPaste()"
-  />
-}

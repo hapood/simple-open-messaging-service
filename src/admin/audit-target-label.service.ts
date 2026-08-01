@@ -46,7 +46,6 @@ export class AuditTargetLabelService {
 
     const bigBuckets = {
       admin_session: new Set<bigint>(),
-      webauthn_credential: new Set<bigint>(),
     };
     const intBuckets = {
       user: new Set<number>(),
@@ -54,6 +53,7 @@ export class AuditTargetLabelService {
       user_session: new Set<number>(),
       login_code: new Set<number>(),
       push_token: new Set<number>(),
+      webauthn_credential: new Set<number>(),
     };
     for (const r of rows) {
       const t = r.targetType;
@@ -116,7 +116,7 @@ export class AuditTargetLabelService {
             .innerJoin(user, eq(user.id, pushToken.userId))
             .where(inArray(pushToken.id, [...intBuckets.push_token]))
         : [],
-      bigBuckets.webauthn_credential.size
+      intBuckets.webauthn_credential.size
         ? this.database.db
             .select({ id: webAuthnCredential.id, account: user.account })
             .from(webAuthnCredential)
@@ -124,7 +124,7 @@ export class AuditTargetLabelService {
             .innerJoin(user, eq(user.id, admin.userId))
             .where(
               inArray(webAuthnCredential.id, [
-                ...bigBuckets.webauthn_credential,
+                ...intBuckets.webauthn_credential,
               ]),
             )
         : [],
