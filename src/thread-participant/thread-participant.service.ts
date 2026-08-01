@@ -184,8 +184,7 @@ export class ThreadParticipantService {
 
   /**
    * Generic list query (used by the conversation-list endpoint). Generic over the args so that
-   * `include`/`select` are reflected in the returned payload type — Prisma can't infer includes
-   * passed through a plain `FindManyArgs`-typed variable.
+   * selected relations are reflected in the returned payload type.
    */
   async queryParticipants(params: ParticipantQuery) {
     const threadId = params.where.threadId;

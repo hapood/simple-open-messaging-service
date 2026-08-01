@@ -5,7 +5,7 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
 import { seedUserWithSession } from './seed';
 
@@ -25,7 +25,7 @@ import { seedUserWithSession } from './seed';
  */
 describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-read is a no-op)', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let invites: InviteService;
 
   beforeAll(async () => {
@@ -38,13 +38,13 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     invites = app.get(InviteService);
   });
 
   beforeEach(async () => {
     // Isolate every run: truncating User CASCADE-clears Invite, RefreshToken, threads, etc.
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -56,8 +56,12 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
 
     // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
     // authenticated users, not the login flow).
-    const tokA = (await seedUserWithSession(app, 'inviter', { name: 'Inviter' })).token;
-    const tokB = (await seedUserWithSession(app, 'invitee', { name: 'Invitee' })).token;
+    const tokA = (
+      await seedUserWithSession(app, 'inviter', { name: 'Inviter' })
+    ).token;
+    const tokB = (
+      await seedUserWithSession(app, 'invitee', { name: 'Invitee' })
+    ).token;
     expect(tokA).toBeTruthy();
     expect(tokB).toBeTruthy();
     const authA = { Authorization: `Bearer ${tokA}` };
@@ -85,7 +89,9 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
     // 6. markRead is a CLIENT-side cursor advance — a server no-op (no state to clear). friendReqRev is
     //    unchanged after it; the badge clears because the client advances its own cursor, not because the
     //    server mutated anything.
-    const mark = await request(http).post('/api/v1/invite/mark-read').set(authB);
+    const mark = await request(http)
+      .post('/api/v1/invite/mark-read')
+      .set(authB);
     expect(mark.body.code).toBe(0);
     expect(await invites.findLatestFriendReqUpdate(inviteeId)).toBe(armed);
   });

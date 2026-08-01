@@ -32,7 +32,7 @@ export type ThreadDeltaPlan = {
  * add-then-remove (ADD then DELETE) nets to DELETE. A thread that fully cancels (ADD then DELETE when absent
  * before) nets to DELETE and is removed by the client's idempotent `removeThread`.
  *
- * Pure: no NestJS / Prisma deps, no I/O. Deterministic — Map iteration preserves first-occurrence order, so
+ * Pure: no NestJS / database deps, no I/O. Deterministic — Map iteration preserves first-occurrence order, so
  * `addIds`/`removeIds` are stable for a given input (useful for tests + a reproducible hydrate order).
  */
 export function planThreadDelta(ops: ThreadDeltaOp[]): ThreadDeltaPlan {

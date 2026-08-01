@@ -22,8 +22,8 @@ import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
  * FederationService needs InviteService (InviteModule, unified invite deliver/accept), MessageService
  * (MessageModule, card write on outbound group invite), ThreadParticipantService (relationship reads +
- * raw roster mutators), SseService (GatewayModule), + UploadModule (avatar wire helpers). PrismaService
- * is provided globally by PrismaModule.
+ * raw roster mutators), SseService (GatewayModule), + UploadModule (avatar wire helpers). DatabaseService
+ * is provided globally by DatabaseModule.
  *
  * Two S2S controllers share the `s2s` prefix: S2sController (unified invite + roster + signed GETs,
  * allow-list-gated via S2sSignatureGuard) and S2sInitController (POST /s2s/init — the trust bootstrap,

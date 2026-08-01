@@ -1215,11 +1215,11 @@ export class MessageService implements OnModuleInit {
         tp."threadId" AS "threadId",
         COUNT(m.seq)::int AS "unread",
         COALESCE(
-          ARRAY_AGG(m.content) FILTER (
+          ARRAY_AGG(m.content::text) FILTER (
             WHERE m."contentType" = 'PURE_TEXT'
               AND (
-                strpos(m.content, '](soms://user/') > 0
-                OR strpos(m.content, '](soms://audience/all?v=1)') > 0
+                strpos(m.content ->> 'text', '](soms://user/') > 0
+                OR strpos(m.content ->> 'text', '](soms://audience/all?v=1)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1284,11 +1284,11 @@ export class MessageService implements OnModuleInit {
         a."lastReadSeq" AS "lastReadSeq",
         COUNT(s.seq)::int AS unread,
         COALESCE(
-          ARRAY_AGG(s.content) FILTER (
+          ARRAY_AGG(s.content::text) FILTER (
             WHERE s."contentType" = 'PURE_TEXT'
               AND (
-                strpos(s.content, '](soms://user/') > 0
-                OR strpos(s.content, '](soms://audience/all?v=1)') > 0
+                strpos(s.content ->> 'text', '](soms://user/') > 0
+                OR strpos(s.content ->> 'text', '](soms://audience/all?v=1)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1364,11 +1364,11 @@ export class MessageService implements OnModuleInit {
         COUNT(*) AS cnt,
         MAX(seq) AS latest,
         COALESCE(
-          ARRAY_AGG(content) FILTER (
+          ARRAY_AGG(content::text) FILTER (
             WHERE "contentType" = 'PURE_TEXT'
               AND (
-                strpos(content, '](soms://user/') > 0
-                OR strpos(content, '](soms://audience/all?v=1)') > 0
+                strpos(content ->> 'text', '](soms://user/') > 0
+                OR strpos(content ->> 'text', '](soms://audience/all?v=1)') > 0
               )
           ),
           ARRAY[]::text[]
@@ -1442,7 +1442,17 @@ export class MessageService implements OnModuleInit {
     const result = new Map<number, AwayNotificationMessage[]>();
     for (const row of rows) {
       const list = result.get(row.threadId) ?? [];
-      list.push(row);
+      list.push({
+        ...row,
+        content:
+          typeof row.content === 'string'
+            ? row.content
+            : JSON.stringify(row.content),
+        createdAt:
+          row.createdAt instanceof Date
+            ? row.createdAt
+            : new Date(row.createdAt as unknown as string),
+      });
       result.set(row.threadId, list);
     }
     return result;
@@ -1492,7 +1502,7 @@ export class MessageService implements OnModuleInit {
     const rows = await this.queryRaw<
       Array<{ threadId: number; content: string }>
     >`
-      SELECT m."threadId" AS "threadId", m.content
+      SELECT m."threadId" AS "threadId", m.content::text AS content
       FROM "ThreadParticipant" tp
       JOIN "Message" m
         ON m."threadId" = tp."threadId"
@@ -1503,8 +1513,8 @@ export class MessageService implements OnModuleInit {
         AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
-          strpos(m.content, '](soms://user/') > 0
-          OR strpos(m.content, '](soms://audience/all?v=1)') > 0
+          strpos(m.content ->> 'text', '](soms://user/') > 0
+          OR strpos(m.content ->> 'text', '](soms://audience/all?v=1)') > 0
         )
     `;
     const contents = new Map<number, string[]>();
@@ -1539,7 +1549,7 @@ export class MessageService implements OnModuleInit {
     const rows = await this.queryRaw<
       Array<{ threadId: number; content: string }>
     >`
-      SELECT m."threadId" AS "threadId", m.content
+      SELECT m."threadId" AS "threadId", m.content::text AS content
       FROM "Message" m
       JOIN "ThreadParticipant" tp
         ON tp."threadId" = m."threadId"
@@ -1552,8 +1562,8 @@ export class MessageService implements OnModuleInit {
         AND m."contentType" = 'PURE_TEXT'
         ${threadClause}
         AND (
-          strpos(m.content, '](soms://user/') > 0
-          OR strpos(m.content, '](soms://audience/all?v=1)') > 0
+          strpos(m.content ->> 'text', '](soms://user/') > 0
+          OR strpos(m.content ->> 'text', '](soms://audience/all?v=1)') > 0
         )
     `;
     const contents = new Map<number, string[]>();

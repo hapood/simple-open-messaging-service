@@ -73,7 +73,7 @@ export class AdminFederationController {
     summary: 'Single federated peer detail (current lifecycle state)',
   })
   async peerDetail(@Param('domain') domain: string) {
-    // Read directly from Prisma rather than FederationService — the service is the S2S runtime's
+    // Read directly from the database rather than FederationService — the service is the S2S runtime's
     // concern; this is a trivial current-state read for the console, and keeps the admin surface
     // independent of the federation module's WIP.
     const peer = await this.database.db.query.federatedPeer.findFirst({

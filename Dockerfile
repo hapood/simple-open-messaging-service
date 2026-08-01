@@ -115,7 +115,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 EXPOSE 7667/tcp
 EXPOSE 7667/udp
 # ENTRYPOINT sources the init-generated /soms/run/app.env, then execs the command — so the `migrate`
-# one-shot (`prisma migrate deploy`) and any `docker compose run app …` escape hatch still receive
+# one-shot (`npm run db:migrate`) and any `docker compose run app …` escape hatch still receive
 # DATABASE_URL/SOMS_DOMAIN. Default CMD is the node+Caddy supervisor; override CMD to run something else.
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/app/supervisor.sh"]

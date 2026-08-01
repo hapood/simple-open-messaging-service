@@ -2,7 +2,7 @@
 //
 // Self-registration is closed (PUBLIC_CONFIG.registrationOpen = false) and password login is disabled
 // under APP_OTP_AND_QR, so the old register→HTTP-login seeding no longer works (and was never correct for
-// OTP/QR accounts, which carry no password). These helpers insert users + sessions DIRECTLY — Prisma +
+// OTP/QR accounts, which carry no password). These helpers insert users + sessions directly through Drizzle +
 // SessionTokenService off the in-process app — the right fixtures for specs that need an authenticated
 // user but don't care HOW they authenticated. For the process-boundary federation e2e, see
 // federation-test-helpers.ts, which uses its own Drizzle client.

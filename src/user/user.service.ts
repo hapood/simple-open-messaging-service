@@ -12,7 +12,7 @@ export class UserService implements OnModuleInit {
 
   async onModuleInit() {}
 
-  // Sensitive columns are omitted at the Prisma layer (never loaded → can't leak into responses),
+  // Sensitive columns are omitted at the query layer (never loaded → can't leak into responses),
   // so there are no per-site `delete` lines. hashPwd is omitted by default; the opt-in read below
   // re-includes it where a legitimate internal consumer (the login path) needs it.
   findUniqueUser(where: UserLookup) {
@@ -87,8 +87,7 @@ export class UserService implements OnModuleInit {
   queryUsers(params: {
     where?: { id?: { in: number[] }; isDeleted?: boolean };
   }) {
-    // Default-omit sensitive columns. Callers needing an explicit `select` must hit prisma directly
-    // (select + omit are mutually exclusive in Prisma); all current callers pass only `where`.
+    // Default-omit sensitive columns; callers that need them must use an explicit internal query.
     return this.database.db
       .select(publicUserColumns)
       .from(user)

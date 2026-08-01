@@ -5,10 +5,11 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
-import { PrismaClient } from '../src/prisma/generated/client.js';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { AdminRole } from '../src/prisma/generated/client.js';
+import { and, eq, sql } from 'drizzle-orm';
+import { Pool } from 'pg';
+import { DatabaseService } from '../src/database/database.service';
+import { AdminRole } from '../src/database/enums.js';
+import { admin, user } from '../src/database/schema.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 
@@ -30,45 +31,55 @@ const BOOT_PWD = 'bootstrap-e2e-password';
 
 /** Standalone client for pre-boot cleanup (the fork DB persists across runs; truncate before each case so
  *  every boot starts from an empty User table — CASCADE reaches Admin / tokens / audit logs). */
-let cleanup: PrismaClient;
+let cleanup: Pool;
 
 beforeAll(async () => {
-  cleanup = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
+  cleanup = new Pool({ connectionString: process.env.DATABASE_URL });
 });
 
 afterAll(async () => {
-  await cleanup?.$disconnect();
+  await cleanup?.end();
 });
 
 beforeEach(async () => {
-  await cleanup.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+  await cleanup.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
 });
 
 /** Boot a fresh AppModule+Fastify app (OnApplicationBootstrap fires during listen). */
-async function bootApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
-  const module: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
+async function bootApp(): Promise<{
+  app: INestApplication;
+  database: DatabaseService;
+}> {
+  const module: TestingModule = await Test.createTestingModule({
+    imports: [AppModule],
+  }).compile();
   const adapter = new FastifyAdapter();
   const app = module.createNestApplication(adapter);
   await configureApp(app, adapter);
   await app.listen(0);
-  return { app, prisma: app.get(PrismaService) };
+  return { app, database: app.get(DatabaseService) };
 }
 
 describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on boot)', () => {
   it('creates account=admin (SUPER_ADMIN, enabled) when ADMIN_BOOTSTRAP_PASSWORD is set', async () => {
     process.env.ADMIN_BOOTSTRAP_PASSWORD = BOOT_PWD;
-    const { app, prisma } = await bootApp();
+    const { app, database } = await bootApp();
     try {
-      const user = await prisma.user.findUnique({
-        where: { account_domain: { account: 'admin', domain: 'local' } },
-        include: { admins: { select: { role: true, enabled: true } } },
-      });
-      expect(user).not.toBeNull();
-      expect(user!.account).toBe('admin');
-      expect(user!.isForeigner).toBe(false);
-      expect(user!.admins).toHaveLength(1);
-      expect(user!.admins[0].role).toBe(AdminRole.SUPER_ADMIN);
-      expect(user!.admins[0].enabled).toBe(true);
+      const rows = await database.db
+        .select({
+          account: user.account,
+          isForeigner: user.isForeigner,
+          role: admin.role,
+          enabled: admin.enabled,
+        })
+        .from(user)
+        .innerJoin(admin, eq(admin.userId, user.id))
+        .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].account).toBe('admin');
+      expect(rows[0].isForeigner).toBe(false);
+      expect(rows[0].role).toBe(AdminRole.SUPER_ADMIN);
+      expect(rows[0].enabled).toBe(true);
 
       // The seeded password logs in through the real HTTP endpoint — argon2.verify against the live row.
       const login = await request(app.getHttpServer())
@@ -78,7 +89,9 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       expect(login.body.code).toBe(BusinessCode.OK);
       // The session is delivered via the httpOnly admin_session cookie, not a response-body token.
       expect(login.body.data?.authenticated).toBe(true);
-      expect(String(login.headers['set-cookie'])).toContain(ADMIN_SESSION_COOKIE);
+      expect(String(login.headers['set-cookie'])).toContain(
+        ADMIN_SESSION_COOKIE,
+      );
     } finally {
       await app.close();
     }
@@ -86,12 +99,14 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
 
   it('boots fine and creates NO admin when ADMIN_BOOTSTRAP_PASSWORD is unset (no weak default)', async () => {
     delete process.env.ADMIN_BOOTSTRAP_PASSWORD;
-    const { app, prisma } = await bootApp();
+    const { app, database } = await bootApp();
     try {
-      const user = await prisma.user.findUnique({
-        where: { account_domain: { account: 'admin', domain: 'local' } },
-      });
-      expect(user).toBeNull();
+      const [bootstrapUser] = await database.db
+        .select({ id: user.id })
+        .from(user)
+        .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')))
+        .limit(1);
+      expect(bootstrapUser).toBeUndefined();
 
       const login = await request(app.getHttpServer())
         .post('/api/v1/admin/login')
@@ -106,17 +121,25 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
     process.env.ADMIN_BOOTSTRAP_PASSWORD = BOOT_PWD;
 
     const first = await bootApp();
-    const afterFirst = await first.prisma.user.count({ where: { account: 'admin', domain: 'local' } });
+    const [firstCount] = await first.database.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(user)
+      .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
     await first.app.close();
-    expect(afterFirst).toBe(1);
+    expect(firstCount.count).toBe(1);
 
     // Second boot: the bootstrap finds account=admin already present and must skip (no duplicate row/admin).
     const second = await bootApp();
     try {
-      const users = await second.prisma.user.count({ where: { account: 'admin', domain: 'local' } });
-      const admins = await second.prisma.admin.count();
-      expect(users).toBe(1);
-      expect(admins).toBe(1);
+      const [userCount] = await second.database.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(user)
+        .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
+      const [adminCount] = await second.database.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(admin);
+      expect(userCount.count).toBe(1);
+      expect(adminCount.count).toBe(1);
     } finally {
       await second.app.close();
     }

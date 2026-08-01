@@ -25,7 +25,7 @@ This document describes the system architecture, module responsibilities, authen
 │  - SSE in a Web Worker        │                             │  - Gateway (SSE downlink)      │
 └──────────────┬────────────────┘                             └──────────────┬────────────────┘
                │                                                            │
-               │  SSE  GET /api/v1/events (httpOnly cookie / Bearer)        │ Prisma (@Global)
+               │  SSE  GET /api/v1/events (httpOnly cookie / Bearer)        │ Drizzle (@Global)
                └───────────────────────────────────────────────────────────▶│
                                                                             ▼
                                                                  ┌──────────────────────────┐
@@ -67,7 +67,7 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 | **LoggerModule** | [src/logger/](../../src/logger/) | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService` |
 | **KvStoreModule** (`@Global`) | [src/kv-store/](../../src/kv-store/) | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters |
 | **SettingsModule** (`@Global`) | [src/settings/](../../src/settings/) | `SettingsService` — runtime settings facade (VAPID, Firebase config, login mode, …) |
-| **PrismaModule** (`@Global`) | [src/prisma.service.ts](../../src/prisma.service.ts) | Single shared `PrismaClient` / `node-pg` pool; `@Global` so every module injects the same instance |
+| **DatabaseModule** (`@Global`) | [src/database/database.service.ts](../../src/database/database.service.ts) | Single shared Drizzle / `node-postgres` pool; `@Global` so every module injects the same instance |
 
 > SOMS is **single-instance by design** — the in-process maps in `SseService`, `ThrottleGuard`, `BruteForceService`, `KvStoreService` are intentional (not a gap); there is no Redis layer, and multi-instance horizontal scaling is a non-goal.
 

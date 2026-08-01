@@ -4,8 +4,8 @@
 
 The NestJS API lives in `src/`. Keep domain logic in feature directories such as
 `src/message/` or `src/auth/`, HTTP handlers in `src/controller/`, and shared
-types/utilities in `src/common/` and `src/dto/`. Prisma schema and timestamped
-migrations are under `prisma/`. Unit tests sit beside source files as
+types/utilities in `src/common/` and `src/dto/`. Drizzle schema and relations are
+under `src/database/`; SQL migrations are under `database/migrations/`. Unit tests sit beside source files as
 `*.spec.ts`; PostgreSQL-backed end-to-end tests live in `test/` as
 `*.e2e-spec.ts`.
 
@@ -15,12 +15,13 @@ under `deploy/`; architecture and protocol documentation belongs in `docs/`.
 
 ## Build, Test, and Development Commands
 
-- `npm install` installs backend dependencies and generates the Prisma client.
+- `npm install` installs backend dependencies.
 - `npm install --prefix web && npm install --prefix admin-web` installs both UIs.
 - `npm run dev` starts the API, bundle watcher, Angular client, and admin console.
 - `npm run build` compiles the API; run it with `--prefix web` or
   `--prefix admin-web` to build a UI.
-- `npx prisma migrate deploy` applies existing database migrations.
+- `npm run db:migrate` applies existing database migrations; `npm run db:status`
+  reports their state.
 - `npm test` runs backend unit tests; `npm run test:e2e` runs integration tests
   against PostgreSQL.
 - `npm run lint` fixes lint issues; `npm run format` applies Prettier.
@@ -53,5 +54,5 @@ configuration changes, and include screenshots for visible UI changes.
 
 Copy `.env.example` to `.env` and never commit credentials. Treat
 `DATABASE_URL`, bootstrap passwords, signing keys, and DNS provider tokens as
-secrets. Add schema changes through a new Prisma migration; never rewrite a
-migration that may already be deployed.
+secrets. Keep `src/database/schema.ts` and SQL migrations in sync. Add deployed
+schema changes through a new SQL migration; never rewrite one that may already be deployed.

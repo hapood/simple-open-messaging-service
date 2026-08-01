@@ -27,7 +27,7 @@ export interface NewMsgMapEntry {
  * NOT a restart (pull-on-thread-open is the restart floor). Bounded by ACTIVE CONVERSATION COUNT (one entry
  * per (from, fromDomain, to), never per message), so it cannot grow unbounded during a long outage.
  *
- * Deliberately dependency-free (no FederationService, no PrismaService): the ROUTING (signalOutbound), the
+ * Deliberately dependency-free (no FederationService, no DatabaseService): the ROUTING (signalOutbound), the
  * debounce timer, and the flush-over-the-signed-transport (pushNewMsgMap) all live in FederationService — a
  * ONE-WAY FederationService → FederationBufferService edge. The old two-way edge (Buffer injected Fed for
  * pushNewMsgMap + ourDomain) was a forwardRef CYCLE whose `design:paramtypes` value references crashed
@@ -44,7 +44,11 @@ export class FederationBufferService {
   private static readonly CAP_PER_DOMAIN = 10_000;
 
   /** scopeKey for the nested map (internal only — \0 cannot appear in accounts/domains). */
-  private scopeKey(e: { fromAccount: string; fromDomain: string; toAccount: string }): string {
+  private scopeKey(e: {
+    fromAccount: string;
+    fromDomain: string;
+    toAccount: string;
+  }): string {
     return `${e.fromAccount}\0${e.fromDomain}\0${e.toAccount}`;
   }
 
@@ -67,21 +71,35 @@ export class FederationBufferService {
     const key = this.scopeKey({ fromAccount, fromDomain, toAccount });
     const existing = byScope.get(key);
     if (existing && existing.latestSeq >= latestSeq) return; // stale — never regress
-    byScope.set(key, { fromAccount, fromDomain, toAccount, latestSeq, generatedAt: Date.now() });
-    if (byScope.size > FederationBufferService.CAP_PER_DOMAIN) this.evictHalf(byScope);
+    byScope.set(key, {
+      fromAccount,
+      fromDomain,
+      toAccount,
+      latestSeq,
+      generatedAt: Date.now(),
+    });
+    if (byScope.size > FederationBufferService.CAP_PER_DOMAIN)
+      this.evictHalf(byScope);
   }
 
   /** Drop the older HALF of entries by generatedAt in one shot (not one-by-one — avoids thrashing at
    *  the cap boundary). Evicted conversations fall back to the slow-poll floor (§4.4). */
   private evictHalf(byScope: Map<string, DirtyEntry>): void {
-    const flat = [...byScope.entries()].sort((a, b) => a[1].generatedAt - b[1].generatedAt);
+    const flat = [...byScope.entries()].sort(
+      (a, b) => a[1].generatedAt - b[1].generatedAt,
+    );
     const drop = Math.floor(flat.length / 2);
     for (let i = 0; i < drop; i++) byScope.delete(flat[i][0]);
   }
 
   /** Flatten a DirtyEntry to the on-wire NewMsgMapEntry (drops generatedAt). */
   private toWire(e: DirtyEntry): NewMsgMapEntry {
-    return { fromAccount: e.fromAccount, fromDomain: e.fromDomain, toAccount: e.toAccount, latestSeq: e.latestSeq };
+    return {
+      fromAccount: e.fromAccount,
+      fromDomain: e.fromDomain,
+      toAccount: e.toAccount,
+      latestSeq: e.latestSeq,
+    };
   }
 
   /**
@@ -97,8 +115,11 @@ export class FederationBufferService {
     take: number,
   ): { entries: NewMsgMapEntry[]; cursor: number | null; hasMore: boolean } {
     const byScope = this.domains.get(domain);
-    if (!byScope || byScope.size === 0) return { entries: [], cursor: null, hasMore: false };
-    const flat = [...byScope.values()].sort((a, b) => a.generatedAt - b.generatedAt);
+    if (!byScope || byScope.size === 0)
+      return { entries: [], cursor: null, hasMore: false };
+    const flat = [...byScope.values()].sort(
+      (a, b) => a.generatedAt - b.generatedAt,
+    );
     const start = Math.max(0, cursor);
     const slice = flat.slice(start, start + take);
     const nextCursor = start + take;
@@ -118,8 +139,11 @@ export class FederationBufferService {
     batchSize: number,
   ): { entries: NewMsgMapEntry[]; keys: string[]; hasMore: boolean } {
     const byScope = this.domains.get(domain);
-    if (!byScope || byScope.size === 0) return { entries: [], keys: [], hasMore: false };
-    const flat = [...byScope.entries()].sort((a, b) => a[1].generatedAt - b[1].generatedAt);
+    if (!byScope || byScope.size === 0)
+      return { entries: [], keys: [], hasMore: false };
+    const flat = [...byScope.entries()].sort(
+      (a, b) => a[1].generatedAt - b[1].generatedAt,
+    );
     const slice = flat.slice(0, batchSize);
     return {
       entries: slice.map(([, e]) => this.toWire(e)),

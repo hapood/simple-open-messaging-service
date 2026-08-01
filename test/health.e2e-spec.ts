@@ -11,7 +11,7 @@ import { BusinessCode } from '../src/common/business-code';
 // envelope carrying the liveness marker, server version, server time, and — the addition under test —
 // DB reachability probed by a real SELECT 1 against the (migrated, isolated) test database. The endpoint
 // is unauthenticated and does no seeding, and booting AppModule here also exercises the new
-// PrismaService.onModuleInit connect-with-retry path against a live Postgres.
+// DatabaseService.onModuleInit connect-with-retry path against a live Postgres.
 
 describe('Public liveness probe GET /api/v1/health', () => {
   let app: INestApplication;

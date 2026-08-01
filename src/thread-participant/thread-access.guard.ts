@@ -51,7 +51,7 @@ export class ThreadAccessGuard implements CanActivate {
 
     // Strict positive-integer gate (no transform): guards run before ValidationPipe, so the body value
     // is still raw JSON. assertPositiveInt rejects a non-number with VALIDATION_FAILED before it can
-    // reach Prisma's Int field (which would surface as an opaque 500). The field name comes from the
+    // reach the integer database field (which would surface as an opaque 500). The field name comes from the
     // route's @ResourceId, so the error message names the actual DTO field.
     const threadId = assertPositiveInt(
       (req.body as Record<string, unknown> | undefined)?.[field],

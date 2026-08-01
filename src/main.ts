@@ -1,4 +1,4 @@
-import 'dotenv/config'; // Load .env first so the AppModule import chain (requireEnv, Prisma) sees the vars.
+import 'dotenv/config'; // Load .env first so the AppModule import chain sees required environment variables.
 import { NestFactory } from '@nestjs/core';
 import { Logger } from 'nestjs-pino';
 import {

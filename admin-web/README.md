@@ -56,7 +56,7 @@ npm run lint --prefix admin-web    # oxlint
   for dev and same-origin production.
 - **Path alias:** `@` → `src/`.
 - **Admin bootstrap:** the API self-seeds the initial admin (`account=admin`) on startup from
-  `ADMIN_BOOTSTRAP_PASSWORD` when none exists — no manual step. For local dev, `node prisma/seed-admin.cjs`
+  `ADMIN_BOOTSTRAP_PASSWORD` when none exists — no manual seed step is required.
   does the same via dotenv. Then log in here.
 
 ## Project layout

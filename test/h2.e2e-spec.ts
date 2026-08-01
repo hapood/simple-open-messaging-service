@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { DatabaseService } from '../src/database/database.service';
 import { seedUserWithSession } from './seed';
 
 // Verifies the HTTP/2-over-TLS path itself: boots the app on a FastifyAdapter({http2,https})
@@ -64,7 +64,7 @@ function h2Request(
 
 describe('HTTP/2 over TLS', () => {
   let app: NestFastifyApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let port: number;
   let token: string;
 
@@ -104,15 +104,14 @@ describe('HTTP/2 over TLS', () => {
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     port = (app.getHttpServer().address() as { port: number }).port;
 
-    await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "User" RESTART IDENTITY CASCADE',
-    );
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
     // Seed a user + session directly (registration is closed; the server is TLS-only so supertest can't
     // reach it anyway). The token drives the h2 SSE test below.
-    token = (await seedUserWithSession(app, 'h2user', { name: 'H2 User' })).token;
+    token = (await seedUserWithSession(app, 'h2user', { name: 'H2 User' }))
+      .token;
   }, 30000);
 
   afterAll(async () => {

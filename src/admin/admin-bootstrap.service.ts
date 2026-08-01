@@ -6,7 +6,7 @@ import { PasswordHasher } from '../auth/password-hasher.service.js';
 
 /**
  * Idempotent first-admin self-bootstrap. Runs once per application start via OnApplicationBootstrap
- * (which fires AFTER PrismaService.onModuleInit → $connect, so the DB is reachable). Ensures the
+ * (which fires after DatabaseService.onModuleInit, so the DB is reachable). Ensures the
  * bootstrap admin (account=admin, domain=local) exists:
  *
  *   - present            → no-op (no ADMIN_BOOTSTRAP_PASSWORD needed) — every boot after the first;
@@ -18,8 +18,7 @@ import { PasswordHasher } from '../auth/password-hasher.service.js';
  * This is deliberately decoupled from the deploy orchestrator: it works identically under compose, k8s,
  * bare metal, or systemd — the application brings ITSELF to a manageable state. A missing/failed seed
  * never takes the chat service down; it is a best-effort, self-healing side concern that logs loudly.
- * No placeholder password is ever applied. The `prisma/seed-admin.cjs` script remains as a local-dev /
- * escape hatch (same logic via dotenv) for when the operator wants to force a re-seed out of band.
+ * No placeholder password is ever applied. This service is the single bootstrap path in every environment.
  */
 @Injectable()
 export class AdminBootstrapService implements OnApplicationBootstrap {

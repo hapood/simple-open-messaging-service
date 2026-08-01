@@ -5,7 +5,9 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import { DatabaseService } from '../src/database/database.service';
+import { invite, mediaMessage, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 
@@ -19,7 +21,7 @@ import { registerAndLogin } from './federation-test-helpers';
  */
 describe('LINK message send (single instance)', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let baseUrl: string;
 
   // A fake card the mocked LinkPreviewService "built" — the og:image is the thumbnail's sha256 DIGEST
@@ -44,7 +46,7 @@ describe('LINK message send (single instance)', () => {
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     const address = (
       app.getHttpServer() as { address: () => { port: number } | string | null }
     ).address();
@@ -53,7 +55,7 @@ describe('LINK message send (single instance)', () => {
   });
 
   beforeEach(async () => {
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -61,7 +63,7 @@ describe('LINK message send (single instance)', () => {
   });
 
   it('rebuilds the card server-side from the URL and stores the og:image digest (not base64) in content', async () => {
-    const appLike = { baseUrl, prisma };
+    const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice', 'Alice');
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
 
@@ -71,44 +73,62 @@ describe('LINK message send (single instance)', () => {
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ toUserId: bob.id })
       .expect((res) => expect(res.body.code).toBe(0));
-    const invite = await prisma.invite.findFirst({
-      where: { kind: 'FRIEND', fromUserId: alice.id, toUserId: bob.id },
-    });
+    const [pendingInvite] = await database.db
+      .select()
+      .from(invite)
+      .where(
+        and(
+          eq(invite.kind, 'FRIEND'),
+          eq(invite.fromUserId, alice.id),
+          eq(invite.toUserId, bob.id),
+        ),
+      )
+      .limit(1);
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: invite!.id.toString() });
+      .send({ inviteId: pendingInvite.id.toString() });
     const threadId: number = accept.body.data.threadId;
 
     // Alice sends a LINK message — only the bare URL on the wire.
     const send = await request(baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ threadId, content: 'https://example.com/page', contentType: 'LINK' });
+      .send({
+        threadId,
+        content: 'https://example.com/page',
+        contentType: 'LINK',
+      });
     expect(send.status).toBe(200);
     expect(send.body.code).toBe(0); // parseLinkContent passed (else VALIDATION_FAILED)
 
     // The stored content is the SERVER-REBUILT card (not the bare URL the client sent).
-    const msg = await prisma.message.findFirst({
-      where: { threadId },
-      orderBy: { seq: 'desc' },
-    });
-    expect(msg).not.toBeNull();
-    expect(msg!.contentType).toBe('LINK');
+    const [storedMessage] = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.threadId, threadId))
+      .orderBy(desc(message.seq))
+      .limit(1);
+    expect(storedMessage).toBeDefined();
+    expect(storedMessage.contentType).toBe('LINK');
     // The DB stores the image DIGEST (small) — NOT the base64 (the wire serializer inlines it on read).
-    expect(JSON.parse(msg!.content)).toEqual(CARD);
-    expect((JSON.parse(msg!.content) as { image: string }).image).toBe(DIGEST);
+    expect(JSON.parse(storedMessage.content)).toEqual(CARD);
+    expect((JSON.parse(storedMessage.content) as { image: string }).image).toBe(
+      DIGEST,
+    );
     // LINK no longer touches CAS: no MediaMessage authz row (the thumbnail is inlined, not a shard).
-    expect(await prisma.mediaMessage.count({ where: { threadId } })).toBe(0);
+    expect(await countMediaMessages(database, threadId)).toBe(0);
   });
 
   it('degrades to a bare-link card when the page has no usable metadata (no MediaMessage row)', async () => {
     // Swap the mock to a bare card (no image → no shard URL → no authz row).
-    (app.get(LinkPreviewService) as { buildCardContent: unknown }).buildCardContent = async () => ({
+    (
+      app.get(LinkPreviewService) as { buildCardContent: unknown }
+    ).buildCardContent = async () => ({
       url: 'https://example.com/bare',
     });
 
-    const appLike = { baseUrl, prisma };
+    const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice2', 'Alice2');
     const bob = await registerAndLogin(appLike, 'bob2', 'Bob2');
     await request(baseUrl)
@@ -116,27 +136,54 @@ describe('LINK message send (single instance)', () => {
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ toUserId: bob.id })
       .expect((res) => expect(res.body.code).toBe(0));
-    const invite = await prisma.invite.findFirst({
-      where: { kind: 'FRIEND', fromUserId: alice.id, toUserId: bob.id },
-    });
+    const [pendingInvite] = await database.db
+      .select()
+      .from(invite)
+      .where(
+        and(
+          eq(invite.kind, 'FRIEND'),
+          eq(invite.fromUserId, alice.id),
+          eq(invite.toUserId, bob.id),
+        ),
+      )
+      .limit(1);
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: invite!.id.toString() });
+      .send({ inviteId: pendingInvite.id.toString() });
     const threadId: number = accept.body.data.threadId;
 
     const send = await request(baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ threadId, content: 'https://example.com/bare', contentType: 'LINK' });
+      .send({
+        threadId,
+        content: 'https://example.com/bare',
+        contentType: 'LINK',
+      });
     expect(send.body.code).toBe(0);
 
-    const msg = await prisma.message.findFirst({
-      where: { threadId },
-      orderBy: { seq: 'desc' },
+    const [storedMessage] = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.threadId, threadId))
+      .orderBy(desc(message.seq))
+      .limit(1);
+    expect(JSON.parse(storedMessage.content)).toEqual({
+      url: 'https://example.com/bare',
     });
-    expect(JSON.parse(msg!.content)).toEqual({ url: 'https://example.com/bare' });
     // No image → no shard digest → no MediaMessage authz row.
-    expect(await prisma.mediaMessage.count({ where: { threadId } })).toBe(0);
+    expect(await countMediaMessages(database, threadId)).toBe(0);
   });
 });
+
+async function countMediaMessages(
+  database: DatabaseService,
+  threadId: number,
+): Promise<number> {
+  const [row] = await database.db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(mediaMessage)
+    .where(eq(mediaMessage.threadId, threadId));
+  return row.count;
+}

@@ -5,8 +5,14 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
-import { registerAndLogin, openSse, waitForSseEvent } from './federation-test-helpers';
+import { and, eq, sql } from 'drizzle-orm';
+import { DatabaseService } from '../src/database/database.service';
+import { invite, message } from '../src/database/schema';
+import {
+  registerAndLogin,
+  openSse,
+  waitForSseEvent,
+} from './federation-test-helpers';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -19,11 +25,11 @@ import { registerAndLogin, openSse, waitForSseEvent } from './federation-test-he
  * dispatch, SSE registry) that would break first-message delivery.
  *
  * Single-instance (both users local), bootstrapped in-process like test/auth.e2e-spec.ts. Reuses the
- * federation-test-helpers HTTP/SSE helpers by wrapping the app as { baseUrl, prisma }.
+ * federation-test-helpers HTTP/SSE helpers by wrapping the app with its base URL and database handle.
  */
 describe('First message after friend-add is delivered (single instance)', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let baseUrl: string;
 
   beforeAll(async () => {
@@ -34,17 +40,19 @@ describe('First message after friend-add is delivered (single instance)', () => 
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     // Resolve the OS-assigned port so the helpers can reach the app over real HTTP/SSE (mirrors the
     // federation subprocess harness, which reaches apps at http://127.0.0.1:<port>).
-    const address = (app.getHttpServer() as { address: () => { port: number } | string | null }).address();
+    const address = (
+      app.getHttpServer() as { address: () => { port: number } | string | null }
+    ).address();
     const port = typeof address === 'object' && address ? address.port : 0;
     baseUrl = `http://127.0.0.1:${port}`;
   });
 
   beforeEach(async () => {
     // Truncating User CASCADE-clears threads, messages, invites, etc. — a fresh graph per test.
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -52,7 +60,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
   });
 
   it('delivers the FIRST message on a brand-new (empty) P2P thread to the receiver over SSE and persists it', async () => {
-    const appLike = { baseUrl, prisma };
+    const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice', 'Alice');
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
 
@@ -66,22 +74,35 @@ describe('First message after friend-add is delivered (single instance)', () => 
         expect(res.body.code).toBe(0);
       });
 
-    const invite = await prisma.invite.findFirst({
-      where: { kind: 'FRIEND', status: 'PENDING', fromUserId: alice.id, toUserId: bob.id },
-    });
-    expect(invite).not.toBeNull();
+    const [pendingInvite] = await database.db
+      .select()
+      .from(invite)
+      .where(
+        and(
+          eq(invite.kind, 'FRIEND'),
+          eq(invite.status, 'PENDING'),
+          eq(invite.fromUserId, alice.id),
+          eq(invite.toUserId, bob.id),
+        ),
+      )
+      .limit(1);
+    expect(pendingInvite).toBeDefined();
 
     const accept = await request(baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ inviteId: invite!.id.toString() });
+      .send({ inviteId: pendingInvite.id.toString() });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
     const threadId: number = accept.body.data.threadId;
     expect(threadId).toBeGreaterThan(0);
 
     // Sanity: the thread truly has NO messages yet (this is the "empty chatbox" precondition).
-    expect(await prisma.message.count({ where: { threadId } })).toBe(0);
+    const [emptyCount] = await database.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(message)
+      .where(eq(message.threadId, threadId));
+    expect(emptyCount.count).toBe(0);
 
     // 2. Open Bob's SSE stream BEFORE the send so the NEW_MESSAGE frame is captured on the real wire.
     const reader = await openSse(baseUrl, bob.token);
@@ -109,10 +130,15 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(delivered).toBeDefined();
 
       // 5. The row is committed and it is genuinely the first message (seq/originSeq 0 — curSeq starts at -1).
-      const msg = await prisma.message.findFirst({ where: { content: 'first!', threadId } });
-      expect(msg).not.toBeNull();
-      expect(Number(msg!.seq)).toBe(0);
-      expect(Number(msg!.originSeq)).toBe(0);
+      const [storedMessage] = await database.db
+        .select()
+        .from(message)
+        .where(eq(message.threadId, threadId))
+        .limit(1);
+      expect(storedMessage).toBeDefined();
+      expect(JSON.parse(storedMessage.content)).toEqual({ text: 'first!' });
+      expect(Number(storedMessage.seq)).toBe(0);
+      expect(Number(storedMessage.originSeq)).toBe(0);
     } finally {
       await reader.cancel();
     }

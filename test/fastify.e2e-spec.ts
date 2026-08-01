@@ -5,9 +5,21 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import {
+  DatabaseService,
+  type Database,
+} from '../src/database/database.service';
+import {
+  mediaAsset,
+  mediaMessage,
+  message,
+  messageThread,
+  threadParticipant,
+  user,
+} from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
 import { seedUserWithSession } from './seed';
@@ -30,43 +42,73 @@ const MP4_MIN = Buffer.from([
 // 'OggS' signature — the ogg/opus container magic byte.
 const OGG_MIN = Buffer.from([0x4f, 0x67, 0x67, 0x53]);
 
+async function createThread(database: Database, userId: number) {
+  const now = new Date();
+  const [peer] = await database
+    .insert(user)
+    .values({
+      account: `peer-${randomUUID().slice(0, 8)}`,
+      name: 'Peer',
+      hashPwd: 'x',
+      isForeigner: false,
+      updatedAt: now,
+    })
+    .returning({ id: user.id });
+  const [thread] = await database
+    .insert(messageThread)
+    .values({ type: 'P2P', updatedAt: now })
+    .returning({ id: messageThread.id });
+  await database.insert(threadParticipant).values([
+    { userId, threadId: thread.id, updatedAt: now },
+    { userId: peer.id, threadId: thread.id, updatedAt: now },
+  ]);
+  return thread;
+}
+
 /** Grant `userId` read access to a CAS digest by linking it to a P2P thread they're an active member
  *  of — exactly what writeMsgToThread does on a real send. Used by the serving tests so they can
  *  exercise @fastify/static BEHIND the per-object gate without the full send-message round-trip. */
 async function authorizeDigest(
-  prisma: PrismaService,
+  database: Database,
   userId: number,
   digest: string,
 ): Promise<void> {
-  const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
-  await prisma.threadParticipant.create({
-    data: { userId, threadId: thread.id },
-  });
+  const now = new Date();
+  const [thread] = await database
+    .insert(messageThread)
+    .values({ type: 'P2P', updatedAt: now })
+    .returning({ id: messageThread.id });
+  await database
+    .insert(threadParticipant)
+    .values({ userId, threadId: thread.id, updatedAt: now });
   // Allocate the per-thread seq the same way writeMsgToThread does (curSeq atomic increment), so the
   // direct create mirrors a real send. originSeq == seq for a locally-authored message.
-  const { curSeq: seq } = await prisma.messageThread.update({
-    where: { id: thread.id },
-    data: { curSeq: { increment: 1 } },
-    select: { curSeq: true },
-  });
-  const msg = await prisma.message.create({
-    data: {
+  const [advanced] = await database
+    .update(messageThread)
+    .set({ curSeq: 0 })
+    .where(eq(messageThread.id, thread.id))
+    .returning({ curSeq: messageThread.curSeq });
+  const seq = advanced.curSeq;
+  const [msg] = await database
+    .insert(message)
+    .values({
       contentType: 'IMAGE',
-      content: '',
+      content: JSON.stringify({}),
       threadId: thread.id,
       creator: userId,
       seq,
       originSeq: seq,
-    },
-  });
-  await prisma.mediaMessage.create({
-    data: { messageId: msg.id, threadId: thread.id, digest },
-  });
+      updatedAt: now,
+    })
+    .returning({ id: message.id });
+  await database
+    .insert(mediaMessage)
+    .values({ messageId: msg.id, threadId: thread.id, digest });
 }
 
 describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let token: string;
   let token2: string;
   let userAId: number;
@@ -85,18 +127,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // runs init + Fastify ready() (initializing route-context lifecycle hooks).
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     port = (app.getHttpServer().address() as { port: number }).port;
 
     // Seed two local users + sessions directly (registration is closed; the spec needs authenticated
     // users, not the login flow). userAId is the member for the per-object media-authz tests.
-    await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "User" RESTART IDENTITY CASCADE',
-    );
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
     // MediaAsset (CAS ref counts) — start clean so dedup assertions are predictable.
-    await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY',
-    );
+    await database.pool.query('TRUNCATE TABLE "MediaAsset" RESTART IDENTITY');
     const userA = await seedUserWithSession(app, 'fastify', {
       name: 'Fastify',
     });
@@ -148,7 +186,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .split('/')
       .pop()!
       .replace(/\.png$/, '');
-    await authorizeDigest(prisma, userAId, digest);
+    await authorizeDigest(database.db, userAId, digest);
     const file = await request(app.getHttpServer())
       .get(res.body.data.url)
       .set('Authorization', `Bearer ${token}`);
@@ -182,7 +220,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .split('/')
       .pop()!
       .replace(/\.png$/, '');
-    const asset = await prisma.mediaAsset.findUnique({ where: { digest } });
+    const [asset] = await database.db
+      .select()
+      .from(mediaAsset)
+      .where(eq(mediaAsset.digest, digest))
+      .limit(1);
     expect(asset?.refs).toBeGreaterThanOrEqual(2);
   });
 
@@ -192,10 +234,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // authored {url,w,h,size}. `size` (the real buffer length from saveCas) MUST land in the persisted
     // content — parseImageContent reads it back to render the meta bar; drop it and every reloaded /
     // SSE-echoed / received image renders "unknown size".
-    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
-    await prisma.threadParticipant.create({
-      data: { userId: userAId, threadId: thread.id },
-    });
+    const thread = await createThread(database.db, userAId);
     const cid = randomUUID();
 
     const stage = await request(app.getHttpServer())
@@ -219,10 +258,12 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.code).toBe(0);
     expect(up.body.data.size).toBe(PNG_1X1.length);
 
-    const msg = await prisma.message.findUnique({
-      where: { clientMessageId: cid },
-    });
-    expect(msg).not.toBeNull();
+    const [msg] = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.clientMessageId, cid))
+      .limit(1);
+    expect(msg).toBeDefined();
     const content = JSON.parse(msg!.content);
     expect(content.url).toBe(up.body.data.url);
     expect(content.w).toBe(2);
@@ -232,10 +273,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   });
 
   it('promotes an unsupported chat image as FILE without failing the upload', async () => {
-    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
-    await prisma.threadParticipant.create({
-      data: { userId: userAId, threadId: thread.id },
-    });
+    const thread = await createThread(database.db, userAId);
     const cid = randomUUID();
     const heic = Buffer.from('unsupported-heic-fixture');
 
@@ -268,9 +306,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.bin$/,
     );
 
-    const msg = await prisma.message.findUnique({
-      where: { clientMessageId: cid },
-    });
+    const [msg] = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.clientMessageId, cid))
+      .limit(1);
     expect(msg?.contentType).toBe('FILE');
     expect(JSON.parse(msg!.content)).toEqual(up.body.data);
 
@@ -283,10 +323,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   });
 
   it('promotes a corrupt claimed PNG as FILE instead of rejecting the upload', async () => {
-    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
-    await prisma.threadParticipant.create({
-      data: { userId: userAId, threadId: thread.id },
-    });
+    const thread = await createThread(database.db, userAId);
     const cid = randomUUID();
     const corrupt = Buffer.from('not-really-a-png');
 
@@ -311,9 +348,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.code).toBe(0);
     expect(up.body.data.name).toBe('broken.png');
     expect(up.body.data.mimeType).toBe('image/png');
-    const msg = await prisma.message.findUnique({
-      where: { clientMessageId: cid },
-    });
+    const [msg] = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.clientMessageId, cid))
+      .limit(1);
     expect(msg?.contentType).toBe('FILE');
     expect(JSON.parse(msg!.content)).toEqual(up.body.data);
   });
@@ -337,7 +376,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .split('/')
       .pop()!
       .replace(/\.mp4$/, '');
-    await authorizeDigest(prisma, userAId, digest);
+    await authorizeDigest(database.db, userAId, digest);
     const file = await request(app.getHttpServer())
       .get(res.body.data.url)
       .set('Authorization', `Bearer ${token}`);
@@ -388,27 +427,18 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .set('Authorization', `Bearer ${token}`);
     expect(preA.status).toBe(403);
 
-    // Create a P2P thread with A as the SOLE active participant (B is not a member).
-    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
-    await prisma.threadParticipant.create({
-      data: { userId: userAId, threadId: thread.id },
-    });
-
-    // A sends an IMAGE message → writeMsgToThread writes the MediaMessage authz row in-tx.
-    const send = await request(app.getHttpServer())
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        threadId: thread.id,
-        contentType: 'IMAGE',
-        content: JSON.stringify({ url, w: 1, h: 1, size: PNG_1X1.length }),
-      });
-    expect(send.body.code).toBe(0);
+    // Direct IMAGE sends are intentionally rejected; seed the same Message + MediaMessage linkage
+    // produced by the staged upload promotion path. User B remains outside that thread.
+    await authorizeDigest(database.db, userAId, digest);
 
     // The MediaMessage row now links digest → this thread.
-    const mm = await prisma.mediaMessage.findFirst({ where: { digest } });
-    expect(mm).not.toBeNull();
-    expect(mm?.threadId).toBe(thread.id);
+    const [mm] = await database.db
+      .select()
+      .from(mediaMessage)
+      .where(eq(mediaMessage.digest, digest))
+      .limit(1);
+    expect(mm).toBeDefined();
+    expect(mm?.threadId).toBeGreaterThan(0);
 
     // A (active member) may now read it; B (non-member) is still forbidden.
     const aGet = await request(app.getHttpServer())

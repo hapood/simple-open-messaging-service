@@ -3,9 +3,18 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
+import { and, count, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { DatabaseService } from '../src/database/database.service';
+import {
+  mediaMessage,
+  message,
+  messageThread,
+  pendingMedia,
+  threadParticipant,
+  user,
+} from '../src/database/schema';
 import { MessageService } from '../src/message/message.service';
 
 /**
@@ -19,7 +28,7 @@ import { MessageService } from '../src/message/message.service';
  */
 describe('Local media send staging (PendingMedia)', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let messages: MessageService;
 
   // A throwaway P2P thread + sender participant the staged send targets.
@@ -34,31 +43,43 @@ describe('Local media send staging (PendingMedia)', () => {
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     messages = app.get(MessageService);
 
-    const user = await prisma.user.create({
-      data: {
+    const now = new Date();
+    const [createdUser] = await database.db
+      .insert(user)
+      .values({
         account: `st-${randomUUID().replace(/-/g, '').slice(0, 8)}`,
         hashPwd: 'x',
         name: 'stage',
         isForeigner: false,
-      },
-    });
-    userId = user.id;
-    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+        updatedAt: now,
+      })
+      .returning({ id: user.id });
+    userId = createdUser.id;
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({ type: 'P2P', updatedAt: now })
+      .returning({ id: messageThread.id });
     threadId = thread.id;
-    await prisma.threadParticipant.create({ data: { userId, threadId } });
+    await database.db
+      .insert(threadParticipant)
+      .values({ userId, threadId, updatedAt: now });
   });
 
   afterAll(async () => {
-    await prisma.threadParticipant
-      .deleteMany({ where: { threadId } })
+    await database.pool
+      .query('DELETE FROM "ThreadParticipant" WHERE "threadId" = $1', [
+        threadId,
+      ])
       .catch(() => {});
-    await prisma.messageThread
-      .delete({ where: { id: threadId } })
+    await database.pool
+      .query('DELETE FROM "MessageThread" WHERE id = $1', [threadId])
       .catch(() => {});
-    await prisma.user.delete({ where: { id: userId } }).catch(() => {});
+    await database.pool
+      .query('DELETE FROM "User" WHERE id = $1', [userId])
+      .catch(() => {});
     await app.close();
   });
 
@@ -75,15 +96,18 @@ describe('Local media send staging (PendingMedia)', () => {
     const cid = randomUUID();
     await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
     await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {}); // retried stage
-    const rows = await prisma.pendingMedia.findMany({
-      where: { clientMessageId: cid },
-    });
+    const rows = await database.db
+      .select()
+      .from(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid));
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('pending');
     expect(rows[0].threadId).toBe(threadId);
     expect(rows[0].creatorId).toBe(userId);
     // cleanup
-    await prisma.pendingMedia.delete({ where: { id: rows[0].id } });
+    await database.db
+      .delete(pendingMedia)
+      .where(eq(pendingMedia.id, rows[0].id));
   });
 
   it('persists failure and only an explicit retry moves failed back to pending', async () => {
@@ -91,24 +115,30 @@ describe('Local media send staging (PendingMedia)', () => {
     await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
     await messages.failStaged(userId, cid, 'file too large');
 
-    let stage = await prisma.pendingMedia.findUnique({
-      where: { clientMessageId: cid },
-    });
+    let [stage] = await database.db
+      .select()
+      .from(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid))
+      .limit(1);
     expect(stage?.status).toBe('failed');
     expect(stage?.failReason).toBe('file too large');
     expect(await messages.promoteStaged(cid, uploadPayload, userId)).toBeNull();
 
     // An ordinary duplicate stage is a no-op; it must not silently retry a failed send.
     await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
-    stage = await prisma.pendingMedia.findUnique({
-      where: { clientMessageId: cid },
-    });
+    [stage] = await database.db
+      .select()
+      .from(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid))
+      .limit(1);
     expect(stage?.status).toBe('failed');
 
     await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {}, true);
-    stage = await prisma.pendingMedia.findUnique({
-      where: { clientMessageId: cid },
-    });
+    [stage] = await database.db
+      .select()
+      .from(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid))
+      .limit(1);
     expect(stage?.status).toBe('pending');
     expect(stage?.failReason).toBeNull();
 
@@ -122,7 +152,9 @@ describe('Local media send staging (PendingMedia)', () => {
         }),
       ]),
     );
-    await prisma.pendingMedia.delete({ where: { clientMessageId: cid } });
+    await database.db
+      .delete(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid));
   });
 
   it('does not let another user fail or promote a staged send by clientMessageId', async () => {
@@ -132,11 +164,15 @@ describe('Local media send staging (PendingMedia)', () => {
     expect(
       await messages.promoteStaged(cid, uploadPayload, userId + 1),
     ).toBeNull();
-    const stage = await prisma.pendingMedia.findUnique({
-      where: { clientMessageId: cid },
-    });
+    const [stage] = await database.db
+      .select()
+      .from(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid))
+      .limit(1);
     expect(stage?.status).toBe('pending');
-    await prisma.pendingMedia.delete({ where: { clientMessageId: cid } });
+    await database.db
+      .delete(pendingMedia)
+      .where(eq(pendingMedia.clientMessageId, cid));
   });
 
   it('promoteStaged commits a Message + MediaMessage and deletes the stage; re-promote is idempotent', async () => {
@@ -150,25 +186,36 @@ describe('Local media send staging (PendingMedia)', () => {
     expect(committed!.threadId).toBe(threadId);
     // The stage row is gone; a real Message + its MediaMessage authz row now exist.
     expect(
-      await prisma.pendingMedia.findUnique({ where: { clientMessageId: cid } }),
-    ).toBeNull();
-    const msg = await prisma.message.findFirst({
-      where: { threadId, creator: userId },
-    });
-    expect(msg).not.toBeNull();
-    const mediaMsg = await prisma.mediaMessage.findFirst({
-      where: { threadId },
-    });
-    expect(mediaMsg).not.toBeNull();
+      (
+        await database.db
+          .select()
+          .from(pendingMedia)
+          .where(eq(pendingMedia.clientMessageId, cid))
+          .limit(1)
+      )[0],
+    ).toBeUndefined();
+    const [msg] = await database.db
+      .select()
+      .from(message)
+      .where(and(eq(message.threadId, threadId), eq(message.creator, userId)))
+      .limit(1);
+    expect(msg).toBeDefined();
+    const [mediaMsg] = await database.db
+      .select()
+      .from(mediaMessage)
+      .where(eq(mediaMessage.threadId, threadId))
+      .limit(1);
+    expect(mediaMsg).toBeDefined();
     expect(mediaMsg!.digest).toBe(digest);
 
     // Re-promote with the same cid returns the SAME message (idempotent) — no duplicate, no error.
     const again = await messages.promoteStaged(cid, uploadPayload);
     expect(again!.seq).toBe(committed!.seq);
-    const count = await prisma.message.count({
-      where: { threadId, creator: userId },
-    });
-    expect(count).toBe(1);
+    const [{ value }] = await database.db
+      .select({ value: count() })
+      .from(message)
+      .where(and(eq(message.threadId, threadId), eq(message.creator, userId)));
+    expect(value).toBe(1);
   });
 
   it('can promote an IMAGE stage as FILE and drops image-only metadata', async () => {

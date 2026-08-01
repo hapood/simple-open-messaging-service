@@ -5,7 +5,7 @@
 // TRUNCATEs `User` in its setup — if they shared one DB, one fork's TRUNCATE would wipe another's
 // just-seeded user mid-test (observed as spurious 401s). Per-fork DBs make that impossible.
 //
-// The fork DBs persist across runs: `prisma migrate deploy` is idempotent, so an existing fork DB
+// The fork DBs persist across runs: the SQL migration runner is idempotent, so an existing fork DB
 // is reused (no orphans accumulate). global-setup only ensures the base `soms_test` is reachable.
 import 'dotenv/config';
 import { tmpdir } from 'node:os';

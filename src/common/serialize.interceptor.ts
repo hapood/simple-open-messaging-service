@@ -43,7 +43,7 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
     return value; // number/string/boolean/symbol returned as-is
   }
 
-  // Circular reference defense (Prisma data is acyclic, purely defensive): already-seen objects return the original reference to avoid stack overflow.
+  // Circular reference defense: already-seen objects return the original reference to avoid stack overflow.
   if (seen.has(value as object)) {
     return value;
   }
@@ -54,7 +54,7 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
   }
 
   // Only traverse "plain objects"; class instances / Map / Set / Buffer / TypedArray etc. are returned as-is,
-  // to avoid mishandling container types beyond Prisma.
+  // to avoid mishandling non-plain container types.
   const proto = Object.getPrototypeOf(value);
   if (proto !== null && proto !== Object.prototype) {
     return value;

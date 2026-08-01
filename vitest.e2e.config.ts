@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// E2E tests. globalSetup runs `prisma migrate deploy` once; setupFiles (per
+// E2E tests. globalSetup applies the SQL baseline once; setupFiles (per
 // worker) forces DATABASE_URL to the isolated soms_test DB before AppModule
 // boots. Generous timeouts for argon2 + a real Postgres round-trip.
 export default defineConfig({

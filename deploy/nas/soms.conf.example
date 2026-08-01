@@ -43,7 +43,7 @@ POSTGRES_PASSWORD=
 # Bootstrap admin password (account=admin). Used only on first boot to seed the admin; ignored after.
 ADMIN_BOOTSTRAP_PASSWORD=
 
-# Prisma connection-pool max. Keep (max × app replicas) ≤ PostgreSQL max_connections (100).
+# PostgreSQL connection-pool max. Keep (max × app replicas) ≤ PostgreSQL max_connections (100).
 DATABASE_POOL_MAX=10
 
 # Optional — admin WebAuthn (passkeys) overrides. Defaults: rpId = SOMS_DOMAIN; allowed origins derived

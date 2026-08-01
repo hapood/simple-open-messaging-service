@@ -3,9 +3,14 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519.js';
+import { sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
 import sharp from 'sharp';
-import { PrismaClient } from '../src/prisma/generated/client.js';
-import { PrismaPg } from '@prisma/adapter-pg';
+import {
+  databaseSchema,
+  type Database,
+} from '../src/database/database.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
 import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
@@ -167,12 +172,12 @@ function pickFreePort(): Promise<number> {
   });
 }
 
-// ─── a booted federation app (subprocess + test-process prisma) ───────────────────────────────
+// ─── a booted federation app (subprocess + test-process Drizzle client) ──────────────────────
 
 export interface FedApp {
   baseUrl: string;
   port: number;
-  prisma: PrismaClient;
+  database: Database;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   restart: () => Promise<void>;
@@ -188,13 +193,12 @@ interface FedAppConfig {
 }
 
 /** Boot one app in a subprocess. `start()` forks test/federation-app.main.ts (via tsx) with the app's
- *  env, awaits `FED_APP_READY <port>` on stdout, and connects a test-process PrismaClient to its DB.
+ *  env, awaits `FED_APP_READY <port>` on stdout, and exposes a test-process Drizzle client for assertions.
  *  `stop()` SIGTERMs the child (used by the demote test to force a real ECONNREFUSED); `restart()`
  *  re-forks on the same port (used by the re-handshake test). */
 function makeFedApp(cfg: FedAppConfig): FedApp {
-  const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: cfg.dbUrl }),
-  });
+  const pool = new Pool({ connectionString: cfg.dbUrl });
+  const database = drizzle({ client: pool, schema: databaseSchema });
   let child: ChildProcess | null = null;
 
   const start = async (): Promise<void> => {
@@ -244,7 +248,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
   return {
     baseUrl: `http://127.0.0.1:${cfg.appPort}`,
     port: cfg.appPort,
-    prisma,
+    database,
     start,
     stop,
     restart: async () => {
@@ -253,7 +257,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     },
     close: async () => {
       await stop();
-      await prisma.$disconnect();
+      await pool.end();
     },
   };
 }
@@ -338,16 +342,16 @@ export async function assertSeparateDatabases(
   appB: FedApp,
 ): Promise<void> {
   const [dbA, dbB] = await Promise.all([
-    appA.prisma.$queryRawUnsafe<{ current_database: string }[]>(
-      'SELECT current_database()',
+    appA.database.execute(
+      sql<{ current_database: string }>`SELECT current_database()`,
     ),
-    appB.prisma.$queryRawUnsafe<{ current_database: string }[]>(
-      'SELECT current_database()',
+    appB.database.execute(
+      sql<{ current_database: string }>`SELECT current_database()`,
     ),
   ]);
-  if (dbA[0].current_database === dbB[0].current_database) {
+  if (dbA.rows[0].current_database === dbB.rows[0].current_database) {
     throw new Error(
-      `federation e2e invariant violated: appA and appB share database "${dbA[0].current_database}". They ` +
+      `federation e2e invariant violated: appA and appB share database "${dbA.rows[0].current_database}". They ` +
         `MUST be on separate DBs — a group's fedGroupAccount is @unique per DB, so a shared DB aliases ` +
         `appB's mirror to appA's origin thread and cross-server is never exercised. Use bootFederationPair().`,
     );
@@ -368,7 +372,7 @@ export async function truncateFederationDbs(
   appB: FedApp,
 ): Promise<void> {
   await Promise.all([
-    appA.prisma.$executeRawUnsafe(FEDERATION_TRUNCATE_SQL),
-    appB.prisma.$executeRawUnsafe(FEDERATION_TRUNCATE_SQL),
+    appA.database.execute(sql.raw(FEDERATION_TRUNCATE_SQL)),
+    appB.database.execute(sql.raw(FEDERATION_TRUNCATE_SQL)),
   ]);
 }

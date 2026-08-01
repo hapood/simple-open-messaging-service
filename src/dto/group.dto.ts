@@ -17,7 +17,7 @@ import { IsValidAvatarPath } from '../upload/avatar-path.js';
 /**
  * Group-domain request DTOs. Validation rules:
  * - id fields: @Type(()=>Number)+@IsInt with the global ValidationPipe transform converts JSON/string input
- *   to number (Prisma needs number).
+ *   to number (database ids are numeric).
  * - inviteUserIds: @Type(()=>Number) transforms each array element; @IsInt({each:true}) validates.
  */
 

@@ -7,8 +7,7 @@ import { BusinessException } from './business.exception.js';
  * narrowed to `number`.
  *
  * Meant for guards/interceptors that read raw `req.body` BEFORE `ValidationPipe` coerces it: a
- * non-number reaching Prisma's `Int` field throws `PrismaClientValidationError`, which
- * `AllExceptionsFilter` does not map (it only handles `PrismaClientKnownRequestError`), surfacing as
+ * non-number reaching an integer database field throws a low-level validation error, surfacing as
  * an opaque 500. The DTO remains the validation authority for controllers; this is the strict,
  * no-transform gate for pre-pipe reads.
  */

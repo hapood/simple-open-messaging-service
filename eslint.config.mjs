@@ -13,7 +13,6 @@ export default tseslint.config(
       'node_modules/**',
       'coverage/**',
       'web/**',
-      'src/prisma/generated/**',
     ],
   },
   ...tseslint.configs.recommended,

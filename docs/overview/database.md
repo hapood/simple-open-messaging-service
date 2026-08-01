@@ -1,6 +1,6 @@
 # Data Model
 
-SOMS uses PostgreSQL (+ TimescaleDB), with the data model defined via Prisma 7 (Rust-free client + `@prisma/adapter-pg` driver adapter; `relationJoins` is GA). Schema source file: [prisma/schema.prisma](../../prisma/schema.prisma); CLI configuration is in [prisma.config.ts](../../prisma.config.ts).
+SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. The typed schema is defined in [src/database/schema.ts](../../src/database/schema.ts), relations in [src/database/relations.ts](../../src/database/relations.ts), and deployable SQL in [database/migrations/](../../database/migrations/).
 
 > Scope: this document covers the **consumer messaging** data model (identity, threads, messages, invites, media, sessions, admin, federation, quota). Rows are **soft-deleted only** (`isDeleted` / `revokedAt` / `leftAt`); the only hard-deletes are media-CAS blobs reclaimed at refcount 0. See [architecture.md](./architecture.md) for how the services use these tables.
 

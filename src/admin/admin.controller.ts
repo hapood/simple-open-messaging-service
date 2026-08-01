@@ -48,7 +48,7 @@ import { ADMIN_SESSION_COOKIE, clearAdminSessionCookie, setAdminSessionCookie } 
 /**
  * Admin console HTTP adapter. All domain logic lives in services (AdminAuthService, AuthService,
  * UserManageService, BruteForceService, SseService, PushService) — this controller only parses input
- * and delegates. No Prisma is touched here. Handlers return raw data (or void for acks); the global
+ * and delegates. No database is touched here. Handlers return raw data (or void for acks); the global
  * SerializeInterceptor wraps the {code,message,data} envelope. Failures throw BusinessException (the
  * global AllExceptionsFilter renders the body).
  *

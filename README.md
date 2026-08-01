@@ -4,7 +4,7 @@ A self-hosted instant messaging service with accounts, friend and group threads,
 real-time delivery, push notifications, voice/video calls, administration, and server federation.
 The design goal is to remain straightforward for third-party applications to integrate.
 
-- **Backend**: NestJS 11 + Prisma 7 + PostgreSQL + SSE + opaque per-device session tokens
+- **Backend**: NestJS 11 + Drizzle ORM + PostgreSQL + SSE + opaque per-device session tokens
 - **Web client**: Angular 20 (standalone components, Signals, zoneless change detection)
 - **Admin console**: React 19 + Vite
 - **Native shell**: Tauri 2, including the Android calling integration
@@ -52,7 +52,7 @@ The design goal is to remain straightforward for third-party applications to int
 | Category | Choice |
 | --- | --- |
 | Framework | NestJS 11 |
-| Database | PostgreSQL (Prisma 7 ORM, Rust-free client + `@prisma/adapter-pg` driver adapter) |
+| Database | PostgreSQL (Drizzle ORM + `node-postgres`) |
 | Real-time | SSE (`GET /api/v1/events`, `text/event-stream`) — a one-way downstream-only push channel |
 | Authentication | Passport Local + opaque database-backed session tokens + Argon2id password hashing |
 | Federation | RFC 9421-style HTTP message signatures, Ed25519 keys, discovery, quotas, and media transfer |
@@ -76,7 +76,7 @@ simple-open-chat-service/
 │   ├── main.ts               # App entry and Fastify adapter
 │   ├── bootstrap.ts          # HTTP plugins, validation, CORS, static/media serving
 │   ├── app.module.ts         # Root module
-│   ├── prisma.service.ts     # PrismaClient wrapper
+│   ├── database/             # Drizzle schema, relations, and DatabaseService
 │   ├── auth/                 # Session, password, OTP, QR, throttling and guards
 │   ├── controller/           # User-facing HTTP controllers
 │   ├── message/              # Messages and fan-out
@@ -86,9 +86,8 @@ simple-open-chat-service/
 │   ├── calls/                # Call lifecycle, signaling and TURN credentials
 │   ├── federation/           # Discovery, signatures, S2S protocol and delivery
 │   └── admin/                # Administration, RBAC, audit, 2FA and WebAuthn
-├── prisma/
-│   ├── schema.prisma         # Data model definitions
-│   └── migrations/           # Database migrations
+├── database/
+│   └── migrations/           # Versioned SQL migrations
 ├── test/                     # e2e tests
 ├── web/                      # Angular frontend
 ├── admin-web/                # React administration console
@@ -128,12 +127,11 @@ npm install --prefix admin-web
 ### 3. Initialize the Database
 
 ```bash
-# Generate Prisma Client
-npx prisma generate
-
 # Apply database migrations (create tables)
-npx prisma migrate deploy
-# Or during development: npx prisma migrate dev
+npm run db:migrate
+# Inspect or baseline an existing database
+npm run db:status
+npm run db:baseline
 ```
 
 ### 4. Start the Services
@@ -155,7 +153,7 @@ npm run dev --prefix admin-web
 
 | Location | Setting | Description |
 | --- | --- | --- |
-| `.env` → `DATABASE_URL` | PostgreSQL connection string | Read by Prisma, required |
+| `.env` → `DATABASE_URL` | PostgreSQL connection string | Read by the Drizzle/pg database layer, required |
 | `.env` → `SOMS_DOMAIN` | Public domain of this service (federation identity) | Required (`@user@<domain>`, host of `/.well-known/soms`) |
 | `.env` → `ADMIN_BOOTSTRAP_PASSWORD` | Password used to create the first `admin` account when no administrator exists |
 | `.env` → `SOMS_TLS_MODE` | Public origin mode: `standard`, `custom`, or `disabled` |
@@ -226,7 +224,7 @@ npm run lint            # ESLint
 npm run format          # Prettier formatting
 npm test                # Unit tests
 npm run test:e2e        # e2e tests
-npx prisma studio       # Visual data browser
+npm run db:status       # Migration status
 ```
 
 **Frontend**

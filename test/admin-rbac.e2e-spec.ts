@@ -3,13 +3,15 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { DatabaseService } from '../src/database/database.service';
+import { admin, adminActionLog, user } from '../src/database/schema';
 import { AdminAuthService } from '../src/admin/admin-auth.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
-import { AdminRole } from '../src/prisma/generated/client.js';
+import { AdminRole } from '../src/database/enums.js';
 
 /**
  * Admin security invariants e2e — the regression anchor for the RBAC + opaque-session revocation +
@@ -34,7 +36,7 @@ import { AdminRole } from '../src/prisma/generated/client.js';
  */
 describe('Admin RBAC + revocation + audit', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let adminAuth: AdminAuthService;
 
   beforeAll(async () => {
@@ -45,14 +47,14 @@ describe('Admin RBAC + revocation + audit', () => {
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     adminAuth = app.get(AdminAuthService);
   });
 
   beforeEach(async () => {
     // CASCADE clears Admin, AdminSession, AdminActionLog (all FK-reachable from User), so each
     // case starts from an empty admin set.
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
@@ -66,23 +68,44 @@ describe('Admin RBAC + revocation + audit', () => {
     account: string,
     role: AdminRole,
   ): Promise<{ adminId: number; userId: number; cookie: string }> {
-    const user = await prisma.user.create({
-      data: { account, domain: 'local', hashPwd: 'x', name: account, isForeigner: false },
-      select: { id: true },
-    });
-    const admin = await prisma.admin.create({
-      data: { userId: user.id, role, enabled: true },
-      select: { id: true },
-    });
-    const token = await adminAuth.createAdminSession(admin.id, {});
-    return { adminId: admin.id, userId: user.id, cookie: `${ADMIN_SESSION_COOKIE}=${token}` };
+    const now = new Date();
+    const [createdUser] = await database.db
+      .insert(user)
+      .values({
+        account,
+        domain: 'local',
+        hashPwd: 'x',
+        name: account,
+        isForeigner: false,
+        updatedAt: now,
+      })
+      .returning({ id: user.id });
+    const [createdAdmin] = await database.db
+      .insert(admin)
+      .values({ userId: createdUser.id, role, enabled: true, updatedAt: now })
+      .returning({ id: admin.id });
+    const token = await adminAuth.createAdminSession(createdAdmin.id, {});
+    return {
+      adminId: createdAdmin.id,
+      userId: createdUser.id,
+      cookie: `${ADMIN_SESSION_COOKIE}=${token}`,
+    };
   }
 
-  const seedUser = (account: string) =>
-    prisma.user.create({
-      data: { account, domain: 'local', hashPwd: 'x', name: account, isForeigner: false },
-      select: { id: true },
-    });
+  const seedUser = async (account: string) => {
+    const [created] = await database.db
+      .insert(user)
+      .values({
+        account,
+        domain: 'local',
+        hashPwd: 'x',
+        name: account,
+        isForeigner: false,
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id });
+    return created;
+  };
 
   const post = (cookie: string, path: string, body?: object) =>
     request(app.getHttpServer())
@@ -100,7 +123,10 @@ describe('Admin RBAC + revocation + audit', () => {
     expect(read.body.code).toBe(BusinessCode.OK);
 
     // routine mutation (disable user — ADMIN+) → FORBIDDEN (HTTP 200 + code 10004 by envelope)
-    const routine = await post(viewer.cookie, `admin/users/${target.id}/disable`);
+    const routine = await post(
+      viewer.cookie,
+      `admin/users/${target.id}/disable`,
+    );
     expect(routine.body.code).toBe(BusinessCode.FORBIDDEN);
 
     // high-impact (purge all sessions — SUPER_ADMIN-only) → FORBIDDEN
@@ -112,7 +138,10 @@ describe('Admin RBAC + revocation + audit', () => {
     const admin = await seedAdmin('admin', AdminRole.ADMIN);
     const target = await seedUser('tgt2');
 
-    const routine = await post(admin.cookie, `admin/users/${target.id}/disable`);
+    const routine = await post(
+      admin.cookie,
+      `admin/users/${target.id}/disable`,
+    );
     expect(routine.status).toBe(200);
     expect(routine.body.code).toBe(BusinessCode.OK);
 
@@ -132,7 +161,10 @@ describe('Admin RBAC + revocation + audit', () => {
 
     // A disables B → revokeSessionsByAdmin('admin_disabled') marks B's AdminSession rows revoked
     // (and B.enabled flips false) inside the last-super-guarded transaction.
-    const disable = await post(superA.cookie, `admin/admins/${superB.adminId}/disable`);
+    const disable = await post(
+      superA.cookie,
+      `admin/admins/${superB.adminId}/disable`,
+    );
     expect(disable.body.code).toBe(BusinessCode.OK);
 
     // B's SAME previously-issued cookie now fails validation (revoked + disabled) → 401 / UNAUTHENTICATED.
@@ -144,19 +176,27 @@ describe('Admin RBAC + revocation + audit', () => {
   it('the last enabled super admin cannot be disabled or demoted', async () => {
     const only = await seedAdmin('only-super', AdminRole.SUPER_ADMIN);
 
-    const disable = await post(only.cookie, `admin/admins/${only.adminId}/disable`);
+    const disable = await post(
+      only.cookie,
+      `admin/admins/${only.adminId}/disable`,
+    );
     expect(disable.body.code).toBe(BusinessCode.FORBIDDEN); // last-super guard refused (HTTP 200 + code by envelope)
 
-    const demote = await post(only.cookie, `admin/admins/${only.adminId}/role`, {
-      role: AdminRole.ADMIN,
-    });
+    const demote = await post(
+      only.cookie,
+      `admin/admins/${only.adminId}/role`,
+      {
+        role: AdminRole.ADMIN,
+      },
+    );
     expect(demote.body.code).toBe(BusinessCode.FORBIDDEN);
 
     // Still enabled + still super — the guard refused before mutating.
-    const row = await prisma.admin.findUnique({
-      where: { id: only.adminId },
-      select: { enabled: true, role: true },
-    });
+    const [row] = await database.db
+      .select({ enabled: admin.enabled, role: admin.role })
+      .from(admin)
+      .where(eq(admin.id, only.adminId))
+      .limit(1);
     expect(row?.enabled).toBe(true);
     expect(row?.role).toBe(AdminRole.SUPER_ADMIN);
   });
@@ -167,7 +207,9 @@ describe('Admin RBAC + revocation + audit', () => {
 
     // Re-affirming B's existing role writes the same value — guardedStateChange reports changed:false,
     // so setRole must NOT call revokeSessionsByAdmin.
-    const r = await post(a.cookie, `admin/admins/${b.adminId}/role`, { role: AdminRole.SUPER_ADMIN });
+    const r = await post(a.cookie, `admin/admins/${b.adminId}/role`, {
+      role: AdminRole.SUPER_ADMIN,
+    });
     expect(r.body.code).toBe(BusinessCode.OK);
 
     // B's previously-issued cookie still validates → no kick.
@@ -181,17 +223,24 @@ describe('Admin RBAC + revocation + audit', () => {
     const actor = await seedAdmin('auditor', AdminRole.SUPER_ADMIN);
     const target = await seedAdmin('audited', AdminRole.SUPER_ADMIN);
 
-    const r = await post(actor.cookie, `admin/admins/${target.adminId}/disable`);
+    const r = await post(
+      actor.cookie,
+      `admin/admins/${target.adminId}/disable`,
+    );
     expect(r.body.code).toBe(BusinessCode.OK);
 
-    const log = await prisma.adminActionLog.findFirst({
-      where: {
-        adminId: actor.adminId,
-        action: 'admin.disable',
-        targetId: String(target.adminId),
-      },
-    });
-    expect(log).not.toBeNull();
+    const [log] = await database.db
+      .select()
+      .from(adminActionLog)
+      .where(
+        and(
+          eq(adminActionLog.adminId, actor.adminId),
+          eq(adminActionLog.action, 'admin.disable'),
+          eq(adminActionLog.targetId, String(target.adminId)),
+        ),
+      )
+      .limit(1);
+    expect(log).toBeDefined();
     expect(log?.success).toBe(true);
     expect(log?.adminRole).toBe(AdminRole.SUPER_ADMIN);
   });

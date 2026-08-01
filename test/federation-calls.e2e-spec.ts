@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import request from 'supertest';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   bootFederationPair,
   truncateFederationDbs,
@@ -10,9 +11,19 @@ import {
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
-import { registerAndLogin, openSse, waitForSseEvent } from './federation-test-helpers.js';
+import {
+  registerAndLogin,
+  openSse,
+  waitForSseEvent,
+} from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
-import { MessageThreadType } from '../src/prisma/generated/client.js';
+import { MessageThreadType } from '../src/database/enums.js';
+import {
+  invite,
+  message,
+  threadParticipant,
+  user,
+} from '../src/database/schema.js';
 
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a
@@ -57,15 +68,19 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       .set('Authorization', `Bearer ${tokenErin}`)
       .send({ toUserId: frankStubIdOnA, note: 'hi' });
     expect(inv.body.code).toBe(BusinessCode.OK);
-    const erinStubB = await appB.prisma.user.findUnique({
-      where: { account_domain: { account: 'erin', domain: DOM_A } },
+    const erinStubB = await appB.database.query.user.findFirst({
+      where: and(eq(user.account, 'erin'), eq(user.domain, DOM_A)),
     });
     expect(erinStubB).not.toBeNull();
     erinStubIdOnB = erinStubB!.id;
 
     // frank accepts → a live P2P thread exists on BOTH servers.
-    const pending = await appB.prisma.invite.findFirst({
-      where: { kind: 'FRIEND', status: 'PENDING', fromUserId: erinStubIdOnB },
+    const pending = await appB.database.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, 'FRIEND'),
+        eq(invite.status, 'PENDING'),
+        eq(invite.fromUserId, erinStubIdOnB),
+      ),
     });
     expect(pending).not.toBeNull();
     const acc = await request(appB.baseUrl)
@@ -83,7 +98,10 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
 
   /** Poll a predicate until it returns non-null or the timeout elapses (the S2S relay + the debounced
    *  message pull are asynchronous, so terminal frames + pulled bubbles land slightly after the HTTP 200). */
-  async function pollFor<T>(fn: () => Promise<T | null | undefined>, timeoutMs = 5000): Promise<T> {
+  async function pollFor<T>(
+    fn: () => Promise<T | null | undefined>,
+    timeoutMs = 5000,
+  ): Promise<T> {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
       const r = await fn();
@@ -147,7 +165,9 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(endRes.body.code).toBe(BusinessCode.OK);
 
       const onA = await pollFor(() =>
-        appA.prisma.message.findUnique({ where: { clientMessageId: callSid } }),
+        appA.database.query.message.findFirst({
+          where: eq(message.clientMessageId, callSid),
+        }),
       );
       expect(onA.contentType).toBe('CALL');
       const content = JSON.parse(onA.content);
@@ -190,7 +210,11 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .post('/api/v1/calls/decline')
         .set('Authorization', `Bearer ${tokenFrank}`)
         .send({ callSid });
-      await pollFor(() => appA.prisma.message.findUnique({ where: { clientMessageId: callSid } }));
+      await pollFor(() =>
+        appA.database.query.message.findFirst({
+          where: eq(message.clientMessageId, callSid),
+        }),
+      );
     } finally {
       await frankSse.cancel();
       await erinSse.cancel();
@@ -217,24 +241,31 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(decRes.body.code).toBe(BusinessCode.OK);
 
       const onA = await pollFor(() =>
-        appA.prisma.message.findUnique({ where: { clientMessageId: callSid } }),
+        appA.database.query.message.findFirst({
+          where: eq(message.clientMessageId, callSid),
+        }),
       );
       expect(onA.contentType).toBe('CALL');
       expect(JSON.parse(onA.content).status).toBe('declined');
 
       // The bubble pulls to appB — find frank's P2P thread with erin's stub, then the CALL row by originSeq.
-      const frankThreadB = await appB.prisma.threadParticipant.findFirst({
-        where: { userId: erinStubIdOnB, leftAt: null, thread: { type: MessageThreadType.P2P } },
-        select: { threadId: true },
-      });
+      const frankThreadB =
+        await appB.database.query.threadParticipant.findFirst({
+          where: and(
+            eq(threadParticipant.userId, erinStubIdOnB),
+            isNull(threadParticipant.leftAt),
+            sql`exists (select 1 from "MessageThread" mt where mt.id = "threadParticipant"."threadId" and mt.type = ${MessageThreadType.P2P})`,
+          ),
+          columns: { threadId: true },
+        });
       const onB = await pollFor(() =>
-        appB.prisma.message.findFirst({
-          where: {
-            threadId: frankThreadB!.threadId,
-            creator: erinStubIdOnB,
-            originSeq: onA.originSeq,
-            contentType: 'CALL',
-          },
+        appB.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, frankThreadB!.threadId),
+            eq(message.creator, erinStubIdOnB),
+            eq(message.originSeq, onA.originSeq),
+            eq(message.contentType, 'CALL'),
+          ),
         }),
       );
       expect(JSON.parse(onB.content).status).toBe('declined');

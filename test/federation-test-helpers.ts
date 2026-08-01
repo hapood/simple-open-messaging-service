@@ -1,11 +1,18 @@
 // Shared helpers for the federation e2e — the process-boundary-safe replacements for the old in-process
 // `app.get(Service)` patterns. Each helper talks to an app over HTTP (or the shared filesystem + a
-// test-process PrismaClient for CAS staging) so it works with the apps running in separate processes.
+// test-process Drizzle connection for CAS staging) so it works with apps running in separate processes.
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import request from 'supertest';
-import type { PrismaClient } from '../src/prisma/generated/client.js';
+import { sql } from 'drizzle-orm';
+import type { Database } from '../src/database/database.service.js';
+import {
+  admin,
+  mediaAsset,
+  sessionToken,
+  user,
+} from '../src/database/schema.js';
 import { PasswordHasher } from '../src/auth/password-hasher.service.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 
@@ -17,10 +24,10 @@ const IMG_EXT: Record<string, string> = {
   'image/gif': 'gif',
 };
 
-/** The minimal app surface these helpers need (baseUrl for HTTP, prisma for direct DB/fixtures). */
+/** The minimal app surface these helpers need (baseUrl for HTTP, database for direct DB/fixtures). */
 interface AppLike {
   baseUrl: string;
-  prisma: PrismaClient;
+  database: Database;
 }
 
 /**
@@ -31,7 +38,7 @@ interface AppLike {
  * (what a chat IMAGE message embeds) + the size + the digest.
  */
 export async function stageCasAsset(
-  prisma: PrismaClient,
+  database: Database,
   mimeType: string,
   buf: Buffer,
 ): Promise<{ url: string; size: number; digest: string }> {
@@ -48,17 +55,23 @@ export async function stageCasAsset(
     recursive: true,
   });
   await writeFile(abs, buf);
-  await prisma.mediaAsset.upsert({
-    where: { digest },
-    create: { digest, bytes: BigInt(buf.length), refs: 1 },
-    update: { refs: { increment: 1 } },
-  });
+  await database
+    .insert(mediaAsset)
+    .values({ digest, bytes: BigInt(buf.length), refs: 1 })
+    .onConflictDoUpdate({
+      target: mediaAsset.digest,
+      set: { refs: sql`${mediaAsset.refs} + 1` },
+    });
   return { url: `/uploads/${rel}`, size: buf.length, digest };
 }
 
 /** Upload an avatar via the real HTTP route (multipart) — the test-process equivalent of
  *  `UploadService.saveAvatars` + `UserService.updateAvatar`. Returns the response. */
-export function uploadAvatar(app: AppLike, token: string, png: Buffer): request.Test {
+export function uploadAvatar(
+  app: AppLike,
+  token: string,
+  png: Buffer,
+): request.Test {
   return request(app.baseUrl)
     .post('/api/v1/user/update-avatar')
     .set('Authorization', `Bearer ${token}`)
@@ -75,23 +88,22 @@ function hashToken(token: string): string {
  *  app's SessionAuthGuard validates on first use (a cache miss → DB read → this row). `app` → no expiry;
  *  `web`/`desktop` → 14-day sliding, mirroring SessionTokenService.issue. */
 async function seedSessionToken(
-  prisma: PrismaClient,
+  database: Database,
   userId: number,
   client: 'app' | 'web' | 'desktop' = 'app',
 ): Promise<string> {
   const plaintext = randomBytes(32).toString('hex');
-  await prisma.sessionToken.create({
-    data: {
-      userId,
-      tokenHash: hashToken(plaintext),
-      client,
-      device: null,
-      userAgent: null,
-      ip: null,
-      lastSeenIp: null,
-      expiresAt: client === 'app' ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-      persistent: true,
-    },
+  await database.insert(sessionToken).values({
+    userId,
+    tokenHash: hashToken(plaintext),
+    client,
+    device: null,
+    userAgent: null,
+    ip: null,
+    lastSeenIp: null,
+    expiresAt:
+      client === 'app' ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+    persistent: true,
   });
   return plaintext;
 }
@@ -104,11 +116,19 @@ export async function registerAndLogin(
   account: string,
   name: string,
 ): Promise<{ id: number; token: string }> {
-  const u = await app.prisma.user.create({
-    data: { account, domain: 'local', name, hashPwd: null, mustChangePassword: false, isForeigner: false },
-    select: { id: true },
-  });
-  const token = await seedSessionToken(app.prisma, u.id, 'app');
+  const [u] = await app.database
+    .insert(user)
+    .values({
+      account,
+      domain: 'local',
+      name,
+      hashPwd: null,
+      mustChangePassword: false,
+      isForeigner: false,
+      updatedAt: new Date(),
+    })
+    .returning({ id: user.id });
+  const token = await seedSessionToken(app.database, u.id, 'app');
   return { id: u.id, token };
 }
 
@@ -118,22 +138,31 @@ export async function registerAndLogin(
  *  /admin/login verifies the password over HTTP. Admin auth is an opaque session delivered via the
  *  httpOnly admin_session cookie (set by the controller, never the response body), so the caller attaches
  *  the returned pair with .set('Cookie', …) on admin routes (this is the real way the federation
- *  peer-block tests block a domain — through markBlocked via the admin route, not a prisma shortcut). */
-export async function getAdminCookie(app: AppLike, account = 'admin'): Promise<string> {
-  const u = await app.prisma.user.create({
-    data: {
+ *  peer-block tests block a domain — through markBlocked via the admin route, not a database shortcut). */
+export async function getAdminCookie(
+  app: AppLike,
+  account = 'admin',
+): Promise<string> {
+  const [u] = await app.database
+    .insert(user)
+    .values({
       account,
       domain: 'local',
       name: account,
       hashPwd: await new PasswordHasher().hash('Pass1234'),
       mustChangePassword: false,
       isForeigner: false,
-    },
-    select: { id: true },
-  });
-  await app.prisma.admin.create({
-    data: { userId: u.id, role: 'SUPER_ADMIN', enabled: true },
-  });
+      updatedAt: new Date(),
+    })
+    .returning({ id: user.id });
+  await app.database
+    .insert(admin)
+    .values({
+      userId: u.id,
+      role: 'SUPER_ADMIN',
+      enabled: true,
+      updatedAt: new Date(),
+    });
   const res = await request(app.baseUrl)
     .post('/api/v1/admin/login')
     .send({ account, password: 'Pass1234' });
@@ -155,11 +184,15 @@ function extractAdminCookie(res: request.Response): string {
 
 /** Open the SSE stream as a user (Bearer token) + return a reader on the response body. The caller
  *  reads frames with waitForSseEvent + cancels when done. */
-export async function openSse(baseUrl: string, token: string): Promise<ReadableStreamDefaultReader<Uint8Array>> {
+export async function openSse(
+  baseUrl: string,
+  token: string,
+): Promise<ReadableStreamDefaultReader<Uint8Array>> {
   const res = await fetch(`${baseUrl}/api/v1/events`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok || !res.body) throw new Error(`SSE connect failed: HTTP ${res.status}`);
+  if (!res.ok || !res.body)
+    throw new Error(`SSE connect failed: HTTP ${res.status}`);
   return res.body.getReader();
 }
 
@@ -182,7 +215,11 @@ export async function waitForSseEvent(
       const frame = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
       const lines = frame.split('\n');
-      const event = lines.find((l) => l.startsWith('event:'))?.slice(6).trim() ?? '';
+      const event =
+        lines
+          .find((l) => l.startsWith('event:'))
+          ?.slice(6)
+          .trim() ?? '';
       const dataRaw = lines
         .filter((l) => l.startsWith('data:'))
         .map((l) => l.slice(5).replace(/^ /, ''))

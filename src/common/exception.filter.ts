@@ -73,7 +73,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     } else {
       // Append the underlying error's own message when it carries more than the mapped envelope —
-      // notably the PrismaClientValidationError detail (column/type that failed), which the generic
+      // notably the database validation detail (column/type that failed), which the generic
       // client-facing `message` deliberately omits so it stays debuggable server-side.
       const detail =
         exception instanceof Error ? exception.message : String(exception);

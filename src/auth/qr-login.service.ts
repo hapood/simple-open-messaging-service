@@ -48,7 +48,7 @@ export interface QrPollResult {
  * session's lifetime follows the platform's trust: the trusted native clients (`app`/Android and `desktop`,
  * which keep the token in OS secure storage) get a permanent, revocation-only session; the browser gets a
  * 14-day sliding session (a browser can't safely hold a permanent bearer token). Ephemeral by design: the
- * pending state lives in the in-process KV (seconds-to-minutes lifetime), NOT a Prisma table — the issued
+ * pending state lives in the in-process KV (seconds-to-minutes lifetime), NOT a database table — the issued
  * session is the durable artifact (its SessionToken row records device/ip/client/trusted for audit).
  *
  * Two-step (WeChat/DingTalk-style): scan → 'scanned' (QR-displaying client shows "confirm on phone") →

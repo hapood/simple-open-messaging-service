@@ -11,7 +11,6 @@ import {
   type S2sProxy,
 } from './federation-harness.js';
 import {
-  stageCasAsset,
   uploadAvatar,
   registerAndLogin,
   getAdminCookie,
@@ -20,10 +19,23 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { SignatureService } from '../src/federation/signature.service.js';
+import { ContentType, MessageThreadType } from '../src/database/enums.js';
+import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
-  MessageThreadType,
-  ContentType,
-} from '../src/prisma/generated/client.js';
+  federatedPeer,
+  federatedPeerEvent,
+  forwardBundle,
+  forwardBundleDependency,
+  forwardMessage,
+  invite,
+  mediaAsset,
+  mediaMessage,
+  message,
+  messageThread,
+  s2SKeyCache,
+  threadParticipant,
+  user,
+} from '../src/database/schema.js';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -55,6 +67,112 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let firstGroupAccount: string; // its `!account` (groupUser.account) — the on-wire group address
   let tokenDave: string; // dave @ appB — a SECOND local member of the same mirror (shared-mirror fan-out test)
   let daveLocalIdB: number;
+
+  async function findActiveP2pParticipant(app: FedApp, userId: number) {
+    return app.database.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.userId, userId),
+        isNull(threadParticipant.leftAt),
+        sql`exists (select 1 from "MessageThread" mt where mt.id = "threadParticipant"."threadId" and mt.type = 'P2P')`,
+      ),
+      columns: { threadId: true },
+    });
+  }
+
+  async function countPendingInvites(
+    app: FedApp,
+    firstUserId: number,
+    secondUserId: number,
+  ): Promise<number> {
+    const [row] = await app.database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(invite)
+      .where(
+        and(
+          eq(invite.kind, 'FRIEND'),
+          eq(invite.status, 'PENDING'),
+          or(
+            and(
+              eq(invite.fromUserId, firstUserId),
+              eq(invite.toUserId, secondUserId),
+            ),
+            and(
+              eq(invite.fromUserId, secondUserId),
+              eq(invite.toUserId, firstUserId),
+            ),
+          ),
+        ),
+      );
+    return row.count;
+  }
+
+  async function countMessages(app: FedApp, condition: ReturnType<typeof eq>) {
+    const [row] = await app.database
+      .select({ count: count() })
+      .from(message)
+      .where(condition);
+    return row.count;
+  }
+
+  const textContent = (value: string) => JSON.stringify({ text: value });
+
+  async function findGroupThreadByAccount(app: FedApp, account: string) {
+    const [row] = await app.database
+      .select({
+        id: messageThread.id,
+        pullUntil: messageThread.pullUntil,
+        account: user.account,
+        domain: user.domain,
+      })
+      .from(messageThread)
+      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .where(eq(user.account, account))
+      .limit(1);
+    return row
+      ? { ...row, groupUser: { account: row.account, domain: row.domain } }
+      : undefined;
+  }
+
+  async function findGroupThreadById(app: FedApp, threadId: number) {
+    const [row] = await app.database
+      .select({ account: user.account, domain: user.domain })
+      .from(messageThread)
+      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    return row ? { groupUser: row } : undefined;
+  }
+
+  async function findLatestForwardMessage(app: FedApp, creator: number) {
+    const [row] = await app.database
+      .select({
+        threadId: message.threadId,
+        seq: message.seq,
+        bundleId: forwardMessage.bundleId,
+        depth: forwardBundle.depth,
+      })
+      .from(message)
+      .innerJoin(forwardMessage, eq(forwardMessage.messageId, message.id))
+      .innerJoin(forwardBundle, eq(forwardBundle.id, forwardMessage.bundleId))
+      .where(
+        and(
+          eq(message.creator, creator),
+          eq(message.contentType, ContentType.FORWARD),
+        ),
+      )
+      .orderBy(desc(message.seq))
+      .limit(1);
+    return row
+      ? {
+          threadId: row.threadId,
+          seq: row.seq,
+          forwardMessage: {
+            bundleId: row.bundleId,
+            bundle: { depth: row.depth },
+          },
+        }
+      : undefined;
+  }
 
   beforeAll(async () => {
     // Force tiny media chunks so a modest fixture file spans multiple Range requests — exercises the
@@ -96,16 +214,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       'carol',
       'Carol',
     ));
-    await appA.prisma.$transaction(async (tx) => {
-      const t = await tx.messageThread.create({
-        data: { type: MessageThreadType.P2P },
-      });
-      await tx.threadParticipant.createMany({
-        data: [
-          { userId: aliceLocalIdA, threadId: t.id },
-          { userId: carolLocalIdA, threadId: t.id },
-        ],
-      });
+    await appA.database.transaction(async (tx) => {
+      const [t] = await tx
+        .insert(messageThread)
+        .values({ type: MessageThreadType.P2P, updatedAt: new Date() })
+        .returning();
+      await tx.insert(threadParticipant).values([
+        { userId: aliceLocalIdA, threadId: t.id, updatedAt: new Date() },
+        { userId: carolLocalIdA, threadId: t.id, updatedAt: new Date() },
+      ]);
     });
 
     // Avatars are TEST FIXTURES (alice's profile must carry a real avatar over S2S; bob's must exist so
@@ -115,7 +232,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await uploadAvatar(appB, tokenB, await makePng(100));
 
     // A super-admin on appA — the trust-lifecycle tests block a peer + read the event timeline via the
-    // REAL admin routes (which call markBlocked/peerEvents), not prisma shortcuts.
+    // REAL admin routes (which call markBlocked/peerEvents), not direct database shortcuts.
     adminCookieA = await getAdminCookie(appA);
   }, 120_000);
 
@@ -138,13 +255,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     bobStubIdOnA = res.body.data.id;
 
     // appA now trusts bbb.local.
-    const peerA = await appA.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_B },
+    const peerA = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
     });
     expect(peerA?.trustLevel).toBe('trusted');
     // appB auto-accepted the init → trusts aaa.local (mutual).
-    const peerB = await appB.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_A },
+    const peerB = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
     });
     expect(peerB?.trustLevel).toBe('trusted');
   });
@@ -158,19 +275,23 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.body.code).toBe(BusinessCode.OK);
 
     // appB created a stub of alice with a localized avatar (saved through saveAvatars → /uploads/).
-    const aliceStubB = await appB.prisma.user.findUnique({
-      where: { account_domain: { account: 'alice', domain: DOM_A } },
+    const aliceStubB = await appB.database.query.user.findFirst({
+      where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
     });
-    expect(aliceStubB).not.toBeNull();
+    expect(aliceStubB).toBeDefined();
     expect(aliceStubB!.isForeigner).toBe(true);
     expect(aliceStubB!.avatar).toMatch(/^\/uploads\/.+-(512)\.webp$/);
     aliceStubIdOnB = aliceStubB!.id;
 
     // appB has a PENDING FRIEND Invite from alice's stub (the S2S delivery created it + armed the badge).
-    const inviteB = await appB.prisma.invite.findFirst({
-      where: { kind: 'FRIEND', status: 'PENDING', fromUserId: aliceStubIdOnB },
+    const inviteB = await appB.database.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, 'FRIEND'),
+        eq(invite.status, 'PENDING'),
+        eq(invite.fromUserId, aliceStubIdOnB),
+      ),
     });
-    expect(inviteB).not.toBeNull();
+    expect(inviteB).toBeDefined();
     expect(inviteB!.toUserId).not.toBe(aliceStubIdOnB); // addressed to bob (local), not the stub
 
     // Crossed-request edge: before accepting Alice's request, Bob independently adds Alice. Both
@@ -182,36 +303,30 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(reverse.status).toBe(200);
     expect(reverse.body.code).toBe(BusinessCode.OK);
 
-    const pendingA = await appA.prisma.invite.count({
-      where: {
-        kind: 'FRIEND',
-        status: 'PENDING',
-        OR: [
-          { fromUserId: aliceLocalIdA, toUserId: bobStubIdOnA },
-          { fromUserId: bobStubIdOnA, toUserId: aliceLocalIdA },
-        ],
-      },
-    });
-    const pendingB = await appB.prisma.invite.count({
-      where: {
-        kind: 'FRIEND',
-        status: 'PENDING',
-        OR: [
-          { fromUserId: bobLocalIdB, toUserId: aliceStubIdOnB },
-          { fromUserId: aliceStubIdOnB, toUserId: bobLocalIdB },
-        ],
-      },
-    });
+    const pendingA = await countPendingInvites(
+      appA,
+      aliceLocalIdA,
+      bobStubIdOnA,
+    );
+    const pendingB = await countPendingInvites(
+      appB,
+      bobLocalIdB,
+      aliceStubIdOnB,
+    );
     expect(pendingA).toBe(2);
     expect(pendingB).toBe(2);
   });
 
   it('friend.approve (no profile) creates the P2P thread on both servers', async () => {
     // appB accepts the inbound invite from alice's stub by its id.
-    const inv = await appB.prisma.invite.findFirst({
-      where: { kind: 'FRIEND', status: 'PENDING', fromUserId: aliceStubIdOnB },
+    const inv = await appB.database.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, 'FRIEND'),
+        eq(invite.status, 'PENDING'),
+        eq(invite.fromUserId, aliceStubIdOnB),
+      ),
     });
-    expect(inv).not.toBeNull();
+    expect(inv).toBeDefined();
     const res = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenB}`)
@@ -220,58 +335,37 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.body.code).toBe(BusinessCode.OK);
 
     // appB (approver side): invite ACCEPTED + an active P2P thread with alice's stub.
-    const invB = await appB.prisma.invite.findFirst({
-      where: { kind: 'FRIEND', fromUserId: aliceStubIdOnB },
+    const invB = await appB.database.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, 'FRIEND'),
+        eq(invite.fromUserId, aliceStubIdOnB),
+      ),
     });
     expect(invB?.status).toBe('ACCEPTED');
-    const threadB = await appB.prisma.threadParticipant.findFirst({
-      where: { userId: aliceStubIdOnB, leftAt: null, thread: { type: 'P2P' } },
-      select: { threadId: true },
-    });
-    expect(threadB).not.toBeNull();
+    const threadB = await findActiveP2pParticipant(appB, aliceStubIdOnB);
+    expect(threadB).toBeDefined();
 
     // appA (requester side): received friend.approve → its own P2P thread + outgoing invite ACCEPTED.
-    const invA = await appA.prisma.invite.findFirst({
-      where: {
-        kind: 'FRIEND',
-        fromUserId: aliceLocalIdA,
-        toUserId: bobStubIdOnA,
-      },
+    const invA = await appA.database.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, 'FRIEND'),
+        eq(invite.fromUserId, aliceLocalIdA),
+        eq(invite.toUserId, bobStubIdOnA),
+      ),
     });
     expect(invA?.status).toBe('ACCEPTED');
-    expect(
-      await appA.prisma.invite.count({
-        where: {
-          kind: 'FRIEND',
-          status: 'PENDING',
-          OR: [
-            { fromUserId: aliceLocalIdA, toUserId: bobStubIdOnA },
-            { fromUserId: bobStubIdOnA, toUserId: aliceLocalIdA },
-          ],
-        },
-      }),
-    ).toBe(0);
-    expect(
-      await appB.prisma.invite.count({
-        where: {
-          kind: 'FRIEND',
-          status: 'PENDING',
-          OR: [
-            { fromUserId: bobLocalIdB, toUserId: aliceStubIdOnB },
-            { fromUserId: aliceStubIdOnB, toUserId: bobLocalIdB },
-          ],
-        },
-      }),
-    ).toBe(0);
-    const threadA = await appA.prisma.threadParticipant.findFirst({
-      where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
-      select: { threadId: true },
-    });
-    expect(threadA).not.toBeNull();
+    expect(await countPendingInvites(appA, aliceLocalIdA, bobStubIdOnA)).toBe(
+      0,
+    );
+    expect(await countPendingInvites(appB, bobLocalIdB, aliceStubIdOnB)).toBe(
+      0,
+    );
+    const threadA = await findActiveP2pParticipant(appA, bobStubIdOnA);
+    expect(threadA).toBeDefined();
 
     // appA's stub of bob also has a localized avatar (pulled at resolve time, pre-request).
-    const bobStubA = await appA.prisma.user.findUnique({
-      where: { id: bobStubIdOnA },
+    const bobStubA = await appA.database.query.user.findFirst({
+      where: eq(user.id, bobStubIdOnA),
     });
     expect(bobStubA?.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
   });
@@ -284,12 +378,37 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   /** Resolve alice's P2P thread on appA (the thread she sends into). A friend relationship == a
    *  shared active P2P thread, so look it up via the bob stub's active participant row. */
   async function alicesThreadIdOnA(): Promise<number> {
-    const p = await appA.prisma.threadParticipant.findFirst({
-      where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
-      select: { threadId: true },
-    });
+    const p = await findActiveP2pParticipant(appA, bobStubIdOnA);
     if (!p?.threadId) throw new Error('alice↔bob thread missing on appA');
     return p.threadId;
+  }
+
+  async function sendFederatedImage(bytes: Buffer, dimension: number) {
+    const clientMessageId = randomUUID();
+    const stage = await request(appA.baseUrl)
+      .post('/api/v1/send-media')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: await alicesThreadIdOnA(),
+        contentType: 'IMAGE',
+        clientMessageId,
+        meta: { w: dimension, h: dimension },
+      });
+    expect(stage.body.code).toBe(BusinessCode.OK);
+    const upload = await request(appA.baseUrl)
+      .post('/api/v1/upload')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('x-client-message-id', clientMessageId)
+      .attach('file', bytes, 'federated.png')
+      .field('w', String(dimension))
+      .field('h', String(dimension));
+    expect(upload.body.code).toBe(BusinessCode.OK);
+    const { url, size } = upload.body.data as { url: string; size: number };
+    const digest = url
+      .split('/')
+      .pop()!
+      .replace(/\.[^.]+$/, '');
+    return { url, size, digest };
   }
 
   it('Step 2: a federated message is pushed + pulled to the peer (text) + SSE-fanned', async () => {
@@ -314,10 +433,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       let bobLocalSeq = -1;
       await vi.waitFor(
         async () => {
-          const msg = await appB.prisma.message.findFirst({
-            where: { content: 'hi from alice', creator: aliceStubIdOnB },
+          const msg = await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.content, JSON.stringify({ text: 'hi from alice' })),
+              eq(message.creator, aliceStubIdOnB),
+            ),
           });
-          expect(msg).not.toBeNull();
+          expect(msg).toBeDefined();
           expect(msg!.originSeq).toBe(0); // alice's first message → originSeq 0 (0-indexed), copied verbatim
           bobLocalThreadId = msg!.threadId;
           bobLocalSeq = msg!.seq;
@@ -340,9 +462,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('forwards a complete bundle closure, preserves retry idempotency, and relays a nested bundle from the receiving server', async () => {
-    const sourceA = await appA.prisma.message.findFirstOrThrow({
-      where: { content: 'hi from alice', creator: aliceLocalIdA },
+    const sourceA = await appA.database.query.message.findFirst({
+      where: and(
+        eq(message.content, JSON.stringify({ text: 'hi from alice' })),
+        eq(message.creator, aliceLocalIdA),
+      ),
     });
+    if (!sourceA) throw new Error('source message missing on appA');
     const clientMessageIdA = randomUUID();
     const payloadA = {
       threadId: sourceA.threadId,
@@ -361,9 +487,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send(payloadA);
     expect(retry.body.data.seq).toBe(first.body.data.seq);
     expect(
-      await appA.prisma.message.count({
-        where: { clientMessageId: clientMessageIdA },
-      }),
+      await countMessages(appA, eq(message.clientMessageId, clientMessageIdA)),
     ).toBe(1);
 
     let importedOnB: {
@@ -373,14 +497,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     } | null = null;
     await vi.waitFor(
       async () => {
-        importedOnB = await appB.prisma.message.findFirst({
-          where: {
-            creator: aliceStubIdOnB,
-            contentType: ContentType.FORWARD,
-          },
-          include: { forwardMessage: { include: { bundle: true } } },
-          orderBy: { seq: 'desc' },
-        });
+        importedOnB = await findLatestForwardMessage(appB, aliceStubIdOnB);
         expect(importedOnB?.forwardMessage?.bundle.depth).toBe(1);
       },
       { timeout: 8000 },
@@ -402,18 +519,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     await vi.waitFor(
       async () => {
-        const relayed = await appA.prisma.message.findFirst({
-          where: {
-            creator: bobStubIdOnA,
-            contentType: ContentType.FORWARD,
-          },
-          include: { forwardMessage: { include: { bundle: true } } },
-          orderBy: { seq: 'desc' },
-        });
+        const relayed = await findLatestForwardMessage(appA, bobStubIdOnA);
         expect(relayed?.forwardMessage?.bundle.depth).toBe(2);
-        const closure = await appA.prisma.forwardBundleDependency.findMany({
-          where: { parentBundleId: relayed!.forwardMessage!.bundleId },
-        });
+        const closure =
+          await appA.database.query.forwardBundleDependency.findMany({
+            where: eq(
+              forwardBundleDependency.parentBundleId,
+              relayed!.forwardMessage!.bundleId,
+            ),
+          });
         expect(closure).toHaveLength(1);
       },
       { timeout: 8000 },
@@ -421,9 +535,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   }, 30_000);
 
   it('Step 2: pull-on-open is idempotent (a re-sync stores no duplicate)', async () => {
-    const before = await appB.prisma.message.count({
-      where: { creator: aliceStubIdOnB },
-    });
+    const before = await countMessages(
+      appB,
+      eq(message.creator, aliceStubIdOnB),
+    );
     // sync-peer-profile triggers pull-on-open (§4.4) — fire-and-forget; the originSeq unique index
     // absorbs the re-pull as a no-op (the message is already at the cursor).
     await request(appB.baseUrl)
@@ -432,9 +547,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ userId: aliceStubIdOnB });
     // Let the async pull settle, then assert nothing duplicated.
     await new Promise((r) => setTimeout(r, 1500));
-    const after = await appB.prisma.message.count({
-      where: { creator: aliceStubIdOnB },
-    });
+    const after = await countMessages(
+      appB,
+      eq(message.creator, aliceStubIdOnB),
+    );
     expect(after).toBe(before);
   });
 
@@ -456,10 +572,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     }
     // alice's messages on appA (the serving side), originSeq ascending. Includes the 3 seeded + any from
     // earlier Step-2 tests — all are < (max+1), so the assertions hold regardless of the prior count.
-    const rows = await appA.prisma.message.findMany({
-      where: { threadId, creator: aliceLocalIdA },
-      orderBy: { originSeq: 'asc' },
-      select: { originSeq: true },
+    const rows = await appA.database.query.message.findMany({
+      where: and(
+        eq(message.threadId, threadId),
+        eq(message.creator, aliceLocalIdA),
+      ),
+      orderBy: message.originSeq,
+      columns: { originSeq: true },
     });
     expect(rows.length).toBeGreaterThanOrEqual(3);
     const allSeqs = rows.map((r) => r.originSeq ?? 0);
@@ -521,8 +640,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.message.findFirst({
-            where: { content: 'recover me', creator: aliceStubIdOnB },
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.content, JSON.stringify({ text: 'recover me' })),
+              eq(message.creator, aliceStubIdOnB),
+            ),
           }),
         ).not.toBeNull();
       },
@@ -531,14 +653,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Simulate a message appB never stored (a lost push / a store that failed after the pull): wipe ONLY
     // appB's copy — scoped by creator so appA's own copy (creator = alice's local id) survives to be
     // re-pulled. The cursor (MAX originSeq for alice's stub on appB) drops, so pull-on-open sees the gap.
-    await appB.prisma.message.deleteMany({
-      where: { content: 'recover me', creator: aliceStubIdOnB },
-    });
+    await appB.database
+      .delete(message)
+      .where(
+        and(
+          eq(message.content, JSON.stringify({ text: 'recover me' })),
+          eq(message.creator, aliceStubIdOnB),
+        ),
+      );
     expect(
-      await appB.prisma.message.findFirst({
-        where: { content: 'recover me', creator: aliceStubIdOnB },
+      await appB.database.query.message.findFirst({
+        where: and(
+          eq(message.content, JSON.stringify({ text: 'recover me' })),
+          eq(message.creator, aliceStubIdOnB),
+        ),
       }),
-    ).toBeNull();
+    ).toBeUndefined();
 
     // bob opens the thread → pull-on-open re-derives the cursor + re-fetches the gap from appA — the
     // §4.4 backstop that makes a lost push non-fatal.
@@ -549,8 +679,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.message.findFirst({
-            where: { content: 'recover me', creator: aliceStubIdOnB },
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.content, JSON.stringify({ text: 'recover me' })),
+              eq(message.creator, aliceStubIdOnB),
+            ),
           }),
         ).not.toBeNull();
       },
@@ -561,35 +694,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('Step 2: a federated image localizes on the peer (media round-trip, same-origin)', async () => {
     // alice uploads an image on appA (fixture) → a CAS url. Sent as an IMAGE message whose content
     // embeds the url (the shape extractDigestEntries scans for the digest + ext).
-    const { url, size, digest } = await stageCasAsset(
-      appA.prisma,
-      'image/png',
-      await makePng(77),
+    const { url, digest } = await sendFederatedImage(
+      await makePng(Math.floor(Math.random() * 256)),
+      16,
     );
-    const content = JSON.stringify({ url, w: 16, h: 16, size });
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: await alicesThreadIdOnA(),
-        content,
-        contentType: 'IMAGE',
-      });
-    expect(res.status).toBe(200);
 
     // The message pulls, then localizeMedia fetches the digest via /get_file + stores it in appB's CAS
     // (byte-identical → same shard path) + writes the MediaMessage authz row. Poll for both.
     await vi.waitFor(
       async () => {
-        const asset = await appB.prisma.mediaAsset.findUnique({
-          where: { digest },
+        const asset = await appB.database.query.mediaAsset.findFirst({
+          where: eq(mediaAsset.digest, digest),
         });
-        expect(asset).not.toBeNull();
+        expect(asset).toBeDefined();
         expect(asset!.refs).toBeGreaterThan(0);
-        const mm = await appB.prisma.mediaMessage.findFirst({
-          where: { digest },
+        const mm = await appB.database.query.mediaMessage.findFirst({
+          where: eq(mediaMessage.digest, digest),
         });
-        expect(mm).not.toBeNull();
+        expect(mm).toBeDefined();
       },
       { timeout: 5000 },
     );
@@ -612,36 +734,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // A 48x48 PNG spans several 64-byte chunks (chunk size forced small in beforeAll). The file can ONLY
     // localize if appB fetches /get_file as a sequence of signed Range GETs + reassembles them — so a
     // byte-exact result here PROVES the multi-chunk path (no need to count /get_file calls).
-    const { url, size, digest } = await stageCasAsset(
-      appA.prisma,
-      'image/png',
+    const { url, size, digest } = await sendFederatedImage(
       await makePng(77, 48),
+      48,
     );
-    const content = JSON.stringify({ url, w: 48, h: 48, size });
-
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: await alicesThreadIdOnA(),
-        content,
-        contentType: 'IMAGE',
-      });
-    expect(res.status).toBe(200);
 
     // appB (its own DB) has never seen this asset → localizeMedia fetches it over /get_file + writes a
     // MediaAsset + MediaMessage row. (No shared-DB dedup to defeat: appA's row is in _a, appB's in _b.)
     await vi.waitFor(
       async () => {
-        const asset = await appB.prisma.mediaAsset.findUnique({
-          where: { digest },
+        const asset = await appB.database.query.mediaAsset.findFirst({
+          where: eq(mediaAsset.digest, digest),
         });
-        expect(asset).not.toBeNull();
+        expect(asset).toBeDefined();
         expect(asset!.refs).toBeGreaterThan(0);
-        const mm = await appB.prisma.mediaMessage.findFirst({
-          where: { digest },
+        const mm = await appB.database.query.mediaMessage.findFirst({
+          where: eq(mediaMessage.digest, digest),
         });
-        expect(mm).not.toBeNull();
+        expect(mm).toBeDefined();
       },
       { timeout: 5000 },
     );
@@ -666,34 +776,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('Step 2: a dropped /get_file chunk resumes from its offset (no demote, byte-exact)', async () => {
-    const { url, size, digest } = await stageCasAsset(
-      appA.prisma,
-      'image/png',
-      await makePng(190, 48),
-    );
-    const content = JSON.stringify({ url, w: 48, h: 48, size });
+    const imageBytes = await makePng(190, 48);
 
     // Arm the S2S proxy (on appB→appA) to truncate the FIRST /get_file `bytes=0-` response mid-stream —
     // a simulated network drop. appB must discard the partial unit + re-request the SAME range (resume),
     // NOT demote appA. The proxy preserves the signed Host, so signatures still verify at appA.
     proxy.armGetFileTruncation();
 
-    const res = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: await alicesThreadIdOnA(),
-        content,
-        contentType: 'IMAGE',
-      });
-    expect(res.status).toBe(200);
+    const { url, size, digest } = await sendFederatedImage(imageBytes, 48);
 
     await vi.waitFor(
       async () => {
-        const asset = await appB.prisma.mediaAsset.findUnique({
-          where: { digest },
+        const asset = await appB.database.query.mediaAsset.findFirst({
+          where: eq(mediaAsset.digest, digest),
         });
-        expect(asset).not.toBeNull();
+        expect(asset).toBeDefined();
         expect(asset!.refs).toBeGreaterThan(0);
       },
       { timeout: 8000 },
@@ -703,8 +800,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // that got truncated + the retry that succeeded) → appB re-requested the SAME range, not restarted.
     expect(proxy.firstRangeGetFileCount()).toBeGreaterThanOrEqual(2);
     // A mid-body stall is a stream glitch, not a trust failure → appB must still trust appA.
-    const peer = await appB.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_A },
+    const peer = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
     });
     expect(peer?.trustLevel).toBe('trusted');
 
@@ -727,8 +824,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('/revision probe re-pulls a changed avatar', async () => {
-    const before = await appB.prisma.user.findUnique({
-      where: { id: aliceStubIdOnB },
+    const before = await appB.database.query.user.findFirst({
+      where: eq(user.id, aliceStubIdOnB),
     });
     expect(before?.remoteProfileRev).not.toBeNull();
     const avatarBefore = before!.avatar;
@@ -747,8 +844,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const after = await vi.waitFor(
       async () => {
-        const a = await appB.prisma.user.findUnique({
-          where: { id: aliceStubIdOnB },
+        const a = await appB.database.query.user.findFirst({
+          where: eq(user.id, aliceStubIdOnB),
         });
         expect(a?.avatar).not.toBe(avatarBefore); // re-pulled to the new avatar
         return a!;
@@ -764,11 +861,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('sync-peer-profile is ACK-only (no payload) and no-ops when the stub is fresh', async () => {
     // After the re-pull above, the stub is fresh (remoteProfileRev == appA's profileRev). The signal-only
     // design ALWAYS returns ACK with NO profile payload; a fresh stub triggers no async re-pull.
-    const before = await appB.prisma.user.findUnique({
-      where: { id: aliceStubIdOnB },
-      select: { avatar: true, remoteProfileRev: true },
+    const before = await appB.database.query.user.findFirst({
+      where: eq(user.id, aliceStubIdOnB),
+      columns: { avatar: true, remoteProfileRev: true },
     });
-    expect(before).not.toBeNull();
+    expect(before).toBeDefined();
     const avatarBefore = before!.avatar;
 
     const res = await request(appB.baseUrl)
@@ -785,9 +882,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Fresh stub → the async federated probe finds nothing newer → no re-localize. Give the async probe a
     // moment to (not) re-pull, then confirm the avatar is untouched.
     await new Promise((r) => setTimeout(r, 1500));
-    const after = await appB.prisma.user.findUnique({
-      where: { id: aliceStubIdOnB },
-      select: { avatar: true },
+    const after = await appB.database.query.user.findFirst({
+      where: eq(user.id, aliceStubIdOnB),
+      columns: { avatar: true },
     });
     expect(after?.avatar).toBe(avatarBefore);
   });
@@ -863,10 +960,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const groupThreadA = create.body.data.threadId as number;
 
     // The group account (groupUser.account == the group !account) — the on-wire group address.
-    const trdA = await appA.prisma.messageThread.findUnique({
-      where: { id: groupThreadA },
-      select: { groupUser: { select: { account: true, domain: true } } },
-    });
+    const trdA = await findGroupThreadById(appA, groupThreadA);
     expect(trdA?.groupUser?.account).toBeTruthy();
     // appA is the ORIGIN: a local group-user carries the 'local' domain sentinel (isOriginThread checks
     // `=== 'local'`); the real domain is materialized only on the wire (roster/address mapping). The
@@ -877,11 +971,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // appB mints the mirror + the incoming Invite (handleGroupInvite). Poll for the mirror thread.
     const mirrorB = await vi.waitFor(
       async () => {
-        const m = await appB.prisma.messageThread.findFirst({
-          where: { groupUser: { account: groupAccount } },
-          select: { id: true, groupUser: { select: { domain: true } } },
-        });
-        expect(m).not.toBeNull();
+        const m = await findGroupThreadByAccount(appB, groupAccount);
+        expect(m).toBeDefined();
         expect(m!.groupUser?.domain).toBe(DOM_A); // mirror knows the origin
         return m!;
       },
@@ -896,13 +987,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // card body pinpoint it; the `!account` is globally unique).
     await vi.waitFor(
       async () => {
-        const card = await appB.prisma.message.findFirst({
-          where: {
-            contentType: ContentType.INVITE,
-            content: { contains: groupAccount },
-          },
+        const card = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.contentType, ContentType.INVITE),
+            sql`${message.content}::text like ${`%${groupAccount}%`}`,
+          ),
         });
-        expect(card).not.toBeNull();
+        expect(card).toBeDefined();
       },
       { timeout: 8000 },
     );
@@ -922,11 +1013,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // The origin (appA) records bob on its canonical roster (handleGroupAccept). Poll for it.
     await vi.waitFor(
       async () => {
-        const bobOnA = await appA.prisma.threadParticipant.findUnique({
-          where: {
-            userId_threadId: { userId: bobStubIdOnA, threadId: groupThreadA },
-          },
-          select: { leftAt: true },
+        const bobOnA = await appA.database.query.threadParticipant.findFirst({
+          where: and(
+            eq(threadParticipant.userId, bobStubIdOnA),
+            eq(threadParticipant.threadId, groupThreadA),
+          ),
+          columns: { leftAt: true },
         });
         expect(bobOnA?.leftAt).toBeNull(); // bob is an active member on the origin roster
       },
@@ -952,10 +1044,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       let helloGroupSeq = -1;
       await vi.waitFor(
         async () => {
-          const msg = await appB.prisma.message.findFirst({
-            where: { threadId: mirrorB.id, content: 'hello group' },
+          const msg = await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, mirrorB.id),
+              eq(message.content, textContent('hello group')),
+            ),
           });
-          expect(msg).not.toBeNull();
+          expect(msg).toBeDefined();
           helloGroupSeq = msg!.seq;
         },
         { timeout: 8000 },
@@ -1002,13 +1097,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.message.findFirst({
-            where: { threadId: firstMirrorBId, content: 'open-recover-1' },
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.content, textContent('open-recover-1')),
+            ),
           }),
         ).not.toBeNull();
         expect(
-          await appB.prisma.message.findFirst({
-            where: { threadId: firstMirrorBId, content: 'open-recover-2' },
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.content, textContent('open-recover-2')),
+            ),
           }),
         ).not.toBeNull();
       },
@@ -1021,25 +1122,36 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // per-author), so a deletion alone would NOT self-heal (unlike P2P's derived MAX). We regress the
     // cursor explicitly — the exact real stuck condition — reading open-recover-1's origin thread seq from
     // appA (the authority), since appB's stored copy carries only its OWN local seq + the per-author originSeq.
-    const recover1OriginSeq = (await appA.prisma.message.findFirst({
-      where: { threadId: firstGroupThreadA, content: 'open-recover-1' },
-      select: { seq: true },
+    const recover1OriginSeq = (await appA.database.query.message.findFirst({
+      where: and(
+        eq(message.threadId, firstGroupThreadA),
+        eq(message.content, textContent('open-recover-1')),
+      ),
+      columns: { seq: true },
     }))!.seq;
-    await appB.prisma.message.deleteMany({
-      where: {
-        threadId: firstMirrorBId,
-        content: { in: ['open-recover-1', 'open-recover-2'] },
-      },
-    });
-    await appB.prisma.messageThread.update({
-      where: { id: firstMirrorBId },
-      data: { pullUntil: recover1OriginSeq - 1 },
-    });
+    await appB.database
+      .delete(message)
+      .where(
+        and(
+          eq(message.threadId, firstMirrorBId),
+          inArray(message.content, [
+            textContent('open-recover-1'),
+            textContent('open-recover-2'),
+          ]),
+        ),
+      );
+    await appB.database
+      .update(messageThread)
+      .set({ pullUntil: recover1OriginSeq - 1 })
+      .where(eq(messageThread.id, firstMirrorBId));
     expect(
-      await appB.prisma.message.findFirst({
-        where: { threadId: firstMirrorBId, content: 'open-recover-1' },
+      await appB.database.query.message.findFirst({
+        where: and(
+          eq(message.threadId, firstMirrorBId),
+          eq(message.content, textContent('open-recover-1')),
+        ),
       }),
-    ).toBeNull();
+    ).toBeUndefined();
 
     // bob opens the group chat → /group/sync-meta → syncGroupMessagesOnOpen → force-pull (bypasses the
     // receiver debounce) → re-fetches both. Without the #1 fix, these would stay stuck on the origin
@@ -1051,13 +1163,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.message.findFirst({
-            where: { threadId: firstMirrorBId, content: 'open-recover-1' },
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.content, textContent('open-recover-1')),
+            ),
           }),
         ).not.toBeNull();
         expect(
-          await appB.prisma.message.findFirst({
-            where: { threadId: firstMirrorBId, content: 'open-recover-2' },
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.content, textContent('open-recover-2')),
+            ),
           }),
         ).not.toBeNull();
       },
@@ -1083,10 +1201,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ toUserId: daveStubA, note: 'hi dave' });
     const daveFriendInv = await vi.waitFor(
       async () => {
-        const inv = await appB.prisma.invite.findFirst({
-          where: { kind: 'FRIEND', status: 'PENDING', toUserId: daveLocalIdB },
+        const inv = await appB.database.query.invite.findFirst({
+          where: and(
+            eq(invite.kind, 'FRIEND'),
+            eq(invite.status, 'PENDING'),
+            eq(invite.toUserId, daveLocalIdB),
+          ),
         });
-        expect(inv).not.toBeNull();
+        expect(inv).toBeDefined();
         return inv!;
       },
       { timeout: 5000 },
@@ -1099,14 +1221,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.threadParticipant.findFirst({
-            where: {
-              userId: daveLocalIdB,
-              leftAt: null,
-              thread: { type: 'P2P' },
-            },
-            select: { threadId: true },
-          }),
+          await findActiveP2pParticipant(appB, daveLocalIdB),
         ).not.toBeNull();
       },
       { timeout: 5000 },
@@ -1120,13 +1235,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.invite.findFirst({
-            where: {
-              kind: 'GROUP',
-              status: 'PENDING',
-              toUserId: daveLocalIdB,
-              thread: { groupUser: { account: firstGroupAccount } },
-            },
+          await appB.database.query.invite.findFirst({
+            where: and(
+              eq(invite.kind, 'GROUP'),
+              eq(invite.status, 'PENDING'),
+              eq(invite.toUserId, daveLocalIdB),
+              eq(invite.threadId, firstMirrorBId),
+            ),
           }),
         ).not.toBeNull();
       },
@@ -1145,12 +1260,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await vi.waitFor(
       async () => {
         expect(
-          await appB.prisma.threadParticipant.findFirst({
-            where: {
-              userId: daveLocalIdB,
-              threadId: firstMirrorBId,
-              leftAt: null,
-            },
+          await appB.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.userId, daveLocalIdB),
+              eq(threadParticipant.threadId, firstMirrorBId),
+              isNull(threadParticipant.leftAt),
+            ),
           }),
         ).not.toBeNull();
       },
@@ -1174,10 +1289,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       // iterate every active local member of the one mirror thread, not just the first.
       const hiBoth = await vi.waitFor(
         async () => {
-          const msg = await appB.prisma.message.findFirst({
-            where: { threadId: firstMirrorBId, content: 'hi both' },
+          const msg = await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.content, textContent('hi both')),
+            ),
           });
-          expect(msg).not.toBeNull();
+          expect(msg).toBeDefined();
           return msg!;
         },
         { timeout: 8000 },
@@ -1208,11 +1326,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   it('Step 3: a mirror member leaving propagates to the origin roster (pull-reject dissolution, no demote)', async () => {
     // Precondition: bob's stub is ACTIVE on the origin's canonical roster for the first group.
-    const bobOnABefore = await appA.prisma.threadParticipant.findUnique({
-      where: {
-        userId_threadId: { userId: bobStubIdOnA, threadId: firstGroupThreadA },
-      },
-      select: { leftAt: true },
+    const bobOnABefore = await appA.database.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.userId, bobStubIdOnA),
+        eq(threadParticipant.threadId, firstGroupThreadA),
+      ),
+      columns: { leftAt: true },
     });
     expect(bobOnABefore?.leftAt).toBeNull();
 
@@ -1230,21 +1349,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(leave.body.code).toBe(BusinessCode.OK);
 
     // appB soft-left bob on the mirror thread (the local side of the leave — synchronous).
-    const bobLocalB = await appB.prisma.user.findUnique({
-      where: { account_domain: { account: 'bob', domain: 'local' } },
-      select: { id: true },
+    const bobLocalB = await appB.database.query.user.findFirst({
+      where: and(eq(user.account, 'bob'), eq(user.domain, 'local')),
+      columns: { id: true },
     });
-    expect(bobLocalB).not.toBeNull();
+    expect(bobLocalB).toBeDefined();
     await vi.waitFor(
       async () => {
-        const bobOnB = await appB.prisma.threadParticipant.findUnique({
-          where: {
-            userId_threadId: {
-              userId: bobLocalB!.id,
-              threadId: firstMirrorBId,
-            },
-          },
-          select: { leftAt: true },
+        const bobOnB = await appB.database.query.threadParticipant.findFirst({
+          where: and(
+            eq(threadParticipant.userId, bobLocalB!.id),
+            eq(threadParticipant.threadId, firstMirrorBId),
+          ),
+          columns: { leftAt: true },
         });
         expect(bobOnB?.leftAt).not.toBeNull();
       },
@@ -1255,15 +1372,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // end-to-end proof: a leave on the mirror reached the origin over the message-pull channel.
     await vi.waitFor(
       async () => {
-        const bobOnAAfter = await appA.prisma.threadParticipant.findUnique({
-          where: {
-            userId_threadId: {
-              userId: bobStubIdOnA,
-              threadId: firstGroupThreadA,
-            },
-          },
-          select: { leftAt: true },
-        });
+        const bobOnAAfter =
+          await appA.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.userId, bobStubIdOnA),
+              eq(threadParticipant.threadId, firstGroupThreadA),
+            ),
+            columns: { leftAt: true },
+          });
         expect(bobOnAAfter?.leftAt).not.toBeNull();
       },
       { timeout: 8000 },
@@ -1272,9 +1388,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Regression guard for the core hazard: the 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) outcome must NOT
     // demote the peer. (Before this change, a left author yielded HTTP 403 → getSigned demoted → the trust
     // broke.)
-    const peer = await appA.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_B },
-      select: { trustLevel: true },
+    const peer = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
+      columns: { trustLevel: true },
     });
     expect(peer?.trustLevel).toBe('trusted');
   }, 60_000);
@@ -1309,19 +1425,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ groupId: groupThreadA, userIds: [bobStubIdOnA] });
     expect(invite.body.code).toBe(BusinessCode.OK);
 
-    const groupAccount = (await appA.prisma.messageThread.findUnique({
-      where: { id: groupThreadA },
-      select: { groupUser: { select: { account: true } } },
-    }))!.groupUser!.account;
+    const groupAccount = (await findGroupThreadById(appA, groupThreadA))!
+      .groupUser.account;
 
     // bob's mirror is created with pullUntil seeded to sinceSeq = 0 (past the pre-invite seq 0).
     const mirrorB = await vi.waitFor(
       async () => {
-        const m = await appB.prisma.messageThread.findFirst({
-          where: { groupUser: { account: groupAccount } },
-          select: { id: true, pullUntil: true },
-        });
-        expect(m).not.toBeNull();
+        const m = await findGroupThreadByAccount(appB, groupAccount);
+        expect(m).toBeDefined();
         expect(m!.pullUntil).toBe(0); // seeded past the pre-invite message
         return m!;
       },
@@ -1350,19 +1461,25 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(post.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
       async () => {
-        const got = await appB.prisma.message.findFirst({
-          where: { threadId: mirrorB.id, content: 'after-invite' },
+        const got = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, mirrorB.id),
+            eq(message.content, textContent('after-invite')),
+          ),
         });
-        expect(got).not.toBeNull();
+        expect(got).toBeDefined();
       },
       { timeout: 8000 },
     );
 
     // The pre-invite message (seq 0) was NEVER pulled — pullUntil was seeded past it.
-    const leaked = await appB.prisma.message.findFirst({
-      where: { threadId: mirrorB.id, content: 'before-bob-joined' },
+    const leaked = await appB.database.query.message.findFirst({
+      where: and(
+        eq(message.threadId, mirrorB.id),
+        eq(message.content, textContent('before-bob-joined')),
+      ),
     });
-    expect(leaked).toBeNull();
+    expect(leaked).toBeUndefined();
   }, 60_000);
 
   it('unfriend is local-only (no S2S fan-out; peer learns lazily)', async () => {
@@ -1374,19 +1491,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.body.code).toBe(BusinessCode.OK);
 
     // appA tore it down — the P2P thread is soft-left (no active thread between alice and bob's stub).
-    const threadA = await appA.prisma.threadParticipant.findFirst({
-      where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
-      select: { threadId: true },
-    });
-    expect(threadA).toBeNull();
+    const threadA = await findActiveP2pParticipant(appA, bobStubIdOnA);
+    expect(threadA).toBeUndefined();
 
     // appB is UNCHANGED — no S2S notification was sent. The active P2P thread still stands; appB only
     // learns lazily about the severance (Step 2 send-reject, resolveFriendshipThread → 403).
-    const threadB = await appB.prisma.threadParticipant.findFirst({
-      where: { userId: aliceStubIdOnB, leftAt: null, thread: { type: 'P2P' } },
-      select: { threadId: true },
-    });
-    expect(threadB).not.toBeNull();
+    const threadB = await findActiveP2pParticipant(appB, aliceStubIdOnB);
+    expect(threadB).toBeDefined();
   });
 
   it('rejects an inbound invite signed by an untrusted domain', async () => {
@@ -1433,12 +1544,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   it('demotes a trusted peer when a signed op fails (network), logs the event + purges keys', async () => {
     // Precondition: aaa still trusts bbb, and bbb's signing keys are cached on aaa (fetched at init).
-    const peerBefore = await appA.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_B },
+    const peerBefore = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
     });
     expect(peerBefore?.trustLevel).toBe('trusted');
-    const keysBefore = await appA.prisma.s2SKeyCache.findMany({
-      where: { domain: DOM_B },
+    const keysBefore = await appA.database.query.s2SKeyCache.findMany({
+      where: eq(s2SKeyCache.domain, DOM_B),
     });
     expect(keysBefore.length).toBeGreaterThan(0);
 
@@ -1453,22 +1564,27 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.body.code).toBe(BusinessCode.FEDERATION_DELIVERY_FAILED);
 
     // aaa demoted bbb: state flipped, count bumped, demoted event logged, keys purged.
-    const peerAfter = await appA.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_B },
+    const peerAfter = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
     });
     expect(peerAfter?.trustLevel).toBe('demoted');
     expect(peerAfter?.demotionCount).toBe(1);
     expect(peerAfter?.demotedAt).not.toBeNull();
     expect(peerAfter?.demoteReason).toContain('network/timeout');
 
-    const demotedEvent = await appA.prisma.federatedPeerEvent.findFirst({
-      where: { domain: DOM_B, type: 'demoted' },
-    });
-    expect(demotedEvent).not.toBeNull();
+    const demotedEvent = await appA.database.query.federatedPeerEvent.findFirst(
+      {
+        where: and(
+          eq(federatedPeerEvent.domain, DOM_B),
+          eq(federatedPeerEvent.type, 'demoted'),
+        ),
+      },
+    );
+    expect(demotedEvent).toBeDefined();
     expect(demotedEvent!.reason).toContain('network/timeout');
 
-    const keysAfter = await appA.prisma.s2SKeyCache.findMany({
-      where: { domain: DOM_B },
+    const keysAfter = await appA.database.query.s2SKeyCache.findMany({
+      where: eq(s2SKeyCache.domain, DOM_B),
     });
     expect(keysAfter.length).toBe(0);
 
@@ -1486,8 +1602,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
 
-    const peer = await appA.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_B },
+    const peer = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
     });
     expect(peer?.trustLevel).toBe('trusted');
     expect(peer?.demotedAt).toBeNull();
@@ -1513,8 +1629,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .post(`/api/v1/admin/federation/peers/${DOM_B}/block`)
       .set('Cookie', adminCookieA)
       .send({ note: 'abuse' });
-    const blocked = await appA.prisma.federatedPeer.findUnique({
-      where: { domain: DOM_B },
+    const blocked = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
     });
     expect(blocked?.trustLevel).toBe('blocked');
 

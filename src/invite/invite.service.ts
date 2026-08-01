@@ -180,7 +180,7 @@ export class InviteService {
 
     // Explicit type param keeps the callback's `status` literals from widening to string (the
     // bare `const result = await …` form loses the method-return contextual type the old
-    // `return this.prisma.$transaction(…)` form got for free).
+    // returning the transaction promise directly used to provide implicitly).
     const result = await this.database.db.transaction<CreateFriendInviteResult>(
       async (tx) => {
         if (allowAutoAccept) {

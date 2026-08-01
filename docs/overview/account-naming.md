@@ -82,7 +82,7 @@ Regex (**validate**, then **normalize** — see §4):
   because `!` is neither a letter nor a digit (§2.1).
 - **Dot rules:** no leading `.`, no trailing `.`, no consecutive `..`. The `(\.[a-z0-9]+)*` structure
   enforces this — `.` is only ever a single separator between alphanumeric runs.
-- **Length:** 3–31 characters. The DB column is `VarChar(31)` (`prisma/schema.prisma`); 31 is the
+- **Length:** 3–31 characters. The DB column is `VarChar(31)` (`src/database/schema.ts`); 31 is the
   hard ceiling.
 - **Semantics of `.`:** **significant, not collapsed.** `alice` ≠ `alice.bob` ≠ `alicebob` are three
   distinct accounts. This is NOT Gmail-style dot-ignoring.
@@ -118,7 +118,7 @@ opposite of an opaque random id. (The codebase already applied the same principl
 are content-addressed by sha256 CAS, not by a collision-retreat filename — `sanitizeName` only
 cleans names, it never appends an incrementing suffix.)
 
-The `@@unique([account, domain])` index makes a Prisma `P2002` *theoretically* possible, so the
+The unique `(account, domain)` index makes a duplicate-key race *theoretically* possible, so the
 minting path uses a **bounded regenerate-and-retry** loop as a correctness safety net — NOT a suffix
 retreat:
 

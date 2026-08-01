@@ -444,7 +444,7 @@ ALTER TABLE "Admin" ADD CONSTRAINT "Admin_userId_fkey" FOREIGN KEY ("userId") RE
 ALTER TABLE "AdminRefreshToken" ADD CONSTRAINT "AdminRefreshToken_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 
--- Invariants Prisma cannot express (raw SQL): the baseline carries them so a fresh reset recreates them.
+-- Database invariants carried in SQL so a fresh reset recreates them exactly.
 ALTER TABLE "MessageThread" ADD CONSTRAINT "MessageThread_groupUserId_type_check"
   CHECK (("type" = 'P2P') = ("groupUserId" IS NULL));
 ALTER TABLE "User" ADD CONSTRAINT "User_isGroup_sigil_check"
@@ -559,7 +559,7 @@ ALTER TABLE "AdminActionLog" ADD CONSTRAINT "AdminActionLog_adminId_fkey"
 -- Federation pull cursor (Step 3 Phase B): the REMOTE server's thread seq this server has pulled up to.
 -- Seeded by the `sinceSeq` carried in invite/invite-accept; advanced to the response latestSeq after each
 -- pull. Used by 1:1 (peer's thread seq) and a GROUP mirror (origin's thread seq) — the unified catch-up
--- cursor. -1 = nothing pulled yet (the head). See schema.prisma `MessageThread.pullUntil`.
+-- cursor. -1 = nothing pulled yet (the head). See `src/database/schema.ts`.
 ALTER TABLE "MessageThread" ADD COLUMN "pullUntil" INTEGER NOT NULL DEFAULT -1;
 
 -- Source: 20260710140000_rename_fed_group_account/migration.sql
@@ -576,7 +576,7 @@ ALTER TABLE "MessageThread" RENAME COLUMN "federatedThreadId" TO "fedGroupAccoun
 -- (no Message, no seq, nothing visible in the thread). On success the row is deleted as the real
 -- Message+MediaMessage are created (promote); on failure it is marked `failed` and left (no auto-retry).
 -- Created BEFORE the file write so a crash between "intent recorded" and "bytes confirmed" always
--- leaves an attributable, GC-reclaimable record. See the model doc in schema.prisma.
+-- leaves an attributable, GC-reclaimable record. See `docs/overview/database.md`.
 CREATE TABLE "PendingMedia" (
     "id" BIGSERIAL NOT NULL,
     "threadId" INTEGER NOT NULL,
@@ -725,7 +725,7 @@ ALTER TABLE "FederatedPeer" ADD COLUMN "dailyMsgLimit" INTEGER,
 
 -- SessionToken: long-lived per-device session credential (Telegram-style). Supersedes the
 -- access+refresh+notification trinity. `expiresAt` is NULL for the native app (no lifecycle,
--- revocation-only) or a sliding 30-day deadline for web. See prisma/schema.prisma.
+-- revocation-only) or a sliding 30-day deadline for web. See `src/database/schema.ts`.
 
 CREATE TABLE "SessionToken" (
     "id" BIGSERIAL NOT NULL,
@@ -994,14 +994,14 @@ ALTER TABLE "DiagnosticsReport" ADD CONSTRAINT "DiagnosticsReport_reporterUserId
 
 -- Cleanup pass. Two parts:
 --  (1) Drop three unused PendingMedia columns — failReason, originDomain, originServerTime — with zero
---      Prisma reads/writes, zero raw-SQL references, and zero DTO exposure (PendingMedia is internal-
+--      ORM reads/writes, zero raw-SQL references, and zero DTO exposure (PendingMedia is internal-
 --      only). The 'failed' status they implied was never wired (the GC hard-deletes stale rows instead).
---  (2) Reconcile migrations ↔ schema.prisma drift left from earlier schema edits: drop stale column
+--  (2) Reconcile earlier migration/schema drift: drop stale column
 --      DEFAULTs (Group/SystemSetting @updatedAt carried DEFAULT NOW() though @updatedAt is client-
 --      managed; SessionToken.client carried DEFAULT 'web') and recreate the Group.groupUserId +
---      ThreadRevision FKs to the ON DELETE CASCADE action schema.prisma declares.
+--      ThreadRevision FKs to their intended ON DELETE CASCADE action.
 --  Non-destructive to row data (unused columns held none; defaults/constraints carry none). SQL generated
---  via `prisma migrate diff` so constraint names + actions match Prisma's schema intent exactly.
+--  so constraint names and actions match the typed schema exactly.
 -- Dropping the 3 columns is a model change (no data migration); the rest is schema/migrations alignment.
 
 -- DropForeignKey

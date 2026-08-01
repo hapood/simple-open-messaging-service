@@ -5,7 +5,9 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { and, eq } from 'drizzle-orm';
+import { DatabaseService } from '../src/database/database.service';
+import { user } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUser, seedSession } from './seed';
 
@@ -21,7 +23,7 @@ import { seedUser, seedSession } from './seed';
  */
 describe('Session management + login-policy e2e', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -31,13 +33,13 @@ describe('Session management + login-policy e2e', () => {
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
   });
 
   beforeEach(async () => {
     // CASCADE on User also clears SessionToken (FK→User); both listed so a stray session can't leak
     // between tests even if the on-delete weren't CASCADE.
-    await prisma.$executeRawUnsafe(
+    await database.pool.query(
       'TRUNCATE TABLE "SessionToken", "User" RESTART IDENTITY CASCADE',
     );
   });
@@ -61,7 +63,9 @@ describe('Session management + login-policy e2e', () => {
     expect(current).toBeTruthy();
     expect(current.client).toBe('app'); // the requesting credential's row
     expect(current.device).toBe('Pixel');
-    expect(rows.filter((r: { isCurrent: boolean }) => r.isCurrent)).toHaveLength(1);
+    expect(
+      rows.filter((r: { isCurrent: boolean }) => r.isCurrent),
+    ).toHaveLength(1);
   });
 
   it('POST /auth/revoke-session revokes the targeted session (it then 401s; others survive)', async () => {
@@ -73,7 +77,9 @@ describe('Session management + login-policy e2e', () => {
     const list = await request(app.getHttpServer())
       .post('/api/v1/auth/sessions')
       .set('Authorization', `Bearer ${aSession}`);
-    const bRow = list.body.data.find((r: { isCurrent: boolean }) => !r.isCurrent);
+    const bRow = list.body.data.find(
+      (r: { isCurrent: boolean }) => !r.isCurrent,
+    );
     expect(bRow).toBeTruthy();
 
     const revoke = await request(app.getHttpServer())
@@ -145,10 +151,12 @@ describe('Session management + login-policy e2e', () => {
       .send({ account: 'shouldnotexist', name: 'X', password: 'Pass1234' });
     expect(r.body.code).toBe(BusinessCode.REGISTRATION_DISABLED);
     // No user was created.
-    const exists = await prisma.user.findUnique({
-      where: { account_domain: { account: 'shouldnotexist', domain: 'local' } },
-    });
-    expect(exists).toBeNull();
+    const [exists] = await database.db
+      .select({ id: user.id })
+      .from(user)
+      .where(and(eq(user.account, 'shouldnotexist'), eq(user.domain, 'local')))
+      .limit(1);
+    expect(exists).toBeUndefined();
   });
 
   it('rejects password login with LOGIN_METHOD_DISABLED under APP_OTP_AND_QR', async () => {

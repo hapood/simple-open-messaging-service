@@ -3,10 +3,17 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import { asc, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
-import { ContentType } from '../src/prisma/generated/client.js';
+import { DatabaseService } from '../src/database/database.service';
+import {
+  message,
+  messageThread,
+  threadParticipant,
+  user,
+} from '../src/database/schema';
+import { ContentType } from '../src/database/enums.js';
 import { seedUser, seedSession } from './seed';
 
 /**
@@ -19,19 +26,21 @@ import { seedUser, seedSession } from './seed';
  */
 describe('notifications/action (descriptor button round-trip)', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let sessionToken: string;
   let recipientId: number;
   let threadId: number;
   let peerId: number;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
     const adapter = new FastifyAdapter();
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
   });
 
   afterAll(async () => {
@@ -39,38 +48,61 @@ describe('notifications/action (descriptor button round-trip)', () => {
   });
 
   beforeEach(async () => {
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
     const recipient = await seedUser(app, 'recip', { name: 'Recip' });
     recipientId = recipient.id;
     sessionToken = await seedSession(app, recipientId, 'app');
-    const peer = await prisma.user.create({
-      data: { account: 'alice', hashPwd: 'x', name: 'Alice', isForeigner: false },
-    });
+    const now = new Date();
+    const [peer] = await database.db
+      .insert(user)
+      .values({
+        account: 'alice',
+        hashPwd: 'x',
+        name: 'Alice',
+        isForeigner: false,
+        updatedAt: now,
+      })
+      .returning({ id: user.id });
     peerId = peer.id;
-    const thread = await prisma.messageThread.create({
-      data: { type: 'P2P', curSeq: 1, lastMessageSeq: 1, lastMessageAt: new Date() },
-    });
+    const [thread] = await database.db
+      .insert(messageThread)
+      .values({
+        type: 'P2P',
+        curSeq: 1,
+        lastMessageSeq: 1,
+        lastMessageAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: messageThread.id });
     threadId = thread.id;
-    await prisma.threadParticipant.createMany({
-      data: [
-        { userId: recipientId, threadId },
-        { userId: peerId, threadId },
-      ],
-    });
+    await database.db.insert(threadParticipant).values([
+      { userId: recipientId, threadId, updatedAt: now },
+      { userId: peerId, threadId, updatedAt: now },
+    ]);
     // seq 0 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 1 =
     // Alice's reply that arrives while away. /notifications/missed is pulled with since = seq 0.
-    await prisma.message.create({
-      data: {
-        threadId, seq: 0, originSeq: 0, contentType: ContentType.PURE_TEXT,
-        content: 'yo', creator: recipientId, createdAt: new Date(Date.now() - 1000),
+    await database.db.insert(message).values([
+      {
+        threadId,
+        seq: 0,
+        originSeq: 0,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({ text: 'yo' }),
+        creator: recipientId,
+        createdAt: new Date(Date.now() - 1000),
+        updatedAt: now,
       },
-    });
-    await prisma.message.create({
-      data: {
-        threadId, seq: 1, originSeq: 1, contentType: ContentType.PURE_TEXT,
-        content: 'hi', creator: peerId, createdAt: new Date(),
+      {
+        threadId,
+        seq: 1,
+        originSeq: 1,
+        contentType: ContentType.PURE_TEXT,
+        content: JSON.stringify({ text: 'hi' }),
+        creator: peerId,
+        createdAt: now,
+        updatedAt: now,
       },
-    });
+    ]);
   });
 
   function auth() {
@@ -87,7 +119,12 @@ describe('notifications/action (descriptor button round-trip)', () => {
     expect(d.title).toBe('Alice');
     expect(d.body).toBe('Alice sent you a message');
     expect(d.messages).toEqual([
-      expect.objectContaining({ seq: 1, senderId: peerId, senderName: 'Alice', text: 'hi' }),
+      expect.objectContaining({
+        seq: 1,
+        senderId: peerId,
+        senderName: 'Alice',
+        text: 'hi',
+      }),
     ]);
     // The button is still authored by the server (each client renders it), but the tap is PURE frontend:
     // the client advances its away-HWM to this cursor + closes the shade — it never POSTs, never touches the
@@ -100,42 +137,71 @@ describe('notifications/action (descriptor button round-trip)', () => {
     const act = await request(app.getHttpServer())
       .post('/api/v1/notifications/action')
       .set(auth())
-      .send({ tag: 'soms-msg', actionId: 'reply', threadId, replyText: '  thanks  ' });
+      .send({
+        tag: 'soms-msg',
+        actionId: 'reply',
+        threadId,
+        replyText: '  thanks  ',
+      });
     expect(act.body.code).toBe(0);
 
     // A new message row exists: seq 2, creator = recipient, content trimmed. (seq 0 = the recipient's HWM
     // baseline, seq 1 = Alice's reply, seq 2 = this inline reply.)
-    const msgs = await prisma.message.findMany({
-      where: { threadId }, orderBy: { seq: 'asc' },
-    });
+    const msgs = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.threadId, threadId))
+      .orderBy(asc(message.seq));
     expect(msgs.map((m) => m.seq)).toEqual([0, 1, 2]);
     const reply = msgs.find((m) => m.seq === 2)!;
     expect(reply.creator).toBe(recipientId);
     expect(reply.contentType).toBe(ContentType.PURE_TEXT);
-    expect(reply.content).toBe('thanks'); // trimmed
+    expect(JSON.parse(reply.content)).toEqual({ text: 'thanks' }); // trimmed
     // The thread's lastMessageSeq advanced (the send pipeline allocated seq 2).
-    const thread = await prisma.messageThread.findUnique({ where: { id: threadId } });
+    const [thread] = await database.db
+      .select()
+      .from(messageThread)
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
     expect(thread?.lastMessageSeq).toBe(2);
   });
 
   it('reply is refused for a thread the caller is not a member of (no message created)', async () => {
     // A thread the recipient is NOT in.
-    const other = await prisma.user.create({
-      data: { account: 'bob', hashPwd: 'x', name: 'Bob', isForeigner: false },
-    });
-    const otherThread = await prisma.messageThread.create({
-      data: { type: 'P2P', curSeq: 0, lastMessageSeq: null },
-    });
-    await prisma.threadParticipant.createMany({
-      data: [{ userId: other.id, threadId: otherThread.id }, { userId: peerId, threadId: otherThread.id }],
-    });
+    const now = new Date();
+    const [other] = await database.db
+      .insert(user)
+      .values({
+        account: 'bob',
+        hashPwd: 'x',
+        name: 'Bob',
+        isForeigner: false,
+        updatedAt: now,
+      })
+      .returning({ id: user.id });
+    const [otherThread] = await database.db
+      .insert(messageThread)
+      .values({ type: 'P2P', curSeq: 0, lastMessageSeq: null, updatedAt: now })
+      .returning({ id: messageThread.id });
+    await database.db.insert(threadParticipant).values([
+      { userId: other.id, threadId: otherThread.id, updatedAt: now },
+      { userId: peerId, threadId: otherThread.id, updatedAt: now },
+    ]);
 
     const act = await request(app.getHttpServer())
       .post('/api/v1/notifications/action')
       .set(auth())
-      .send({ tag: 'soms-msg', actionId: 'reply', threadId: otherThread.id, replyText: 'intrude' });
+      .send({
+        tag: 'soms-msg',
+        actionId: 'reply',
+        threadId: otherThread.id,
+        replyText: 'intrude',
+      });
     expect(act.body.code).toBe(0); // best-effort — 200, but no message created
-    const created = await prisma.message.findMany({ where: { threadId: otherThread.id } });
+    const created = await database.db
+      .select()
+      .from(message)
+      .where(eq(message.threadId, otherThread.id));
     expect(created).toEqual([]);
   });
 });

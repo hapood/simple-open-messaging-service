@@ -10,7 +10,7 @@ import { mediaAsset } from '../database/schema.js';
  *
  * The upsert compiles to `INSERT ... ON CONFLICT (digest) DO UPDATE SET refs = refs + 1`, which is
  * atomic under concurrency — two simultaneous uploads of identical bytes both succeed and land at
- * refs = 2. A defensive P2002 branch covers Prisma configs that surface the conflict as an error
+ * refs = 2. The atomic upsert prevents duplicate-digest races.
  * instead of a clean upsert.
  *
  * File-write ordering is the caller's job (UploadService.saveCas): write the shard file FIRST, then

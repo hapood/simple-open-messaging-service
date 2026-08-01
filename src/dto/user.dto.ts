@@ -18,7 +18,7 @@ import { IsDisplayName } from '../common/validators.js';
 /**
  * User-domain request DTOs. Validation rules are ported from the original inline checks.
  * Note: IsNumber + Type(() => Number) with the global ValidationPipe transform converts JSON/string input
- * to number (Prisma needs numeric ids).
+ * to number (database ids are numeric).
  */
 
 export class UserIdDto {
