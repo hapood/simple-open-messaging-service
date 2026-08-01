@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Menu, Moon, Search, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { LanguageSwitcher } from '@/components/layout/language-switcher'
 import { matchNav } from '@/components/layout/nav-config'
 import { useMe } from '@/hooks/use-me'
 import type { AdminRole } from '@/types/api'
@@ -69,6 +70,7 @@ export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
             </Badge>
           </div>
         ) : null}
+        <LanguageSwitcher />
         <Button
           variant="ghost"
           size="icon"

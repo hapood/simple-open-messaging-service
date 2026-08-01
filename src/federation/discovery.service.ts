@@ -1,6 +1,13 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  OnModuleDestroy,
+  Logger,
+} from '@nestjs/common';
 import { resolveSrv } from 'node:dns/promises';
-import { PrismaService } from '../prisma.service.js';
+import { and, eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { s2SKeyCache } from '../database/schema.js';
 import { loadFederationConfig } from './federation.config.js';
 
 interface PeerKey {
@@ -32,19 +39,21 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
   private refreshTimer: NodeJS.Timeout | undefined;
-  private readonly baseCache = new Map<string, { baseUrl: string; fetchedAt: number }>();
+  private readonly baseCache = new Map<
+    string,
+    { baseUrl: string; fetchedAt: number }
+  >();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   onModuleInit(): void {
-    this.refreshTimer = setInterval(
-      () => {
-        this.refreshAll().catch((e) =>
-          this.logger.warn(`proactive key-refresh round failed: ${(e as Error).message}`),
-        );
-      },
-      this.config.keyCacheTtlSec * 1000,
-    );
+    this.refreshTimer = setInterval(() => {
+      this.refreshAll().catch((e) =>
+        this.logger.warn(
+          `proactive key-refresh round failed: ${(e as Error).message}`,
+        ),
+      );
+    }, this.config.keyCacheTtlSec * 1000);
   }
 
   onModuleDestroy(): void {
@@ -71,13 +80,17 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
     } catch (e) {
       // No SRV record (ENOTFOUND) or DNS hiccup → fall back to the apex domain; the .well-known
       // fetch below is the real liveness test.
-      this.logger.debug(`SRV _soms._tcp.${domain} fell back to apex: ${(e as Error).message}`);
+      this.logger.debug(
+        `SRV _soms._tcp.${domain} fell back to apex: ${(e as Error).message}`,
+      );
     }
 
     const scheme = this.config.allowInsecureHttp ? 'http' : 'https';
     const defaultPort = scheme === 'https' ? 443 : 80;
     const baseUrl =
-      port && port !== defaultPort ? `${scheme}://${host}:${port}` : `${scheme}://${host}`;
+      port && port !== defaultPort
+        ? `${scheme}://${host}:${port}`
+        : `${scheme}://${host}`;
     this.baseCache.set(domain, { baseUrl, fetchedAt: Date.now() });
     return baseUrl;
   }
@@ -94,7 +107,9 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
     try {
       doc = (await res.json()) as WellKnownDoc;
     } catch (e) {
-      throw new Error(`well-known ${domain}: malformed JSON (${(e as Error).message})`);
+      throw new Error(
+        `well-known ${domain}: malformed JSON (${(e as Error).message})`,
+      );
     }
     if (!doc || !Array.isArray(doc.keys)) {
       throw new Error(`well-known ${domain}: missing keys`);
@@ -107,10 +122,13 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
    * THROWS on fetch failure (caller → 503 → sender retries). Returns null only if the peer is
    * reachable but does not publish this keyId (a permanent signature failure → caller 401).
    */
-  async getPublicKey(domain: string, keyId: string): Promise<Uint8Array | null> {
+  async getPublicKey(
+    domain: string,
+    keyId: string,
+  ): Promise<Uint8Array | null> {
     const ttlMs = this.config.keyCacheTtlSec * 1000;
-    const cached = await this.prisma.s2SKeyCache.findUnique({
-      where: { domain_keyId: { domain, keyId } },
+    const cached = await this.database.db.query.s2SKeyCache.findFirst({
+      where: and(eq(s2SKeyCache.domain, domain), eq(s2SKeyCache.keyId, keyId)),
     });
     if (cached && Date.now() - cached.fetchedAt.getTime() < ttlMs) {
       return Uint8Array.from(Buffer.from(cached.publicKey, 'base64'));
@@ -125,28 +143,32 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
   /** Cache all of a domain's currently-published keys (upsert + refresh fetchedAt). */
   async cacheKeys(domain: string, keys: PeerKey[]): Promise<void> {
     await Promise.all(
-      keys.map((k) =>
-        this.prisma.s2SKeyCache.upsert({
-          where: { domain_keyId: { domain, keyId: k.keyId } },
-          create: { domain, keyId: k.keyId, publicKey: k.ed25519 },
-          update: { publicKey: k.ed25519, fetchedAt: new Date() },
-        }),
-      ),
+      keys.map((k) => {
+        const fetchedAt = new Date();
+        return this.database.db
+          .insert(s2SKeyCache)
+          .values({ domain, keyId: k.keyId, publicKey: k.ed25519, fetchedAt })
+          .onConflictDoUpdate({
+            target: [s2SKeyCache.domain, s2SKeyCache.keyId],
+            set: { publicKey: k.ed25519, fetchedAt },
+          });
+      }),
     );
   }
 
   /** Proactive refresh: re-fetch every cached peer's keys. Per-domain failures are logged, not fatal. */
   private async refreshAll(): Promise<void> {
-    const rows = await this.prisma.s2SKeyCache.findMany({
-      select: { domain: true },
-      distinct: ['domain'],
-    });
+    const rows = await this.database.db
+      .selectDistinct({ domain: s2SKeyCache.domain })
+      .from(s2SKeyCache);
     for (const { domain } of rows) {
       try {
         const doc = await this.fetchWellKnown(domain);
         await this.cacheKeys(domain, doc.keys);
       } catch (e) {
-        this.logger.warn(`proactive key refresh failed for ${domain}: ${(e as Error).message}`);
+        this.logger.warn(
+          `proactive key refresh failed for ${domain}: ${(e as Error).message}`,
+        );
       }
     }
   }

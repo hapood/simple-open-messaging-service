@@ -11,8 +11,11 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import { MessageService } from '../message/message.service.js';
-import { ContentType, GroupRole, Prisma } from '../prisma/generated/client.js';
+import {
+  MessageService,
+  type MessageQueryParams,
+} from '../message/message.service.js';
+import { ContentType, GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -114,7 +117,16 @@ export class MessageController {
     }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
     if (contentType === ContentType.PURE_TEXT) {
-      const textContent = parseTextMessageContent(dto.content);
+      // Keep the pre-envelope wire contract working: older clients send the text body directly.
+      // JSON-looking input is still required to be a valid envelope so malformed quote payloads are
+      // not silently converted into visible text. Persistence remains canonical JSON in both cases.
+      const parsedTextContent = parseTextMessageContent(dto.content);
+      const trimmedContent = dto.content.trimStart();
+      const textContent =
+        parsedTextContent ??
+        (!trimmedContent.startsWith('{') && !trimmedContent.startsWith('[')
+          ? { text: dto.content }
+          : null);
       if (!textContent) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
@@ -459,7 +471,7 @@ export class MessageController {
     // take+1 trick: fetch one extra row to decide hasMore, then truncate `data` back to `take` rows.
     // This removes the edge case where a total count that is an exact multiple of `take` would make the
     // client fire one speculative empty request (its `< take` heuristic would otherwise be ambiguous).
-    const newParams: Prisma.MessageFindManyArgs = {
+    const newParams: MessageQueryParams = {
       skip: dto.skip,
       take: dto.take + 1,
       orderBy: { seq: dto.orderBy },

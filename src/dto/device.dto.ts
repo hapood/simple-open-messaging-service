@@ -1,6 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
-import { PushPlatform } from '../prisma/generated/client.js';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
+import {
+  PushPlatform,
+  type PushPlatform as PushPlatformType,
+} from '../database/enums.js';
 
 /**
  * Device registration DTOs for FCM push. The client obtains an FCM registration token from the
@@ -24,7 +33,7 @@ export class RegisterDeviceDto {
     description: 'Delivery platform (determines the server-side transport).',
   })
   @IsEnum(PushPlatform)
-  platform!: PushPlatform;
+  platform!: PushPlatformType;
 
   @ApiProperty({
     required: false,
@@ -49,7 +58,7 @@ export class RegisterDeviceDto {
   @ApiProperty({
     required: false,
     description:
-      'Optional client device_id (the web app\'s localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps.',
+      "Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps.",
   })
   @IsOptional()
   @IsString()

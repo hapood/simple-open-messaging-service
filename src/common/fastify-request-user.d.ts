@@ -2,10 +2,10 @@
 // the request after a successful auth guard (SessionAuthGuard / LocalAuthGuard / AdminAuthGuard).
 // Augmenting the interface here gives the whole codebase type-safe access to `req.user`
 // (userId for the C-end auth, adminId for the admin console) without scattering casts.
-import type {
-  MessageThreadType,
-  ThreadParticipant,
-} from '../prisma/generated/client.js';
+import type { MessageThreadType } from '../database/enums.js';
+import type { threadParticipant } from '../database/schema.js';
+
+type ThreadParticipant = typeof threadParticipant.$inferSelect;
 
 declare module 'fastify' {
   interface FastifyRequest {

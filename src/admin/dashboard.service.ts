@@ -1,5 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, desc, gt, isNull, lte, or, sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import {
+  adminActionLog,
+  federatedPeer,
+  mediaAsset,
+  sessionToken,
+} from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
 
@@ -17,7 +24,7 @@ import { AuditTargetLabelService } from './audit-target-label.service.js';
 @Injectable()
 export class DashboardService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly sseService: SseService,
     private readonly labels: AuditTargetLabelService,
   ) {}
@@ -33,40 +40,54 @@ export class DashboardService {
       recentActionRows,
     ] = await Promise.all([
       this.sseService.snapshot(),
-      this.prisma.sessionToken.count({
-        where: { revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-      }),
-      this.prisma.federatedPeer.groupBy({
-        by: ['trustLevel'],
-        _count: { _all: true },
-      }),
-      this.prisma.mediaAsset.aggregate({
-        _sum: { bytes: true },
-        _count: true,
-      }),
-      this.prisma.mediaAsset.count({ where: { refs: { lte: 0 } } }),
-      this.prisma.adminActionLog.findMany({
-        take: 10,
-        orderBy: { at: 'desc' },
-        select: {
-          id: true,
-          action: true,
-          targetType: true,
-          targetId: true,
-          adminId: true,
-          adminRole: true,
-          success: true,
-          errorMessage: true,
-          ip: true,
-          at: true,
-        },
-      }),
+      this.database.db
+        .select({ value: count() })
+        .from(sessionToken)
+        .where(
+          and(
+            isNull(sessionToken.revokedAt),
+            or(isNull(sessionToken.expiresAt), gt(sessionToken.expiresAt, now)),
+          ),
+        )
+        .then(([row]) => row.value),
+      this.database.db
+        .select({ trustLevel: federatedPeer.trustLevel, value: count() })
+        .from(federatedPeer)
+        .groupBy(federatedPeer.trustLevel),
+      this.database.db
+        .select({
+          bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
+          assetCount: count(),
+        })
+        .from(mediaAsset)
+        .then(([row]) => row),
+      this.database.db
+        .select({ value: count() })
+        .from(mediaAsset)
+        .where(lte(mediaAsset.refs, 0))
+        .then(([row]) => row.value),
+      this.database.db
+        .select({
+          id: adminActionLog.id,
+          action: adminActionLog.action,
+          targetType: adminActionLog.targetType,
+          targetId: adminActionLog.targetId,
+          adminId: adminActionLog.adminId,
+          adminRole: adminActionLog.adminRole,
+          success: adminActionLog.success,
+          errorMessage: adminActionLog.errorMessage,
+          ip: adminActionLog.ip,
+          at: adminActionLog.at,
+        })
+        .from(adminActionLog)
+        .orderBy(desc(adminActionLog.at))
+        .limit(10),
     ]);
 
     const federation = { trusted: 0, demoted: 0, pending: 0, blocked: 0 };
     for (const g of fedGroups) {
       const lvl = g.trustLevel as keyof typeof federation;
-      if (lvl in federation) federation[lvl] = g._count._all;
+      if (lvl in federation) federation[lvl] = g.value;
     }
 
     // Resolve targetIds into account names — same shared resolver as the audit log, so the dashboard's
@@ -75,7 +96,9 @@ export class DashboardService {
     const recentActions = recentActionRows.map((r) => ({
       ...r,
       targetLabel:
-        r.targetType && r.targetId ? (labelByKey.get(`${r.targetType}:${r.targetId}`) ?? null) : null,
+        r.targetType && r.targetId
+          ? (labelByKey.get(`${r.targetType}:${r.targetId}`) ?? null)
+          : null,
     }));
 
     return {
@@ -83,8 +106,8 @@ export class DashboardService {
       activeSessions,
       federation,
       media: {
-        bytes: mediaAgg._sum.bytes ?? 0n,
-        assetCount: mediaAgg._count,
+        bytes: BigInt(mediaAgg.bytes),
+        assetCount: mediaAgg.assetCount,
         reclaimable,
       },
       recentActions,

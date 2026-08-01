@@ -2,10 +2,11 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
-import { PrismaService } from '../prisma.service.js';
+import { and, eq, max } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { invite, user as userTable } from '../database/schema.js';
 import { MessageService } from '../message/message.service.js';
 import { CallStateRegistry } from './call-state.registry.js';
-import { InviteKind } from '../prisma/generated/client.js';
 
 /**
  * Group-lifecycle SSE event names. Carried on every group frame so the frontend dispatches by
@@ -13,9 +14,7 @@ import { InviteKind } from '../prisma/generated/client.js';
  *   { groupId, threadId, ...event-specific fields, byUserId? }
  * The frontend refreshes the roster / conversation list on receipt (Phase 4).
  */
-export type GroupSseEvent =
-  | 'GROUP_UPDATED'
-  | 'GROUP_ROSTER_UPDATED';
+export type GroupSseEvent = 'GROUP_UPDATED' | 'GROUP_ROSTER_UPDATED';
 
 export const GROUP_SSE: Record<GroupSseEvent, GroupSseEvent> = {
   GROUP_UPDATED: 'GROUP_UPDATED',
@@ -51,7 +50,7 @@ export class SseService implements OnModuleDestroy {
   private readonly clients: Record<number, SseClient[]> = {};
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly messages: MessageService,
     private readonly callState: CallStateRegistry,
   ) {}
@@ -64,7 +63,12 @@ export class SseService implements OnModuleDestroy {
    * (SessionAuthGuard), so this only pushes. `origin` is the request Origin, forwarded so the hijacked raw
    * response carries its CORS header.
    */
-  register(userId: number, sessionId: number, res: ServerResponse, origin?: string): void {
+  register(
+    userId: number,
+    sessionId: number,
+    res: ServerResponse,
+    origin?: string,
+  ): void {
     const ping = initSseResponse(res, origin);
 
     const entry: SseClient = { res, ping, since: Date.now(), sessionId };
@@ -92,24 +96,31 @@ export class SseService implements OnModuleDestroy {
     try {
       const [latestMessage, user, friendReqAgg] = await Promise.all([
         this.messages.findNewestForUser(userId),
-        this.prisma.user.findUnique({
-          where: { id: userId },
-          select: { threadRevision: true, profileRev: true, friendReqAckRev: true },
+        this.database.db.query.user.findFirst({
+          where: eq(userTable.id, userId),
+          columns: {
+            threadRevision: true,
+            profileRev: true,
+            friendReqAckRev: true,
+          },
         }),
         // friendReqRev = MAX(createdAt) over the user's incoming FRIEND invites — creation-based so the
         // badge arms ONLY on a NEW request (accept/decline flip status/updatedAt but don't re-arm). Null
         // when the user has never received one.
-        this.prisma.invite.aggregate({
-          where: { kind: InviteKind.FRIEND, toUserId: userId },
-          _max: { createdAt: true },
-        }),
+        this.database.db
+          .select({ createdAt: max(invite.createdAt) })
+          .from(invite)
+          .where(and(eq(invite.kind, 'FRIEND'), eq(invite.toUserId, userId)))
+          .then(([row]) => row),
       ]);
-      const friendReqRev = friendReqAgg._max.createdAt
-        ? friendReqAgg._max.createdAt.getTime()
+      const friendReqRev = friendReqAgg.createdAt
+        ? friendReqAgg.createdAt.getTime()
         : null;
       // friendReqAckRev is a DateTime column; the wire carries it as epoch-ms (JS Number) for a clean `>`
       // comparison vs friendReqRev. Epoch (0) when somehow absent.
-      const friendReqAckRev = user?.friendReqAckRev ? user.friendReqAckRev.getTime() : 0;
+      const friendReqAckRev = user?.friendReqAckRev
+        ? user.friendReqAckRev.getTime()
+        : 0;
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
@@ -273,7 +284,12 @@ export class SseService implements OnModuleDestroy {
    */
   onMediaStatus(
     userId: number,
-    data: { threadId: number; seq: number; status: 'ready' | 'failed'; v: number },
+    data: {
+      threadId: number;
+      seq: number;
+      status: 'ready' | 'failed';
+      v: number;
+    },
   ) {
     this.pushToUser(userId, 'MEDIA_STATUS', data);
   }
@@ -321,7 +337,11 @@ export class SseService implements OnModuleDestroy {
    *  just the matching entries). Idempotent per-connection — a half-closed socket is already gone.
    *  formatSseFrame keeps the wire shape identical to the client's SSE_EVENT_FORCE_LOGOUT handler. */
   private forceLogout(entries: SseClient[], reason: string): void {
-    const frame = formatSseFrame('FORCE_LOGOUT', { event: 'FORCE_LOGOUT', status: 0, message: reason });
+    const frame = formatSseFrame('FORCE_LOGOUT', {
+      event: 'FORCE_LOGOUT',
+      status: 0,
+      message: reason,
+    });
     for (const { res, ping } of entries) {
       clearInterval(ping);
       try {
@@ -345,7 +365,11 @@ export class SseService implements OnModuleDestroy {
    *  several connections (multiple tabs sharing one session token) — all are disconnected, since they all
    *  ride the now-revoked credential. Splices the matching entries out and drops the user slot if empty. */
   @OnEvent('auth.session-revoked')
-  onSessionRevoked(payload: { userId: number; sessionId: number; reason: string }) {
+  onSessionRevoked(payload: {
+    userId: number;
+    sessionId: number;
+    reason: string;
+  }) {
     const list = this.clients[payload.userId];
     if (!list || list.length === 0) return;
     const revoked = list.filter((c) => c.sessionId === payload.sessionId);

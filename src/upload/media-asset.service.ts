@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '../prisma/generated/client.js';
-import { PrismaService } from '../prisma.service.js';
+import { eq, sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { mediaAsset } from '../database/schema.js';
 
 /**
  * Reference-counted content-addressed media asset records. Every successful CAS upload upserts a row
@@ -22,7 +23,7 @@ import { PrismaService } from '../prisma.service.js';
  */
 @Injectable()
 export class MediaAssetService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /**
    * Record a reference to a CAS asset: create with refs = 1, or increment refs on conflict. Atomic
@@ -31,27 +32,13 @@ export class MediaAssetService {
    * rewrites it idempotently, and re-upserts to increment refs).
    */
   async upsertAndRef(digest: string, bytes: bigint): Promise<void> {
-    try {
-      await this.prisma.mediaAsset.upsert({
-        where: { digest },
-        create: { digest, bytes, refs: 1 },
-        update: { refs: { increment: 1 } },
+    await this.database.db
+      .insert(mediaAsset)
+      .values({ digest, bytes, refs: 1 })
+      .onConflictDoUpdate({
+        target: mediaAsset.digest,
+        set: { refs: sql`${mediaAsset.refs} + 1` },
       });
-    } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002'
-      ) {
-        // Lost the concurrent upsert race: another request inserted this digest first. Increment
-        // their row. (Some Prisma/Postgres configs surface ON CONFLICT as a unique violation.)
-        await this.prisma.mediaAsset.update({
-          where: { digest },
-          data: { refs: { increment: 1 } },
-        });
-        return;
-      }
-      throw e;
-    }
   }
 
   /**
@@ -60,16 +47,11 @@ export class MediaAssetService {
    * reap the file when it hits 0, or null if the row is already gone (nothing to decrement).
    */
   async decrement(digest: string): Promise<number | null> {
-    try {
-      const row = await this.prisma.mediaAsset.update({
-        where: { digest },
-        data: { refs: { decrement: 1 } },
-        select: { refs: true },
-      });
-      return row.refs;
-    } catch {
-      // Row already deleted (e.g. concurrent GC) — nothing to decrement.
-      return null;
-    }
+    const [row] = await this.database.db
+      .update(mediaAsset)
+      .set({ refs: sql`${mediaAsset.refs} - 1` })
+      .where(eq(mediaAsset.digest, digest))
+      .returning({ refs: mediaAsset.refs });
+    return row?.refs ?? null;
   }
 }

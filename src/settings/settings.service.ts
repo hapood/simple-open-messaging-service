@@ -1,8 +1,15 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import webpush from 'web-push';
-import { PrismaService } from '../prisma.service.js';
+import { eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { systemSetting } from '../database/schema.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import {
   type VapidConfig,
@@ -68,7 +75,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   private inflight: Promise<void> | null = null;
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async onModuleInit(): Promise<void> {
     try {
@@ -116,7 +123,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   /** The admin-configured one-time-code validity window, in minutes (default 10, clamped). Read fresh on
    *  each issue — OTP issuance is rare and admin-triggered, so no cache is warranted (unlike VAPID). */
   async getOtpTtlMinutes(): Promise<number> {
-    const row = await this.prisma.systemSetting.findUnique({ where: { key: OTP_TTL_KEY } });
+    const row = await this.findSetting(OTP_TTL_KEY);
     const n = row ? Number(row.value) : NaN;
     if (!Number.isFinite(n)) return OTP_TTL_DEFAULT;
     return Math.min(OTP_TTL_MAX, Math.max(OTP_TTL_MIN, Math.trunc(n)));
@@ -125,12 +132,11 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   /** Persist the one-time-code validity window (minutes). The value is clamped on read too, so an out-of-
    *  range write is still safe, but we clamp on write for a tidy stored value + accurate admin display. */
   async setOtpTtlMinutes(minutes: number): Promise<void> {
-    const clamped = Math.min(OTP_TTL_MAX, Math.max(OTP_TTL_MIN, Math.trunc(minutes)));
-    await this.prisma.systemSetting.upsert({
-      where: { key: OTP_TTL_KEY },
-      create: { key: OTP_TTL_KEY, value: String(clamped) },
-      update: { value: String(clamped) },
-    });
+    const clamped = Math.min(
+      OTP_TTL_MAX,
+      Math.max(OTP_TTL_MIN, Math.trunc(minutes)),
+    );
+    await this.upsertSetting(OTP_TTL_KEY, String(clamped));
   }
 
   /** Authoritative VAPID descriptor for the admin read view — queries the row directly for the real
@@ -141,7 +147,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     publicKey?: string;
     updatedAt?: Date;
   }> {
-    const row = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
+    const row = await this.findSetting(VAPID_KEY);
     if (!row) return { configured: false };
     const cfg = this.parseVapid(row.value);
     if (!cfg) return { configured: false };
@@ -160,8 +166,11 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       try {
-        const vapidRow = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
-        this.entry = { value: vapidRow ? this.parseVapid(vapidRow.value) : null, fetchedAt: Date.now() };
+        const vapidRow = await this.findSetting(VAPID_KEY);
+        this.entry = {
+          value: vapidRow ? this.parseVapid(vapidRow.value) : null,
+          fetchedAt: Date.now(),
+        };
       } finally {
         this.inflight = null;
       }
@@ -172,23 +181,42 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   /** Generate a fresh P-256 VAPID keypair (library-blessed output: base64url, browser-compatible). */
   generateVapid(subject: string = DEFAULT_SUBJECT): VapidConfig {
     const { publicKey, privateKey } = webpush.generateVAPIDKeys();
-    return { publicKey, privateKey, subject: subject?.trim() || DEFAULT_SUBJECT };
+    return {
+      publicKey,
+      privateKey,
+      subject: subject?.trim() || DEFAULT_SUBJECT,
+    };
   }
 
   /** Persist a VAPID config and update the local cache immediately (other instances pick it up ≤ TTL). */
   async setVapid(cfg: VapidConfig): Promise<void> {
-    await this.prisma.systemSetting.upsert({
-      where: { key: VAPID_KEY },
-      create: { key: VAPID_KEY, value: JSON.stringify(cfg) },
-      update: { value: JSON.stringify(cfg) },
-    });
+    await this.upsertSetting(VAPID_KEY, JSON.stringify(cfg));
     this.entry = { value: cfg, fetchedAt: Date.now() };
   }
 
   /** Remove the VAPID config (disables Web Push). */
   async clearVapid(): Promise<void> {
-    await this.prisma.systemSetting.deleteMany({ where: { key: VAPID_KEY } });
+    await this.database.db
+      .delete(systemSetting)
+      .where(eq(systemSetting.key, VAPID_KEY));
     this.entry = { value: null, fetchedAt: Date.now() };
+  }
+
+  private findSetting(key: string) {
+    return this.database.db.query.systemSetting.findFirst({
+      where: eq(systemSetting.key, key),
+    });
+  }
+
+  private async upsertSetting(key: string, value: string): Promise<void> {
+    const updatedAt = new Date();
+    await this.database.db
+      .insert(systemSetting)
+      .values({ key, value, updatedAt })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value, updatedAt },
+      });
   }
 
   // ---- Firebase client config (FCM for Android) ---------------------------------------------
@@ -214,7 +242,9 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
    *  malformed file is always warned. Never throws — a bad file leaves FCM unconfigured, never crashes boot. */
   private loadFirebaseClientConfig(): FirebaseClientConfig | null {
     const explicit = !!process.env.FIREBASE_CLIENT_CONFIG;
-    const p = process.env.FIREBASE_CLIENT_CONFIG || join(process.cwd(), 'data', 'google-services.json');
+    const p =
+      process.env.FIREBASE_CLIENT_CONFIG ||
+      join(process.cwd(), 'data', 'google-services.json');
     let raw: string;
     try {
       raw = readFileSync(p, 'utf8');
@@ -248,13 +278,21 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   getFirebaseDescriptor(): FirebaseConfigDescriptor {
     const cfg = this.getFirebaseConfig();
     if (!cfg) return { configured: false };
-    return { configured: true, projectId: cfg.projectId, appId: cfg.appId, gcmSenderId: cfg.gcmSenderId };
+    return {
+      configured: true,
+      projectId: cfg.projectId,
+      appId: cfg.appId,
+      gcmSenderId: cfg.gcmSenderId,
+    };
   }
 
   /** Validate a VAPID config without any network access (deterministic health check). `fcmConfigured` is
    *  passed in (it comes from PushService / GOOGLE_APPLICATION_CREDENTIALS); `webPushConfigured` in the
    *  report reflects whether THIS cfg is a working Web Push keypair (pairMatches && subjectValid). */
-  validateVapid(cfg: VapidConfig | null, fcmConfigured: boolean): VapidHealthReport {
+  validateVapid(
+    cfg: VapidConfig | null,
+    fcmConfigured: boolean,
+  ): VapidHealthReport {
     const errors: string[] = [];
     const somsDomain = this.somsDomain;
     if (!cfg) {
@@ -272,12 +310,19 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
       };
     }
     const publicKeyValid = isValidPublicKey(cfg.publicKey);
-    if (!publicKeyValid) errors.push('publicKey must be base64url of a 65-byte uncompressed P-256 point');
+    if (!publicKeyValid)
+      errors.push(
+        'publicKey must be base64url of a 65-byte uncompressed P-256 point',
+      );
     const privateKeyValid = isValidPrivateKey(cfg.privateKey);
-    if (!privateKeyValid) errors.push('privateKey must be base64url of a 32-byte scalar');
+    if (!privateKeyValid)
+      errors.push('privateKey must be base64url of a 32-byte scalar');
     const subjectValid = isValidSubject(cfg.subject);
     if (!subjectValid) errors.push('subject must be a mailto: or https: URL');
-    const pairMatches = publicKeyValid && privateKeyValid && pairMatchesKey(cfg.publicKey, cfg.privateKey);
+    const pairMatches =
+      publicKeyValid &&
+      privateKeyValid &&
+      pairMatchesKey(cfg.publicKey, cfg.privateKey);
     if (!pairMatches && publicKeyValid && privateKeyValid) {
       errors.push('publicKey does not match privateKey (not a P-256 keypair)');
     }
@@ -303,12 +348,18 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
         typeof obj.privateKey === 'string' &&
         typeof obj.subject === 'string'
       ) {
-        return { publicKey: obj.publicKey, privateKey: obj.privateKey, subject: obj.subject };
+        return {
+          publicKey: obj.publicKey,
+          privateKey: obj.privateKey,
+          subject: obj.subject,
+        };
       }
     } catch {
       // fall through to the warn
     }
-    this.logger.warn('stored VAPID row is malformed — treating Web Push as unconfigured');
+    this.logger.warn(
+      'stored VAPID row is malformed — treating Web Push as unconfigured',
+    );
     return null;
   }
 }

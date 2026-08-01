@@ -1,12 +1,19 @@
 import { Injectable, OnModuleInit, HttpStatus } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import {
+  group,
+  invite,
+  messageThread,
+  threadParticipant,
+  user,
+} from '../database/schema.js';
 import {
   GroupRole,
   InviteKind,
   InviteStatus,
   MessageThreadType,
-  Prisma,
-} from '../prisma/generated/client.js';
+} from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
@@ -47,7 +54,7 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
 @Injectable()
 export class GroupService implements OnModuleInit {
   constructor(
-    private prisma: PrismaService,
+    private database: DatabaseService,
     private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
@@ -56,10 +63,12 @@ export class GroupService implements OnModuleInit {
   /** Load a GROUP thread + its `!`-User (name/avatar/bio) by threadId. Returns null if missing. The read
    *  path replacing the old queryGroups/findUniqeGroup (which hit the Group table). */
   findGroupByThreadId(threadId: number) {
-    return this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      include: { groupUser: { include: { group: true } } },
-    });
+    return this.database.db.query.messageThread
+      .findFirst({
+        where: eq(messageThread.id, threadId),
+        with: { user: { with: { group: true } } },
+      })
+      .then((row) => (row ? { ...row, groupUser: row.user } : null));
   }
 
   /** Bump Group.rosterRev — the roster revision a federated mirror compares (against its remoteRosterRev)
@@ -67,15 +76,18 @@ export class GroupService implements OnModuleInit {
    *  kick/role/transfer) so a roster change is detectable by the lazy meta-pull, independent of identity
    *  (identity has its own User.profileRev, bumped by updateGroup/updateProfile/updateAvatar). */
   async bumpRosterRev(threadId: number): Promise<void> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: { groupUserId: true },
+    const trd = await this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+      columns: { groupUserId: true },
     });
     if (trd?.groupUserId != null) {
-      await this.prisma.group.update({
-        where: { groupUserId: trd.groupUserId },
-        data: { rosterRev: { increment: 1 } },
-      });
+      await this.database.db
+        .update(group)
+        .set({
+          rosterRev: sql`${group.rosterRev} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(group.groupUserId, trd.groupUserId));
     }
   }
 
@@ -102,20 +114,22 @@ export class GroupService implements OnModuleInit {
     >
   > {
     if (threadIds.length === 0) return new Map();
-    const threads = await this.prisma.messageThread.findMany({
-      where: { id: { in: threadIds } },
-      select: {
-        id: true,
-        groupUser: {
-          select: {
+    const threads = await this.database.db.query.messageThread.findMany({
+      where: inArray(messageThread.id, threadIds),
+      columns: { id: true },
+      with: {
+        user: {
+          columns: {
             id: true,
             name: true,
             avatar: true,
             bio: true,
             domain: true,
             profileRev: true,
+          },
+          with: {
             group: {
-              select: {
+              columns: {
                 ownerId: true,
                 dissolvedAt: true,
                 createdAt: true,
@@ -144,7 +158,7 @@ export class GroupService implements OnModuleInit {
       }
     >();
     for (const t of threads) {
-      if (t.groupUser) m.set(t.id, t.groupUser);
+      if (t.user) m.set(t.id, t.user);
     }
     return m;
   }
@@ -165,9 +179,10 @@ export class GroupService implements OnModuleInit {
     for (let attempt = 0; attempt < 3; attempt++) {
       const account = mintGroupAccount();
       try {
-        const result = await this.prisma.$transaction(async (prisma) => {
-          const groupUser = await prisma.user.create({
-            data: {
+        const result = await this.database.db.transaction(async (tx) => {
+          const groupUser = await tx
+            .insert(user)
+            .values({
               account,
               domain: 'local',
               isForeigner: false,
@@ -176,25 +191,31 @@ export class GroupService implements OnModuleInit {
               name: params.name,
               avatar: params.avatar ?? '',
               bio: params.description ?? '',
-            },
-          });
-          const thread = await prisma.messageThread.create({
-            data: { type: MessageThreadType.GROUP, groupUserId: groupUser.id },
-          });
-          await prisma.threadParticipant.create({
-            data: {
-              userId: params.owner,
-              threadId: thread.id,
-              role: GroupRole.OWNER,
-            },
+              updatedAt: new Date(),
+            })
+            .returning()
+            .then(([row]) => row);
+          const thread = await tx
+            .insert(messageThread)
+            .values({
+              type: MessageThreadType.GROUP,
+              groupUserId: groupUser.id,
+              updatedAt: new Date(),
+            })
+            .returning()
+            .then(([row]) => row);
+          await tx.insert(threadParticipant).values({
+            userId: params.owner,
+            threadId: thread.id,
+            role: GroupRole.OWNER,
+            updatedAt: new Date(),
           });
           // Group-exclusive state: owner + roster revision (origin group: remoteRosterRev null).
-          await prisma.group.create({
-            data: {
-              groupUserId: groupUser.id,
-              ownerId: params.owner,
-              rosterRev: 0,
-            },
+          await tx.insert(group).values({
+            groupUserId: groupUser.id,
+            ownerId: params.owner,
+            rosterRev: 0,
+            updatedAt: new Date(),
           });
           return {
             id: groupUser.id,
@@ -232,7 +253,7 @@ export class GroupService implements OnModuleInit {
     deleteData: boolean;
   }): Promise<{ remainingMemberIds: number[]; transitioned: boolean }> {
     const now = new Date();
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       const hidden = params.deleteData
         ? await this.threadRevisionService.isThreadHiddenInTx(
             tx,
@@ -241,21 +262,31 @@ export class GroupService implements OnModuleInit {
           )
         : false;
       const shouldDelete = params.deleteData && !hidden;
-      const current = await tx.threadParticipant.findUnique({
-        where: {
-          userId_threadId: {
-            userId: params.userId,
-            threadId: params.threadId,
-          },
-        },
-        select: { leftAt: true, role: true },
-      });
+      const [current] = await tx
+        .select({
+          leftAt: threadParticipant.leftAt,
+          role: threadParticipant.role,
+        })
+        .from(threadParticipant)
+        .where(
+          and(
+            eq(threadParticipant.userId, params.userId),
+            eq(threadParticipant.threadId, params.threadId),
+          ),
+        )
+        .limit(1);
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
       if (current.leftAt === null && current.role === GroupRole.OWNER) {
-        const active = await tx.threadParticipant.count({
-          where: { threadId: params.threadId, leftAt: null },
-        });
+        const [{ value: active }] = await tx
+          .select({ value: count() })
+          .from(threadParticipant)
+          .where(
+            and(
+              eq(threadParticipant.threadId, params.threadId),
+              isNull(threadParticipant.leftAt),
+            ),
+          );
         if (active > 1) {
           throw new BusinessException(
             BusinessCode.GROUP_OWNER_MUST_TRANSFER,
@@ -263,48 +294,65 @@ export class GroupService implements OnModuleInit {
           );
         }
       }
-      const ended = await tx.threadParticipant.updateMany({
-        where: {
-          userId: params.userId,
-          threadId: params.threadId,
-          leftAt: null,
-        },
-        data: { leftAt: now },
-      });
+      const ended = await tx
+        .update(threadParticipant)
+        .set({ leftAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(threadParticipant.userId, params.userId),
+            eq(threadParticipant.threadId, params.threadId),
+            isNull(threadParticipant.leftAt),
+          ),
+        )
+        .returning({ id: threadParticipant.id });
       if (shouldDelete) {
-        await tx.threadParticipant.update({
-          where: {
-            userId_threadId: {
-              userId: params.userId,
-              threadId: params.threadId,
-            },
-          },
-          data: { clearedAt: now, pinned: false, pinnedAt: null },
-        });
+        await tx
+          .update(threadParticipant)
+          .set({
+            clearedAt: now,
+            pinned: false,
+            pinnedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(threadParticipant.userId, params.userId),
+              eq(threadParticipant.threadId, params.threadId),
+            ),
+          );
       }
-      if (ended.count > 0) {
-        const thread = await tx.messageThread.findUnique({
-          where: { id: params.threadId },
-          select: { groupUserId: true },
-        });
+      if (ended.length > 0) {
+        const [thread] = await tx
+          .select({ groupUserId: messageThread.groupUserId })
+          .from(messageThread)
+          .where(eq(messageThread.id, params.threadId))
+          .limit(1);
         if (thread?.groupUserId != null) {
-          await tx.group.update({
-            where: { groupUserId: thread.groupUserId },
-            data: { rosterRev: { increment: 1 } },
-          });
+          await tx
+            .update(group)
+            .set({
+              rosterRev: sql`${group.rosterRev} + 1`,
+              updatedAt: now,
+            })
+            .where(eq(group.groupUserId, thread.groupUserId));
         }
       }
-      const remaining = await tx.threadParticipant.findMany({
-        where: { threadId: params.threadId, leftAt: null },
-        select: { userId: true },
-      });
+      const remaining = await tx
+        .select({ userId: threadParticipant.userId })
+        .from(threadParticipant)
+        .where(
+          and(
+            eq(threadParticipant.threadId, params.threadId),
+            isNull(threadParticipant.leftAt),
+          ),
+        );
       const revision = shouldDelete
         ? await this.threadRevisionService.recordThreadDeleteInTx(
             tx,
             params.userId,
             params.threadId,
           )
-        : ended.count > 0 && !hidden
+        : ended.length > 0 && !hidden
           ? await this.threadRevisionService.recordThreadAddInTx(
               tx,
               params.userId,
@@ -312,7 +360,7 @@ export class GroupService implements OnModuleInit {
             )
           : null;
       return {
-        transitioned: ended.count > 0,
+        transitioned: ended.length > 0,
         remainingMemberIds: remaining.map((row) => row.userId),
         revision,
       };
@@ -336,7 +384,7 @@ export class GroupService implements OnModuleInit {
     deleteForUserId?: number;
   }): Promise<{ transitioned: boolean }> {
     const now = new Date();
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       const hidden =
         params.deleteForUserId === undefined
           ? false
@@ -346,37 +394,55 @@ export class GroupService implements OnModuleInit {
               params.threadId,
             );
       const shouldDelete = params.deleteForUserId !== undefined && !hidden;
-      const thread = await tx.messageThread.findUnique({
-        where: { id: params.threadId },
-        select: { groupUserId: true },
-      });
+      const [thread] = await tx
+        .select({ groupUserId: messageThread.groupUserId })
+        .from(messageThread)
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
       if (thread?.groupUserId == null) {
         throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
       }
-      const dissolved = await tx.group.updateMany({
-        where: { groupUserId: thread.groupUserId, dissolvedAt: null },
-        data: { dissolvedAt: now, rosterRev: { increment: 1 } },
-      });
-      if (dissolved.count > 0) {
-        await tx.invite.updateMany({
-          where: {
-            kind: InviteKind.GROUP,
-            threadId: params.threadId,
-            status: InviteStatus.PENDING,
-          },
-          data: { status: InviteStatus.REVOKED },
-        });
+      const dissolved = await tx
+        .update(group)
+        .set({
+          dissolvedAt: now,
+          rosterRev: sql`${group.rosterRev} + 1`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(group.groupUserId, thread.groupUserId),
+            isNull(group.dissolvedAt),
+          ),
+        )
+        .returning({ id: group.id });
+      if (dissolved.length > 0) {
+        await tx
+          .update(invite)
+          .set({ status: InviteStatus.REVOKED, updatedAt: now })
+          .where(
+            and(
+              eq(invite.kind, InviteKind.GROUP),
+              eq(invite.threadId, params.threadId),
+              eq(invite.status, InviteStatus.PENDING),
+            ),
+          );
       }
       if (shouldDelete && params.deleteForUserId !== undefined) {
-        await tx.threadParticipant.update({
-          where: {
-            userId_threadId: {
-              userId: params.deleteForUserId,
-              threadId: params.threadId,
-            },
-          },
-          data: { clearedAt: now, pinned: false, pinnedAt: null },
-        });
+        await tx
+          .update(threadParticipant)
+          .set({
+            clearedAt: now,
+            pinned: false,
+            pinnedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(threadParticipant.userId, params.deleteForUserId),
+              eq(threadParticipant.threadId, params.threadId),
+            ),
+          );
       }
       const revision =
         shouldDelete && params.deleteForUserId !== undefined
@@ -386,7 +452,7 @@ export class GroupService implements OnModuleInit {
               params.threadId,
             )
           : null;
-      return { transitioned: dissolved.count > 0, revision };
+      return { transitioned: dissolved.length > 0, revision };
     });
     if (result.revision !== null && params.deleteForUserId !== undefined) {
       this.threadRevisionService.notifyThreadRevision({
@@ -406,26 +472,32 @@ export class GroupService implements OnModuleInit {
     operatorUserId: number;
     targetUserId: number;
   }): Promise<{ transitioned: boolean }> {
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       const [operator, target] = await Promise.all([
-        tx.threadParticipant.findUnique({
-          where: {
-            userId_threadId: {
-              userId: params.operatorUserId,
-              threadId: params.threadId,
-            },
-          },
-        }),
-        tx.threadParticipant.findUnique({
-          where: {
-            userId_threadId: {
-              userId: params.targetUserId,
-              threadId: params.threadId,
-            },
-          },
-        }),
+        tx
+          .select()
+          .from(threadParticipant)
+          .where(
+            and(
+              eq(threadParticipant.userId, params.operatorUserId),
+              eq(threadParticipant.threadId, params.threadId),
+            ),
+          )
+          .limit(1)
+          .then(([row]) => row),
+        tx
+          .select()
+          .from(threadParticipant)
+          .where(
+            and(
+              eq(threadParticipant.userId, params.targetUserId),
+              eq(threadParticipant.threadId, params.threadId),
+            ),
+          )
+          .limit(1)
+          .then(([row]) => row),
       ]);
-      if (target === null) {
+      if (!target) {
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
           'target is not a member',
@@ -434,7 +506,7 @@ export class GroupService implements OnModuleInit {
       if (target.leftAt !== null)
         return { transitioned: false, revision: null };
       if (
-        operator === null ||
+        !operator ||
         operator.leftAt !== null ||
         operator.role === null ||
         target.role === GroupRole.OWNER ||
@@ -450,20 +522,32 @@ export class GroupService implements OnModuleInit {
         params.targetUserId,
         params.threadId,
       );
-      const ended = await tx.threadParticipant.updateMany({
-        where: { id: target.id, leftAt: null, role: target.role },
-        data: { leftAt: new Date() },
-      });
-      if (ended.count === 0) return { transitioned: false, revision: null };
-      const thread = await tx.messageThread.findUnique({
-        where: { id: params.threadId },
-        select: { groupUserId: true },
-      });
+      const now = new Date();
+      const ended = await tx
+        .update(threadParticipant)
+        .set({ leftAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(threadParticipant.id, target.id),
+            isNull(threadParticipant.leftAt),
+            eq(threadParticipant.role, target.role!),
+          ),
+        )
+        .returning({ id: threadParticipant.id });
+      if (ended.length === 0) return { transitioned: false, revision: null };
+      const [thread] = await tx
+        .select({ groupUserId: messageThread.groupUserId })
+        .from(messageThread)
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
       if (thread?.groupUserId != null) {
-        await tx.group.update({
-          where: { groupUserId: thread.groupUserId },
-          data: { rosterRev: { increment: 1 } },
-        });
+        await tx
+          .update(group)
+          .set({
+            rosterRev: sql`${group.rosterRev} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(group.groupUserId, thread.groupUserId));
       }
       const revision = hidden
         ? null
@@ -500,60 +584,70 @@ export class GroupService implements OnModuleInit {
         'cannot transfer ownership to yourself',
       );
     }
-    await this.prisma.$transaction(async (tx) => {
-      const target = await tx.threadParticipant.findUnique({
-        where: {
-          userId_threadId: {
-            userId: params.toUserId,
-            threadId: params.threadId,
-          },
-        },
-        include: { user: { select: { isForeigner: true } } },
-      });
-      if (target === null || target.leftAt !== null) {
+    await this.database.db.transaction(async (tx) => {
+      const [target] = await tx
+        .select({
+          participant: threadParticipant,
+          isForeigner: user.isForeigner,
+        })
+        .from(threadParticipant)
+        .innerJoin(user, eq(user.id, threadParticipant.userId))
+        .where(
+          and(
+            eq(threadParticipant.userId, params.toUserId),
+            eq(threadParticipant.threadId, params.threadId),
+          ),
+        )
+        .limit(1);
+      if (!target || target.participant.leftAt !== null) {
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
           'target is not an active member',
         );
       }
       // Ownership can't cross servers — the owner must stay on the origin (the roster authority).
-      if (target.user.isForeigner) {
+      if (target.isForeigner) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'cannot transfer ownership to a member on another server',
         );
       }
-      if (target.role === GroupRole.OWNER) {
+      if (target.participant.role === GroupRole.OWNER) {
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'target is already the owner',
         );
       }
-      await tx.threadParticipant.update({
-        where: {
-          userId_threadId: {
-            userId: params.fromUserId,
-            threadId: params.threadId,
-          },
-        },
-        data: { role: GroupRole.MEMBER },
-      });
-      await tx.threadParticipant.update({
-        where: { id: target.id },
-        data: { role: GroupRole.OWNER },
-      });
+      const now = new Date();
+      await tx
+        .update(threadParticipant)
+        .set({ role: GroupRole.MEMBER, updatedAt: now })
+        .where(
+          and(
+            eq(threadParticipant.userId, params.fromUserId),
+            eq(threadParticipant.threadId, params.threadId),
+          ),
+        );
+      await tx
+        .update(threadParticipant)
+        .set({ role: GroupRole.OWNER, updatedAt: now })
+        .where(eq(threadParticipant.id, target.participant.id));
+      const [trd] = await tx
+        .select({ groupUserId: messageThread.groupUserId })
+        .from(messageThread)
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
+      if (trd?.groupUserId != null) {
+        await tx
+          .update(group)
+          .set({
+            ownerId: params.toUserId,
+            rosterRev: sql`${group.rosterRev} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(group.groupUserId, trd.groupUserId));
+      }
     });
-    // Transfer bumps rosterRev AND flips the denormalized ownerId (mirrors the OWNER participant).
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: params.threadId },
-      select: { groupUserId: true },
-    });
-    if (trd?.groupUserId != null) {
-      await this.prisma.group.update({
-        where: { groupUserId: trd.groupUserId },
-        data: { ownerId: params.toUserId, rosterRev: { increment: 1 } },
-      });
-    }
   }
 
   /**
@@ -578,15 +672,13 @@ export class GroupService implements OnModuleInit {
         'cannot change your own role',
       );
     }
-    const target = await this.prisma.threadParticipant.findUnique({
-      where: {
-        userId_threadId: {
-          userId: params.targetUserId,
-          threadId: params.threadId,
-        },
-      },
+    const target = await this.database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(threadParticipant.userId, params.targetUserId),
+        eq(threadParticipant.threadId, params.threadId),
+      ),
     });
-    if (target === null || target.leftAt !== null) {
+    if (!target || target.leftAt !== null) {
       throw new BusinessException(
         BusinessCode.GROUP_TARGET_NOT_MEMBER,
         'target is not an active member',
@@ -598,10 +690,10 @@ export class GroupService implements OnModuleInit {
         "cannot change the owner's role",
       );
     }
-    await this.prisma.threadParticipant.update({
-      where: { id: target.id },
-      data: { role: params.role },
-    });
+    await this.database.db
+      .update(threadParticipant)
+      .set({ role: params.role, updatedAt: new Date() })
+      .where(eq(threadParticipant.id, target.id));
     await this.bumpRosterRev(params.threadId);
   }
 
@@ -613,9 +705,9 @@ export class GroupService implements OnModuleInit {
     description?: string;
     avatar?: string;
   }) {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: params.threadId },
-      select: { groupUserId: true },
+    const trd = await this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, params.threadId),
+      columns: { groupUserId: true },
     });
     if (!trd || !trd.groupUserId) {
       throw new BusinessException(
@@ -624,11 +716,19 @@ export class GroupService implements OnModuleInit {
         HttpStatus.NOT_FOUND,
       );
     }
-    const data: Prisma.UserUpdateInput = {};
+    const data: Partial<typeof user.$inferInsert> = {};
     if (params.name !== undefined) data.name = params.name;
     if (params.description !== undefined) data.bio = params.description;
     if (params.avatar !== undefined) data.avatar = params.avatar;
-    data.profileRev = { increment: 1 }; // identity change bumps the profile revision
-    return this.prisma.user.update({ where: { id: trd.groupUserId }, data });
+    return this.database.db
+      .update(user)
+      .set({
+        ...data,
+        profileRev: sql`${user.profileRev} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(user.id, trd.groupUserId))
+      .returning()
+      .then(([row]) => row);
   }
 }

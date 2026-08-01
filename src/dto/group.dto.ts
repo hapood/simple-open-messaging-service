@@ -11,7 +11,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { GroupRole } from '../prisma/generated/client.js';
+import { GroupRole } from '../database/enums.js';
 import { IsValidAvatarPath } from '../upload/avatar-path.js';
 
 /**

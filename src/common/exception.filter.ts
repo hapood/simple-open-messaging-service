@@ -6,10 +6,13 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
-import { Prisma } from '../prisma/generated/client.js';
 import type { FastifyReply } from 'fastify';
 import { BusinessCode } from './business-code.js';
 import { BusinessException } from './business.exception.js';
+import {
+  isPostgresError,
+  PG_UNIQUE_VIOLATION,
+} from '../database/database-error.js';
 
 /**
  * Global exception filter: every exception is normalized to the { code, message, data } envelope, where
@@ -23,7 +26,7 @@ import { BusinessException } from './business.exception.js';
  *
  * - ValidationPipe's BadRequestException (field-level message array) → HTTP 200 + VALIDATION_FAILED
  * - Other HttpException → keeps its HTTP status; code is mapped from the status to the 10xxx segment
- * - Known Prisma errors: P2002 (unique conflict) → 409/ALREADY_EXISTS, P2025 (record not found) → 404/NOT_FOUND
+ * - PostgreSQL unique violations → 409/ALREADY_EXISTS
  * - Any other unknown exception → 500/INTERNAL; the original message is logged server-side only (pino
  *   structured logs, correlated per-request via the X-Request-Id response header). Surfacing a traceId
  *   field in the response *body* was considered and rejected as unnecessary for a self-hosted service —
@@ -72,7 +75,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       // Append the underlying error's own message when it carries more than the mapped envelope —
       // notably the PrismaClientValidationError detail (column/type that failed), which the generic
       // client-facing `message` deliberately omits so it stays debuggable server-side.
-      const detail = exception instanceof Error ? exception.message : String(exception);
+      const detail =
+        exception instanceof Error ? exception.message : String(exception);
       this.logger.warn(
         `${httpStatus} ${message}${detail && detail !== message ? ` — ${detail}` : ''}`,
       );
@@ -155,34 +159,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
-    if (exception instanceof Prisma.PrismaClientKnownRequestError) {
-      switch (exception.code) {
-        case 'P2002':
-          return {
-            httpStatus: HttpStatus.CONFLICT,
-            code: BusinessCode.ALREADY_EXISTS,
-            message: 'resource already exists',
-          };
-        case 'P2025':
-          return {
-            httpStatus: HttpStatus.NOT_FOUND,
-            code: BusinessCode.NOT_FOUND,
-            message: 'resource not found',
-          };
-      }
-    }
-
-    if (exception instanceof Prisma.PrismaClientValidationError) {
-      // A mistyped / missing / wrong-shape argument reached Prisma — e.g. a value ValidationPipe didn't
-      // coerce (guards read raw req.body pre-pipe) or a service bound a value Prisma can't cast to its
-      // column type. This is the SYSTEM-WIDE safety net: without it the error falls through to the
-      // generic 500 below, so every type-mismatch anywhere surfaces as an opaque 500. The Prisma message
-      // names internal models/fields, so it is logged in full server-side while the client gets a generic
-      // VALIDATION_FAILED (see the warn log in `catch`).
+    if (isPostgresError(exception) && exception.code === PG_UNIQUE_VIOLATION) {
       return {
-        httpStatus: HttpStatus.BAD_REQUEST,
-        code: BusinessCode.VALIDATION_FAILED,
-        message: 'invalid request parameters',
+        httpStatus: HttpStatus.CONFLICT,
+        code: BusinessCode.ALREADY_EXISTS,
+        message: 'resource already exists',
       };
     }
 

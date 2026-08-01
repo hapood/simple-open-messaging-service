@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import type { AdminRole } from '../prisma/generated/client.js';
+import type { AdminRole } from '../database/enums.js';
 
 export type AdminPrincipal = { userId: number; adminId: number; role: AdminRole; sessionId: number };
 

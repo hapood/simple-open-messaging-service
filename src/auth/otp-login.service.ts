@@ -1,10 +1,16 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
-import { PrismaService } from '../prisma.service.js';
+import { and, desc, eq, isNull } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { loginCode, user as userTable } from '../database/schema.js';
 import { SessionTokenService } from './session-token.service.js';
 import { SettingsService } from '../settings/settings.service.js';
-import { BruteForceService, BAN_DIM_OTP, type BanStep } from './brute-force.service.js';
+import {
+  BruteForceService,
+  BAN_DIM_OTP,
+  type BanStep,
+} from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { normalizeAccount } from '../common/account.js';
@@ -68,7 +74,7 @@ export interface IssuedLoginCode extends LoginCodeView {
 @Injectable()
 export class OtpLoginService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly sessionTokens: SessionTokenService,
     private readonly bruteForce: BruteForceService,
     private readonly settings: SettingsService,
@@ -82,10 +88,16 @@ export class OtpLoginService {
    *  {@link BruteForceService}, so OTP locks are admin-visible/unbannable alongside password bans. Counted
    *  ONLY for real accounts (see the not-found/group/disabled guard in {@link verifyAndLogin}). */
   private failOtp(account: string, code: BusinessCode, message: string): never {
-    const ban = this.bruteForce.registerFailure(BAN_DIM_OTP, account, OTP_STEPS);
+    const ban = this.bruteForce.registerFailure(
+      BAN_DIM_OTP,
+      account,
+      OTP_STEPS,
+    );
     throw new BusinessException(
       ban !== undefined ? BusinessCode.RATE_LIMITED : code,
-      ban !== undefined ? 'too many one-time code attempts; try again later' : message,
+      ban !== undefined
+        ? 'too many one-time code attempts; try again later'
+        : message,
       HttpStatus.OK,
       ban !== undefined ? { bannedUntil: ban } : undefined,
     );
@@ -98,15 +110,19 @@ export class OtpLoginService {
   async issueCode(adminId: number, userId: number): Promise<IssuedLoginCode> {
     const code = generateCode();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + (await this.settings.getOtpTtlMinutes()) * 60_000);
-    const created = await this.prisma.loginCode.create({
-      data: {
+    const expiresAt = new Date(
+      now.getTime() + (await this.settings.getOtpTtlMinutes()) * 60_000,
+    );
+    const created = await this.database.db
+      .insert(loginCode)
+      .values({
         userId,
         codeHash: await argon2.hash(code),
         issuedBy: adminId,
         expiresAt,
-      },
-    });
+      })
+      .returning()
+      .then(([row]) => row);
     return {
       id: created.id,
       code,
@@ -133,14 +149,21 @@ export class OtpLoginService {
   async verifyAndLogin(
     account: string,
     code: string,
-    opts: { device?: string; userAgent?: string; ip?: string; client?: 'app' | 'web' | 'desktop' },
+    opts: {
+      device?: string;
+      userAgent?: string;
+      ip?: string;
+      client?: 'app' | 'web' | 'desktop';
+    },
   ): Promise<{ token: string; mustChangePassword: boolean }> {
     const acct = normalizeAccount(account);
     // Account-dimension brute-force lock (the IP dimension is the route @Throttle). A locked account is
     // rejected before any code lookup — RATE_LIMITED surfaces it so a legitimate user knows to wait / get a
     // new code, and an attacker already knows they're hammering. Bounds distributed guessing against one
     // account (the 6-digit space can't be exhausted once ≤5 guesses/window are allowed).
-    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_OTP, value: acct }]);
+    const ban = this.bruteForce.activeBanUntil([
+      { dimension: BAN_DIM_OTP, value: acct },
+    ]);
     if (ban !== undefined) {
       throw new BusinessException(
         BusinessCode.RATE_LIMITED,
@@ -149,15 +172,23 @@ export class OtpLoginService {
         { bannedUntil: ban },
       );
     }
-    const user = await this.prisma.user.findUnique({
-      where: { account_domain: { account: acct, domain: 'local' } },
-      select: { id: true, isGroup: true, isDeleted: true, mustChangePassword: true },
+    const user = await this.database.db.query.user.findFirst({
+      where: and(eq(userTable.account, acct), eq(userTable.domain, 'local')),
+      columns: {
+        id: true,
+        isGroup: true,
+        isDeleted: true,
+        mustChangePassword: true,
+      },
     });
     // Non-revealing: a non-existent / group / disabled account is indistinguishable from a wrong code. NOT
     // counted toward the lock — there is no real account to protect, and counting arbitrary input strings
     // would let an attacker fill the failure map.
     if (!user || user.isGroup || user.isDeleted) {
-      throw new BusinessException(BusinessCode.OTP_INVALID, 'invalid one-time code');
+      throw new BusinessException(
+        BusinessCode.OTP_INVALID,
+        'invalid one-time code',
+      );
     }
 
     // Multi-issue: several codes may be active per account. Fetch the newest unconsumed + unrevoked
@@ -165,11 +196,18 @@ export class OtpLoginService {
     // OTP_EXPIRED, not OTP_INVALID) and find the one whose argon2 hash matches the entered value. A code
     // value matches at most one hash. Each failure below is a guessable failure → counted toward the account
     // lock (failOtp throws).
-    const candidates = await this.prisma.loginCode.findMany({
-      where: { userId: user.id, consumedAt: null, revokedAt: null },
-      orderBy: { issuedAt: 'desc' },
-      take: VERIFY_CANDIDATE_LIMIT,
-    });
+    const candidates = await this.database.db
+      .select()
+      .from(loginCode)
+      .where(
+        and(
+          eq(loginCode.userId, user.id),
+          isNull(loginCode.consumedAt),
+          isNull(loginCode.revokedAt),
+        ),
+      )
+      .orderBy(desc(loginCode.issuedAt))
+      .limit(VERIFY_CANDIDATE_LIMIT);
     let matched: { id: number } | null = null;
     let expiredMatch = false;
     for (const c of candidates) {
@@ -192,12 +230,26 @@ export class OtpLoginService {
     // Single-use guard: only the first concurrent verifier flips consumedAt from null on the matched code.
     // A 0 count means the race was lost → treat as consumed (the other verifier got the session).
     const now = new Date();
-    const consumed = await this.prisma.loginCode.updateMany({
-      where: { id: matched.id, consumedAt: null, revokedAt: null },
-      data: { consumedAt: now, consumedIp: opts.ip ?? null, consumedDevice: opts.device ?? null },
-    });
-    if (consumed.count === 0) {
-      throw new BusinessException(BusinessCode.OTP_CONSUMED, 'one-time code already used');
+    const consumed = await this.database.db
+      .update(loginCode)
+      .set({
+        consumedAt: now,
+        consumedIp: opts.ip ?? null,
+        consumedDevice: opts.device ?? null,
+      })
+      .where(
+        and(
+          eq(loginCode.id, matched.id),
+          isNull(loginCode.consumedAt),
+          isNull(loginCode.revokedAt),
+        ),
+      )
+      .returning({ id: loginCode.id });
+    if (consumed.length === 0) {
+      throw new BusinessException(
+        BusinessCode.OTP_CONSUMED,
+        'one-time code already used',
+      );
     }
 
     // OTP is the trusted-platform method: a trusted native client ('app', the default, / 'desktop') gets a
@@ -214,8 +266,10 @@ export class OtpLoginService {
     // Record the produced session id on the code for audit (best-effort link; never the token value).
     const sessionId = await this.sessionTokens.idOfToken(token);
     if (sessionId !== null) {
-      await this.prisma.loginCode
-        .update({ where: { id: matched.id }, data: { producedSessionId: sessionId } })
+      await this.database.db
+        .update(loginCode)
+        .set({ producedSessionId: sessionId })
+        .where(eq(loginCode.id, matched.id))
         .catch(() => {});
     }
     this.bruteForce.clearFailures(BAN_DIM_OTP, acct); // success clears the account's OTP failure history
@@ -225,10 +279,10 @@ export class OtpLoginService {
   /** Audit list of a user's login codes — never the codeHash or token value; producedSessionId links into
    *  the session-management detail view. Newest first. */
   async listCodes(userId: number): Promise<LoginCodeView[]> {
-    return this.prisma.loginCode.findMany({
-      where: { userId },
-      orderBy: { issuedAt: 'desc' },
-      select: {
+    return this.database.db.query.loginCode.findMany({
+      where: eq(loginCode.userId, userId),
+      orderBy: desc(loginCode.issuedAt),
+      columns: {
         id: true,
         issuedAt: true,
         expiresAt: true,
@@ -245,10 +299,17 @@ export class OtpLoginService {
   /** Revoke an unused code (admin cancellation). Only an unconsumed, unrevoked code can be revoked.
    *  Returns true iff a row was actually revoked. */
   async revokeCode(codeId: number): Promise<boolean> {
-    const r = await this.prisma.loginCode.updateMany({
-      where: { id: codeId, consumedAt: null, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-    return r.count > 0;
+    const rows = await this.database.db
+      .update(loginCode)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(loginCode.id, codeId),
+          isNull(loginCode.consumedAt),
+          isNull(loginCode.revokedAt),
+        ),
+      )
+      .returning({ id: loginCode.id });
+    return rows.length > 0;
   }
 }

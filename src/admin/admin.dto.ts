@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { type AuthenticationResponseJSON, type RegistrationResponseJSON } from '@simplewebauthn/server';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 import { IsDisplayName } from '../common/validators.js';
 

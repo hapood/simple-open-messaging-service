@@ -1,8 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { applicationDefault, getApps, getApp, initializeApp } from 'firebase-admin/app';
-import { getMessaging, type Messaging, type Message } from 'firebase-admin/messaging';
+import {
+  applicationDefault,
+  getApps,
+  getApp,
+  initializeApp,
+} from 'firebase-admin/app';
+import {
+  getMessaging,
+  type Messaging,
+  type Message,
+} from 'firebase-admin/messaging';
 import webpush from 'web-push';
-import { PrismaService } from '../prisma.service.js';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  or,
+  type SQL,
+} from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { pushToken, user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
@@ -30,7 +50,7 @@ export class PushService {
   private readonly messaging: Messaging | null;
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly sse: SseService,
     private readonly settings: SettingsService,
   ) {
@@ -42,10 +62,14 @@ export class PushService {
         ? getApp()
         : initializeApp({ credential: applicationDefault() });
       this.messaging = getMessaging(app);
-      this.logger.log('FCM messaging initialized from GOOGLE_APPLICATION_CREDENTIALS');
+      this.logger.log(
+        'FCM messaging initialized from GOOGLE_APPLICATION_CREDENTIALS',
+      );
     } else {
       this.messaging = null;
-      this.logger.warn('GOOGLE_APPLICATION_CREDENTIALS unset — FCM dispatch disabled');
+      this.logger.warn(
+        'GOOGLE_APPLICATION_CREDENTIALS unset — FCM dispatch disabled',
+      );
     }
     // Web Push: VAPID keys are now DB-backed (SettingsService, admin-managed) and passed PER SEND as the
     // vapidDetails option (see sendWebPush) — NOT the module-global setVapidDetails. Nothing to init here:
@@ -59,33 +83,38 @@ export class PushService {
    *  WEB the subscription's p256dh + auth keys are stored alongside (the server must encrypt the Web
    *  Push payload to these keys before sending). */
   async registerToken(userId: number, dto: RegisterDeviceDto): Promise<void> {
-    await this.prisma.pushToken.upsert({
-      where: { token: dto.token },
-      create: {
+    const now = new Date();
+    await this.database.db
+      .insert(pushToken)
+      .values({
         userId,
         token: dto.token,
         platform: dto.platform,
         deviceId: dto.deviceId,
         webP256dh: dto.p256dh,
         webAuth: dto.auth,
-      },
-      update: {
-        userId,
-        platform: dto.platform,
-        deviceId: dto.deviceId,
-        webP256dh: dto.p256dh,
-        webAuth: dto.auth,
-        lastSeenAt: new Date(),
-      },
-    });
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: pushToken.token,
+        set: {
+          userId,
+          platform: dto.platform,
+          deviceId: dto.deviceId,
+          webP256dh: dto.p256dh,
+          webAuth: dto.auth,
+          updatedAt: now,
+          lastSeenAt: now,
+        },
+      });
   }
 
   /** Remove a registration token. Scoped to the caller — a user cannot unregister another user's device.
    *  deleteMany (not delete) so a not-found / wrong-owner call is a no-op rather than throwing. */
   async unregisterToken(userId: number, token: string): Promise<void> {
-    await this.prisma.pushToken.deleteMany({
-      where: { token, userId },
-    });
+    await this.database.db
+      .delete(pushToken)
+      .where(and(eq(pushToken.token, token), eq(pushToken.userId, userId)));
   }
 
   /** Send one Web Push notification, passing the VAPID details PER CALL from SettingsService (NOT the
@@ -131,9 +160,14 @@ export class PushService {
         .filter((uid) => !this.sse.isUserOnline(uid));
       if (userIds.length === 0) return;
 
-      const tokens = await this.prisma.pushToken.findMany({
-        where: { userId: { in: userIds } },
-        select: { token: true, platform: true, webP256dh: true, webAuth: true },
+      const tokens = await this.database.db.query.pushToken.findMany({
+        where: inArray(pushToken.userId, userIds),
+        columns: {
+          token: true,
+          platform: true,
+          webP256dh: true,
+          webAuth: true,
+        },
       });
       if (tokens.length === 0) return;
 
@@ -175,7 +209,9 @@ export class PushService {
         });
         const failed = res.failureCount - dead.length;
         if (failed > 0) {
-          this.logger.warn(`FCM sendEach: ${failed} transient failure(s) (not pruned)`);
+          this.logger.warn(
+            `FCM sendEach: ${failed} transient failure(s) (not pruned)`,
+          );
         }
       }
 
@@ -188,7 +224,10 @@ export class PushService {
           webSubs.map(async (s) => {
             try {
               await this.sendWebPush(
-                { endpoint: s.token, keys: { p256dh: s.webP256dh!, auth: s.webAuth! } },
+                {
+                  endpoint: s.token,
+                  keys: { p256dh: s.webP256dh!, auth: s.webAuth! },
+                },
                 payload,
               );
             } catch (e) {
@@ -196,7 +235,9 @@ export class PushService {
               if (code === 404 || code === 410) {
                 dead.push(s.token);
               } else {
-                this.logger.warn(`Web Push transient failure (${code}): ${(e as Error).message}`);
+                this.logger.warn(
+                  `Web Push transient failure (${code}): ${(e as Error).message}`,
+                );
               }
             }
           }),
@@ -204,12 +245,16 @@ export class PushService {
       }
 
       if (dead.length > 0) {
-        await this.prisma.pushToken.deleteMany({ where: { token: { in: dead } } });
+        await this.database.db
+          .delete(pushToken)
+          .where(inArray(pushToken.token, dead));
         this.logger.debug(`pruned ${dead.length} stale push subscription(s)`);
       }
     } catch (e) {
       // Last-resort guard: a push failure must NEVER surface to the send path (it's fire-and-forget).
-      this.logger.error(`push dispatchForMessage failed: ${(e as Error).message}`);
+      this.logger.error(
+        `push dispatchForMessage failed: ${(e as Error).message}`,
+      );
     }
   }
 
@@ -237,9 +282,14 @@ export class PushService {
     },
   ): Promise<void> {
     try {
-      const tokens = await this.prisma.pushToken.findMany({
-        where: { userId: calleeUserId },
-        select: { token: true, platform: true, webP256dh: true, webAuth: true },
+      const tokens = await this.database.db.query.pushToken.findMany({
+        where: eq(pushToken.userId, calleeUserId),
+        columns: {
+          token: true,
+          platform: true,
+          webP256dh: true,
+          webAuth: true,
+        },
       });
       if (tokens.length === 0) return;
 
@@ -278,7 +328,9 @@ export class PushService {
         });
         const failed = res.failureCount - dead.length;
         if (failed > 0) {
-          this.logger.warn(`FCM sendEach (call): ${failed} transient failure(s) (not pruned)`);
+          this.logger.warn(
+            `FCM sendEach (call): ${failed} transient failure(s) (not pruned)`,
+          );
         }
       }
 
@@ -289,7 +341,10 @@ export class PushService {
           webSubs.map(async (s) => {
             try {
               await this.sendWebPush(
-                { endpoint: s.token, keys: { p256dh: s.webP256dh!, auth: s.webAuth! } },
+                {
+                  endpoint: s.token,
+                  keys: { p256dh: s.webP256dh!, auth: s.webAuth! },
+                },
                 body,
               );
             } catch (e) {
@@ -297,7 +352,9 @@ export class PushService {
               if (code === 404 || code === 410) {
                 dead.push(s.token);
               } else {
-                this.logger.warn(`Web Push transient failure (call, ${code}): ${(e as Error).message}`);
+                this.logger.warn(
+                  `Web Push transient failure (call, ${code}): ${(e as Error).message}`,
+                );
               }
             }
           }),
@@ -305,8 +362,12 @@ export class PushService {
       }
 
       if (dead.length > 0) {
-        await this.prisma.pushToken.deleteMany({ where: { token: { in: dead } } });
-        this.logger.debug(`pruned ${dead.length} stale push subscription(s) (call)`);
+        await this.database.db
+          .delete(pushToken)
+          .where(inArray(pushToken.token, dead));
+        this.logger.debug(
+          `pruned ${dead.length} stale push subscription(s) (call)`,
+        );
       }
     } catch (e) {
       // Fire-and-forget: a push failure must never break the call path.
@@ -327,7 +388,11 @@ export class PushService {
 
   /** Admin: paginated device-token list with the owning user's id + account, optional fuzzy search
    *  over account / token / deviceId. Newest lastSeen first. */
-  async listTokens(opts: { skip: number; take: number; search?: string }): Promise<{
+  async listTokens(opts: {
+    skip: number;
+    take: number;
+    search?: string;
+  }): Promise<{
     list: Array<{
       id: number;
       userId: number;
@@ -341,31 +406,40 @@ export class PushService {
     total: number;
   }> {
     const search = opts.search?.trim();
-    const where = search
-      ? {
-          OR: [
-            { user: { account: { contains: search, mode: 'insensitive' as const } } },
-            { token: { contains: search } },
-            { deviceId: { contains: search } },
-          ],
-        }
+    const where: SQL | undefined = search
+      ? or(
+          ilike(user.account, `%${search}%`),
+          ilike(pushToken.token, `%${search}%`),
+          ilike(pushToken.deviceId, `%${search}%`),
+        )
       : undefined;
-    const [list, total] = await Promise.all([
-      this.prisma.pushToken.findMany({
-        where,
-        orderBy: { lastSeenAt: 'desc' },
-        skip: opts.skip,
-        take: opts.take,
-        include: { user: { select: { id: true, account: true } } },
-      }),
-      this.prisma.pushToken.count({ where }),
+    const [rows, total] = await Promise.all([
+      this.database.db
+        .select({ token: pushToken, userId: user.id, account: user.account })
+        .from(pushToken)
+        .leftJoin(user, eq(user.id, pushToken.userId))
+        .where(where)
+        .orderBy(desc(pushToken.lastSeenAt))
+        .offset(opts.skip)
+        .limit(opts.take),
+      this.database.db
+        .select({ value: count() })
+        .from(pushToken)
+        .leftJoin(user, eq(user.id, pushToken.userId))
+        .where(where)
+        .then((result) => result[0]?.value ?? 0),
     ]);
+    const list = rows.map(({ token, userId, account }) => ({
+      ...token,
+      user:
+        userId === null || account === null ? null : { id: userId, account },
+    }));
     return { list, total };
   }
 
   /** Admin: delete a device token by id (unregister). Idempotent via deleteMany. */
   async deleteTokenById(tokenId: number): Promise<void> {
-    await this.prisma.pushToken.deleteMany({ where: { id: tokenId } });
+    await this.database.db.delete(pushToken).where(eq(pushToken.id, tokenId));
   }
 
   /** Admin: send a one-off test push to a specific device token (looked up by id) to verify delivery.
@@ -377,14 +451,24 @@ export class PushService {
     title: string,
     body: string,
   ): Promise<{ ok: boolean; error?: string }> {
-    const row = await this.prisma.pushToken.findUnique({ where: { id: tokenId } });
+    const row = await this.database.db.query.pushToken.findFirst({
+      where: eq(pushToken.id, tokenId),
+    });
     if (!row) return { ok: false, error: 'token not found' };
     const isWeb = !!row.webP256dh && !!row.webAuth;
     try {
       if (isWeb) {
         await this.sendWebPush(
-          { endpoint: row.token, keys: { p256dh: row.webP256dh!, auth: row.webAuth! } },
-          JSON.stringify({ type: 'ADMIN_TEST', ts: String(Date.now()), title, body }),
+          {
+            endpoint: row.token,
+            keys: { p256dh: row.webP256dh!, auth: row.webAuth! },
+          },
+          JSON.stringify({
+            type: 'ADMIN_TEST',
+            ts: String(Date.now()),
+            title,
+            body,
+          }),
         );
         return { ok: true };
       }
@@ -397,8 +481,13 @@ export class PushService {
       return { ok: true };
     } catch (e) {
       // A definitively-dead FCM token surfaces here — prune it so the list self-cleans.
-      if ((e as { code?: string }).code === 'messaging/registration-token-not-registered') {
-        await this.prisma.pushToken.deleteMany({ where: { id: tokenId } });
+      if (
+        (e as { code?: string }).code ===
+        'messaging/registration-token-not-registered'
+      ) {
+        await this.database.db
+          .delete(pushToken)
+          .where(eq(pushToken.id, tokenId));
       }
       return { ok: false, error: (e as Error).message };
     }

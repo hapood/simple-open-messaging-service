@@ -4,11 +4,15 @@
 // under APP_OTP_AND_QR, so the old register→HTTP-login seeding no longer works (and was never correct for
 // OTP/QR accounts, which carry no password). These helpers insert users + sessions DIRECTLY — Prisma +
 // SessionTokenService off the in-process app — the right fixtures for specs that need an authenticated
-// user but don't care HOW they authenticated. For the process-boundary federation e2e (apps in separate
-// processes), see federation-test-helpers.ts, which seeds via a test-process PrismaClient instead.
+// user but don't care HOW they authenticated. For the process-boundary federation e2e, see
+// federation-test-helpers.ts, which uses its own Drizzle client.
 import type { INestApplication } from '@nestjs/common';
-import { PrismaService } from '../src/prisma.service';
-import { SessionTokenService, type SessionClient } from '../src/auth/session-token.service';
+import { DatabaseService } from '../src/database/database.service';
+import { user } from '../src/database/schema';
+import {
+  SessionTokenService,
+  type SessionClient,
+} from '../src/auth/session-token.service';
 import { PasswordHasher } from '../src/auth/password-hasher.service';
 
 export interface SeededUser {
@@ -24,18 +28,22 @@ export async function seedUser(
   account: string,
   opts: { name?: string; password?: string } = {},
 ): Promise<SeededUser> {
-  const prisma = app.get(PrismaService);
-  const u = await prisma.user.create({
-    data: {
+  const database = app.get(DatabaseService);
+  const [u] = await database.db
+    .insert(user)
+    .values({
       account,
       domain: 'local',
       name: opts.name ?? account,
-      hashPwd: opts.password === undefined ? null : await new PasswordHasher().hash(opts.password),
+      hashPwd:
+        opts.password === undefined
+          ? null
+          : await new PasswordHasher().hash(opts.password),
       mustChangePassword: false,
       isForeigner: false,
-    },
-    select: { id: true, account: true },
-  });
+      updatedAt: new Date(),
+    })
+    .returning({ id: user.id, account: user.account });
   return u;
 }
 
@@ -62,6 +70,8 @@ export async function seedUserWithSession(
   opts: { name?: string; client?: SessionClient; device?: string } = {},
 ): Promise<SeededUser & { token: string }> {
   const user = await seedUser(app, account, { name: opts.name });
-  const token = await seedSession(app, user.id, opts.client ?? 'app', { device: opts.device });
+  const token = await seedSession(app, user.id, opts.client ?? 'app', {
+    device: opts.device,
+  });
   return { ...user, token };
 }

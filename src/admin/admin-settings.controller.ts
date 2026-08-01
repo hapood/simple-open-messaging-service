@@ -12,7 +12,7 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SettingsService } from '../settings/settings.service.js';

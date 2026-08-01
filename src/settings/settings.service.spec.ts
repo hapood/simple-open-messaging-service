@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SettingsService } from './settings.service.js';
-import type { PrismaService } from '../prisma.service.js';
+import type { DatabaseService } from '../database/database.service.js';
 
 /**
  * SettingsService Firebase client config (file-based, 2026-07-23): the 4 fields are read once at boot from
@@ -13,10 +13,12 @@ import type { PrismaService } from '../prisma.service.js';
  * FIREBASE_CLIENT_CONFIG at a temp file so the real data/google-services.json is never touched.
  */
 
-// The Firebase path never touches Prisma; onModuleInit→refresh only reads the (absent) VAPID row.
-const prismaStub = {
-  systemSetting: { findUnique: async () => null },
-} as unknown as PrismaService;
+// The Firebase path only refreshes the absent VAPID row during boot.
+const databaseStub = {
+  db: {
+    query: { systemSetting: { findFirst: async () => undefined } },
+  },
+} as unknown as DatabaseService;
 
 const validJson = JSON.stringify({
   project_info: { project_number: '987654321098', project_id: 'soms-example' },
@@ -48,7 +50,7 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
 
   /** Boot a fresh service (runs onModuleInit → the eager disk read) and return it. Caller calls onModuleDestroy. */
   async function boot(): Promise<SettingsService> {
-    const s = new SettingsService(prismaStub);
+    const s = new SettingsService(databaseStub);
     await s.onModuleInit();
     return s;
   }

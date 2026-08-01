@@ -3,7 +3,7 @@ import { ThreadParticipantService } from '../thread-participant/thread-participa
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { QuotaService } from '../quota/quota.service.js';
-import { ContentType } from '../prisma/generated/client.js';
+import { ContentType } from '../database/enums.js';
 import type { ReportActionDto } from '../dto/notification.dto.js';
 import { stringifyTextMessageContent } from '../../shared/text-message-content.js';
 

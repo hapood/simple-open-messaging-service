@@ -18,31 +18,54 @@ import { PushService } from './push.service.js';
  */
 describe('PushService — identity-only payloads', () => {
   let svc: PushService;
-  let pushToken: { findMany: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; deleteMany: ReturnType<typeof vi.fn> };
-  let settings: { isWebPushConfigured: boolean; getVapid: ReturnType<typeof vi.fn> };
+  let pushToken: {
+    findMany: ReturnType<typeof vi.fn>;
+    findFirst: ReturnType<typeof vi.fn>;
+  };
+  let settings: {
+    isWebPushConfigured: boolean;
+    getVapid: ReturnType<typeof vi.fn>;
+  };
   let sse: { isUserOnline: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     sendNotification.mockReset();
     delete process.env.GOOGLE_APPLICATION_CREDENTIALS; // FCM disabled → exercise the Web Push branch
-    pushToken = { findMany: vi.fn(), findUnique: vi.fn(), deleteMany: vi.fn() };
+    pushToken = { findMany: vi.fn(), findFirst: vi.fn() };
     settings = {
       isWebPushConfigured: true,
-      getVapid: vi.fn(() => ({ subject: 'mailto:t@t', publicKey: 'pk', privateKey: 'sk' })),
+      getVapid: vi.fn(() => ({
+        subject: 'mailto:t@t',
+        publicKey: 'pk',
+        privateKey: 'sk',
+      })),
     };
     sse = { isUserOnline: vi.fn(() => false) };
-    svc = new PushService({ pushToken } as never, sse as never, settings as never);
+    svc = new PushService(
+      { db: { query: { pushToken } } } as never,
+      sse as never,
+      settings as never,
+    );
   });
 
   it('dispatchForMessage emits exactly { type:"NEW_MESSAGE", ts, threadId, seq } (no body/preview/contentType/msgid)', async () => {
     pushToken.findMany.mockResolvedValue([
-      { token: 'https://fcm/x', platform: 'WEB', webP256dh: 'p256', webAuth: 'auth' },
+      {
+        token: 'https://fcm/x',
+        platform: 'WEB',
+        webP256dh: 'p256',
+        webAuth: 'auth',
+      },
     ]);
     await svc.dispatchForMessage([{ userId: 1 }], 42, 7);
     expect(sendNotification).toHaveBeenCalledTimes(1);
     const data = JSON.parse(sendNotification.mock.calls[0][1]);
     expect(Object.keys(data).sort()).toEqual(['seq', 'threadId', 'ts', 'type']);
-    expect(data).toMatchObject({ type: 'NEW_MESSAGE', threadId: '42', seq: '7' });
+    expect(data).toMatchObject({
+      type: 'NEW_MESSAGE',
+      threadId: '42',
+      seq: '7',
+    });
     expect(typeof data.ts).toBe('string'); // FCM requires string values; Web Push JSON-stringifies
   });
 
@@ -54,14 +77,21 @@ describe('PushService — identity-only payloads', () => {
   });
 
   it('sendTestPush emits { type:"ADMIN_TEST", ts, title, body }', async () => {
-    pushToken.findUnique.mockResolvedValue({
-      id: 5, token: 'https://fcm/x', webP256dh: 'p256', webAuth: 'auth',
+    pushToken.findFirst.mockResolvedValue({
+      id: 5,
+      token: 'https://fcm/x',
+      webP256dh: 'p256',
+      webAuth: 'auth',
     });
     const res = await svc.sendTestPush(5, 'Hello', 'World');
     expect(res).toEqual({ ok: true });
     expect(sendNotification).toHaveBeenCalledTimes(1);
     const data = JSON.parse(sendNotification.mock.calls[0][1]);
-    expect(data).toMatchObject({ type: 'ADMIN_TEST', title: 'Hello', body: 'World' });
+    expect(data).toMatchObject({
+      type: 'ADMIN_TEST',
+      title: 'Hello',
+      body: 'World',
+    });
     expect(typeof data.ts).toBe('string');
   });
 });

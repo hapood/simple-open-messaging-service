@@ -11,7 +11,7 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import { MediaAssetGcService } from './media-asset-gc.service.js';
 
 /**

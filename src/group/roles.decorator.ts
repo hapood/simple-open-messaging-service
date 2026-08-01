@@ -1,5 +1,5 @@
 import { SetMetadata } from '@nestjs/common';
-import { GroupRole } from '../prisma/generated/client.js';
+import { GroupRole } from '../database/enums.js';
 
 /** Metadata key carrying the set of roles allowed on a route (read by RolesGuard). */
 export const ROLES_KEY = 'group:roles';

@@ -13,7 +13,7 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import {
   AdminListFederationPeersDto,
   AdminFederationPeerEventsDto,
@@ -22,7 +22,9 @@ import {
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { PrismaService } from '../prisma.service.js';
+import { eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { federatedPeer } from '../database/schema.js';
 import { FederationService } from '../federation/federation.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 
@@ -45,13 +47,16 @@ export class AdminFederationController {
   constructor(
     private readonly federationService: FederationService,
     private readonly selfCheckService: FederationSelfCheckService,
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/peers')
-  @ApiOperation({ summary: 'Federated-peer lifecycle list (trust state + audit cols), paginated + filterable' })
+  @ApiOperation({
+    summary:
+      'Federated-peer lifecycle list (trust state + audit cols), paginated + filterable',
+  })
   async listPeers(@Body() dto: AdminListFederationPeersDto) {
     return this.federationService.listPeers({
       skip: dto.skip ?? 0,
@@ -64,20 +69,28 @@ export class AdminFederationController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/peers/:domain')
-  @ApiOperation({ summary: 'Single federated peer detail (current lifecycle state)' })
+  @ApiOperation({
+    summary: 'Single federated peer detail (current lifecycle state)',
+  })
   async peerDetail(@Param('domain') domain: string) {
     // Read directly from Prisma rather than FederationService — the service is the S2S runtime's
     // concern; this is a trivial current-state read for the console, and keeps the admin surface
     // independent of the federation module's WIP.
-    const peer = await this.prisma.federatedPeer.findUnique({ where: { domain } });
-    if (!peer) throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
+    const peer = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, domain),
+    });
+    if (!peer)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
     return peer;
   }
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/peers/:domain/events')
-  @ApiOperation({ summary: 'A peer trust-lifecycle event timeline (trust → demote → re-trust …)' })
+  @ApiOperation({
+    summary:
+      'A peer trust-lifecycle event timeline (trust → demote → re-trust …)',
+  })
   async peerEvents(
     @Param('domain') domain: string,
     @Body() dto: AdminFederationPeerEventsDto,
@@ -90,7 +103,9 @@ export class AdminFederationController {
   @Audit('federation.peer.block', { targetType: 'peer', targetParam: 'domain' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/peers/:domain/block')
-  @ApiOperation({ summary: 'Block a peer domain — federation is refused until unblocked' })
+  @ApiOperation({
+    summary: 'Block a peer domain — federation is refused until unblocked',
+  })
   async blockPeer(
     @Param('domain') domain: string,
     @Body() dto: AdminFederationBlockDto,
@@ -100,10 +115,16 @@ export class AdminFederationController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('federation.peer.unblock', { targetType: 'peer', targetParam: 'domain' })
+  @Audit('federation.peer.unblock', {
+    targetType: 'peer',
+    targetParam: 'domain',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/peers/:domain/unblock')
-  @ApiOperation({ summary: 'Unblock a peer domain — moves to pending; the next contact re-handshakes' })
+  @ApiOperation({
+    summary:
+      'Unblock a peer domain — moves to pending; the next contact re-handshakes',
+  })
   async unblockPeer(@Param('domain') domain: string): Promise<void> {
     await this.federationService.markUnblocked(domain);
   }
@@ -112,9 +133,13 @@ export class AdminFederationController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/self-check')
   @ApiOperation({
-    summary: 'S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only)',
+    summary:
+      'S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only)',
   })
   async selfCheck(@Body() dto: AdminFederationSelfCheckDto) {
-    return this.selfCheckService.run({ ntpServer: dto?.ntpServer, dnsResolver: dto?.dnsResolver });
+    return this.selfCheckService.run({
+      ntpServer: dto?.ntpServer,
+      dnsResolver: dto?.dnsResolver,
+    });
   }
 }

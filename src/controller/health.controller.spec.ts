@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HealthController } from './health.controller.js';
-import type { PrismaService } from '../prisma.service.js';
+import type { DatabaseService } from '../database/database.service.js';
 
 /**
  * HealthController.health — the public liveness probe now reports DB reachability as a `database`
@@ -10,16 +10,16 @@ import type { PrismaService } from '../prisma.service.js';
  * code:0 HTTP response envelope, which is covered by the interceptor unit tests and health e2e test.
  */
 describe('HealthController.health — database reachability field', () => {
-  const $queryRaw = vi.fn();
-  const prisma = { $queryRaw } as unknown as PrismaService;
-  const controller = new HealthController(prisma);
+  const execute = vi.fn();
+  const database = { db: { execute } } as unknown as DatabaseService;
+  const controller = new HealthController(database);
 
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
   it('reports database "up" when SELECT 1 resolves', async () => {
-    $queryRaw.mockResolvedValueOnce([{ '?column?': 1 }]);
+    execute.mockResolvedValueOnce([{ '?column?': 1 }]);
 
     const result = await controller.health();
 
@@ -30,7 +30,7 @@ describe('HealthController.health — database reachability field', () => {
   });
 
   it('reports database "down" when SELECT 1 rejects', async () => {
-    $queryRaw.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    execute.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const result = await controller.health();
 
@@ -40,7 +40,7 @@ describe('HealthController.health — database reachability field', () => {
   it('reports database "down" when SELECT 1 hangs past the fail-fast timeout', async () => {
     vi.useFakeTimers();
     try {
-      $queryRaw.mockReturnValueOnce(new Promise<never>(() => {}));
+      execute.mockReturnValueOnce(new Promise<never>(() => {}));
 
       const pending = controller.health();
       await vi.advanceTimersByTimeAsync(3000);

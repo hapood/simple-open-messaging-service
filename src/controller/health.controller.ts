@@ -1,8 +1,9 @@
 import { Public } from '../common/public.decorator.js';
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
+import { sql } from 'drizzle-orm';
 import { SERVER_VERSION } from '../common/version.js';
-import { PrismaService } from '../prisma.service.js';
+import { DatabaseService } from '../database/database.service.js';
 
 /**
  * Fail-fast ceiling for the `SELECT 1` reachability probe. Stays under Docker HEALTHCHECK's 5s
@@ -13,7 +14,10 @@ const DB_PROBE_TIMEOUT_MS = 3000;
 
 /** Payload of GET /api/v1/health. */
 export class HealthResponseDto {
-  @ApiProperty({ example: 'ok', description: 'Liveness marker — always "ok" on a 200 response.' })
+  @ApiProperty({
+    example: 'ok',
+    description: 'Liveness marker — always "ok" on a 200 response.',
+  })
   status!: string;
 
   @ApiProperty({
@@ -23,12 +27,16 @@ export class HealthResponseDto {
   })
   database!: 'up' | 'down';
 
-  @ApiProperty({ example: '0.1.0', description: 'Server version (from package.json).' })
+  @ApiProperty({
+    example: '0.1.0',
+    description: 'Server version (from package.json).',
+  })
   version!: string;
 
   @ApiProperty({
     example: 1720000000000,
-    description: 'Server time as unix epoch milliseconds (lets a client sanity-check clock skew too).',
+    description:
+      'Server time as unix epoch milliseconds (lets a client sanity-check clock skew too).',
   })
   time!: number;
 }
@@ -67,11 +75,12 @@ export class HealthResponseDto {
 @Public()
 @Controller()
 export class HealthController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   @Get('health')
   @ApiOperation({
-    summary: 'Public liveness probe (unauthenticated): status, DB reachability, version, server time.',
+    summary:
+      'Public liveness probe (unauthenticated): status, DB reachability, version, server time.',
   })
   async health(): Promise<HealthResponseDto> {
     return {
@@ -87,7 +96,7 @@ export class HealthController {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.prisma.$queryRaw`SELECT 1`,
+        this.database.db.execute(sql`SELECT 1`),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('database probe timed out')),

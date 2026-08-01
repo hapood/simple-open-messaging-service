@@ -41,11 +41,7 @@ FROM ${NODE_IMAGE} AS server-build
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-# `npm ci` triggers the postinstall `prisma generate`, so schema + config + tsconfig must precede it.
-# tsconfig is still consulted at generate time (prisma reads `module` to shape its output); with the
-# project now ESM-native this is the natural state, not a CJS workaround.
-COPY package.json package-lock.json prisma.config.ts tsconfig.json tsconfig.build.json nest-cli.json ./
-COPY prisma ./prisma
+COPY package.json package-lock.json tsconfig.json tsconfig.build.json nest-cli.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 COPY src ./src
@@ -59,6 +55,7 @@ COPY --from=web-build /build/web/dist/web/browser ./web/dist/web/browser
 # scripts/ holds the packager invoked next (package-web-bundle.mjs); copy it in so `npm run
 # bundle:package` can tgz the browser build and emit manifest.json under shell-bundle/.
 COPY scripts ./scripts
+COPY database ./database
 RUN npm run bundle:package
 # Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
 RUN npm prune --omit=dev
@@ -74,20 +71,17 @@ ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 WORKDIR /app
 ENV NODE_ENV=production APP_VERSION=${APP_VERSION}
-# openssl CLI: Prisma probes `openssl version` at runtime to pick the matching bundled engine; the slim
-# base omits it, so without the CLI Prisma defaults to openssl-1.1.x (not bundled) and tries to download
-# it at migrate time. ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+# ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # Secrets (DATABASE_URL, JWT_*, etc.) are injected at run time via the init service, never baked in.
 # --chown=node:node so the non-root runtime user owns every file (node:*-slim ships uid-1000 `node`).
 COPY --chown=node:node package.json ./
 COPY --chown=node:node --from=server-build /build/node_modules ./node_modules
 COPY --chown=node:node --from=server-build /build/dist ./dist
-# Prisma schema + migrations + config: the compose `migrate` service runs `prisma migrate deploy`
-# from this same image. The `prisma` CLI is a real dependency now.
-COPY --chown=node:node --from=server-build /build/prisma ./prisma
-COPY --chown=node:node --from=server-build /build/prisma.config.ts ./prisma.config.ts
+# Pure SQL migrations + checksum/lock runner used by the one-shot compose migrate service.
+COPY --chown=node:node --from=server-build /build/database ./database
+COPY --chown=node:node --from=server-build /build/scripts/migrate-db.ts ./scripts/migrate-db.ts
 # Angular's application builder emits client files under dist/web/browser/ (SSR-ready layout); copy its
 # contents flat into public/web so index.html sits at public/web/index.html for Caddy file_server.
 COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web

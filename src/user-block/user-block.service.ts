@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { and, eq, inArray } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { userBlock } from '../database/schema.js';
 
 /**
  * UserBlock data layer.
@@ -16,60 +18,80 @@ import { PrismaService } from '../prisma.service.js';
  */
 @Injectable()
 export class UserBlockService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /** Block a user. Idempotent: re-blocking an already-blocked user is a no-op (upsert). */
-  block(blockerId: number, blockedId: number) {
-    return this.prisma.userBlock.upsert({
-      where: { blockerId_blockedId: { blockerId, blockedId } },
-      create: { blockerId, blockedId },
-      update: {},
-    });
+  async block(blockerId: number, blockedId: number): Promise<void> {
+    await this.database.db
+      .insert(userBlock)
+      .values({ blockerId, blockedId })
+      .onConflictDoNothing({
+        target: [userBlock.blockerId, userBlock.blockedId],
+      });
   }
 
   /** Unblock a user. Idempotent: unblocking someone not blocked is a no-op (deleteMany never throws). */
-  unblock(blockerId: number, blockedId: number) {
-    return this.prisma.userBlock.deleteMany({
-      where: { blockerId, blockedId },
-    });
+  async unblock(blockerId: number, blockedId: number): Promise<void> {
+    await this.database.db
+      .delete(userBlock)
+      .where(
+        and(
+          eq(userBlock.blockerId, blockerId),
+          eq(userBlock.blockedId, blockedId),
+        ),
+      );
   }
 
   /** Users whom `blockerId` has blocked. Hides their messages in query-messages (the blocker's view). */
   async blockedByMe(blockerId: number): Promise<Set<number>> {
-    const rows = await this.prisma.userBlock.findMany({
-      where: { blockerId },
-      select: { blockedId: true },
-    });
+    const rows = await this.database.db
+      .select({ blockedId: userBlock.blockedId })
+      .from(userBlock)
+      .where(eq(userBlock.blockerId, blockerId));
     return new Set(rows.map((r) => r.blockedId));
   }
 
   /** Of `targetIds`, the subset that `blockerId` has blocked — batched lookup for hydrating a list of
    *  P2P conversations with each peer's blocked flag in one query. */
-  async blockedAmong(blockerId: number, targetIds: number[]): Promise<Set<number>> {
+  async blockedAmong(
+    blockerId: number,
+    targetIds: number[],
+  ): Promise<Set<number>> {
     if (targetIds.length === 0) return new Set();
-    const rows = await this.prisma.userBlock.findMany({
-      where: { blockerId, blockedId: { in: targetIds } },
-      select: { blockedId: true },
-    });
+    const rows = await this.database.db
+      .select({ blockedId: userBlock.blockedId })
+      .from(userBlock)
+      .where(
+        and(
+          eq(userBlock.blockerId, blockerId),
+          inArray(userBlock.blockedId, targetIds),
+        ),
+      );
     return new Set(rows.map((r) => r.blockedId));
   }
 
   /** Users who have blocked `userId`. Used by send-message fan-out to drop those recipients — they
    *  must not receive the sender's messages. */
   async blockersOf(userId: number): Promise<Set<number>> {
-    const rows = await this.prisma.userBlock.findMany({
-      where: { blockedId: userId },
-      select: { blockerId: true },
-    });
+    const rows = await this.database.db
+      .select({ blockerId: userBlock.blockerId })
+      .from(userBlock)
+      .where(eq(userBlock.blockedId, userId));
     return new Set(rows.map((r) => r.blockerId));
   }
 
   /** True iff `blockerId` currently blocks `blockedId`. */
   async isBlocked(blockerId: number, blockedId: number): Promise<boolean> {
-    const row = await this.prisma.userBlock.findUnique({
-      where: { blockerId_blockedId: { blockerId, blockedId } },
-      select: { id: true },
-    });
-    return row !== null;
+    const row = await this.database.db
+      .select({ id: userBlock.id })
+      .from(userBlock)
+      .where(
+        and(
+          eq(userBlock.blockerId, blockerId),
+          eq(userBlock.blockedId, blockedId),
+        ),
+      )
+      .limit(1);
+    return row.length > 0;
   }
 }

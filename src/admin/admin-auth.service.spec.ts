@@ -9,11 +9,17 @@ import { PasswordHasher } from '../auth/password-hasher.service.js';
 import { jwtConstants } from '../auth/constants.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import {
+  admin as adminTable,
+  adminLoginChallenge,
+  adminSession,
+  twoFactorBackupCode,
+} from '../database/schema.js';
 
 /**
  * AdminAuthService orchestration specs — lock the login two-step contract and the brute-force escalation,
  * using a REAL TwoFactorService (real AES-GCM + TOTP + JWT) and a REAL BruteForceService (in-memory) over a
- * hand-rolled Prisma fake. This exercises the actual crypto + ban math end-to-end (no Nest DI container),
+ * hand-rolled Drizzle fake. This exercises the actual crypto + ban math end-to-end (no Nest DI container),
  * matching the project's spec style.
  */
 
@@ -101,8 +107,48 @@ async function setup(o: Overrides = {}) {
     },
   };
 
+  const db = {
+    query: {
+      user: { findFirst: prisma.user.findUnique },
+      admin: { findFirst: prisma.admin.findUnique },
+      twoFactorBackupCode: {
+        findFirst: vi.fn(async () => (backupRows.length > 0 ? { id: 1 } : null)),
+      },
+    },
+    insert: vi.fn((table: unknown) => ({
+      values: async (data: Record<string, unknown>) => {
+        if (table === adminSession) return prisma.adminSession.create({ data });
+        if (table === adminLoginChallenge) return prisma.adminLoginChallenge.create({ data: data as never });
+      },
+    })),
+    update: vi.fn((table: unknown) => {
+      let operation: Promise<unknown> = Promise.resolve(undefined);
+      const query = {
+        set: (data: Record<string, unknown>) => {
+          operation = table === adminTable
+            ? prisma.admin.update({ data })
+            : table === adminLoginChallenge
+              ? prisma.adminLoginChallenge.updateMany()
+              : table === twoFactorBackupCode
+                ? prisma.twoFactorBackupCode.updateMany()
+                : prisma.adminSession.updateMany();
+          return query;
+        },
+        where: () => query,
+        returning: async () => {
+          const result = await operation as { count?: number };
+          return result?.count === 0 ? [] : [{ id: 1, jti: 'claimed' }];
+        },
+        then: (resolve: (value: unknown) => unknown) => operation.then(resolve),
+      };
+      return query;
+    }),
+    delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
+  };
+  const database = { db };
+
   // Re-bind TwoFactor to the fake Prisma so backup-code consume uses the seeded store.
-  const twoFactorBound = new TwoFactorService(prisma as never, jwt);
+  const twoFactorBound = new TwoFactorService(database as never, jwt);
   // WebAuthnService is stubbed at the orchestration level: the admin-auth specs test ban/issuance
   // branching, not the assertion crypto (that is covered in webauthn.service.spec.ts).
   const webAuthn = {
@@ -111,7 +157,7 @@ async function setup(o: Overrides = {}) {
     completeRegistration: vi.fn(async () => ({ id: 'cred-1', nickname: 'phone', deviceType: 'platform', backed: true })),
     removeCredential: vi.fn(async () => ({ remaining: 0 })),
   } as unknown as WebAuthnService;
-  const svc = new AdminAuthService(prisma as never, jwt, bruteForce, twoFactorBound, passwordHasher, webAuthn);
+  const svc = new AdminAuthService(database as never, jwt, bruteForce, twoFactorBound, passwordHasher, webAuthn);
 
   return {
     svc,

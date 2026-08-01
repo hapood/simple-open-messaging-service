@@ -1,5 +1,14 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  federatedPeer,
+  quotaDailyUsage,
+  systemSetting,
+} from '../database/schema.js';
 import {
   loadFederationConfig,
   loadQuotaConfig,
@@ -38,7 +47,7 @@ export class QuotaService {
   /** SystemSetting KV key holding the LOCAL node's override JSON (peers use FederatedPeer columns). */
   static readonly LOCAL_KEY = 'quota:local';
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /** Whether `domain` is this server (the local aggregate node). */
   isLocal(domain: string): boolean {
@@ -55,8 +64,8 @@ export class QuotaService {
   /** Per-node override set (null/absent = use the global default for that field). */
   async getOverrides(domain: string): Promise<QuotaOverrides> {
     if (this.isLocal(domain)) {
-      const row = await this.prisma.systemSetting.findUnique({
-        where: { key: QuotaService.LOCAL_KEY },
+      const row = await this.database.db.query.systemSetting.findFirst({
+        where: eq(systemSetting.key, QuotaService.LOCAL_KEY),
       });
       if (!row) return {};
       try {
@@ -66,9 +75,9 @@ export class QuotaService {
         return {};
       }
     }
-    const peer = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
-      select: {
+    const peer = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, domain),
+      columns: {
         dailyMsgLimit: true,
         dailyImageLimit: true,
         dailyLargeFileLimit: true,
@@ -118,15 +127,13 @@ export class QuotaService {
   async peek(domain: string, category: QuotaCategory): Promise<void> {
     const overrides = await this.getOverrides(domain);
     const limit = this.effectiveLimit(overrides, category);
-    const row = await this.prisma.quotaDailyUsage.findUnique({
-      where: {
-        domain_date_category: {
-          domain,
-          date: this.utcToday(),
-          category,
-        },
-      },
-      select: { count: true },
+    const row = await this.database.db.query.quotaDailyUsage.findFirst({
+      where: and(
+        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.date, this.utcToday()),
+        eq(quotaDailyUsage.category, category),
+      ),
+      columns: { count: true },
     });
     const count = row?.count ?? 0;
     if (count >= limit) {
@@ -149,18 +156,30 @@ export class QuotaService {
   async tick(
     domain: string,
     category: QuotaCategory,
-    tx?: PrismaTx,
+    tx?: DatabaseTransaction | LegacyRawTransaction,
   ): Promise<void> {
     const overrides = await this.getOverrides(domain);
     const limit = this.effectiveLimit(overrides, category);
     const today = this.utcToday();
-    const run = async (runner: PrismaTx): Promise<void> => {
-      const rows = await runner.$queryRaw<Array<{ count: number }>>`
-        INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
-        VALUES (${domain}, ${today}, ${category}, 1)
-        ON CONFLICT ("domain", "date", "category")
-        DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1
-        RETURNING "count"`;
+    const run = async (
+      runner: DatabaseTransaction | LegacyRawTransaction,
+    ): Promise<void> => {
+      const rows =
+        'execute' in runner
+          ? (
+              await runner.execute<{ count: number }>(sql`
+                INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
+                VALUES (${domain}, ${today}, ${category}, 1)
+                ON CONFLICT ("domain", "date", "category")
+                DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1
+                RETURNING "count"`)
+            ).rows
+          : await runner.$queryRawUnsafe<{ count: number }[]>(
+              'INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count") VALUES ($1, $2, $3, 1) ON CONFLICT ("domain", "date", "category") DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1 RETURNING "count"',
+              domain,
+              today,
+              category,
+            );
       const count = rows[0]?.count ?? 1;
       if (count > limit) {
         const retryAfter = this.retryAfterSeconds();
@@ -173,7 +192,7 @@ export class QuotaService {
       }
     };
     if (tx) await run(tx);
-    else await this.prisma.$transaction(run);
+    else await this.database.db.transaction(run);
   }
 
   /**
@@ -191,14 +210,14 @@ export class QuotaService {
     const rollback = Symbol('quota-rollback');
     let outcome!: QuotaTickOutcome;
     try {
-      await this.prisma.$transaction(async (tx) => {
-        const rows = await tx.$queryRaw<Array<{ count: number }>>`
+      await this.database.db.transaction(async (tx) => {
+        const result = await tx.execute<{ count: number }>(sql`
           INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
           VALUES (${this.ownDomain}, ${today}, ${category}, 1)
           ON CONFLICT ("domain", "date", "category")
           DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1
-          RETURNING "count"`;
-        const count = rows[0]?.count ?? 1;
+          RETURNING "count"`);
+        const count = result.rows[0]?.count ?? 1;
         outcome = {
           count,
           limit,
@@ -268,10 +287,19 @@ export class QuotaService {
   ): Promise<Map<string, Record<QuotaCategory, number>>> {
     const map = new Map<string, Record<QuotaCategory, number>>();
     if (domains.length === 0) return map;
-    const rows = await this.prisma.quotaDailyUsage.findMany({
-      where: { date: this.utcToday(), domain: { in: domains } },
-      select: { domain: true, category: true, count: true },
-    });
+    const rows = await this.database.db
+      .select({
+        domain: quotaDailyUsage.domain,
+        category: quotaDailyUsage.category,
+        count: quotaDailyUsage.count,
+      })
+      .from(quotaDailyUsage)
+      .where(
+        and(
+          eq(quotaDailyUsage.date, this.utcToday()),
+          inArray(quotaDailyUsage.domain, domains),
+        ),
+      );
     for (const r of rows) {
       let dc = map.get(r.domain);
       if (!dc) {
@@ -288,7 +316,12 @@ export class QuotaService {
     counts: Record<QuotaCategory, number>,
     overrides: QuotaOverrides,
   ): Record<QuotaCategory, { count: number; limit: number }> {
-    const cats: QuotaCategory[] = ['messages', 'images', 'largeFiles', 'requests'];
+    const cats: QuotaCategory[] = [
+      'messages',
+      'images',
+      'largeFiles',
+      'requests',
+    ];
     return cats.reduce(
       (acc, c) => {
         acc[c] = { count: counts[c], limit: this.effectiveLimit(overrides, c) };
@@ -303,7 +336,8 @@ export class QuotaService {
     domain: string,
   ): Promise<Record<QuotaCategory, { count: number; limit: number }>> {
     const overrides = await this.getOverrides(domain);
-    const counts = (await this.countsToday([domain])).get(domain) ?? zeroCounts();
+    const counts =
+      (await this.countsToday([domain])).get(domain) ?? zeroCounts();
     return this.buildUsage(counts, overrides);
   }
 
@@ -311,9 +345,9 @@ export class QuotaService {
    *  Three queries total regardless of peer count (peers, a batched usage fetch, the local KV override) —
    *  no N+1 per peer. */
   async listNodes(): Promise<QuotaNode[]> {
-    const peers = await this.prisma.federatedPeer.findMany({
-      orderBy: { domain: 'asc' },
-      select: {
+    const peers = await this.database.db.query.federatedPeer.findMany({
+      orderBy: asc(federatedPeer.domain),
+      columns: {
         domain: true,
         trustLevel: true,
         dailyMsgLimit: true,
@@ -362,27 +396,37 @@ export class QuotaService {
   async setLimits(domain: string, overrides: QuotaOverrides): Promise<void> {
     const normalized = normalizeOverrides(overrides);
     if (this.isLocal(domain)) {
-      await this.prisma.systemSetting.upsert({
-        where: { key: QuotaService.LOCAL_KEY },
-        create: {
+      await this.database.db
+        .insert(systemSetting)
+        .values({
           key: QuotaService.LOCAL_KEY,
           value: JSON.stringify(normalized),
-        },
-        update: { value: JSON.stringify(normalized) },
-      });
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: systemSetting.key,
+          set: { value: JSON.stringify(normalized), updatedAt: new Date() },
+        });
       return;
     }
-    await this.prisma.federatedPeer.update({
-      where: { domain },
-      data: {
+    const rows = await this.database.db
+      .update(federatedPeer)
+      .set({
         dailyMsgLimit: normalized.dailyMsgLimit ?? null,
         dailyImageLimit: normalized.dailyImageLimit ?? null,
         dailyLargeFileLimit: normalized.dailyLargeFileLimit ?? null,
         dailyRequestLimit: normalized.dailyRequestLimit ?? null,
         maxImageBytes: normalized.maxImageBytes ?? null,
         maxLargeFileBytes: normalized.maxLargeFileBytes ?? null,
-      },
-    });
+      })
+      .where(eq(federatedPeer.domain, domain))
+      .returning({ domain: federatedPeer.domain });
+    if (rows.length === 0) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'quota node not found',
+      );
+    }
   }
 }
 
@@ -422,18 +466,19 @@ export interface QuotaNode {
   usage: Record<QuotaCategory, { count: number; limit: number }> | undefined;
 }
 
-/** A Prisma client or transaction client narrowed to the raw-query surface. The `tx` param lets tick
- *  join a caller's existing transaction (storePulledMessage); structurally compatible with both
- *  PrismaService and Prisma.TransactionClient (both expose $queryRaw). */
-type PrismaTx = Pick<PrismaService, '$queryRaw'>;
-
 /** A fresh all-zero per-category count record (the default for a node with no usage row today). */
 function zeroCounts(): Record<QuotaCategory, number> {
   return { messages: 0, images: 0, largeFiles: 0, requests: 0, signals: 0 };
 }
 
+type LegacyRawTransaction = {
+  $queryRawUnsafe<T>(query: string, ...values: unknown[]): Promise<T>;
+};
+
 /** Coerce a loose/partial override object into a clean QuotaOverrides (numbers-or-null, no junk). */
-function normalizeOverrides(src: Partial<QuotaOverrides> | null | undefined): QuotaOverrides {
+function normalizeOverrides(
+  src: Partial<QuotaOverrides> | null | undefined,
+): QuotaOverrides {
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
   return {

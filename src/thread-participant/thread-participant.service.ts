@@ -1,10 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
-  GroupRole,
-  MessageThreadType,
-  Prisma,
-} from '../prisma/generated/client.js';
+  DatabaseService,
+  type Database,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  group,
+  messageThread,
+  threadParticipant,
+  user,
+} from '../database/schema.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
 import {
   PendingThreadRevision,
   ThreadRevisionService,
@@ -23,15 +30,20 @@ import {
 @Injectable()
 export class ThreadParticipantService {
   constructor(
-    private prisma: PrismaService,
+    private database: DatabaseService,
     private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
   /** The caller's participant row, regardless of leftAt. */
   findParticipant(userId: number, threadId: number) {
-    return this.prisma.threadParticipant.findUnique({
-      where: { userId_threadId: { userId, threadId } },
-    });
+    return this.database.db.query.threadParticipant
+      .findFirst({
+        where: and(
+          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.threadId, threadId),
+        ),
+      })
+      .then((row) => row ?? null);
   }
 
   /** The caller's participant row only if still active (not left). Null otherwise. */
@@ -45,35 +57,55 @@ export class ThreadParticipantService {
    *  recipients (the in-app bubble still renders via their own SSE pull — mute is a notification
    *  concern, not a delivery concern). */
   getActiveParticipantUserIds(threadId: number) {
-    return this.prisma.threadParticipant.findMany({
-      where: { threadId, leftAt: null },
-      select: { userId: true, muted: true },
+    return this.database.db.query.threadParticipant.findMany({
+      where: and(
+        eq(threadParticipant.threadId, threadId),
+        isNull(threadParticipant.leftAt),
+      ),
+      columns: { userId: true, muted: true },
     });
   }
 
   /** Resolve a history-readable participant with the thread type. GROUP rows must still be active;
    *  P2P rows remain readable after unfriend so the old conversation can be opened without a composer. */
   async findActiveParticipantWithThread(userId: number, threadId: number) {
-    const p = await this.prisma.threadParticipant.findUnique({
-      where: { userId_threadId: { userId, threadId } },
-      include: {
-        thread: {
-          select: {
-            type: true,
-            groupUser: { select: { group: { select: { dissolvedAt: true } } } },
+    const [row] = await this.database.db
+      .select({
+        participant: threadParticipant,
+        threadType: messageThread.type,
+        groupId: group.id,
+        dissolvedAt: group.dissolvedAt,
+      })
+      .from(threadParticipant)
+      .innerJoin(
+        messageThread,
+        eq(messageThread.id, threadParticipant.threadId),
+      )
+      .leftJoin(group, eq(group.groupUserId, messageThread.groupUserId))
+      .where(
+        and(
+          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    return row
+      ? {
+          ...row.participant,
+          thread: {
+            type: row.threadType,
+            groupUser:
+              row.groupId === null
+                ? null
+                : { group: { dissolvedAt: row.dissolvedAt } },
           },
-        },
-      },
-    });
-    return p;
+        }
+      : null;
   }
 
   /** Toggle mute for the caller's row. Idempotent (writing the same value is a no-op write). */
   setMuted(userId: number, threadId: number, muted: boolean) {
-    return this.prisma.threadParticipant.update({
-      where: { userId_threadId: { userId, threadId } },
-      data: { muted },
-    });
+    return this.updateParticipant(userId, threadId, { muted });
   }
 
   /**
@@ -82,12 +114,13 @@ export class ThreadParticipantService {
    * pinned thread refreshes pinnedAt so it jumps to the top of the pinned tier.
    */
   setPinned(userId: number, threadId: number, pinned: boolean) {
-    return this.prisma.threadParticipant.update({
-      where: { userId_threadId: { userId, threadId } },
-      data: pinned
+    return this.updateParticipant(
+      userId,
+      threadId,
+      pinned
         ? { pinned: true, pinnedAt: new Date() }
         : { pinned: false, pinnedAt: null },
-    });
+    );
   }
 
   /**
@@ -97,17 +130,15 @@ export class ThreadParticipantService {
    * lastReadSeq untouched so the unread badge doesn't regress.
    */
   clearHistory(userId: number, threadId: number) {
-    return this.prisma.threadParticipant.update({
-      where: { userId_threadId: { userId, threadId } },
-      data: { clearedAt: new Date() },
-    });
+    return this.updateParticipant(userId, threadId, { clearedAt: new Date() });
   }
 
   /** Permanently hide a thread for one participant. The peer/member copies and Message rows are untouched. */
   deleteThreadForUser(userId: number, threadId: number) {
-    return this.prisma.threadParticipant.update({
-      where: { userId_threadId: { userId, threadId } },
-      data: { clearedAt: new Date(), pinned: false, pinnedAt: null },
+    return this.updateParticipant(userId, threadId, {
+      clearedAt: new Date(),
+      pinned: false,
+      pinnedAt: null,
     });
   }
 
@@ -116,9 +147,8 @@ export class ThreadParticipantService {
    *  view only. */
   setAlias(userId: number, threadId: number, alias: string | undefined) {
     const trimmed = alias?.trim();
-    return this.prisma.threadParticipant.update({
-      where: { userId_threadId: { userId, threadId } },
-      data: { alias: trimmed && trimmed.length > 0 ? trimmed : null },
+    return this.updateParticipant(userId, threadId, {
+      alias: trimmed && trimmed.length > 0 ? trimmed : null,
     });
   }
 
@@ -128,20 +158,27 @@ export class ThreadParticipantService {
    * by role for display. P2P threads have exactly two rows with role null.
    */
   getRoster(threadId: number) {
-    return this.prisma.threadParticipant.findMany({
-      where: { threadId, leftAt: null },
-      include: { user: true },
-      orderBy: { joinedAt: 'asc' },
+    return this.database.db.query.threadParticipant.findMany({
+      where: and(
+        eq(threadParticipant.threadId, threadId),
+        isNull(threadParticipant.leftAt),
+      ),
+      with: { user: true },
+      orderBy: asc(threadParticipant.joinedAt),
     });
   }
 
   /** Batch roster fetch for multiple threads (mixed; group by threadId at the call site). Used by the
    *  /group/members batch endpoint so the client can hydrate all group rosters in one request. */
   getRosters(threadIds: number[]) {
-    return this.prisma.threadParticipant.findMany({
-      where: { threadId: { in: threadIds }, leftAt: null },
-      include: { user: true },
-      orderBy: { joinedAt: 'asc' },
+    if (threadIds.length === 0) return Promise.resolve([]);
+    return this.database.db.query.threadParticipant.findMany({
+      where: and(
+        inArray(threadParticipant.threadId, threadIds),
+        isNull(threadParticipant.leftAt),
+      ),
+      with: { user: true },
+      orderBy: asc(threadParticipant.joinedAt),
     });
   }
 
@@ -150,14 +187,28 @@ export class ThreadParticipantService {
    * `include`/`select` are reflected in the returned payload type — Prisma can't infer includes
    * passed through a plain `FindManyArgs`-typed variable.
    */
-  queryParticipants<T extends Prisma.ThreadParticipantFindManyArgs>(
-    params: T,
-  ): Promise<Prisma.ThreadParticipantGetPayload<T>[]> {
-    // Cast: findMany's generic return narrows to the default payload, but callers passing `include` need the included
-    // fields typed (e.g. `thread`). GetPayload<T> models exactly that.
-    return this.prisma.threadParticipant.findMany(params) as unknown as Promise<
-      Prisma.ThreadParticipantGetPayload<T>[]
-    >;
+  async queryParticipants(params: ParticipantQuery) {
+    const threadId = params.where.threadId;
+    const rows = await this.database.db.query.threadParticipant.findMany({
+      where: and(
+        eq(threadParticipant.userId, params.where.userId),
+        params.where.leftAt === null
+          ? isNull(threadParticipant.leftAt)
+          : undefined,
+        typeof threadId === 'number'
+          ? eq(threadParticipant.threadId, threadId)
+          : threadId
+            ? inArray(threadParticipant.threadId, threadId.in)
+            : undefined,
+      ),
+      with: { messageThread: true },
+      orderBy: params.orderBy ? asc(threadParticipant.id) : undefined,
+      limit: params.take,
+    });
+    return rows.map(({ messageThread, ...row }) => ({
+      ...row,
+      thread: messageThread,
+    }));
   }
 
   /**
@@ -166,17 +217,22 @@ export class ThreadParticipantService {
    * conversation list. Returns at most one peer per thread (P2P threads have exactly two participants).
    */
   findP2PPeers(threadIds: number[], notUserId: number) {
-    return this.prisma.threadParticipant.findMany({
-      where: {
-        threadId: { in: threadIds },
-        userId: { not: notUserId },
-      },
+    if (threadIds.length === 0) return Promise.resolve([]);
+    return this.database.db.query.threadParticipant.findMany({
+      where: and(
+        inArray(threadParticipant.threadId, threadIds),
+        ne(threadParticipant.userId, notUserId),
+      ),
     });
   }
 
   /** Add a member to a conversation (used by group create/join). */
-  createParticipant(data: Prisma.ThreadParticipantCreateInput) {
-    return this.prisma.threadParticipant.create({ data });
+  createParticipant(data: typeof threadParticipant.$inferInsert) {
+    return this.database.db
+      .insert(threadParticipant)
+      .values({ ...data, updatedAt: data.updatedAt ?? new Date() })
+      .returning()
+      .then(([row]) => row);
   }
 
   /**
@@ -192,24 +248,19 @@ export class ThreadParticipantService {
     userX: number,
     userY: number,
   ): Promise<number | null> {
-    const mine = await this.prisma.threadParticipant.findMany({
-      where: {
-        userId: userX,
-        leftAt: null,
-        thread: { type: MessageThreadType.P2P },
-      },
-      select: { threadId: true },
-    });
-    if (mine.length === 0) return null;
-    const peer = await this.prisma.threadParticipant.findFirst({
-      where: {
-        userId: userY,
-        leftAt: null,
-        threadId: { in: mine.map((m) => m.threadId) },
-      },
-      select: { threadId: true },
-    });
-    return peer?.threadId ?? null;
+    const result = await this.database.db.execute<{ threadId: number }>(sql`
+      SELECT mine."threadId"
+      FROM "ThreadParticipant" mine
+      JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
+      JOIN "MessageThread" thread ON thread.id = mine."threadId"
+      WHERE mine."userId" = ${userX}
+        AND peer."userId" = ${userY}
+        AND mine."leftAt" IS NULL
+        AND peer."leftAt" IS NULL
+        AND thread.type = ${MessageThreadType.P2P}
+      LIMIT 1
+    `);
+    return result.rows[0]?.threadId ?? null;
   }
 
   /** Most recent retained P2P thread for a pair, including an already-ended relationship. Used only
@@ -218,18 +269,18 @@ export class ThreadParticipantService {
     userX: number,
     userY: number,
   ): Promise<number | null> {
-    const row = await this.prisma.threadParticipant.findFirst({
-      where: {
-        userId: userX,
-        thread: {
-          type: MessageThreadType.P2P,
-          ThreadParticipant: { some: { userId: userY } },
-        },
-      },
-      orderBy: { threadId: 'desc' },
-      select: { threadId: true },
-    });
-    return row?.threadId ?? null;
+    const result = await this.database.db.execute<{ threadId: number }>(sql`
+      SELECT mine."threadId"
+      FROM "ThreadParticipant" mine
+      JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
+      JOIN "MessageThread" thread ON thread.id = mine."threadId"
+      WHERE mine."userId" = ${userX}
+        AND peer."userId" = ${userY}
+        AND thread.type = ${MessageThreadType.P2P}
+      ORDER BY mine."threadId" DESC
+      LIMIT 1
+    `);
+    return result.rows[0]?.threadId ?? null;
   }
 
   /**
@@ -239,10 +290,15 @@ export class ThreadParticipantService {
    * discovers the severed edge lazily via a 403 on its next pull, per the federation protocol).
    */
   async softLeaveP2PBoth(threadId: number): Promise<void> {
-    await this.prisma.threadParticipant.updateMany({
-      where: { threadId, leftAt: null },
-      data: { leftAt: new Date() },
-    });
+    await this.database.db
+      .update(threadParticipant)
+      .set({ leftAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(threadParticipant.threadId, threadId),
+          isNull(threadParticipant.leftAt),
+        ),
+      );
   }
 
   /** Atomically end both sides of a P2P relation and optionally clear the caller's history boundary. */
@@ -253,7 +309,7 @@ export class ThreadParticipantService {
     localPeerUserId?: number,
   ): Promise<{ transitioned: boolean }> {
     const now = new Date();
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.database.db.transaction(async (tx) => {
       const callerHidden = await this.threadRevisionService.isThreadHiddenInTx(
         tx,
         callerUserId,
@@ -267,18 +323,34 @@ export class ThreadParticipantService {
               localPeerUserId,
               threadId,
             );
-      const ended = await tx.threadParticipant.updateMany({
-        where: { threadId, leftAt: null },
-        data: { leftAt: now },
-      });
+      const ended = await tx
+        .update(threadParticipant)
+        .set({ leftAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(threadParticipant.threadId, threadId),
+            isNull(threadParticipant.leftAt),
+          ),
+        )
+        .returning({ id: threadParticipant.id });
       const shouldDelete = deleteData && !callerHidden;
       if (shouldDelete) {
-        await tx.threadParticipant.update({
-          where: { userId_threadId: { userId: callerUserId, threadId } },
-          data: { clearedAt: now, pinned: false, pinnedAt: null },
-        });
+        await tx
+          .update(threadParticipant)
+          .set({
+            clearedAt: now,
+            pinned: false,
+            pinnedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(threadParticipant.userId, callerUserId),
+              eq(threadParticipant.threadId, threadId),
+            ),
+          );
       }
-      const transitioned = ended.count > 0;
+      const transitioned = ended.length > 0;
       const revisions: PendingThreadRevision[] = [];
       if (shouldDelete) {
         revisions.push({
@@ -326,23 +398,35 @@ export class ThreadParticipantService {
    *  role. Takes a tx-or-client so a caller's transaction (e.g. InviteService.acceptInvite) can include
    *  the member add atomically — the single implementation shared with the non-tx callers. */
   async upsertMemberInTx(
-    tx: Prisma.TransactionClient,
+    tx: Database | DatabaseTransaction,
     threadId: number,
     userId: number,
     role: GroupRole,
   ): Promise<void> {
-    const existing = await tx.threadParticipant.findUnique({
-      where: { userId_threadId: { userId, threadId } },
-    });
-    if (existing === null) {
-      await tx.threadParticipant.create({ data: { userId, threadId, role } });
+    const [existing] = await tx
+      .select()
+      .from(threadParticipant)
+      .where(
+        and(
+          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    if (!existing) {
+      await tx.insert(threadParticipant).values({
+        userId,
+        threadId,
+        role,
+        updatedAt: new Date(),
+      });
       return;
     }
     if (existing.leftAt !== null || existing.role !== role) {
-      await tx.threadParticipant.update({
-        where: { id: existing.id },
-        data: { leftAt: null, role },
-      });
+      await tx
+        .update(threadParticipant)
+        .set({ leftAt: null, role, updatedAt: new Date() })
+        .where(eq(threadParticipant.id, existing.id));
     }
   }
 
@@ -352,15 +436,21 @@ export class ThreadParticipantService {
     userId: number,
     role: GroupRole,
   ): Promise<void> {
-    return this.upsertMemberInTx(this.prisma, threadId, userId, role);
+    return this.upsertMemberInTx(this.database.db, threadId, userId, role);
   }
 
   /** Soft-leave a single member (set leftAt). No-op if already left / not a member. */
   async softLeaveMember(threadId: number, userId: number): Promise<void> {
-    await this.prisma.threadParticipant.updateMany({
-      where: { threadId, userId, leftAt: null },
-      data: { leftAt: new Date() },
-    });
+    await this.database.db
+      .update(threadParticipant)
+      .set({ leftAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(threadParticipant.threadId, threadId),
+          eq(threadParticipant.userId, userId),
+          isNull(threadParticipant.leftAt),
+        ),
+      );
   }
 
   /** Set a member's role (raw — the origin authorized it). */
@@ -369,10 +459,15 @@ export class ThreadParticipantService {
     userId: number,
     role: GroupRole,
   ): Promise<void> {
-    await this.prisma.threadParticipant.updateMany({
-      where: { threadId, userId },
-      data: { role },
-    });
+    await this.database.db
+      .update(threadParticipant)
+      .set({ role, updatedAt: new Date() })
+      .where(
+        and(
+          eq(threadParticipant.threadId, threadId),
+          eq(threadParticipant.userId, userId),
+        ),
+      );
   }
 
   /** Whether two users currently share an active P2P thread (i.e. are friends). */
@@ -388,21 +483,36 @@ export class ThreadParticipantService {
    * shows them, mirroring the previous behavior.
    */
   async getActiveP2PPeerUserIds(userId: number): Promise<number[]> {
-    const mine = await this.prisma.threadParticipant.findMany({
-      where: { userId, leftAt: null, thread: { type: MessageThreadType.P2P } },
-      select: { threadId: true },
-    });
-    if (mine.length === 0) return [];
-    const peers = await this.prisma.threadParticipant.findMany({
-      where: {
-        threadId: { in: mine.map((m) => m.threadId) },
-        leftAt: null,
-        userId: { not: userId },
-      },
-      select: { userId: true },
-      distinct: ['userId'],
-    });
-    return peers.map((p) => p.userId);
+    const result = await this.database.db.execute<{ userId: number }>(sql`
+      SELECT DISTINCT peer."userId"
+      FROM "ThreadParticipant" mine
+      JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
+      JOIN "MessageThread" thread ON thread.id = mine."threadId"
+      WHERE mine."userId" = ${userId}
+        AND peer."userId" <> ${userId}
+        AND mine."leftAt" IS NULL
+        AND peer."leftAt" IS NULL
+        AND thread.type = ${MessageThreadType.P2P}
+    `);
+    return result.rows.map((row) => row.userId);
+  }
+
+  private updateParticipant(
+    userId: number,
+    threadId: number,
+    data: Partial<typeof threadParticipant.$inferInsert>,
+  ) {
+    return this.database.db
+      .update(threadParticipant)
+      .set({ ...data, updatedAt: new Date() })
+      .where(
+        and(
+          eq(threadParticipant.userId, userId),
+          eq(threadParticipant.threadId, threadId),
+        ),
+      )
+      .returning()
+      .then(([row]) => row);
   }
 
   /**
@@ -417,3 +527,14 @@ export class ThreadParticipantService {
    * strictly greater than the current watermark (or the watermark is NULL); count>0 means it moved.
    */
 }
+
+type ParticipantQuery = {
+  where: {
+    userId: number;
+    leftAt?: null;
+    threadId?: number | { in: number[] };
+  };
+  include?: { thread: true };
+  orderBy?: { id: 'asc' };
+  take?: number;
+};

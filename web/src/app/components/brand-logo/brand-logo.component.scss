@@ -17,7 +17,9 @@
 .bl-mark {
   display: block;
   margin: 0 auto 16px;
-  // Host-overridable: on the brand-gradient panel requires a drop-shadow layer (auth-brand); keep none on the white-background main area
+  border-radius: var(--bl-mark-radius, 0);
+  box-shadow: var(--bl-mark-shadow, none);
+  // Host-overridable: the auth brand panel adds depth; compact marks stay unframed.
   filter: var(--bl-mark-filter, none);
 }
 

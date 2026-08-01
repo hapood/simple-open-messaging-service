@@ -53,6 +53,11 @@
     padding-top: 16px;
     padding-bottom: 16px;
   }
+
+  // Android shell only: position from native IME geometry. Browser keyboard behavior remains unchanged.
+  &.auth-native-keyboard-open {
+    align-items: safe center;
+  }
 }
 
 .cfg-shell {
@@ -181,6 +186,11 @@
   .cfg-toast {
     bottom: calc(var(--auth-keyboard-inset, 0px) + 16px);
   }
+}
+
+.cfg-viewport.auth-native-keyboard-open .cfg-shell {
+  transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
+  transition: transform 160ms ease-out;
 }
 
 // The "can't validate both servers at once" guidance under the LAN field — small + faded, reads as a hint

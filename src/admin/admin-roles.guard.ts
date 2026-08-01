@@ -6,7 +6,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { ADMIN_ROLES_KEY } from './admin-roles.decorator.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import type { AdminPrincipal } from './admin-session.js';

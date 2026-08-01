@@ -11,7 +11,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { ContentType, GroupRole } from '../prisma/generated/client.js';
+import { ContentType, GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -21,7 +21,9 @@ import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { UserService } from '../user/user.service.js';
-import { PrismaService } from '../prisma.service.js';
+import { eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { user } from '../database/schema.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
@@ -63,7 +65,7 @@ export class GroupController {
     private readonly sseService: SseService,
     private readonly federationService: FederationService,
     private readonly userService: UserService,
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
   ) {}
 
   /**
@@ -158,13 +160,13 @@ export class GroupController {
     // first federated invite mints it; for a purely-local group it is just the groupUser account). Both
     // resolve the invite cross-server via the @@unique-backed (toUser, thread) lookup.
     const [inviterRow, groupUserRow] = await Promise.all([
-      this.prisma.user.findUnique({
-        where: { id: inviter },
-        select: { account: true },
+      this.database.db.query.user.findFirst({
+        where: eq(user.id, inviter),
+        columns: { account: true },
       }),
-      this.prisma.user.findUnique({
-        where: { id: group.groupUserId },
-        select: { account: true, domain: true },
+      this.database.db.query.user.findFirst({
+        where: eq(user.id, group.groupUserId),
+        columns: { account: true, domain: true },
       }),
     ]);
     const inviterAccount = inviterRow?.account;
@@ -369,7 +371,7 @@ export class GroupController {
     const me = req.user.userId;
     const rows = await this.participantService.getRosters(dto.threadIds);
     // Group by threadId; keep only threads where the caller is an active member (roster contains me).
-    const byThread = new Map<number, typeof rows>();
+    const byThread = new Map<number, Array<(typeof rows)[number]>>();
     for (const r of rows) {
       const arr = byThread.get(r.threadId);
       if (arr) arr.push(r);

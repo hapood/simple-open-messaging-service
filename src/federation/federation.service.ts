@@ -12,7 +12,34 @@ import {
   isValidAccount,
   isValidGroupAccount,
 } from '../common/account.js';
-import { PrismaService } from '../prisma.service.js';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  ContentType,
+  GroupRole,
+  MessageThreadType,
+} from '../database/enums.js';
+import type { Message } from '../message/message.service.js';
+import * as tables from '../database/schema.js';
+import { isUniqueViolation } from '../database/database-error.js';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  max,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { UploadService } from '../upload/upload.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
@@ -30,13 +57,6 @@ import { ThreadParticipantService } from '../thread-participant/thread-participa
 import { InviteService } from '../invite/invite.service.js';
 import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
-import {
-  ContentType,
-  GroupRole,
-  Message,
-  MessageThreadType,
-  Prisma,
-} from '../prisma/generated/client.js';
 import { derivePreview, MessageService } from '../message/message.service.js';
 import {
   FederationBufferService,
@@ -245,7 +265,7 @@ export class FederationService implements OnModuleDestroy {
   private readonly recentGroupPulls = new Map<number, number>();
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly signature: SignatureService,
     private readonly discovery: DiscoveryService,
     private readonly upload: UploadService,
@@ -303,17 +323,18 @@ export class FederationService implements OnModuleDestroy {
     leaverUserId: number,
   ): Promise<void> {
     try {
-      const trd = await this.prisma.messageThread.findUnique({
-        where: { id: threadId },
-        select: { groupUser: { select: { account: true, domain: true } } },
+      const trd = await this.database.db.query.messageThread.findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: {},
+        with: { user: { columns: { account: true, domain: true } } },
       });
-      const originDomain = trd?.groupUser?.domain;
+      const originDomain = trd?.user?.domain;
       if (!originDomain || originDomain === 'local') return; // origin / local group — no-op
-      const groupAccount = trd.groupUser?.account;
+      const groupAccount = trd.user?.account;
       if (!groupAccount) return;
-      const leaver = await this.prisma.user.findUnique({
-        where: { id: leaverUserId },
-        select: { account: true, domain: true, isForeigner: true },
+      const leaver = await this.database.db.query.user.findFirst({
+        where: eq(tables.user.id, leaverUserId),
+        columns: { account: true, domain: true, isForeigner: true },
       });
       if (!leaver) return;
       const cursor = await this.derivedOriginSeqCursor(threadId, leaverUserId);
@@ -347,17 +368,27 @@ export class FederationService implements OnModuleDestroy {
     threadId: number,
     userId: number,
   ): Promise<number> {
-    const [msg, pend] = await Promise.all([
-      this.prisma.message.aggregate({
-        where: { threadId, creator: userId },
-        _max: { originSeq: true },
-      }),
-      this.prisma.pendingMedia.aggregate({
-        where: { threadId, creatorId: userId },
-        _max: { originSeq: true },
-      }),
+    const [[msg], [pend]] = await Promise.all([
+      this.database.db
+        .select({ originSeq: max(tables.message.originSeq) })
+        .from(tables.message)
+        .where(
+          and(
+            eq(tables.message.threadId, threadId),
+            eq(tables.message.creator, userId),
+          ),
+        ),
+      this.database.db
+        .select({ originSeq: max(tables.pendingMedia.originSeq) })
+        .from(tables.pendingMedia)
+        .where(
+          and(
+            eq(tables.pendingMedia.threadId, threadId),
+            eq(tables.pendingMedia.creatorId, userId),
+          ),
+        ),
     ]);
-    return Math.max(msg._max.originSeq ?? -1, pend._max.originSeq ?? -1);
+    return Math.max(msg.originSeq ?? -1, pend.originSeq ?? -1);
   }
 
   /**
@@ -376,15 +407,19 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<void> {
     try {
       const [trd, participants] = await Promise.all([
-        this.prisma.messageThread.findUnique({
-          where: { id: threadId },
-          select: { groupUser: { select: { account: true, domain: true } } },
+        this.database.db.query.messageThread.findFirst({
+          where: eq(tables.messageThread.id, threadId),
+          columns: {},
+          with: { user: { columns: { account: true, domain: true } } },
         }),
-        this.prisma.threadParticipant.findMany({
-          where: { threadId, leftAt: null },
-          include: {
+        this.database.db.query.threadParticipant.findMany({
+          where: and(
+            eq(tables.threadParticipant.threadId, threadId),
+            isNull(tables.threadParticipant.leftAt),
+          ),
+          with: {
             user: {
-              select: { account: true, domain: true, isForeigner: true },
+              columns: { account: true, domain: true, isForeigner: true },
             },
           },
         }),
@@ -397,7 +432,7 @@ export class FederationService implements OnModuleDestroy {
         : this.ourDomain;
       const authorAccount = author.user.account;
 
-      const groupDomain = trd.groupUser?.domain; // 'local' = origin; <peer> = mirror; undefined = P2P
+      const groupDomain = trd.user?.domain; // 'local' = origin; <peer> = mirror; undefined = P2P
       if (!groupDomain) {
         // P2P (local-only or federated 1:1): signal each foreign peer participant EXCEPT the author + the
         // fetch source. A pulled P2P message's only foreign participant is the author → nobody to signal.
@@ -418,7 +453,7 @@ export class FederationService implements OnModuleDestroy {
       }
       // GROUP federated. dest = (origin → all foreign member-domains; mirror → {originDomain}), minus the
       // fetch source. The `toAccount` is the group `!account` (one hint per foreign domain).
-      const groupAccount = trd.groupUser?.account;
+      const groupAccount = trd.user?.account;
       if (!groupAccount) return;
       const destDomains = new Set<string>();
       if (groupDomain === 'local') {
@@ -492,10 +527,11 @@ export class FederationService implements OnModuleDestroy {
    *  /get_file never touches tokens — so a disabled user's media would still flow out over federation
    *  unless we reject the soft-deleted row here. */
   async findLocalUserId(account: string): Promise<number | null> {
-    const u = await this.prisma.user.findUnique({
-      where: {
-        account_domain: { account: normalizeAccount(account), domain: 'local' },
-      },
+    const u = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(account)),
+        eq(tables.user.domain, 'local'),
+      ),
     });
     return u && !u.isForeigner && !u.isDeleted ? u.id : null;
   }
@@ -516,7 +552,9 @@ export class FederationService implements OnModuleDestroy {
     bio: string;
     profileRev: number;
   }> {
-    const u = await this.prisma.user.findUnique({ where: { id: userId } });
+    const u = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, userId),
+    });
     if (!u || u.isForeigner)
       throw new Error(`user ${userId} is not a local user`);
     return u;
@@ -546,13 +584,11 @@ export class FederationService implements OnModuleDestroy {
   /** Public profile of a local user (GET /api/v1/s2s/users/:account). Null if not local / not found. */
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
-    const u = await this.prisma.user.findUnique({
-      where: {
-        account_domain: {
-          account: normalizeAccount(address.account),
-          domain: 'local',
-        },
-      },
+    const u = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(address.account)),
+        eq(tables.user.domain, 'local'),
+      ),
     });
     if (!u || u.isForeigner) return null;
     return this.toS2SProfile(u);
@@ -565,14 +601,12 @@ export class FederationService implements OnModuleDestroy {
     address: S2SAddress,
   ): Promise<{ profileRev: number } | null> {
     if (address.domain !== this.config.domain) return null;
-    const u = await this.prisma.user.findUnique({
-      where: {
-        account_domain: {
-          account: normalizeAccount(address.account),
-          domain: 'local',
-        },
-      },
-      select: { profileRev: true, isForeigner: true },
+    const u = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(address.account)),
+        eq(tables.user.domain, 'local'),
+      ),
+      columns: { profileRev: true, isForeigner: true },
     });
     if (!u || u.isForeigner) return null;
     return { profileRev: u.profileRev };
@@ -592,9 +626,9 @@ export class FederationService implements OnModuleDestroy {
         'group has been dissolved',
       );
     }
-    const grp = await this.prisma.group.findUnique({
-      where: { groupUserId: trd.groupUserId },
-      select: { rosterRev: true },
+    const grp = await this.database.db.query.group.findFirst({
+      where: eq(tables.group.groupUserId, trd.groupUserId),
+      columns: { rosterRev: true },
     });
     return grp ? { rosterRev: grp.rosterRev } : null;
   }
@@ -602,12 +636,13 @@ export class FederationService implements OnModuleDestroy {
   /** Find or create a foreign User stub for account@<peer-domain>. Stubs never authenticate. */
   async ensureForeignUser(account: string, domain: string): Promise<number> {
     const acct = normalizeAccount(account); // case-insensitive
-    const existing = await this.prisma.user.findUnique({
-      where: { account_domain: { account: acct, domain } },
+    const existing = await this.database.db.query.user.findFirst({
+      where: and(eq(tables.user.account, acct), eq(tables.user.domain, domain)),
     });
     if (existing) return existing.id;
-    const created = await this.prisma.user.create({
-      data: {
+    const [created] = await this.database.db
+      .insert(tables.user)
+      .values({
         account: acct,
         domain,
         isForeigner: true,
@@ -615,8 +650,23 @@ export class FederationService implements OnModuleDestroy {
         name: acct,
         avatar: '',
         bio: '',
-      },
-    });
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing({
+        target: [tables.user.account, tables.user.domain],
+      })
+      .returning({ id: tables.user.id });
+    if (!created) {
+      const winner = await this.database.db.query.user.findFirst({
+        where: and(
+          eq(tables.user.account, acct),
+          eq(tables.user.domain, domain),
+        ),
+        columns: { id: true },
+      });
+      if (!winner) throw new Error('failed to create foreign user');
+      return winner.id;
+    }
     return created.id;
   }
 
@@ -631,9 +681,9 @@ export class FederationService implements OnModuleDestroy {
     userId: number,
     address: S2SAddress,
   ): Promise<void> {
-    const stub = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { remoteProfileRev: true },
+    const stub = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, userId),
+      columns: { remoteProfileRev: true },
     });
     if (!stub || stub.remoteProfileRev !== null) return; // already localized (or gone)
     const profile = await this.fetchRemoteUser(address);
@@ -813,8 +863,8 @@ export class FederationService implements OnModuleDestroy {
    * The reverse direction (their user searches ours) is covered by our inbound /init endpoint auto-accepting them.
    */
   async ensurePeerTrusted(domain: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
+    const existing = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
     });
     if (existing?.trustLevel === 'trusted') return; // mutual trust already established
     if (existing?.trustLevel === 'blocked') {
@@ -847,8 +897,8 @@ export class FederationService implements OnModuleDestroy {
    *  and surfaces as an error there, not here. */
   async isPeerTrusted(domain: string): Promise<boolean> {
     if (domain === this.config.domain) return true;
-    const existing = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
+    const existing = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
     });
     return existing?.trustLevel === 'trusted';
   }
@@ -882,20 +932,18 @@ export class FederationService implements OnModuleDestroy {
     domain: string,
     opts?: { addedBy?: string },
   ): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
+    const existing = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
     });
     const now = new Date();
     if (!existing) {
-      await this.prisma.federatedPeer.create({
-        data: {
-          domain,
-          trustLevel: 'trusted',
-          addedBy: opts?.addedBy ?? null,
-          trustedAt: now,
-          lastSuccessAt: now,
-          demotionCount: 0,
-        },
+      await this.database.db.insert(tables.federatedPeer).values({
+        domain,
+        trustLevel: 'trusted',
+        addedBy: opts?.addedBy ?? null,
+        trustedAt: now,
+        lastSuccessAt: now,
+        demotionCount: 0,
       });
       await this.logEvent(domain, 'discovered');
       await this.logEvent(domain, 'trusted');
@@ -904,23 +952,23 @@ export class FederationService implements OnModuleDestroy {
     if (existing.trustLevel === 'blocked') return; // respect admin intent
     if (existing.trustLevel === 'trusted') {
       // Idempotent re-init: advance liveness, no transition, no event.
-      await this.prisma.federatedPeer.update({
-        where: { domain },
-        data: { lastSuccessAt: now },
-      });
+      await this.database.db
+        .update(tables.federatedPeer)
+        .set({ lastSuccessAt: now })
+        .where(eq(tables.federatedPeer.domain, domain));
       return;
     }
     // pending | demoted → (re-)establish trust.
-    await this.prisma.federatedPeer.update({
-      where: { domain },
-      data: {
+    await this.database.db
+      .update(tables.federatedPeer)
+      .set({
         trustLevel: 'trusted',
         trustedAt: now,
         lastSuccessAt: now,
         demotedAt: null,
         demoteReason: null,
-      },
-    });
+      })
+      .where(eq(tables.federatedPeer.domain, domain));
     await this.logEvent(domain, 'trusted');
   }
 
@@ -948,20 +996,21 @@ export class FederationService implements OnModuleDestroy {
       return;
     this.lastSuccessSentAt.set(domain, now);
     try {
-      await this.prisma.federatedPeer.updateMany({
-        where: {
-          domain,
-          OR: [
-            { lastSuccessAt: null },
-            {
-              lastSuccessAt: {
-                lt: new Date(now - FederationService.LAST_SUCCESS_WINDOW_MS),
-              },
-            },
-          ],
-        },
-        data: { lastSuccessAt: new Date(now) },
-      });
+      await this.database.db
+        .update(tables.federatedPeer)
+        .set({ lastSuccessAt: new Date(now) })
+        .where(
+          and(
+            eq(tables.federatedPeer.domain, domain),
+            or(
+              isNull(tables.federatedPeer.lastSuccessAt),
+              lt(
+                tables.federatedPeer.lastSuccessAt,
+                new Date(now - FederationService.LAST_SUCCESS_WINDOW_MS),
+              ),
+            ),
+          ),
+        );
     } catch {
       // Best-effort liveness watermark — never break the caller's op.
     }
@@ -974,25 +1023,30 @@ export class FederationService implements OnModuleDestroy {
    *  re-fetches them). `blocked` is admin intent → no-op. Self-healing: a demoted peer re-runs the init
    *  handshake on the next resolve (ensurePeerTrusted sees non-trusted). */
   async markDemoted(domain: string, reason: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
+    const existing = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
     });
     if (!existing || existing.trustLevel === 'blocked') return;
     const now = new Date();
     const transitioned =
       existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
-    await this.prisma.federatedPeer.update({
-      where: { domain },
-      data: {
+    await this.database.db
+      .update(tables.federatedPeer)
+      .set({
         ...(transitioned
-          ? { trustLevel: 'demoted', demotionCount: { increment: 1 } }
+          ? {
+              trustLevel: 'demoted',
+              demotionCount: sql`${tables.federatedPeer.demotionCount} + 1`,
+            }
           : {}),
         demotedAt: now,
         demoteReason: reason.slice(0, 255),
-      },
-    });
+      })
+      .where(eq(tables.federatedPeer.domain, domain));
     if (transitioned) {
-      await this.prisma.s2SKeyCache.deleteMany({ where: { domain } });
+      await this.database.db
+        .delete(tables.s2SKeyCache)
+        .where(eq(tables.s2SKeyCache.domain, domain));
       await this.logEvent(domain, 'demoted', reason);
     }
   }
@@ -1000,30 +1054,32 @@ export class FederationService implements OnModuleDestroy {
   /** Admin block: forbid federation with a peer (ensurePeerTrusted refuses to re-handshake; the inbound
    *  guard rejects it since trustLevel !== 'trusted'). Idempotent. Logs a `blocked` event. */
   async markBlocked(domain: string, note?: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
+    const existing = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
     });
     if (existing?.trustLevel === 'blocked') return;
     const now = new Date();
-    await this.prisma.federatedPeer.upsert({
-      where: { domain },
-      create: { domain, trustLevel: 'blocked', blockedAt: now },
-      update: { trustLevel: 'blocked', blockedAt: now },
-    });
+    await this.database.db
+      .insert(tables.federatedPeer)
+      .values({ domain, trustLevel: 'blocked', blockedAt: now })
+      .onConflictDoUpdate({
+        target: tables.federatedPeer.domain,
+        set: { trustLevel: 'blocked', blockedAt: now },
+      });
     await this.logEvent(domain, 'blocked', note);
   }
 
   /** Admin unblock: move the peer to `pending` so the next contact re-runs the init handshake to
    *  re-establish trust (it is NOT auto-re-trusted). Logs an `unblocked` event. No-op if not blocked. */
   async markUnblocked(domain: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({
-      where: { domain },
+    const existing = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
     });
     if (!existing || existing.trustLevel !== 'blocked') return;
-    await this.prisma.federatedPeer.update({
-      where: { domain },
-      data: { trustLevel: 'pending', blockedAt: null },
-    });
+    await this.database.db
+      .update(tables.federatedPeer)
+      .set({ trustLevel: 'pending', blockedAt: null })
+      .where(eq(tables.federatedPeer.domain, domain));
     await this.logEvent(domain, 'unblocked');
   }
 
@@ -1035,8 +1091,10 @@ export class FederationService implements OnModuleDestroy {
     reason?: string,
   ): Promise<void> {
     try {
-      await this.prisma.federatedPeerEvent.create({
-        data: { domain, type, reason: reason ? reason.slice(0, 255) : null },
+      await this.database.db.insert(tables.federatedPeerEvent).values({
+        domain,
+        type,
+        reason: reason ? reason.slice(0, 255) : null,
       });
     } catch {
       // Swallow — audit row is secondary to the state mutation.
@@ -1050,30 +1108,36 @@ export class FederationService implements OnModuleDestroy {
     search?: string;
     status?: string;
   }) {
-    const where = {
+    const where = and(
       ...(opts.search
-        ? { domain: { contains: opts.search, mode: 'insensitive' as const } }
-        : {}),
-      ...(opts.status ? { trustLevel: opts.status } : {}),
-    };
+        ? [ilike(tables.federatedPeer.domain, `%${opts.search}%`)]
+        : []),
+      ...(opts.status
+        ? [eq(tables.federatedPeer.trustLevel, opts.status)]
+        : []),
+    );
     const [list, total] = await Promise.all([
-      this.prisma.federatedPeer.findMany({
+      this.database.db.query.federatedPeer.findMany({
         where,
-        skip: opts.skip,
-        take: opts.take,
-        orderBy: { createdAt: 'desc' },
+        offset: opts.skip,
+        limit: opts.take,
+        orderBy: desc(tables.federatedPeer.createdAt),
       }),
-      this.prisma.federatedPeer.count({ where }),
+      this.database.db
+        .select({ value: count() })
+        .from(tables.federatedPeer)
+        .where(where)
+        .then(([row]) => row.value),
     ]);
     return { list, total };
   }
 
   /** Admin timeline: a peer's lifecycle events, newest-first. */
   async peerEvents(domain: string, take = 100) {
-    return this.prisma.federatedPeerEvent.findMany({
-      where: { domain },
-      orderBy: { createdAt: 'desc' },
-      take,
+    return this.database.db.query.federatedPeerEvent.findMany({
+      where: eq(tables.federatedPeerEvent.domain, domain),
+      orderBy: desc(tables.federatedPeerEvent.createdAt),
+      limit: take,
     });
   }
 
@@ -1148,14 +1212,13 @@ export class FederationService implements OnModuleDestroy {
       // from "now" (post-invite) instead of pulling the whole pre-join history (the pullUntil=-1 default).
       // ORIGIN (us): our own curSeq (== the origin's latest). MIRROR: our pullUntil (the origin seq we've
       // caught up to — at worst slightly behind the origin's true latest; the gap closes on the next push).
-      const trd = await this.prisma.messageThread.findUnique({
-        where: { id: params.threadId! },
-        select: {
-          curSeq: true,
-          pullUntil: true,
-          groupUser: { select: { domain: true } },
-        },
-      });
+      const trd = await this.database.db.query.messageThread
+        .findFirst({
+          where: eq(tables.messageThread.id, params.threadId!),
+          columns: { curSeq: true, pullUntil: true },
+          with: { user: { columns: { domain: true } } },
+        })
+        .then((row) => (row ? { ...row, groupUser: row.user } : null));
       payload.sinceSeq =
         trd == null || trd.groupUser == null
           ? -1
@@ -1280,10 +1343,13 @@ export class FederationService implements OnModuleDestroy {
    *  IS the group !-User row's account — set at group.create, so no lazy stamping is needed (the former
    *  fedGroupAccount/originDomain columns were folded into groupUser.account / groupUser.domain). */
   async ensureOriginFederatedId(threadId: number): Promise<string> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: { groupUser: { select: { account: true } } },
-    });
+    const trd = await this.database.db.query.messageThread
+      .findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: {},
+        with: { user: { columns: { account: true } } },
+      })
+      .then((row) => (row ? { groupUser: row.user } : null));
     if (!trd) throw new Error(`thread ${threadId} not found`);
     if (!trd.groupUser) throw new Error(`thread ${threadId} has no group user`);
     return trd.groupUser.account;
@@ -1306,10 +1372,15 @@ export class FederationService implements OnModuleDestroy {
     fromDomain: string,
   ): Promise<{ id: number; isForeigner: boolean } | null> {
     const domain = fromDomain === this.config.domain ? 'local' : fromDomain;
-    return this.prisma.user.findUnique({
-      where: { account_domain: { account: normalizeAccount(account), domain } },
-      select: { id: true, isForeigner: true },
-    });
+    return (
+      (await this.database.db.query.user.findFirst({
+        where: and(
+          eq(tables.user.account, normalizeAccount(account)),
+          eq(tables.user.domain, domain),
+        ),
+        columns: { id: true, isForeigner: true },
+      })) ?? null
+    );
   }
 
   /** Resolve a group `!account` to its local thread (origin or mirror). The group account is the
@@ -1326,23 +1397,30 @@ export class FederationService implements OnModuleDestroy {
       group: { dissolvedAt: Date | null } | null;
     } | null;
   } | null> {
-    return this.prisma.messageThread.findFirst({
-      where: {
-        groupUser: { account: normalizeAccount(groupAccount), isGroup: true },
-      },
-      select: {
-        id: true,
-        type: true,
-        groupUserId: true,
-        groupUser: {
-          select: {
-            account: true,
-            domain: true,
-            group: { select: { dissolvedAt: true } },
+    return this.database.db.query.messageThread
+      .findFirst({
+        where: sql`EXISTS (
+        SELECT 1 FROM "User" u
+        WHERE u.id = ${tables.messageThread.groupUserId}
+          AND u.account = ${normalizeAccount(groupAccount)}
+          AND u."isGroup" = true
+      )`,
+        columns: {
+          id: true,
+          type: true,
+          groupUserId: true,
+        },
+        with: {
+          user: {
+            columns: {
+              account: true,
+              domain: true,
+            },
+            with: { group: { columns: { dissolvedAt: true } } },
           },
         },
-      },
-    });
+      })
+      .then((row) => (row ? { ...row, groupUser: row.user } : null));
   }
 
   /** Inbound POST /s2s/invite — receive an invite (friend OR group), unified. Dispatches on `kind`.
@@ -1420,15 +1498,13 @@ export class FederationService implements OnModuleDestroy {
     }
     // The inviter's stub must already exist (a passing friend gate ⇒ they're already friends ⇒ the stub
     // was created when they befriended). LOOK IT UP (don't ensure/create) — missing ⇒ not friends.
-    const byStub = await this.prisma.user.findUnique({
-      where: {
-        account_domain: {
-          account: normalizeAccount(by.account),
-          domain: by.domain,
-        },
-      },
+    const byStub = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(by.account)),
+        eq(tables.user.domain, by.domain),
+      ),
     });
-    if (byStub === null) {
+    if (!byStub) {
       throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
     }
     const byStubId = byStub.id;
@@ -1455,15 +1531,15 @@ export class FederationService implements OnModuleDestroy {
     });
     // Revision-gated avatar/name refresh: skip when the peer's revision is not newer than the mirror's
     // remoteProfileRev (no avatar re-localization / orphan files on an unchanged group).
-    const mirror = await this.prisma.messageThread.findUnique({
-      where: { id: mirrorThreadId },
-      select: { groupUserId: true },
+    const mirror = await this.database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, mirrorThreadId),
+      columns: { groupUserId: true },
     });
     const gu =
       mirror?.groupUserId != null
-        ? await this.prisma.user.findUnique({
-            where: { id: mirror.groupUserId },
-            select: { remoteProfileRev: true, avatar: true },
+        ? await this.database.db.query.user.findFirst({
+            where: eq(tables.user.id, mirror.groupUserId),
+            columns: { remoteProfileRev: true, avatar: true },
           })
         : null;
     const rev = body.groupRevision ?? 0;
@@ -1474,14 +1550,15 @@ export class FederationService implements OnModuleDestroy {
       avatarUrl = body.groupAvatar
         ? await this.upload.saveAvatarFromWire(body.groupAvatar)
         : avatarUrl;
-      await this.prisma.user.update({
-        where: { id: mirror.groupUserId },
-        data: {
+      await this.database.db
+        .update(tables.user)
+        .set({
           name: (body.groupName ?? '').slice(0, 255),
           avatar: avatarUrl,
           remoteProfileRev: rev,
-        },
-      });
+          updatedAt: new Date(),
+        })
+        .where(eq(tables.user.id, mirror.groupUserId));
     }
     // Mint the inbound Invite. NO card write — the card is the SENDER's responsibility (written into the
     // sender's P2P mirror), delivered to this server via the Step-2 message pull in Phase B. Phase A
@@ -1635,10 +1712,10 @@ export class FederationService implements OnModuleDestroy {
     // Bump the roster revision so mirrors re-pull the roster on the next chat-open (lazy meta-pull).
     // The former bump-User.updatedAt hack is replaced by Group.rosterRev++ (identity is untouched).
     if (trd.groupUserId != null) {
-      await this.prisma.group.update({
-        where: { groupUserId: trd.groupUserId },
-        data: { rosterRev: { increment: 1 } },
-      });
+      await this.database.db
+        .update(tables.group)
+        .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
+        .where(eq(tables.group.groupUserId, trd.groupUserId));
     }
   }
 
@@ -1652,9 +1729,13 @@ export class FederationService implements OnModuleDestroy {
   } | null> {
     const trd = await this.findGroupThread(groupAccount);
     if (trd == null) return null;
-    const rows = await this.prisma.threadParticipant.findMany({
-      where: { threadId: trd.id, leftAt: null },
-      select: { role: true, user: { select: { account: true, domain: true } } },
+    const rows = await this.database.db.query.threadParticipant.findMany({
+      where: and(
+        eq(tables.threadParticipant.threadId, trd.id),
+        isNull(tables.threadParticipant.leftAt),
+      ),
+      columns: { role: true },
+      with: { user: { columns: { account: true, domain: true } } },
     });
     return {
       members: rows.map((r) => ({
@@ -1690,20 +1771,26 @@ export class FederationService implements OnModuleDestroy {
    *  localizeForeignProfile; roster via reconcile) and fan its OWN signal (GROUP_UPDATED for identity,
    *  GROUP_ROSTER_UPDATED for roster). A local group / when we ARE the origin is a no-op. */
   async syncGroupMetaIfStale(threadId: number): Promise<void> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: {
-        groupUserId: true,
-        groupUser: {
-          select: {
-            account: true,
-            domain: true,
-            remoteProfileRev: true,
-            group: { select: { rosterRev: true, remoteRosterRev: true } },
+    const trd = await this.database.db.query.messageThread
+      .findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: {
+          groupUserId: true,
+        },
+        with: {
+          user: {
+            columns: {
+              account: true,
+              domain: true,
+              remoteProfileRev: true,
+            },
+            with: {
+              group: { columns: { rosterRev: true, remoteRosterRev: true } },
+            },
           },
         },
-      },
-    });
+      })
+      .then((row) => (row ? { ...row, groupUser: row.user } : null));
     const gu = trd?.groupUser;
     if (!gu || gu.domain === 'local' || trd?.groupUserId == null) return;
     const groupUserId = trd.groupUserId;
@@ -1727,10 +1814,10 @@ export class FederationService implements OnModuleDestroy {
           const roster = await this.pullGroupRoster(gu.account, gu.domain);
           if (roster) {
             await this.reconcileRoster(threadId, roster.members);
-            await this.prisma.group.update({
-              where: { groupUserId },
-              data: { remoteRosterRev: rrev.rosterRev },
-            });
+            await this.database.db
+              .update(tables.group)
+              .set({ remoteRosterRev: rrev.rosterRev })
+              .where(eq(tables.group.groupUserId, groupUserId));
             rosterChanged = true;
           }
         }
@@ -1764,10 +1851,13 @@ export class FederationService implements OnModuleDestroy {
    *  send (the "local is simple" case). Best-effort + fire-and-forget-friendly: never blocks opening; a
    *  transient origin failure retries on the next open. */
   async syncGroupMessagesOnOpen(threadId: number): Promise<void> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: { groupUser: { select: { account: true, domain: true } } },
-    });
+    const trd = await this.database.db.query.messageThread
+      .findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: {},
+        with: { user: { columns: { account: true, domain: true } } },
+      })
+      .then((row) => (row ? { groupUser: row.user } : null));
     // Only a federated MIRROR pulls here (groupUser.domain is the origin's domain, not 'local'). Origin /
     // local group: nothing to do (messages already local).
     const gu = trd?.groupUser;
@@ -1790,12 +1880,13 @@ export class FederationService implements OnModuleDestroy {
    * origin return GROUP_DISSOLVED before the mirror persists a new message. Local-origin groups and
    * P2P threads are no-ops; their local guards remain authoritative. */
   async assertGroupWritable(threadId: number): Promise<void> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: {
-        groupUser: { select: { account: true, domain: true } },
-      },
-    });
+    const trd = await this.database.db.query.messageThread
+      .findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: {},
+        with: { user: { columns: { account: true, domain: true } } },
+      })
+      .then((row) => (row ? { groupUser: row.user } : null));
     const group = trd?.groupUser;
     if (!group || group.domain === 'local') return;
     try {
@@ -1829,12 +1920,13 @@ export class FederationService implements OnModuleDestroy {
     threadId: number,
     localUserId: number,
   ): Promise<void> {
-    const participants = await this.prisma.threadParticipant.findMany({
-      where: { threadId },
-      include: {
-        user: { select: { account: true, domain: true, isForeigner: true } },
-      },
-    });
+    const participants =
+      await this.database.db.query.threadParticipant.findMany({
+        where: eq(tables.threadParticipant.threadId, threadId),
+        with: {
+          user: { columns: { account: true, domain: true, isForeigner: true } },
+        },
+      });
     const local = participants.find((p) => p.userId === localUserId);
     const peer = participants.find((p) => p.userId !== localUserId);
     if (!local || local.leftAt !== null || !peer || peer.leftAt !== null) {
@@ -1847,7 +1939,9 @@ export class FederationService implements OnModuleDestroy {
           `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(peer.user.account)}` +
             `&fromDomain=${encodeURIComponent(peer.user.domain)}` +
             `&toAccount=${encodeURIComponent(local.user.account)}` +
-            `&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${Number.MAX_SAFE_INTEGER}&take=1`,
+            // Message.originSeq is PostgreSQL INTEGER. Using MAX_SAFE_INTEGER here overflows the pg
+            // parameter before PostgreSQL can evaluate the comparison.
+            `&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=2147483647&take=1`,
           peer.user.domain,
         ),
       );
@@ -1898,10 +1992,20 @@ export class FederationService implements OnModuleDestroy {
       originForeignIds.add(stubId);
       await this.participantService.upsertMember(threadId, stubId, m.role);
     }
-    const localForeign = await this.prisma.threadParticipant.findMany({
-      where: { threadId, leftAt: null, user: { isForeigner: true } },
-      select: { userId: true },
-    });
+    const localForeign = await this.database.db
+      .select({ userId: tables.threadParticipant.userId })
+      .from(tables.threadParticipant)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, threadId),
+          isNull(tables.threadParticipant.leftAt),
+          eq(tables.user.isForeigner, true),
+        ),
+      );
     for (const p of localForeign.filter(
       (p) => !originForeignIds.has(p.userId),
     )) {
@@ -1921,73 +2025,78 @@ export class FederationService implements OnModuleDestroy {
     ownerStubId: number;
     sinceSeq?: number;
   }): Promise<number> {
-    const existing = await this.prisma.messageThread.findFirst({
-      where: {
-        groupUser: {
-          account: normalizeAccount(params.fedGroupAccount),
-          isGroup: true,
-        },
-      },
-      select: { id: true },
-    });
+    const existing = await this.findGroupThread(params.fedGroupAccount);
     if (existing) return existing.id;
     // The mirror group-user REUSES the origin's `!account` (== fedGroupAccount) under the origin's domain
     // (account_domain uniqueness holds since the origin stores it under 'local').
-    const groupUser = await this.prisma.user.create({
-      data: {
-        account: params.fedGroupAccount,
-        domain: params.originDomain,
-        isForeigner: true,
-        isGroup: true,
-        hashPwd: '', // empty — mirror group-user never logs in
-        name: params.name.slice(0, 255),
-        avatar: '',
-        bio: '',
-      },
-    });
-    const trd = await this.prisma.messageThread.create({
-      data: {
-        type: MessageThreadType.GROUP,
-        groupUserId: groupUser.id,
-        // Seed pullUntil from the invite's sinceSeq so the member pulls from invite-time latest, not the
-        // full pre-join history. -1 (no sinceSeq) ⇒ pull everything (the safe default for an empty group).
-        pullUntil: params.sinceSeq ?? -1,
-      },
-    });
-    // Group-exclusive state: owner + roster revision. remoteRosterRev stays null until the first probe.
-    await this.prisma.group.create({
-      data: {
-        groupUserId: groupUser.id,
-        ownerId: params.ownerStubId,
-        rosterRev: 0,
-      },
-    });
-    // Record the origin owner on the mirror (roster authority is the origin).
-    await this.prisma.threadParticipant.create({
-      data: {
-        userId: params.ownerStubId,
-        threadId: trd.id,
-        role: GroupRole.OWNER,
-      },
-    });
-    return trd.id;
+    try {
+      return await this.database.db.transaction(async (tx) => {
+        const [groupUser] = await tx
+          .insert(tables.user)
+          .values({
+            account: params.fedGroupAccount,
+            domain: params.originDomain,
+            isForeigner: true,
+            isGroup: true,
+            hashPwd: '', // empty — mirror group-user never logs in
+            name: params.name.slice(0, 255),
+            avatar: '',
+            bio: '',
+            updatedAt: new Date(),
+          })
+          .returning({ id: tables.user.id });
+        const [trd] = await tx
+          .insert(tables.messageThread)
+          .values({
+            type: MessageThreadType.GROUP,
+            groupUserId: groupUser.id,
+            // Seed pullUntil from the invite's sinceSeq so the member pulls from invite-time latest, not the
+            // full pre-join history. -1 (no sinceSeq) ⇒ pull everything (the safe default for an empty group).
+            pullUntil: params.sinceSeq ?? -1,
+            updatedAt: new Date(),
+          })
+          .returning({ id: tables.messageThread.id });
+        // Group-exclusive state: owner + roster revision. remoteRosterRev stays null until the first probe.
+        await tx.insert(tables.group).values({
+          groupUserId: groupUser.id,
+          ownerId: params.ownerStubId,
+          rosterRev: 0,
+          updatedAt: new Date(),
+        });
+        // Record the origin owner on the mirror (roster authority is the origin).
+        await tx.insert(tables.threadParticipant).values({
+          userId: params.ownerStubId,
+          threadId: trd.id,
+          role: GroupRole.OWNER,
+          updatedAt: new Date(),
+        });
+        return trd.id;
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const winner = await this.findGroupThread(params.fedGroupAccount);
+      if (!winner) throw error;
+      return winner.id;
+    }
   }
 
   /** True if (origin, opId) already applied. Reuses S2SFriendOpSeen as the generic op-seen table (the
    *  name is historical — it is just an (origin, opId) dedup index). Race-safe (P2002 = concurrent dup). */
   private async isOpSeen(origin: string, opId: string): Promise<boolean> {
-    const existing = await this.prisma.s2SFriendOpSeen.findUnique({
-      where: { origin_opId: { origin, opId } },
+    const existing = await this.database.db.query.s2SFriendOpSeen.findFirst({
+      where: and(
+        eq(tables.s2SFriendOpSeen.origin, origin),
+        eq(tables.s2SFriendOpSeen.opId, opId),
+      ),
     });
     if (existing) return true;
     try {
-      await this.prisma.s2SFriendOpSeen.create({ data: { origin, opId } });
+      await this.database.db
+        .insert(tables.s2SFriendOpSeen)
+        .values({ origin, opId });
       return false;
     } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002'
-      ) {
+      if (isUniqueViolation(e)) {
         return true;
       }
       throw e;
@@ -2083,9 +2192,9 @@ export class FederationService implements OnModuleDestroy {
 
   /** Domains needing recovery (pending | demoted) — the reconnect sweep's work list. */
   async listRecoverablePeerDomains(): Promise<string[]> {
-    const rows = await this.prisma.federatedPeer.findMany({
-      where: { trustLevel: { in: ['pending', 'demoted'] } },
-      select: { domain: true },
+    const rows = await this.database.db.query.federatedPeer.findMany({
+      where: inArray(tables.federatedPeer.trustLevel, ['pending', 'demoted']),
+      columns: { domain: true },
     });
     return rows.map((r) => r.domain);
   }
@@ -2093,9 +2202,9 @@ export class FederationService implements OnModuleDestroy {
   /** Trusted peer domains — the slow poll's work list (it pulls their /new-msg-map to catch lost pushes
    *  via the one-directional fallback, §4.4). */
   async listTrustedPeerDomains(): Promise<string[]> {
-    const rows = await this.prisma.federatedPeer.findMany({
-      where: { trustLevel: 'trusted' },
-      select: { domain: true },
+    const rows = await this.database.db.query.federatedPeer.findMany({
+      where: eq(tables.federatedPeer.trustLevel, 'trusted'),
+      columns: { domain: true },
     });
     return rows.map((r) => r.domain);
   }
@@ -2112,13 +2221,13 @@ export class FederationService implements OnModuleDestroy {
     localUserId: number,
   ): Promise<void> {
     const [stub, local] = await Promise.all([
-      this.prisma.user.findUnique({
-        where: { id: stubUserId },
-        select: { account: true, domain: true, isForeigner: true },
+      this.database.db.query.user.findFirst({
+        where: eq(tables.user.id, stubUserId),
+        columns: { account: true, domain: true, isForeigner: true },
       }),
-      this.prisma.user.findUnique({
-        where: { id: localUserId },
-        select: { account: true, isForeigner: true },
+      this.database.db.query.user.findFirst({
+        where: eq(tables.user.id, localUserId),
+        columns: { account: true, isForeigner: true },
       }),
     ]);
     if (!stub || !stub.isForeigner || !local || local.isForeigner) return;
@@ -2153,10 +2262,14 @@ export class FederationService implements OnModuleDestroy {
       toAccount,
       signerDomain,
     );
-    const rows = await this.prisma.message.findMany({
-      where: { threadId, creator: fromId, originSeq: { gt: after } },
-      orderBy: { originSeq: 'asc' },
-      take: take + 1,
+    const rows = await this.database.db.query.message.findMany({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.creator, fromId),
+        gt(tables.message.originSeq, after),
+      ),
+      orderBy: asc(tables.message.originSeq),
+      limit: take + 1,
     });
     const hasMore = rows.length > take;
     const page = hasMore ? rows.slice(0, take) : rows;
@@ -2173,11 +2286,16 @@ export class FederationService implements OnModuleDestroy {
         ts: m.createdAt.getTime(),
       })),
     );
-    const latest = await this.prisma.message.aggregate({
-      where: { threadId, creator: fromId },
-      _max: { originSeq: true },
-    });
-    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore }; // 0-indexed: empty → -1
+    const [latest] = await this.database.db
+      .select({ originSeq: max(tables.message.originSeq) })
+      .from(tables.message)
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.creator, fromId),
+        ),
+      );
+    return { messages, latestSeq: latest.originSeq ?? -1, hasMore }; // 0-indexed: empty → -1
   }
 
   /** GET /api/v1/s2s/messages/before — the BACKWARD twin of serveOutboundMessages (reserved for external
@@ -2196,14 +2314,14 @@ export class FederationService implements OnModuleDestroy {
       toAccount,
       signerDomain,
     );
-    const rows = await this.prisma.message.findMany({
-      where: {
-        threadId,
-        creator: fromId,
-        ...(beforeSeq >= 0 ? { originSeq: { lt: beforeSeq } } : {}),
-      },
-      orderBy: { originSeq: 'desc' },
-      take: take + 1,
+    const rows = await this.database.db.query.message.findMany({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.creator, fromId),
+        ...(beforeSeq >= 0 ? [lt(tables.message.originSeq, beforeSeq)] : []),
+      ),
+      orderBy: desc(tables.message.originSeq),
+      limit: take + 1,
     });
     const hasMore = rows.length > take;
     // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
@@ -2219,11 +2337,16 @@ export class FederationService implements OnModuleDestroy {
         ts: m.createdAt.getTime(),
       })),
     );
-    const latest = await this.prisma.message.aggregate({
-      where: { threadId, creator: fromId },
-      _max: { originSeq: true },
-    });
-    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
+    const [latest] = await this.database.db
+      .select({ originSeq: max(tables.message.originSeq) })
+      .from(tables.message)
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.creator, fromId),
+        ),
+      );
+    return { messages, latestSeq: latest.originSeq ?? -1, hasMore };
   }
 
   /** Effective wire domain of a participant's user: locals ("local" in DB) surface as our real
@@ -2245,15 +2368,23 @@ export class FederationService implements OnModuleDestroy {
       if (quoteSeq !== undefined) refs.set(message.seq, quoteSeq);
     }
     if (refs.size === 0) return new Map();
-    const targets = await this.prisma.message.findMany({
-      where: { threadId, seq: { in: [...new Set(refs.values())] } },
-      include: {
-        creatorItem: {
-          select: { account: true, domain: true, isForeigner: true },
+    const targets = await this.database.db.query.message.findMany({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        inArray(tables.message.seq, [...new Set(refs.values())]),
+      ),
+      with: {
+        user: {
+          columns: { account: true, domain: true, isForeigner: true },
         },
       },
     });
-    const bySeq = new Map(targets.map((target) => [target.seq, target]));
+    const bySeq = new Map(
+      targets.map((target) => [
+        target.seq,
+        { ...target, creatorItem: target.user },
+      ]),
+    );
     const result = new Map<number, S2SQuoteTarget>();
     for (const [messageSeq, targetSeq] of refs) {
       const target = bySeq.get(targetSeq);
@@ -2307,12 +2438,16 @@ export class FederationService implements OnModuleDestroy {
         'group has been dissolved',
       );
     }
-    const participants = await this.prisma.threadParticipant.findMany({
-      where: { threadId: trd.id, leftAt: null },
-      include: {
-        user: { select: { account: true, domain: true, isForeigner: true } },
-      },
-    });
+    const participants =
+      await this.database.db.query.threadParticipant.findMany({
+        where: and(
+          eq(tables.threadParticipant.threadId, trd.id),
+          isNull(tables.threadParticipant.leftAt),
+        ),
+        with: {
+          user: { columns: { account: true, domain: true, isForeigner: true } },
+        },
+      });
     const signerIsMember = participants.some(
       (p) => this.effectiveDomain(p.user) === signerDomain,
     );
@@ -2350,13 +2485,16 @@ export class FederationService implements OnModuleDestroy {
     fromAccount: string,
     fromDomain: string,
   ): Promise<{ authorId: number }> {
-    const p = await this.prisma.threadParticipant.findFirst({
-      where: { threadId, user: { account: normalizeAccount(fromAccount) } },
-      select: {
+    const p = await this.database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(tables.threadParticipant.threadId, threadId),
+        sql`EXISTS (SELECT 1 FROM "User" u WHERE u.id = ${tables.threadParticipant.userId} AND u.account = ${normalizeAccount(fromAccount)})`,
+      ),
+      columns: {
         userId: true,
         leftAt: true,
-        user: { select: { isForeigner: true, domain: true } },
       },
+      with: { user: { columns: { isForeigner: true, domain: true } } },
     });
     if (
       !p ||
@@ -2380,15 +2518,15 @@ export class FederationService implements OnModuleDestroy {
     userId: number,
   ): Promise<void> {
     await this.participantService.softLeaveMember(threadId, userId);
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: { groupUserId: true },
+    const trd = await this.database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, threadId),
+      columns: { groupUserId: true },
     });
     if (trd?.groupUserId != null) {
-      await this.prisma.user.update({
-        where: { id: trd.groupUserId },
-        data: { updatedAt: new Date() },
-      });
+      await this.database.db
+        .update(tables.user)
+        .set({ updatedAt: new Date() })
+        .where(eq(tables.user.id, trd.groupUserId));
     }
   }
 
@@ -2412,31 +2550,37 @@ export class FederationService implements OnModuleDestroy {
       undefined,
       signerDomain,
     );
-    const rows = await this.prisma.message.findMany({
-      where: { threadId, seq: { gt: after } },
-      orderBy: { seq: 'asc' },
-      take: take + 1,
-      include: {
-        creatorItem: {
-          select: { account: true, domain: true, isForeigner: true },
+    const rows = await this.database.db.query.message.findMany({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        gt(tables.message.seq, after),
+      ),
+      orderBy: asc(tables.message.seq),
+      limit: take + 1,
+      with: {
+        user: {
+          columns: { account: true, domain: true, isForeigner: true },
         },
       },
     });
     const hasMore = rows.length > take;
     const page = hasMore ? rows.slice(0, take) : rows;
     const quoteTargets = await this.quoteTargetsForWire(threadId, page);
-    const messages = page.map((m) => ({
-      seq: m.seq, // origin thread seq — the mirror advances pullUntil to this, page-by-page
-      originSeq: m.originSeq ?? 0,
-      creator: {
-        account: m.creatorItem.account,
-        domain: this.effectiveDomain(m.creatorItem),
-      },
-      contentType: m.contentType,
-      content: m.content,
-      ...this.quoteTargetField(quoteTargets.get(m.seq)),
-      ts: m.createdAt.getTime(),
-    }));
+    const messages = page.map((row) => {
+      const m = { ...row, creatorItem: row.user };
+      return {
+        seq: m.seq, // origin thread seq — the mirror advances pullUntil to this, page-by-page
+        originSeq: m.originSeq ?? 0,
+        creator: {
+          account: m.creatorItem.account,
+          domain: this.effectiveDomain(m.creatorItem),
+        },
+        contentType: m.contentType,
+        content: m.content,
+        ...this.quoteTargetField(quoteTargets.get(m.seq)),
+        ts: m.createdAt.getTime(),
+      };
+    });
     // latestSeq = the highest seq in THIS batch (the cursor the receiver lands on after storing it), NOT
     // the thread total — so a multi-page catch-up walks every page. -1 only when the batch is empty.
     const latestSeq =
@@ -2470,10 +2614,14 @@ export class FederationService implements OnModuleDestroy {
       fromAccount,
       fromDomain,
     );
-    const rows = await this.prisma.message.findMany({
-      where: { threadId, creator: authorId, originSeq: { gt: after } },
-      orderBy: { originSeq: 'asc' },
-      take: take + 1,
+    const rows = await this.database.db.query.message.findMany({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.creator, authorId),
+        gt(tables.message.originSeq, after),
+      ),
+      orderBy: asc(tables.message.originSeq),
+      limit: take + 1,
     });
     const hasMore = rows.length > take;
     const page = hasMore ? rows.slice(0, take) : rows;
@@ -2490,11 +2638,16 @@ export class FederationService implements OnModuleDestroy {
         ts: m.createdAt.getTime(),
       })),
     );
-    const latest = await this.prisma.message.aggregate({
-      where: { threadId, creator: authorId },
-      _max: { originSeq: true },
-    });
-    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
+    const [latest] = await this.database.db
+      .select({ originSeq: max(tables.message.originSeq) })
+      .from(tables.message)
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.creator, authorId),
+        ),
+      );
+    return { messages, latestSeq: latest.originSeq ?? -1, hasMore };
   }
 
   /**
@@ -2516,36 +2669,41 @@ export class FederationService implements OnModuleDestroy {
       undefined,
       signerDomain,
     );
-    const rows = await this.prisma.message.findMany({
-      where: {
-        threadId,
-        creatorItem: { domain: { not: signerDomain } }, // self-exclusion — never serve the requester's own authors
-        ...(beforeSeq >= 0 ? { seq: { lt: beforeSeq } } : {}),
-      },
-      orderBy: { seq: 'desc' },
-      take: take + 1,
-      include: {
-        creatorItem: {
-          select: { account: true, domain: true, isForeigner: true },
-        },
-      },
-    });
+    const rows = await this.database.db
+      .select({ message: tables.message, user: tables.user })
+      .from(tables.message)
+      .innerJoin(tables.user, eq(tables.user.id, tables.message.creator))
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          ne(tables.user.domain, signerDomain),
+          ...(beforeSeq >= 0 ? [lt(tables.message.seq, beforeSeq)] : []),
+        ),
+      )
+      .orderBy(desc(tables.message.seq))
+      .limit(take + 1);
     const hasMore = rows.length > take;
     // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
-    const quoteTargets = await this.quoteTargetsForWire(threadId, batch);
-    const messages = batch.map((m) => ({
-      seq: m.seq,
-      originSeq: m.originSeq ?? 0,
-      creator: {
-        account: m.creatorItem.account,
-        domain: this.effectiveDomain(m.creatorItem),
-      },
-      contentType: m.contentType,
-      content: m.content,
-      ...this.quoteTargetField(quoteTargets.get(m.seq)),
-      ts: m.createdAt.getTime(),
-    }));
+    const quoteTargets = await this.quoteTargetsForWire(
+      threadId,
+      batch.map((row) => row.message),
+    );
+    const messages = batch.map(({ message: row, user }) => {
+      const m = { ...row, creatorItem: user };
+      return {
+        seq: m.seq,
+        originSeq: m.originSeq ?? 0,
+        creator: {
+          account: m.creatorItem.account,
+          domain: this.effectiveDomain(m.creatorItem),
+        },
+        contentType: m.contentType,
+        content: m.content,
+        ...this.quoteTargetField(quoteTargets.get(m.seq)),
+        ts: m.createdAt.getTime(),
+      };
+    });
     // latestSeq = the NEWEST seq in this batch (mirrors the forward leg's batch cursor); -1 when empty.
     const latestSeq =
       messages.length > 0 ? messages[messages.length - 1].seq : -1;
@@ -2579,14 +2737,14 @@ export class FederationService implements OnModuleDestroy {
       fromAccount,
       fromDomain,
     );
-    const rows = await this.prisma.message.findMany({
-      where: {
-        threadId,
-        creator: authorId,
-        ...(beforeSeq >= 0 ? { originSeq: { lt: beforeSeq } } : {}),
-      },
-      orderBy: { originSeq: 'desc' },
-      take: take + 1,
+    const rows = await this.database.db.query.message.findMany({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.creator, authorId),
+        ...(beforeSeq >= 0 ? [lt(tables.message.originSeq, beforeSeq)] : []),
+      ),
+      orderBy: desc(tables.message.originSeq),
+      limit: take + 1,
     });
     const hasMore = rows.length > take;
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
@@ -2601,11 +2759,16 @@ export class FederationService implements OnModuleDestroy {
         ts: m.createdAt.getTime(),
       })),
     );
-    const latest = await this.prisma.message.aggregate({
-      where: { threadId, creator: authorId },
-      _max: { originSeq: true },
-    });
-    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
+    const [latest] = await this.database.db
+      .select({ originSeq: max(tables.message.originSeq) })
+      .from(tables.message)
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.creator, authorId),
+        ),
+      );
+    return { messages, latestSeq: latest.originSeq ?? -1, hasMore };
   }
 
   async resolveMediaFile(
@@ -2647,9 +2810,12 @@ export class FederationService implements OnModuleDestroy {
           )
         ).threadId;
     // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
-    const inThread = await this.prisma.mediaMessage.findFirst({
-      where: { digest, threadId },
-      select: { messageId: true },
+    const inThread = await this.database.db.query.mediaMessage.findFirst({
+      where: and(
+        eq(tables.mediaMessage.digest, digest),
+        eq(tables.mediaMessage.threadId, threadId),
+      ),
+      columns: { messageId: true },
     });
     if (!inThread) {
       throw new BusinessException(
@@ -2669,27 +2835,32 @@ export class FederationService implements OnModuleDestroy {
     bundleId: string,
     signerDomain: string,
   ): Promise<void> {
-    const visible = await this.prisma.forwardMessage.findFirst({
-      where: {
-        bundleId,
-        message: {
-          isDeleted: false,
-          threadItem: {
-            ThreadParticipant: {
-              some: {
-                leftAt: null,
-                user: {
-                  isForeigner: true,
-                  domain: signerDomain,
-                  isDeleted: false,
-                },
-              },
-            },
-          },
-        },
-      },
-      select: { messageId: true },
-    });
+    const [visible] = await this.database.db
+      .select({ messageId: tables.forwardMessage.messageId })
+      .from(tables.forwardMessage)
+      .innerJoin(
+        tables.message,
+        eq(tables.message.id, tables.forwardMessage.messageId),
+      )
+      .innerJoin(
+        tables.threadParticipant,
+        eq(tables.threadParticipant.threadId, tables.message.threadId),
+      )
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.forwardMessage.bundleId, bundleId),
+          eq(tables.message.isDeleted, false),
+          isNull(tables.threadParticipant.leftAt),
+          eq(tables.user.isForeigner, true),
+          eq(tables.user.domain, signerDomain),
+          eq(tables.user.isDeleted, false),
+        ),
+      )
+      .limit(1);
     if (!visible) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -2744,14 +2915,12 @@ export class FederationService implements OnModuleDestroy {
       );
     }
     // `toAccount` is the requester's user → on OUR side it's a foreign stub on the signer's domain.
-    const toStub = await this.prisma.user.findUnique({
-      where: {
-        account_domain: {
-          account: normalizeAccount(toAccount),
-          domain: signerDomain,
-        },
-      },
-      select: { id: true, isForeigner: true },
+    const toStub = await this.database.db.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(toAccount)),
+        eq(tables.user.domain, signerDomain),
+      ),
+      columns: { id: true, isForeigner: true },
     });
     if (!toStub || !toStub.isForeigner) {
       throw new BusinessException(
@@ -2911,11 +3080,16 @@ export class FederationService implements OnModuleDestroy {
         toLocalUserId,
       );
       if (threadId === null) return true; // not friends (lazy-unfriend §9.4) → drop
-      const cur = await this.prisma.message.aggregate({
-        where: { threadId, creator: creatorId },
-        _max: { originSeq: true },
-      });
-      let after = cur._max.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1
+      const [cur] = await this.database.db
+        .select({ originSeq: max(tables.message.originSeq) })
+        .from(tables.message)
+        .where(
+          and(
+            eq(tables.message.threadId, threadId),
+            eq(tables.message.creator, creatorId),
+          ),
+        );
+      let after = cur.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1
       if (e.latestSeq <= after) return true; // already current
       for (;;) {
         const res = await this.withTrustedPeer(domain, () =>
@@ -3003,15 +3177,15 @@ export class FederationService implements OnModuleDestroy {
    * a send hint or the chat-open history pull. Former members keep the thread/history; clients receive
    * GROUP_UPDATED and remove their composer. */
   private async markGroupDissolved(threadId: number): Promise<void> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: { groupUserId: true },
+    const trd = await this.database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, threadId),
+      columns: { groupUserId: true },
     });
     if (trd?.groupUserId == null) return;
-    await this.prisma.group.update({
-      where: { groupUserId: trd.groupUserId },
-      data: { dissolvedAt: new Date() },
-    });
+    await this.database.db
+      .update(tables.group)
+      .set({ dissolvedAt: new Date() })
+      .where(eq(tables.group.groupUserId, trd.groupUserId));
     const localMembers = await this.localActiveMemberIds(threadId);
     for (const userId of localMembers) {
       this.sse.onGroupEvent(userId, GROUP_SSE.GROUP_UPDATED, {
@@ -3056,9 +3230,9 @@ export class FederationService implements OnModuleDestroy {
       }
     }
     this.recentGroupPulls.set(threadId, Date.now());
-    const th = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: { pullUntil: true },
+    const th = await this.database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, threadId),
+      columns: { pullUntil: true },
     });
     let after = th?.pullUntil ?? -1;
     const recipients = await this.localActiveMemberIds(threadId);
@@ -3108,10 +3282,10 @@ export class FederationService implements OnModuleDestroy {
       // thread total — that would skip the middle of a >`take`-message catch-up). Empty batch ⇒ no advance.
       if (res.messages.length > 0) {
         after = res.messages[res.messages.length - 1].seq;
-        await this.prisma.messageThread.update({
-          where: { id: threadId },
-          data: { pullUntil: after },
-        });
+        await this.database.db
+          .update(tables.messageThread)
+          .set({ pullUntil: after, updatedAt: new Date() })
+          .where(eq(tables.messageThread.id, threadId));
       }
       if (!res.hasMore) return true;
     }
@@ -3130,11 +3304,16 @@ export class FederationService implements OnModuleDestroy {
     e: NewMsgMapEntry,
   ): Promise<boolean> {
     const creatorId = await this.ensureForeignUser(e.fromAccount, e.fromDomain);
-    const cur = await this.prisma.message.aggregate({
-      where: { threadId, creator: creatorId },
-      _max: { originSeq: true },
-    });
-    let after = cur._max.originSeq ?? -1;
+    const [cur] = await this.database.db
+      .select({ originSeq: max(tables.message.originSeq) })
+      .from(tables.message)
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.creator, creatorId),
+        ),
+      );
+    let after = cur.originSeq ?? -1;
     if (e.latestSeq <= after) return true;
     const recipients = await this.localActiveMemberIds(threadId);
     try {
@@ -3202,10 +3381,20 @@ export class FederationService implements OnModuleDestroy {
    * from the client's view). The sender (creatorId) is excluded by storePulledMessage.
    */
   private async localActiveMemberIds(threadId: number): Promise<number[]> {
-    const rows = await this.prisma.threadParticipant.findMany({
-      where: { threadId, leftAt: null, user: { isForeigner: false } },
-      select: { userId: true },
-    });
+    const rows = await this.database.db
+      .select({ userId: tables.threadParticipant.userId })
+      .from(tables.threadParticipant)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, threadId),
+          isNull(tables.threadParticipant.leftAt),
+          eq(tables.user.isForeigner, false),
+        ),
+      );
     return rows.map((r) => r.userId);
   }
 
@@ -3300,8 +3489,8 @@ export class FederationService implements OnModuleDestroy {
     // the peer's originSeq verbatim — the dedup key + the value the receiver tracks as its pull cursor.
     // Wrapped in a tx so a P2002 dup-pull (same (threadId, creator, originSeq)) rolls the curSeq increment
     // back too (no seq gap from a deduped re-pull).
-    const created = await this.prisma
-      .$transaction(async (tx) => {
+    const created = await this.database.db
+      .transaction(async (tx) => {
         if (forwardClosure && forwardCard) {
           const imported = await this.forwardBundles.importClosure(
             fetchedFromDomain,
@@ -3314,11 +3503,11 @@ export class FederationService implements OnModuleDestroy {
             bundleId: localForwardBundleId,
           });
         }
-        const { curSeq: seq } = await tx.messageThread.update({
-          where: { id: threadId },
-          data: { curSeq: { increment: 1 } },
-          select: { curSeq: true },
-        });
+        const [{ curSeq: seq }] = await tx
+          .update(tables.messageThread)
+          .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
+          .where(eq(tables.messageThread.id, threadId))
+          .returning({ curSeq: tables.messageThread.curSeq });
         if (incomingText?.quote && m.quoteTarget) {
           const localQuoteSeq = await this.resolveLocalQuoteSeq(
             tx,
@@ -3330,8 +3519,9 @@ export class FederationService implements OnModuleDestroy {
             quote: { seq: localQuoteSeq },
           });
         }
-        const msg = await tx.message.create({
-          data: {
+        const [msg] = await tx
+          .insert(tables.message)
+          .values({
             contentType: m.contentType as ContentType,
             content: storedContent,
             threadId,
@@ -3339,12 +3529,14 @@ export class FederationService implements OnModuleDestroy {
             seq,
             originSeq: m.originSeq,
             originServerTime: originTime,
+            updatedAt: new Date(),
             // createdAt defaults to now() → the local arrival time
-          },
-        });
+          })
+          .returning();
         if (localForwardBundleId) {
-          await tx.forwardMessage.create({
-            data: { messageId: msg.id, bundleId: localForwardBundleId },
+          await tx.insert(tables.forwardMessage).values({
+            messageId: msg.id,
+            bundleId: localForwardBundleId,
           });
         }
         // Quota: tick the peer's daily message budget ON THE SAME tx. Over-limit throws inside the tx →
@@ -3354,10 +3546,7 @@ export class FederationService implements OnModuleDestroy {
         return msg;
       })
       .catch((e: unknown) => {
-        if (
-          e instanceof Prisma.PrismaClientKnownRequestError &&
-          e.code === 'P2002'
-        ) {
+        if (isUniqueViolation(e)) {
           return null; // already pulled (push/pull race) — idempotent skip (tx rolled back → no seq gap)
         }
         if (
@@ -3392,20 +3581,26 @@ export class FederationService implements OnModuleDestroy {
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
     // than what's cached (a message the local user sent after this one must not be overwritten). Ordered
     // by ARRIVAL time (what the user sees), not the origin server time.
-    await this.prisma.messageThread.updateMany({
-      where: {
-        id: threadId,
-        OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: arrival } }],
-      },
-      data: {
+    await this.database.db
+      .update(tables.messageThread)
+      .set({
         lastMessageSeq: created.seq,
         lastMessagePreview: derivePreview(
           m.contentType as ContentType,
           storedContent,
         ),
         lastMessageAt: arrival,
-      },
-    });
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(tables.messageThread.id, threadId),
+          or(
+            isNull(tables.messageThread.lastMessageAt),
+            lt(tables.messageThread.lastMessageAt, arrival),
+          ),
+        ),
+      );
     await this.threadRevisionService.restoreHiddenThreads(threadId, recipients);
     // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
     // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
@@ -3427,13 +3622,13 @@ export class FederationService implements OnModuleDestroy {
   }
 
   private async resolveLocalQuoteSeq(
-    tx: Prisma.TransactionClient,
+    tx: DatabaseTransaction,
     threadId: number,
     target: S2SQuoteTarget,
   ): Promise<number> {
-    const candidates = await tx.user.findMany({
-      where: { account: normalizeAccount(target.creator.account) },
-      select: { id: true, domain: true, isForeigner: true },
+    const candidates = await tx.query.user.findMany({
+      where: eq(tables.user.account, normalizeAccount(target.creator.account)),
+      columns: { id: true, domain: true, isForeigner: true },
     });
     const creator = candidates.find(
       (candidate) => this.effectiveDomain(candidate) === target.creator.domain,
@@ -3445,15 +3640,13 @@ export class FederationService implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const message = await tx.message.findUnique({
-      where: {
-        threadId_creator_originSeq: {
-          threadId,
-          creator: creator.id,
-          originSeq: target.originSeq,
-        },
-      },
-      select: { seq: true },
+    const message = await tx.query.message.findFirst({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.creator, creator.id),
+        eq(tables.message.originSeq, target.originSeq),
+      ),
+      columns: { seq: true },
     });
     if (!message) {
       throw new BusinessException(
@@ -3483,9 +3676,9 @@ export class FederationService implements OnModuleDestroy {
     }
     for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
       try {
-        const have = await this.prisma.mediaAsset.findUnique({
-          where: { digest: asset.digest },
-          select: { refs: true },
+        const have = await this.database.db.query.mediaAsset.findFirst({
+          where: eq(tables.mediaAsset.digest, asset.digest),
+          columns: { refs: true },
         });
         if (have && have.refs > 0) continue;
         const category: 'images' | 'largeFiles' =
@@ -3509,10 +3702,10 @@ export class FederationService implements OnModuleDestroy {
         );
         const remainingRefs = (referenceCounts.get(asset.digest) ?? 1) - 1;
         if (remainingRefs > 0) {
-          await this.prisma.mediaAsset.update({
-            where: { digest: asset.digest },
-            data: { refs: { increment: remainingRefs } },
-          });
+          await this.database.db
+            .update(tables.mediaAsset)
+            .set({ refs: sql`${tables.mediaAsset.refs} + ${remainingRefs}` })
+            .where(eq(tables.mediaAsset.digest, asset.digest));
         }
       } catch {
         // Bundle JSON remains usable and the client can retry asset localization later.
@@ -3562,9 +3755,9 @@ export class FederationService implements OnModuleDestroy {
       try {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
         // the authz row exists and skip the network fetch.
-        const have = await this.prisma.mediaAsset.findUnique({
-          where: { digest },
-          select: { refs: true },
+        const have = await this.database.db.query.mediaAsset.findFirst({
+          where: eq(tables.mediaAsset.digest, digest),
+          columns: { refs: true },
         });
         if (!(have && have.refs > 0)) {
           // Stream the asset from the peer in resumable Range chunks → local CAS (no whole-file
@@ -3584,10 +3777,10 @@ export class FederationService implements OnModuleDestroy {
             digest,
           );
         }
-        await this.prisma.mediaMessage.createMany({
-          data: { messageId: msg.id, threadId: msg.threadId, digest },
-          skipDuplicates: true,
-        });
+        await this.database.db
+          .insert(tables.mediaMessage)
+          .values({ messageId: msg.id, threadId: msg.threadId, digest })
+          .onConflictDoNothing();
       } catch {
         // Best-effort per file — never block the text pull. The cross-origin URL stays inert until a
         // later retry (the manual relocalize endpoint, or pull-on-open / next push) re-runs localize.
@@ -3621,14 +3814,17 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<boolean> {
     const digests = extractDigests(content);
     if (digests.length === 0) return true;
-    const rows = await this.prisma.mediaMessage.findMany({
-      where: { messageId: msgId, digest: { in: digests } },
-      select: { digest: true },
+    const rows = await this.database.db.query.mediaMessage.findMany({
+      where: and(
+        eq(tables.mediaMessage.messageId, msgId),
+        inArray(tables.mediaMessage.digest, digests),
+      ),
+      columns: { digest: true },
     });
     if (rows.length !== digests.length) return false; // a digest has no authz row yet
-    const assets = await this.prisma.mediaAsset.findMany({
-      where: { digest: { in: digests } },
-      select: { digest: true, refs: true },
+    const assets = await this.database.db.query.mediaAsset.findMany({
+      where: inArray(tables.mediaAsset.digest, digests),
+      columns: { digest: true, refs: true },
     });
     return assets.length === digests.length && assets.every((a) => a.refs > 0);
   }
@@ -3648,8 +3844,11 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<'ready' | 'failed'> {
     // Fetch WITH id (localizeMedia + isMessageMediaReady need the internal BigInt id); the id never
     // leaves this method — only a status string is returned.
-    const msg = await this.prisma.message.findUnique({
-      where: { threadId_seq: { threadId, seq } },
+    const msg = await this.database.db.query.message.findFirst({
+      where: and(
+        eq(tables.message.threadId, threadId),
+        eq(tables.message.seq, seq),
+      ),
     });
     if (!msg) {
       throw new BusinessException(
@@ -3658,9 +3857,9 @@ export class FederationService implements OnModuleDestroy {
       );
     }
     if (!this.isMediaContentType(msg.contentType)) return 'ready';
-    const creator = await this.prisma.user.findUnique({
-      where: { id: msg.creator },
-      select: { account: true, domain: true },
+    const creator = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, msg.creator),
+      columns: { account: true, domain: true },
     });
     if (!creator) {
       throw new BusinessException(
@@ -3699,13 +3898,15 @@ export class FederationService implements OnModuleDestroy {
     creatorAccount: string,
     creatorDomain: string,
   ): Promise<{ toAccount: string; peerDomain: string }> {
-    const thread = await this.prisma.messageThread.findUnique({
-      where: { id: threadId },
-      select: {
-        type: true,
-        groupUser: { select: { account: true, domain: true } },
-      },
-    });
+    const thread = await this.database.db.query.messageThread
+      .findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: {
+          type: true,
+        },
+        with: { user: { columns: { account: true, domain: true } } },
+      })
+      .then((row) => (row ? { ...row, groupUser: row.user } : null));
     if (thread?.type === MessageThreadType.GROUP && thread.groupUser) {
       return {
         toAccount: thread.groupUser.account,
@@ -3713,9 +3914,13 @@ export class FederationService implements OnModuleDestroy {
       };
     }
     // P2P: the receiver is the thread's other active (non-creator) participant.
-    const peer = await this.prisma.threadParticipant.findFirst({
-      where: { threadId, userId: { not: creatorUserId }, leftAt: null },
-      include: { user: { select: { account: true } } },
+    const peer = await this.database.db.query.threadParticipant.findFirst({
+      where: and(
+        eq(tables.threadParticipant.threadId, threadId),
+        ne(tables.threadParticipant.userId, creatorUserId),
+        isNull(tables.threadParticipant.leftAt),
+      ),
+      with: { user: { columns: { account: true } } },
     });
     return {
       toAccount: peer?.user.account ?? creatorAccount,
@@ -3980,9 +4185,9 @@ export class FederationService implements OnModuleDestroy {
     userId: number,
     profile: S2SProfile,
   ): Promise<void> {
-    const stub = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { avatar: true, remoteProfileRev: true },
+    const stub = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, userId),
+      columns: { avatar: true, remoteProfileRev: true },
     });
     if (!stub) return; // stub gone — nothing to localize
     if (
@@ -4015,7 +4220,10 @@ export class FederationService implements OnModuleDestroy {
       remoteProfileRev: profile.profileRev,
     };
     if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
-    await this.prisma.user.update({ where: { id: userId }, data });
+    await this.database.db
+      .update(tables.user)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(tables.user.id, userId));
 
     // Catch-up push: this federated stub just changed, so fan the fresh profile to every local friend
     // of this user — they refresh without each having to independently probe. Fire-and-forget so a slow
@@ -4054,9 +4262,9 @@ export class FederationService implements OnModuleDestroy {
    * updatedAt is authoritative; there's nothing to sync).
    */
   async syncForeignUserIfStale(userId: number): Promise<void> {
-    const stub = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
+    const stub = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, userId),
+      columns: {
         isForeigner: true,
         account: true,
         domain: true,

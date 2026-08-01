@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { ContentType } from '../prisma/generated/client.js';
+import { ContentType } from '../database/enums.js';
+import { forwardBundle, forwardBundleDependency } from '../database/schema.js';
 import {
   digestManifest,
   FORWARD_MAX_WIRE_JSON_BYTES,
@@ -37,13 +38,40 @@ function sourceRow(childDepth: number) {
   };
 }
 
+function sourceQueryRow(childDepth: number) {
+  const row = sourceRow(childDepth);
+  return {
+    ...row,
+    user: row.creatorItem,
+    forwardMessages: [
+      { ...row.forwardMessage, forwardBundle: row.forwardMessage.bundle },
+    ],
+  };
+}
+
+function databaseFake(childDepth: number, tx?: unknown) {
+  return {
+    db: {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ value: 1 }]),
+        })),
+      })),
+      query: {
+        message: {
+          findFirst: vi.fn().mockResolvedValue(sourceQueryRow(childDepth)),
+        },
+      },
+      transaction: vi.fn(async (work: (client: unknown) => Promise<void>) =>
+        work(tx),
+      ),
+    },
+  };
+}
+
 describe('ForwardBundleService', () => {
   it('rejects forwarding an existing depth-3 bundle because the result would be depth 4', async () => {
-    const prisma = {
-      threadParticipant: { count: vi.fn().mockResolvedValue(1) },
-      message: { findUnique: vi.fn().mockResolvedValue(sourceRow(3)) },
-    };
-    const service = new ForwardBundleService(prisma as never);
+    const service = new ForwardBundleService(databaseFake(3) as never);
 
     await expect(
       service.createFromMessages(9, [{ threadId: 4, seq: 7 }]),
@@ -55,36 +83,31 @@ describe('ForwardBundleService', () => {
   it('stores children as a JSON array and a searchable dependency when result depth is 3', async () => {
     const createBundle = vi.fn().mockResolvedValue(undefined);
     const createDependencies = vi.fn().mockResolvedValue(undefined);
-    const prisma = {
-      threadParticipant: { count: vi.fn().mockResolvedValue(1) },
-      message: { findUnique: vi.fn().mockResolvedValue(sourceRow(2)) },
-      $transaction: vi.fn(async (work: (tx: unknown) => Promise<void>) =>
-        work({
-          forwardBundle: { create: createBundle },
-          forwardBundleDependency: { createMany: createDependencies },
-          forwardBundleAsset: { createMany: vi.fn() },
-          mediaAsset: { update: vi.fn() },
-        }),
-      ),
+    const tx = {
+      insert: vi.fn((table: unknown) => ({
+        values:
+          table === forwardBundle
+            ? createBundle
+            : table === forwardBundleDependency
+              ? createDependencies
+              : vi.fn(),
+      })),
     };
-    const service = new ForwardBundleService(prisma as never);
+    const service = new ForwardBundleService(databaseFake(2, tx) as never);
     const result = await service.createFromMessages(9, [
       { threadId: 4, seq: 7 },
     ]);
 
     expect(result.depth).toBe(3);
-    const manifest = createBundle.mock.calls[0][0].data
-      .manifest as ForwardManifest;
+    const manifest = createBundle.mock.calls[0][0].manifest as ForwardManifest;
     expect(manifest.children).toEqual(['01childbundle00000000000000']);
-    expect(createDependencies).toHaveBeenCalledWith({
-      data: [
-        {
-          parentBundleId: result.bundleId,
-          childBundleId: '01childbundle00000000000000',
-          ordinal: 0,
-        },
-      ],
-    });
+    expect(createDependencies).toHaveBeenCalledWith([
+      {
+        parentBundleId: result.bundleId,
+        childBundleId: '01childbundle00000000000000',
+        ordinal: 0,
+      },
+    ]);
   });
 
   it('hashes manifests canonically rather than depending on object key insertion order', () => {

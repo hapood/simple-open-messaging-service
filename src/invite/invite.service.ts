@@ -1,12 +1,34 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  max,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  group,
+  invite,
+  messageThread,
+  threadParticipant,
+  user,
+} from '../database/schema.js';
 import {
   GroupRole,
   InviteKind,
   InviteStatus,
   MessageThreadType,
-  Prisma,
-} from '../prisma/generated/client.js';
+} from '../database/enums.js';
 import { mintUlid, normalizeAccount } from '../common/account.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -71,7 +93,7 @@ export class InviteService {
   private readonly config = loadFederationConfig();
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly participantService: ThreadParticipantService,
     private readonly threadRevisionService: ThreadRevisionService,
   ) {}
@@ -96,18 +118,24 @@ export class InviteService {
 
     const [friendIds, invites] = await Promise.all([
       this.participantService.getActiveP2PPeerUserIds(me),
-      this.prisma.invite.findMany({
-        where: {
-          kind: InviteKind.FRIEND,
-          status: InviteStatus.PENDING,
-          expiresAt: { gt: new Date() },
-          OR: [
-            { fromUserId: me, toUserId: { in: userIds } },
-            { toUserId: me, fromUserId: { in: userIds } },
-          ],
-        },
-        select: { id: true, fromUserId: true, toUserId: true },
-      }),
+      this.database.db
+        .select({
+          id: invite.id,
+          fromUserId: invite.fromUserId,
+          toUserId: invite.toUserId,
+        })
+        .from(invite)
+        .where(
+          and(
+            eq(invite.kind, InviteKind.FRIEND),
+            eq(invite.status, InviteStatus.PENDING),
+            gt(invite.expiresAt, new Date()),
+            or(
+              and(eq(invite.fromUserId, me), inArray(invite.toUserId, userIds)),
+              and(eq(invite.toUserId, me), inArray(invite.fromUserId, userIds)),
+            ),
+          ),
+        ),
     ]);
     const friends = new Set(friendIds);
     const outgoing = new Map(
@@ -153,16 +181,16 @@ export class InviteService {
     // Explicit type param keeps the callback's `status` literals from widening to string (the
     // bare `const result = await …` form loses the method-return contextual type the old
     // `return this.prisma.$transaction(…)` form got for free).
-    const result = await this.prisma.$transaction<CreateFriendInviteResult>(
+    const result = await this.database.db.transaction<CreateFriendInviteResult>(
       async (tx) => {
         if (allowAutoAccept) {
-          const mutual = await tx.invite.findFirst({
-            where: {
-              kind: InviteKind.FRIEND,
-              status: InviteStatus.PENDING,
-              fromUserId: toUserId,
-              toUserId: fromUserId,
-            },
+          const mutual = await tx.query.invite.findFirst({
+            where: and(
+              eq(invite.kind, InviteKind.FRIEND),
+              eq(invite.status, InviteStatus.PENDING),
+              eq(invite.fromUserId, toUserId),
+              eq(invite.toUserId, fromUserId),
+            ),
           });
           if (mutual) {
             const threadId = await this.createP2PFriendshipInTx(
@@ -170,59 +198,61 @@ export class InviteService {
               fromUserId,
               toUserId,
             );
-            await tx.invite.update({
-              where: { id: mutual.id },
-              data: { status: InviteStatus.ACCEPTED },
-            });
+            await tx
+              .update(invite)
+              .set({ status: InviteStatus.ACCEPTED, updatedAt: new Date() })
+              .where(eq(invite.id, mutual.id));
             return { status: 'auto-accepted', threadId };
           }
         }
 
         const originId = originIdOverride ?? mintUlid();
-        try {
-          const invite = await tx.invite.create({
-            data: {
-              kind: InviteKind.FRIEND,
-              fromUserId,
-              toUserId,
-              note: trimmed,
-              status: InviteStatus.PENDING,
-              expiresAt,
-              origin,
-              originId,
-            },
-          });
+        const [created] = await tx
+          .insert(invite)
+          .values({
+            kind: InviteKind.FRIEND,
+            fromUserId,
+            toUserId,
+            note: trimmed,
+            status: InviteStatus.PENDING,
+            expiresAt,
+            origin,
+            originId,
+            updatedAt: new Date(),
+          })
+          .onConflictDoNothing()
+          .returning({ id: invite.id });
+        if (created) {
           // The friend-request badge is derived (MAX(createdAt) over incoming FRIEND invites) — creating
           // this PENDING row advances it automatically (accept/decline don't: createdAt is immutable); no
           // denormalized badge column to arm here.
-          return { status: 'created', inviteId: invite.id.toString() };
-        } catch (e) {
-          if (
-            e instanceof Prisma.PrismaClientKnownRequestError &&
-            e.code === 'P2002'
-          ) {
-            // Partial unique index (FRIEND, from→to, PENDING) — refresh the existing row in place.
-            const existing = await tx.invite.findFirst({
-              where: {
-                kind: InviteKind.FRIEND,
-                status: InviteStatus.PENDING,
-                fromUserId,
-                toUserId,
-              },
-            });
-            if (existing !== null) {
-              await tx.invite.update({
-                where: { id: existing.id },
-                data: { note: trimmed, expiresAt, origin, originId },
-              });
-              return {
-                status: 'already-pending',
-                inviteId: existing.id.toString(),
-              };
-            }
-          }
-          throw e;
+          return { status: 'created', inviteId: created.id.toString() };
         }
+        // Partial unique index (FRIEND, from→to, PENDING) — refresh the existing row in place.
+        const existing = await tx.query.invite.findFirst({
+          where: and(
+            eq(invite.kind, InviteKind.FRIEND),
+            eq(invite.status, InviteStatus.PENDING),
+            eq(invite.fromUserId, fromUserId),
+            eq(invite.toUserId, toUserId),
+          ),
+        });
+        if (!existing)
+          throw new Error('invite insert conflicted without a pending row');
+        await tx
+          .update(invite)
+          .set({
+            note: trimmed,
+            expiresAt,
+            origin,
+            originId,
+            updatedAt: new Date(),
+          })
+          .where(eq(invite.id, existing.id));
+        return {
+          status: 'already-pending',
+          inviteId: existing.id.toString(),
+        };
       },
     );
     // Record the thread add AFTER the tx commits (bump threadRevision + push signal). Auto-accept
@@ -261,45 +291,47 @@ export class InviteService {
     // mint our domain + a fresh ULID.
     const origin = originOverride?.origin ?? this.config.domain;
     const originId = originOverride?.originId ?? mintUlid();
-    try {
-      const invite = await this.prisma.invite.create({
-        data: {
-          kind: InviteKind.GROUP,
+    const [created] = await this.database.db
+      .insert(invite)
+      .values({
+        kind: InviteKind.GROUP,
+        fromUserId,
+        toUserId,
+        threadId,
+        note: trimmed,
+        status: InviteStatus.PENDING,
+        expiresAt,
+        origin,
+        originId,
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing()
+      .returning({ id: invite.id });
+    if (created) return created.id.toString();
+    // Partial unique index (GROUP, to, thread, PENDING) — refresh in place; id stays stable.
+    const existing = await this.database.db.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, InviteKind.GROUP),
+        eq(invite.status, InviteStatus.PENDING),
+        eq(invite.toUserId, toUserId),
+        eq(invite.threadId, threadId),
+      ),
+    });
+    if (existing) {
+      await this.database.db
+        .update(invite)
+        .set({
           fromUserId,
-          toUserId,
-          threadId,
           note: trimmed,
-          status: InviteStatus.PENDING,
           expiresAt,
           origin,
           originId,
-        },
-      });
-      return invite.id.toString();
-    } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002'
-      ) {
-        // Partial unique index (GROUP, to, thread, PENDING) — refresh in place; id stays stable.
-        const existing = await this.prisma.invite.findFirst({
-          where: {
-            kind: InviteKind.GROUP,
-            status: InviteStatus.PENDING,
-            toUserId,
-            threadId,
-          },
-        });
-        if (existing !== null) {
-          await this.prisma.invite.update({
-            where: { id: existing.id },
-            data: { fromUserId, note: trimmed, expiresAt, origin, originId },
-          });
-          return existing.id.toString();
-        }
-      }
-      throw e;
+          updatedAt: new Date(),
+        })
+        .where(eq(invite.id, existing.id));
+      return existing.id.toString();
     }
+    throw new Error('group invite insert conflicted without a pending row');
   }
 
   /**
@@ -332,49 +364,51 @@ export class InviteService {
     };
   }> {
     const id = await this.resolveInviteId(inviteIdOrGroup, callerId, false);
-    const invite = await this.prisma.invite.findUnique({
-      where: { id },
-      include: {
-        fromUser: { select: USER_SELECT },
-        thread: {
-          select: {
-            groupUser: { select: { name: true, avatar: true, domain: true } },
+    const inviteRow = await this.database.db.query.invite.findFirst({
+      where: eq(invite.id, id),
+      with: {
+        user_fromUserId: { columns: USER_SELECT },
+        messageThread: {
+          columns: { id: true },
+          with: {
+            user: { columns: { name: true, avatar: true, domain: true } },
           },
         },
       },
     });
-    if (invite === null || invite.toUserId !== callerId) {
+    if (!inviteRow || inviteRow.toUserId !== callerId) {
       throw new BusinessException(
         BusinessCode.INVITE_NOT_FOUND,
         'invite not found',
       );
     }
     let alreadyJoined = false;
-    if (invite.threadId !== null) {
-      const p = await this.prisma.threadParticipant.findUnique({
-        where: {
-          userId_threadId: { userId: callerId, threadId: invite.threadId },
-        },
-        select: { leftAt: true },
+    if (inviteRow.threadId !== null) {
+      const p = await this.database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.userId, callerId),
+          eq(threadParticipant.threadId, inviteRow.threadId),
+        ),
+        columns: { leftAt: true },
       });
-      alreadyJoined = p !== null && p.leftAt === null;
+      alreadyJoined = !!p && p.leftAt === null;
     }
-    const gu = invite.thread?.groupUser;
+    const gu = inviteRow.messageThread?.user;
     const groupIsLocal = !gu?.domain || gu.domain === 'local';
     const groupDomain = groupIsLocal ? this.config.domain : (gu?.domain ?? '');
     return {
-      id: invite.id.toString(),
-      kind: invite.kind,
-      status: invite.status,
-      expiresAt: invite.expiresAt,
-      note: invite.note,
-      threadId: invite.threadId,
+      id: inviteRow.id.toString(),
+      kind: inviteRow.kind,
+      status: inviteRow.status,
+      expiresAt: inviteRow.expiresAt,
+      note: inviteRow.note,
+      threadId: inviteRow.threadId,
       groupName: gu?.name ?? '',
       groupAvatar: gu?.avatar ?? '',
       groupDomain,
       groupIsLocal,
       alreadyJoined,
-      fromUser: invite.fromUser,
+      fromUser: inviteRow.user_fromUserId,
     };
   }
 
@@ -389,69 +423,86 @@ export class InviteService {
     byUserId: number,
   ): Promise<AcceptInviteResult> {
     const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
-    const result = await this.prisma.$transaction(
+    const result = await this.database.db.transaction(
       async (tx): Promise<AcceptInviteResult> => {
-        const invite = await tx.invite.findUnique({ where: { id } });
-        if (invite === null || invite.status !== InviteStatus.PENDING) {
+        const inviteRow = await tx.query.invite.findFirst({
+          where: eq(invite.id, id),
+        });
+        if (!inviteRow || inviteRow.status !== InviteStatus.PENDING) {
           throw new BusinessException(
-            invite === null
+            !inviteRow
               ? BusinessCode.INVITE_NOT_FOUND
               : BusinessCode.INVITE_ALREADY_HANDLED,
-            invite === null ? 'invite not found' : 'invite already handled',
+            !inviteRow ? 'invite not found' : 'invite already handled',
           );
         }
-        if (invite.toUserId !== byUserId) {
+        if (inviteRow.toUserId !== byUserId) {
           throw new BusinessException(
             BusinessCode.INVITE_NOT_YOURS,
             'this invite is not yours to accept',
           );
         }
-        if (invite.expiresAt.getTime() <= Date.now()) {
+        if (inviteRow.expiresAt.getTime() <= Date.now()) {
           throw new BusinessException(
             BusinessCode.INVITE_EXPIRED,
             'invite expired',
           );
         }
 
-        if (invite.kind === InviteKind.FRIEND) {
+        if (inviteRow.kind === InviteKind.FRIEND) {
           const threadId = await this.createP2PFriendshipInTx(
             tx,
-            invite.fromUserId,
-            invite.toUserId,
+            inviteRow.fromUserId,
+            inviteRow.toUserId,
           );
-          await tx.invite.update({
-            where: { id },
-            data: { status: InviteStatus.ACCEPTED },
-          });
+          const now = new Date();
+          await tx
+            .update(invite)
+            .set({ status: InviteStatus.ACCEPTED, updatedAt: now })
+            .where(eq(invite.id, id));
           // Symmetric cleanup: any other pending friend invite between this pair (either direction) is
           // now moot — mark it ACCEPTED so it leaves both pending lists.
-          await tx.invite.updateMany({
-            where: {
-              kind: InviteKind.FRIEND,
-              status: InviteStatus.PENDING,
-              id: { not: id },
-              OR: [
-                { fromUserId: invite.fromUserId, toUserId: invite.toUserId },
-                { fromUserId: invite.toUserId, toUserId: invite.fromUserId },
-              ],
-            },
-            data: { status: InviteStatus.ACCEPTED },
-          });
-          return { kind: 'FRIEND', threadId, fromUserId: invite.fromUserId };
+          await tx
+            .update(invite)
+            .set({ status: InviteStatus.ACCEPTED, updatedAt: now })
+            .where(
+              and(
+                eq(invite.kind, InviteKind.FRIEND),
+                eq(invite.status, InviteStatus.PENDING),
+                ne(invite.id, id),
+                or(
+                  and(
+                    eq(invite.fromUserId, inviteRow.fromUserId),
+                    eq(invite.toUserId, inviteRow.toUserId),
+                  ),
+                  and(
+                    eq(invite.fromUserId, inviteRow.toUserId),
+                    eq(invite.toUserId, inviteRow.fromUserId),
+                  ),
+                ),
+              ),
+            );
+          return {
+            kind: 'FRIEND',
+            threadId,
+            fromUserId: inviteRow.fromUserId,
+          };
         }
 
         // GROUP
-        if (invite.threadId === null) {
+        if (inviteRow.threadId === null) {
           throw new BusinessException(
             BusinessCode.INVITE_NOT_FOUND,
             'group invite has no target thread',
           );
         }
-        const groupState = await tx.messageThread.findUnique({
-          where: { id: invite.threadId },
-          select: { groupUser: { select: { group: { select: { dissolvedAt: true } } } } },
-        });
-        if (groupState?.groupUser?.group?.dissolvedAt != null) {
+        const [groupState] = await tx
+          .select({ dissolvedAt: group.dissolvedAt })
+          .from(messageThread)
+          .leftJoin(group, eq(group.groupUserId, messageThread.groupUserId))
+          .where(eq(messageThread.id, inviteRow.threadId))
+          .limit(1);
+        if (groupState?.dissolvedAt != null) {
           throw new BusinessException(
             BusinessCode.GROUP_DISSOLVED,
             'group has been dissolved',
@@ -461,25 +512,27 @@ export class InviteService {
         // the group accept marking the Invite ACCEPTED but never adding the joiner to the mirror thread.)
         await this.participantService.upsertMemberInTx(
           tx,
-          invite.threadId,
+          inviteRow.threadId,
           byUserId,
           GroupRole.MEMBER,
         );
-        await tx.invite.update({
-          where: { id },
-          data: { status: InviteStatus.ACCEPTED },
-        });
+        await tx
+          .update(invite)
+          .set({ status: InviteStatus.ACCEPTED, updatedAt: new Date() })
+          .where(eq(invite.id, id));
         // The group's federation fields: a cross-server mirror iff groupUser.domain !== 'local'. The
         // controller uses originDomain (non-null = mirror) to propagate the join to the origin (roster fanout).
-        const thread = await tx.messageThread.findUnique({
-          where: { id: invite.threadId },
-          select: { groupUser: { select: { account: true, domain: true } } },
-        });
-        const groupAccount = thread?.groupUser?.account ?? null;
-        const groupDomain = thread?.groupUser?.domain ?? null;
+        const [thread] = await tx
+          .select({ account: user.account, domain: user.domain })
+          .from(messageThread)
+          .leftJoin(user, eq(user.id, messageThread.groupUserId))
+          .where(eq(messageThread.id, inviteRow.threadId))
+          .limit(1);
+        const groupAccount = thread?.account ?? null;
+        const groupDomain = thread?.domain ?? null;
         return {
           kind: 'GROUP',
-          threadId: invite.threadId,
+          threadId: inviteRow.threadId,
           fedGroupAccount: groupAccount, // the group `!account` (S2S 'to'); non-null for any group
           originDomain:
             groupDomain && groupDomain !== 'local' ? groupDomain : null, // non-null = federated mirror
@@ -509,52 +562,56 @@ export class InviteService {
   /** Reject a pending invite addressed to `byUserId`. */
   async rejectInvite(inviteId: string, byUserId: number): Promise<void> {
     const id = this.parseInviteId(inviteId);
-    await this.prisma.$transaction(async (tx) => {
-      const invite = await tx.invite.findUnique({ where: { id } });
-      if (invite === null || invite.status !== InviteStatus.PENDING) {
+    await this.database.db.transaction(async (tx) => {
+      const inviteRow = await tx.query.invite.findFirst({
+        where: eq(invite.id, id),
+      });
+      if (!inviteRow || inviteRow.status !== InviteStatus.PENDING) {
         throw new BusinessException(
-          invite === null
+          !inviteRow
             ? BusinessCode.INVITE_NOT_FOUND
             : BusinessCode.INVITE_ALREADY_HANDLED,
-          invite === null ? 'invite not found' : 'invite already handled',
+          !inviteRow ? 'invite not found' : 'invite already handled',
         );
       }
-      if (invite.toUserId !== byUserId) {
+      if (inviteRow.toUserId !== byUserId) {
         throw new BusinessException(
           BusinessCode.INVITE_NOT_YOURS,
           'this invite is not yours to reject',
         );
       }
-      await tx.invite.update({
-        where: { id },
-        data: { status: InviteStatus.REJECTED },
-      });
+      await tx
+        .update(invite)
+        .set({ status: InviteStatus.REJECTED, updatedAt: new Date() })
+        .where(eq(invite.id, id));
     });
   }
 
   /** Revoke my own outgoing pending invite. */
   async revokeInvite(inviteId: string, byUserId: number): Promise<void> {
     const id = this.parseInviteId(inviteId);
-    await this.prisma.$transaction(async (tx) => {
-      const invite = await tx.invite.findUnique({ where: { id } });
-      if (invite === null || invite.status !== InviteStatus.PENDING) {
+    await this.database.db.transaction(async (tx) => {
+      const inviteRow = await tx.query.invite.findFirst({
+        where: eq(invite.id, id),
+      });
+      if (!inviteRow || inviteRow.status !== InviteStatus.PENDING) {
         throw new BusinessException(
-          invite === null
+          !inviteRow
             ? BusinessCode.INVITE_NOT_FOUND
             : BusinessCode.INVITE_ALREADY_HANDLED,
-          invite === null ? 'invite not found' : 'invite already handled',
+          !inviteRow ? 'invite not found' : 'invite already handled',
         );
       }
-      if (invite.fromUserId !== byUserId) {
+      if (inviteRow.fromUserId !== byUserId) {
         throw new BusinessException(
           BusinessCode.INVITE_NOT_YOURS,
           'this invite is not yours to revoke',
         );
       }
-      await tx.invite.update({
-        where: { id },
-        data: { status: InviteStatus.REVOKED },
-      });
+      await tx
+        .update(invite)
+        .set({ status: InviteStatus.REVOKED, updatedAt: new Date() })
+        .where(eq(invite.id, id));
     });
   }
 
@@ -562,27 +619,27 @@ export class InviteService {
    * recipient address to synchronously notify a federated peer before committing the local terminal. */
   async getOutgoingRevokeContext(inviteId: string, byUserId: number) {
     const id = this.parseInviteId(inviteId);
-    const invite = await this.prisma.invite.findUnique({
-      where: { id },
-      include: { toUser: { select: USER_SELECT } },
+    const inviteRow = await this.database.db.query.invite.findFirst({
+      where: eq(invite.id, id),
+      with: { user_toUserId: { columns: USER_SELECT } },
     });
-    if (invite === null || invite.status !== InviteStatus.PENDING) {
+    if (!inviteRow || inviteRow.status !== InviteStatus.PENDING) {
       throw new BusinessException(
-        invite === null
+        !inviteRow
           ? BusinessCode.INVITE_NOT_FOUND
           : BusinessCode.INVITE_ALREADY_HANDLED,
-        invite === null ? 'invite not found' : 'invite already handled',
+        !inviteRow ? 'invite not found' : 'invite already handled',
       );
     }
-    if (invite.fromUserId !== byUserId) {
+    if (inviteRow.fromUserId !== byUserId) {
       throw new BusinessException(
         BusinessCode.INVITE_NOT_YOURS,
         'this invite is not yours to revoke',
       );
     }
     return {
-      originId: invite.originId,
-      toUser: invite.toUser,
+      originId: inviteRow.originId,
+      toUser: inviteRow.user_toUserId,
     };
   }
 
@@ -594,11 +651,12 @@ export class InviteService {
     origin: string;
     originId: string;
   }): Promise<void> {
-    const invite = await this.prisma.invite.findUnique({
-      where: {
-        origin_originId: { origin: params.origin, originId: params.originId },
-      },
-      select: {
+    const inviteRow = await this.database.db.query.invite.findFirst({
+      where: and(
+        eq(invite.origin, params.origin),
+        eq(invite.originId, params.originId),
+      ),
+      columns: {
         id: true,
         kind: true,
         status: true,
@@ -607,18 +665,18 @@ export class InviteService {
       },
     });
     if (
-      invite === null ||
-      invite.kind !== InviteKind.FRIEND ||
-      invite.fromUserId !== params.fromUserId ||
-      invite.toUserId !== params.toUserId ||
-      invite.status !== InviteStatus.PENDING
+      !inviteRow ||
+      inviteRow.kind !== InviteKind.FRIEND ||
+      inviteRow.fromUserId !== params.fromUserId ||
+      inviteRow.toUserId !== params.toUserId ||
+      inviteRow.status !== InviteStatus.PENDING
     ) {
       return;
     }
-    await this.prisma.invite.update({
-      where: { id: invite.id },
-      data: { status: InviteStatus.REVOKED },
-    });
+    await this.database.db
+      .update(invite)
+      .set({ status: InviteStatus.REVOKED, updatedAt: new Date() })
+      .where(eq(invite.id, inviteRow.id));
   }
 
   /**
@@ -627,39 +685,38 @@ export class InviteService {
    */
   listIncoming(userId: number) {
     const since = new Date(Date.now() - INVITE_TTL_MS);
-    return this.prisma.invite.findMany({
-      where: {
-        kind: InviteKind.FRIEND,
-        status: InviteStatus.PENDING,
-        toUserId: userId,
-        createdAt: { gt: since },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: LIST_LIMIT,
-      include: {
-        fromUser: { select: USER_SELECT },
-        toUser: { select: USER_SELECT },
-      },
-    });
+    return this.listFriendInvites(
+      and(eq(invite.toUserId, userId), gt(invite.createdAt, since)),
+    );
   }
 
   /** Outgoing PENDING friend invites from `userId`, newest first, last-7-days, ≤200. */
   listOutgoing(userId: number) {
     const since = new Date(Date.now() - INVITE_TTL_MS);
-    return this.prisma.invite.findMany({
-      where: {
-        kind: InviteKind.FRIEND,
-        status: InviteStatus.PENDING,
-        fromUserId: userId,
-        createdAt: { gt: since },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: LIST_LIMIT,
-      include: {
-        fromUser: { select: USER_SELECT },
-        toUser: { select: USER_SELECT },
+    return this.listFriendInvites(
+      and(eq(invite.fromUserId, userId), gt(invite.createdAt, since)),
+    );
+  }
+
+  private async listFriendInvites(extra: SQL | undefined) {
+    const rows = await this.database.db.query.invite.findMany({
+      where: and(
+        eq(invite.kind, InviteKind.FRIEND),
+        eq(invite.status, InviteStatus.PENDING),
+        extra,
+      ),
+      orderBy: desc(invite.createdAt),
+      limit: LIST_LIMIT,
+      with: {
+        user_fromUserId: { columns: USER_SELECT },
+        user_toUserId: { columns: USER_SELECT },
       },
     });
+    return rows.map(({ user_fromUserId, user_toUserId, ...row }) => ({
+      ...row,
+      fromUser: user_fromUserId,
+      toUser: user_toUserId,
+    }));
   }
 
   /** Acknowledge the friend-request badge (the panel was opened): advance the server-side read cursor
@@ -671,10 +728,10 @@ export class InviteService {
   ): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
     const d = await this.latestFriendReqDate(userId);
     const ackDate = d ?? new Date(0); // no incoming FRIEND invites → ack epoch (no badge either way)
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { friendReqAckRev: ackDate },
-    });
+    await this.database.db
+      .update(user)
+      .set({ friendReqAckRev: ackDate, updatedAt: new Date() })
+      .where(eq(user.id, userId));
     return {
       friendReqRev: d ? d.getTime() : null,
       friendReqAckRev: ackDate.getTime(),
@@ -686,11 +743,13 @@ export class InviteService {
    *  request, so the derivation advances ONLY on create — accept/decline/expiry flip status (bumping
    *  updatedAt) but must NOT re-arm the badge, hence createdAt. Monotonic + DATA-DERIVED (no counter). */
   private async latestFriendReqDate(userId: number): Promise<Date | null> {
-    const res = await this.prisma.invite.aggregate({
-      where: { kind: InviteKind.FRIEND, toUserId: userId },
-      _max: { createdAt: true },
-    });
-    return res._max.createdAt ?? null;
+    const [res] = await this.database.db
+      .select({ createdAt: max(invite.createdAt) })
+      .from(invite)
+      .where(
+        and(eq(invite.kind, InviteKind.FRIEND), eq(invite.toUserId, userId)),
+      );
+    return res.createdAt ?? null;
   }
 
   /** The friend-request revision as epoch-ms (the wire form), or null. */
@@ -705,17 +764,17 @@ export class InviteService {
   async friendReqState(
     userId: number,
   ): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
-    const [d, user] = await Promise.all([
+    const [d, userRow] = await Promise.all([
       this.latestFriendReqDate(userId),
-      this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { friendReqAckRev: true },
+      this.database.db.query.user.findFirst({
+        where: eq(user.id, userId),
+        columns: { friendReqAckRev: true },
       }),
     ]);
     return {
       friendReqRev: d ? d.getTime() : null,
-      friendReqAckRev: user?.friendReqAckRev
-        ? user.friendReqAckRev.getTime()
+      friendReqAckRev: userRow?.friendReqAckRev
+        ? userRow.friendReqAckRev.getTime()
         : 0,
     };
   }
@@ -738,51 +797,49 @@ export class InviteService {
     expiresAt: Date;
   }): Promise<string> {
     const note = (params.note ?? '').slice(0, 255);
-    try {
-      const invite = await this.prisma.invite.create({
-        data: {
-          kind: InviteKind.FRIEND,
-          fromUserId: params.fromUserId,
-          toUserId: params.toUserId,
+    const [created] = await this.database.db
+      .insert(invite)
+      .values({
+        kind: InviteKind.FRIEND,
+        fromUserId: params.fromUserId,
+        toUserId: params.toUserId,
+        note,
+        status: InviteStatus.PENDING,
+        expiresAt: params.expiresAt,
+        origin: params.origin,
+        originId: params.originId,
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing()
+      .returning({ id: invite.id });
+    if (created) {
+      // Creating this PENDING row advances the derived friendReqRev (MAX(createdAt) over incoming FRIEND
+      // invites) — no denormalized badge column to arm.
+      return created.id.toString();
+    }
+    // Existing PENDING invite from this foreign stub → refresh in place, keep the badge armed.
+    const existing = await this.database.db.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, InviteKind.FRIEND),
+        eq(invite.status, InviteStatus.PENDING),
+        eq(invite.fromUserId, params.fromUserId),
+        eq(invite.toUserId, params.toUserId),
+      ),
+    });
+    if (existing) {
+      await this.database.db
+        .update(invite)
+        .set({
           note,
-          status: InviteStatus.PENDING,
           expiresAt: params.expiresAt,
           origin: params.origin,
           originId: params.originId,
-        },
-      });
-      // Creating this PENDING row advances the derived friendReqRev (MAX(createdAt) over incoming FRIEND
-      // invites) — no denormalized badge column to arm.
-      return invite.id.toString();
-    } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002'
-      ) {
-        // Existing PENDING invite from this foreign stub → refresh in place, keep the badge armed.
-        const existing = await this.prisma.invite.findFirst({
-          where: {
-            kind: InviteKind.FRIEND,
-            status: InviteStatus.PENDING,
-            fromUserId: params.fromUserId,
-            toUserId: params.toUserId,
-          },
-        });
-        if (existing !== null) {
-          await this.prisma.invite.update({
-            where: { id: existing.id },
-            data: {
-              note,
-              expiresAt: params.expiresAt,
-              origin: params.origin,
-              originId: params.originId,
-            },
-          });
-          return existing.id.toString();
-        }
-      }
-      throw e;
+          updatedAt: new Date(),
+        })
+        .where(eq(invite.id, existing.id));
+      return existing.id.toString();
     }
+    throw new Error('inbound invite insert conflicted without a pending row');
   }
 
   /**
@@ -796,24 +853,26 @@ export class InviteService {
     localRequesterId: number,
     foreignApproverId: number,
   ): Promise<{ threadId: number; created: boolean }> {
-    return this.prisma.$transaction(async (tx) => {
-      await tx.invite.updateMany({
-        where: {
-          kind: InviteKind.FRIEND,
-          status: InviteStatus.PENDING,
-          OR: [
-            {
-              fromUserId: localRequesterId,
-              toUserId: foreignApproverId,
-            },
-            {
-              fromUserId: foreignApproverId,
-              toUserId: localRequesterId,
-            },
-          ],
-        },
-        data: { status: InviteStatus.ACCEPTED },
-      });
+    return this.database.db.transaction(async (tx) => {
+      await tx
+        .update(invite)
+        .set({ status: InviteStatus.ACCEPTED, updatedAt: new Date() })
+        .where(
+          and(
+            eq(invite.kind, InviteKind.FRIEND),
+            eq(invite.status, InviteStatus.PENDING),
+            or(
+              and(
+                eq(invite.fromUserId, localRequesterId),
+                eq(invite.toUserId, foreignApproverId),
+              ),
+              and(
+                eq(invite.fromUserId, foreignApproverId),
+                eq(invite.toUserId, localRequesterId),
+              ),
+            ),
+          ),
+        );
       const existing = await this.findP2PThreadBetweenInTx(
         tx,
         localRequesterId,
@@ -835,47 +894,41 @@ export class InviteService {
    *  two users share (leftAt null on BOTH), or null. Used by applyInboundFriendApprove's accept-wins
    *  check to avoid minting a second thread when the friendship already exists. */
   private async findP2PThreadBetweenInTx(
-    tx: Prisma.TransactionClient,
+    tx: DatabaseTransaction,
     userX: number,
     userY: number,
   ): Promise<number | null> {
-    const mine = await tx.threadParticipant.findMany({
-      where: {
-        userId: userX,
-        leftAt: null,
-        thread: { type: MessageThreadType.P2P },
-      },
-      select: { threadId: true },
-    });
-    if (mine.length === 0) return null;
-    const peer = await tx.threadParticipant.findFirst({
-      where: {
-        userId: userY,
-        leftAt: null,
-        threadId: { in: mine.map((m) => m.threadId) },
-      },
-      select: { threadId: true },
-    });
-    return peer?.threadId ?? null;
+    const result = await tx.execute<{ threadId: number }>(sql`
+      SELECT mine."threadId"
+      FROM "ThreadParticipant" mine
+      JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
+      JOIN "MessageThread" thread ON thread.id = mine."threadId"
+      WHERE mine."userId" = ${userX}
+        AND peer."userId" = ${userY}
+        AND mine."leftAt" IS NULL
+        AND peer."leftAt" IS NULL
+        AND thread.type = ${MessageThreadType.P2P}
+      LIMIT 1
+    `);
+    return result.rows[0]?.threadId ?? null;
   }
 
   /** Create the P2P MessageThread + both active participants. A fresh threadId means brand-new
    *  participant rows even when re-friending (the old soft-left thread stays, filtered out by
    *  findP2PThreadBetween's leftAt:null check). */
   private async createP2PFriendshipInTx(
-    tx: Prisma.TransactionClient,
+    tx: DatabaseTransaction,
     userAId: number,
     userBId: number,
   ): Promise<number> {
-    const thread = await tx.messageThread.create({
-      data: { type: MessageThreadType.P2P },
-    });
-    await tx.threadParticipant.createMany({
-      data: [
-        { userId: userAId, threadId: thread.id },
-        { userId: userBId, threadId: thread.id },
-      ],
-    });
+    const [thread] = await tx
+      .insert(messageThread)
+      .values({ type: MessageThreadType.P2P, updatedAt: new Date() })
+      .returning({ id: messageThread.id });
+    await tx.insert(threadParticipant).values([
+      { userId: userAId, threadId: thread.id, updatedAt: new Date() },
+      { userId: userBId, threadId: thread.id, updatedAt: new Date() },
+    ]);
     return thread.id;
   }
 
@@ -904,19 +957,23 @@ export class InviteService {
     callerId: number,
     pendingOnly: boolean,
   ): Promise<bigint | null> {
-    const invite = await this.prisma.invite.findFirst({
-      where: {
-        toUserId: callerId,
-        kind: InviteKind.GROUP,
-        ...(pendingOnly ? { status: InviteStatus.PENDING } : {}),
-        thread: {
-          groupUser: { account: normalizeAccount(groupAccount), isGroup: true },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true },
-    });
-    return invite?.id ?? null;
+    const [row] = await this.database.db
+      .select({ id: invite.id })
+      .from(invite)
+      .innerJoin(messageThread, eq(messageThread.id, invite.threadId))
+      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .where(
+        and(
+          eq(invite.toUserId, callerId),
+          eq(invite.kind, InviteKind.GROUP),
+          pendingOnly ? eq(invite.status, InviteStatus.PENDING) : undefined,
+          eq(user.account, normalizeAccount(groupAccount)),
+          eq(user.isGroup, true),
+        ),
+      )
+      .orderBy(desc(invite.createdAt))
+      .limit(1);
+    return row?.id ?? null;
   }
 
   /** Resolve the concrete invite id from a card identity: a group `!account` (lookup) or a BigInt id. */

@@ -4,8 +4,10 @@ import { promisify } from 'util';
 import { join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import type { FastifyRequest } from 'fastify';
-import { PrismaService } from '../prisma.service.js';
-import { Prisma } from '../prisma/generated/client.js';
+import { and, count, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { diagnosticsReport, user } from '../database/schema.js';
+import type { JsonValue } from '../database/json.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { AdminListDiagnosticsDto } from './diagnostics.dto.js';
@@ -30,7 +32,7 @@ export interface DiagnosticsListItem {
   id: number;
   reporter: { id: number; name: string; account: string; avatar: string };
   bundleBytes: number;
-  manifest: Prisma.JsonValue;
+  manifest: JsonValue;
   status: string;
   createdAt: Date;
 }
@@ -43,7 +45,7 @@ export interface DiagnosticsListItem {
  */
 @Injectable()
 export class DiagnosticsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /** The on-disk directory holding bundle files (DiagnosticsGcService walks it). */
   readonly dir = DIAGNOSTICS_DIR;
@@ -61,7 +63,7 @@ export class DiagnosticsService {
    */
   async consumeBundle(
     req: FastifyRequest,
-  ): Promise<{ buffer: Buffer; manifest: Prisma.InputJsonValue }> {
+  ): Promise<{ buffer: Buffer; manifest: JsonValue }> {
     let bundle: Buffer | undefined;
     let manifestRaw: string | undefined;
     for await (const part of req.parts()) {
@@ -79,10 +81,16 @@ export class DiagnosticsService {
       try {
         buf = await part.toBuffer();
       } catch {
-        throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'bundle too large');
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'bundle too large',
+        );
       }
       if (buf.length > MAX_BUNDLE_BYTES) {
-        throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'bundle too large');
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'bundle too large',
+        );
       }
       bundle = buf;
     }
@@ -91,12 +99,12 @@ export class DiagnosticsService {
     }
     // Best-effort manifest: the client sends a JSON object; a missing/invalid one degrades to {} so a
     // buggy client can still report (the bundle itself is the valuable payload).
-    let manifest: Prisma.InputJsonValue;
+    let manifest: JsonValue;
     try {
       const parsed = manifestRaw ? JSON.parse(manifestRaw) : null;
       manifest =
         parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? (parsed as Prisma.InputJsonValue)
+          ? (parsed as JsonValue)
           : {};
     } catch {
       manifest = {};
@@ -107,11 +115,18 @@ export class DiagnosticsService {
   /** One report per user per window — the authenticated abuse ceiling (the route @Throttle covers the
    *  IP-burst tier). Mirrors OtpLoginService's account-dimension check. */
   private async enforceReportWindow(userId: number): Promise<void> {
-    const latest = await this.prisma.diagnosticsReport.findFirst({
-      where: { reporterUserId: userId, isDeleted: false },
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
-    });
+    const latest = await this.database.db
+      .select({ createdAt: diagnosticsReport.createdAt })
+      .from(diagnosticsReport)
+      .where(
+        and(
+          eq(diagnosticsReport.reporterUserId, userId),
+          eq(diagnosticsReport.isDeleted, false),
+        ),
+      )
+      .orderBy(desc(diagnosticsReport.createdAt))
+      .limit(1)
+      .then((rows) => rows[0]);
     if (!latest) return;
     const elapsed = Date.now() - latest.createdAt.getTime();
     if (elapsed < REPORT_WINDOW_MS) {
@@ -129,7 +144,7 @@ export class DiagnosticsService {
   async storeReport(
     userId: number,
     buffer: Buffer,
-    manifest: Prisma.InputJsonValue,
+    manifest: JsonValue,
   ): Promise<{ id: number }> {
     await this.enforceReportWindow(userId);
     await mkdirAsync(this.dir, { recursive: true });
@@ -143,15 +158,18 @@ export class DiagnosticsService {
       await writeFileAsync(tmp, buffer);
       await renameAsync(tmp, abs);
     }
-    const row = await this.prisma.diagnosticsReport.create({
-      data: {
+    const [row] = await this.database.db
+      .insert(diagnosticsReport)
+      .values({
         reporterUserId: userId,
         bundlePath: filename,
         bundleBytes: buffer.length,
         manifest,
-      },
-    });
-    return { id: row.id };
+        updatedAt: new Date(),
+      })
+      .returning({ id: diagnosticsReport.id });
+    if (!row) throw new Error('diagnostics report insert returned no row');
+    return row;
   }
 
   /** Admin list: JOIN reporter (name/account/avatar) so reports from different users are
@@ -159,30 +177,48 @@ export class DiagnosticsService {
   async list(
     dto: AdminListDiagnosticsDto,
   ): Promise<{ list: DiagnosticsListItem[]; total: number }> {
-    const where: Prisma.DiagnosticsReportWhereInput = { isDeleted: false };
+    const filters: SQL[] = [eq(diagnosticsReport.isDeleted, false)];
     if (dto.search) {
-      where.reporter = {
-        OR: [{ name: { contains: dto.search } }, { account: { contains: dto.search } }],
-      };
+      const pattern = `%${dto.search}%`;
+      filters.push(
+        or(ilike(user.name, pattern), ilike(user.account, pattern))!,
+      );
     }
+    const where = and(...filters);
     const [rows, total] = await Promise.all([
-      this.prisma.diagnosticsReport.findMany({
-        where,
-        include: {
-          reporter: { select: { id: true, name: true, account: true, avatar: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: dto.skip ?? 0,
-        take: dto.take ?? 20,
-      }),
-      this.prisma.diagnosticsReport.count({ where }),
+      this.database.db
+        .select({
+          id: diagnosticsReport.id,
+          reporter: {
+            id: user.id,
+            name: user.name,
+            account: user.account,
+            avatar: user.avatar,
+          },
+          bundleBytes: diagnosticsReport.bundleBytes,
+          manifest: diagnosticsReport.manifest,
+          status: diagnosticsReport.status,
+          createdAt: diagnosticsReport.createdAt,
+        })
+        .from(diagnosticsReport)
+        .innerJoin(user, eq(user.id, diagnosticsReport.reporterUserId))
+        .where(where)
+        .orderBy(desc(diagnosticsReport.createdAt))
+        .offset(dto.skip ?? 0)
+        .limit(dto.take ?? 20),
+      this.database.db
+        .select({ value: count() })
+        .from(diagnosticsReport)
+        .innerJoin(user, eq(user.id, diagnosticsReport.reporterUserId))
+        .where(where)
+        .then((rows) => rows[0]?.value ?? 0),
     ]);
     return {
       list: rows.map((r) => ({
         id: r.id,
         reporter: r.reporter,
         bundleBytes: r.bundleBytes,
-        manifest: r.manifest,
+        manifest: r.manifest as JsonValue,
         status: r.status,
         createdAt: r.createdAt,
       })),
@@ -194,10 +230,17 @@ export class DiagnosticsService {
    *  a row whose file is gone on disk (e.g. an archived bundle after reconcile) — so download gets a
    *  clean 404 instead of a 500 from a missing-file createReadStream. */
   async resolveBundlePath(id: number): Promise<string> {
-    const row = await this.prisma.diagnosticsReport.findFirst({
-      where: { id, isDeleted: false },
-      select: { bundlePath: true },
-    });
+    const row = await this.database.db
+      .select({ bundlePath: diagnosticsReport.bundlePath })
+      .from(diagnosticsReport)
+      .where(
+        and(
+          eq(diagnosticsReport.id, id),
+          eq(diagnosticsReport.isDeleted, false),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
     if (!row) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -218,8 +261,15 @@ export class DiagnosticsService {
 
   /** Mark a report viewed (best-effort — a missing row was GC'd concurrently). */
   async markViewed(id: number): Promise<void> {
-    await this.prisma.diagnosticsReport
-      .updateMany({ where: { id, isDeleted: false }, data: { status: 'viewed' } })
+    await this.database.db
+      .update(diagnosticsReport)
+      .set({ status: 'viewed', updatedAt: new Date() })
+      .where(
+        and(
+          eq(diagnosticsReport.id, id),
+          eq(diagnosticsReport.isDeleted, false),
+        ),
+      )
       .catch(() => {
         // row gone — nothing to mark.
       });

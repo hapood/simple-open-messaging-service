@@ -1,10 +1,12 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes } from 'crypto';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, desc, eq, gt, isNull, like } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { admin, adminSession, user } from '../database/schema.js';
 import { jwtConstants } from '../auth/constants.js';
 import { normalizeAccount } from '../common/account.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import {
   BruteForceService,
   BAN_DIM_ADMIN_PWD,
@@ -13,12 +15,21 @@ import {
 } from '../auth/brute-force.service.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 import { TwoFactorService, type SetupBundle } from './two-factor.service.js';
-import { WebAuthnService, type WebAuthnCredentialView } from './webauthn.service.js';
-import { type AuthenticationResponseJSON, type RegistrationResponseJSON } from '@simplewebauthn/server';
+import {
+  WebAuthnService,
+  type WebAuthnCredentialView,
+} from './webauthn.service.js';
+import {
+  type AuthenticationResponseJSON,
+  type RegistrationResponseJSON,
+} from '@simplewebauthn/server';
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { ADMIN_SESSION_IDLE_MS, ADMIN_SESSION_TTL_MS } from './admin-session.js';
+import {
+  ADMIN_SESSION_IDLE_MS,
+  ADMIN_SESSION_TTL_MS,
+} from './admin-session.js';
 
 /**
  * Admin auth service: mirrors AuthService's family-based + reuse-detection algorithm. Identity (account + password)
@@ -36,7 +47,9 @@ const ADMIN_PWD_STEPS: readonly BanStep[] = [
 ];
 /** Account-dimension brute-force ceiling on the 6-digit TOTP / 8-char backup code (mirrors OtpLoginService:
  *  the 10^6 code space can't be exhausted once ≤5 guesses/window are allowed). */
-const ADMIN_2FA_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }];
+const ADMIN_2FA_STEPS: readonly BanStep[] = [
+  { count: 5, banMs: 30 * 60 * 1000 },
+];
 
 /** Login outcome: an authenticated session — the opaque session token is delivered via the httpOnly
  *  admin_session cookie (set by the controller, never the response body) — or a second-factor challenge
@@ -54,7 +67,7 @@ export type AdminLoginResult =
 @Injectable()
 export class AdminAuthService {
   constructor(
-    private prisma: PrismaService,
+    private database: DatabaseService,
     private jwtService: JwtService,
     private bruteForce: BruteForceService,
     private twoFactor: TwoFactorService,
@@ -67,10 +80,17 @@ export class AdminAuthService {
    *  session yet); /admin/login/verify completes login after the TOTP/backup code. Account-dimension progressive
    *  banning lives in BruteForceService (the IP ceiling is the route @Throttle); a wrong password throws
    *  INVALID_CREDENTIALS (or RATE_LIMITED once the threshold trips). */
-  async login(account: string, password: string, ip?: string, userAgent?: string): Promise<AdminLoginResult> {
+  async login(
+    account: string,
+    password: string,
+    ip?: string,
+    userAgent?: string,
+  ): Promise<AdminLoginResult> {
     const acct = normalizeAccount(account);
     // Pre-check the account-dimension lock before the (slow) argon2 verify. The IP ceiling is @Throttle(5,60).
-    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_PWD, value: acct }]);
+    const ban = this.bruteForce.activeBanUntil([
+      { dimension: BAN_DIM_ADMIN_PWD, value: acct },
+    ]);
     if (ban !== undefined) {
       throw new BusinessException(
         BusinessCode.RATE_LIMITED,
@@ -79,24 +99,26 @@ export class AdminAuthService {
         { bannedUntil: ban },
       );
     }
-    const user = await this.prisma.user.findUnique({
-      where: { account_domain: { account: acct, domain: 'local' } },
+    const userRow = await this.database.db.query.user.findFirst({
+      where: and(eq(user.account, acct), eq(user.domain, 'local')),
     });
     // Non-revealing: a missing / deleted / group identity, no admin profile, a disabled admin, a no-password
     // account, or a wrong password are all indistinguishable from the caller's view (INVALID_CREDENTIALS).
     // NOT counted when there is no real enabled admin to protect (avoids filling the failure map with noise).
-    const admin =
-      user && !user.isDeleted && !user.isGroup
-        ? await this.prisma.admin.findUnique({ where: { userId: user.id } })
+    const adminProfile =
+      userRow && !userRow.isDeleted && !userRow.isGroup
+        ? await this.database.db.query.admin.findFirst({
+            where: eq(admin.userId, userRow.id),
+          })
         : null;
     const passwordOk =
-      !!admin &&
-      admin.enabled &&
-      !!user &&
-      !!user.hashPwd &&
-      (await this.passwordHasher.verify(user.hashPwd, password));
-    if (!passwordOk || !admin) {
-      if (admin) {
+      !!adminProfile &&
+      adminProfile.enabled &&
+      !!userRow &&
+      !!userRow.hashPwd &&
+      (await this.passwordHasher.verify(userRow.hashPwd, password));
+    if (!passwordOk || !adminProfile) {
+      if (adminProfile) {
         // Real enabled admin + wrong password → count toward the progressive lock.
         this.failAdminPwd(acct);
       }
@@ -110,17 +132,22 @@ export class AdminAuthService {
     // Password verified. Branch: a second factor is required (TOTP and/or a passkey) → challenge; otherwise
     // issue the session right away. The SAME challenge token (scope admin-2fa-challenge) is consumed by
     // either POST admin/login/verify (TOTP/backup) or POST admin/webauthn/login/finish (passkey assertion).
-    const hasTotp = admin.twoFactorEnabled;
-    const hasWebauthn = admin.webauthnEnabled;
+    const hasTotp = adminProfile.twoFactorEnabled;
+    const hasWebauthn = adminProfile.webauthnEnabled;
     if (hasTotp || hasWebauthn) {
       return {
         twoFactorRequired: true,
-        challengeToken: await this.twoFactor.signChallenge(admin.id),
+        challengeToken: await this.twoFactor.signChallenge(adminProfile.id),
         factors: { totp: hasTotp, webauthn: hasWebauthn },
       };
     }
-    await this.completeLogin(admin.id, ip);
-    return { sessionToken: await this.createAdminSession(admin.id, { ip, userAgent }) };
+    await this.completeLogin(adminProfile.id, ip);
+    return {
+      sessionToken: await this.createAdminSession(adminProfile.id, {
+        ip,
+        userAgent,
+      }),
+    };
   }
 
   /** Complete a 2FA login: verify the challenge token, check the account lock, validate the TOTP (with the
@@ -141,27 +168,34 @@ export class AdminAuthService {
       );
     }
     const { adminId, jti } = decoded;
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: {
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: {
         id: true,
         enabled: true,
         twoFactorEnabled: true,
         twoFactorSecretCipher: true,
         twoFactorLastUsedCounter: true,
-        user: { select: { account: true } },
       },
+      with: { user: { columns: { account: true } } },
     });
     // 2FA disabled / admin gone mid-challenge → the admin must restart login (no session to leak).
-    if (!admin || !admin.enabled || !admin.twoFactorEnabled || !admin.twoFactorSecretCipher) {
+    if (
+      !adminRow ||
+      !adminRow.enabled ||
+      !adminRow.twoFactorEnabled ||
+      !adminRow.twoFactorSecretCipher
+    ) {
       throw new BusinessException(
         BusinessCode.TWO_FACTOR_NOT_ENABLED,
         'two-factor is not enabled for this account',
         HttpStatus.OK,
       );
     }
-    const acct = admin.user.account;
-    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_2FA, value: acct }]);
+    const acct = adminRow.user.account;
+    const ban = this.bruteForce.activeBanUntil([
+      { dimension: BAN_DIM_ADMIN_2FA, value: acct },
+    ]);
     if (ban !== undefined) {
       throw new BusinessException(
         BusinessCode.RATE_LIMITED,
@@ -171,7 +205,12 @@ export class AdminAuthService {
       );
     }
 
-    const passed = await this.verifyFactor(admin, code, backupCode, /*advanceCounter*/ true);
+    const passed = await this.verifyFactor(
+      adminRow,
+      code,
+      backupCode,
+      /*advanceCounter*/ true,
+    );
     if (!passed) this.failAdmin2FA(acct);
 
     // Single-use challenge: a captured/replayed challenge cannot buy a second session.
@@ -183,8 +222,13 @@ export class AdminAuthService {
       );
     }
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
-    await this.completeLogin(admin.id, ip);
-    return { sessionToken: await this.createAdminSession(admin.id, { ip, userAgent }) };
+    await this.completeLogin(adminRow.id, ip);
+    return {
+      sessionToken: await this.createAdminSession(adminRow.id, {
+        ip,
+        userAgent,
+      }),
+    };
   }
 
   // ── Two-factor enrollment + management (self-service; the caller is the authenticated admin) ──────
@@ -192,19 +236,29 @@ export class AdminAuthService {
   /** Begin 2FA enrollment: mint a secret + provisioning URI + a signed pending token (stateless — no DB write
    *  until the admin confirms with their first code). Refuses if already enrolled. */
   async beginTwoFactorSetup(adminId: number): Promise<SetupBundle> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { twoFactorEnabled: true, user: { select: { account: true, name: true } } },
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { twoFactorEnabled: true },
+      with: { user: { columns: { account: true, name: true } } },
     });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
-    if (admin.twoFactorEnabled) {
+    if (!adminRow)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'admin not found',
+        HttpStatus.OK,
+      );
+    if (adminRow.twoFactorEnabled) {
       throw new BusinessException(
         BusinessCode.TWO_FACTOR_ALREADY_ENABLED,
         'two-factor is already enabled; disable it first to re-enroll',
         HttpStatus.OK,
       );
     }
-    return this.twoFactor.beginSetup(adminId, admin.user.account, admin.user.name);
+    return this.twoFactor.beginSetup(
+      adminId,
+      adminRow.user.account,
+      adminRow.user.name,
+    );
   }
 
   /** Confirm enrollment: verify the pending token + the first code, persist the encrypted secret + backup codes,
@@ -225,9 +279,16 @@ export class AdminAuthService {
     }
     // No replay guard pre-enable (counter is null); window=1 tolerance covers phone/server clock drift.
     if (!this.twoFactor.verifyTotp(pending.secret, code, null).ok) {
-      throw new BusinessException(BusinessCode.TWO_FACTOR_INVALID, 'invalid verification code', HttpStatus.OK);
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_INVALID,
+        'invalid verification code',
+        HttpStatus.OK,
+      );
     }
-    const { backupCodes } = await this.twoFactor.enableWithBackupCodes(adminId, pending.secret);
+    const { backupCodes } = await this.twoFactor.enableWithBackupCodes(
+      adminId,
+      pending.secret,
+    );
     // Revoking outstanding sessions forces an immediate re-login through the new 2FA challenge (rather
     // than waiting for session expiry) — no pre-enrollment session can bypass the new factor. The admin
     // just proved enrollment, so the forced re-login is expected.
@@ -243,26 +304,49 @@ export class AdminAuthService {
     code: string | undefined,
     backupCode: string | undefined,
   ): Promise<void> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: {
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: {
         id: true,
         twoFactorEnabled: true,
         twoFactorSecretCipher: true,
         twoFactorLastUsedCounter: true,
-        user: { select: { account: true, hashPwd: true } },
       },
+      with: { user: { columns: { account: true, hashPwd: true } } },
     });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
-    if (!admin.twoFactorEnabled) {
-      throw new BusinessException(BusinessCode.TWO_FACTOR_NOT_ENABLED, 'two-factor is not enabled', HttpStatus.OK);
+    if (!adminRow)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'admin not found',
+        HttpStatus.OK,
+      );
+    if (!adminRow.twoFactorEnabled) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_NOT_ENABLED,
+        'two-factor is not enabled',
+        HttpStatus.OK,
+      );
     }
-    const acct = admin.user.account;
-    if (!admin.user.hashPwd || !(await this.passwordHasher.verify(admin.user.hashPwd, password))) {
-      throw new BusinessException(BusinessCode.INVALID_CREDENTIALS, 'invalid credentials', HttpStatus.OK);
+    const acct = adminRow.user.account;
+    if (
+      !adminRow.user.hashPwd ||
+      !(await this.passwordHasher.verify(adminRow.user.hashPwd, password))
+    ) {
+      throw new BusinessException(
+        BusinessCode.INVALID_CREDENTIALS,
+        'invalid credentials',
+        HttpStatus.OK,
+      );
     }
     // A wrong 2FA factor counts toward the lock (same surface as login verify).
-    if (!(await this.verifyFactor(admin, code, backupCode, /*advanceCounter*/ false))) {
+    if (
+      !(await this.verifyFactor(
+        adminRow,
+        code,
+        backupCode,
+        /*advanceCounter*/ false,
+      ))
+    ) {
       this.failAdmin2FA(acct);
     }
     await this.twoFactor.disable(adminId);
@@ -275,39 +359,61 @@ export class AdminAuthService {
     code: string | undefined,
     backupCode: string | undefined,
   ): Promise<{ backupCodes: string[] }> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: {
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: {
         id: true,
         twoFactorEnabled: true,
         twoFactorSecretCipher: true,
         twoFactorLastUsedCounter: true,
-        user: { select: { account: true } },
       },
+      with: { user: { columns: { account: true } } },
     });
-    if (!admin || !admin.twoFactorEnabled || !admin.twoFactorSecretCipher) {
-      throw new BusinessException(BusinessCode.TWO_FACTOR_NOT_ENABLED, 'two-factor is not enabled', HttpStatus.OK);
+    if (
+      !adminRow ||
+      !adminRow.twoFactorEnabled ||
+      !adminRow.twoFactorSecretCipher
+    ) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_NOT_ENABLED,
+        'two-factor is not enabled',
+        HttpStatus.OK,
+      );
     }
-    const acct = admin.user.account;
-    if (!(await this.verifyFactor(admin, code, backupCode, /*advanceCounter*/ false))) {
+    const acct = adminRow.user.account;
+    if (
+      !(await this.verifyFactor(
+        adminRow,
+        code,
+        backupCode,
+        /*advanceCounter*/ false,
+      ))
+    ) {
       this.failAdmin2FA(acct);
     }
     return this.twoFactor.regenerateBackupCodes(adminId);
   }
 
   /** 2FA status for the security card. */
-  async twoFactorStatus(
-    adminId: number,
-  ): Promise<{ enabled: boolean; enabledAt: Date | null; backupCodesRemaining: number }> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { twoFactorEnabled: true, twoFactorEnabledAt: true },
+  async twoFactorStatus(adminId: number): Promise<{
+    enabled: boolean;
+    enabledAt: Date | null;
+    backupCodesRemaining: number;
+  }> {
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { twoFactorEnabled: true, twoFactorEnabledAt: true },
     });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
+    if (!adminRow)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'admin not found',
+        HttpStatus.OK,
+      );
     return {
-      enabled: admin.twoFactorEnabled,
-      enabledAt: admin.twoFactorEnabledAt,
-      backupCodesRemaining: admin.twoFactorEnabled
+      enabled: adminRow.twoFactorEnabled,
+      enabledAt: adminRow.twoFactorEnabledAt,
+      backupCodesRemaining: adminRow.twoFactorEnabled
         ? await this.twoFactor.remainingBackupCodes(adminId)
         : 0,
     };
@@ -318,12 +424,17 @@ export class AdminAuthService {
    *  sessions so they re-login after the reset (a locked-out admin may still hold sessions from before
    *  the lockout). */
   async resetTwoFactorBySuper(targetAdminId: number): Promise<void> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: targetAdminId },
-      select: { twoFactorEnabled: true },
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, targetAdminId),
+      columns: { twoFactorEnabled: true },
     });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
-    if (!admin.twoFactorEnabled) return; // nothing to reset
+    if (!adminRow)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'admin not found',
+        HttpStatus.OK,
+      );
+    if (!adminRow.twoFactorEnabled) return; // nothing to reset
     await this.twoFactor.disable(targetAdminId);
     await this.revokeSessionsByAdmin(targetAdminId, '2fa_reset');
   }
@@ -334,7 +445,9 @@ export class AdminAuthService {
    *  still has a passkey enabled, pre-check the 2FA lock, then mint assertion options. The challenge token
    *  is the SAME admin-2fa-challenge token issued by login(); the inner webauthn-assert-pending token is
    *  minted here and carries the per-attempt challenge. */
-  async beginWebAuthnLogin(challengeToken: string): Promise<{ options: unknown; pendingToken: string }> {
+  async beginWebAuthnLogin(
+    challengeToken: string,
+  ): Promise<{ options: unknown; pendingToken: string }> {
     const decoded = this.twoFactor.verifyChallenge(challengeToken);
     if (decoded === null) {
       throw new BusinessException(
@@ -344,18 +457,21 @@ export class AdminAuthService {
       );
     }
     const { adminId } = decoded;
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { enabled: true, webauthnEnabled: true, user: { select: { account: true } } },
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { enabled: true, webauthnEnabled: true },
+      with: { user: { columns: { account: true } } },
     });
-    if (!admin || !admin.enabled || !admin.webauthnEnabled) {
+    if (!adminRow || !adminRow.enabled || !adminRow.webauthnEnabled) {
       throw new BusinessException(
         BusinessCode.TWO_FACTOR_NOT_ENABLED,
         'no passkey is enabled for this account',
         HttpStatus.OK,
       );
     }
-    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_2FA, value: admin.user.account }]);
+    const ban = this.bruteForce.activeBanUntil([
+      { dimension: BAN_DIM_ADMIN_2FA, value: adminRow.user.account },
+    ]);
     if (ban !== undefined) {
       throw new BusinessException(
         BusinessCode.RATE_LIMITED,
@@ -386,19 +502,22 @@ export class AdminAuthService {
       );
     }
     const { adminId, jti } = decoded;
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { enabled: true, user: { select: { account: true } } },
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { enabled: true },
+      with: { user: { columns: { account: true } } },
     });
-    if (!admin || !admin.enabled) {
+    if (!adminRow || !adminRow.enabled) {
       throw new BusinessException(
         BusinessCode.TWO_FACTOR_NOT_ENABLED,
         'account is not available',
         HttpStatus.OK,
       );
     }
-    const acct = admin.user.account;
-    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_2FA, value: acct }]);
+    const acct = adminRow.user.account;
+    const ban = this.bruteForce.activeBanUntil([
+      { dimension: BAN_DIM_ADMIN_2FA, value: acct },
+    ]);
     if (ban !== undefined) {
       throw new BusinessException(
         BusinessCode.RATE_LIMITED,
@@ -407,7 +526,11 @@ export class AdminAuthService {
         { bannedUntil: ban },
       );
     }
-    const result = await this.webAuthn.verifyAssertion(adminId, pendingToken, assertion);
+    const result = await this.webAuthn.verifyAssertion(
+      adminId,
+      pendingToken,
+      assertion,
+    );
     if (!result.ok) this.failAdmin2FA(acct);
 
     // Single-use challenge: a replayed (captured) assertion cannot buy a second session — critical for
@@ -421,7 +544,9 @@ export class AdminAuthService {
     }
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
     await this.completeLogin(adminId, ip);
-    return { sessionToken: await this.createAdminSession(adminId, { ip, userAgent }) };
+    return {
+      sessionToken: await this.createAdminSession(adminId, { ip, userAgent }),
+    };
   }
 
   // ── WebAuthn enrollment + management (self-service; caller is the authenticated admin) ──────────
@@ -434,15 +559,35 @@ export class AdminAuthService {
     password: string,
     nickname?: string,
   ): Promise<{ options: unknown; pendingToken: string }> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { user: { select: { account: true, name: true, hashPwd: true } } },
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { id: true },
+      with: {
+        user: { columns: { account: true, name: true, hashPwd: true } },
+      },
     });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
-    if (!admin.user.hashPwd || !(await this.passwordHasher.verify(admin.user.hashPwd, password))) {
-      throw new BusinessException(BusinessCode.INVALID_CREDENTIALS, 'invalid credentials', HttpStatus.OK);
+    if (!adminRow)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'admin not found',
+        HttpStatus.OK,
+      );
+    if (
+      !adminRow.user.hashPwd ||
+      !(await this.passwordHasher.verify(adminRow.user.hashPwd, password))
+    ) {
+      throw new BusinessException(
+        BusinessCode.INVALID_CREDENTIALS,
+        'invalid credentials',
+        HttpStatus.OK,
+      );
     }
-    return this.webAuthn.beginRegistration(adminId, admin.user.account, admin.user.name, nickname);
+    return this.webAuthn.beginRegistration(
+      adminId,
+      adminRow.user.account,
+      adminRow.user.name,
+      nickname,
+    );
   }
 
   /** Confirm enrollment: verify the registration response + persist the credential. A passkey is an
@@ -452,36 +597,61 @@ export class AdminAuthService {
     adminId: number,
     pendingToken: string,
     registration: RegistrationResponseJSON,
-  ): Promise<{ id: string; nickname: string | null; deviceType: string | null; backed: boolean }> {
-    return this.webAuthn.completeRegistration(adminId, pendingToken, registration);
+  ): Promise<{
+    id: string;
+    nickname: string | null;
+    deviceType: string | null;
+    backed: boolean;
+  }> {
+    return this.webAuthn.completeRegistration(
+      adminId,
+      pendingToken,
+      registration,
+    );
   }
 
-  async listWebAuthnCredentials(adminId: number): Promise<WebAuthnCredentialView[]> {
+  async listWebAuthnCredentials(
+    adminId: number,
+  ): Promise<WebAuthnCredentialView[]> {
     return this.webAuthn.listCredentials(adminId);
   }
 
-  async renameWebAuthnCredential(adminId: number, rowId: bigint, nickname: string): Promise<void> {
+  async renameWebAuthnCredential(
+    adminId: number,
+    rowId: bigint,
+    nickname: string,
+  ): Promise<void> {
     await this.webAuthn.renameCredential(adminId, rowId, nickname);
   }
 
   /** Remove a passkey credential. Additive factor — does NOT revoke existing sessions (mirrors
    *  enrollment; see completeWebAuthnRegistration). */
-  async removeWebAuthnCredential(adminId: number, rowId: bigint): Promise<{ remaining: number }> {
+  async removeWebAuthnCredential(
+    adminId: number,
+    rowId: bigint,
+  ): Promise<{ remaining: number }> {
     return this.webAuthn.removeCredential(adminId, rowId);
   }
 
   /** Passkey status for the security card. */
-  async webAuthnStatus(
-    adminId: number,
-  ): Promise<{ available: boolean; enabled: boolean; credentialCount: number }> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { webauthnEnabled: true },
+  async webAuthnStatus(adminId: number): Promise<{
+    available: boolean;
+    enabled: boolean;
+    credentialCount: number;
+  }> {
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { webauthnEnabled: true },
     });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
+    if (!adminRow)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'admin not found',
+        HttpStatus.OK,
+      );
     return {
       available: WEBAUTHN_CONFIG.available,
-      enabled: admin.webauthnEnabled,
+      enabled: adminRow.webauthnEnabled,
       credentialCount: await this.webAuthn.countCredentials(adminId),
     };
   }
@@ -491,7 +661,7 @@ export class AdminAuthService {
   /** Validate a 2FA factor against an admin: a TOTP code (optionally advancing the replay counter) OR a backup
    *  code (consumed on success). Returns false (no throw) on mismatch so the caller can apply brute-force. */
   private async verifyFactor(
-    admin: {
+    adminRecord: {
       id: number;
       twoFactorSecretCipher: string | null;
       twoFactorLastUsedCounter: number | null;
@@ -500,16 +670,26 @@ export class AdminAuthService {
     backupCode: string | undefined,
     advanceCounter: boolean,
   ): Promise<boolean> {
-    if (backupCode) return this.twoFactor.consumeBackupCode(admin.id, backupCode);
-    if (code && admin.twoFactorSecretCipher) {
-      const secret = this.twoFactor.decryptSecret(admin.twoFactorSecretCipher);
-      const check = this.twoFactor.verifyTotp(secret, code, admin.twoFactorLastUsedCounter);
+    if (backupCode)
+      return this.twoFactor.consumeBackupCode(adminRecord.id, backupCode);
+    if (code && adminRecord.twoFactorSecretCipher) {
+      const secret = this.twoFactor.decryptSecret(
+        adminRecord.twoFactorSecretCipher,
+      );
+      const check = this.twoFactor.verifyTotp(
+        secret,
+        code,
+        adminRecord.twoFactorLastUsedCounter,
+      );
       if (check.ok) {
         if (advanceCounter) {
-          await this.prisma.admin.update({
-            where: { id: admin.id },
-            data: { twoFactorLastUsedCounter: check.counter },
-          });
+          await this.database.db
+            .update(admin)
+            .set({
+              twoFactorLastUsedCounter: check.counter,
+              updatedAt: new Date(),
+            })
+            .where(eq(admin.id, adminRecord.id));
         }
         return true;
       }
@@ -520,10 +700,18 @@ export class AdminAuthService {
   /** Record one admin-password failure for the account, then throw. Surfaces RATE_LIMITED + the ban deadline the
    *  moment a tier trips (consistency with the password + OTP paths). */
   private failAdminPwd(account: string): never {
-    const ban = this.bruteForce.registerFailure(BAN_DIM_ADMIN_PWD, account, ADMIN_PWD_STEPS);
+    const ban = this.bruteForce.registerFailure(
+      BAN_DIM_ADMIN_PWD,
+      account,
+      ADMIN_PWD_STEPS,
+    );
     throw new BusinessException(
-      ban !== undefined ? BusinessCode.RATE_LIMITED : BusinessCode.INVALID_CREDENTIALS,
-      ban !== undefined ? 'too many login attempts; try again later' : 'invalid credentials',
+      ban !== undefined
+        ? BusinessCode.RATE_LIMITED
+        : BusinessCode.INVALID_CREDENTIALS,
+      ban !== undefined
+        ? 'too many login attempts; try again later'
+        : 'invalid credentials',
       HttpStatus.OK,
       ban !== undefined ? { bannedUntil: ban } : undefined,
     );
@@ -532,10 +720,18 @@ export class AdminAuthService {
   /** Record one admin-2FA failure for the account, then throw. Collapses every post-lock failure to RATE_LIMITED
    *  (no expired/consumed distinction under a lock, same as the OTP path). */
   private failAdmin2FA(account: string): never {
-    const ban = this.bruteForce.registerFailure(BAN_DIM_ADMIN_2FA, account, ADMIN_2FA_STEPS);
+    const ban = this.bruteForce.registerFailure(
+      BAN_DIM_ADMIN_2FA,
+      account,
+      ADMIN_2FA_STEPS,
+    );
     throw new BusinessException(
-      ban !== undefined ? BusinessCode.RATE_LIMITED : BusinessCode.TWO_FACTOR_INVALID,
-      ban !== undefined ? 'too many code attempts; try again later' : 'invalid verification code',
+      ban !== undefined
+        ? BusinessCode.RATE_LIMITED
+        : BusinessCode.TWO_FACTOR_INVALID,
+      ban !== undefined
+        ? 'too many code attempts; try again later'
+        : 'invalid verification code',
       HttpStatus.OK,
       ban !== undefined ? { bannedUntil: ban } : undefined,
     );
@@ -543,29 +739,36 @@ export class AdminAuthService {
 
   /** Record lastLogin (shared by the password-only and 2FA-verified login completions). */
   private async completeLogin(adminId: number, ip?: string): Promise<void> {
-    await this.prisma.admin.update({
-      where: { id: adminId },
-      data: { lastLoginAt: new Date(), lastLoginIp: ip ?? null },
-    });
+    await this.database.db
+      .update(admin)
+      .set({
+        lastLoginAt: new Date(),
+        lastLoginIp: ip ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(admin.id, adminId));
   }
 
   async revokeSessionsByAdmin(adminId: number, reason: string): Promise<void> {
-    await this.prisma.adminSession.updateMany({
-      where: { adminId, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
+    await this.database.db
+      .update(adminSession)
+      .set({ revokedAt: new Date(), revokeReason: reason })
+      .where(
+        and(eq(adminSession.adminId, adminId), isNull(adminSession.revokedAt)),
+      );
   }
 
-  async createAdminSession(adminId: number, opts: AdminSessionOpts = {}): Promise<string> {
+  async createAdminSession(
+    adminId: number,
+    opts: AdminSessionOpts = {},
+  ): Promise<string> {
     const token = randomBytes(32).toString('base64url');
-    await this.prisma.adminSession.create({
-      data: {
-        adminId,
-        tokenHash: hashToken(token),
-        ip: opts.ip ?? null,
-        userAgent: opts.userAgent ?? null,
-        expiresAt: new Date(Date.now() + ADMIN_SESSION_TTL_MS),
-      },
+    await this.database.db.insert(adminSession).values({
+      adminId,
+      tokenHash: hashToken(token),
+      ip: opts.ip ?? null,
+      userAgent: opts.userAgent ?? null,
+      expiresAt: new Date(Date.now() + ADMIN_SESSION_TTL_MS),
     });
     return token;
   }
@@ -573,16 +776,23 @@ export class AdminAuthService {
   async validateAdminSession(
     token: string,
     ip?: string,
-  ): Promise<{ userId: number; adminId: number; role: AdminRole; sessionId: number } | null> {
-    const rec = await this.prisma.adminSession.findUnique({
-      where: { tokenHash: hashToken(token) },
-      select: {
+  ): Promise<{
+    userId: number;
+    adminId: number;
+    role: AdminRole;
+    sessionId: number;
+  } | null> {
+    const rec = await this.database.db.query.adminSession.findFirst({
+      where: eq(adminSession.tokenHash, hashToken(token)),
+      columns: {
         id: true,
         adminId: true,
         revokedAt: true,
         expiresAt: true,
         lastAccessedAt: true,
-        admin: { select: { userId: true, enabled: true, role: true } },
+      },
+      with: {
+        admin: { columns: { userId: true, enabled: true, role: true } },
       },
     });
     if (
@@ -592,12 +802,18 @@ export class AdminAuthService {
       !rec.admin.enabled ||
       (ADMIN_SESSION_IDLE_MS !== null &&
         Date.now() - rec.lastAccessedAt.getTime() > ADMIN_SESSION_IDLE_MS)
-    ) return null;
+    )
+      return null;
     if (Date.now() - rec.lastAccessedAt.getTime() >= 5 * 60 * 1000) {
-      await this.prisma.adminSession.updateMany({
-        where: { id: rec.id, revokedAt: null },
-        data: { lastAccessedAt: new Date(), ip: ip ?? undefined },
-      });
+      await this.database.db
+        .update(adminSession)
+        .set({
+          lastAccessedAt: new Date(),
+          ...(ip === undefined ? {} : { ip }),
+        })
+        .where(
+          and(eq(adminSession.id, rec.id), isNull(adminSession.revokedAt)),
+        );
     }
     return {
       userId: rec.admin.userId,
@@ -608,10 +824,15 @@ export class AdminAuthService {
   }
 
   async revokeAdminSessionToken(token: string) {
-    await this.prisma.adminSession.updateMany({
-      where: { tokenHash: hashToken(token), revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'logout' },
-    });
+    await this.database.db
+      .update(adminSession)
+      .set({ revokedAt: new Date(), revokeReason: 'logout' })
+      .where(
+        and(
+          eq(adminSession.tokenHash, hashToken(token)),
+          isNull(adminSession.revokedAt),
+        ),
+      );
   }
 
   // ── Admin session reads + identity (moved from AdminController) ──────────────
@@ -619,55 +840,70 @@ export class AdminAuthService {
 
   /** Active admin refresh-session list (joins Admin → linked user account for display). */
   async listAdminSessions(opts: { skip?: number; take?: number; ip?: string }) {
-    const where = {
-      revokedAt: null,
-      expiresAt: { gt: new Date() },
-      ...(opts.ip ? { ip: { contains: opts.ip } } : {}),
-    };
+    const where = and(
+      isNull(adminSession.revokedAt),
+      gt(adminSession.expiresAt, new Date()),
+      opts.ip ? like(adminSession.ip, `%${opts.ip}%`) : undefined,
+    );
     const [rows, total] = await Promise.all([
-      this.prisma.adminSession.findMany({
-        where,
-        skip: opts.skip ?? 0,
-        take: opts.take ?? 50,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          adminId: true,
-          id: true,
-          userAgent: true,
-          ip: true,
-          createdAt: true,
-          lastAccessedAt: true,
-          expiresAt: true,
-          admin: { select: { id: true, user: { select: { account: true } } } },
-        },
-      }),
-      this.prisma.adminSession.count({ where }),
+      this.database.db
+        .select({
+          adminId: adminSession.adminId,
+          id: adminSession.id,
+          userAgent: adminSession.userAgent,
+          ip: adminSession.ip,
+          createdAt: adminSession.createdAt,
+          lastAccessedAt: adminSession.lastAccessedAt,
+          expiresAt: adminSession.expiresAt,
+          account: user.account,
+        })
+        .from(adminSession)
+        .innerJoin(admin, eq(admin.id, adminSession.adminId))
+        .innerJoin(user, eq(user.id, admin.userId))
+        .where(where)
+        .orderBy(desc(adminSession.createdAt))
+        .offset(opts.skip ?? 0)
+        .limit(opts.take ?? 50),
+      this.database.db
+        .select({ value: count() })
+        .from(adminSession)
+        .where(where)
+        .then(([row]) => row.value),
     ]);
     // Flatten admin.user.account → admin.account so the shape matches the user-session list.
-    const list = rows.map((r) => ({
+    const list = rows.map(({ account, ...r }) => ({
       ...r,
       id: r.id.toString(),
-      admin: { id: r.admin.id, account: r.admin.user.account },
+      admin: { id: r.adminId, account },
     }));
     return { list, total };
   }
 
   /** Revoke a single admin session by jti (its access token stays valid for up to the access TTL). */
   async revokeAdminSession(id: string): Promise<void> {
-    await this.prisma.adminSession.updateMany({
-      where: { id: BigInt(id), revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'admin_revoke' },
-    });
+    await this.database.db
+      .update(adminSession)
+      .set({ revokedAt: new Date(), revokeReason: 'admin_revoke' })
+      .where(
+        and(eq(adminSession.id, BigInt(id)), isNull(adminSession.revokedAt)),
+      );
   }
 
   /** Current admin identity for the console header + role gating. null when the profile is gone. */
-  async me(adminId: number): Promise<{ account: string; name: string; role: AdminRole } | null> {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { role: true, user: { select: { account: true, name: true } } },
+  async me(
+    adminId: number,
+  ): Promise<{ account: string; name: string; role: AdminRole } | null> {
+    const adminRow = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { role: true },
+      with: { user: { columns: { account: true, name: true } } },
     });
-    if (!admin) return null;
-    return { account: admin.user.account, name: admin.user.name, role: admin.role };
+    if (!adminRow) return null;
+    return {
+      account: adminRow.user.account,
+      name: adminRow.user.name,
+      role: adminRow.role,
+    };
   }
 }
 

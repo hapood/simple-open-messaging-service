@@ -11,7 +11,9 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
-import { PrismaService } from '../prisma.service.js';
+import { and, asc, count, eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { admin, webAuthnCredential } from '../database/schema.js';
 import { jwtConstants } from '../auth/constants.js';
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -60,7 +62,7 @@ interface AssertPendingPayload {
 @Injectable()
 export class WebAuthnService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly jwtService: JwtService,
   ) {}
 
@@ -72,10 +74,13 @@ export class WebAuthnService {
     account: string,
     displayName: string,
     nickname?: string,
-  ): Promise<{ options: PublicKeyCredentialCreationOptionsJSON; pendingToken: string }> {
-    const existing = await this.prisma.webAuthnCredential.findMany({
-      where: { adminId },
-      select: { credentialId: true, transports: true },
+  ): Promise<{
+    options: PublicKeyCredentialCreationOptionsJSON;
+    pendingToken: string;
+  }> {
+    const existing = await this.database.db.query.webAuthnCredential.findMany({
+      where: eq(webAuthnCredential.adminId, adminId),
+      columns: { credentialId: true, transports: true },
     });
     const options = await generateRegistrationOptions({
       rpName: 'SOMS Admin',
@@ -99,7 +104,12 @@ export class WebAuthnService {
       },
     });
     const pendingToken = this.jwtService.sign(
-      { sub: adminId, scope: 'webauthn-reg-pending', challenge: options.challenge, nickname },
+      {
+        sub: adminId,
+        scope: 'webauthn-reg-pending',
+        challenge: options.challenge,
+        nickname,
+      },
       { secret: jwtConstants.adminSecret, expiresIn: REG_PENDING_TTL },
     );
     return { options, pendingToken };
@@ -111,7 +121,12 @@ export class WebAuthnService {
     adminId: number,
     pendingToken: string,
     response: RegistrationResponseJSON,
-  ): Promise<{ id: string; nickname: string | null; deviceType: string | null; backed: boolean }> {
+  ): Promise<{
+    id: string;
+    nickname: string | null;
+    deviceType: string | null;
+    backed: boolean;
+  }> {
     const pending = this.verifyRegPending(pendingToken);
     if (!pending || pending.sub !== adminId) {
       throw new BusinessException(
@@ -145,9 +160,10 @@ export class WebAuthnService {
     }
     const info = verification.registrationInfo;
     const transports = (response.response.transports ?? []) as string[];
-    const created = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.webAuthnCredential.create({
-        data: {
+    const created = await this.database.db.transaction(async (tx) => {
+      const row = await tx
+        .insert(webAuthnCredential)
+        .values({
           adminId,
           credentialId: info.credential.id,
           publicKey: Buffer.from(info.credential.publicKey),
@@ -156,25 +172,35 @@ export class WebAuthnService {
           deviceType: info.credentialDeviceType,
           backed: info.credentialBackedUp,
           nickname: pending.nickname ?? null,
-        },
-      });
+        })
+        .returning()
+        .then(([created]) => created);
       // Flip the hint on the FIRST credential only (idempotent: only if currently false).
-      await tx.admin.updateMany({ where: { id: adminId, webauthnEnabled: false }, data: { webauthnEnabled: true } });
+      await tx
+        .update(admin)
+        .set({ webauthnEnabled: true, updatedAt: new Date() })
+        .where(and(eq(admin.id, adminId), eq(admin.webauthnEnabled, false)));
       return row;
     });
-    return { id: created.id.toString(), nickname: created.nickname, deviceType: created.deviceType, backed: created.backed };
+    return {
+      id: created.id.toString(),
+      nickname: created.nickname,
+      deviceType: created.deviceType,
+      backed: created.backed,
+    };
   }
 
   // ── assertion (login) ─────────────────────────────────────────────────────────
 
   /** Mint assertion options for an admin's enrolled credentials + a signed pending token carrying the
    *  challenge. Re-counts credentials first (guards a stale webauthnEnabled=true hint). */
-  async beginAssertion(
-    adminId: number,
-  ): Promise<{ options: PublicKeyCredentialRequestOptionsJSON; pendingToken: string }> {
-    const creds = await this.prisma.webAuthnCredential.findMany({
-      where: { adminId },
-      select: { credentialId: true, transports: true },
+  async beginAssertion(adminId: number): Promise<{
+    options: PublicKeyCredentialRequestOptionsJSON;
+    pendingToken: string;
+  }> {
+    const creds = await this.database.db.query.webAuthnCredential.findMany({
+      where: eq(webAuthnCredential.adminId, adminId),
+      columns: { credentialId: true, transports: true },
     });
     if (creds.length === 0) {
       throw new BusinessException(
@@ -193,7 +219,11 @@ export class WebAuthnService {
       userVerification: 'required',
     });
     const pendingToken = this.jwtService.sign(
-      { sub: adminId, scope: 'webauthn-assert-pending', challenge: options.challenge },
+      {
+        sub: adminId,
+        scope: 'webauthn-assert-pending',
+        challenge: options.challenge,
+      },
       { secret: jwtConstants.adminSecret, expiresIn: ASSERT_PENDING_TTL },
     );
     return { options, pendingToken };
@@ -211,9 +241,9 @@ export class WebAuthnService {
     if (!pending || pending.sub !== adminId) return { ok: false };
     // The assertion names which credential was used; bind it to THIS admin (a credential enrolled by
     // another admin can never authenticate this one).
-    const row = await this.prisma.webAuthnCredential.findUnique({
-      where: { credentialId: response.id },
-      select: { id: true, adminId: true, publicKey: true, counter: true },
+    const row = await this.database.db.query.webAuthnCredential.findFirst({
+      where: eq(webAuthnCredential.credentialId, response.id),
+      columns: { id: true, adminId: true, publicKey: true, counter: true },
     });
     if (!row || row.adminId !== adminId) return { ok: false };
     let newCounter: number | undefined;
@@ -223,7 +253,11 @@ export class WebAuthnService {
         expectedChallenge: pending.challenge,
         expectedOrigin: WEBAUTHN_CONFIG.allowedOrigins,
         expectedRPID: [WEBAUTHN_CONFIG.rpId],
-        credential: { id: response.id, publicKey: row.publicKey, counter: row.counter },
+        credential: {
+          id: response.id,
+          publicKey: new Uint8Array(row.publicKey),
+          counter: row.counter,
+        },
         requireUserVerification: true,
       });
       if (!verification.verified) return { ok: false };
@@ -236,13 +270,23 @@ export class WebAuthnService {
     // verify that already advanced it leaves count=0 (harmless — the row already holds a ≥ counter). The
     // library guarantees newCounter > row.counter or both 0 by this point, so we never decrease.
     const now = new Date();
-    const swapped = await this.prisma.webAuthnCredential.updateMany({
-      where: { id: row.id, counter: row.counter },
-      data: { counter: newCounter, lastUsedAt: now },
-    });
-    if (swapped.count === 0) {
+    const swapped = await this.database.db
+      .update(webAuthnCredential)
+      .set({ counter: newCounter, lastUsedAt: now })
+      .where(
+        and(
+          eq(webAuthnCredential.id, row.id),
+          eq(webAuthnCredential.counter, row.counter),
+        ),
+      )
+      .returning({ id: webAuthnCredential.id });
+    if (swapped.length === 0) {
       // Lost the CAS — another verify advanced the counter. Still record last-use.
-      await this.prisma.webAuthnCredential.update({ where: { id: row.id }, data: { lastUsedAt: now } }).catch(() => {});
+      await this.database.db
+        .update(webAuthnCredential)
+        .set({ lastUsedAt: now })
+        .where(eq(webAuthnCredential.id, row.id))
+        .catch(() => {});
     }
     return { ok: true };
   }
@@ -251,10 +295,18 @@ export class WebAuthnService {
 
   /** List an admin's credentials (never publicKey / counter). */
   async listCredentials(adminId: number): Promise<WebAuthnCredentialView[]> {
-    const rows = await this.prisma.webAuthnCredential.findMany({
-      where: { adminId },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true, nickname: true, deviceType: true, backed: true, transports: true, createdAt: true, lastUsedAt: true },
+    const rows = await this.database.db.query.webAuthnCredential.findMany({
+      where: eq(webAuthnCredential.adminId, adminId),
+      orderBy: asc(webAuthnCredential.createdAt),
+      columns: {
+        id: true,
+        nickname: true,
+        deviceType: true,
+        backed: true,
+        transports: true,
+        createdAt: true,
+        lastUsedAt: true,
+      },
     });
     return rows.map((r) => ({
       id: r.id.toString(),
@@ -268,13 +320,27 @@ export class WebAuthnService {
   }
 
   /** Rename a credential. Refused (NOT_FOUND) if it belongs to another admin. */
-  async renameCredential(adminId: number, rowId: bigint, nickname: string): Promise<void> {
-    const r = await this.prisma.webAuthnCredential.updateMany({
-      where: { id: rowId, adminId },
-      data: { nickname },
-    });
-    if (r.count === 0) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'credential not found', HttpStatus.OK);
+  async renameCredential(
+    adminId: number,
+    rowId: bigint,
+    nickname: string,
+  ): Promise<void> {
+    const rows = await this.database.db
+      .update(webAuthnCredential)
+      .set({ nickname })
+      .where(
+        and(
+          eq(webAuthnCredential.id, rowId),
+          eq(webAuthnCredential.adminId, adminId),
+        ),
+      )
+      .returning({ id: webAuthnCredential.id });
+    if (rows.length === 0) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'credential not found',
+        HttpStatus.OK,
+      );
     }
   }
 
@@ -282,34 +348,63 @@ export class WebAuthnService {
    *  on every removal (a 2FA-config change) so every outstanding session is invalidated and the admin must
    *  re-authenticate — surfacing the change at next login (the Google/GitHub posture). Returns the
    *  remaining count. Throws NOT_FOUND if the credential belongs to another admin. */
-  async removeCredential(adminId: number, rowId: bigint): Promise<{ remaining: number }> {
-    const deleted = await this.prisma.webAuthnCredential.deleteMany({ where: { id: rowId, adminId } });
-    if (deleted.count === 0) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'credential not found', HttpStatus.OK);
-    }
-    const remaining = await this.prisma.webAuthnCredential.count({ where: { adminId } });
-    await this.prisma.$transaction(async (tx) => {
-      if (remaining === 0) {
-        await tx.admin.updateMany({
-          where: { id: adminId, webauthnEnabled: true },
-          data: { webauthnEnabled: false },
-        });
+  async removeCredential(
+    adminId: number,
+    rowId: bigint,
+  ): Promise<{ remaining: number }> {
+    const remaining = await this.database.db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(webAuthnCredential)
+        .where(
+          and(
+            eq(webAuthnCredential.id, rowId),
+            eq(webAuthnCredential.adminId, adminId),
+          ),
+        )
+        .returning({ id: webAuthnCredential.id });
+      if (deleted.length === 0) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'credential not found',
+          HttpStatus.OK,
+        );
       }
+      const [{ value }] = await tx
+        .select({ value: count() })
+        .from(webAuthnCredential)
+        .where(eq(webAuthnCredential.adminId, adminId));
+      if (value === 0) {
+        await tx
+          .update(admin)
+          .set({ webauthnEnabled: false, updatedAt: new Date() })
+          .where(and(eq(admin.id, adminId), eq(admin.webauthnEnabled, true)));
+      }
+      return value;
     });
     return { remaining };
   }
 
   /** Count an admin's credentials (for the status card + login branching sanity). */
   async countCredentials(adminId: number): Promise<number> {
-    return this.prisma.webAuthnCredential.count({ where: { adminId } });
+    return this.database.db
+      .select({ value: count() })
+      .from(webAuthnCredential)
+      .where(eq(webAuthnCredential.adminId, adminId))
+      .then(([row]) => row.value);
   }
 
   // ── pending-token helpers (signed with the admin secret, scope-isolated) ─────────
 
   private verifyRegPending(token: string): RegPendingPayload | null {
     try {
-      const payload = this.jwtService.verify<RegPendingPayload>(token, { secret: jwtConstants.adminSecret });
-      if (payload.scope !== 'webauthn-reg-pending' || typeof payload.sub !== 'number' || !payload.challenge) {
+      const payload = this.jwtService.verify<RegPendingPayload>(token, {
+        secret: jwtConstants.adminSecret,
+      });
+      if (
+        payload.scope !== 'webauthn-reg-pending' ||
+        typeof payload.sub !== 'number' ||
+        !payload.challenge
+      ) {
         return null;
       }
       return payload;
@@ -320,8 +415,14 @@ export class WebAuthnService {
 
   private verifyAssertPending(token: string): AssertPendingPayload | null {
     try {
-      const payload = this.jwtService.verify<AssertPendingPayload>(token, { secret: jwtConstants.adminSecret });
-      if (payload.scope !== 'webauthn-assert-pending' || typeof payload.sub !== 'number' || !payload.challenge) {
+      const payload = this.jwtService.verify<AssertPendingPayload>(token, {
+        secret: jwtConstants.adminSecret,
+      });
+      if (
+        payload.scope !== 'webauthn-assert-pending' ||
+        typeof payload.sub !== 'number' ||
+        !payload.challenge
+      ) {
         return null;
       }
       return payload;
@@ -330,7 +431,9 @@ export class WebAuthnService {
     }
   }
 
-  private parseTransports(stored: string | null): AuthenticatorTransportFuture[] {
+  private parseTransports(
+    stored: string | null,
+  ): AuthenticatorTransportFuture[] {
     if (!stored) return [];
     try {
       const v = JSON.parse(stored);

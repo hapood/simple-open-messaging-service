@@ -14,7 +14,7 @@ import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminManageService } from './admin-manage.service.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import {
   AdminManageListDto,
   AdminCreateDto,

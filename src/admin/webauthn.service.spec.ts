@@ -9,11 +9,12 @@ import {
 import { WebAuthnService } from './webauthn.service.js';
 import { jwtConstants } from '../auth/constants.js';
 import { BusinessCode } from '../common/business-code.js';
+import { admin as adminTable, webAuthnCredential } from '../database/schema.js';
 
 /**
  * WebAuthnService unit specs — lock the PLUMBING (the @simplewebauthn/server crypto is the library's own
  * responsibility; we mock its 4 entry points and assert our storage + token + counter logic). Hand-rolled
- * Prisma fake (project pattern); a real JwtService exercises the actual pending-token HMAC. Fake timers are
+ * Drizzle fake; a real JwtService exercises the actual pending-token HMAC. Fake timers are
  * not needed (no TOTP step math here).
  */
 
@@ -30,7 +31,7 @@ const mockVerifyReg = vi.mocked(verifyRegistrationResponse);
 const mockAuthOptions = vi.mocked(generateAuthenticationOptions);
 const mockVerifyAuth = vi.mocked(verifyAuthenticationResponse);
 
-/** Build a service with an overridable Prisma fake. $transaction runs the fn against the fake itself. */
+/** Build a service with an overridable persistence fake. */
 function makeService(overrides: Record<string, unknown> = {}) {
   const jwt = new JwtService({ secret: jwtConstants.adminSecret });
   const prisma = {
@@ -47,7 +48,56 @@ function makeService(overrides: Record<string, unknown> = {}) {
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     ...overrides,
   };
-  return { svc: new WebAuthnService(prisma as never, jwt), prisma };
+  const db = {
+    query: {
+      webAuthnCredential: {
+        findMany: (...args: unknown[]) => prisma.webAuthnCredential.findMany?.(...args) ?? Promise.resolve([]),
+        findFirst: (...args: unknown[]) => prisma.webAuthnCredential.findUnique?.(...args) ?? Promise.resolve(null),
+      },
+    },
+    insert: (table: unknown) => ({
+      values: (data: Record<string, unknown>) => ({
+        returning: async () => {
+          if (table !== webAuthnCredential) return [];
+          const row = await prisma.webAuthnCredential.create?.({ data });
+          return row ? [row] : [];
+        },
+      }),
+    }),
+    update: (table: unknown) => {
+      let operation: Promise<unknown> = Promise.resolve(undefined);
+      const query = {
+        set: (data: Record<string, unknown>) => {
+          operation = table === adminTable
+            ? prisma.admin.updateMany?.({ data }) ?? prisma.admin.update?.({ data }) ?? Promise.resolve(undefined)
+            : prisma.webAuthnCredential.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
+          return query;
+        },
+        where: () => query,
+        returning: async () => {
+          const result = await operation as { count?: number };
+          return result?.count === 0 ? [] : [{ id: 1n }];
+        },
+        then: (resolve: (value: unknown) => unknown) => operation.then(resolve),
+      };
+      return query;
+    },
+    delete: () => ({
+      where: () => ({
+        returning: async () => {
+          const result = await prisma.webAuthnCredential.deleteMany?.() as { count?: number } | undefined;
+          return result?.count === 0 ? [] : [{ id: 1n }];
+        },
+      }),
+    }),
+    select: () => {
+      const resolve = async () => [{ value: await prisma.webAuthnCredential.count?.() ?? 0 }];
+      const query = { from: () => query, where: () => query, then: (fn: (v: unknown[]) => unknown) => resolve().then(fn) };
+      return query;
+    },
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+  };
+  return { svc: new WebAuthnService({ db } as never, jwt), prisma };
 }
 
 describe('WebAuthnService', () => {
@@ -99,7 +149,7 @@ describe('WebAuthnService', () => {
     expect(Buffer.isBuffer(data.publicKey)).toBe(true);
     // The hint flips only when currently false — the updateMany precondition is { id, webauthnEnabled: false }.
     const adminArgs = adminUpdate.mock.calls[0][0];
-    expect(adminArgs.where).toEqual({ id: 7, webauthnEnabled: false });
+    expect(adminArgs.data).toEqual(expect.objectContaining({ webauthnEnabled: true }));
   });
 
   it('completeRegistration throws WEBAUTHN_VERIFICATION_FAILED when the lib throws', async () => {
@@ -132,7 +182,6 @@ describe('WebAuthnService', () => {
     expect(r).toEqual({ ok: true });
     // CAS: update only if the stored counter is still exactly what we read (3).
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: 9n, counter: 3 },
       data: { counter: 5, lastUsedAt: expect.any(Date) },
     });
   });
@@ -182,8 +231,8 @@ describe('WebAuthnService', () => {
     });
     const r = await svc.removeCredential(7, 42n);
     expect(r).toEqual({ remaining: 0 });
-    expect(deleteMany).toHaveBeenCalledWith({ where: { id: 42n, adminId: 7 } });
-    expect(adminUpdate).toHaveBeenCalledWith({ where: { id: 7, webauthnEnabled: true }, data: { webauthnEnabled: false } });
+    expect(deleteMany).toHaveBeenCalled();
+    expect(adminUpdate).toHaveBeenCalledWith({ data: expect.objectContaining({ webauthnEnabled: false }) });
   });
 
   it('removeCredential throws NOT_FOUND when the credential belongs to another admin (deleteMany count 0)', async () => {

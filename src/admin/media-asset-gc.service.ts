@@ -2,10 +2,23 @@ import { Injectable, Logger } from '@nestjs/common';
 import { join } from 'path';
 import { readdir, stat, unlink } from 'fs';
 import { promisify } from 'util';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, eq, inArray, lt, lte, ne, or, sql } from 'drizzle-orm';
+import {
+  DatabaseService,
+  type Database,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  forwardBundle,
+  forwardBundleAsset,
+  forwardBundleDependency,
+  mediaAsset,
+  mediaMessage,
+  pendingMedia,
+  user,
+} from '../database/schema.js';
 import { UploadService } from '../upload/upload.service.js';
 import { parseAvatarBase } from '../upload/avatar-path.js';
-import { Prisma } from '../prisma/generated/client.js';
 
 const readdirAsync = promisify(readdir);
 const statAsync = promisify(stat);
@@ -58,7 +71,7 @@ export class MediaAssetGcService {
   private readonly logger = new Logger(MediaAssetGcService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly upload: UploadService,
   ) {}
 
@@ -69,14 +82,17 @@ export class MediaAssetGcService {
     if (ids.length === 0) {
       return { orphanBundles: 0, orphanAssets: 0, orphanBytes: '0' };
     }
-    const aggregate = await this.prisma.forwardBundle.aggregate({
-      where: { id: { in: ids } },
-      _sum: { assetCount: true, totalBytes: true },
-    });
+    const [aggregate] = await this.database.db
+      .select({
+        assetCount: sql<number>`coalesce(sum(${forwardBundle.assetCount}), 0)::int`,
+        totalBytes: sql<bigint>`coalesce(sum(${forwardBundle.totalBytes}), 0)::bigint`,
+      })
+      .from(forwardBundle)
+      .where(inArray(forwardBundle.id, ids));
     return {
       orphanBundles: ids.length,
-      orphanAssets: aggregate._sum.assetCount ?? 0,
-      orphanBytes: String(aggregate._sum.totalBytes ?? 0n),
+      orphanAssets: aggregate.assetCount,
+      orphanBytes: String(aggregate.totalBytes),
     };
   }
 
@@ -84,19 +100,22 @@ export class MediaAssetGcService {
    * asset rows. A fresh reachability scan runs inside the transaction, so inspection is advisory and
    * cleanup never trusts a stale list supplied by the browser. */
   async gcOrphanedForwardBundles(): Promise<ForwardBundleGcResult> {
-    return this.prisma.$transaction(async (tx) => {
+    return this.database.db.transaction(async (tx) => {
       const ids = await this.findOrphanedForwardBundleIds(tx);
       if (ids.length === 0) {
         return { orphanBundles: 0, orphanAssets: 0, orphanBytes: '0' };
       }
-      const bundles = await tx.forwardBundle.findMany({
-        where: { id: { in: ids } },
-        select: { assetCount: true, totalBytes: true },
-      });
-      const assets = await tx.forwardBundleAsset.findMany({
-        where: { bundleId: { in: ids } },
-        select: { digest: true },
-      });
+      const bundles = await tx
+        .select({
+          assetCount: forwardBundle.assetCount,
+          totalBytes: forwardBundle.totalBytes,
+        })
+        .from(forwardBundle)
+        .where(inArray(forwardBundle.id, ids));
+      const assets = await tx
+        .select({ digest: forwardBundleAsset.digest })
+        .from(forwardBundleAsset)
+        .where(inArray(forwardBundleAsset.bundleId, ids));
       const refsByDigest = new Map<string, number>();
       for (const asset of assets) {
         refsByDigest.set(
@@ -105,20 +124,23 @@ export class MediaAssetGcService {
         );
       }
       for (const [digest, count] of refsByDigest) {
-        await tx.mediaAsset.updateMany({
-          where: { digest },
-          data: { refs: { decrement: count } },
-        });
+        await tx
+          .update(mediaAsset)
+          .set({ refs: sql`${mediaAsset.refs} - ${count}` })
+          .where(eq(mediaAsset.digest, digest));
       }
-      await tx.forwardBundleDependency.deleteMany({
-        where: {
-          OR: [{ parentBundleId: { in: ids } }, { childBundleId: { in: ids } }],
-        },
-      });
-      await tx.forwardBundleAsset.deleteMany({
-        where: { bundleId: { in: ids } },
-      });
-      await tx.forwardBundle.deleteMany({ where: { id: { in: ids } } });
+      await tx
+        .delete(forwardBundleDependency)
+        .where(
+          or(
+            inArray(forwardBundleDependency.parentBundleId, ids),
+            inArray(forwardBundleDependency.childBundleId, ids),
+          ),
+        );
+      await tx
+        .delete(forwardBundleAsset)
+        .where(inArray(forwardBundleAsset.bundleId, ids));
+      await tx.delete(forwardBundle).where(inArray(forwardBundle.id, ids));
       return {
         orphanBundles: bundles.length,
         orphanAssets: bundles.reduce((sum, row) => sum + row.assetCount, 0),
@@ -130,9 +152,9 @@ export class MediaAssetGcService {
   }
 
   private async findOrphanedForwardBundleIds(
-    client: Prisma.TransactionClient | PrismaService = this.prisma,
+    client: Database | DatabaseTransaction = this.database.db,
   ): Promise<string[]> {
-    const rows = await client.$queryRaw<Array<{ id: string }>>`
+    const rows = await client.execute<{ id: string }>(sql`
       WITH RECURSIVE live(id) AS (
         SELECT DISTINCT fm."bundleId"
         FROM "ForwardMessage" fm
@@ -145,24 +167,27 @@ export class MediaAssetGcService {
       FROM "ForwardBundle" fb
       LEFT JOIN live l ON l.id = fb.id
       WHERE l.id IS NULL
-    `;
-    return rows.map((row) => row.id);
+    `);
+    return rows.rows.map((row) => row.id);
   }
 
   /** Primary GC: reap MediaAsset rows with refs <= 0 + their shard file, sweep stale tmp, and reap
    *  stale PendingMedia staging rows (abandoned pending sends and expired failed recovery records) along
    *  with any orphan file they point at. */
   async gcOrphanedAssets(): Promise<GcResult> {
-    const orphans = await this.prisma.mediaAsset.findMany({
-      where: { refs: { lte: 0 } },
-      select: { digest: true },
-    });
+    const orphans = await this.database.db
+      .select({ digest: mediaAsset.digest })
+      .from(mediaAsset)
+      .where(lte(mediaAsset.refs, 0));
     let reapedFiles = 0;
     for (const { digest } of orphans) {
       if (await this.reapDigest(digest)) reapedFiles++;
-      await this.prisma.mediaAsset.delete({ where: { digest } }).catch(() => {
-        // row already gone (concurrent GC) — nothing to do.
-      });
+      await this.database.db
+        .delete(mediaAsset)
+        .where(eq(mediaAsset.digest, digest))
+        .catch(() => {
+          // row already gone (concurrent GC) — nothing to do.
+        });
     }
     const sweptTmp = await this.sweepTmp();
     const pending = await this.gcStalePending(
@@ -199,36 +224,46 @@ export class MediaAssetGcService {
   ): Promise<{ sweptRows: number; reapedFiles: number }> {
     const cutoff = new Date(Date.now() - ttlMs);
     const failedCutoff = new Date(Date.now() - failedTtlMs);
-    const stale = await this.prisma.pendingMedia.findMany({
-      where: {
-        OR: [
-          { status: 'pending', createdAt: { lt: cutoff } },
-          { status: 'failed', createdAt: { lt: failedCutoff } },
-        ],
-      },
-      select: { id: true, digest: true },
-    });
+    const stale = await this.database.db
+      .select({ id: pendingMedia.id, digest: pendingMedia.digest })
+      .from(pendingMedia)
+      .where(
+        or(
+          and(
+            eq(pendingMedia.status, 'pending'),
+            lt(pendingMedia.createdAt, cutoff),
+          ),
+          and(
+            eq(pendingMedia.status, 'failed'),
+            lt(pendingMedia.createdAt, failedCutoff),
+          ),
+        ),
+      );
     let reapedFiles = 0;
     for (const { id, digest } of stale) {
       if (digest) {
         // Reap the file only if NO committed message references this digest — a MediaMessage row means
         // the file is live (some other send/localize committed and is using it).
-        const inUse = await this.prisma.mediaMessage.findFirst({
-          where: { digest },
-          select: { messageId: true },
+        const inUse = await this.database.db.query.mediaMessage.findFirst({
+          where: eq(mediaMessage.digest, digest),
+          columns: { messageId: true },
         });
         if (!inUse) {
           if (await this.reapDigest(digest)) reapedFiles++;
-          await this.prisma.mediaAsset
-            .deleteMany({ where: { digest } })
+          await this.database.db
+            .delete(mediaAsset)
+            .where(eq(mediaAsset.digest, digest))
             .catch(() => {
               // row already gone — nothing to do.
             });
         }
       }
-      await this.prisma.pendingMedia.delete({ where: { id } }).catch(() => {
-        // row already gone (concurrent sweep) — nothing to do.
-      });
+      await this.database.db
+        .delete(pendingMedia)
+        .where(eq(pendingMedia.id, id))
+        .catch(() => {
+          // row already gone (concurrent sweep) — nothing to do.
+        });
     }
     this.logger.log(
       `gcStalePending: swept ${stale.length} stale stage(s), reaped ${reapedFiles} orphan file(s).`,
@@ -241,9 +276,11 @@ export class MediaAssetGcService {
   async reconcileShards(): Promise<number> {
     const shardsDir = join(this.upload.uploadDir, 'shards');
     const referenced = new Set(
-      (await this.prisma.mediaAsset.findMany({ select: { digest: true } })).map(
-        (r) => r.digest,
-      ),
+      (
+        await this.database.db
+          .select({ digest: mediaAsset.digest })
+          .from(mediaAsset)
+      ).map((r) => r.digest),
     );
     let reaped = 0;
     try {
@@ -275,13 +312,20 @@ export class MediaAssetGcService {
    *  (deduped by digest); `onDisk` walks uploads/shards/ to break bytes down by extension and surface
    *  drift vs the table. O(files) — fine for a manually triggered admin read. */
   async stats() {
-    const agg = await this.prisma.mediaAsset.aggregate({
-      _sum: { bytes: true },
-      _count: true,
-    });
-    const reclaimable = await this.prisma.mediaAsset.count({
-      where: { refs: { lte: 0 } },
-    });
+    const [agg, reclaimable] = await Promise.all([
+      this.database.db
+        .select({
+          bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
+          assetCount: count(),
+        })
+        .from(mediaAsset)
+        .then(([row]) => row),
+      this.database.db
+        .select({ value: count() })
+        .from(mediaAsset)
+        .where(lte(mediaAsset.refs, 0))
+        .then(([row]) => row.value),
+    ]);
 
     const shardsDir = join(this.upload.uploadDir, 'shards');
     const byExt = new Map<string, { files: number; bytes: bigint }>();
@@ -313,7 +357,11 @@ export class MediaAssetGcService {
     }
 
     return {
-      db: { bytes: agg._sum.bytes ?? 0n, assetCount: agg._count, reclaimable },
+      db: {
+        bytes: BigInt(agg.bytes),
+        assetCount: agg.assetCount,
+        reclaimable,
+      },
       onDisk: {
         files: shardFiles,
         bytes: shardBytes,
@@ -339,10 +387,10 @@ export class MediaAssetGcService {
     // sizes of one logical avatar collapse to one key.
     // Group avatars live on the `!`-User rows now (Group table abolished), so this single User query
     // covers both people and group avatars.
-    const users = await this.prisma.user.findMany({
-      where: { NOT: { avatar: '' } },
-      select: { avatar: true },
-    });
+    const users = await this.database.db
+      .select({ avatar: user.avatar })
+      .from(user)
+      .where(ne(user.avatar, ''));
     const live = new Set<string>();
     for (const r of users) {
       const base = parseAvatarBase(r.avatar);

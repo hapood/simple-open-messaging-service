@@ -1,5 +1,5 @@
 import { SetMetadata } from '@nestjs/common';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 
 /** Metadata key carrying the admin roles allowed on a route (read by AdminRolesGuard). */
 export const ADMIN_ROLES_KEY = 'admin:roles';

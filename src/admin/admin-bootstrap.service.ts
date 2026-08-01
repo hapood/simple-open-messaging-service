@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { and, eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { admin, user as userTable } from '../database/schema.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 
 /**
@@ -24,7 +25,10 @@ import { PasswordHasher } from '../auth/password-hasher.service.js';
 export class AdminBootstrapService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AdminBootstrapService.name);
 
-  constructor(private readonly prisma: PrismaService, private readonly passwordHasher: PasswordHasher) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly passwordHasher: PasswordHasher,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     try {
@@ -32,14 +36,16 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
     } catch (err) {
       // A transient DB blip during boot must not kill the chat product. Log loudly and continue; the
       // next successful boot (or the seed-admin.cjs escape hatch) will create the admin.
-      this.logger.error(`bootstrap admin seeding failed (app continues without it): ${(err as Error).message}`);
+      this.logger.error(
+        `bootstrap admin seeding failed (app continues without it): ${(err as Error).message}`,
+      );
     }
   }
 
   private async ensureBootstrapAdmin(): Promise<void> {
-    const existing = await this.prisma.user.findUnique({
-      where: { account_domain: { account: 'admin', domain: 'local' } },
-      select: { id: true },
+    const existing = await this.database.db.query.user.findFirst({
+      where: and(eq(userTable.account, 'admin'), eq(userTable.domain, 'local')),
+      columns: { id: true },
     });
     if (existing) return; // already manageable — idempotent no-op on every boot after the first
 
@@ -56,19 +62,42 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
     const hash = await this.passwordHasher.hash(pwd);
     // Identity lives on User (single account namespace); the Admin row is the linked profile. upsert with
     // update:{} absorbs the vanishing race between the findUnique above and the create (P2002-safe).
-    const user = await this.prisma.user.upsert({
-      where: { account_domain: { account: 'admin', domain: 'local' } },
-      update: {},
-      create: { account: 'admin', hashPwd: hash, name: 'admin', isForeigner: false, domain: 'local' },
-    });
-    await this.prisma.admin.upsert({
-      where: { userId: user.id },
-      update: {},
-      // role/enabled match the schema defaults; stated explicitly to document bootstrap intent.
-      create: { userId: user.id, role: AdminRole.SUPER_ADMIN, enabled: true },
-    });
+    const createdUser = await this.database.db
+      .insert(userTable)
+      .values({
+        account: 'admin',
+        hashPwd: hash,
+        name: 'admin',
+        isForeigner: false,
+        domain: 'local',
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing({ target: [userTable.account, userTable.domain] })
+      .returning({ id: userTable.id });
+    const userId =
+      createdUser[0]?.id ??
+      (
+        await this.database.db.query.user.findFirst({
+          where: and(
+            eq(userTable.account, 'admin'),
+            eq(userTable.domain, 'local'),
+          ),
+          columns: { id: true },
+        })
+      )?.id;
+    if (userId === undefined)
+      throw new Error('bootstrap admin user was not created');
+    await this.database.db
+      .insert(admin)
+      .values({
+        userId,
+        role: 'SUPER_ADMIN',
+        enabled: true,
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing({ target: admin.userId });
     this.logger.log(
-      `bootstrap admin created: account=admin userId=${user.id} — change the password or unset ADMIN_BOOTSTRAP_PASSWORD after first login`,
+      `bootstrap admin created: account=admin userId=${userId} — change the password or unset ADMIN_BOOTSTRAP_PASSWORD after first login`,
     );
   }
 }

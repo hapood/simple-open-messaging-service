@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { Message } from '../prisma/generated/client.js';
+import type { Message } from './message.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';

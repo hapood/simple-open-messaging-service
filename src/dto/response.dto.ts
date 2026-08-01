@@ -1,9 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  ContentType,
-  GroupRole,
-  MessageThreadType,
-} from '../prisma/generated/client.js';
+import { ContentType, GroupRole, MessageThreadType } from '../database/enums.js';
 import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
 
 /**

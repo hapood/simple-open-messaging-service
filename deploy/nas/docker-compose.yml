@@ -65,7 +65,7 @@ services:
     restart: unless-stopped
 
   # Applies pending migrations (idempotent — a sub-second no-op when nothing is pending). The image
-  # ENTRYPOINT sources /soms/run/app.env (DATABASE_URL) before exec'ing prisma.
+  # ENTRYPOINT sources /soms/run/app.env (DATABASE_URL) before running the SQL migration ledger.
   migrate:
     image: soms:latest
     depends_on:
@@ -75,7 +75,7 @@ services:
         condition: service_healthy
     volumes:
       - soms-run:/soms/run:ro
-    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+    command: ["npm", "run", "db:migrate"]
     restart: "no"
 
   # The app + Caddy edge (all-in-one). ENTRYPOINT sources /soms/run/app.env; supervisor.sh runs node +

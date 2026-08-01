@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
 
 /**
  * Per-object media authorization. Answers the single question the /uploads/shards/* gate needs:
@@ -16,94 +17,43 @@ import { PrismaService } from '../prisma.service.js';
  */
 @Injectable()
 export class MediaAccessService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   /** True iff `userId` is an active member of a thread that contains a message referencing `digest`. */
   async canReadDigest(userId: number, digest: string): Promise<boolean> {
-    const row = await this.prisma.mediaMessage.findFirst({
-      where: {
-        digest,
-        thread: {
-          ThreadParticipant: { some: { userId, leftAt: null } },
-        },
-      },
-      select: { messageId: true },
-    });
-    if (row !== null) return true;
-    // Forward assets may live on a nested child bundle rather than directly on the visible root card.
-    // Depth is capped at 3, so the explicit parent / grandparent probes are bounded and indexable.
-    const forwarded = await this.prisma.forwardBundleAsset.findFirst({
-      where: {
-        digest,
-        OR: [
-          {
-            bundle: {
-              messages: {
-                some: {
-                  message: {
-                    threadItem: {
-                      ThreadParticipant: { some: { userId, leftAt: null } },
-                    },
-                    isDeleted: false,
-                  },
-                },
-              },
-            },
-          },
-          {
-            bundle: {
-              parents: {
-                some: {
-                  parent: {
-                    messages: {
-                      some: {
-                        message: {
-                          threadItem: {
-                            ThreadParticipant: {
-                              some: { userId, leftAt: null },
-                            },
-                          },
-                          isDeleted: false,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          {
-            bundle: {
-              parents: {
-                some: {
-                  parent: {
-                    parents: {
-                      some: {
-                        parent: {
-                          messages: {
-                            some: {
-                              message: {
-                                threadItem: {
-                                  ThreadParticipant: {
-                                    some: { userId, leftAt: null },
-                                  },
-                                },
-                                isDeleted: false,
-                              },
-                            },
-                          },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        ],
-      },
-      select: { bundleId: true },
-    });
-    return forwarded !== null;
+    const result = await this.database.db.execute(sql<{ allowed: boolean }>`
+      WITH RECURSIVE visible_bundle("bundleId", depth) AS (
+        SELECT fba."bundleId", 0
+        FROM "ForwardBundleAsset" fba
+        WHERE fba.digest = ${digest}
+        UNION ALL
+        SELECT dependency."parentBundleId", visible_bundle.depth + 1
+        FROM visible_bundle
+        JOIN "ForwardBundleDependency" dependency
+          ON dependency."childBundleId" = visible_bundle."bundleId"
+        WHERE visible_bundle.depth < 2
+      )
+      SELECT EXISTS (
+        SELECT 1
+        FROM "MediaMessage" media
+        JOIN "ThreadParticipant" participant
+          ON participant."threadId" = media."threadId"
+         AND participant."userId" = ${userId}
+         AND participant."leftAt" IS NULL
+        WHERE media.digest = ${digest}
+        UNION ALL
+        SELECT 1
+        FROM visible_bundle bundle
+        JOIN "ForwardMessage" forwarded
+          ON forwarded."bundleId" = bundle."bundleId"
+        JOIN "Message" message ON message.id = forwarded."messageId"
+        JOIN "ThreadParticipant" participant
+          ON participant."threadId" = message."threadId"
+         AND participant."userId" = ${userId}
+         AND participant."leftAt" IS NULL
+        WHERE message."isDeleted" = false
+      ) AS allowed
+    `);
+    return Boolean(result.rows[0]?.allowed);
   }
 }

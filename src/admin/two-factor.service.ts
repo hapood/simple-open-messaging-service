@@ -1,8 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+  randomUUID,
+} from 'node:crypto';
 import { Secret, TOTP } from 'otpauth';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, eq, isNull, lt } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import {
+  admin,
+  adminLoginChallenge,
+  twoFactorBackupCode,
+} from '../database/schema.js';
 import { jwtConstants } from '../auth/constants.js';
 import { twoFactorKey } from './two-factor.secret.js';
 
@@ -72,7 +84,7 @@ export interface PendingPayload {
 @Injectable()
 export class TwoFactorService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly jwtService: JwtService,
   ) {}
 
@@ -91,13 +103,18 @@ export class TwoFactorService {
   }
 
   /** Verify a TOTP against a base32 secret, enforcing the same-window replay guard. */
-  verifyTotp(secretBase32: string, token: string, lastUsedCounter: number | null): TotpCheck {
+  verifyTotp(
+    secretBase32: string,
+    token: string,
+    lastUsedCounter: number | null,
+  ): TotpCheck {
     const totp = this.totp(secretBase32);
     const delta = totp.validate({ token, window: TOTP_WINDOW });
     if (delta === null) return { ok: false };
     const counter = Math.floor(Date.now() / (TOTP_PERIOD * 1000)) + delta;
     // Reject a code from a step already consumed (RFC 6238 §5.2 — the same 30s code can't be used twice).
-    if (lastUsedCounter !== null && counter <= lastUsedCounter) return { ok: false };
+    if (lastUsedCounter !== null && counter <= lastUsedCounter)
+      return { ok: false };
     return { ok: true, counter };
   }
 
@@ -117,7 +134,10 @@ export class TwoFactorService {
   private encrypt(plaintext: string): string {
     const iv = randomBytes(GCM_IV_LEN);
     const cipher = createCipheriv('aes-256-gcm', twoFactorKey, iv);
-    const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    const enc = Buffer.concat([
+      cipher.update(plaintext, 'utf8'),
+      cipher.final(),
+    ]);
     const tag = cipher.getAuthTag();
     return Buffer.concat([iv, tag, enc]).toString('base64');
   }
@@ -129,7 +149,9 @@ export class TwoFactorService {
     const enc = buf.subarray(GCM_IV_LEN + GCM_TAG_LEN);
     const decipher = createDecipheriv('aes-256-gcm', twoFactorKey, iv);
     decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+    return Buffer.concat([decipher.update(enc), decipher.final()]).toString(
+      'utf8',
+    );
   }
 
   /** Decrypt an admin's stored secret cipher → base32 plaintext (throws on tamper / wrong key). */
@@ -142,10 +164,18 @@ export class TwoFactorService {
   /** Decode a setup pending token. Returns null on any failure (invalid / expired / wrong scope). */
   verifyPending(token: string): PendingPayload | null {
     try {
-      const payload = this.jwtService.verify<{ sub?: number; scope?: string; sec?: string }>(token, {
+      const payload = this.jwtService.verify<{
+        sub?: number;
+        scope?: string;
+        sec?: string;
+      }>(token, {
         secret: jwtConstants.adminSecret,
       });
-      if (payload.scope !== '2fa-setup-pending' || typeof payload.sub !== 'number' || !payload.sec) {
+      if (
+        payload.scope !== '2fa-setup-pending' ||
+        typeof payload.sub !== 'number' ||
+        !payload.sec
+      ) {
         return null;
       }
       return { adminId: payload.sub, secret: payload.sec };
@@ -162,10 +192,16 @@ export class TwoFactorService {
   async signChallenge(adminId: number): Promise<string> {
     const jti = randomUUID();
     // Best-effort GC: drop rows older than 1h (the challenge TTL is 5m, so these are long-expired).
-    await this.prisma.adminLoginChallenge
-      .deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 60 * 60 * 1000) } } })
+    await this.database.db
+      .delete(adminLoginChallenge)
+      .where(
+        lt(
+          adminLoginChallenge.createdAt,
+          new Date(Date.now() - 60 * 60 * 1000),
+        ),
+      )
       .catch(() => {});
-    await this.prisma.adminLoginChallenge.create({ data: { jti, adminId } });
+    await this.database.db.insert(adminLoginChallenge).values({ jti, adminId });
     return this.jwtService.sign(
       { sub: adminId, scope: 'admin-2fa-challenge', jti },
       { secret: jwtConstants.adminSecret, expiresIn: CHALLENGE_TTL },
@@ -176,7 +212,11 @@ export class TwoFactorService {
    *  wrong scope). The jti is what {@link consumeChallenge} marks single-use. */
   verifyChallenge(token: string): { adminId: number; jti: string } | null {
     try {
-      const payload = this.jwtService.verify<{ sub?: number; scope?: string; jti?: string }>(token, {
+      const payload = this.jwtService.verify<{
+        sub?: number;
+        scope?: string;
+        jti?: string;
+      }>(token, {
         secret: jwtConstants.adminSecret,
       });
       if (
@@ -197,11 +237,17 @@ export class TwoFactorService {
    *  returns false and the caller rejects it. Called by AdminAuthService on a successful TOTP/backup OR
    *  passkey verify, after the factor is proven but before the session is issued. */
   async consumeChallenge(jti: string): Promise<boolean> {
-    const r = await this.prisma.adminLoginChallenge.updateMany({
-      where: { jti, consumedAt: null },
-      data: { consumedAt: new Date() },
-    });
-    return r.count > 0;
+    const rows = await this.database.db
+      .update(adminLoginChallenge)
+      .set({ consumedAt: new Date() })
+      .where(
+        and(
+          eq(adminLoginChallenge.jti, jti),
+          isNull(adminLoginChallenge.consumedAt),
+        ),
+      )
+      .returning({ jti: adminLoginChallenge.jti });
+    return rows.length > 0;
   }
 
   // ── Admin.twoFactor* + TwoFactorBackupCode persistence ──────────────────────────
@@ -211,51 +257,68 @@ export class TwoFactorService {
    *  outstanding access token is already invalid (its tver check fails on the next request). This makes the
    *  "no 2FA-bypassing session can exist" invariant atomic; the caller (AdminAuthService.completeSetup)
    *  then revokes refresh tokens best-effort. Returns the plaintext backup codes ONCE. */
-  async enableWithBackupCodes(adminId: number, secretBase32: string): Promise<{ backupCodes: string[] }> {
+  async enableWithBackupCodes(
+    adminId: number,
+    secretBase32: string,
+  ): Promise<{ backupCodes: string[] }> {
     const cipher = this.encrypt(secretBase32);
-    const codes = Array.from({ length: BACKUP_CODE_COUNT }, () => generateBackupCode());
-    await this.prisma.$transaction(async (tx) => {
-      await tx.admin.update({
-        where: { id: adminId },
-        data: {
+    const codes = Array.from({ length: BACKUP_CODE_COUNT }, () =>
+      generateBackupCode(),
+    );
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .update(admin)
+        .set({
           twoFactorEnabled: true,
           twoFactorSecretCipher: cipher,
           twoFactorEnabledAt: new Date(),
           twoFactorLastUsedCounter: null,
-        },
-      });
-      await tx.twoFactorBackupCode.deleteMany({ where: { adminId } });
-      await tx.twoFactorBackupCode.createMany({
-        data: codes.map((c) => ({ adminId, codeHash: hashBackupCode(c) })),
-      });
+          updatedAt: new Date(),
+        })
+        .where(eq(admin.id, adminId));
+      await tx
+        .delete(twoFactorBackupCode)
+        .where(eq(twoFactorBackupCode.adminId, adminId));
+      await tx
+        .insert(twoFactorBackupCode)
+        .values(codes.map((c) => ({ adminId, codeHash: hashBackupCode(c) })));
     });
     return { backupCodes: codes.map(formatBackupCode) };
   }
 
   /** Atomically disable 2FA: clear the secret + flags and drop all backup codes. */
   async disable(adminId: number): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      await tx.admin.update({
-        where: { id: adminId },
-        data: {
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .update(admin)
+        .set({
           twoFactorEnabled: false,
           twoFactorSecretCipher: null,
           twoFactorEnabledAt: null,
           twoFactorLastUsedCounter: null,
-        },
-      });
-      await tx.twoFactorBackupCode.deleteMany({ where: { adminId } });
+          updatedAt: new Date(),
+        })
+        .where(eq(admin.id, adminId));
+      await tx
+        .delete(twoFactorBackupCode)
+        .where(eq(twoFactorBackupCode.adminId, adminId));
     });
   }
 
   /** Replace all backup codes with a fresh set (requires a fresh TOTP at the call site). Returns plaintext ONCE. */
-  async regenerateBackupCodes(adminId: number): Promise<{ backupCodes: string[] }> {
-    const codes = Array.from({ length: BACKUP_CODE_COUNT }, () => generateBackupCode());
-    await this.prisma.$transaction(async (tx) => {
-      await tx.twoFactorBackupCode.deleteMany({ where: { adminId } });
-      await tx.twoFactorBackupCode.createMany({
-        data: codes.map((c) => ({ adminId, codeHash: hashBackupCode(c) })),
-      });
+  async regenerateBackupCodes(
+    adminId: number,
+  ): Promise<{ backupCodes: string[] }> {
+    const codes = Array.from({ length: BACKUP_CODE_COUNT }, () =>
+      generateBackupCode(),
+    );
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .delete(twoFactorBackupCode)
+        .where(eq(twoFactorBackupCode.adminId, adminId));
+      await tx
+        .insert(twoFactorBackupCode)
+        .values(codes.map((c) => ({ adminId, codeHash: hashBackupCode(c) })));
     });
     return { backupCodes: codes.map(formatBackupCode) };
   }
@@ -267,21 +330,40 @@ export class TwoFactorService {
   async consumeBackupCode(adminId: number, rawCode: string): Promise<boolean> {
     const code = normalizeBackupCode(rawCode);
     if (!code) return false;
-    const row = await this.prisma.twoFactorBackupCode.findFirst({
-      where: { adminId, codeHash: hashBackupCode(code), consumedAt: null },
-      select: { id: true },
+    const row = await this.database.db.query.twoFactorBackupCode.findFirst({
+      where: and(
+        eq(twoFactorBackupCode.adminId, adminId),
+        eq(twoFactorBackupCode.codeHash, hashBackupCode(code)),
+        isNull(twoFactorBackupCode.consumedAt),
+      ),
+      columns: { id: true },
     });
     if (!row) return false;
-    const claimed = await this.prisma.twoFactorBackupCode.updateMany({
-      where: { id: row.id, consumedAt: null },
-      data: { consumedAt: new Date() },
-    });
-    return claimed.count > 0; // false only if a concurrent verifier beat us to it
+    const claimed = await this.database.db
+      .update(twoFactorBackupCode)
+      .set({ consumedAt: new Date() })
+      .where(
+        and(
+          eq(twoFactorBackupCode.id, row.id),
+          isNull(twoFactorBackupCode.consumedAt),
+        ),
+      )
+      .returning({ id: twoFactorBackupCode.id });
+    return claimed.length > 0; // false only if a concurrent verifier beat us to it
   }
 
   /** Remaining (unconsumed) backup codes — for the status card's "X codes left" indicator. */
   async remainingBackupCodes(adminId: number): Promise<number> {
-    return this.prisma.twoFactorBackupCode.count({ where: { adminId, consumedAt: null } });
+    return this.database.db
+      .select({ value: count() })
+      .from(twoFactorBackupCode)
+      .where(
+        and(
+          eq(twoFactorBackupCode.adminId, adminId),
+          isNull(twoFactorBackupCode.consumedAt),
+        ),
+      )
+      .then(([row]) => row.value);
   }
 }
 
@@ -295,7 +377,8 @@ const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 function generateBackupCode(): string {
   const bytes = randomBytes(BACKUP_CODE_CHARS);
   let chars = '';
-  for (let i = 0; i < BACKUP_CODE_CHARS; i++) chars += CODE_ALPHABET[bytes[i] % 32];
+  for (let i = 0; i < BACKUP_CODE_CHARS; i++)
+    chars += CODE_ALPHABET[bytes[i] % 32];
   return chars;
 }
 
@@ -316,5 +399,7 @@ function normalizeBackupCode(raw: string): string | null {
  *  at-rest key. Exported so tests can seed a store with the exact stored value; the key stays
  *  module-private, so the exported digest is never usable off-server. */
 export function hashBackupCode(bareCode: string): string {
-  return createHmac('sha256', twoFactorKey).update(bareCode).digest('base64url');
+  return createHmac('sha256', twoFactorKey)
+    .update(bareCode)
+    .digest('base64url');
 }

@@ -581,6 +581,23 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     });
   });
 
+  it('rejects legacy raw text instead of silently rendering or hiding it', async () => {
+    const legacy = {
+      ...row(101, 2),
+      content: 'legacy raw message',
+    };
+    const { src } = setup({
+      code: 0,
+      message: 'ok',
+      data: [legacy],
+      hasMore: false,
+    });
+
+    await expectAsync(src.init(-1, 50, 0)).toBeRejectedWithError(
+      'invalid PURE_TEXT message envelope',
+    );
+  });
+
   it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {
     const quoted = {
       ...row(101, 2),

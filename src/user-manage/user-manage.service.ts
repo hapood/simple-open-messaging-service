@@ -1,6 +1,12 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
-import { Prisma } from '../prisma/generated/client.js';
+import { and, count, desc, eq, ilike, inArray } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import {
+  messageThread,
+  pushToken,
+  threadParticipant,
+  user,
+} from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -9,59 +15,55 @@ import { randomInt } from 'node:crypto';
 @Injectable()
 export class UserManageService implements OnModuleInit {
   constructor(
-    private prisma: PrismaService,
+    private database: DatabaseService,
     private auth: AuthService,
     private userService: UserService,
   ) {}
 
   async onModuleInit() {}
 
-  async getUserList(params: {
-    skip?: number;
-    take?: number;
-    cursor?: Prisma.UserWhereUniqueInput;
-    where?: Prisma.UserWhereInput;
-    orderBy?: Prisma.UserOrderByWithRelationInput;
-  }): Promise<Prisma.UserGetPayload<{ omit: { hashPwd: true, friendReqAckRev: true } }>[]> {
-    const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.user.findMany({
-      skip,
-      take,
-      cursor,
-      where,
-      orderBy,
-      omit: { hashPwd: true, friendReqAckRev: true },
-    });
-  }
-
   /** 360° view of one user: profile + group memberships + active sessions + push devices.
    *  One round-trip via Promise.all. Returns null when the user does not exist. */
   async getUserDetail(id: number) {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      omit: { hashPwd: true, friendReqAckRev: true },
-    });
-    if (!user) return null;
+    const profile = await this.userService.findUniqueUser({ id });
+    if (!profile) return null;
     const [groups, sessions, pushTokens] = await Promise.all([
-      this.prisma.threadParticipant.findMany({
-        where: { userId: id, thread: { type: 'GROUP' } },
-        select: {
-          threadId: true,
-          role: true,
-          joinedAt: true,
-          leftAt: true,
-          thread: { select: { groupUser: { select: { account: true, name: true } } } },
-        },
-        orderBy: { joinedAt: 'desc' },
-      }),
+      this.database.db
+        .select({
+          threadId: threadParticipant.threadId,
+          role: threadParticipant.role,
+          joinedAt: threadParticipant.joinedAt,
+          leftAt: threadParticipant.leftAt,
+          groupAccount: user.account,
+          groupName: user.name,
+        })
+        .from(threadParticipant)
+        .innerJoin(
+          messageThread,
+          eq(messageThread.id, threadParticipant.threadId),
+        )
+        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .where(
+          and(
+            eq(threadParticipant.userId, id),
+            eq(messageThread.type, 'GROUP'),
+          ),
+        )
+        .orderBy(desc(threadParticipant.joinedAt))
+        .then((rows) =>
+          rows.map(({ groupAccount, groupName, ...row }) => ({
+            ...row,
+            thread: { groupUser: { account: groupAccount, name: groupName } },
+          })),
+        ),
       this.auth.listActiveSessions(id, null),
-      this.prisma.pushToken.findMany({
-        where: { userId: id },
-        select: { id: true, platform: true, deviceId: true, lastSeenAt: true },
-        orderBy: { lastSeenAt: 'desc' },
+      this.database.db.query.pushToken.findMany({
+        where: eq(pushToken.userId, id),
+        columns: { id: true, platform: true, deviceId: true, lastSeenAt: true },
+        orderBy: desc(pushToken.lastSeenAt),
       }),
     ]);
-    return { user, groups, sessions, pushTokens };
+    return { user: profile, groups, sessions, pushTokens };
   }
 
   // ── Admin user-management operations ────────────────────────────────────────
@@ -72,29 +74,51 @@ export class UserManageService implements OnModuleInit {
 
   /** Paginated, searchable user list (non-group users only). Omits hashPwd. */
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
-    const where = opts.search
-      ? { isGroup: false, account: { contains: opts.search, mode: 'insensitive' as const } }
-      : { isGroup: false };
+    const where = and(
+      eq(user.isGroup, false),
+      opts.search ? ilike(user.account, `%${opts.search}%`) : undefined,
+    );
     const [list, total] = await Promise.all([
-      this.getUserList({
-        where,
-        skip: opts.skip ?? 0,
-        take: opts.take ?? 20,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.user.count({ where }),
+      this.database.db
+        .select({
+          id: user.id,
+          account: user.account,
+          name: user.name,
+          avatar: user.avatar,
+          bio: user.bio,
+          isForeigner: user.isForeigner,
+          isGroup: user.isGroup,
+          domain: user.domain,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+          isDeleted: user.isDeleted,
+          profileRev: user.profileRev,
+          remoteProfileRev: user.remoteProfileRev,
+          threadRevision: user.threadRevision,
+          mustChangePassword: user.mustChangePassword,
+        })
+        .from(user)
+        .where(where)
+        .orderBy(desc(user.createdAt))
+        .offset(opts.skip ?? 0)
+        .limit(opts.take ?? 20),
+      this.database.db
+        .select({ value: count() })
+        .from(user)
+        .where(where)
+        .then(([row]) => row.value),
     ]);
     return { list, total };
   }
 
   /** Soft-delete + revoke every session token (invalidateAllSessions revokes all SessionToken rows + emits FORCE_LOGOUT). */
   async disableUser(id: number): Promise<void> {
-    await this.prisma.user.update({ where: { id }, data: { isDeleted: true } });
+    await this.updateUserOrThrow(id, { isDeleted: true });
     await this.auth.invalidateAllSessions(id, 'admin_disabled');
   }
 
   async enableUser(id: number): Promise<void> {
-    await this.prisma.user.update({ where: { id }, data: { isDeleted: false } });
+    await this.updateUserOrThrow(id, { isDeleted: false });
   }
 
   /** Force logout every device without changing the account (disable = soft-delete; this does not). */
@@ -110,9 +134,9 @@ export class UserManageService implements OnModuleInit {
   async generateInitialPassword(id: number): Promise<{ password: string }> {
     const password = randomInitialPassword();
     const hash = await this.auth.hashPassword(password);
-    await this.prisma.user.update({
-      where: { id },
-      data: { hashPwd: hash, mustChangePassword: true },
+    await this.updateUserOrThrow(id, {
+      hashPwd: hash,
+      mustChangePassword: true,
     });
     await this.auth.invalidateAllSessions(id, 'admin_reinit_password');
     return { password };
@@ -129,7 +153,9 @@ export class UserManageService implements OnModuleInit {
     name: string;
     password?: string;
   }): Promise<{ id: number; account: string }> {
-    const hashPwd = params.password ? await this.auth.hashPassword(params.password) : null;
+    const hashPwd = params.password
+      ? await this.auth.hashPassword(params.password)
+      : null;
     const res = await this.userService.addUser({
       account: params.account,
       name: params.name,
@@ -138,7 +164,10 @@ export class UserManageService implements OnModuleInit {
     // addUser returns {status:2} on a duplicate account (no data) — map to ALREADY_EXISTS. status 0
     // guarantees data is present; the guard also narrows it for the typechecker.
     if (res.status !== 0 || !res.data) {
-      throw new BusinessException(BusinessCode.ALREADY_EXISTS, `account ${params.account} already exists`);
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        `account ${params.account} already exists`,
+      );
     }
     return res.data;
   }
@@ -158,18 +187,34 @@ export class UserManageService implements OnModuleInit {
 
   /** Batch-resolve userId → account for the live-connections backfill (avoids N+1 in the controller). */
   async attachAccounts(userIds: number[]): Promise<Map<number, string>> {
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, account: true },
-    });
+    if (userIds.length === 0) return new Map();
+    const users = await this.database.db
+      .select({ id: user.id, account: user.account })
+      .from(user)
+      .where(inArray(user.id, userIds));
     return new Map(users.map((u) => [u.id, u.account]));
+  }
+
+  private async updateUserOrThrow(
+    id: number,
+    data: Partial<typeof user.$inferInsert>,
+  ): Promise<void> {
+    const rows = await this.database.db
+      .update(user)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(user.id, id))
+      .returning({ id: user.id });
+    if (rows.length === 0) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
+    }
   }
 }
 
 /** 12-char [A-Za-z0-9] password (~71 bits) — typeable, matches RegisterDto's allowed-character class.
  *  Used only by {@link UserManageService.generateInitialPassword}. */
 function randomInitialPassword(): string {
-  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const CHARS =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let s = '';
   for (let i = 0; i < 12; i++) s += CHARS[randomInt(0, CHARS.length)];
   return s;

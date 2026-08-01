@@ -19,11 +19,8 @@ import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import {
-  GroupRole,
-  MessageThreadType,
-  Prisma,
-} from '../prisma/generated/client.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
+import { messageThread, threadParticipant } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
@@ -65,6 +62,10 @@ import {
 type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItemDto }
   | { threadId: number; direction: 'DELETE' };
+
+type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
+  thread: typeof messageThread.$inferSelect;
+};
 
 @ApiTags('user')
 @Controller()
@@ -196,7 +197,7 @@ export class UserController {
    */
   private async hydrateConversationItems(
     me: number,
-    list: Prisma.ThreadParticipantGetPayload<{ include: { thread: true } }>[],
+    list: ParticipantWithThread[],
   ) {
     // Count + semantic mention come from the same unread range query; they must never disagree about the
     // caller's read watermark or own-message exclusion.

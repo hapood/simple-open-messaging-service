@@ -8,7 +8,8 @@ import { Reflector } from '@nestjs/core';
 import { catchError, tap, throwError } from 'rxjs';
 import type { Observable } from 'rxjs';
 import type { FastifyRequest } from 'fastify';
-import { PrismaService } from '../prisma.service.js';
+import { DatabaseService } from '../database/database.service.js';
+import { adminActionLog } from '../database/schema.js';
 import { ADMIN_AUDIT_KEY, type AdminAuditMetadata } from './audit.decorator.js';
 import type { AdminPrincipal } from './admin-session.js';
 
@@ -29,14 +30,13 @@ type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
 export class AdminAuditInterceptor implements NestInterceptor {
   constructor(
     private readonly reflector: Reflector,
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const meta = this.reflector.getAllAndOverride<AdminAuditMetadata | undefined>(
-      ADMIN_AUDIT_KEY,
-      [context.getHandler(), context.getClass()],
-    );
+    const meta = this.reflector.getAllAndOverride<
+      AdminAuditMetadata | undefined
+    >(ADMIN_AUDIT_KEY, [context.getHandler(), context.getClass()]);
     // Not an audited handler → pass through untouched (the common case; this interceptor is global).
     if (!meta) return next.handle();
 
@@ -71,21 +71,19 @@ export class AdminAuditInterceptor implements NestInterceptor {
         : undefined;
       const ip = (req.ip ?? '').slice(0, 64);
       const ua = String(req.headers['user-agent'] ?? '').slice(0, 255);
-      await this.prisma.adminActionLog.create({
-        data: {
-          adminId,
-          adminRole: req.user!.role,
-          action: meta.action,
-          targetType: meta.options?.targetType,
-          targetId: targetId || undefined,
-          ip: ip || null,
-          userAgent: ua || null,
-          route: String(req.url ?? '').slice(0, 255),
-          success,
-          errorMessage: success
-            ? null
-            : (err instanceof Error ? err.message : String(err)).slice(0, 255),
-        },
+      await this.database.db.insert(adminActionLog).values({
+        adminId,
+        adminRole: req.user!.role,
+        action: meta.action,
+        targetType: meta.options?.targetType,
+        targetId: targetId || undefined,
+        ip: ip || null,
+        userAgent: ua || null,
+        route: String(req.url ?? '').slice(0, 255),
+        success,
+        errorMessage: success
+          ? null
+          : (err instanceof Error ? err.message : String(err)).slice(0, 255),
       });
     } catch {
       // Swallow — audit is best-effort and must never break the observed operation.

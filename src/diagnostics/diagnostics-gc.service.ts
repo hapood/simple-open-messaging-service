@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { existsSync, readdir, unlink } from 'fs';
 import { promisify } from 'util';
-import { PrismaService } from '../prisma.service.js';
+import { and, eq, lt, ne } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { diagnosticsReport } from '../database/schema.js';
 import { DiagnosticsService } from './diagnostics.service.js';
 
 const readdirAsync = promisify(readdir);
@@ -22,7 +24,7 @@ export class DiagnosticsGcService {
   private readonly logger = new Logger(DiagnosticsGcService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly diagnostics: DiagnosticsService,
   ) {}
 
@@ -31,16 +33,24 @@ export class DiagnosticsGcService {
     retentionDays = DEFAULT_RETENTION_DAYS,
   ): Promise<{ rows: number; files: number }> {
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
-    const expired = await this.prisma.diagnosticsReport.findMany({
-      where: { createdAt: { lt: cutoff }, isDeleted: false },
-      select: { id: true, bundlePath: true },
-    });
+    const expired = await this.database.db
+      .select({
+        id: diagnosticsReport.id,
+        bundlePath: diagnosticsReport.bundlePath,
+      })
+      .from(diagnosticsReport)
+      .where(
+        and(
+          lt(diagnosticsReport.createdAt, cutoff),
+          eq(diagnosticsReport.isDeleted, false),
+        ),
+      );
     let files = 0;
     for (const { id, bundlePath } of expired) {
-      await this.prisma.diagnosticsReport.update({
-        where: { id },
-        data: { isDeleted: true },
-      });
+      await this.database.db
+        .update(diagnosticsReport)
+        .set({ isDeleted: true, updatedAt: new Date() })
+        .where(eq(diagnosticsReport.id, id));
       if (await this.unlinkBundleIfUnreferenced(bundlePath, id)) files++;
     }
     this.logger.log(
@@ -61,10 +71,17 @@ export class DiagnosticsGcService {
     let files = 0;
     for (const name of entries) {
       if (!name.endsWith('.tar.gz')) continue;
-      const live = await this.prisma.diagnosticsReport.findFirst({
-        where: { bundlePath: name, isDeleted: false },
-        select: { id: true },
-      });
+      const live = await this.database.db
+        .select({ id: diagnosticsReport.id })
+        .from(diagnosticsReport)
+        .where(
+          and(
+            eq(diagnosticsReport.bundlePath, name),
+            eq(diagnosticsReport.isDeleted, false),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]);
       if (live) continue;
       try {
         await unlinkAsync(this.diagnostics.bundleAbsPath(name));
@@ -81,33 +98,57 @@ export class DiagnosticsGcService {
    *  it. Idempotent — a missing/already-deleted row returns { deleted: false }. Reuses the same
    *  reference guard as {@link gcExpiredReports} so an identical sha256 bundle shared with another row
    *  is never yanked. */
-  async deleteReport(id: number): Promise<{ deleted: boolean; unlinked: boolean }> {
-    const row = await this.prisma.diagnosticsReport.findFirst({
-      where: { id, isDeleted: false },
-      select: { id: true, bundlePath: true },
-    });
+  async deleteReport(
+    id: number,
+  ): Promise<{ deleted: boolean; unlinked: boolean }> {
+    const row = await this.database.db
+      .select({
+        id: diagnosticsReport.id,
+        bundlePath: diagnosticsReport.bundlePath,
+      })
+      .from(diagnosticsReport)
+      .where(
+        and(
+          eq(diagnosticsReport.id, id),
+          eq(diagnosticsReport.isDeleted, false),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
     if (!row) return { deleted: false, unlinked: false };
-    await this.prisma.diagnosticsReport.update({
-      where: { id: row.id },
-      data: { isDeleted: true },
-    });
-    const unlinked = await this.unlinkBundleIfUnreferenced(row.bundlePath, row.id);
+    await this.database.db
+      .update(diagnosticsReport)
+      .set({ isDeleted: true, updatedAt: new Date() })
+      .where(eq(diagnosticsReport.id, row.id));
+    const unlinked = await this.unlinkBundleIfUnreferenced(
+      row.bundlePath,
+      row.id,
+    );
     this.logger.log(`deleteReport: soft-deleted #${id}, unlinked=${unlinked}.`);
     return { deleted: true, unlinked };
   }
 
   /** Flag rows whose bundle file is missing on disk as archived (manual deletion / FS loss). */
-  async reconcileDiagnostics(): Promise<{ flagged: number }> {    const rows = await this.prisma.diagnosticsReport.findMany({
-      where: { isDeleted: false, status: { not: 'archived' } },
-      select: { id: true, bundlePath: true },
-    });
+  async reconcileDiagnostics(): Promise<{ flagged: number }> {
+    const rows = await this.database.db
+      .select({
+        id: diagnosticsReport.id,
+        bundlePath: diagnosticsReport.bundlePath,
+      })
+      .from(diagnosticsReport)
+      .where(
+        and(
+          eq(diagnosticsReport.isDeleted, false),
+          ne(diagnosticsReport.status, 'archived'),
+        ),
+      );
     let flagged = 0;
     for (const { id, bundlePath } of rows) {
       if (existsSync(this.diagnostics.bundleAbsPath(bundlePath))) continue;
-      await this.prisma.diagnosticsReport.updateMany({
-        where: { id },
-        data: { status: 'archived' },
-      });
+      await this.database.db
+        .update(diagnosticsReport)
+        .set({ status: 'archived', updatedAt: new Date() })
+        .where(eq(diagnosticsReport.id, id));
       flagged++;
     }
     this.logger.log(
@@ -122,10 +163,18 @@ export class DiagnosticsGcService {
     bundlePath: string,
     excludingId: number,
   ): Promise<boolean> {
-    const other = await this.prisma.diagnosticsReport.findFirst({
-      where: { bundlePath, isDeleted: false, id: { not: excludingId } },
-      select: { id: true },
-    });
+    const other = await this.database.db
+      .select({ id: diagnosticsReport.id })
+      .from(diagnosticsReport)
+      .where(
+        and(
+          eq(diagnosticsReport.bundlePath, bundlePath),
+          eq(diagnosticsReport.isDeleted, false),
+          ne(diagnosticsReport.id, excludingId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
     if (other) return false;
     try {
       await unlinkAsync(this.diagnostics.bundleAbsPath(bundlePath));

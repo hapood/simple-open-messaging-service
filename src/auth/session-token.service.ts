@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
-import { PrismaService } from '../prisma.service.js';
+import { and, eq, isNull } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { sessionToken, user } from '../database/schema.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 
 /** Untrusted-session deadline + how long it slides forward on each (throttled) use. Active sessions
@@ -56,7 +58,7 @@ export class SessionTokenService {
   private readonly logger = new Logger(SessionTokenService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly kvStore: KvStoreService,
   ) {}
 
@@ -75,32 +77,47 @@ export class SessionTokenService {
   async issue(
     userId: number,
     client: SessionClient,
-    opts: { device?: string; userAgent?: string; ip?: string; persistent?: boolean; trusted?: boolean } = {},
+    opts: {
+      device?: string;
+      userAgent?: string;
+      ip?: string;
+      persistent?: boolean;
+      trusted?: boolean;
+    } = {},
   ): Promise<string> {
     const plaintext = randomBytes(32).toString('hex');
     // Lifetime by trust, not platform: the native app is trusted by default; a desktop opts in; web never.
-    const trusted = opts.trusted ?? (client === 'app');
-    const expiresAt = trusted ? null : new Date(Date.now() + WEB_SESSION_TTL_MS);
+    const trusted = opts.trusted ?? client === 'app';
+    const expiresAt = trusted
+      ? null
+      : new Date(Date.now() + WEB_SESSION_TTL_MS);
     const tokenHash = hashToken(plaintext);
     const persistent = opts.persistent ?? true;
-    const created = await this.prisma.sessionToken.create({
-      data: {
-        userId,
-        tokenHash,
-        client,
-        device: opts.device ?? null,
-        userAgent: opts.userAgent ?? null,
-        ip: opts.ip ?? null,
-        lastSeenIp: opts.ip ?? null,
-        expiresAt,
-        persistent,
-        trusted,
-      },
-      select: {
-        id: true,
-        user: { select: { mustChangePassword: true } },
-      },
-    });
+    const [created, principal] = await Promise.all([
+      this.database.db
+        .insert(sessionToken)
+        .values({
+          userId,
+          tokenHash,
+          client,
+          device: opts.device ?? null,
+          userAgent: opts.userAgent ?? null,
+          ip: opts.ip ?? null,
+          lastSeenIp: opts.ip ?? null,
+          expiresAt,
+          persistent,
+          trusted,
+        })
+        .returning({ id: sessionToken.id })
+        .then((rows) => rows[0]),
+      this.database.db
+        .select({ mustChangePassword: user.mustChangePassword })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1)
+        .then((rows) => rows[0]),
+    ]);
+    if (!created || !principal) throw new Error('session issue failed');
     await this.kvStore
       .initPersistent(
         `${CACHE_PREFIX}${tokenHash}`,
@@ -109,7 +126,7 @@ export class SessionTokenService {
           sessionId: created.id,
           exp: expiresAt?.getTime() ?? null,
           persistent,
-          mustChangePassword: created.user.mustChangePassword,
+          mustChangePassword: principal.mustChangePassword,
           nextTouchAt: Date.now() + WEB_SESSION_SLIDING_TOUCH_MS,
         }),
         expiresAt?.getTime() ?? null,
@@ -130,7 +147,13 @@ export class SessionTokenService {
   async validate(
     raw: string,
     opts: { ip?: string | null } = {},
-  ): Promise<{ userId: number; sessionId: number; slid: boolean; persistent: boolean; mustChangePassword: boolean } | null> {
+  ): Promise<{
+    userId: number;
+    sessionId: number;
+    slid: boolean;
+    persistent: boolean;
+    mustChangePassword: boolean;
+  } | null> {
     const h = hashToken(raw);
     const key = `${CACHE_PREFIX}${h}`;
 
@@ -149,18 +172,21 @@ export class SessionTokenService {
       }
     }
 
-    const rec = await this.prisma.sessionToken.findUnique({
-      where: { tokenHash: h },
-      select: {
-        id: true,
-        userId: true,
-        expiresAt: true,
-        revokedAt: true,
-        lastSeenAt: true,
-        persistent: true,
-        user: { select: { mustChangePassword: true } },
-      },
-    });
+    const rec = await this.database.db
+      .select({
+        id: sessionToken.id,
+        userId: sessionToken.userId,
+        expiresAt: sessionToken.expiresAt,
+        revokedAt: sessionToken.revokedAt,
+        lastSeenAt: sessionToken.lastSeenAt,
+        persistent: sessionToken.persistent,
+        mustChangePassword: user.mustChangePassword,
+      })
+      .from(sessionToken)
+      .innerJoin(user, eq(user.id, sessionToken.userId))
+      .where(eq(sessionToken.tokenHash, h))
+      .limit(1)
+      .then((rows) => rows[0]);
     if (!rec || rec.revokedAt !== null) return null;
     const exp = rec.expiresAt?.getTime() ?? null;
     if (exp !== null && exp <= Date.now()) return null;
@@ -172,9 +198,10 @@ export class SessionTokenService {
     let slid = false;
     let nextTouchAt = Date.now() + WEB_SESSION_SLIDING_TOUCH_MS;
     if (Date.now() - rec.lastSeenAt.getTime() > WEB_SESSION_SLIDING_TOUCH_MS) {
-      const data: { lastSeenAt: Date; lastSeenIp?: string; expiresAt?: Date } = {
-        lastSeenAt: new Date(),
-      };
+      const data: { lastSeenAt: Date; lastSeenIp?: string; expiresAt?: Date } =
+        {
+          lastSeenAt: new Date(),
+        };
       if (opts.ip) data.lastSeenIp = opts.ip;
       if (exp !== null) {
         cachedExp = Date.now() + WEB_SESSION_TTL_MS;
@@ -182,12 +209,17 @@ export class SessionTokenService {
         slid = true;
       }
       try {
-        await this.prisma.sessionToken.update({ where: { tokenHash: h }, data });
+        await this.database.db
+          .update(sessionToken)
+          .set(data)
+          .where(eq(sessionToken.tokenHash, h));
       } catch (e) {
         // Authentication is still valid according to the authoritative row just read. Do not claim a
         // slide or refresh the cookie when persistence failed; leave nextTouchAt due so a later request
         // retries the touch.
-        this.logger.warn(`activity/sliding-touch write failed (non-fatal): ${String(e)}`);
+        this.logger.warn(
+          `activity/sliding-touch write failed (non-fatal): ${String(e)}`,
+        );
         cachedExp = exp;
         slid = false;
         nextTouchAt = Date.now();
@@ -199,11 +231,11 @@ export class SessionTokenService {
         .updatePersistent(
           key,
           encodeCacheEntry({
-          userId: rec.userId,
-          sessionId: rec.id,
-          exp: cachedExp,
-          persistent: rec.persistent,
-          mustChangePassword: rec.user.mustChangePassword,
+            userId: rec.userId,
+            sessionId: rec.id,
+            exp: cachedExp,
+            persistent: rec.persistent,
+            mustChangePassword: rec.mustChangePassword,
             nextTouchAt,
           }),
           cachedExp,
@@ -214,17 +246,25 @@ export class SessionTokenService {
       // such as setPassword returns the fresh principal instead of causing a spurious logout.
       if (!updated) return this.validate(raw, opts);
     }
-    return { userId: rec.userId, sessionId: rec.id, slid, persistent: rec.persistent, mustChangePassword: rec.user.mustChangePassword };
+    return {
+      userId: rec.userId,
+      sessionId: rec.id,
+      slid,
+      persistent: rec.persistent,
+      mustChangePassword: rec.mustChangePassword,
+    };
   }
 
   /** Revoke a single presented token (self-revoke on logout). Idempotent — a not-found or
    *  already-revoked token is a no-op so device logout is resilient to retries / stale state. */
   async revoke(raw: string): Promise<void> {
     const h = hashToken(raw);
-    await this.prisma.sessionToken.updateMany({
-      where: { tokenHash: h, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'logout' },
-    });
+    await this.database.db
+      .update(sessionToken)
+      .set({ revokedAt: new Date(), revokeReason: 'logout' })
+      .where(
+        and(eq(sessionToken.tokenHash, h), isNull(sessionToken.revokedAt)),
+      );
     await this.kvStore.delPersistent(`${CACHE_PREFIX}${h}`).catch(() => {});
   }
 
@@ -234,30 +274,51 @@ export class SessionTokenService {
    *  id. Idempotent (a not-found / already-revoked / foreign row is a no-op). The persistent validation
    *  entry is dropped by the row's tokenHash, immediately preventing further cache authentication.
    *  Returns true iff a row was actually revoked (lets the caller distinguish "revoked" from "no-op"). */
-  async revokeById(userId: number, sessionId: number, reason: string = 'device_revoke'): Promise<boolean> {
-    const rec = await this.prisma.sessionToken.findFirst({
-      where: { id: sessionId, userId, revokedAt: null },
-      select: { tokenHash: true },
-    });
+  async revokeById(
+    userId: number,
+    sessionId: number,
+    reason: string = 'device_revoke',
+  ): Promise<boolean> {
+    const rec = await this.database.db
+      .select({ tokenHash: sessionToken.tokenHash })
+      .from(sessionToken)
+      .where(
+        and(
+          eq(sessionToken.id, sessionId),
+          eq(sessionToken.userId, userId),
+          isNull(sessionToken.revokedAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
     if (!rec) return false;
-    await this.prisma.sessionToken.update({
-      where: { id: sessionId },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
-    await this.kvStore.delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`).catch(() => {});
+    await this.database.db
+      .update(sessionToken)
+      .set({ revokedAt: new Date(), revokeReason: reason })
+      .where(eq(sessionToken.id, sessionId));
+    await this.kvStore
+      .delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`)
+      .catch(() => {});
     return true;
   }
 
   /** Revoke ALL of the user's session tokens and delete each corresponding persistent validation entry. */
-  async revokeAllForUser(userId: number, reason = 'all_devices'): Promise<void> {
-    const sessions = await this.prisma.sessionToken.findMany({
-      where: { userId, revokedAt: null },
-      select: { tokenHash: true },
-    });
-    await this.prisma.sessionToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
+  async revokeAllForUser(
+    userId: number,
+    reason = 'all_devices',
+  ): Promise<void> {
+    const active = and(
+      eq(sessionToken.userId, userId),
+      isNull(sessionToken.revokedAt),
+    );
+    const sessions = await this.database.db
+      .select({ tokenHash: sessionToken.tokenHash })
+      .from(sessionToken)
+      .where(active);
+    await this.database.db
+      .update(sessionToken)
+      .set({ revokedAt: new Date(), revokeReason: reason })
+      .where(active);
     if (sessions.length > 0) {
       await this.kvStore
         .delPersistent(
@@ -271,10 +332,12 @@ export class SessionTokenService {
    *  Used by OTP/QR login to record the produced session id on an audit row WITHOUT changing issue()'s
    *  return shape. The row exists immediately after issue()'s create, so this never misses. */
   async idOfToken(raw: string): Promise<number | null> {
-    const rec = await this.prisma.sessionToken.findUnique({
-      where: { tokenHash: hashToken(raw) },
-      select: { id: true },
-    });
+    const rec = await this.database.db
+      .select({ id: sessionToken.id })
+      .from(sessionToken)
+      .where(eq(sessionToken.tokenHash, hashToken(raw)))
+      .limit(1)
+      .then((rows) => rows[0]);
     return rec?.id ?? null;
   }
 
@@ -284,10 +347,12 @@ export class SessionTokenService {
    *  generateInitialPassword (which revoke all sessions, so stale caches die with them), setPassword KEEPS
    *  this session, so the issue-initialized entry must be removed when that flag changes. */
   async bustCacheBySessionId(sessionId: number): Promise<void> {
-    const rec = await this.prisma.sessionToken.findUnique({
-      where: { id: sessionId },
-      select: { tokenHash: true },
-    });
+    const rec = await this.database.db
+      .select({ tokenHash: sessionToken.tokenHash })
+      .from(sessionToken)
+      .where(eq(sessionToken.id, sessionId))
+      .limit(1)
+      .then((rows) => rows[0]);
     if (rec) {
       await this.kvStore
         .delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`)

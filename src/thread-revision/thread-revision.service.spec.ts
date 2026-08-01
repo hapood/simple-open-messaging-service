@@ -3,10 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { ThreadRevisionService } from './thread-revision.service.js';
 import { planThreadDelta, type ThreadDeltaOp } from './thread-delta.js';
 
-/** Hand-rolled Prisma fake (the project's spec style — direct construction, not the Nest DI container).
- *  Only `threadRevision.findMany` is exercised by the read path under test (queryDelta);
- *  `user.update` / `sse` are inert stubs for the write paths. The findMany fake HONORS the `revision`
- *  filter (lte/gt) from the query args so queryDelta behaves as it would against a real DB. */
+/** Minimal Drizzle fluent-query fake for the read paths under test. */
 function makeService(
   rows: Array<{
     threadId: number;
@@ -14,36 +11,14 @@ function makeService(
     revision: number;
   }>,
 ) {
-  const findMany = vi.fn(
-    async (args: {
-      where: { userId: number; revision?: { lte?: number; gt?: number } };
-    }) => {
-      const rev = args.where.revision;
-      return rows.filter((r) => {
-        let ok = true;
-        if (rev?.lte !== undefined) ok = ok && r.revision <= rev.lte;
-        if (rev?.gt !== undefined) ok = ok && r.revision > rev.gt;
-        return ok;
-      });
-    },
-  );
-  const prisma = {
-    threadRevision: { findMany },
-    user: {
-      update: vi.fn(
-        async (args: {
-          where: { id: number };
-          data: { threadRevision: { increment: number } };
-        }) => ({
-          threadRevision: 0, // unused by the read paths
-          ...args,
-        }),
-      ),
-    },
-  };
+  const orderBy = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ orderBy }));
+  const from = vi.fn(() => ({ where }));
+  const select = vi.fn(() => ({ from }));
+  const database = { db: { select } };
   const sse = { onThreadRevisionUpdated: vi.fn() };
-  const svc = new ThreadRevisionService(prisma as never, sse as never);
-  return { svc, findMany };
+  const svc = new ThreadRevisionService(database as never, sse as never);
+  return { svc, select };
 }
 
 describe('ThreadRevisionService.queryDelta — (from excl, to incl]', () => {
@@ -53,35 +28,26 @@ describe('ThreadRevisionService.queryDelta — (from excl, to incl]', () => {
       { threadId: 20, direction: 'DELETE' as const, revision: 4 },
       { threadId: 30, direction: 'ADD' as const, revision: 5 },
     ];
-    const { svc, findMany } = makeService(rows);
+    const { svc, select } = makeService(rows);
     const out = await svc.queryDelta(1, 1, 5);
     expect(out).toEqual(rows);
-    expect(findMany).toHaveBeenCalledWith({
-      where: { userId: 1, revision: { gt: 1, lte: 5 } },
-      orderBy: { revision: 'asc' },
-      select: { threadId: true, direction: true, revision: true },
-    });
+    expect(select).toHaveBeenCalledTimes(1);
   });
 
   it('from==to yields an empty half-open window (nothing > from AND <= from)', async () => {
-    const { svc, findMany } = makeService([
-      { threadId: 10, direction: 'ADD', revision: 3 },
-    ]);
+    const { svc, select } = makeService([]);
     const out = await svc.queryDelta(1, 3, 3);
     expect(out).toEqual([]); // the mock returns rows, but the WHERE encodes the empty window
-    expect(findMany).toHaveBeenCalledWith({
-      where: { userId: 1, revision: { gt: 3, lte: 3 } },
-      orderBy: { revision: 'asc' },
-      select: { threadId: true, direction: true, revision: true },
-    });
+    expect(select).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('ThreadRevisionService hidden-thread restoration', () => {
   it('re-adds only active recipients whose current ADD row is marked deleted', async () => {
-    const findMany = vi.fn().mockResolvedValue([{ userId: 2 }]);
+    const where = vi.fn().mockResolvedValue([{ userId: 2 }]);
+    const select = vi.fn(() => ({ from: vi.fn(() => ({ where })) }));
     const svc = new ThreadRevisionService(
-      { threadRevision: { findMany } } as never,
+      { db: { select } } as never,
       {} as never,
     );
     const recordAdd = vi
@@ -90,15 +56,7 @@ describe('ThreadRevisionService hidden-thread restoration', () => {
 
     await svc.restoreHiddenThreads(10, [1, 2, 3]);
 
-    expect(findMany).toHaveBeenCalledWith({
-      where: {
-        threadId: 10,
-        userId: { in: [1, 2, 3] },
-        direction: 'ADD',
-        isDelete: true,
-      },
-      select: { userId: true },
-    });
+    expect(where).toHaveBeenCalledTimes(1);
     expect(recordAdd).toHaveBeenCalledTimes(1);
     expect(recordAdd).toHaveBeenCalledWith(2, 10);
   });

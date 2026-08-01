@@ -1,11 +1,36 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
 import {
-  ContentType,
-  Message,
-  MessageThreadType,
-  Prisma,
-} from '../prisma/generated/client.js';
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import { ContentType, MessageThreadType } from '../database/enums.js';
+import {
+  forwardMessage,
+  group,
+  mediaAsset,
+  mediaMessage,
+  message,
+  messageThread,
+  pendingMedia,
+  threadParticipant,
+  user,
+} from '../database/schema.js';
+import { isUniqueViolation } from '../database/database-error.js';
 import { extractDigests } from '../upload/file-content.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
@@ -22,6 +47,13 @@ import {
 } from '../../shared/text-message-content.js';
 
 export type UnreadMentionState = Array<'all' | 'me'>;
+export type Message = typeof message.$inferSelect;
+export interface MessageQueryParams {
+  skip?: number;
+  take?: number;
+  orderBy?: { seq: 'asc' | 'desc' };
+  cursor?: { threadId_seq: { threadId: number; seq: number } };
+}
 
 export interface ThreadAttentionState {
   count: number;
@@ -128,17 +160,30 @@ export function derivePreview(type: ContentType, content: string): string {
 @Injectable()
 export class MessageService implements OnModuleInit {
   constructor(
-    private prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
   ) {}
+
+  private async queryRaw<T extends object[]>(
+    strings: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<T> {
+    return (await this.database.db.execute(sql(strings, ...values))).rows as T;
+  }
+
+  private joinSql(values: readonly unknown[]): SQL {
+    return sql.join(
+      values.map((value) => sql`${value}`),
+      sql`, `,
+    );
+  }
 
   async onModuleInit() {}
 
   findByClientMessageId(clientMessageId: string) {
-    return this.prisma.message.findUnique({
-      where: { clientMessageId },
-      omit: { id: true },
-    });
+    return this.database.db.query.message
+      .findFirst({ where: eq(message.clientMessageId, clientMessageId) })
+      .then((row) => (row ? stripMessageId(row) : null));
   }
 
   /**
@@ -172,28 +217,25 @@ export class MessageService implements OnModuleInit {
     type: ContentType,
     clientMessageId?: string,
     forwardBundleId?: string,
-    beforeMessageCreate?: (tx: Prisma.TransactionClient) => Promise<void>,
+    beforeMessageCreate?: (tx: DatabaseTransaction) => Promise<void>,
     quoteVisibility?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
   ): Promise<Omit<Message, 'id'>> {
     if (clientMessageId !== undefined) {
-      const existing = await this.prisma.message.findUnique({
-        where: { clientMessageId },
-        omit: { id: true },
-      });
+      const existing = await this.findByClientMessageId(clientMessageId);
       if (existing !== null) return existing; // retry → return the original message (already dispatched)
     }
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      return await this.database.db.transaction(async (tx) => {
         if (beforeMessageCreate) await beforeMessageCreate(tx);
         // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
         // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
         // keeps curSeq == MAX(seq) by construction — no MAX() aggregate, no allocation race, no retry.
         // 0-INDEXED: curSeq defaults to -1, so the first message gets seq 0.
-        const { curSeq: seq } = await tx.messageThread.update({
-          where: { id: threadId },
-          data: { curSeq: { increment: 1 } },
-          select: { curSeq: true },
-        });
+        const [{ curSeq: seq }] = await tx
+          .update(messageThread)
+          .set({ curSeq: sql`${messageThread.curSeq} + 1` })
+          .where(eq(messageThread.id, threadId))
+          .returning({ curSeq: messageThread.curSeq });
         // originSeq == seq: a locally-authored message's per-thread seq IS the value a federation
         // receiver copies verbatim (the dedup key + per-(thread, sender) pull cursor).
         const textContent =
@@ -210,10 +252,17 @@ export class MessageService implements OnModuleInit {
         const quoteTarget =
           quoteSeq === undefined
             ? null
-            : await tx.message.findUnique({
-                where: { threadId_seq: { threadId, seq: quoteSeq } },
-                include: { creatorItem: { select: { name: true } } },
-              });
+            : await tx.query.message
+                .findFirst({
+                  where: and(
+                    eq(message.threadId, threadId),
+                    eq(message.seq, quoteSeq),
+                  ),
+                  with: { user: { columns: { name: true } } },
+                })
+                .then((row) =>
+                  row ? { ...row, creatorItem: row.user } : null,
+                );
         if (quoteSeq !== undefined && !quoteTarget) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
@@ -239,8 +288,9 @@ export class MessageService implements OnModuleInit {
                 quote: { seq: quoteTarget.seq },
               })
             : content;
-        const msg = await tx.message.create({
-          data: {
+        const [msg] = await tx
+          .insert(message)
+          .values({
             content: storedContent,
             contentType: type,
             threadId,
@@ -248,30 +298,37 @@ export class MessageService implements OnModuleInit {
             clientMessageId,
             seq,
             originSeq: seq,
-          },
-        });
+            updatedAt: new Date(),
+          })
+          .returning();
         if (type === ContentType.FORWARD) {
           if (!forwardBundleId) {
             throw new Error('FORWARD message requires forwardBundleId');
           }
-          await tx.forwardMessage.create({
-            data: { messageId: msg.id, bundleId: forwardBundleId },
-          });
+          await tx
+            .insert(forwardMessage)
+            .values({ messageId: msg.id, bundleId: forwardBundleId });
         }
-        await tx.messageThread.update({
-          where: { id: threadId },
-          data: {
+        await tx
+          .update(messageThread)
+          .set({
             lastMessageSeq: seq,
             lastMessagePreview: derivePreview(type, storedContent),
             lastMessageAt: msg.createdAt,
-          },
-        });
+            updatedAt: new Date(),
+          })
+          .where(eq(messageThread.id, threadId));
         // Sender has implicitly "read" what they just sent; seq is freshly allocated so it is always
         // strictly greater than the prior watermark — a forward move, never a regression.
-        await tx.threadParticipant.update({
-          where: { userId_threadId: { userId, threadId } },
-          data: { lastReadSeq: seq },
-        });
+        await tx
+          .update(threadParticipant)
+          .set({ lastReadSeq: seq, updatedAt: new Date() })
+          .where(
+            and(
+              eq(threadParticipant.userId, userId),
+              eq(threadParticipant.threadId, threadId),
+            ),
+          );
         // Per-object media authz: record the CAS digest this message references so the /uploads/shards/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
         // one media (MediaMessage is 1:1). PURE_TEXT/
@@ -284,9 +341,9 @@ export class MessageService implements OnModuleInit {
         ) {
           const digest = extractDigests(content)[0];
           if (digest) {
-            await tx.mediaMessage.create({
-              data: { messageId: msg.id, threadId, digest },
-            });
+            await tx
+              .insert(mediaMessage)
+              .values({ messageId: msg.id, threadId, digest });
           }
         }
         // Strip the internal BigInt id — a throughput side-channel that must never be serialized.
@@ -298,18 +355,8 @@ export class MessageService implements OnModuleInit {
       // concurrent RETRY of the same send (same clientMessageId): another request inserted it first.
       // Return theirs rather than surfacing the error. (The interactive tx is poisoned, so the re-fetch
       // runs on the root client.)
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002' &&
-        clientMessageId !== undefined &&
-        ((e.meta?.target as string[] | undefined) ?? []).includes(
-          'clientMessageId',
-        )
-      ) {
-        const winner = await this.prisma.message.findUnique({
-          where: { clientMessageId },
-          omit: { id: true },
-        });
+      if (isUniqueViolation(e) && clientMessageId !== undefined) {
+        const winner = await this.findByClientMessageId(clientMessageId);
         if (winner !== null) return winner;
       }
       throw e;
@@ -339,9 +386,9 @@ export class MessageService implements OnModuleInit {
     meta: Record<string, unknown>,
     retry = false,
   ): Promise<{ clientMessageId: string }> {
-    const committed = await this.prisma.message.findUnique({
-      where: { clientMessageId },
-      select: { creator: true },
+    const committed = await this.database.db.query.message.findFirst({
+      where: eq(message.clientMessageId, clientMessageId),
+      columns: { creator: true },
     });
     if (committed) {
       if (committed.creator !== userId) {
@@ -352,18 +399,17 @@ export class MessageService implements OnModuleInit {
       }
       return { clientMessageId }; // already promoted — nothing to stage
     }
-    const existing = await this.prisma.pendingMedia.findUnique({
-      where: { clientMessageId },
+    const existing = await this.database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.clientMessageId, clientMessageId),
     });
     if (!existing) {
-      await this.prisma.pendingMedia.create({
-        data: {
-          threadId,
-          creatorId: userId,
-          contentType,
-          content: JSON.stringify(meta ?? {}),
-          clientMessageId,
-        },
+      await this.database.db.insert(pendingMedia).values({
+        threadId,
+        creatorId: userId,
+        contentType,
+        content: JSON.stringify(meta ?? {}),
+        clientMessageId,
+        updatedAt: new Date(),
       });
       return { clientMessageId };
     }
@@ -378,16 +424,22 @@ export class MessageService implements OnModuleInit {
       );
     }
     if (retry && existing.status === 'failed') {
-      await this.prisma.pendingMedia.updateMany({
-        where: { id: existing.id, status: 'failed' },
-        data: {
+      await this.database.db
+        .update(pendingMedia)
+        .set({
           status: 'pending',
           failReason: null,
           digest: null,
           content: JSON.stringify(meta ?? {}),
           createdAt: new Date(),
-        },
-      });
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(pendingMedia.id, existing.id),
+            eq(pendingMedia.status, 'failed'),
+          ),
+        );
     }
     return { clientMessageId };
   }
@@ -399,25 +451,32 @@ export class MessageService implements OnModuleInit {
     clientMessageId: string,
     reason: string,
   ): Promise<void> {
-    await this.prisma.pendingMedia.updateMany({
-      where: { clientMessageId, creatorId: userId, status: 'pending' },
-      data: {
+    await this.database.db
+      .update(pendingMedia)
+      .set({
         status: 'failed',
         failReason: reason.slice(0, 255),
         createdAt: new Date(),
-      },
-    });
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(pendingMedia.clientMessageId, clientMessageId),
+          eq(pendingMedia.creatorId, userId),
+          eq(pendingMedia.status, 'pending'),
+        ),
+      );
   }
 
   /** Recoverable server-side state for refresh/cross-device reconciliation. */
   async queryMediaStages(userId: number, threadId: number) {
-    return this.prisma.pendingMedia.findMany({
-      where: {
-        threadId,
-        creatorId: userId,
-        clientMessageId: { not: null },
-      },
-      select: {
+    return this.database.db.query.pendingMedia.findMany({
+      where: and(
+        eq(pendingMedia.threadId, threadId),
+        eq(pendingMedia.creatorId, userId),
+        isNotNull(pendingMedia.clientMessageId),
+      ),
+      columns: {
         clientMessageId: true,
         contentType: true,
         content: true,
@@ -426,7 +485,7 @@ export class MessageService implements OnModuleInit {
         createdAt: true,
         updatedAt: true,
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: asc(pendingMedia.createdAt),
     });
   }
 
@@ -441,14 +500,16 @@ export class MessageService implements OnModuleInit {
     digest: string,
     userId?: number,
   ): Promise<void> {
-    await this.prisma.pendingMedia.updateMany({
-      where: {
-        clientMessageId,
-        status: 'pending',
-        ...(userId === undefined ? {} : { creatorId: userId }),
-      },
-      data: { digest },
-    });
+    await this.database.db
+      .update(pendingMedia)
+      .set({ digest, updatedAt: new Date() })
+      .where(
+        and(
+          eq(pendingMedia.clientMessageId, clientMessageId),
+          eq(pendingMedia.status, 'pending'),
+          ...(userId === undefined ? [] : [eq(pendingMedia.creatorId, userId)]),
+        ),
+      );
   }
 
   /**
@@ -469,13 +530,10 @@ export class MessageService implements OnModuleInit {
     userId?: number,
     contentTypeOverride?: ContentType,
   ): Promise<Omit<Message, 'id'> | null> {
-    const committed = await this.prisma.message.findUnique({
-      where: { clientMessageId },
-      omit: { id: true },
-    });
+    const committed = await this.findByClientMessageId(clientMessageId);
     if (committed) return committed; // retry after a committed promote → return the original
-    const stage = await this.prisma.pendingMedia.findUnique({
-      where: { clientMessageId },
+    const stage = await this.database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.clientMessageId, clientMessageId),
     });
     if (
       !stage ||
@@ -496,20 +554,19 @@ export class MessageService implements OnModuleInit {
     });
     let created: Omit<Message, 'id'>;
     try {
-      created = await this.prisma.$transaction(async (tx) => {
-        const participant = await tx.threadParticipant.findUnique({
-          where: {
-            userId_threadId: {
-              userId: stage.creatorId,
-              threadId: stage.threadId,
-            },
-          },
-          include: {
-            thread: {
-              select: {
-                type: true,
-                groupUser: {
-                  select: { group: { select: { dissolvedAt: true } } },
+      created = await this.database.db.transaction(async (tx) => {
+        const participant = await tx.query.threadParticipant.findFirst({
+          where: and(
+            eq(threadParticipant.userId, stage.creatorId),
+            eq(threadParticipant.threadId, stage.threadId),
+          ),
+          with: {
+            messageThread: {
+              columns: { type: true },
+              with: {
+                user: {
+                  columns: {},
+                  with: { group: { columns: { dissolvedAt: true } } },
                 },
               },
             },
@@ -517,25 +574,26 @@ export class MessageService implements OnModuleInit {
         });
         if (!participant || participant.leftAt !== null) {
           throw new BusinessException(
-            participant?.thread.type === MessageThreadType.P2P
+            participant?.messageThread.type === MessageThreadType.P2P
               ? BusinessCode.FRIEND_NOT_FOUND
               : BusinessCode.GROUP_FORBIDDEN,
             'conversation is read-only',
           );
         }
-        if (participant.thread.groupUser?.group?.dissolvedAt != null) {
+        if (participant.messageThread.user?.group?.dissolvedAt != null) {
           throw new BusinessException(
             BusinessCode.GROUP_DISSOLVED,
             'group has been dissolved',
           );
         }
-        const { curSeq: seq } = await tx.messageThread.update({
-          where: { id: stage.threadId },
-          data: { curSeq: { increment: 1 } },
-          select: { curSeq: true },
-        });
-        const msg = await tx.message.create({
-          data: {
+        const [{ curSeq: seq }] = await tx
+          .update(messageThread)
+          .set({ curSeq: sql`${messageThread.curSeq} + 1` })
+          .where(eq(messageThread.id, stage.threadId))
+          .returning({ curSeq: messageThread.curSeq });
+        const [msg] = await tx
+          .insert(message)
+          .values({
             content,
             contentType: finalContentType,
             threadId: stage.threadId,
@@ -543,44 +601,42 @@ export class MessageService implements OnModuleInit {
             clientMessageId,
             seq,
             originSeq: seq,
-          },
-        });
-        await tx.messageThread.update({
-          where: { id: stage.threadId },
-          data: {
+            updatedAt: new Date(),
+          })
+          .returning();
+        await tx
+          .update(messageThread)
+          .set({
             lastMessageSeq: seq,
             lastMessagePreview: derivePreview(finalContentType, content),
             lastMessageAt: msg.createdAt,
-          },
-        });
-        await tx.threadParticipant.update({
-          where: {
-            userId_threadId: {
-              userId: stage.creatorId,
-              threadId: stage.threadId,
-            },
-          },
-          data: { lastReadSeq: seq },
-        });
+            updatedAt: new Date(),
+          })
+          .where(eq(messageThread.id, stage.threadId));
+        await tx
+          .update(threadParticipant)
+          .set({ lastReadSeq: seq, updatedAt: new Date() })
+          .where(
+            and(
+              eq(threadParticipant.userId, stage.creatorId),
+              eq(threadParticipant.threadId, stage.threadId),
+            ),
+          );
         const digest = extractDigests(content)[0];
         if (digest) {
-          await tx.mediaMessage.create({
-            data: { messageId: msg.id, threadId: stage.threadId, digest },
+          await tx.insert(mediaMessage).values({
+            messageId: msg.id,
+            threadId: stage.threadId,
+            digest,
           });
         }
-        await tx.pendingMedia.delete({ where: { id: stage.id } });
+        await tx.delete(pendingMedia).where(eq(pendingMedia.id, stage.id));
         return stripMessageId(msg);
       });
     } catch (e) {
       // Concurrent retry race (P2002 on clientMessageId) → return the winner rather than surfacing.
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002'
-      ) {
-        const winner = await this.prisma.message.findUnique({
-          where: { clientMessageId },
-          omit: { id: true },
-        });
+      if (isUniqueViolation(e)) {
+        const winner = await this.findByClientMessageId(clientMessageId);
         if (winner !== null) return winner;
       }
       throw e;
@@ -590,26 +646,37 @@ export class MessageService implements OnModuleInit {
 
   async queryMessages(
     threadId: number,
-    params: Prisma.MessageFindManyArgs,
+    params: MessageQueryParams,
     filters?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
   ) {
     // The viewer's per-thread filters, layered on top of the membership-resolved threadId:
     //  - clearedAfter: per-user "clear history" watermark — hide rows older than it for THIS user only.
     //  - hideCreatorIds: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
     //    by the controller (group threads leave blocked members visible).
-    const where: Prisma.MessageWhereInput = { threadId };
-    if (filters?.clearedAfter) {
-      where.createdAt = { gt: filters.clearedAfter };
-    }
-    if (filters?.hideCreatorIds && filters.hideCreatorIds.length > 0) {
-      where.creator = { notIn: filters.hideCreatorIds };
+    const conditions: SQL[] = [eq(message.threadId, threadId)];
+    if (filters?.clearedAfter)
+      conditions.push(gt(message.createdAt, filters.clearedAfter));
+    if (filters?.hideCreatorIds?.length)
+      conditions.push(notInArray(message.creator, filters.hideCreatorIds));
+    const cursorSeq = params.cursor?.threadId_seq.seq;
+    if (cursorSeq !== undefined) {
+      conditions.push(
+        params.orderBy?.seq === 'asc'
+          ? gt(message.seq, cursorSeq)
+          : lt(message.seq, cursorSeq),
+      );
     }
     // id is fetched here (not omitted) so attachMediaStatus can resolve MediaMessage authz by messageId;
     // attachMediaStatus strips id before returning (id is the internal global throughput side-channel
     // and must never reach a client).
-    const rows = await this.prisma.message.findMany({
-      ...params,
-      where,
+    const rows = await this.database.db.query.message.findMany({
+      where: and(...conditions),
+      orderBy:
+        params.orderBy?.seq === 'asc'
+          ? asc(message.seq)
+          : sql`${message.seq} DESC`,
+      limit: params.take,
+      offset: cursorSeq === undefined ? params.skip : 0,
     });
     return this.attachMediaStatus(
       await this.attachQuotePreviews(rows, filters),
@@ -632,26 +699,29 @@ export class MessageService implements OnModuleInit {
     }
     if (refs.size === 0) return msgs;
 
-    const targetWhere: Prisma.MessageWhereInput = {
-      OR: [...refs].map(([threadId, seqs]) => ({
-        threadId,
-        seq: { in: [...seqs] },
-      })),
-      isDeleted: false,
-    };
+    const targetConditions: SQL[] = [
+      or(
+        ...[...refs].map(([threadId, seqs]) =>
+          and(eq(message.threadId, threadId), inArray(message.seq, [...seqs])),
+        ),
+      )!,
+      eq(message.isDeleted, false),
+    ];
     if (filters?.clearedAfter)
-      targetWhere.createdAt = { gt: filters.clearedAfter };
+      targetConditions.push(gt(message.createdAt, filters.clearedAfter));
     if (filters?.hideCreatorIds?.length)
-      targetWhere.creator = { notIn: filters.hideCreatorIds };
-    const targets = await this.prisma.message.findMany({
-      where: targetWhere,
-      include: { creatorItem: { select: { name: true } } },
+      targetConditions.push(
+        notInArray(message.creator, filters.hideCreatorIds),
+      );
+    const targets = await this.database.db.query.message.findMany({
+      where: and(...targetConditions),
+      with: { user: { columns: { name: true } } },
     });
     const byKey = new Map(
       targets.map((target) => [
         `${target.threadId}:${target.seq}`,
         truncateText(
-          `${target.creatorItem.name}：${derivePreview(
+          `${target.user.name}：${derivePreview(
             target.contentType,
             target.content,
           )}`,
@@ -697,15 +767,15 @@ export class MessageService implements OnModuleInit {
     }
     const ids = msgs.map((m) => m.id);
     const [authRows, assetRows] = await Promise.all([
-      this.prisma.mediaMessage.findMany({
-        where: { messageId: { in: ids } },
-        select: { messageId: true, digest: true },
+      this.database.db.query.mediaMessage.findMany({
+        where: inArray(mediaMessage.messageId, ids),
+        columns: { messageId: true, digest: true },
       }),
       allDigests.size === 0
         ? Promise.resolve([] as { digest: string; refs: number }[])
-        : this.prisma.mediaAsset.findMany({
-            where: { digest: { in: [...allDigests] } },
-            select: { digest: true, refs: true },
+        : this.database.db.query.mediaAsset.findMany({
+            where: inArray(mediaAsset.digest, [...allDigests]),
+            columns: { digest: true, refs: true },
           }),
     ]);
     // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset has
@@ -752,8 +822,8 @@ export class MessageService implements OnModuleInit {
     seqs: number[],
   ): Promise<Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>> {
     if (seqs.length === 0) return [];
-    const msgs = await this.prisma.message.findMany({
-      where: { threadId, seq: { in: seqs } },
+    const msgs = await this.database.db.query.message.findMany({
+      where: and(eq(message.threadId, threadId), inArray(message.seq, seqs)),
     });
     const attached = await this.attachMediaStatus(msgs);
     return attached.map((m) => ({
@@ -777,8 +847,8 @@ export class MessageService implements OnModuleInit {
     lastSeq?: number,
   ) {
     const cursor =
-      lastSeq === undefined ? Prisma.empty : Prisma.sql`AND seq < ${lastSeq}`;
-    return this.prisma.$queryRaw<Array<{ seq: number; createdAt: Date }>>`
+      lastSeq === undefined ? sql.empty() : sql`AND seq < ${lastSeq}`;
+    return this.queryRaw<Array<{ seq: number; createdAt: Date }>>`
       SELECT seq, "createdAt"
       FROM "Message"
       WHERE "threadId" = ${threadId}
@@ -793,10 +863,11 @@ export class MessageService implements OnModuleInit {
   /** Single message lookup by per-thread (threadId, seq) identity — seq is unique only within a thread,
    *  so both parts of the compound unique are required. Used by mark-read to validate the cursor. */
   findMessageBySeq(threadId: number, seq: number) {
-    return this.prisma.message.findUnique({
-      where: { threadId_seq: { threadId, seq } },
-      omit: { id: true },
-    });
+    return this.database.db.query.message
+      .findFirst({
+        where: and(eq(message.threadId, threadId), eq(message.seq, seq)),
+      })
+      .then((row) => (row ? stripMessageId(row) : null));
   }
 
   /** Batched lookup of messages by their per-thread (threadId, seq) identity — the missed summary fetches
@@ -808,14 +879,20 @@ export class MessageService implements OnModuleInit {
     pairs: Array<{ threadId: number; seq: number }>,
   ): Promise<Message[]> {
     if (pairs.length === 0) return [];
-    return this.prisma.message.findMany({
-      where: { OR: pairs.map((p) => ({ threadId: p.threadId, seq: p.seq })) },
+    return this.database.db.query.message.findMany({
+      where: or(
+        ...pairs.map((pair) =>
+          and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
+        ),
+      ),
     });
   }
 
   /** Single thread lookup (used by mark-read to resolve "mark all current messages read"). */
   findThread(id: number) {
-    return this.prisma.messageThread.findUnique({ where: { id } });
+    return this.database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, id),
+    });
   }
 
   /**
@@ -849,16 +926,16 @@ export class MessageService implements OnModuleInit {
   ): Promise<Message[]> {
     const blocked = opts.hideCreatorIds ?? [];
     const blockedClause = blocked.length
-      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(blocked)})`
-      : Prisma.empty;
+      ? sql`AND m."creator" NOT IN (${this.joinSql(blocked)})`
+      : sql.empty();
 
     if (opts.init) {
       // Newest message per active thread. DISTINCT ON picks the first row per threadId under the given
       // ORDER BY, so `ORDER BY threadId, seq DESC` yields each thread's highest-seq (latest) message.
       const where = blocked.length
-        ? Prisma.sql`WHERE m."creator" NOT IN (${Prisma.join(blocked)})`
-        : Prisma.empty;
-      return this.prisma.$queryRaw<Message[]>`
+        ? sql`WHERE m."creator" NOT IN (${this.joinSql(blocked)})`
+        : sql.empty();
+      return this.queryRaw<Message[]>`
         SELECT DISTINCT ON (m."threadId") m.*
         FROM "Message" m
         JOIN "ThreadParticipant" tp
@@ -873,7 +950,7 @@ export class MessageService implements OnModuleInit {
     // rows already seen at the cursor's millisecond, so paging is strictly forward.
     const since = new Date(opts.sinceMs ?? 0);
     const sinceId = opts.sinceId ?? 0n;
-    return this.prisma.$queryRaw<Message[]>`
+    return this.queryRaw<Message[]>`
       SELECT m.*
       FROM "Message" m
       JOIN "ThreadParticipant" tp
@@ -903,9 +980,9 @@ export class MessageService implements OnModuleInit {
     hideCreatorIds: number[] = [],
   ): Promise<{ counts: Map<number, number>; overflow: boolean }> {
     const blockedClause = hideCreatorIds.length
-      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<Array<{ creator: number }>>`
+      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
+    const rows = await this.queryRaw<Array<{ creator: number }>>`
       SELECT m."creator" AS creator
       FROM "Message" m
       JOIN "ThreadParticipant" tp
@@ -938,9 +1015,9 @@ export class MessageService implements OnModuleInit {
     overflow: boolean;
   }> {
     const hiddenClause = hideCreatorIds.length
-      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<
+      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
+    const rows = await this.queryRaw<
       Array<{ creator: number; contentType: string; content: string }>
     >`
       SELECT m.creator, m."contentType" AS "contentType", m.content
@@ -994,9 +1071,9 @@ export class MessageService implements OnModuleInit {
     sampleLimit = 1000,
   ): Promise<Map<number, { count: number; latestSeq: number }>> {
     const blockedClause = hideCreatorIds.length
-      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<
+      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
+    const rows = await this.queryRaw<
       Array<{ threadId: number; cnt: bigint; latest: number }>
     >`
       WITH sample AS (
@@ -1036,15 +1113,13 @@ export class MessageService implements OnModuleInit {
   ): Promise<Map<number, number>> {
     if (pairs.length === 0) return new Map();
     const blockedClause = hideCreatorIds.length
-      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
+      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
     const tids = pairs.map((p) => p.tid);
     const seqs = pairs.map((p) => p.sinceSeq);
-    const rows = await this.prisma.$queryRaw<
-      Array<{ tid: number; cnt: bigint }>
-    >`
+    const rows = await this.queryRaw<Array<{ tid: number; cnt: bigint }>>`
       SELECT u.tid AS tid, COUNT(m.id) AS cnt
-      FROM UNNEST(ARRAY[${Prisma.join(tids)}]::int[], ARRAY[${Prisma.join(seqs)}]::int[]) AS u(tid, sinceseq)
+      FROM UNNEST(ARRAY[${this.joinSql(tids)}]::int[], ARRAY[${this.joinSql(seqs)}]::int[]) AS u(tid, sinceseq)
       JOIN "Message" m
         ON m."threadId" = u.tid AND m."seq" > u.sinceseq AND m."id" > ${globalSinceId} AND m."isDeleted" = false
       JOIN "ThreadParticipant" tp
@@ -1068,7 +1143,7 @@ export class MessageService implements OnModuleInit {
   async findNewestForUser(
     userId: number,
   ): Promise<{ threadId: number; seq: number; ts: number } | null> {
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.queryRaw<
       Array<{ threadId: number; seq: number; createdAt: Date | string }>
     >`
       SELECT m."threadId" AS "threadId", m."seq" AS seq, m."createdAt" AS "createdAt"
@@ -1100,7 +1175,7 @@ export class MessageService implements OnModuleInit {
     threadIds: number[],
   ): Promise<Map<number, number>> {
     if (threadIds.length === 0) return new Map();
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.queryRaw<
       Array<{ threadId: number; unread: number }>
     >`
       SELECT tp."threadId" AS "threadId", COUNT(m.seq)::int AS "unread"
@@ -1116,7 +1191,7 @@ export class MessageService implements OnModuleInit {
       ) m ON TRUE
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL
-        AND tp."threadId" IN (${Prisma.join(threadIds)})
+        AND tp."threadId" IN (${this.joinSql(threadIds)})
       GROUP BY tp."threadId"
     `;
     return new Map(rows.map((r) => [r.threadId, r.unread]));
@@ -1133,7 +1208,7 @@ export class MessageService implements OnModuleInit {
     threadIds: number[],
   ): Promise<Map<number, ThreadAttentionState>> {
     if (threadIds.length === 0) return new Map();
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.queryRaw<
       Array<{ threadId: number; unread: number; mentionContents: string[] }>
     >`
       SELECT
@@ -1161,7 +1236,7 @@ export class MessageService implements OnModuleInit {
       ) m ON TRUE
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL
-        AND tp."threadId" IN (${Prisma.join(threadIds)})
+        AND tp."threadId" IN (${this.joinSql(threadIds)})
       GROUP BY tp."threadId"
     `;
     return new Map(
@@ -1181,7 +1256,7 @@ export class MessageService implements OnModuleInit {
     threadId: number,
     localReadHwm: number,
   ): Promise<CommittedThreadReadState | null> {
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.queryRaw<
       Array<{
         lastReadSeq: number;
         unread: number;
@@ -1247,8 +1322,8 @@ export class MessageService implements OnModuleInit {
     sampleLimit = 1000,
   ): Promise<Map<number, AwayThreadAttentionState>> {
     const hiddenClause = hideCreatorIds.length
-      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
+      ? sql`AND m."creator" NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
     const hwmEntries = Object.entries(threadHwms)
       .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
       .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
@@ -1256,9 +1331,9 @@ export class MessageService implements OnModuleInit {
     const seqs = hwmEntries.map((p) => p.seq);
     const hwmCte =
       hwmEntries.length > 0
-        ? Prisma.sql`SELECT * FROM UNNEST(ARRAY[${Prisma.join(tids)}]::int[], ARRAY[${Prisma.join(seqs)}]::int[]) AS x(tid, since_seq)`
-        : Prisma.sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
-    const rows = await this.prisma.$queryRaw<
+        ? sql`SELECT * FROM UNNEST(ARRAY[${this.joinSql(tids)}]::int[], ARRAY[${this.joinSql(seqs)}]::int[]) AS x(tid, since_seq)`
+        : sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
+    const rows = await this.queryRaw<
       Array<{
         threadId: number;
         cnt: bigint;
@@ -1326,19 +1401,19 @@ export class MessageService implements OnModuleInit {
   ): Promise<Map<number, AwayNotificationMessage[]>> {
     if (threadIds.length === 0) return new Map();
     const hiddenClause = hideCreatorIds.length
-      ? Prisma.sql`AND m.creator NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
+      ? sql`AND m.creator NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
     const hwmEntries = Object.entries(threadHwms)
       .map(([threadId, seq]) => ({ threadId: Number(threadId), seq }))
       .filter((p) => Number.isInteger(p.threadId) && Number.isInteger(p.seq));
     const hwmCte =
       hwmEntries.length > 0
-        ? Prisma.sql`SELECT * FROM UNNEST(
-            ARRAY[${Prisma.join(hwmEntries.map((p) => p.threadId))}]::int[],
-            ARRAY[${Prisma.join(hwmEntries.map((p) => p.seq))}]::int[]
+        ? sql`SELECT * FROM UNNEST(
+            ARRAY[${this.joinSql(hwmEntries.map((p) => p.threadId))}]::int[],
+            ARRAY[${this.joinSql(hwmEntries.map((p) => p.seq))}]::int[]
           ) AS x(tid, since_seq)`
-        : Prisma.sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
-    const rows = await this.prisma.$queryRaw<
+        : sql`SELECT NULL::int AS tid, NULL::int AS since_seq WHERE FALSE`;
+    const rows = await this.queryRaw<
       Array<AwayNotificationMessage & { rn: bigint }>
     >`
       WITH thread_hwm AS (${hwmCte}),
@@ -1354,7 +1429,7 @@ export class MessageService implements OnModuleInit {
          AND tp."leftAt" IS NULL
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
-        WHERE m."threadId" IN (${Prisma.join(threadIds)})
+        WHERE m."threadId" IN (${this.joinSql(threadIds)})
           AND m.id > ${globalSinceId}
           AND m.seq > COALESCE(h.since_seq, -1)
           AND m.creator <> ${userId}
@@ -1414,7 +1489,7 @@ export class MessageService implements OnModuleInit {
     threadIds: number[],
   ): Promise<Map<number, UnreadMentionState>> {
     if (threadIds.length === 0 || !selfAccount.trim()) return new Map();
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.queryRaw<
       Array<{ threadId: number; content: string }>
     >`
       SELECT m."threadId" AS "threadId", m.content
@@ -1425,7 +1500,7 @@ export class MessageService implements OnModuleInit {
        AND m.creator <> ${userId}
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL
-        AND tp."threadId" IN (${Prisma.join(threadIds)})
+        AND tp."threadId" IN (${this.joinSql(threadIds)})
         AND m."contentType" = 'PURE_TEXT'
         AND (
           strpos(m.content, '](soms://user/') > 0
@@ -1456,12 +1531,12 @@ export class MessageService implements OnModuleInit {
   ): Promise<Map<number, UnreadMentionState>> {
     if (!selfAccount.trim() || threadIds?.length === 0) return new Map();
     const threadClause = threadIds
-      ? Prisma.sql`AND m."threadId" IN (${Prisma.join(threadIds)})`
-      : Prisma.empty;
+      ? sql`AND m."threadId" IN (${this.joinSql(threadIds)})`
+      : sql.empty();
     const hiddenClause = hideCreatorIds.length
-      ? Prisma.sql`AND m.creator NOT IN (${Prisma.join(hideCreatorIds)})`
-      : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<
+      ? sql`AND m.creator NOT IN (${this.joinSql(hideCreatorIds)})`
+      : sql.empty();
+    const rows = await this.queryRaw<
       Array<{ threadId: number; content: string }>
     >`
       SELECT m."threadId" AS "threadId", m.content

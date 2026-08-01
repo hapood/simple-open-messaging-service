@@ -5,7 +5,7 @@ import { DiagnosticsGcService } from './diagnostics-gc.service.js';
 import { ThrottleGuard } from '../auth/throttle.guard.js';
 
 @Module({
-  // PrismaService + KvStoreService are @Global, so no PrismaModule/KvStoreModule import is needed.
+  // DatabaseService + KvStoreService are @Global, so no database/KV module import is needed.
   // ThrottleGuard is provided here (it is NOT exported by AuthModule) so the consumer route's
   // @UseGuards(ThrottleGuard) resolves; KvStoreService (@Global) + Reflector (Nest core) back it.
   // The admin controller (AdminDiagnosticsController) lives in AdminModule's controllers array — AdminModule

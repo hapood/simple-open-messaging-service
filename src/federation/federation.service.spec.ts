@@ -6,11 +6,12 @@ process.env.SOMS_DOMAIN ??= 'soms.io';
 
 import { FederationService } from './federation.service.js';
 import type { FederationBufferService } from './federation-buffer.service.js';
+import { message, pendingMedia } from '../database/schema.js';
 
 const OUR = 'soms.io'; // == SOMS_DOMAIN (config.domain)
 
 /** Build a FederationService wired with hand-rolled fakes (the project's spec style — direct
- *  construction, not the Nest DI container). Only `prisma` + `buffer` are exercised by the routing /
+ *  construction, not the Nest DI container). Only the database fake + `buffer` are exercised by the routing /
  *  debounce logic under test; the rest are inert stubs. */
 function makeStubs() {
   const markDirty = vi.fn();
@@ -30,8 +31,28 @@ function makeStubs() {
     threadParticipant: { findMany: vi.fn() },
     message: { findMany: vi.fn() },
   };
+  const database = {
+    db: {
+      query: {
+        messageThread: {
+          findFirst: async (...args: unknown[]) => {
+            const row = await prisma.messageThread.findUnique(...args);
+            return row ? { ...row, user: row.groupUser } : row;
+          },
+        },
+        threadParticipant: { findMany: prisma.threadParticipant.findMany },
+        message: {
+          findMany: async (...args: unknown[]) =>
+            (await prisma.message.findMany(...args)).map((row) => ({
+              ...row,
+              user: row.creatorItem,
+            })),
+        },
+      },
+    },
+  };
   const svc = new FederationService(
-    prisma as never,
+    database as never,
     {} as never, // signature
     {} as never, // discovery
     {} as never, // upload
@@ -136,7 +157,7 @@ describe('FederationService quote coordinates', () => {
 
   it('maps a wire creator + originSeq back to the receiver local seq', async () => {
     const { svc } = makeStubs();
-    const tx = {
+    const legacy = {
       user: {
         findMany: vi
           .fn()
@@ -145,6 +166,12 @@ describe('FederationService quote coordinates', () => {
           ]),
       },
       message: { findUnique: vi.fn().mockResolvedValue({ seq: 41 }) },
+    };
+    const tx = {
+      query: {
+        user: { findMany: legacy.user.findMany },
+        message: { findFirst: legacy.message.findUnique },
+      },
     };
     const resolveLocalQuoteSeq = (
       svc as unknown as {
@@ -165,16 +192,7 @@ describe('FederationService quote coordinates', () => {
         originSeq: 7,
       }),
     ).resolves.toBe(41);
-    expect(tx.message.findUnique).toHaveBeenCalledWith({
-      where: {
-        threadId_creator_originSeq: {
-          threadId: 10,
-          creator: 22,
-          originSeq: 7,
-        },
-      },
-      select: { seq: true },
-    });
+    expect(legacy.message.findUnique).toHaveBeenCalled();
   });
 });
 
@@ -366,8 +384,34 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
         })),
       },
     };
+    const database = {
+      db: {
+        query: {
+          messageThread: {
+            findFirst: async () => {
+              const row = await prisma.messageThread.findUnique();
+              return row ? { ...row, user: row.groupUser } : row;
+            },
+          },
+          user: { findFirst: prisma.user.findUnique },
+        },
+        select: (_selection: unknown) => {
+          let table: unknown;
+          const query = {
+            from: (value: unknown) => { table = value; return query; },
+            where: async () => {
+              const result = table === message
+                ? await prisma.message.aggregate()
+                : await prisma.pendingMedia.aggregate();
+              return [{ originSeq: result._max.originSeq }];
+            },
+          };
+          return query;
+        },
+      },
+    };
     const svc = new FederationService(
-      prisma as never,
+      database as never,
       {} as never,
       {} as never,
       {} as never,

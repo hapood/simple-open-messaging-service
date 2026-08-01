@@ -5,6 +5,13 @@
   @include auth-card;
 }
 
+// Android shell only: the auth viewport measures the focused input against the native IME top and
+// publishes the minimum lift needed to retain a comfortable 24px gap (capped by the directive at 80px).
+:host-context(.auth-native-keyboard-open) .login-card {
+  transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
+  transition: transform 160ms ease-out;
+}
+
 .progress-slot {
   position: absolute;
   top: 0;

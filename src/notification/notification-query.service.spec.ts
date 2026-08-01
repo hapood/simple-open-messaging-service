@@ -238,7 +238,7 @@ describe('NotificationQueryService', () => {
       [{ id: 11, name: 'Alice', avatar: '' }, { id: 22, name: 'Bob', avatar: '' }, { id: 33, name: 'Carol', avatar: '' }],
     );
     awayNotificationMessages.mockResolvedValue(new Map([
-      [3, [{ threadId: 3, seq: 9, creator: 33, senderName: 'Carol', contentType: 'PURE_TEXT', content: 'hello', createdAt: new Date(123) }]],
+      [3, [{ threadId: 3, seq: 9, creator: 33, senderName: 'Carol', contentType: 'PURE_TEXT', content: JSON.stringify({ text: 'hello' }), createdAt: new Date(123) }]],
     ]));
     const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, previewMode: 'message', acceptLanguage: 'en' });
     expect(res.notifications).toHaveLength(3);

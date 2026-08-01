@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
-import type { PrismaService } from '../prisma.service.js';
+import {
+  admin,
+  adminSession,
+  loginCode,
+  pushToken,
+  sessionToken,
+  user,
+  webAuthnCredential,
+} from '../database/schema.js';
 
 /**
  * AuditTargetLabelService.resolve — turns AdminActionLog targetIds into account names, shared by the
@@ -13,7 +21,7 @@ import type { PrismaService } from '../prisma.service.js';
  *  - empty buckets skip their findMany entirely (the N+1 guard), so rows touching only `user` never
  *    hit the sessionToken / adminSession / pushToken tables.
  *
- * Pure unit (Prisma mocked inline).
+ * Pure unit (Drizzle mocked inline).
  */
 function row(targetType: string | null, targetId: string | null) {
   return { targetType, targetId };
@@ -21,18 +29,41 @@ function row(targetType: string | null, targetId: string | null) {
 
 describe('AuditTargetLabelService.resolve', () => {
   function setup() {
-    const prisma = {
-      user: { findMany: vi.fn() },
-      admin: { findMany: vi.fn() },
-      sessionToken: { findMany: vi.fn() },
-      adminSession: { findMany: vi.fn() },
-      loginCode: { findMany: vi.fn() },
-      pushToken: { findMany: vi.fn() },
-      webAuthnCredential: { findMany: vi.fn() },
+    const queries = {
+      user: vi.fn(),
+      admin: vi.fn(),
+      sessionToken: vi.fn(),
+      adminSession: vi.fn(),
+      loginCode: vi.fn(),
+      pushToken: vi.fn(),
+      webAuthnCredential: vi.fn(),
     };
-    for (const m of Object.values(prisma)) m.findMany.mockResolvedValue([]);
-    const svc = new AuditTargetLabelService(prisma as unknown as PrismaService);
-    return { prisma, svc };
+    for (const query of Object.values(queries)) query.mockResolvedValue([]);
+    const byTable = new Map<unknown, ReturnType<typeof vi.fn>>([
+      [user, queries.user],
+      [admin, queries.admin],
+      [sessionToken, queries.sessionToken],
+      [adminSession, queries.adminSession],
+      [loginCode, queries.loginCode],
+      [pushToken, queries.pushToken],
+      [webAuthnCredential, queries.webAuthnCredential],
+    ]);
+    const database = {
+      db: {
+        select: vi.fn(() => ({
+          from: vi.fn((table: unknown) => {
+            const query = byTable.get(table)!;
+            const builder = {
+              innerJoin: vi.fn(() => builder),
+              where: vi.fn(() => query()),
+            };
+            return builder;
+          }),
+        })),
+      },
+    };
+    const svc = new AuditTargetLabelService(database as never);
+    return { queries, svc };
   }
 
   beforeEach(() => {
@@ -40,11 +71,11 @@ describe('AuditTargetLabelService.resolve', () => {
   });
 
   it('resolves each targetType to its account name and leaves non-resolvable targets out', async () => {
-    const { prisma, svc } = setup();
-    prisma.user.findMany.mockResolvedValue([{ id: 7, account: 'alice' }]);
-    prisma.sessionToken.findMany.mockResolvedValue([{ id: 101, user: { account: 'bob' } }]);
-    prisma.adminSession.findMany.mockResolvedValue([
-      { id: 5n, admin: { user: { account: 'admin-carol' } } },
+    const { queries, svc } = setup();
+    queries.user.mockResolvedValue([{ id: 7, account: 'alice' }]);
+    queries.sessionToken.mockResolvedValue([{ id: 101, account: 'bob' }]);
+    queries.adminSession.mockResolvedValue([
+      { id: 5n, account: 'admin-carol' },
     ]);
 
     const map = await svc.resolve([
@@ -61,24 +92,21 @@ describe('AuditTargetLabelService.resolve', () => {
     expect(map.has('peer:example.com')).toBe(false); // not resolved (client falls back to targetId)
     expect(map.has(':')).toBe(false); // no-target row produces nothing
     // admin_session ids go into the BigInt IN-list, not the Int one.
-    expect(prisma.adminSession.findMany).toHaveBeenCalledWith({
-      where: { id: { in: [5n] } },
-      select: { id: true, admin: { select: { user: { select: { account: true } } } } },
-    });
+    expect(queries.adminSession).toHaveBeenCalledTimes(1);
   });
 
   it('skips the findMany for any target table that has no rows needing it (N+1 guard)', async () => {
-    const { prisma, svc } = setup();
-    prisma.user.findMany.mockResolvedValue([{ id: 7, account: 'alice' }]);
+    const { queries, svc } = setup();
+    queries.user.mockResolvedValue([{ id: 7, account: 'alice' }]);
 
     await svc.resolve([row('user', '7')]);
 
-    expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.sessionToken.findMany).not.toHaveBeenCalled();
-    expect(prisma.adminSession.findMany).not.toHaveBeenCalled();
-    expect(prisma.admin.findMany).not.toHaveBeenCalled();
-    expect(prisma.pushToken.findMany).not.toHaveBeenCalled();
-    expect(prisma.webAuthnCredential.findMany).not.toHaveBeenCalled();
-    expect(prisma.loginCode.findMany).not.toHaveBeenCalled();
+    expect(queries.user).toHaveBeenCalledTimes(1);
+    expect(queries.sessionToken).not.toHaveBeenCalled();
+    expect(queries.adminSession).not.toHaveBeenCalled();
+    expect(queries.admin).not.toHaveBeenCalled();
+    expect(queries.pushToken).not.toHaveBeenCalled();
+    expect(queries.webAuthnCredential).not.toHaveBeenCalled();
+    expect(queries.loginCode).not.toHaveBeenCalled();
   });
 });

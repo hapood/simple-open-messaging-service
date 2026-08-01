@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserService } from '../user/user.service.js';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { sessionToken, user as userTable } from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -20,7 +22,7 @@ import { PasswordHasher } from './password-hasher.service.js';
 export class AuthService {
   constructor(
     private userService: UserService,
-    private prisma: PrismaService,
+    private database: DatabaseService,
     private eventEmitter: EventEmitter2,
     private sessionTokens: SessionTokenService,
     private passwordHasher: PasswordHasher,
@@ -75,19 +77,27 @@ export class AuthService {
     oldPassword: string,
     newPassword: string,
   ): Promise<{ ok: true } | { ok: false; reason: 'wrong_password' }> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { hashPwd: true },
+    const user = await this.database.db.query.user.findFirst({
+      where: eq(userTable.id, userId),
+      columns: { hashPwd: true },
     });
-    if (!user || !user.hashPwd || !(await this.passwordHasher.verify(user.hashPwd, oldPassword))) {
+    if (
+      !user ||
+      !user.hashPwd ||
+      !(await this.passwordHasher.verify(user.hashPwd, oldPassword))
+    ) {
       // No user, or no password set yet (OTP/QR-only account) → can't "change"; treat as wrong_password.
       // The first-time set uses setPassword (no old password); a voluntary change requires the current one.
       return { ok: false, reason: 'wrong_password' };
     }
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { hashPwd: await this.passwordHasher.hash(newPassword), mustChangePassword: false },
-    });
+    await this.database.db
+      .update(userTable)
+      .set({
+        hashPwd: await this.passwordHasher.hash(newPassword),
+        mustChangePassword: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(userTable.id, userId));
     await this.invalidateAllSessions(userId, 'password_change');
     return { ok: true };
   }
@@ -102,10 +112,14 @@ export class AuthService {
    *  Unlike changePassword, sessions are NOT invalidated — the user keeps the session they just proved
    *  ownership of. The calling session's validation entry is deleted (via sessionId) so the cleared
    *  flag is seen at once on the next database-backed validation. */
-  async setPassword(userId: number, newPassword: string, sessionId?: number): Promise<void> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { hashPwd: true, mustChangePassword: true },
+  async setPassword(
+    userId: number,
+    newPassword: string,
+    sessionId?: number,
+  ): Promise<void> {
+    const user = await this.database.db.query.user.findFirst({
+      where: eq(userTable.id, userId),
+      columns: { hashPwd: true, mustChangePassword: true },
     });
     if (!user) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
@@ -116,10 +130,14 @@ export class AuthService {
         'password already set — use change-password (old password required)',
       );
     }
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { hashPwd: await this.passwordHasher.hash(newPassword), mustChangePassword: false },
-    });
+    await this.database.db
+      .update(userTable)
+      .set({
+        hashPwd: await this.passwordHasher.hash(newPassword),
+        mustChangePassword: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(userTable.id, userId));
     if (sessionId !== undefined) {
       await this.sessionTokens.bustCacheBySessionId(sessionId);
     }
@@ -131,14 +149,17 @@ export class AuthService {
    *  row id (stamped on req.user by the guard); the matching row is flagged `isCurrent` so the UI can
    *  tag "this device". */
   async listActiveSessions(userId: number, currentSessionId: number | null) {
-    const rows = await this.prisma.sessionToken.findMany({
-      where: {
-        userId,
-        revokedAt: null,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
-      orderBy: { lastSeenAt: 'desc' },
-      select: {
+    const rows = await this.database.db.query.sessionToken.findMany({
+      where: and(
+        eq(sessionToken.userId, userId),
+        isNull(sessionToken.revokedAt),
+        or(
+          isNull(sessionToken.expiresAt),
+          gt(sessionToken.expiresAt, new Date()),
+        ),
+      ),
+      orderBy: desc(sessionToken.lastSeenAt),
+      columns: {
         id: true,
         client: true,
         device: true,
@@ -175,7 +196,11 @@ export class AuthService {
   async revokeSession(userId: number, sessionId: number) {
     const ok = await this.sessionTokens.revokeById(userId, sessionId);
     if (ok) {
-      this.eventEmitter.emit('auth.session-revoked', { userId, sessionId, reason: 'device_revoke' });
+      this.eventEmitter.emit('auth.session-revoked', {
+        userId,
+        sessionId,
+        reason: 'device_revoke',
+      });
     }
     return ok;
   }
@@ -187,12 +212,19 @@ export class AuthService {
    *  kicks every device). Returns true iff a row was actually revoked; a not-found / already-revoked id
    *  is a no-op (no emit) so a stale list entry can't trigger a phantom logout. */
   async revokeSessionAdmin(sessionId: number): Promise<boolean> {
-    const rec = await this.prisma.sessionToken.findFirst({
-      where: { id: sessionId, revokedAt: null },
-      select: { userId: true },
+    const rec = await this.database.db.query.sessionToken.findFirst({
+      where: and(
+        eq(sessionToken.id, sessionId),
+        isNull(sessionToken.revokedAt),
+      ),
+      columns: { userId: true },
     });
     if (!rec) return false;
-    const ok = await this.sessionTokens.revokeById(rec.userId, sessionId, 'admin_revoke');
+    const ok = await this.sessionTokens.revokeById(
+      rec.userId,
+      sessionId,
+      'admin_revoke',
+    );
     if (ok) {
       this.eventEmitter.emit('auth.session-revoked', {
         userId: rec.userId,
@@ -211,51 +243,76 @@ export class AuthService {
   /** System-wide active session overview — SessionToken rows (filter by userId / ip). Active = not
    *  revoked and not past its sliding deadline (no-expiry app tokens always qualify); the ip filter
    *  matches both the sign-in ip and the last-seen ip. Newest activity (lastSeenAt) first. */
-  async listAllSessions(opts: { skip?: number; take?: number; userId?: number; ip?: string }) {
-    const where = {
-      revokedAt: null,
-      AND: [
-        { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-        ...(opts.userId ? [{ userId: opts.userId }] : []),
-        ...(opts.ip
-          ? [{ OR: [{ ip: { contains: opts.ip } }, { lastSeenIp: { contains: opts.ip } }] }]
-          : []),
-      ],
-    };
-    const [list, total] = await Promise.all([
-      this.prisma.sessionToken.findMany({
-        where,
-        skip: opts.skip ?? 0,
-        take: opts.take ?? 50,
-        orderBy: { lastSeenAt: 'desc' },
-        select: {
-          id: true,
-          userId: true,
-          client: true,
-          device: true,
-          userAgent: true,
-          ip: true,
-          lastSeenIp: true,
-          createdAt: true,
-          lastSeenAt: true,
-          expiresAt: true,
-          trusted: true,
-          user: { select: { id: true, account: true } },
-        },
-      }),
-      this.prisma.sessionToken.count({ where }),
+  async listAllSessions(opts: {
+    skip?: number;
+    take?: number;
+    userId?: number;
+    ip?: string;
+  }) {
+    const where = and(
+      isNull(sessionToken.revokedAt),
+      or(
+        isNull(sessionToken.expiresAt),
+        gt(sessionToken.expiresAt, new Date()),
+      ),
+      opts.userId ? eq(sessionToken.userId, opts.userId) : undefined,
+      opts.ip
+        ? or(
+            like(sessionToken.ip, `%${opts.ip}%`),
+            like(sessionToken.lastSeenIp, `%${opts.ip}%`),
+          )
+        : undefined,
+    );
+    const [rows, total] = await Promise.all([
+      this.database.db
+        .select({
+          id: sessionToken.id,
+          userId: sessionToken.userId,
+          client: sessionToken.client,
+          device: sessionToken.device,
+          userAgent: sessionToken.userAgent,
+          ip: sessionToken.ip,
+          lastSeenIp: sessionToken.lastSeenIp,
+          createdAt: sessionToken.createdAt,
+          lastSeenAt: sessionToken.lastSeenAt,
+          expiresAt: sessionToken.expiresAt,
+          trusted: sessionToken.trusted,
+          account: userTable.account,
+        })
+        .from(sessionToken)
+        .innerJoin(userTable, eq(userTable.id, sessionToken.userId))
+        .where(where)
+        .orderBy(desc(sessionToken.lastSeenAt))
+        .offset(opts.skip ?? 0)
+        .limit(opts.take ?? 50),
+      this.database.db
+        .select({ value: count() })
+        .from(sessionToken)
+        .where(where)
+        .then(([row]) => row.value),
     ]);
+    const list = rows.map(({ account, ...row }) => ({
+      ...row,
+      user: { id: row.userId, account },
+    }));
     return { list, total };
   }
 
   /** Purge every active session in one shot: revoke every session token for each user with an active
    *  credential (forces every user to re-login). */
   async purgeAllSessions(): Promise<{ purgedUsers: number }> {
-    const sessionUsers = await this.prisma.sessionToken.findMany({
-      where: { revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-      select: { userId: true },
-      distinct: ['userId'],
-    });
+    const sessionUsers = await this.database.db
+      .selectDistinct({ userId: sessionToken.userId })
+      .from(sessionToken)
+      .where(
+        and(
+          isNull(sessionToken.revokedAt),
+          or(
+            isNull(sessionToken.expiresAt),
+            gt(sessionToken.expiresAt, new Date()),
+          ),
+        ),
+      );
     const userIds = new Set(sessionUsers.map((r) => r.userId));
     for (const userId of userIds) {
       await this.invalidateAllSessions(userId, 'admin_purge');

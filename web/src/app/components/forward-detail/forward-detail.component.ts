@@ -37,7 +37,7 @@ import {
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import { toDisplayText } from '../../lib/message-entity';
-import { textMessageBody } from '../../../../../shared/text-message-content';
+import { requireTextMessageContent } from '../../../../../shared/text-message-content';
 import type {
   ForwardManifestMessage,
   ForwardWireBundle,
@@ -233,7 +233,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       avatarIdentityId: creator,
       text:
         contentType === 'PURE_TEXT'
-          ? toDisplayText(textMessageBody(message.content) ?? '')
+          ? toDisplayText(requireTextMessageContent(message.content).text)
           : snapshotContent(message),
       time: dayjs(message.sentAt).format('HH:mm'),
       contentType,

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseTextMessageContent,
+  requireTextMessageContent,
   stringifyTextMessageContent,
-  textMessageBody,
 } from './text-message-content.js';
 
 describe('text message content protocol', () => {
@@ -15,7 +15,7 @@ describe('text message content protocol', () => {
       text: 'hello',
       quote: { seq: 31, preview: 'Alice：original' },
     });
-    expect(textMessageBody(wire)).toBe('hello');
+    expect(requireTextMessageContent(wire).text).toBe('hello');
   });
 
   it.each([
@@ -28,6 +28,8 @@ describe('text message content protocol', () => {
     '{"text":"hello","quote":{"seq":1,"preview":2}}',
   ])('rejects malformed content: %s', (content) => {
     expect(parseTextMessageContent(content)).toBeNull();
-    expect(textMessageBody(content)).toBeNull();
+    expect(() => requireTextMessageContent(content)).toThrow(
+      'invalid PURE_TEXT message envelope',
+    );
   });
 });

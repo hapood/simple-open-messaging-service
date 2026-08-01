@@ -21,6 +21,7 @@ describe('NativeComposerService global geometry', () => {
     sending: false,
     canRecord: true,
     canUpload: true,
+    mentionsEnabled: true,
     theme: 'system',
   };
 

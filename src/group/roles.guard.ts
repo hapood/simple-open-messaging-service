@@ -2,7 +2,7 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { ROLES_KEY } from './roles.decorator.js';
-import { GroupRole } from '../prisma/generated/client.js';
+import { GroupRole } from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 

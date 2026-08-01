@@ -1,6 +1,13 @@
-import { Injectable, Logger, HttpStatus, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  HttpStatus,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { PrismaService } from '../prisma.service.js';
+import { eq } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
@@ -8,11 +15,15 @@ import { ThreadParticipantService } from '../thread-participant/thread-participa
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import type { S2SCallFrame, S2SCallOp, S2SAddress } from '../federation/federation.service.js';
+import type {
+  S2SCallFrame,
+  S2SCallOp,
+  S2SAddress,
+} from '../federation/federation.service.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ContentType } from '../prisma/generated/client.js';
+import { ContentType } from '../database/enums.js';
 import {
   buildCallContent,
   type CallMediaType,
@@ -122,7 +133,7 @@ export class CallsService implements OnModuleDestroy {
   private readonly ringTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly sse: SseService,
     private readonly push: PushService,
     private readonly participants: ThreadParticipantService,
@@ -143,12 +154,21 @@ export class CallsService implements OnModuleDestroy {
     dto: { callSid: string; calleeUserId: number; callType: CallMediaType },
   ): Promise<{ callSid: string; threadId: number }> {
     if (callerId === dto.calleeUserId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_ALLOWED, 'cannot call yourself');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_ALLOWED,
+        'cannot call yourself',
+      );
     }
     // Authorization: caller + callee must share an active P2P thread (be friends).
-    const threadId = await this.participants.findP2PThreadBetween(callerId, dto.calleeUserId);
+    const threadId = await this.participants.findP2PThreadBetween(
+      callerId,
+      dto.calleeUserId,
+    );
     if (threadId === null) {
-      throw new BusinessException(BusinessCode.CALL_NOT_ALLOWED, 'not friends with this user');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_ALLOWED,
+        'not friends with this user',
+      );
     }
 
     // Idempotent: check the live call BEFORE the busy guard — the caller's own in-flight call would
@@ -156,11 +176,17 @@ export class CallsService implements OnModuleDestroy {
     // impossible in practice (client-generated ULID, globally unique); refuse rather than leak.
     const existing = this.activeCalls.get(dto.callSid);
     if (existing) {
-      if (existing.callerId === callerId && existing.calleeId === dto.calleeUserId) {
+      if (
+        existing.callerId === callerId &&
+        existing.calleeId === dto.calleeUserId
+      ) {
         if (existing.state === 'ringing') await this.ring(existing);
         return { callSid: existing.callSid, threadId: existing.threadId };
       }
-      throw new BusinessException(BusinessCode.CALL_NOT_ALLOWED, 'callSid conflict');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_ALLOWED,
+        'callSid conflict',
+      );
     }
 
     // Federated? A foreigner callee is rung on ITS server via an S2S frame; a local callee is rung here.
@@ -168,16 +194,22 @@ export class CallsService implements OnModuleDestroy {
     // block (no await between) — closes the TOCTOU race where two concurrent initiates (A→B + B→A) both
     // pass the check during each other's await, then both register (glare: each side then sees the other's
     // late incoming while its own outgoing screen is up).
-    const callee = await this.prisma.user.findUnique({
-      where: { id: dto.calleeUserId },
-      select: { isForeigner: true, account: true, domain: true },
+    const callee = await this.database.db.query.user.findFirst({
+      where: eq(user.id, dto.calleeUserId),
+      columns: { isForeigner: true, account: true, domain: true },
     });
     const federated = !!callee?.isForeigner;
 
     // New call: neither party may already be in an active call (one active call per user). The check + the
     // activeByUser.set below are SYNCHRONOUS (no await between) → atomic on the event loop → no glare race.
-    if (this.activeByUser.has(callerId) || this.activeByUser.has(dto.calleeUserId)) {
-      throw new BusinessException(BusinessCode.CALL_BUSY, 'an active call already exists');
+    if (
+      this.activeByUser.has(callerId) ||
+      this.activeByUser.has(dto.calleeUserId)
+    ) {
+      throw new BusinessException(
+        BusinessCode.CALL_BUSY,
+        'an active call already exists',
+      );
     }
 
     const call: LiveCall = {
@@ -195,7 +227,9 @@ export class CallsService implements OnModuleDestroy {
       pendingAnswerIce: [],
     };
     this.activeCalls.set(call.callSid, call);
-    this.logger.debug(`[call] initiate sid=${call.callSid} caller=${callerId} callee=${dto.calleeUserId} state=ringing`);
+    this.logger.debug(
+      `[call] initiate sid=${call.callSid} caller=${callerId} callee=${dto.calleeUserId} state=ringing`,
+    );
     this.activeByUser.set(callerId, call.callSid);
     this.activeByUser.set(dto.calleeUserId, call.callSid);
     this.armRingTimer(call);
@@ -235,9 +269,9 @@ export class CallsService implements OnModuleDestroy {
    *  caller's display name/avatar so the callee UI can render without an extra fetch. Called for LOCAL
    *  calls + the federated MIRROR (where callerId is the localized foreigner stub → same-origin avatar). */
   private async ring(call: LiveCall): Promise<void> {
-    const caller = await this.prisma.user.findUnique({
-      where: { id: call.callerId },
-      select: { name: true, avatar: true },
+    const caller = await this.database.db.query.user.findFirst({
+      where: eq(user.id, call.callerId),
+      columns: { name: true, avatar: true },
     });
     this.emit(call.calleeId, 'incoming', {
       callSid: call.callSid,
@@ -270,13 +304,21 @@ export class CallsService implements OnModuleDestroy {
     const call = this.activeCalls.get(callSid);
     this.logger.debug(
       `[call] accept calleeId=${calleeId} sid=${callSid} found=${!!call}` +
-        (call ? ` state=${call.state} caller=${call.callerId} callee=${call.calleeId}` : ''),
+        (call
+          ? ` state=${call.state} caller=${call.callerId} callee=${call.calleeId}`
+          : ''),
     );
     if (!call || call.state !== 'ringing') {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no ringing call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'no ringing call',
+      );
     }
     if (call.calleeId !== calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'only the callee can accept');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'only the callee can accept',
+      );
     }
     call.state = 'accepted';
     this.notifyBoth(call, 'accepted', { threadId: call.threadId });
@@ -293,10 +335,16 @@ export class CallsService implements OnModuleDestroy {
   async ringing(calleeId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
     if (!call || call.state !== 'ringing') {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no ringing call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'no ringing call',
+      );
     }
     if (call.calleeId !== calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'only the callee can ack ringing');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'only the callee can ack ringing',
+      );
     }
     if (call.ringingAcked) return; // another of the callee's devices already acked — no-op
     call.ringingAcked = true;
@@ -311,10 +359,16 @@ export class CallsService implements OnModuleDestroy {
     const call = this.activeCalls.get(callSid);
     if (!call || call.state === 'connected') return; // gone, or the other party already reported connect
     if (call.state !== 'accepted') {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call not answered');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'call not answered',
+      );
     }
     if (userId !== call.callerId && userId !== call.calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'not a party to this call',
+      );
     }
     call.state = 'connected';
     call.startedAt = Date.now();
@@ -331,25 +385,39 @@ export class CallsService implements OnModuleDestroy {
   async upgradeVideo(userId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
     if (!call || call.state !== 'connected') {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no connected call to upgrade');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'no connected call to upgrade',
+      );
     }
     if (userId !== call.callerId && userId !== call.calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'not a party to this call',
+      );
     }
     if (call.callType === 'VIDEO') return;
     call.callType = 'VIDEO';
     this.syncCallState(call);
-    this.notifyBoth(call, 'video-upgraded', { callType: 'VIDEO', upgradedBy: userId });
+    this.notifyBoth(call, 'video-upgraded', {
+      callType: 'VIDEO',
+      upgradedBy: userId,
+    });
   }
 
   /** The callee declines a ringing call: fans `declined`, then writes the terminal bubble on the ORIGIN.
    *  Idempotent on an already-terminal call (no live entry → no-op). */
   async decline(calleeId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    this.logger.debug(`[call] decline calleeId=${calleeId} sid=${callSid} state=${call?.state ?? 'null'}`);
+    this.logger.debug(
+      `[call] decline calleeId=${calleeId} sid=${callSid} state=${call?.state ?? 'null'}`,
+    );
     if (!call || call.state !== 'ringing') return; // already resolved — idempotent no-op
     if (call.calleeId !== calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'only the callee can decline');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'only the callee can decline',
+      );
     }
     this.notifyBoth(call, 'declined');
     this.release(call);
@@ -360,10 +428,15 @@ export class CallsService implements OnModuleDestroy {
    *  `cancelled` bubble on the ORIGIN. Idempotent on an already-terminal call. */
   async cancel(callerId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    this.logger.debug(`[call] cancel callerId=${callerId} sid=${callSid} state=${call?.state ?? 'null'}`);
+    this.logger.debug(
+      `[call] cancel callerId=${callerId} sid=${callSid} state=${call?.state ?? 'null'}`,
+    );
     if (!call || call.state !== 'ringing') return; // already resolved — idempotent no-op
     if (call.callerId !== callerId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'only the caller can cancel');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'only the caller can cancel',
+      );
     }
     this.notifyBoth(call, 'cancelled');
     this.release(call);
@@ -374,14 +447,26 @@ export class CallsService implements OnModuleDestroy {
    *  the ORIGIN. The persisted outcome is `completed` only if the media actually connected; an
    *  answered-but-never-connected call is `failed` (a connection failure, no duration). `endReason` failed/timeout on
    *  a connected call → `failed` (connected-then-failed, with duration). */
-  async end(userId: number, callSid: string, endReason?: string): Promise<void> {
+  async end(
+    userId: number,
+    callSid: string,
+    endReason?: string,
+  ): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    this.logger.debug(`[call] end userId=${userId} sid=${callSid} state=${call?.state ?? 'null'} reason=${endReason ?? ''}`);
+    this.logger.debug(
+      `[call] end userId=${userId} sid=${callSid} state=${call?.state ?? 'null'} reason=${endReason ?? ''}`,
+    );
     if (!call || (call.state !== 'accepted' && call.state !== 'connected')) {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no answered call to end');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'no answered call to end',
+      );
     }
     if (userId !== call.callerId && userId !== call.calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'not a party to this call',
+      );
     }
     const status: CallOutcome =
       call.state === 'connected'
@@ -403,14 +488,23 @@ export class CallsService implements OnModuleDestroy {
   ): Promise<void> {
     const call = this.activeCalls.get(dto.callSid);
     if (!call) {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no active call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'no active call',
+      );
     }
     if (fromUserId !== call.callerId && fromUserId !== call.calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'not a party to this call',
+      );
     }
     const peer = fromUserId === call.callerId ? call.calleeId : call.callerId;
     if (dto.toUserId !== peer) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'relay target is not the call peer');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'relay target is not the call peer',
+      );
     }
     this.stage(call, fromUserId, dto.kind, dto.payload); // store-and-forward: a peer offline now can GET it later
     if (call.peerDomain) {
@@ -551,7 +645,10 @@ export class CallsService implements OnModuleDestroy {
     if (!call || call.state !== 'ringing') return; // already resolved
     if (call.ringingAcked) return; // already relayed — idempotent
     call.ringingAcked = true;
-    this.emit(this.localUserId(call), 'ringing', { callSid: call.callSid, threadId: call.threadId });
+    this.emit(this.localUserId(call), 'ringing', {
+      callSid: call.callSid,
+      threadId: call.threadId,
+    });
   }
 
   /** Inbound `connected`: the peer reports the media leg is up → stamp startedAt (the real connect marker,
@@ -571,7 +668,10 @@ export class CallsService implements OnModuleDestroy {
 
   /** Federated peer permanently upgraded the live call to video. The frame is idempotent and carries no
    *  media; clients perform SDP renegotiation separately over the ordinary signaling relay. */
-  private onInboundVideoUpgraded(localUserId: number, frame: S2SCallFrame): void {
+  private onInboundVideoUpgraded(
+    localUserId: number,
+    frame: S2SCallFrame,
+  ): void {
     const call = this.activeCalls.get(frame.callSid);
     if (!call || call.state !== 'connected') return;
     call.callType = 'VIDEO';
@@ -626,7 +726,10 @@ export class CallsService implements OnModuleDestroy {
    *  exactly like a normal send. ORIGIN-only — the non-origin (callee's server) never writes (it pulls
    *  the origin's bubble via the message sync). `callSid` is the message's clientMessageId → the write
    *  is idempotent. `startedAt`/`durationMs` are included only when the call connected. */
-  private async persistTerminal(call: LiveCall, status: CallOutcome): Promise<void> {
+  private async persistTerminal(
+    call: LiveCall,
+    status: CallOutcome,
+  ): Promise<void> {
     if (!call.origin) return; // the callee's server pulls the origin's bubble — never author one
     const endedAt = Date.now();
     const content = buildCallContent(
@@ -681,15 +784,27 @@ export class CallsService implements OnModuleDestroy {
       startedAt: call.startedAt,
       callType: call.callType,
     };
-    this.callState.set(call.callerId, { ...base, peerUserId: call.calleeId, isCaller: true });
-    this.callState.set(call.calleeId, { ...base, peerUserId: call.callerId, isCaller: false });
+    this.callState.set(call.callerId, {
+      ...base,
+      peerUserId: call.calleeId,
+      isCaller: true,
+    });
+    this.callState.set(call.calleeId, {
+      ...base,
+      peerUserId: call.callerId,
+      isCaller: false,
+    });
   }
 
   private release(call: LiveCall): void {
-    this.logger.debug(`[call] release sid=${call.callSid} state=${call.state} caller=${call.callerId} callee=${call.calleeId}`);
+    this.logger.debug(
+      `[call] release sid=${call.callSid} state=${call.state} caller=${call.callerId} callee=${call.calleeId}`,
+    );
     this.activeCalls.delete(call.callSid);
-    if (this.activeByUser.get(call.callerId) === call.callSid) this.activeByUser.delete(call.callerId);
-    if (this.activeByUser.get(call.calleeId) === call.callSid) this.activeByUser.delete(call.calleeId);
+    if (this.activeByUser.get(call.callerId) === call.callSid)
+      this.activeByUser.delete(call.callerId);
+    if (this.activeByUser.get(call.calleeId) === call.callSid)
+      this.activeByUser.delete(call.calleeId);
     this.callState.clear(call.callerId);
     this.callState.clear(call.calleeId);
     this.clearRingTimer(call.callSid);
@@ -698,13 +813,21 @@ export class CallsService implements OnModuleDestroy {
   /** Stage one setup frame for the recipient to fetch (store-and-forward). The offer + the caller's ICE are
    *  staged for the CALLEE; the answer + the callee's ICE for the CALLER — derived from the sender. ICE is
    *  deduped by its raw payload (a retransmit / a replayed S2S frame must not duplicate). */
-  private stage(call: LiveCall, senderId: number, kind: string, payload: string): void {
+  private stage(
+    call: LiveCall,
+    senderId: number,
+    kind: string,
+    payload: string,
+  ): void {
     if (kind === 'offer') {
       call.pendingOffer = payload;
     } else if (kind === 'answer') {
       call.pendingAnswer = payload;
     } else if (kind === 'ice') {
-      const list = senderId === call.callerId ? call.pendingOfferIce : call.pendingAnswerIce;
+      const list =
+        senderId === call.callerId
+          ? call.pendingOfferIce
+          : call.pendingAnswerIce;
       if (!list.includes(payload)) list.push(payload);
     }
   }
@@ -726,10 +849,16 @@ export class CallsService implements OnModuleDestroy {
   ): { offer?: string | null; answer?: string | null; ice: string[] } {
     const call = this.activeCalls.get(callSid);
     if (!call) {
-      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no active call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_FOUND,
+        'no active call',
+      );
     }
     if (userId !== call.callerId && userId !== call.calleeId) {
-      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_PARTICIPANT,
+        'not a party to this call',
+      );
     }
     return userId === call.callerId
       ? { answer: call.pendingAnswer ?? null, ice: call.pendingAnswerIce }
@@ -738,16 +867,32 @@ export class CallsService implements OnModuleDestroy {
 
   /** Push a CALL_EVENT lifecycle frame to one user's online devices (SSE is per-user → all of that
    *  user's live connections). */
-  private emit(userId: number, type: string, extra: Record<string, unknown> = {}): void {
-    this.sse.onCallEvent(userId, { event: 'CALL_EVENT', type, ts: Date.now(), ...extra });
+  private emit(
+    userId: number,
+    type: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.sse.onCallEvent(userId, {
+      event: 'CALL_EVENT',
+      type,
+      ts: Date.now(),
+      ...extra,
+    });
   }
 
   /** Fan a lifecycle event to BOTH participants. LOCAL call → both are on this server (emit to each).
    *  FEDERATED → emit to the one local participant + relay an S2S frame so the peer server emits to its
    *  local participant. `op` doubles as the CALL_EVENT type and the S2S frame op. */
-  private notifyBoth(call: LiveCall, op: string, extra: Record<string, unknown> = {}): void {
+  private notifyBoth(
+    call: LiveCall,
+    op: string,
+    extra: Record<string, unknown> = {},
+  ): void {
     if (call.peerDomain) {
-      this.emit(this.localUserId(call), op, { callSid: call.callSid, ...extra });
+      this.emit(this.localUserId(call), op, {
+        callSid: call.callSid,
+        ...extra,
+      });
       void this.sendFrame(call, op as S2SCallOp, extra);
     } else {
       this.emit(call.callerId, op, { callSid: call.callSid, ...extra });
@@ -757,7 +902,11 @@ export class CallsService implements OnModuleDestroy {
 
   /** Relay a lifecycle S2S frame to the peer server, fire-and-forget (a lost frame is covered by the
    *  peer's own timeout / the origin's safety-net). Carries endReason/startedAt when present. */
-  private sendFrame(call: LiveCall, op: S2SCallOp, extra: Record<string, unknown>): void {
+  private sendFrame(
+    call: LiveCall,
+    op: S2SCallOp,
+    extra: Record<string, unknown>,
+  ): void {
     void this.federation
       .sendCallFrame(
         {
@@ -766,8 +915,12 @@ export class CallsService implements OnModuleDestroy {
           callSid: call.callSid,
           op,
           callType: call.callType,
-          ...(typeof extra.endReason === 'string' ? { endReason: extra.endReason } : {}),
-          ...(typeof extra.startedAt === 'number' ? { startedAt: extra.startedAt } : {}),
+          ...(typeof extra.endReason === 'string'
+            ? { endReason: extra.endReason }
+            : {}),
+          ...(typeof extra.startedAt === 'number'
+            ? { startedAt: extra.startedAt }
+            : {}),
         },
         call.peerDomain!,
       )
@@ -791,14 +944,17 @@ export class CallsService implements OnModuleDestroy {
 
   /** Map the advisory endReason to the persisted terminal outcome. */
   private static endStatus(endReason?: string): CallOutcome {
-    return endReason === 'failed' || endReason === 'timeout' ? 'failed' : 'completed';
+    return endReason === 'failed' || endReason === 'timeout'
+      ? 'failed'
+      : 'completed';
   }
 
   private armRingTimer(call: LiveCall): void {
     this.clearRingTimer(call.callSid);
     // The federated ORIGIN (caller's server) uses the longer safety-net; everything else (local calls +
     // the federated mirror) uses the 45s ringing timeout.
-    const ms = call.origin && call.peerDomain ? FED_SAFETY_NET_MS : RING_TIMEOUT_MS;
+    const ms =
+      call.origin && call.peerDomain ? FED_SAFETY_NET_MS : RING_TIMEOUT_MS;
     const timer = setTimeout(() => {
       void this.timeoutMissed(call.callSid);
     }, ms);

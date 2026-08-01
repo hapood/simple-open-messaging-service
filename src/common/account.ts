@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { monotonicFactory } from 'ulid';
-import { Prisma } from '../prisma/generated/client.js';
+import { isUniqueViolation } from '../database/database-error.js';
 
 /**
  * Account grammar — single source of truth. This module is the code
@@ -77,7 +77,7 @@ export function mintGroupAccount(): string {
   return account;
 }
 
-/** Prisma unique-constraint-violation (the codebase's 5 existing sites all use this exact shape). */
+/** PostgreSQL unique-constraint violation. Kept under the historical name for call-site stability. */
 export function isP2002(e: unknown): boolean {
-  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+  return isUniqueViolation(e);
 }

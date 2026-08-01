@@ -10,7 +10,9 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminAuditQueryDto } from './admin.dto.js';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, desc, eq, like } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { adminActionLog } from '../database/schema.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
 
 /**
@@ -27,42 +29,51 @@ import { AuditTargetLabelService } from './audit-target-label.service.js';
 @Controller()
 export class AuditController {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly labels: AuditTargetLabelService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/audit')
-  @ApiOperation({ summary: 'Admin action audit log (paginated + filter by action/adminId/success)' })
+  @ApiOperation({
+    summary:
+      'Admin action audit log (paginated + filter by action/adminId/success)',
+  })
   async list(@Body() dto: AdminAuditQueryDto) {
-    const where = {
-      ...(dto.action ? { action: { contains: dto.action } } : {}),
-      ...(dto.adminId ? { adminId: dto.adminId } : {}),
-      ...(dto.success === true || dto.success === false ? { success: dto.success } : {}),
-    };
+    const where = and(
+      dto.action ? like(adminActionLog.action, `%${dto.action}%`) : undefined,
+      dto.adminId ? eq(adminActionLog.adminId, dto.adminId) : undefined,
+      dto.success === true || dto.success === false
+        ? eq(adminActionLog.success, dto.success)
+        : undefined,
+    );
     const [rows, total] = await Promise.all([
-      this.prisma.adminActionLog.findMany({
-        where,
-        skip: dto.skip ?? 0,
-        take: dto.take ?? 50,
-        orderBy: { at: 'desc' },
-        select: {
-          id: true,
-          adminId: true,
-          adminRole: true,
-          action: true,
-          targetType: true,
-          targetId: true,
-          ip: true,
-          userAgent: true,
-          route: true,
-          success: true,
-          errorMessage: true,
-          at: true,
-        },
-      }),
-      this.prisma.adminActionLog.count({ where }),
+      this.database.db
+        .select({
+          id: adminActionLog.id,
+          adminId: adminActionLog.adminId,
+          adminRole: adminActionLog.adminRole,
+          action: adminActionLog.action,
+          targetType: adminActionLog.targetType,
+          targetId: adminActionLog.targetId,
+          ip: adminActionLog.ip,
+          userAgent: adminActionLog.userAgent,
+          route: adminActionLog.route,
+          success: adminActionLog.success,
+          errorMessage: adminActionLog.errorMessage,
+          at: adminActionLog.at,
+        })
+        .from(adminActionLog)
+        .where(where)
+        .orderBy(desc(adminActionLog.at))
+        .offset(dto.skip ?? 0)
+        .limit(dto.take ?? 50),
+      this.database.db
+        .select({ value: count() })
+        .from(adminActionLog)
+        .where(where)
+        .then(([row]) => row.value),
     ]);
     // Resolve each row's targetId into a human-friendly account name so the target column reads
     // "user: alice" instead of "user: 7". Shared with the dashboard (AuditTargetLabelService).
@@ -70,7 +81,9 @@ export class AuditController {
     const list = rows.map((r) => ({
       ...r,
       targetLabel:
-        r.targetType && r.targetId ? (labelByKey.get(`${r.targetType}:${r.targetId}`) ?? null) : null,
+        r.targetType && r.targetId
+          ? (labelByKey.get(`${r.targetType}:${r.targetId}`) ?? null)
+          : null,
     }));
     return { list, total };
   }

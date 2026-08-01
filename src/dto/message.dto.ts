@@ -16,7 +16,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { ContentType } from '../prisma/generated/client.js';
+import { ContentType } from '../database/enums.js';
 
 /** Message-domain request DTOs. Validation rules are ported from the original message.controller inline types. */
 

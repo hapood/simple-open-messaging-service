@@ -1,10 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { count, desc, eq, ilike, sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { admin, user } from '../database/schema.js';
 import { AdminAuthService } from './admin-auth.service.js';
-import { AdminRole } from '../prisma/generated/client.js';
+import { AdminRole } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import type { AdminManageListDto, AdminCreateDto, AdminSetRoleDto } from './admin.dto.js';
+import type {
+  AdminManageListDto,
+  AdminCreateDto,
+  AdminSetRoleDto,
+} from './admin.dto.js';
 
 type StateChange = { kind: 'disable' } | { kind: 'role'; role: AdminRole };
 
@@ -27,40 +33,47 @@ type StateChange = { kind: 'disable' } | { kind: 'role'; role: AdminRole };
 @Injectable()
 export class AdminManageService {
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly database: DatabaseService,
     private readonly adminAuth: AdminAuthService,
   ) {}
 
   async list(dto: AdminManageListDto) {
     const where = dto.search
-      ? { user: { account: { contains: dto.search, mode: 'insensitive' as const } } }
-      : {};
+      ? ilike(user.account, `%${dto.search}%`)
+      : undefined;
     const [rows, total] = await Promise.all([
-      this.prisma.admin.findMany({
-        where,
-        skip: dto.skip ?? 0,
-        take: dto.take ?? 50,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          userId: true,
-          role: true,
-          enabled: true,
-          twoFactorEnabled: true,
-          lastLoginAt: true,
-          lastLoginIp: true,
-          createdAt: true,
-          user: { select: { account: true, name: true } },
-        },
-      }),
-      this.prisma.admin.count({ where }),
+      this.database.db
+        .select({
+          id: admin.id,
+          userId: admin.userId,
+          role: admin.role,
+          enabled: admin.enabled,
+          twoFactorEnabled: admin.twoFactorEnabled,
+          lastLoginAt: admin.lastLoginAt,
+          lastLoginIp: admin.lastLoginIp,
+          createdAt: admin.createdAt,
+          account: user.account,
+          name: user.name,
+        })
+        .from(admin)
+        .innerJoin(user, eq(user.id, admin.userId))
+        .where(where)
+        .orderBy(desc(admin.createdAt))
+        .offset(dto.skip ?? 0)
+        .limit(dto.take ?? 50),
+      this.database.db
+        .select({ value: count() })
+        .from(admin)
+        .innerJoin(user, eq(user.id, admin.userId))
+        .where(where)
+        .then(([row]) => row.value),
     ]);
     // Flatten user.account/name onto the row so the response is a flat admin record.
     const list = rows.map((r) => ({
       id: r.id,
       userId: r.userId,
-      account: r.user.account,
-      name: r.user.name,
+      account: r.account,
+      name: r.name,
       role: r.role,
       enabled: r.enabled,
       twoFactorEnabled: r.twoFactorEnabled,
@@ -72,47 +85,73 @@ export class AdminManageService {
   }
 
   async create(dto: AdminCreateDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: dto.userId },
-      select: { isGroup: true, isDeleted: true, admins: { select: { id: true } } },
+    const candidate = await this.database.db.query.user.findFirst({
+      where: eq(user.id, dto.userId),
+      columns: { isGroup: true, isDeleted: true },
+      with: { admins: { columns: { id: true } } },
     });
-    if (!user) throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    if (user.isGroup) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'a group account cannot become an admin');
+    if (!candidate)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
+    if (candidate.isGroup) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'a group account cannot become an admin',
+      );
     }
-    if (user.isDeleted) {
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'a deleted user cannot become an admin');
+    if (candidate.isDeleted) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'a deleted user cannot become an admin',
+      );
     }
-    if (user.admins.length > 0) {
-      throw new BusinessException(BusinessCode.ALREADY_EXISTS, 'user is already an admin');
+    if (candidate.admins.length > 0) {
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        'user is already an admin',
+      );
     }
-    return this.prisma.admin.create({
-      data: { userId: dto.userId, role: dto.role },
-      select: { id: true, userId: true, role: true },
-    });
+    return this.database.db
+      .insert(admin)
+      .values({ userId: dto.userId, role: dto.role, updatedAt: new Date() })
+      .returning({ id: admin.id, userId: admin.userId, role: admin.role })
+      .then(([row]) => row);
   }
 
   async disable(adminId: number): Promise<void> {
-    const { changed } = await this.guardedStateChange(adminId, { kind: 'disable' });
+    const { changed } = await this.guardedStateChange(adminId, {
+      kind: 'disable',
+    });
     // Revoke outstanding sessions only on a real disable (the admin was enabled) — deleting the linked
     // AdminSession rows is what invalidates their admin_session cookie on the next request.
-    if (changed) await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_disabled');
+    if (changed)
+      await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_disabled');
   }
 
   async enable(adminId: number): Promise<void> {
-    const admin = await this.prisma.admin.findUnique({ where: { id: adminId }, select: { id: true } });
-    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
+    const existing = await this.database.db.query.admin.findFirst({
+      where: eq(admin.id, adminId),
+      columns: { id: true },
+    });
+    if (!existing)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
     // No session revocation: a disabled admin's sessions were already revoked at disable time and none
     // can be created while disabled (login checks enabled), so there is nothing to revoke here. Revoking
     // would only log out an already-enabled admin on a redundant enable call (a no-op must not kick).
-    await this.prisma.admin.update({ where: { id: adminId }, data: { enabled: true } });
+    await this.database.db
+      .update(admin)
+      .set({ enabled: true })
+      .where(eq(admin.id, adminId));
   }
 
   async setRole(adminId: number, dto: AdminSetRoleDto): Promise<void> {
-    const { changed } = await this.guardedStateChange(adminId, { kind: 'role', role: dto.role });
+    const { changed } = await this.guardedStateChange(adminId, {
+      kind: 'role',
+      role: dto.role,
+    });
     // A real role transition demotes/promotes the admin — revoke so they re-login at the new privilege
     // level. A same-role reaffirmation is a no-op (changed:false) and must NOT kick the admin.
-    if (changed) await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_role_change');
+    if (changed)
+      await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_role_change');
   }
 
   /** SUPER_ADMIN lockout recovery: clear another admin's 2FA outright (no code — the role gate is the
@@ -133,27 +172,34 @@ export class AdminManageService {
    * setRole (or disabling an already-disabled admin) reports changed:false so it neither revokes
    * sessions nor kicks the admin.
    */
-  private async guardedStateChange(adminId: number, change: StateChange): Promise<{ changed: boolean }> {
-    return this.prisma.$transaction(async (tx) => {
-      const admin = await tx.admin.findUnique({
-        where: { id: adminId },
-        select: { role: true, enabled: true },
+  private async guardedStateChange(
+    adminId: number,
+    change: StateChange,
+  ): Promise<{ changed: boolean }> {
+    return this.database.db.transaction(async (tx) => {
+      const current = await tx.query.admin.findFirst({
+        where: eq(admin.id, adminId),
+        columns: { role: true, enabled: true },
       });
-      if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
+      if (!current)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
 
       const demotesSuper =
-        admin.enabled &&
-        admin.role === AdminRole.SUPER_ADMIN &&
+        current.enabled &&
+        current.role === AdminRole.SUPER_ADMIN &&
         (change.kind === 'disable' || change.role !== AdminRole.SUPER_ADMIN);
 
       if (demotesSuper) {
         // Lock the enabled super rows so a concurrent disable/demote serializes behind this txn, then
         // re-count under the lock (the count may have dropped if a concurrent txn already committed).
-        const locked = await tx.$queryRaw<Array<{ id: number }>>`
+        const locked = await tx.execute<{ id: number }>(sql`
           SELECT id FROM "Admin" WHERE role = 'SUPER_ADMIN' AND enabled = true FOR UPDATE
-        `;
-        if (locked.length <= 1) {
-          throw new BusinessException(BusinessCode.FORBIDDEN, 'cannot remove the last super admin');
+        `);
+        if (locked.rows.length <= 1) {
+          throw new BusinessException(
+            BusinessCode.FORBIDDEN,
+            'cannot remove the last super admin',
+          );
         }
       }
 
@@ -161,10 +207,13 @@ export class AdminManageService {
       // the admin was enabled; a role change is real only when the role actually differs (a same-role
       // reaffirmation writes the same value and must not revoke anything).
       const changed =
-        change.kind === 'disable' ? admin.enabled : change.role !== admin.role;
-      const data = change.kind === 'disable' ? { enabled: false } : { role: change.role };
+        change.kind === 'disable'
+          ? current.enabled
+          : change.role !== current.role;
+      const data =
+        change.kind === 'disable' ? { enabled: false } : { role: change.role };
 
-      await tx.admin.update({ where: { id: adminId }, data });
+      await tx.update(admin).set(data).where(eq(admin.id, adminId));
       return { changed };
     });
   }

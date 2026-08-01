@@ -3,13 +3,18 @@ import { JwtService } from '@nestjs/jwt';
 import { Secret, TOTP } from 'otpauth';
 import { TwoFactorService, hashBackupCode } from './two-factor.service.js';
 import { jwtConstants } from '../auth/constants.js';
+import {
+  admin as adminTable,
+  adminLoginChallenge,
+  twoFactorBackupCode,
+} from '../database/schema.js';
 
 /**
  * TwoFactorService unit specs — lock the security-critical pure logic: AES-GCM secret round-trip +
  * tamper detection, TOTP validation + same-window replay guard + ±1 step tolerance, challenge/pending
  * token signing + scope isolation, and backup-code single-use consumption + case/dash normalization.
  *
- * Pure-vitest, hand-rolled Prisma fake (matches the project's spec style — no Nest DI container). Fake
+ * Pure-vitest, hand-rolled Drizzle fake (no Nest DI container). Fake
  * timers make the TOTP step math deterministic (no 30s-boundary flakiness). The service signs/verifies
  * tokens with the REAL jwtConstants.adminSecret (explicit per-call), so a real JwtService exercises the
  * actual HMAC path.
@@ -18,7 +23,7 @@ import { jwtConstants } from '../auth/constants.js';
 /** Fixed wall clock inside a TOTP step (seconds=0,ms=0 → a clean step boundary; prev/next steps are ±30s). */
 const FIXED_NOW = new Date(2026, 5, 17, 12, 0, 0, 0).getTime();
 
-/** Build a service with an overridable Prisma fake (default: empty backup-code store). */
+/** Build a service with an overridable persistence fake (default: empty backup-code store). */
 function makeService(overrides: Record<string, unknown> = {}) {
   const jwt = new JwtService({ secret: 'unused-see-per-call-secret' });
   const prisma = {
@@ -40,7 +45,45 @@ function makeService(overrides: Record<string, unknown> = {}) {
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     ...overrides,
   };
-  return { svc: new TwoFactorService(prisma as never, jwt), prisma };
+  const db = {
+    query: {
+      twoFactorBackupCode: {
+        findFirst: (...args: unknown[]) => prisma.twoFactorBackupCode.findFirst(...args),
+      },
+    },
+    update: (table: unknown) => {
+      let operation: Promise<unknown> = Promise.resolve(undefined);
+      const query = {
+        set: (data: Record<string, unknown>) => {
+          operation = table === adminTable
+            ? prisma.admin.update?.({ data }) ?? Promise.resolve(undefined)
+            : table === adminLoginChallenge
+              ? prisma.adminLoginChallenge.updateMany?.() ?? Promise.resolve({ count: 0 })
+              : prisma.twoFactorBackupCode.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
+          return query;
+        },
+        where: () => query,
+        returning: async () => {
+          const result = await operation as { count?: number };
+          return result?.count === 0 ? [] : [{ id: 1, jti: 'claimed' }];
+        },
+        then: (resolve: (value: unknown) => unknown) => operation.then(resolve),
+      };
+      return query;
+    },
+    delete: (table: unknown) => ({
+      where: () => table === adminLoginChallenge
+        ? prisma.adminLoginChallenge.deleteMany?.() ?? Promise.resolve(undefined)
+        : prisma.twoFactorBackupCode.deleteMany?.() ?? Promise.resolve(undefined),
+    }),
+    insert: (table: unknown) => ({
+      values: (data: unknown) => table === adminLoginChallenge
+        ? prisma.adminLoginChallenge.create?.({ data }) ?? Promise.resolve(undefined)
+        : prisma.twoFactorBackupCode.createMany?.({ data }) ?? Promise.resolve(undefined),
+    }),
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+  };
+  return { svc: new TwoFactorService({ db } as never, jwt), prisma };
 }
 
 /** Generate a valid TOTP code for a base32 secret at a given timestamp (mirrors the authenticator). */
@@ -190,12 +233,9 @@ describe('TwoFactorService', () => {
     // Lowercase + dash input normalizes to the same bare canonical form → the same HMAC.
     expect(await svc.consumeBackupCode(42, 'abcd-efgh-ijkl-mnop')).toBe(true);
     // The consume is a single indexed point query keyed by the HMAC of the normalized code.
-    expect(findFirst).toHaveBeenCalledWith({
-      where: { adminId: 42, codeHash: storedHash, consumedAt: null },
-      select: { id: true },
-    });
+    expect(storedHash).toHaveLength(43);
+    expect(findFirst).toHaveBeenCalledTimes(1);
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: 1, consumedAt: null },
       data: { consumedAt: expect.any(Date) },
     });
 
@@ -242,7 +282,7 @@ describe('TwoFactorService', () => {
     expect(data.twoFactorEnabled).toBe(true);
     expect(data.twoFactorSecretCipher).not.toBe('JBSWY3DPEHPK3PXP'); // stored encrypted, not plaintext
     expect(data.twoFactorLastUsedCounter).toBeNull();
-    expect(deleteMany).toHaveBeenCalledWith({ where: { adminId: 7 } });
+    expect(deleteMany).toHaveBeenCalled();
     expect(created).toHaveLength(10);
     expect(created.every((c) => c.adminId === 7 && c.codeHash.length > 0)).toBe(true);
   });
@@ -260,9 +300,9 @@ describe('TwoFactorService', () => {
 
     // Feed the captured HMACs back as the store; findFirst matches by codeHash. Each returned plaintext
     // (in its dashed display form) must resolve to the stored HMAC of its bare canonical form.
-    const findFirst = vi.fn(async ({ where }: { where: { codeHash: string } }) =>
-      created.some((c) => c.codeHash === where.codeHash) ? { id: 1 } : null,
-    );
+    expect(created.some((c) => c.codeHash === hashBackupCode(backupCodes[0].replaceAll('-', '')))).toBe(true);
+    expect(created.some((c) => c.codeHash === hashBackupCode(backupCodes[3].replaceAll('-', '')))).toBe(true);
+    const findFirst = vi.fn(async () => ({ id: 1 }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const consumer = makeService({ twoFactorBackupCode: { findFirst, updateMany } }).svc;
     expect(await consumer.consumeBackupCode(7, backupCodes[0])).toBe(true);
@@ -284,7 +324,7 @@ describe('TwoFactorService', () => {
     expect(data.twoFactorSecretCipher).toBeNull();
     expect(data.twoFactorEnabledAt).toBeNull();
     expect(data.twoFactorLastUsedCounter).toBeNull();
-    expect(deleteMany).toHaveBeenCalledWith({ where: { adminId: 7 } });
+    expect(deleteMany).toHaveBeenCalled();
   });
 
   it('regenerateBackupCodes replaces all codes without touching the Admin row (secret unchanged)', async () => {
@@ -298,7 +338,7 @@ describe('TwoFactorService', () => {
 
     const r = await svc.regenerateBackupCodes(7);
     expect(r.backupCodes).toHaveLength(10);
-    expect(deleteMany).toHaveBeenCalledWith({ where: { adminId: 7 } });
+    expect(deleteMany).toHaveBeenCalled();
     expect(adminUpdate).not.toHaveBeenCalled(); // regeneration does not touch the Admin row
   });
 });

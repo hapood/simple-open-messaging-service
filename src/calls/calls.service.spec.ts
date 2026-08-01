@@ -6,13 +6,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CallsService } from './calls.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
-import { ContentType } from '../prisma/generated/client.js';
+import { ContentType } from '../database/enums.js';
 import { parseCallContent } from './call-content.js';
 import type { CallOutcome } from './call-content.js';
-import type { S2SCallFrame, S2SAddress } from '../federation/federation.service.js';
+import type {
+  S2SCallFrame,
+  S2SAddress,
+} from '../federation/federation.service.js';
 
 /** Build a minimal Message-like object writeMsgToThread resolves with (Omit<Message,'id'>). */
-function mkMsg(p: Partial<{ seq: number; threadId: number; creator: number; contentType: ContentType }> = {}) {
+function mkMsg(
+  p: Partial<{
+    seq: number;
+    threadId: number;
+    creator: number;
+    contentType: ContentType;
+  }> = {},
+) {
   return {
     seq: p.seq ?? 1,
     threadId: p.threadId ?? 10,
@@ -29,15 +39,19 @@ function mkMsg(p: Partial<{ seq: number; threadId: number; creator: number; cont
 
 function mkMocks() {
   return {
-    prisma: {
-      user: {
-        findUnique: vi.fn().mockResolvedValue({
-          isForeigner: false,
-          account: 'alice',
-          domain: 'local',
-          name: 'Alice',
-          avatar: 'a.webp',
-        }),
+    database: {
+      db: {
+        query: {
+          user: {
+            findFirst: vi.fn().mockResolvedValue({
+              isForeigner: false,
+              account: 'alice',
+              domain: 'local',
+              name: 'Alice',
+              avatar: 'a.webp',
+            }),
+          },
+        },
       },
     },
     sse: { onCallEvent: vi.fn(), onCallSignal: vi.fn() },
@@ -46,7 +60,10 @@ function mkMocks() {
     messages: { writeMsgToThread: vi.fn().mockResolvedValue(mkMsg()) },
     fanout: { dispatch: vi.fn().mockResolvedValue(undefined) },
     federation: { sendCallFrame: vi.fn().mockResolvedValue(undefined) },
-    quota: { tick: vi.fn().mockResolvedValue(undefined), peek: vi.fn().mockResolvedValue(undefined) },
+    quota: {
+      tick: vi.fn().mockResolvedValue(undefined),
+      peek: vi.fn().mockResolvedValue(undefined),
+    },
   };
 }
 
@@ -54,7 +71,7 @@ function mkService(m = mkMocks()) {
   const callState = new CallStateRegistry();
   return {
     svc: new CallsService(
-      m.prisma as never,
+      m.database as never,
       m.sse as never,
       m.push as never,
       m.participants as never,
@@ -90,16 +107,29 @@ function lastBubbleContent(m: ReturnType<typeof mkMocks>) {
 describe('CallsService.initiate', () => {
   it('registers a live ringing call, rings the callee in-band (SSE) + to all devices (push)', async () => {
     const { svc, m } = mkService();
-    const res = await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    const res = await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
     // Ring: SSE to callee (with caller display info) + push to the callee's devices.
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
       2,
-      expect.objectContaining({ type: 'incoming', callerUserId: 1, callerName: 'Alice', callType: 'AUDIO' }),
+      expect.objectContaining({
+        type: 'incoming',
+        callerUserId: 1,
+        callerName: 'Alice',
+        callType: 'AUDIO',
+      }),
     );
     expect(m.push.dispatchForCall).toHaveBeenCalledWith(
       2,
-      expect.objectContaining({ callSid: 'cs1', callerUserId: 1, callType: 'AUDIO' }),
+      expect.objectContaining({
+        callSid: 'cs1',
+        callerUserId: 1,
+        callType: 'AUDIO',
+      }),
     );
     // No terminal bubble yet — the call is live.
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
@@ -107,7 +137,9 @@ describe('CallsService.initiate', () => {
 
   it('refuses calling yourself', async () => {
     const { svc } = mkService();
-    await expect(svc.initiate(1, { callSid: 'cs1', calleeUserId: 1, callType: 'AUDIO' })).rejects.toSatisfy(
+    await expect(
+      svc.initiate(1, { callSid: 'cs1', calleeUserId: 1, callType: 'AUDIO' }),
+    ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_ALLOWED,
     );
   });
@@ -115,25 +147,35 @@ describe('CallsService.initiate', () => {
   it('refuses a non-friend callee (no P2P thread)', async () => {
     const { svc, m } = mkService();
     m.participants.findP2PThreadBetween.mockResolvedValue(null);
-    await expect(svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' })).rejects.toSatisfy(
+    await expect(
+      svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }),
+    ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_ALLOWED,
     );
   });
 
   it('rejects when the caller is already in an active call (busy)', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }); // caller 1 now busy
-    await expect(svc.initiate(1, { callSid: 'cs2', calleeUserId: 3, callType: 'AUDIO' })).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY,
-    );
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    }); // caller 1 now busy
+    await expect(
+      svc.initiate(1, { callSid: 'cs2', calleeUserId: 3, callType: 'AUDIO' }),
+    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 
   it('rejects when the callee is already in an active call (busy)', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }); // callee 2 now busy
-    await expect(svc.initiate(3, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' })).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY,
-    );
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    }); // callee 2 now busy
+    await expect(
+      svc.initiate(3, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' }),
+    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 
   it('glare: two CONCURRENT initiates (A→B + B→A) — exactly one wins, the other is CALL_BUSY (no TOCTOU)', async () => {
@@ -149,27 +191,41 @@ describe('CallsService.initiate', () => {
     const rejected = results.filter((r) => r.status === 'rejected');
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
-    expect(bizCode((rejected[0] as PromiseRejectedResult).reason)).toBe(BusinessCode.CALL_BUSY);
+    expect(bizCode((rejected[0] as PromiseRejectedResult).reason)).toBe(
+      BusinessCode.CALL_BUSY,
+    );
   });
 
   it('is idempotent on callSid — a retry re-rings the still-ringing call, no new live call', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     m.sse.onCallEvent.mockClear();
-    const res = await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    const res = await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
     expect(m.sse.onCallEvent).toHaveBeenCalled(); // re-rang
     // The caller is still in exactly one call: a brand-new callSid still trips busy on the caller.
-    await expect(svc.initiate(1, { callSid: 'csX', calleeUserId: 3, callType: 'AUDIO' })).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY,
-    );
+    await expect(
+      svc.initiate(1, { callSid: 'csX', calleeUserId: 3, callType: 'AUDIO' }),
+    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
   });
 });
 
 describe('CallsService bilateral lifecycle fan-out', () => {
   it('accept fans `accepted` to BOTH caller and callee (callee-other-devices dismiss ringing)', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     m.sse.onCallEvent.mockClear();
     await svc.accept(2, 'cs1');
     const types = new Set(
@@ -183,11 +239,19 @@ describe('CallsService bilateral lifecycle fan-out', () => {
 
   it('ringing ack fans `ringing` to BOTH, leaves the call ringing (no transition), and dedupes multi-device', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     m.sse.onCallEvent.mockClear();
     await svc.ringing(2, 'cs1');
     expect(
-      new Set(m.sse.onCallEvent.mock.calls.map((c) => (c[1] as { type: string }).type)).has('ringing'),
+      new Set(
+        m.sse.onCallEvent.mock.calls.map(
+          (c) => (c[1] as { type: string }).type,
+        ),
+      ).has('ringing'),
     ).toBe(true);
     expect(eventRecipients(m).sort()).toEqual([1, 2]); // both
     // A second device's ack is an idempotent no-op (no second fan-out).
@@ -198,14 +262,22 @@ describe('CallsService bilateral lifecycle fan-out', () => {
     m.sse.onCallEvent.mockClear();
     await svc.accept(2, 'cs1');
     expect(
-      new Set(m.sse.onCallEvent.mock.calls.map((c) => (c[1] as { type: string }).type)).has('accepted'),
+      new Set(
+        m.sse.onCallEvent.mock.calls.map(
+          (c) => (c[1] as { type: string }).type,
+        ),
+      ).has('accepted'),
     ).toBe(true);
   });
 
   it('decline / cancel / ended each fan to BOTH participants; incoming is callee-only; missed is caller-only', async () => {
     // incoming (from initiate) → callee only
     const a = mkService();
-    await a.svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await a.svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     const incoming = a.m.sse.onCallEvent.mock.calls
       .filter((c) => (c[1] as { type: string }).type === 'incoming')
       .map((c) => c[0]);
@@ -218,14 +290,22 @@ describe('CallsService bilateral lifecycle fan-out', () => {
 
     // cancel → both
     const b = mkService();
-    await b.svc.initiate(1, { callSid: 'cs2', calleeUserId: 3, callType: 'AUDIO' });
+    await b.svc.initiate(1, {
+      callSid: 'cs2',
+      calleeUserId: 3,
+      callType: 'AUDIO',
+    });
     b.m.sse.onCallEvent.mockClear();
     await b.svc.cancel(1, 'cs2');
     expect(eventRecipients(b.m).sort()).toEqual([1, 3]);
 
     // decline → both
     const c = mkService();
-    await c.svc.initiate(4, { callSid: 'cs3', calleeUserId: 5, callType: 'VIDEO' });
+    await c.svc.initiate(4, {
+      callSid: 'cs3',
+      calleeUserId: 5,
+      callType: 'VIDEO',
+    });
     c.m.sse.onCallEvent.mockClear();
     await c.svc.decline(5, 'cs3');
     expect(eventRecipients(c.m).sort()).toEqual([4, 5]);
@@ -235,7 +315,11 @@ describe('CallsService bilateral lifecycle fan-out', () => {
 describe('CallsService terminal bubble persistence', () => {
   it('decline writes a `declined` CALL bubble authored by the caller, clientMessageId = callSid', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.decline(2, 'cs1');
     expect(m.messages.writeMsgToThread).toHaveBeenCalledWith(
       1, // creator = callerId
@@ -261,19 +345,32 @@ describe('CallsService terminal bubble persistence', () => {
 
   it('cancel writes a `cancelled` bubble', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.cancel(1, 'cs1');
     expect(lastBubbleContent(m)?.status).toBe('cancelled');
   });
 
   it('connected (media up) stamps startedAt; end → completed bubble WITH duration', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'VIDEO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'VIDEO',
+    });
     await svc.accept(2, 'cs1'); // answered — NOT connected yet (no startedAt)
     await svc.connected(1, 'cs1'); // media up → startedAt stamped
     await svc.end(1, 'cs1', 'completed');
     const c = lastBubbleContent(m)!;
-    expect(c).toMatchObject({ status: 'completed', callType: 'VIDEO', callerId: 1, calleeId: 2 });
+    expect(c).toMatchObject({
+      status: 'completed',
+      callType: 'VIDEO',
+      callerId: 1,
+      calleeId: 2,
+    });
     expect(c.startedAt).toBeTypeOf('number');
     expect(c.durationMs).toBeTypeOf('number');
     expect(c.endedAt).toBeTypeOf('number');
@@ -281,7 +378,11 @@ describe('CallsService terminal bubble persistence', () => {
 
   it('accept alone does NOT set startedAt — answered-but-never-connected end → failed (no duration)', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1'); // answered, media never came up
     await svc.end(2, 'cs1');
     const c = lastBubbleContent(m)!;
@@ -292,7 +393,11 @@ describe('CallsService terminal bubble persistence', () => {
 
   it('end with reason `failed` after connected → failed WITH duration (connected-then-failed)', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1');
     await svc.connected(2, 'cs1'); // connected
     await svc.end(2, 'cs1', 'failed');
@@ -303,10 +408,16 @@ describe('CallsService terminal bubble persistence', () => {
 
   it('a terminal transition releases both busy slots (the users can place a new call)', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.cancel(1, 'cs1');
     // Both 1 and 2 are free again — a fresh call between them succeeds.
-    await expect(svc.initiate(2, { callSid: 'cs2', calleeUserId: 1, callType: 'AUDIO' })).resolves.toEqual({
+    await expect(
+      svc.initiate(2, { callSid: 'cs2', calleeUserId: 1, callType: 'AUDIO' }),
+    ).resolves.toEqual({
       callSid: 'cs2',
       threadId: 10,
     });
@@ -316,7 +427,11 @@ describe('CallsService terminal bubble persistence', () => {
 describe('CallsService.accept / decline / cancel / end guards', () => {
   it('accept by a non-callee is rejected', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(svc.accept(99, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
     );
@@ -324,7 +439,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('accept on a non-ringing call is not found', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1'); // → accepted
     await expect(svc.accept(2, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
@@ -333,7 +452,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('ringing by a non-callee is rejected; ringing on a non-ringing call is not found', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(svc.ringing(99, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
     );
@@ -345,7 +468,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('decline by a non-callee is rejected', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(svc.decline(99, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
     );
@@ -353,7 +480,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('cancel by a non-caller is rejected', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(svc.cancel(99, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
     );
@@ -361,7 +492,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('end on a ringing (not-yet-connected) call is not found', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(svc.end(1, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
     );
@@ -369,7 +504,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('end by a non-participant is rejected', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1');
     await expect(svc.end(99, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
@@ -378,7 +517,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('upgrades a connected audio call once and persists the terminal bubble as video', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1');
     await svc.connected(1, 'cs1');
     m.sse.onCallEvent.mockClear();
@@ -401,7 +544,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('rejects video upgrade before media connects or from a non-participant', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1');
     await expect(svc.upgradeVideo(1, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
@@ -414,7 +561,11 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 
   it('decline / cancel are idempotent on an already-terminal call (no second bubble)', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.decline(2, 'cs1');
     await svc.decline(2, 'cs1'); // already terminal → no-op
     expect(m.messages.writeMsgToThread).toHaveBeenCalledTimes(1);
@@ -424,36 +575,79 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
 describe('CallsService.signal (relay)', () => {
   it('relays a frame from a participant to the other participant over SSE', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1');
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: '{"cand":1}' });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'ice',
+      payload: '{"cand":1}',
+    });
     expect(m.sse.onCallSignal).toHaveBeenCalledWith(
       2,
-      expect.objectContaining({ callSid: 'cs1', fromUserId: 1, kind: 'ice', payload: '{"cand":1}' }),
+      expect.objectContaining({
+        callSid: 'cs1',
+        fromUserId: 1,
+        kind: 'ice',
+        payload: '{"cand":1}',
+      }),
     );
   });
 
   it('rejects a sender who is not a participant', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(
-      svc.signal(99, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: '{}' }),
-    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT);
+      svc.signal(99, {
+        callSid: 'cs1',
+        toUserId: 2,
+        kind: 'ice',
+        payload: '{}',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
+    );
   });
 
   it('rejects relaying to anyone but the call peer', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await expect(
-      svc.signal(1, { callSid: 'cs1', toUserId: 77, kind: 'ice', payload: '{}' }),
-    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT);
+      svc.signal(1, {
+        callSid: 'cs1',
+        toUserId: 77,
+        kind: 'ice',
+        payload: '{}',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
+    );
   });
 
   it('rejects relaying on an unknown / no-longer-live callSid', async () => {
     const { svc } = mkService();
     await expect(
-      svc.signal(1, { callSid: 'nope', toUserId: 2, kind: 'ice', payload: '{}' }),
-    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND);
+      svc.signal(1, {
+        callSid: 'nope',
+        toUserId: 2,
+        kind: 'ice',
+        payload: '{}',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
+    );
   });
 });
 
@@ -467,22 +661,34 @@ describe('CallsService ringing timeout', () => {
 
   it('flips ringing → missed after the timeout, fans `missed` to the CALLER only, writes the bubble', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     m.sse.onCallEvent.mockClear();
 
     await vi.advanceTimersByTimeAsync(45_000);
 
     // missed → caller only (the callee learns of the missed call from the bubble).
     expect(eventRecipients(m)).toEqual([1]);
-    expect(m.sse.onCallEvent.mock.calls[0][1]).toMatchObject({ type: 'missed' });
+    expect(m.sse.onCallEvent.mock.calls[0][1]).toMatchObject({
+      type: 'missed',
+    });
     expect(lastBubbleContent(m)?.status).toBe('missed');
     // Slots released → caller can place a new call.
-    await expect(svc.initiate(1, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' })).resolves.toBeDefined();
+    await expect(
+      svc.initiate(1, { callSid: 'cs2', calleeUserId: 2, callType: 'AUDIO' }),
+    ).resolves.toBeDefined();
   });
 
   it('does NOT time out after the media leg connected (the timer is disarmed on connected, not accept)', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1'); // answered — the timer is STILL armed (media not yet up)
     await svc.connected(2, 'cs1'); // media up → timer disarmed
     m.messages.writeMsgToThread.mockClear();
@@ -495,7 +701,11 @@ describe('CallsService ringing timeout', () => {
 
   it('an answered-but-never-connected call times out → failed (a connection failure, NOT missed)', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1'); // answered, media never comes up
     m.messages.writeMsgToThread.mockClear();
 
@@ -525,7 +735,12 @@ function mkFrame(p: Partial<S2SCallFrame> = {}): S2SCallFrame {
 /** Drive the inbound bridge (the @OnEvent handler) directly. */
 function inbound(
   svc: CallsService,
-  args: { localUserId: number; peerStubId: number; threadId?: number; frame: S2SCallFrame },
+  args: {
+    localUserId: number;
+    peerStubId: number;
+    threadId?: number;
+    frame: S2SCallFrame;
+  },
 ): Promise<void> {
   return svc.onInboundCallFrame({
     localUserId: args.localUserId,
@@ -538,13 +753,25 @@ function inbound(
 describe('CallsService federated initiate (outbound)', () => {
   it('a foreigner callee is rung via an S2S incoming frame (no local ring); both busy slots set', async () => {
     const { svc, m } = mkService();
-    m.prisma.user.findUnique.mockResolvedValue({
-      isForeigner: true, account: 'bob', domain: 'bbb.local', name: 'Bob', avatar: '',
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
     });
-    const res = await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'VIDEO' });
+    const res = await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'VIDEO',
+    });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
     expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
-      expect.objectContaining({ op: 'incoming', fromLocalUserId: 1, callType: 'VIDEO' }),
+      expect.objectContaining({
+        op: 'incoming',
+        fromLocalUserId: 1,
+        callType: 'VIDEO',
+      }),
       'bbb.local',
     );
     expect(
@@ -561,13 +788,19 @@ describe('CallsService federated initiate (outbound)', () => {
 
   it('a ring failure writes an `unreachable` bubble + throws CALL_PEER_UNREACHABLE + releases slots', async () => {
     const { svc, m } = mkService();
-    m.prisma.user.findUnique.mockResolvedValue({
-      isForeigner: true, account: 'bob', domain: 'bbb.local', name: 'Bob', avatar: '',
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
     });
     m.federation.sendCallFrame.mockRejectedValue(new Error('network down'));
     await expect(
       svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }),
-    ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE);
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE,
+    );
     expect(lastBubbleContent(m)?.status).toBe('unreachable');
     // Slots released → a fresh call can start.
     m.federation.sendCallFrame.mockResolvedValue(undefined);
@@ -585,7 +818,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       2,
       expect.objectContaining({ type: 'incoming', callerUserId: 5 }),
     );
-    expect(m.push.dispatchForCall).toHaveBeenCalledWith(2, expect.objectContaining({ callSid: 'cs1' }));
+    expect(m.push.dispatchForCall).toHaveBeenCalledWith(
+      2,
+      expect.objectContaining({ callSid: 'cs1' }),
+    );
     expect(m.quota.tick).toHaveBeenCalledWith('bbb.local', 'requests');
     expect(m.quota.tick).toHaveBeenCalledTimes(1);
     // origin=false → no terminal bubble is ever authored on this (callee) side.
@@ -594,11 +830,18 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('incoming on a busy local user throws CALL_BUSY @422 (non-demoting) + burns no quota', async () => {
     const { svc, m } = mkService();
-    await svc.initiate(2, { callSid: 'local1', calleeUserId: 3, callType: 'AUDIO' }); // occupy user 2
+    await svc.initiate(2, {
+      callSid: 'local1',
+      calleeUserId: 3,
+      callType: 'AUDIO',
+    }); // occupy user 2
     m.quota.tick.mockClear();
     await expect(
       inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() }),
-    ).rejects.toSatisfy((e: unknown) => (e as { bizCode?: number }).bizCode === BusinessCode.CALL_BUSY);
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        (e as { bizCode?: number }).bizCode === BusinessCode.CALL_BUSY,
+    );
     expect(m.quota.tick).not.toHaveBeenCalled();
   });
 
@@ -617,22 +860,36 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     // accepted + connected + ended frames the peer sends back — the origin must author the `completed`
     // bubble, stamping startedAt from the `connected` frame (NOT `accepted`).
     const { svc, m } = mkService();
-    m.prisma.user.findUnique.mockResolvedValue({
-      isForeigner: true, account: 'bob', domain: 'bbb.local', name: 'Bob', avatar: '',
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
     });
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     m.sse.onCallEvent.mockClear();
     await inbound(svc, {
-      localUserId: 1, peerStubId: 2,
+      localUserId: 1,
+      peerStubId: 2,
       frame: mkFrame({ op: 'accepted' }),
     });
-    expect(m.sse.onCallEvent).toHaveBeenCalledWith(1, expect.objectContaining({ type: 'accepted' }));
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ type: 'accepted' }),
+    );
     await inbound(svc, {
-      localUserId: 1, peerStubId: 2,
+      localUserId: 1,
+      peerStubId: 2,
       frame: mkFrame({ op: 'connected', startedAt: 1000 }),
     });
     await inbound(svc, {
-      localUserId: 1, peerStubId: 2,
+      localUserId: 1,
+      peerStubId: 2,
       frame: mkFrame({ op: 'ended', endReason: 'completed' }),
     });
     expect(lastBubbleContent(m)?.status).toBe('completed');
@@ -672,16 +929,35 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
   it('an inbound `ringing` frame emits `ringing` to the origin caller (idempotent on replay)', async () => {
     const { svc, m } = mkService();
-    m.prisma.user.findUnique.mockResolvedValue({
-      isForeigner: true, account: 'bob', domain: 'bbb.local', name: 'Bob', avatar: '',
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
     });
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' }); // origin live call
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    }); // origin live call
     m.sse.onCallEvent.mockClear();
-    await inbound(svc, { localUserId: 1, peerStubId: 2, frame: mkFrame({ op: 'ringing' }) });
-    expect(m.sse.onCallEvent).toHaveBeenCalledWith(1, expect.objectContaining({ type: 'ringing' }));
+    await inbound(svc, {
+      localUserId: 1,
+      peerStubId: 2,
+      frame: mkFrame({ op: 'ringing' }),
+    });
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ type: 'ringing' }),
+    );
     // A replayed frame is an idempotent no-op (no second emit).
     m.sse.onCallEvent.mockClear();
-    await inbound(svc, { localUserId: 1, peerStubId: 2, frame: mkFrame({ op: 'ringing' }) });
+    await inbound(svc, {
+      localUserId: 1,
+      peerStubId: 2,
+      frame: mkFrame({ op: 'ringing' }),
+    });
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
   });
 
@@ -689,12 +965,17 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
     await inbound(svc, {
-      localUserId: 2, peerStubId: 5,
+      localUserId: 2,
+      peerStubId: 5,
       frame: mkFrame({ op: 'signal', kind: 'ice', payload: '{"cand":1}' }),
     });
     expect(m.sse.onCallSignal).toHaveBeenCalledWith(
       2,
-      expect.objectContaining({ fromUserId: 5, kind: 'ice', payload: '{"cand":1}' }),
+      expect.objectContaining({
+        fromUserId: 5,
+        kind: 'ice',
+        payload: '{"cand":1}',
+      }),
     );
   });
 
@@ -703,32 +984,45 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     // mirror: localUserId=2 is the callee; peerStubId=5 is the foreign caller's stub (= callerId on the mirror).
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
     await inbound(svc, {
-      localUserId: 2, peerStubId: 5,
+      localUserId: 2,
+      peerStubId: 5,
       frame: mkFrame({ op: 'signal', kind: 'offer', payload: 'OFFER_SDP' }),
     });
     await inbound(svc, {
-      localUserId: 2, peerStubId: 5,
+      localUserId: 2,
+      peerStubId: 5,
       frame: mkFrame({ op: 'signal', kind: 'ice', payload: 'ICE_1' }),
     });
     // The local callee (2) fetches → the staged offer + the caller's ICE (the mirror held them).
-    expect(svc.signaling(2, 'cs1')).toEqual({ offer: 'OFFER_SDP', ice: ['ICE_1'] });
+    expect(svc.signaling(2, 'cs1')).toEqual({
+      offer: 'OFFER_SDP',
+      ice: ['ICE_1'],
+    });
   });
 
   it('a terminal frame with no mirror is an idempotent no-op (no double bubble)', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame({ op: 'missed' }) });
+    await inbound(svc, {
+      localUserId: 2,
+      peerStubId: 5,
+      frame: mkFrame({ op: 'missed' }),
+    });
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
   });
 
-  it('a non-origin terminal does NOT author a bubble (the callee side pulls the origin\'s)', async () => {
+  it("a non-origin terminal does NOT author a bubble (the callee side pulls the origin's)", async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() }); // mirror (origin false)
     await inbound(svc, {
-      localUserId: 2, peerStubId: 5,
+      localUserId: 2,
+      peerStubId: 5,
       frame: mkFrame({ op: 'ended', endReason: 'completed' }),
     });
     // The mirror released + emitted `ended` to the local user, but NO bubble (origin=false).
-    expect(m.sse.onCallEvent).toHaveBeenCalledWith(2, expect.objectContaining({ type: 'ended' }));
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      2,
+      expect.objectContaining({ type: 'ended' }),
+    );
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
   });
 });
@@ -736,34 +1030,96 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 describe('CallsService signaling store-and-forward', () => {
   it('stages the offer + caller ICE for the callee to GET (an offline callee still gets them on accept)', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'offer', payload: 'OFFER_SDP' });
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_1' });
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_2' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'offer',
+      payload: 'OFFER_SDP',
+    });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'ice',
+      payload: 'ICE_1',
+    });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'ice',
+      payload: 'ICE_2',
+    });
     // The callee fetches → the offer + the caller's ICE.
-    expect(svc.signaling(2, 'cs1')).toEqual({ offer: 'OFFER_SDP', ice: ['ICE_1', 'ICE_2'] });
+    expect(svc.signaling(2, 'cs1')).toEqual({
+      offer: 'OFFER_SDP',
+      ice: ['ICE_1', 'ICE_2'],
+    });
   });
 
   it('stages the answer + callee ICE for the caller to GET', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
-    await svc.signal(2, { callSid: 'cs1', toUserId: 1, kind: 'answer', payload: 'ANSWER_SDP' });
-    await svc.signal(2, { callSid: 'cs1', toUserId: 1, kind: 'ice', payload: 'CALLEE_ICE' });
-    expect(svc.signaling(1, 'cs1')).toEqual({ answer: 'ANSWER_SDP', ice: ['CALLEE_ICE'] });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await svc.signal(2, {
+      callSid: 'cs1',
+      toUserId: 1,
+      kind: 'answer',
+      payload: 'ANSWER_SDP',
+    });
+    await svc.signal(2, {
+      callSid: 'cs1',
+      toUserId: 1,
+      kind: 'ice',
+      payload: 'CALLEE_ICE',
+    });
+    expect(svc.signaling(1, 'cs1')).toEqual({
+      answer: 'ANSWER_SDP',
+      ice: ['CALLEE_ICE'],
+    });
   });
 
   it('dedupes a replayed ICE candidate (no duplicate in the staged list)', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_X' });
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_X' }); // retransmit
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'ice',
+      payload: 'ICE_X',
+    });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'ice',
+      payload: 'ICE_X',
+    }); // retransmit
     expect(svc.signaling(2, 'cs1').ice).toEqual(['ICE_X']);
   });
 
   it('clears the staged signaling on connect (media up → setup consumed)', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
-    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'offer', payload: 'OFFER_SDP' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await svc.signal(1, {
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'offer',
+      payload: 'OFFER_SDP',
+    });
     await svc.accept(2, 'cs1');
     await svc.connected(1, 'cs1'); // media up
     expect(svc.signaling(2, 'cs1')).toEqual({ offer: null, ice: [] });
@@ -771,7 +1127,11 @@ describe('CallsService signaling store-and-forward', () => {
 
   it('rejects a GET from a non-participant', async () => {
     const { svc } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     let threw: unknown = null;
     try {
       svc.signaling(99, 'cs1'); // sync — throws rather than rejecting
@@ -798,12 +1158,23 @@ describe('CallsService signaling store-and-forward', () => {
 describe('CallsService active-call registry (HELLO activeCall)', () => {
   it('initiate mirrors the call into the registry for both participants; a terminal clears it', async () => {
     const { svc, callState } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     expect(callState.get(1)).toMatchObject({
-      callSid: 'cs1', peerUserId: 2, isCaller: true, state: 'ringing', startedAt: null,
+      callSid: 'cs1',
+      peerUserId: 2,
+      isCaller: true,
+      state: 'ringing',
+      startedAt: null,
     });
     expect(callState.get(2)).toMatchObject({
-      callSid: 'cs1', peerUserId: 1, isCaller: false, state: 'ringing',
+      callSid: 'cs1',
+      peerUserId: 1,
+      isCaller: false,
+      state: 'ringing',
     });
     // After the call ends, both are cleared — a reconnecting client's HELLO sees no active call.
     await svc.decline(2, 'cs1');
@@ -813,7 +1184,11 @@ describe('CallsService active-call registry (HELLO activeCall)', () => {
 
   it('connected updates the mirrored state to connected + stamps startedAt', async () => {
     const { svc, callState } = mkService();
-    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await svc.accept(2, 'cs1');
     await svc.connected(1, 'cs1');
     expect(callState.get(1)).toMatchObject({ state: 'connected' });
@@ -823,7 +1198,14 @@ describe('CallsService active-call registry (HELLO activeCall)', () => {
 
 describe('CallsService — unused CallOutcome alias keeps the import live', () => {
   it('the terminal status union is exported', () => {
-    const ok: CallOutcome[] = ['completed', 'cancelled', 'declined', 'missed', 'failed', 'unreachable'];
+    const ok: CallOutcome[] = [
+      'completed',
+      'cancelled',
+      'declined',
+      'missed',
+      'failed',
+      'unreachable',
+    ];
     expect(ok).toHaveLength(6);
   });
 });

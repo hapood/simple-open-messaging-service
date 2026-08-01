@@ -8,7 +8,9 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PrismaService } from '../src/prisma.service';
+import { DatabaseService } from '../src/database/database.service';
+import { diagnosticsReport } from '../src/database/schema';
+import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code';
 import { seedUserWithSession } from './seed';
 import {
@@ -30,7 +32,7 @@ import { DiagnosticsGcService } from '../src/diagnostics/diagnostics-gc.service'
  */
 describe('diagnostics reporting e2e', () => {
   let app: INestApplication;
-  let prisma: PrismaService;
+  let database: DatabaseService;
   let diag: DiagnosticsService;
   let gc: DiagnosticsGcService;
   const createdFiles: string[] = [];
@@ -43,7 +45,7 @@ describe('diagnostics reporting e2e', () => {
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
     await app.listen(0);
-    prisma = app.get(PrismaService);
+    database = app.get(DatabaseService);
     diag = app.get(DiagnosticsService);
     gc = app.get(DiagnosticsGcService);
     mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
@@ -51,8 +53,10 @@ describe('diagnostics reporting e2e', () => {
 
   beforeEach(async () => {
     // CASCADE on User clears FK-linked rows; both listed for a clean slate per test.
-    await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "DiagnosticsReport", "User" RESTART IDENTITY CASCADE',
+    await database.db.execute(
+      sql.raw(
+        'TRUNCATE TABLE "DiagnosticsReport", "User" RESTART IDENTITY CASCADE',
+      ),
     );
   });
 
@@ -80,14 +84,18 @@ describe('diagnostics reporting e2e', () => {
   }
 
   it('POST /diagnostics/report stores the bundle + a row (multipart, Bearer)', async () => {
-    const user = await seedUserWithSession(app, 'diaguser', { name: 'Diag User' });
+    const user = await seedUserWithSession(app, 'diaguser', {
+      name: 'Diag User',
+    });
     const bundle = Buffer.from('fake-tar-gz-contents-1');
     const res = await postReport(user.token, bundle);
     expect(res.body.code).toBe(BusinessCode.OK);
     const id: number = res.body.data.id;
     expect(typeof id).toBe('number');
 
-    const row = await prisma.diagnosticsReport.findUnique({ where: { id } });
+    const row = await database.db.query.diagnosticsReport.findFirst({
+      where: eq(diagnosticsReport.id, id),
+    });
     expect(row).toBeTruthy();
     expect(row!.reporterUserId).toBe(user.id);
     const digest = createHash('sha256').update(bundle).digest('hex');
@@ -122,20 +130,23 @@ describe('diagnostics reporting e2e', () => {
   });
 
   it('list() returns reporter identity and matches search', async () => {
-    const user = await seedUserWithSession(app, 'diaglist', { name: 'Alice Lister' });
-    await prisma.diagnosticsReport.create({
-      data: {
-        reporterUserId: user.id,
-        bundlePath: 'list-only.tar.gz',
-        bundleBytes: 10,
-        manifest: { app: '1.0.0' },
-      },
+    const user = await seedUserWithSession(app, 'diaglist', {
+      name: 'Alice Lister',
+    });
+    await database.db.insert(diagnosticsReport).values({
+      reporterUserId: user.id,
+      bundlePath: 'list-only.tar.gz',
+      bundleBytes: 10,
+      manifest: { app: '1.0.0' },
+      updatedAt: new Date(),
     });
     const { list, total } = await diag.list({ search: 'Alice' });
     expect(total).toBeGreaterThanOrEqual(1);
     expect(
       list.some(
-        (r) => r.reporter.account === 'diaglist' && r.reporter.name === 'Alice Lister',
+        (r) =>
+          r.reporter.account === 'diaglist' &&
+          r.reporter.name === 'Alice Lister',
       ),
     ).toBe(true);
   });
@@ -147,18 +158,22 @@ describe('diagnostics reporting e2e', () => {
     const abs = join(DIAGNOSTICS_DIR, filename);
     writeFileSync(abs, buf);
     createdFiles.push(abs);
-    const row = await prisma.diagnosticsReport.create({
-      data: {
+    const [row] = await database.db
+      .insert(diagnosticsReport)
+      .values({
         reporterUserId: user.id,
         bundlePath: filename,
         bundleBytes: buf.length,
         manifest: {},
         createdAt: new Date(Date.now() - 100 * 86_400_000), // 100 days ago → past the 90d retention
-      },
-    });
+        updatedAt: new Date(),
+      })
+      .returning();
     const res = await gc.gcExpiredReports(90);
     expect(res.rows).toBeGreaterThanOrEqual(1);
-    const after = await prisma.diagnosticsReport.findUnique({ where: { id: row.id } });
+    const after = await database.db.query.diagnosticsReport.findFirst({
+      where: eq(diagnosticsReport.id, row.id),
+    });
     expect(after?.isDeleted).toBe(true);
     expect(existsSync(abs)).toBe(false);
   });
@@ -182,17 +197,21 @@ describe('diagnostics reporting e2e', () => {
     const abs = join(DIAGNOSTICS_DIR, filename);
     writeFileSync(abs, buf);
     createdFiles.push(abs);
-    const row = await prisma.diagnosticsReport.create({
-      data: {
+    const [row] = await database.db
+      .insert(diagnosticsReport)
+      .values({
         reporterUserId: user.id,
         bundlePath: filename,
         bundleBytes: buf.length,
         manifest: {},
-      },
-    });
+        updatedAt: new Date(),
+      })
+      .returning();
     const out = await gc.deleteReport(row.id);
     expect(out).toEqual({ deleted: true, unlinked: true });
-    const after = await prisma.diagnosticsReport.findUnique({ where: { id: row.id } });
+    const after = await database.db.query.diagnosticsReport.findFirst({
+      where: eq(diagnosticsReport.id, row.id),
+    });
     expect(after?.isDeleted).toBe(true);
     expect(existsSync(abs)).toBe(false);
     // list() filters isDeleted:false → the report is gone from the admin view.
@@ -201,6 +220,9 @@ describe('diagnostics reporting e2e', () => {
   });
 
   it('deleteReport is idempotent for a missing/already-deleted report', async () => {
-    expect(await gc.deleteReport(999999)).toEqual({ deleted: false, unlinked: false });
+    expect(await gc.deleteReport(999999)).toEqual({
+      deleted: false,
+      unlinked: false,
+    });
   });
 });

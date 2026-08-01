@@ -8,9 +8,9 @@
 // The fork DBs persist across runs: `prisma migrate deploy` is idempotent, so an existing fork DB
 // is reused (no orphans accumulate). global-setup only ensures the base `soms_test` is reachable.
 import 'dotenv/config';
-import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -21,20 +21,9 @@ if (!process.env.DATABASE_URL) {
 const poolId = process.env.VITEST_POOL_ID ?? '0';
 const forkDb = `soms_test_fork${poolId}`;
 
-// CREATE DATABASE has no IF NOT EXISTS — connect to the maintenance `postgres` DB and guard with SELECT.
-const adminUrl = new URL(process.env.DATABASE_URL);
-adminUrl.pathname = '/postgres';
-adminUrl.search = ''; // psql ignores Prisma's ?schema= param; strip it for the maintenance call
-execSync(
-  `psql "${adminUrl.toString()}" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='${forkDb}'" | grep -q 1 || psql "${adminUrl.toString()}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${forkDb}"`,
-  { stdio: 'inherit' },
-);
-
-// Point this fork at its DB + migrate (fresh DB → all migrations applied to its public schema).
-const forkUrl = new URL(process.env.DATABASE_URL);
-forkUrl.pathname = `/${forkDb}`;
-process.env.DATABASE_URL = forkUrl.toString();
-execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+const forkUrl = await ensureDatabase(process.env.DATABASE_URL, forkDb);
+await resetAndMigrateDatabase(forkUrl);
+process.env.DATABASE_URL = forkUrl;
 
 // Keep structured logs out of the repo and quiet during e2e. LoggerModule builds the pino instance
 // during AppModule boot even though the e2e harness never calls useLogger, so without this every

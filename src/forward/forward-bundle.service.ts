@@ -5,8 +5,23 @@ import { dirname, extname, join } from 'node:path';
 import { mintUlid } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { PrismaService } from '../prisma.service.js';
-import { ContentType, Prisma } from '../prisma/generated/client.js';
+import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
+import {
+  forwardBundle,
+  forwardBundleAsset,
+  forwardBundleDependency,
+  forwardMessage,
+  mediaAsset,
+  message,
+  messageThread,
+  threadParticipant,
+  user,
+} from '../database/schema.js';
+import { ContentType } from '../database/enums.js';
 import { extractDigestEntries } from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
@@ -80,7 +95,7 @@ export interface PreparedForwardBundle {
 
 @Injectable()
 export class ForwardBundleService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async createFromMessages(
     userId: number,
@@ -91,7 +106,9 @@ export class ForwardBundleService {
     content: string;
   }> {
     const prepared = await this.prepareFromMessages(userId, sources);
-    await this.prisma.$transaction((tx) => this.persistPrepared(tx, prepared));
+    await this.database.db.transaction((tx) =>
+      this.persistPrepared(tx, prepared),
+    );
     return prepared;
   }
 
@@ -106,13 +123,16 @@ export class ForwardBundleService {
       );
     }
     const uniqueThreads = [...new Set(sources.map((s) => s.threadId))];
-    const memberships = await this.prisma.threadParticipant.count({
-      where: {
-        userId,
-        threadId: { in: uniqueThreads },
-        leftAt: null,
-      },
-    });
+    const [{ value: memberships }] = await this.database.db
+      .select({ value: count() })
+      .from(threadParticipant)
+      .where(
+        and(
+          eq(threadParticipant.userId, userId),
+          inArray(threadParticipant.threadId, uniqueThreads),
+          isNull(threadParticipant.leftAt),
+        ),
+      );
     if (memberships !== uniqueThreads.length) {
       throw new BusinessException(
         BusinessCode.FORWARD_INVALID_BUNDLE,
@@ -121,24 +141,41 @@ export class ForwardBundleService {
     }
     const sourceRows = await Promise.all(
       sources.map((source) =>
-        this.prisma.message.findUnique({
-          where: {
-            threadId_seq: { threadId: source.threadId, seq: source.seq },
-          },
-          include: {
-            creatorItem: {
-              select: {
-                account: true,
-                domain: true,
-                name: true,
-                avatar: true,
+        this.database.db.query.message
+          .findFirst({
+            where: and(
+              eq(message.threadId, source.threadId),
+              eq(message.seq, source.seq),
+            ),
+            with: {
+              user: {
+                columns: {
+                  account: true,
+                  domain: true,
+                  name: true,
+                  avatar: true,
+                },
+              },
+              forwardMessages: {
+                with: { forwardBundle: true },
+                limit: 1,
               },
             },
-            forwardMessage: {
-              include: { bundle: true },
-            },
-          },
-        }),
+          })
+          .then((row) =>
+            row
+              ? {
+                  ...row,
+                  creatorItem: row.user,
+                  forwardMessage: row.forwardMessages[0]
+                    ? {
+                        ...row.forwardMessages[0],
+                        bundle: row.forwardMessages[0].forwardBundle,
+                      }
+                    : null,
+                }
+              : null,
+          ),
       ),
     );
     if (sourceRows.some((row) => row === null || row.isDeleted)) {
@@ -230,42 +267,40 @@ export class ForwardBundleService {
   }
 
   async persistPrepared(
-    tx: Prisma.TransactionClient,
+    tx: DatabaseTransaction,
     prepared: PreparedForwardBundle,
   ): Promise<void> {
-    await tx.forwardBundle.create({
-      data: {
-        id: prepared.bundleId,
-        depth: prepared.depth,
-        manifest: prepared.manifest as unknown as Prisma.InputJsonValue,
-        manifestDigest: prepared.manifestDigest,
-        messageCount: prepared.manifest.messages.length,
-        assetCount: prepared.assets.length,
-        totalBytes: prepared.assets.reduce(
-          (sum, asset) => sum + BigInt(asset.bytes),
-          0n,
-        ),
-        createdBy: prepared.createdBy,
-      },
+    await tx.insert(forwardBundle).values({
+      id: prepared.bundleId,
+      depth: prepared.depth,
+      manifest: prepared.manifest,
+      manifestDigest: prepared.manifestDigest,
+      messageCount: prepared.manifest.messages.length,
+      assetCount: prepared.assets.length,
+      totalBytes: prepared.assets.reduce(
+        (sum, asset) => sum + BigInt(asset.bytes),
+        0n,
+      ),
+      createdBy: prepared.createdBy,
     });
     if (prepared.manifest.children.length > 0) {
-      await tx.forwardBundleDependency.createMany({
-        data: prepared.manifest.children.map((childBundleId, ordinal) => ({
+      await tx.insert(forwardBundleDependency).values(
+        prepared.manifest.children.map((childBundleId, ordinal) => ({
           parentBundleId: prepared.bundleId,
           childBundleId,
           ordinal,
         })),
-      });
+      );
     }
     if (prepared.assets.length > 0) {
       for (const asset of prepared.assets) {
-        await tx.mediaAsset.update({
-          where: { digest: asset.digest },
-          data: { refs: { increment: 1 } },
-        });
+        await tx
+          .update(mediaAsset)
+          .set({ refs: sql`${mediaAsset.refs} + 1` })
+          .where(eq(mediaAsset.digest, asset.digest));
       }
-      await tx.forwardBundleAsset.createMany({
-        data: prepared.assets.map((asset, ordinal) => ({
+      await tx.insert(forwardBundleAsset).values(
+        prepared.assets.map((asset, ordinal) => ({
           bundleId: prepared.bundleId,
           ordinal,
           digest: asset.digest,
@@ -275,7 +310,7 @@ export class ForwardBundleService {
           filename: asset.filename,
           mime: asset.mime,
         })),
-      });
+      );
     }
   }
 
@@ -283,18 +318,23 @@ export class ForwardBundleService {
     userId: number,
     rootBundleId: string,
   ): Promise<ForwardWireClosure> {
-    const visible = await this.prisma.forwardMessage.findFirst({
-      where: {
-        bundleId: rootBundleId,
-        message: {
-          threadItem: {
-            ThreadParticipant: { some: { userId, leftAt: null } },
-          },
-          isDeleted: false,
-        },
-      },
-      select: { messageId: true },
-    });
+    const [visible] = await this.database.db
+      .select({ messageId: forwardMessage.messageId })
+      .from(forwardMessage)
+      .innerJoin(message, eq(message.id, forwardMessage.messageId))
+      .innerJoin(
+        threadParticipant,
+        eq(threadParticipant.threadId, message.threadId),
+      )
+      .where(
+        and(
+          eq(forwardMessage.bundleId, rootBundleId),
+          eq(threadParticipant.userId, userId),
+          isNull(threadParticipant.leftAt),
+          eq(message.isDeleted, false),
+        ),
+      )
+      .limit(1);
     if (!visible) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -318,22 +358,27 @@ export class ForwardBundleService {
         );
       }
       visiting.add(id);
-      const row = await this.prisma.forwardBundle.findUnique({
-        where: { id },
-        include: {
-          children: { orderBy: { ordinal: 'asc' } },
+      const row = await this.database.db.query.forwardBundle.findFirst({
+        where: eq(forwardBundle.id, id),
+        with: {
+          forwardBundleDependencies_parentBundleId: {
+            orderBy: asc(forwardBundleDependency.ordinal),
+          },
         },
       });
       if (!row) throw this.invalidWire('forward child bundle is missing');
-      for (const child of row.children) await visit(child.childBundleId);
+      for (const child of row.forwardBundleDependencies_parentBundleId)
+        await visit(child.childBundleId);
       visiting.delete(id);
       visited.add(id);
       orderedIds.push(id);
     };
     await visit(rootBundleId);
-    const rows = await this.prisma.forwardBundle.findMany({
-      where: { id: { in: orderedIds } },
-      include: { assets: { orderBy: { ordinal: 'asc' } } },
+    const rows = await this.database.db.query.forwardBundle.findMany({
+      where: inArray(forwardBundle.id, orderedIds),
+      with: {
+        forwardBundleAssets: { orderBy: asc(forwardBundleAsset.ordinal) },
+      },
     });
     const byId = new Map(rows.map((row) => [row.id, row]));
     const bundles = orderedIds.map((id) => {
@@ -343,7 +388,9 @@ export class ForwardBundleService {
         depth: row.depth,
         manifestDigest: row.manifestDigest,
         manifest: row.manifest as unknown as ForwardManifest,
-        assets: row.assets.map((asset) => this.assetDocument(asset)),
+        assets: row.forwardBundleAssets.map((asset) =>
+          this.assetDocument(asset),
+        ),
       };
     });
     const assets = new Map<string, ForwardAssetDocument>();
@@ -377,7 +424,7 @@ export class ForwardBundleService {
   async importClosure(
     sourceDomain: string,
     closure: ForwardWireClosure,
-    transaction?: Prisma.TransactionClient,
+    transaction?: DatabaseTransaction,
   ): Promise<{ localRootBundleId: string }> {
     const bytes = Buffer.byteLength(JSON.stringify(closure));
     if (bytes > FORWARD_MAX_WIRE_JSON_BYTES) {
@@ -481,16 +528,17 @@ export class ForwardBundleService {
       );
     }
 
-    const client = transaction ?? this.prisma;
-    const existing = await client.forwardBundle.findUnique({
-      where: {
-        sourceDomain_sourceBundleId: {
-          sourceDomain,
-          sourceBundleId: closure.rootBundleId,
-        },
-      },
-      select: { id: true },
-    });
+    const client = transaction ?? this.database.db;
+    const [existing] = await client
+      .select({ id: forwardBundle.id })
+      .from(forwardBundle)
+      .where(
+        and(
+          eq(forwardBundle.sourceDomain, sourceDomain),
+          eq(forwardBundle.sourceBundleId, closure.rootBundleId),
+        ),
+      )
+      .limit(1);
     if (existing) return { localRootBundleId: existing.id };
 
     const orderedBundles = [...closure.bundles].sort(
@@ -499,7 +547,7 @@ export class ForwardBundleService {
     const idMap = new Map<string, string>(
       orderedBundles.map((bundle) => [bundle.id, mintUlid()]),
     );
-    const persist = async (tx: Prisma.TransactionClient) => {
+    const persist = async (tx: DatabaseTransaction) => {
       for (const wire of orderedBundles) {
         const localId = idMap.get(wire.id)!;
         const localManifest: ForwardManifest = {
@@ -513,42 +561,40 @@ export class ForwardBundleService {
               : {}),
           })),
         };
-        await tx.forwardBundle.create({
-          data: {
-            id: localId,
-            depth: calculated.get(wire.id)!,
-            manifest: localManifest as unknown as Prisma.InputJsonValue,
-            manifestDigest: digestManifest(localManifest),
-            messageCount: localManifest.messages.length,
-            assetCount: wire.assets.length,
-            totalBytes: wire.assets.reduce(
-              (sum, asset) => sum + BigInt(asset.bytes),
-              0n,
-            ),
-            sourceDomain,
-            sourceBundleId: wire.id,
-          },
+        await tx.insert(forwardBundle).values({
+          id: localId,
+          depth: calculated.get(wire.id)!,
+          manifest: localManifest,
+          manifestDigest: digestManifest(localManifest),
+          messageCount: localManifest.messages.length,
+          assetCount: wire.assets.length,
+          totalBytes: wire.assets.reduce(
+            (sum, asset) => sum + BigInt(asset.bytes),
+            0n,
+          ),
+          sourceDomain,
+          sourceBundleId: wire.id,
         });
         if (localManifest.children.length > 0) {
-          await tx.forwardBundleDependency.createMany({
-            data: localManifest.children.map((childBundleId, ordinal) => ({
+          await tx.insert(forwardBundleDependency).values(
+            localManifest.children.map((childBundleId, ordinal) => ({
               parentBundleId: localId,
               childBundleId,
               ordinal,
             })),
-          });
+          );
         }
         if (wire.assets.length > 0) {
           for (const asset of wire.assets) {
             // Existing local bytes gain one logical reference per bundle asset row. Missing assets are
             // localized after commit; saveCasFromStream creates their first ref there.
-            await tx.mediaAsset.updateMany({
-              where: { digest: asset.digest },
-              data: { refs: { increment: 1 } },
-            });
+            await tx
+              .update(mediaAsset)
+              .set({ refs: sql`${mediaAsset.refs} + 1` })
+              .where(eq(mediaAsset.digest, asset.digest));
           }
-          await tx.forwardBundleAsset.createMany({
-            data: wire.assets.map((asset, ordinal) => ({
+          await tx.insert(forwardBundleAsset).values(
+            wire.assets.map((asset, ordinal) => ({
               bundleId: localId,
               ordinal,
               digest: asset.digest,
@@ -558,12 +604,12 @@ export class ForwardBundleService {
               filename: asset.filename,
               mime: asset.mime,
             })),
-          });
+          );
         }
       }
     };
     if (transaction) await persist(transaction);
-    else await this.prisma.$transaction(persist);
+    else await this.database.db.transaction(persist);
     return { localRootBundleId: idMap.get(closure.rootBundleId)! };
   }
 
@@ -592,8 +638,8 @@ export class ForwardBundleService {
     }
     const result: ForwardAssetDocument[] = [];
     for (const { digest, ext } of extractDigestEntries(content)) {
-      const row = await this.prisma.mediaAsset.findUnique({
-        where: { digest },
+      const row = await this.database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, digest),
       });
       if (!row || row.refs <= 0) {
         throw new BusinessException(
@@ -640,11 +686,10 @@ export class ForwardBundleService {
       const temporary = `${target}.${process.pid}.${mintUlid()}.tmp`;
       await writeFile(temporary, buffer);
       await rename(temporary, target);
-      await this.prisma.mediaAsset.upsert({
-        where: { digest },
-        create: { digest, bytes: BigInt(buffer.length), refs: 0 },
-        update: {},
-      });
+      await this.database.db
+        .insert(mediaAsset)
+        .values({ digest, bytes: BigInt(buffer.length), refs: 0 })
+        .onConflictDoNothing({ target: mediaAsset.digest });
       return {
         digest,
         kind: 'avatar',

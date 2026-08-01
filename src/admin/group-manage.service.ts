@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma.service.js';
+import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
+import { messageThread, threadParticipant, user } from '../database/schema.js';
 import type { AdminGroupsListDto } from './admin.dto.js';
 
 /**
@@ -13,39 +15,60 @@ import type { AdminGroupsListDto } from './admin.dto.js';
  */
 @Injectable()
 export class GroupManageService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async list(dto: AdminGroupsListDto) {
-    const where = {
-      type: 'GROUP' as const,
-      ...(dto.search
-        ? {
-            groupUser: {
-              OR: [
-                { account: { contains: dto.search, mode: 'insensitive' as const } },
-                { name: { contains: dto.search, mode: 'insensitive' as const } },
-              ],
-            },
-          }
-        : {}),
-    };
-    const [list, total] = await Promise.all([
-      this.prisma.messageThread.findMany({
-        where,
-        skip: dto.skip ?? 0,
-        take: dto.take ?? 50,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          createdAt: true,
-          lastMessageAt: true,
-          lastMessagePreview: true,
-          groupUser: { select: { account: true, name: true, domain: true } },
-          _count: { select: { ThreadParticipant: { where: { leftAt: null } } } },
-        },
-      }),
-      this.prisma.messageThread.count({ where }),
+    const search = dto.search
+      ? or(
+          ilike(user.account, `%${dto.search}%`),
+          ilike(user.name, `%${dto.search}%`),
+        )
+      : undefined;
+    const where = and(eq(messageThread.type, 'GROUP'), search);
+    const activeParticipants = sql<number>`(
+      select count(*)::int from ${threadParticipant}
+      where ${threadParticipant.threadId} = ${messageThread.id}
+        and ${threadParticipant.leftAt} is null
+    )`;
+    const base = this.database.db
+      .select({
+        id: messageThread.id,
+        createdAt: messageThread.createdAt,
+        lastMessageAt: messageThread.lastMessageAt,
+        lastMessagePreview: messageThread.lastMessagePreview,
+        groupAccount: user.account,
+        groupName: user.name,
+        groupDomain: user.domain,
+        activeParticipants,
+      })
+      .from(messageThread)
+      .innerJoin(user, eq(user.id, messageThread.groupUserId))
+      .where(where);
+    const [rows, totalRow] = await Promise.all([
+      base
+        .orderBy(desc(messageThread.createdAt))
+        .offset(dto.skip ?? 0)
+        .limit(dto.take ?? 50),
+      this.database.db
+        .select({ value: count() })
+        .from(messageThread)
+        .innerJoin(user, eq(user.id, messageThread.groupUserId))
+        .where(where)
+        .then(([row]) => row),
     ]);
+    const list = rows.map((row) => ({
+      id: row.id,
+      createdAt: row.createdAt,
+      lastMessageAt: row.lastMessageAt,
+      lastMessagePreview: row.lastMessagePreview,
+      groupUser: {
+        account: row.groupAccount,
+        name: row.groupName,
+        domain: row.groupDomain,
+      },
+      _count: { ThreadParticipant: row.activeParticipants },
+    }));
+    const total = totalRow.value;
     return { list, total };
   }
 }

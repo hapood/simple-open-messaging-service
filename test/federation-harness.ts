@@ -8,6 +8,7 @@ import { PrismaClient } from '../src/prisma/generated/client.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
+import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
 
 export type { S2sProxy };
 
@@ -44,7 +45,12 @@ export const FED_DOMAIN_A = 'aaa.local';
 export const FED_DOMAIN_B = 'bbb.local';
 
 /** Path to the COMPILED subprocess entry (see ensureCompiledEntry — why it's compiled, not run via tsx). */
-const APP_MAIN = join(process.cwd(), '.e2e-build', 'test', 'federation-app.main.js');
+const APP_MAIN = join(
+  process.cwd(),
+  '.e2e-build',
+  'test',
+  'federation-app.main.js',
+);
 
 /** Compile the subprocess entry + its deps to .e2e-build/ via tsc, IF missing or stale. Staleness is
  *  gated (any relevant source newer than the build → recompile) so the ~10s compile runs only when needed. */
@@ -121,32 +127,17 @@ function federationDbNames(): { a: string; b: string } {
   return { a: `${base}_a`, b: `${base}_b` };
 }
 
-function createDbIfMissing(adminUrl: string, db: string): void {
-  execSync(
-    `psql "${adminUrl}" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='${db}'" | grep -q 1 || psql "${adminUrl}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${db}"`,
-    { stdio: 'inherit' },
-  );
-}
-
-function migrateDb(dbUrl: string): void {
-  const prev = process.env.DATABASE_URL;
-  process.env.DATABASE_URL = dbUrl;
-  try {
-    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
-  } finally {
-    process.env.DATABASE_URL = prev;
-  }
-}
-
 /** Create + migrate both per-app DBs for this fork. Idempotent. Returns the two datasource URLs. */
-export async function ensureFederationDbs(): Promise<{ urlA: string; urlB: string }> {
+export async function ensureFederationDbs(): Promise<{
+  urlA: string;
+  urlB: string;
+}> {
   if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL missing — copy .env.example to .env and configure it.');
+    throw new Error(
+      'DATABASE_URL missing — copy .env.example to .env and configure it.',
+    );
   }
   const base = new URL(process.env.DATABASE_URL);
-  const adminUrl = new URL(base);
-  adminUrl.pathname = '/postgres';
-  adminUrl.search = '';
   const mkUrl = (db: string): string => {
     const u = new URL(base.toString());
     u.pathname = `/${db}`;
@@ -155,10 +146,10 @@ export async function ensureFederationDbs(): Promise<{ urlA: string; urlB: strin
   const { a, b } = federationDbNames();
   const urlA = mkUrl(a);
   const urlB = mkUrl(b);
-  createDbIfMissing(adminUrl.toString(), a);
-  createDbIfMissing(adminUrl.toString(), b);
-  migrateDb(urlA);
-  migrateDb(urlB);
+  await ensureDatabase(base.toString(), a);
+  await ensureDatabase(base.toString(), b);
+  await resetAndMigrateDatabase(urlA);
+  await resetAndMigrateDatabase(urlB);
   return { urlA, urlB };
 }
 
@@ -201,7 +192,9 @@ interface FedAppConfig {
  *  `stop()` SIGTERMs the child (used by the demote test to force a real ECONNREFUSED); `restart()`
  *  re-forks on the same port (used by the re-handshake test). */
 function makeFedApp(cfg: FedAppConfig): FedApp {
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: cfg.dbUrl }) });
+  const prisma = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: cfg.dbUrl }),
+  });
   let child: ChildProcess | null = null;
 
   const start = async (): Promise<void> => {
@@ -226,8 +219,12 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     // TEMP DEBUG — forward the subprocess logs so a swallowed best-effort failure is visible.
-    child.stdout!.on('data', (d: Buffer) => process.stdout.write(`[${cfg.domain}] ${d}`));
-    child.stderr!.on('data', (d: Buffer) => process.stderr.write(`[${cfg.domain}] ${d}`));
+    child.stdout!.on('data', (d: Buffer) =>
+      process.stdout.write(`[${cfg.domain}] ${d}`),
+    );
+    child.stderr!.on('data', (d: Buffer) =>
+      process.stderr.write(`[${cfg.domain}] ${d}`),
+    );
     await waitForReady(child, cfg);
   };
 
@@ -281,13 +278,19 @@ function waitForReady(child: ChildProcess, cfg: FedAppConfig): Promise<void> {
       stderrTail = (stderrTail + chunk.toString()).slice(-2000);
       if (chunk.toString().includes('FED_APP_ERROR')) {
         clearTimeout(timer);
-        reject(new Error(`${cfg.domain} reported FED_APP_ERROR:\n${stderrTail}`));
+        reject(
+          new Error(`${cfg.domain} reported FED_APP_ERROR:\n${stderrTail}`),
+        );
       }
     });
     child.once('exit', (code) => {
       if (code !== null && code !== 0) {
         clearTimeout(timer);
-        reject(new Error(`${cfg.domain} exited (code ${code}) before ready. stderr tail:\n${stderrTail}`));
+        reject(
+          new Error(
+            `${cfg.domain} exited (code ${code}) before ready. stderr tail:\n${stderrTail}`,
+          ),
+        );
       }
     });
   });
@@ -299,25 +302,48 @@ function waitForReady(child: ChildProcess, cfg: FedAppConfig): Promise<void> {
  *  A transparent S2S proxy sits on the appB→appA path (appB's discovery[aaa] → proxy → appA); it relays
  *  all traffic verbatim by default and is only USED (fault injection) by the resume test, which calls
  *  `proxy.armGetFileTruncation()`. appA→appB stays direct (no fault test on that leg). */
-export async function bootFederationPair(): Promise<{ appA: FedApp; appB: FedApp; proxy: S2sProxy }> {
+export async function bootFederationPair(): Promise<{
+  appA: FedApp;
+  appB: FedApp;
+  proxy: S2sProxy;
+}> {
   ensureCompiledEntry(); // compile the subprocess entry once (staleness-gated)
   const { urlA, urlB } = await ensureFederationDbs();
   const [portA, portB] = await Promise.all([pickFreePort(), pickFreePort()]);
   const proxy = await startS2sProxy(portA); // relays appB → appA (portA)
-  const appA = makeFedApp({ domain: FED_DOMAIN_A, dbUrl: urlA, appPort: portA, portA, portB });
+  const appA = makeFedApp({
+    domain: FED_DOMAIN_A,
+    dbUrl: urlA,
+    appPort: portA,
+    portA,
+    portB,
+  });
   // appB routes aaa.local through the proxy (portA field = proxy.port), so its signed /get_file calls can
   // be fault-injected; bbb.local stays appB's own port.
-  const appB = makeFedApp({ domain: FED_DOMAIN_B, dbUrl: urlB, appPort: portB, portA: proxy.port, portB });
+  const appB = makeFedApp({
+    domain: FED_DOMAIN_B,
+    dbUrl: urlB,
+    appPort: portB,
+    portA: proxy.port,
+    portB,
+  });
   await Promise.all([appA.start(), appB.start()]);
   await assertSeparateDatabases(appA, appB);
   return { appA, appB, proxy };
 }
 
 /** Enforcement guard: the two apps MUST be on different physical databases. Throws loudly if not. */
-export async function assertSeparateDatabases(appA: FedApp, appB: FedApp): Promise<void> {
+export async function assertSeparateDatabases(
+  appA: FedApp,
+  appB: FedApp,
+): Promise<void> {
   const [dbA, dbB] = await Promise.all([
-    appA.prisma.$queryRawUnsafe<{ current_database: string }[]>('SELECT current_database()'),
-    appB.prisma.$queryRawUnsafe<{ current_database: string }[]>('SELECT current_database()'),
+    appA.prisma.$queryRawUnsafe<{ current_database: string }[]>(
+      'SELECT current_database()',
+    ),
+    appB.prisma.$queryRawUnsafe<{ current_database: string }[]>(
+      'SELECT current_database()',
+    ),
   ]);
   if (dbA[0].current_database === dbB[0].current_database) {
     throw new Error(
@@ -337,7 +363,10 @@ const FEDERATION_TRUNCATE_SQL =
   'TRUNCATE TABLE "User", "Invite", "MessageThread", "Message", "MediaMessage", "MediaAsset", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "S2SFriendOpSeen" RESTART IDENTITY CASCADE';
 
 /** Truncate BOTH apps' databases between tests (in parallel — a test cannot forget one side). */
-export async function truncateFederationDbs(appA: FedApp, appB: FedApp): Promise<void> {
+export async function truncateFederationDbs(
+  appA: FedApp,
+  appB: FedApp,
+): Promise<void> {
   await Promise.all([
     appA.prisma.$executeRawUnsafe(FEDERATION_TRUNCATE_SQL),
     appB.prisma.$executeRawUnsafe(FEDERATION_TRUNCATE_SQL),

@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { Prisma } from '../prisma/generated/client.js';
 import {
   USER_ACCOUNT_RE,
   GROUP_ACCOUNT_RE,
@@ -95,16 +94,10 @@ describe('account grammar + minting', () => {
     });
   });
 
-  it('isP2002 detects Prisma unique-constraint violations only', () => {
-    const p2002 = new Prisma.PrismaClientKnownRequestError('dup', {
-      code: 'P2002',
-      clientVersion: '0.0.0',
-    });
-    expect(isP2002(p2002)).toBe(true);
-    const other = new Prisma.PrismaClientKnownRequestError('missing', {
-      code: 'P2025',
-      clientVersion: '0.0.0',
-    });
+  it('isP2002 detects PostgreSQL unique-constraint violations only', () => {
+    const unique = Object.assign(new Error('dup'), { code: '23505' });
+    expect(isP2002(unique)).toBe(true);
+    const other = Object.assign(new Error('missing'), { code: '23503' });
     expect(isP2002(other)).toBe(false);
     expect(isP2002(new Error('boom'))).toBe(false);
     expect(isP2002(undefined)).toBe(false);
