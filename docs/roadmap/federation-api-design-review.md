@@ -70,7 +70,7 @@
   `S2SAddress` objects (`S2SInvite.from/to`, `accepter`/`by`/`owner`) deliberately NOT renamed. Typechecks
   clean (`src/` 0 errors); unit specs green (19/19).
 - [~] **A2 — message item `kind` discriminator — RETRACTED (YAGNI under the immutability principle).**
-  The forward-compat rationale (future edit/delete/receipt item kinds) does not hold: edit/delete are a
+  The forward-compat rationale (future delete/receipt item kinds) does not hold: deletes are a
   **NON-GOAL** — the origin has no authority to mutate receiver-local data once delivered (step2-design
   §9), so those kinds will never appear on the wire. Receipts are the only plausible future item kind,
   and they are append-only metadata (compatible with immutability) but v0.2 + undecided channel, with
@@ -248,7 +248,7 @@
 4. ~~Doc defects E1/E2/E4/E5~~ — RESOLVED this session (§5). E1 was already resolved (#6b row); E2/E4/E5
    fixed + §6 + this checklist updated.
 5. ~~A2 `kind` discriminator~~ — **RETRACTED** (§3). Under the immutability principle (origin can't
-   mutate receiver-local data → edit/delete non-goal; receipts v0.2 + undecided, `receipt` type reserved),
+   mutate receiver-local data → delete propagation non-goal; receipts v0.2 + undecided, `receipt` type reserved),
    a tag with no second union member today is YAGNI. See the `federation-origin-cannot-mutate-local` memory.
 6. Doc-only: clarify the response `latestSeq` per-shape contract — per-author = the author's max
    `originSeq` in-thread; all-senders = batch's highest thread `seq` (per-thread, not global); unused by

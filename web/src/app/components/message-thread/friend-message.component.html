@@ -26,18 +26,37 @@
         [style.left.px]="menu.x"
         [style.top.px]="menu.y"
       >
-        <button type="button" role="menuitem" (click)="copyContextMessage()">
-          {{ 'chat.selection.copy' | transloco }}
+        <button
+          type="button"
+          role="menuitem"
+          (click)="copyContextMessage()"
+          [attr.title]="'chat.selection.copy' | transloco"
+        >
+          <span>{{ 'chat.selection.copy' | transloco }}</span>
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          (click)="quoteContextMessage()"
+          [attr.title]="'chat.selection.quote' | transloco"
+        >
+          <span>{{ 'chat.selection.quote' | transloco }}</span>
         </button>
         <button
           type="button"
           role="menuitem"
           (click)="openContextForwardDialog()"
+          [attr.title]="'chat.selection.forward' | transloco"
         >
-          {{ 'chat.selection.forward' | transloco }}
+          <span>{{ 'chat.selection.forward' | transloco }}</span>
         </button>
-        <button type="button" role="menuitem" (click)="selectContextMessage()">
-          {{ 'chat.selection.multiSelect' | transloco }}
+        <button
+          type="button"
+          role="menuitem"
+          (click)="selectContextMessage()"
+          [attr.title]="'chat.selection.multiSelect' | transloco"
+        >
+          <span>{{ 'chat.selection.multiSelect' | transloco }}</span>
         </button>
       </div>
     }
@@ -436,6 +455,18 @@
       </button>
     } @else {
       @if (!nativeComposer.supported) {
+        @if (composingQuote(); as quote) {
+          <div class="msg-compose-quote">
+            <span>{{ quote.preview }}</span>
+            <button
+              type="button"
+              (click)="cancelQuote()"
+              [attr.aria-label]="'common.cancel' | transloco"
+            >
+              ×
+            </button>
+          </div>
+        }
         <app-chat-input
           [class.msg-composer--selection-hidden]="selectionMode()"
           [attr.aria-hidden]="selectionMode()"

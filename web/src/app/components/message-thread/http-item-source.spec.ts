@@ -558,6 +558,46 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(items[0].data.status).toBeUndefined();
   });
 
+  it('rawToItems preserves the server-authored quote preview and jump target', async () => {
+    const quoted = {
+      ...row(101, 2),
+      content: JSON.stringify({
+        text: 'reply',
+        quote: { seq: 44, preview: 'Alice：original message' },
+      }),
+    };
+    const { src } = setup({
+      code: 0,
+      message: 'ok',
+      data: [quoted],
+      hasMore: false,
+    });
+
+    const items = await src.init(-1, 50, 0);
+
+    expect(items[0].data.quote).toEqual({
+      seq: 44,
+      preview: 'Alice：original message',
+    });
+  });
+
+  it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {
+    const quoted = {
+      ...row(101, 2),
+      content: JSON.stringify({ text: 'reply', quote: { seq: 44 } }),
+    };
+    const { src } = setup({
+      code: 0,
+      message: 'ok',
+      data: [quoted],
+      hasMore: false,
+    });
+
+    const items = await src.init(-1, 50, 0);
+
+    expect(items[0].data.quote).toEqual({ seq: 44, preview: '' });
+  });
+
   it('restores a persisted AUDIO message as a playable voice card after reopening the thread', async () => {
     const audio = {
       ...row(101, 1),

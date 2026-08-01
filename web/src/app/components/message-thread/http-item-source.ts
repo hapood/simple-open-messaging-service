@@ -43,6 +43,7 @@ import {
   toDisplayText,
   toRenderMessageEntities,
 } from '../../lib/message-entity';
+import { parseTextMessageContent } from '../../../../../shared/text-message-content';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -562,13 +563,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     file: FileInfo | null,
   ): ChatMsgData {
     const p = this.profiles.get(m.creator);
-    const renderedText =
-      m.contentType === 'PURE_TEXT'
-        ? toRenderMessageEntities(
-            m.content,
-            this.userService.sessionProfile()?.account,
-          )
-        : null;
+    const textContent =
+      m.contentType === 'PURE_TEXT' ? parseTextMessageContent(m.content) : null;
+    const renderedText = textContent
+      ? toRenderMessageEntities(
+          textContent.text,
+          this.userService.sessionProfile()?.account,
+        )
+      : null;
     return {
       type: 'msg',
       msgId: m.seq,
@@ -577,8 +579,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       name: p?.name ?? '',
       avatar: p?.avatar ?? '',
       avatarIdentityId: m.creator,
-      text:
-        m.contentType === 'PURE_TEXT' ? toDisplayText(m.content) : m.content,
+      text: textContent ? toDisplayText(textContent.text) : m.content,
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),
@@ -587,6 +588,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       file,
       createdAtMs: m.createdAt,
       mediaStatus: m.mediaStatus,
+      quote: textContent?.quote
+        ? {
+            seq: textContent.quote.seq,
+            preview: textContent.quote.preview ?? '',
+          }
+        : undefined,
     };
   }
 

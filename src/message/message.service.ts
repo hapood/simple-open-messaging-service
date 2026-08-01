@@ -16,6 +16,10 @@ import {
   parseMessageEntities,
   toDisplayText,
 } from '../common/message-entity.js';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../shared/text-message-content.js';
 
 export type UnreadMentionState = Array<'all' | 'me'>;
 
@@ -67,7 +71,7 @@ export function stripMessageId<T extends { id: bigint }>(
 export function derivePreview(type: ContentType, content: string): string {
   switch (type) {
     case ContentType.PURE_TEXT:
-      return toDisplayText(content)
+      return toDisplayText(parseTextMessageContent(content)?.text ?? '')
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, PREVIEW_TEXT_MAX);
@@ -169,6 +173,7 @@ export class MessageService implements OnModuleInit {
     clientMessageId?: string,
     forwardBundleId?: string,
     beforeMessageCreate?: (tx: Prisma.TransactionClient) => Promise<void>,
+    quoteVisibility?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
   ): Promise<Omit<Message, 'id'>> {
     if (clientMessageId !== undefined) {
       const existing = await this.prisma.message.findUnique({
@@ -191,9 +196,52 @@ export class MessageService implements OnModuleInit {
         });
         // originSeq == seq: a locally-authored message's per-thread seq IS the value a federation
         // receiver copies verbatim (the dedup key + per-(thread, sender) pull cursor).
+        const textContent =
+          type === ContentType.PURE_TEXT
+            ? parseTextMessageContent(content)
+            : null;
+        if (type === ContentType.PURE_TEXT && !textContent) {
+          throw new BusinessException(
+            BusinessCode.VALIDATION_FAILED,
+            'invalid text message content',
+          );
+        }
+        const quoteSeq = textContent?.quote?.seq;
+        const quoteTarget =
+          quoteSeq === undefined
+            ? null
+            : await tx.message.findUnique({
+                where: { threadId_seq: { threadId, seq: quoteSeq } },
+                include: { creatorItem: { select: { name: true } } },
+              });
+        if (quoteSeq !== undefined && !quoteTarget) {
+          throw new BusinessException(
+            BusinessCode.NOT_FOUND,
+            'quoted message not found',
+          );
+        }
+        if (
+          quoteTarget &&
+          (quoteTarget.isDeleted ||
+            (quoteVisibility?.clearedAfter &&
+              quoteTarget.createdAt <= quoteVisibility.clearedAfter) ||
+            quoteVisibility?.hideCreatorIds?.includes(quoteTarget.creator))
+        ) {
+          throw new BusinessException(
+            BusinessCode.NOT_FOUND,
+            'quoted message not found',
+          );
+        }
+        const storedContent =
+          textContent && quoteTarget
+            ? stringifyTextMessageContent({
+                text: textContent.text,
+                quote: { seq: quoteTarget.seq },
+              })
+            : content;
         const msg = await tx.message.create({
           data: {
-            content,
+            content: storedContent,
             contentType: type,
             threadId,
             creator: userId,
@@ -214,7 +262,7 @@ export class MessageService implements OnModuleInit {
           where: { id: threadId },
           data: {
             lastMessageSeq: seq,
-            lastMessagePreview: derivePreview(type, content),
+            lastMessagePreview: derivePreview(type, storedContent),
             lastMessageAt: msg.createdAt,
           },
         });
@@ -563,7 +611,70 @@ export class MessageService implements OnModuleInit {
       ...params,
       where,
     });
-    return this.attachMediaStatus(rows);
+    return this.attachMediaStatus(
+      await this.attachQuotePreviews(rows, filters),
+    );
+  }
+
+  /** Batch-enrich stored `{text, quote:{seq}}` envelopes for the client without persisting a preview. */
+  private async attachQuotePreviews<T extends Message>(
+    msgs: T[],
+    filters?: { clearedAfter?: Date | null; hideCreatorIds?: number[] },
+  ): Promise<T[]> {
+    const refs = new Map<number, Set<number>>();
+    for (const message of msgs) {
+      if (message.contentType !== ContentType.PURE_TEXT) continue;
+      const quoteSeq = parseTextMessageContent(message.content)?.quote?.seq;
+      if (quoteSeq === undefined) continue;
+      const seqs = refs.get(message.threadId) ?? new Set<number>();
+      seqs.add(quoteSeq);
+      refs.set(message.threadId, seqs);
+    }
+    if (refs.size === 0) return msgs;
+
+    const targetWhere: Prisma.MessageWhereInput = {
+      OR: [...refs].map(([threadId, seqs]) => ({
+        threadId,
+        seq: { in: [...seqs] },
+      })),
+      isDeleted: false,
+    };
+    if (filters?.clearedAfter)
+      targetWhere.createdAt = { gt: filters.clearedAfter };
+    if (filters?.hideCreatorIds?.length)
+      targetWhere.creator = { notIn: filters.hideCreatorIds };
+    const targets = await this.prisma.message.findMany({
+      where: targetWhere,
+      include: { creatorItem: { select: { name: true } } },
+    });
+    const byKey = new Map(
+      targets.map((target) => [
+        `${target.threadId}:${target.seq}`,
+        truncateText(
+          `${target.creatorItem.name}：${derivePreview(
+            target.contentType,
+            target.content,
+          )}`,
+          100,
+        ),
+      ]),
+    );
+    return msgs.map((message) => {
+      if (message.contentType !== ContentType.PURE_TEXT) return message;
+      const content = parseTextMessageContent(message.content);
+      if (!content?.quote) return message;
+      const preview = byKey.get(`${message.threadId}:${content.quote.seq}`);
+      return {
+        ...message,
+        content: stringifyTextMessageContent({
+          text: content.text,
+          quote: {
+            seq: content.quote.seq,
+            ...(preview === undefined ? {} : { preview }),
+          },
+        }),
+      };
+    });
   }
 
   /** Attach a `mediaStatus` ('ready' | 'failed') + `sv` (status version = seq) to each message by
@@ -656,9 +767,8 @@ export class MessageService implements OnModuleInit {
    * Substring search over a conversation's PURE_TEXT history. Returns lightweight {id, createdAt}
    * matches (no full bodies) — the client jumps the kernel to each id and the server renders the bubble
    * via the normal query-messages path on demand. Keyset-paginated by message id (descending): the
-   * client's lastId cursor asks for the next older page of matches. ILIKE + the Message content trigram
-   * GIN index backs the scan; non-text types are excluded (their content is a URL / JSON / token, never
-   * meaningful to search and a potential URL leak).
+   * client's lastId cursor asks for the next older page of matches. Search extracts only the envelope's
+   * text field so author names and quote previews never create false hits; non-text types are excluded.
    */
   async searchMessages(
     threadId: number,
@@ -666,21 +776,18 @@ export class MessageService implements OnModuleInit {
     take: number,
     lastSeq?: number,
   ) {
-    const where: Prisma.MessageWhereInput = {
-      threadId,
-      contentType: ContentType.PURE_TEXT,
-      content: { contains: keyword, mode: 'insensitive' },
-    };
-    if (lastSeq !== undefined) {
-      where.seq = { lt: lastSeq };
-    }
-    const rows = await this.prisma.message.findMany({
-      where,
-      orderBy: { seq: 'desc' },
-      take: take + 1, // take+1 hasMore trick — same idiom as queryMessages
-      select: { seq: true, createdAt: true },
-    });
-    return rows;
+    const cursor =
+      lastSeq === undefined ? Prisma.empty : Prisma.sql`AND seq < ${lastSeq}`;
+    return this.prisma.$queryRaw<Array<{ seq: number; createdAt: Date }>>`
+      SELECT seq, "createdAt"
+      FROM "Message"
+      WHERE "threadId" = ${threadId}
+        AND "contentType" = 'PURE_TEXT'
+        ${cursor}
+        AND (content::jsonb ->> 'text') ILIKE ${`%${keyword}%`}
+      ORDER BY seq DESC
+      LIMIT ${take + 1}
+    `;
   }
 
   /** Single message lookup by per-thread (threadId, seq) identity — seq is unique only within a thread,
@@ -1275,7 +1382,8 @@ export class MessageService implements OnModuleInit {
     let all = false;
     let me = false;
     for (const content of contents) {
-      for (const segment of parseMessageEntities(content)) {
+      const text = parseTextMessageContent(content)?.text ?? '';
+      for (const segment of parseMessageEntities(text)) {
         if (
           segment.kind !== 'entity' ||
           segment.version !== 1 ||
@@ -1386,4 +1494,13 @@ export class MessageService implements OnModuleInit {
       ]),
     );
   }
+}
+
+function truncateText(value: string, max: number): string {
+  return [
+    ...new Intl.Segmenter('zh-CN', { granularity: 'grapheme' }).segment(value),
+  ]
+    .slice(0, max)
+    .map((part) => part.segment)
+    .join('');
 }

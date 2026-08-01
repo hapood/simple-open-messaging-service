@@ -3176,8 +3176,8 @@ export interface components {
         | 'FORWARD'
         | 'CALL';
       /**
-       * @description Message content
-       * @example hello
+       * @description Message content. PURE_TEXT uses a JSON envelope with text and an optional quote seq.
+       * @example {"text":"hello","quote":{"seq":31}}
        */
       content: string;
       /**

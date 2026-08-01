@@ -10,11 +10,11 @@
 > pull-on-open + slow poll. **Deferred** (§9): read receipts/presence/typing,
 > history backfill as a feature (Step 2.5), and a durable outbox (only if a future tier
 > needs transactional delivery). Per-peer quotas are now **BUILT** (unified local + peers — see
-> `docs/roadmap/federation-quotas.md`). Edit/delete is a **non-goal** (§9, not deferred); federated groups shipped
+> `docs/roadmap/federation-quotas.md`). Delete propagation is a **non-goal** (§9, not deferred); federated groups shipped
 > in Step 3. This is
 > the authoritative Step 2 design; it **supersedes** the outbox-push/backfill prose retained in
 > `docs/overview/federation-protocol.md` §6.2 / §8 / §9.2 (kept there as rejected-alternative rationale).
-> **Scope:** cross-server **1:1 text + media**. **Out of scope:** edit/delete propagation (**non-goal**
+> **Scope:** cross-server **1:1 text + media**. **Out of scope:** delete propagation (**non-goal**
 > — the origin cannot mutate receiver-local data once delivered; §9), presence/typing (v0.2,
 > best-effort/ephemeral), read receipts (v0.2, a separate deferred item — §10), federated **groups** + shared
 > thread id (Step 3, built), history backfill as a distinct feature (Step 2.5 — same endpoint as
@@ -33,8 +33,8 @@ single source of truth — the hint map is only a latency optimizer, the pull is
 lost or overflowed hint is caught by **pull-on-thread-open** and a **slow periodic poll**. There is
 **no persistent outbox, no worker, no dead-letter queue** — the map is volatile (survives a network
 outage, not a process restart; pull-on-open is the restart floor), deletion shows up as gaps in the
-sequence (absorbed naturally), and edit/delete *propagation* is a **non-goal** (the origin cannot mutate
-receiver-local data; §9) — a local edit/delete stays local. A
+sequence (absorbed naturally), and delete propagation is a **non-goal** (the origin cannot mutate
+receiver-local data; §9) — a local delete stays local. A
 **60 s reconnect sweep** plus a dedicated **signed ping** re-handshake demoted peers and **never get
 permanently stuck on a cert/key rotation** (every tick re-fetches `.well-known` fresh; we never pin).
 Media rides the same trust/friendship chain via a digest-keyed `get_file` (content-addressed → dedup
@@ -270,10 +270,10 @@ receiver fetches each digest via `get_file` (§3.3), stores it locally, and **re
 digest already in the receiver's CAS (`MediaAsset` hit) skips the `get_file` round trip entirely
 (content-addressed dedup).
 
-**Edit/delete.** Not represented in the response — a **non-goal** (§9: the origin has no authority over
+**Delete.** Not represented in the response — a **non-goal** (§9: the origin has no authority over
 receiver-local data once delivered). A deleted-by-sender message simply does not appear in the window —
-a gap in `originSeq` the receiver absorbs naturally (cursor advances past it). No `tombstone`/`editOf`
-shape is planned; a local edit/delete by either side stays local (never a remote-driven mutation).
+a gap in `originSeq` the receiver absorbs naturally (cursor advances past it). No tombstone shape is
+planned; a local delete by either side stays local (never a remote-driven mutation).
 
 ### 3.3 `GET /api/v1/s2s/get_file` (media, digest-keyed, 3-check authz)
 
@@ -532,7 +532,7 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 > profile tests — no regressions. A lost push now self-heals via sweep + pull-on-open + slow poll.
 > Bug fixed during e2e: `drainPendingPulls` spun on a persistently failing pull (now progress-gated).
 > **Open work is the §9 deferrals** (read receipts/presence/typing, history backfill = Step 2.5, per-peer
-> quotas — design ready at `docs/roadmap/federation-quotas.md`). Edit/delete is a non-goal (§9); federated groups
+> quotas — design ready at `docs/roadmap/federation-quotas.md`). Delete propagation is a non-goal (§9); federated groups
 > shipped in Step 3.
 
 1. **Schema migration** — add `Message.originSeq Int?` + `@@unique([threadId, creator, originSeq])` +
@@ -581,12 +581,11 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 
 ## 9. Deferred (explicit non-goals for Step 2 v0.1)
 
-- **Edit/delete propagation — NON-GOAL (origin has no authority over receiver-local data).** Once a
+- **Delete propagation — NON-GOAL (origin has no authority over receiver-local data).** Once a
   message is pulled + stored it is the receiver's local data; the origin may NOT reach back to mutate it
   (the delivered-immutability / email model — this sidesteps distributed mutation consensus entirely). A
-  local edit/delete by either side stays local; a deleted-by-sender message is a gap on the receiver
-  (absorbed), never a remote-driven tombstone. The earlier `message.edit`/`message.delete` hint +
-  `tombstone`/`editOf`-shape design is **retracted** — it would contradict this principle.
+  local delete by either side stays local; a deleted-by-sender message is a gap on the receiver
+  (absorbed), never a remote-driven tombstone.
 - **Presence / typing** — v0.2, best-effort ephemeral (lossy, carry no `id`, never retried).
 - **Read receipts across federation** — v0.2, **a separate deferred item (not the lossy presence/typing
   path).** A receipt is append-only metadata ("user X read msg Y at T"), NOT a mutation of message data,

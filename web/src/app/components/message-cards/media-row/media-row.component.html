@@ -61,8 +61,10 @@
           <div
             class="msg-media-cell msg-media-cell--{{ c.kind }}{{
               c.unplayable ? ' msg-media-cell--placeholder' : ''
-            }}{{ c.isMore ? ' msg-cell-more' : '' }}"
-            [attr.data-media-message-id]="data().images?.[$index]?.msgId ?? data().msgId"
+            }}"
+            [attr.data-media-message-id]="
+              data().images?.[$index]?.msgId ?? data().msgId
+            "
             [style.left.%]="c.rect.xPct"
             [style.top.px]="c.rect.yPx"
             [style.width.%]="c.rect.wPct"
@@ -151,11 +153,7 @@
                 (error)="onThumbnailError($event)"
               />
             }
-            @if (
-              c.kind === 'video' &&
-              !isAndroidApp &&
-              !c.unplayable
-            ) {
+            @if (c.kind === 'video' && !isAndroidApp && !c.unplayable) {
               <video
                 class="msg-media-video"
                 [style.opacity]="loadedVideoFrames().has($index) ? 1 : 0"
@@ -191,17 +189,7 @@
                 c.sizeText || ('chat.unknownSize' | transloco)
               }}</span>
             }
-            @if (c.isMore) {
-              <span class="msg-media-more">+{{ moreCount() }}</span>
-              @if (moreTransfer().active) {
-                <span class="msg-media-more-count">
-                  {{ moreTransfer().completed }}/{{ moreTransfer().total }}
-                </span>
-                <span class="msg-media-progress msg-media-progress--aggregate">
-                  <span [style.width.%]="moreTransfer().progress"></span>
-                </span>
-              }
-            } @else if (c.transferStatus === 'downloading') {
+            @if (c.transferStatus === 'downloading') {
               <span
                 class="msg-media-progress"
                 [class.msg-media-progress--indeterminate]="

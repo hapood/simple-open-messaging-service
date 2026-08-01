@@ -913,7 +913,10 @@ describe('rawPreview', () => {
     expect(
       rawPreview(
         'PURE_TEXT',
-        '你好 [@张三](soms://user/zhangsan%40example.com?v=1)',
+        JSON.stringify({
+          text: '你好 [@张三](soms://user/zhangsan%40example.com?v=1)',
+          quote: { seq: 7, preview: '李四：不应进入会话摘要' },
+        }),
       ),
     ).toBe('你好 @张三');
   });

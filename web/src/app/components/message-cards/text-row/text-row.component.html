@@ -54,6 +54,17 @@
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }}"
       [class.msg-sending]="isSending()"
     >
+      @if (data().quote; as quote) {
+        <button
+          type="button"
+          class="msg-quote"
+          (click)="quoteJump.emit(quote.seq)"
+        >
+          <span>{{
+            quote.preview || ('chat.messageNotFound' | transloco)
+          }}</span>
+        </button>
+      }
       <p class="msg-bubble-text">
         @if (data().textSegments?.length) {
           @for (segment of data().textSegments; track $index) {
@@ -61,7 +72,8 @@
               <span
                 class="msg-mention msg-mention--{{ segment.target }}"
                 [attr.data-account]="segment.account ?? null"
-              >{{ segment.text }}</span>
+                >{{ segment.text }}</span
+              >
             } @else {
               {{ segment.text }}
             }

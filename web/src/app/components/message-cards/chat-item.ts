@@ -76,6 +76,10 @@ export interface ChatMsgData {
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
   wireText?: string;
+  quote?: {
+    seq: number;
+    preview: string;
+  };
   /** Parsed PURE_TEXT body. Stable mention identity is retained for recipient-relative rendering. */
   textSegments?: ChatTextSegment[];
   /** `me` is a direct account match; `all` is the group-wide audience. */

@@ -28,6 +28,7 @@ function makeStubs() {
   const prisma = {
     messageThread: { findUnique: vi.fn() },
     threadParticipant: { findMany: vi.fn() },
+    message: { findMany: vi.fn() },
   };
   const svc = new FederationService(
     prisma as never,
@@ -46,6 +47,136 @@ function makeStubs() {
   );
   return { svc, prisma, markDirty, flushBatch };
 }
+
+describe('FederationService quote coordinates', () => {
+  it('maps a local quote seq to creator identity + originSeq for the wire', async () => {
+    const { svc, prisma } = makeStubs();
+    prisma.message.findMany.mockResolvedValue([
+      {
+        seq: 7,
+        originSeq: 3,
+        creatorItem: {
+          account: 'alice',
+          domain: 'local',
+          isForeigner: false,
+        },
+      },
+    ]);
+    const quoteTargetsForWire = (
+      svc as unknown as {
+        quoteTargetsForWire: (
+          threadId: number,
+          messages: Array<{
+            seq: number;
+            contentType: 'PURE_TEXT';
+            content: string;
+          }>,
+        ) => Promise<
+          Map<
+            number,
+            {
+              creator: { account: string; domain: string };
+              originSeq: number;
+            }
+          >
+        >;
+      }
+    ).quoteTargetsForWire.bind(svc);
+
+    const result = await quoteTargetsForWire(10, [
+      {
+        seq: 12,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'reply', quote: { seq: 7 } }),
+      },
+    ]);
+
+    expect(result.get(12)).toEqual({
+      creator: { account: 'alice', domain: OUR },
+      originSeq: 3,
+    });
+  });
+
+  it('rejects a quote target without a stable originSeq', async () => {
+    const { svc, prisma } = makeStubs();
+    prisma.message.findMany.mockResolvedValue([
+      {
+        seq: 7,
+        originSeq: null,
+        creatorItem: {
+          account: 'alice',
+          domain: 'local',
+          isForeigner: false,
+        },
+      },
+    ]);
+    const quoteTargetsForWire = (
+      svc as unknown as {
+        quoteTargetsForWire: (
+          threadId: number,
+          messages: Array<{
+            seq: number;
+            contentType: 'PURE_TEXT';
+            content: string;
+          }>,
+        ) => Promise<Map<number, unknown>>;
+      }
+    ).quoteTargetsForWire.bind(svc);
+
+    await expect(
+      quoteTargetsForWire(10, [
+        {
+          seq: 12,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'reply', quote: { seq: 7 } }),
+        },
+      ]),
+    ).rejects.toThrow('quoted message has no federated coordinate');
+  });
+
+  it('maps a wire creator + originSeq back to the receiver local seq', async () => {
+    const { svc } = makeStubs();
+    const tx = {
+      user: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 22, domain: 'peer.example', isForeigner: true },
+          ]),
+      },
+      message: { findUnique: vi.fn().mockResolvedValue({ seq: 41 }) },
+    };
+    const resolveLocalQuoteSeq = (
+      svc as unknown as {
+        resolveLocalQuoteSeq: (
+          tx: unknown,
+          threadId: number,
+          target: {
+            creator: { account: string; domain: string };
+            originSeq: number;
+          },
+        ) => Promise<number>;
+      }
+    ).resolveLocalQuoteSeq.bind(svc);
+
+    await expect(
+      resolveLocalQuoteSeq(tx, 10, {
+        creator: { account: 'alice', domain: 'peer.example' },
+        originSeq: 7,
+      }),
+    ).resolves.toBe(41);
+    expect(tx.message.findUnique).toHaveBeenCalledWith({
+      where: {
+        threadId_creator_originSeq: {
+          threadId: 10,
+          creator: 22,
+          originSeq: 7,
+        },
+      },
+      select: { seq: true },
+    });
+  });
+});
 
 const localUser = (userId: number, account: string) => ({
   userId,

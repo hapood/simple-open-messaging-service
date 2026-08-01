@@ -23,8 +23,8 @@
 > **mirror** threads that pull history **from the origin** (the single message authority).
 >
 > **Out of scope (deferred):** group rename/avatar sync propagation, origin death / re-homing. Per-peer
-> quota enforcement is now **BUILT** (unified local + peers — see `docs/roadmap/federation-quotas.md`). Edit/delete
-> is a **non-goal** (Step 2 §9: the origin cannot mutate receiver-local data once delivered).
+> quota enforcement is now **BUILT** (unified local + peers — see `docs/roadmap/federation-quotas.md`). Delete
+> propagation is a **non-goal** (Step 2 §9: the origin cannot mutate receiver-local data once delivered).
 
 ---
 
@@ -509,8 +509,8 @@ hint-write layer: `signalOutbound` excludes the domain the message was fetched f
 - **Group rename / avatar / description sync.** The mirror copies these at invite time; a later origin
   rename does not yet propagate. A `thread.meta` op (same shape as `thread.member`, origin-only) covers
   it later without a new trust path.
-- **Edit / delete propagation — non-goal.** Step 2 §9 establishes the origin cannot mutate receiver-
-  local data once delivered, so there is nothing for groups to inherit; a local edit/delete stays local.
+- **Delete propagation — non-goal.** Step 2 §9 establishes the origin cannot mutate receiver-
+  local data once delivered, so there is nothing for groups to inherit; a local delete stays local.
 - **Origin death / re-homing.** With owner-transfer-to-foreign forbidden (Decision 2), the origin is
   fixed; if it dies the group goes read-only (members retain whatever they have pulled) until it
   returns. Re-homing to another server is explicitly out of scope — it would require a trust transfer

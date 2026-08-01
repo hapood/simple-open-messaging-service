@@ -56,6 +56,10 @@ import {
 } from '../common/message-entity.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../shared/text-message-content.js';
 
 @ApiTags('message')
 @Controller()
@@ -108,16 +112,30 @@ export class MessageController {
     } else {
       await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
     }
-    // Membership is resolved by ThreadAccessGuard (throws THREAD_NOT_FOUND for non-participants);
-    // req.threadAccess.participant is the caller's row. A missing/empty content string is already
-    // rejected by SendMessageDto's @IsNotEmpty/@MaxLength via ValidationPipe (HTTP 200 + code 10000);
-    // this check only catches whitespace-only bodies (business code MESSAGE_EMPTY).
-    if (!dto.content?.trim()) {
-      throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
-    }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
     if (contentType === ContentType.PURE_TEXT) {
-      dto.content = await this.canonicalizeMentions(req, dto.content);
+      const textContent = parseTextMessageContent(dto.content);
+      if (!textContent) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'invalid text message content',
+        );
+      }
+      if (!textContent.text.trim()) {
+        throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
+      }
+      if (textContent.text.length > 5000) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'text must be at most 5000 characters',
+        );
+      }
+      dto.content = stringifyTextMessageContent({
+        text: await this.canonicalizeMentions(req, textContent.text),
+        ...(textContent.quote ? { quote: { seq: textContent.quote.seq } } : {}),
+      });
+    } else if (!dto.content?.trim()) {
+      throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
     }
     // Media content (FILE/VIDEO/AUDIO) is a server-trust contract: the client only forwards what
     // the matching POST /upload/* route returned. parse{File,Video,Audio}Content reject any non-upload
@@ -173,12 +191,26 @@ export class MessageController {
         );
       }
     }
+    const quoteVisibility: {
+      clearedAfter?: Date | null;
+      hideCreatorIds?: number[];
+    } = { clearedAfter: req.threadAccess.participant.clearedAt };
+    const hasQuote =
+      contentType === ContentType.PURE_TEXT &&
+      parseTextMessageContent(dto.content)?.quote !== undefined;
+    if (hasQuote && req.threadAccess.threadType === 'P2P') {
+      const blocked = await this.userBlockService.blockedByMe(req.user.userId);
+      if (blocked.size > 0) quoteVisibility.hideCreatorIds = [...blocked];
+    }
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
       dto.content,
       contentType,
       dto.clientMessageId,
+      undefined,
+      undefined,
+      quoteVisibility,
     );
     // Fire-and-forget: the response confirms PERSISTENCE (the row is committed above); recipient
     // fan-out (SSE + push + notif + federation hint) runs off the request critical path. The client

@@ -33,22 +33,42 @@ describe('NotificationActionService.handleAction', () => {
     const sent = { threadId: 1, seq: 9, content: 'hi' };
     writeMsgToThread.mockResolvedValue(sent);
 
-    await svc.handleAction(1, { tag: 'soms-msg-1', actionId: 'reply', threadId: 1, replyText: '  hi  ' });
+    await svc.handleAction(1, {
+      tag: 'soms-msg-1',
+      actionId: 'reply',
+      threadId: 1,
+      replyText: '  hi  ',
+    });
 
-    expect(writeMsgToThread).toHaveBeenCalledWith(1, 1, 'hi', 'PURE_TEXT'); // trimmed
+    expect(writeMsgToThread).toHaveBeenCalledWith(
+      1,
+      1,
+      JSON.stringify({ text: 'hi' }),
+      'PURE_TEXT',
+    ); // trimmed + canonical text envelope
     expect(dispatch).toHaveBeenCalledWith(sent);
   });
 
   it('reply: refuses a non-member (no write)', async () => {
     findParticipant.mockResolvedValue(null);
-    await svc.handleAction(1, { tag: 'soms-msg-1', actionId: 'reply', threadId: 1, replyText: 'hi' });
+    await svc.handleAction(1, {
+      tag: 'soms-msg-1',
+      actionId: 'reply',
+      threadId: 1,
+      replyText: 'hi',
+    });
     expect(writeMsgToThread).not.toHaveBeenCalled();
   });
 
   it('reply: over-quota is a silent no-op (the user retries in-app)', async () => {
     findParticipant.mockResolvedValue({ leftAt: null });
     tryTickLocal.mockResolvedValue({ exceeded: true });
-    await svc.handleAction(1, { tag: 'soms-msg-1', actionId: 'reply', threadId: 1, replyText: 'hi' });
+    await svc.handleAction(1, {
+      tag: 'soms-msg-1',
+      actionId: 'reply',
+      threadId: 1,
+      replyText: 'hi',
+    });
     expect(writeMsgToThread).not.toHaveBeenCalled();
   });
 
@@ -63,7 +83,12 @@ describe('NotificationActionService.handleAction', () => {
   it('never throws — a failure is swallowed (best-effort)', async () => {
     findParticipant.mockRejectedValue(new Error('db down'));
     await expect(
-      svc.handleAction(1, { tag: 'soms-msg-1', actionId: 'reply', threadId: 1, replyText: 'hi' }),
+      svc.handleAction(1, {
+        tag: 'soms-msg-1',
+        actionId: 'reply',
+        threadId: 1,
+        replyText: 'hi',
+      }),
     ).resolves.toBeUndefined();
   });
 });

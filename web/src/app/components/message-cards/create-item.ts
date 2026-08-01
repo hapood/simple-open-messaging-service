@@ -105,12 +105,13 @@ export function createMsgCbElement(
   onCancel?: (clientMessageId: string) => void,
   unreadDividerLabel?: string,
   onInteraction?: (
-    event: 'activate' | 'contextmenu',
+    intent: 'select' | 'open-menu',
     item: CbItem<ChatItemData>,
     pointer?: { x: number; y: number },
     memberId?: number,
   ) => void,
   onOpenForward?: (bundleId: string) => void,
+  onQuoteJump?: (seq: number) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -223,6 +224,17 @@ export function createMsgCbElement(
     let longPressTimer: ReturnType<typeof setTimeout> | undefined;
     const pressGesture = new MessagePressGesture();
     let pointerStart: { x: number; y: number } | undefined;
+    let pressedMemberId: number | undefined;
+    const mediaMemberIdAt = (
+      target: EventTarget | null,
+    ): number | undefined => {
+      if ((interactionItem.ids?.length ?? 0) < 2) return undefined;
+      const cell = (target as Element | null)?.closest<HTMLElement>(
+        '.msg-media-cell[data-media-message-id]',
+      );
+      const memberId = cell ? Number(cell.dataset['mediaMessageId']) : NaN;
+      return Number.isFinite(memberId) ? memberId : undefined;
+    };
     const clearPressVisual = (): void => {
       if (longPressTimer !== undefined) clearTimeout(longPressTimer);
       longPressTimer = undefined;
@@ -236,12 +248,18 @@ export function createMsgCbElement(
         return;
       }
       pointerStart = { x: event.clientX, y: event.clientY };
+      pressedMemberId = mediaMemberIdAt(event.target);
       el.el.classList.add('cb-message--pressing');
       if (event.pointerType === 'mouse') return;
       longPressTimer = setTimeout(() => {
         longPressTimer = undefined;
         if (pressGesture.commitLongPress())
-          onInteraction('activate', interactionItem);
+          onInteraction(
+            'open-menu',
+            interactionItem,
+            pointerStart,
+            pressedMemberId,
+          );
       }, 500);
     };
     const onPointerMove = (event: PointerEvent): void => {
@@ -276,12 +294,7 @@ export function createMsgCbElement(
           (interactionItem.ids?.length ?? 0) > 1 && cell
             ? Number(cell.dataset['mediaMessageId'])
             : undefined;
-        onInteraction(
-          'activate',
-          interactionItem,
-          undefined,
-          Number.isFinite(memberId) ? memberId : undefined,
-        );
+        onInteraction('select', interactionItem, undefined, memberId);
       }
     };
     const onContextMenu = (event: MouseEvent): void => {
@@ -292,10 +305,12 @@ export function createMsgCbElement(
         event.stopPropagation();
         return;
       }
-      onInteraction('contextmenu', interactionItem, {
-        x: event.clientX,
-        y: event.clientY,
-      });
+      onInteraction(
+        'open-menu',
+        interactionItem,
+        { x: event.clientX, y: event.clientY },
+        mediaMemberIdAt(event.target),
+      );
     };
     el.el.addEventListener('pointerdown', onPointerDown);
     el.el.addEventListener('pointerup', onPointerEnd);
@@ -325,6 +340,12 @@ export function createMsgCbElement(
       base();
     };
   };
+  if (comp === TextRowComponent && onQuoteJump) {
+    const sub = (ref.instance as TextRowComponent).quoteJump.subscribe(
+      onQuoteJump,
+    );
+    wrapDestroy(() => sub.unsubscribe());
+  }
   if (onRetry) {
     // The row's retry output is a click SIGNAL only (its emitted value is the numeric msgId, which for a failed
     // optimistic bubble is a placeholder — not the correlation key). The kernel reconciles retries by the stable

@@ -1,6 +1,39 @@
 // Text message row: reuses only the shared rules (msg-row/avatar/col/name/bubble/time/tail).
 @use '../row-base' as *;
 
+.msg-quote {
+  display: grid;
+  width: 100%;
+  margin: 0 0 5px;
+  padding: 6px 8px;
+  border: 0;
+  border-left: 3px solid var(--app-primary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--app-primary) 8%, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.msg-quote:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+.msg-quote strong,
+.msg-quote span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-quote strong {
+  color: var(--app-primary);
+  font-size: 12px;
+}
+.msg-quote span {
+  font-size: 12px;
+  opacity: 0.78;
+}
+
 .msg-mention {
   display: inline;
   padding: 1px 4px;
@@ -36,7 +69,8 @@
 }
 
 @keyframes mention-me-visible {
-  0%, 38% {
+  0%,
+  38% {
     background: #fff7ed;
     box-shadow:
       0 0 0 3px #fb923c,
@@ -48,7 +82,8 @@
 }
 
 @keyframes mention-all-visible {
-  0%, 38% {
+  0%,
+  38% {
     background: #fff1f2;
     box-shadow:
       0 0 0 3px #fb7185,

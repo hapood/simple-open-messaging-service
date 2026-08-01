@@ -49,6 +49,10 @@ import {
 import { MEDIA_STATUS } from '../common/media-status.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../shared/text-message-content.js';
 
 /**
  * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
@@ -77,6 +81,11 @@ const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export interface S2SAddress {
   account: string;
   domain: string;
+}
+
+export interface S2SQuoteTarget {
+  creator: S2SAddress;
+  originSeq: number;
 }
 
 /**
@@ -2151,13 +2160,16 @@ export class FederationService implements OnModuleDestroy {
     });
     const hasMore = rows.length > take;
     const page = hasMore ? rows.slice(0, take) : rows;
+    const quoteTargets = await this.quoteTargetsForWire(threadId, page);
     const messages = await Promise.all(
       page.map(async (m) => ({
+        seq: m.seq,
         originSeq: m.originSeq ?? 0,
         contentType: m.contentType,
         // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
         // the bytes to render. Non-LINK is a no-op pass-through.
         content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
     );
@@ -2196,11 +2208,14 @@ export class FederationService implements OnModuleDestroy {
     const hasMore = rows.length > take;
     // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
+    const quoteTargets = await this.quoteTargetsForWire(threadId, batch);
     const messages = await Promise.all(
       batch.map(async (m) => ({
+        seq: m.seq,
         originSeq: m.originSeq ?? 0,
         contentType: m.contentType,
         content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
     );
@@ -2216,6 +2231,54 @@ export class FederationService implements OnModuleDestroy {
    *  matching against wire `fromDomain`. */
   private effectiveDomain(u: { isForeigner: boolean; domain: string }): string {
     return u.isForeigner ? u.domain : this.config.domain;
+  }
+
+  /** Convert local quote seqs into stable author+originSeq coordinates for S2S only. */
+  private async quoteTargetsForWire(
+    threadId: number,
+    messages: Array<{ seq: number; contentType: ContentType; content: string }>,
+  ): Promise<Map<number, S2SQuoteTarget>> {
+    const refs = new Map<number, number>();
+    for (const message of messages) {
+      if (message.contentType !== ContentType.PURE_TEXT) continue;
+      const quoteSeq = parseTextMessageContent(message.content)?.quote?.seq;
+      if (quoteSeq !== undefined) refs.set(message.seq, quoteSeq);
+    }
+    if (refs.size === 0) return new Map();
+    const targets = await this.prisma.message.findMany({
+      where: { threadId, seq: { in: [...new Set(refs.values())] } },
+      include: {
+        creatorItem: {
+          select: { account: true, domain: true, isForeigner: true },
+        },
+      },
+    });
+    const bySeq = new Map(targets.map((target) => [target.seq, target]));
+    const result = new Map<number, S2SQuoteTarget>();
+    for (const [messageSeq, targetSeq] of refs) {
+      const target = bySeq.get(targetSeq);
+      if (!target || target.originSeq === null) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'quoted message has no federated coordinate',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      result.set(messageSeq, {
+        creator: {
+          account: target.creatorItem.account,
+          domain: this.effectiveDomain(target.creatorItem),
+        },
+        originSeq: target.originSeq,
+      });
+    }
+    return result;
+  }
+
+  private quoteTargetField(target: S2SQuoteTarget | undefined): {
+    quoteTarget?: S2SQuoteTarget;
+  } {
+    return target ? { quoteTarget: target } : {};
   }
 
   /**
@@ -2360,7 +2423,9 @@ export class FederationService implements OnModuleDestroy {
       },
     });
     const hasMore = rows.length > take;
-    const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
+    const page = hasMore ? rows.slice(0, take) : rows;
+    const quoteTargets = await this.quoteTargetsForWire(threadId, page);
+    const messages = page.map((m) => ({
       seq: m.seq, // origin thread seq — the mirror advances pullUntil to this, page-by-page
       originSeq: m.originSeq ?? 0,
       creator: {
@@ -2369,6 +2434,7 @@ export class FederationService implements OnModuleDestroy {
       },
       contentType: m.contentType,
       content: m.content,
+      ...this.quoteTargetField(quoteTargets.get(m.seq)),
       ts: m.createdAt.getTime(),
     }));
     // latestSeq = the highest seq in THIS batch (the cursor the receiver lands on after storing it), NOT
@@ -2411,13 +2477,16 @@ export class FederationService implements OnModuleDestroy {
     });
     const hasMore = rows.length > take;
     const page = hasMore ? rows.slice(0, take) : rows;
+    const quoteTargets = await this.quoteTargetsForWire(threadId, page);
     const messages = await Promise.all(
       page.map(async (m) => ({
+        seq: m.seq,
         originSeq: m.originSeq ?? 0,
         contentType: m.contentType,
         // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
         // the bytes to render. Non-LINK is a no-op pass-through.
         content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
     );
@@ -2464,6 +2533,7 @@ export class FederationService implements OnModuleDestroy {
     const hasMore = rows.length > take;
     // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
+    const quoteTargets = await this.quoteTargetsForWire(threadId, batch);
     const messages = batch.map((m) => ({
       seq: m.seq,
       originSeq: m.originSeq ?? 0,
@@ -2473,6 +2543,7 @@ export class FederationService implements OnModuleDestroy {
       },
       contentType: m.contentType,
       content: m.content,
+      ...this.quoteTargetField(quoteTargets.get(m.seq)),
       ts: m.createdAt.getTime(),
     }));
     // latestSeq = the NEWEST seq in this batch (mirrors the forward leg's batch cursor); -1 when empty.
@@ -2519,11 +2590,14 @@ export class FederationService implements OnModuleDestroy {
     });
     const hasMore = rows.length > take;
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
+    const quoteTargets = await this.quoteTargetsForWire(threadId, batch);
     const messages = await Promise.all(
       batch.map(async (m) => ({
+        seq: m.seq,
         originSeq: m.originSeq ?? 0,
         contentType: m.contentType,
         content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
     );
@@ -2847,10 +2921,12 @@ export class FederationService implements OnModuleDestroy {
         const res = await this.withTrustedPeer(domain, () =>
           this.getSigned<{
             messages: Array<{
+              seq: number;
               originSeq: number;
               contentType: string;
               content: string;
               ts: number;
+              quoteTarget?: S2SQuoteTarget;
             }>;
             latestSeq: number;
             hasMore: boolean;
@@ -2996,6 +3072,7 @@ export class FederationService implements OnModuleDestroy {
             contentType: string;
             content: string;
             ts: number;
+            quoteTarget?: S2SQuoteTarget;
           }>;
           latestSeq: number;
           hasMore: boolean;
@@ -3065,10 +3142,12 @@ export class FederationService implements OnModuleDestroy {
         const res = await this.withTrustedPeer(domain, () =>
           this.getSigned<{
             messages?: Array<{
+              seq: number;
               originSeq: number;
               contentType: string;
               content: string;
               ts: number;
+              quoteTarget?: S2SQuoteTarget;
             }>;
             latestSeq?: number;
             hasMore?: boolean;
@@ -3141,7 +3220,13 @@ export class FederationService implements OnModuleDestroy {
     creatorId: number,
     fetchedFromDomain: string,
     recipients: number[],
-    m: { originSeq: number; contentType: string; content: string; ts: number },
+    m: {
+      originSeq: number;
+      contentType: string;
+      content: string;
+      ts: number;
+      quoteTarget?: S2SQuoteTarget;
+    },
   ): Promise<Message | null> {
     // LINK thumbnails arrive inlined (base64) on the wire; decode + persist content-addressed, keeping
     // only the digest in our DB (mirrors the local send path's storage). Other types pass through.
@@ -3149,6 +3234,20 @@ export class FederationService implements OnModuleDestroy {
       m.contentType,
       m.content,
     );
+    const incomingText =
+      m.contentType === ContentType.PURE_TEXT
+        ? parseTextMessageContent(storedContent)
+        : null;
+    if (
+      m.contentType === ContentType.PURE_TEXT &&
+      (!incomingText || Boolean(incomingText.quote) !== Boolean(m.quoteTarget))
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'invalid federated text quote',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     let remoteForwardBundleId: string | undefined;
     let forwardClosure: ForwardWireClosure | undefined;
     let localForwardBundleId: string | undefined;
@@ -3220,6 +3319,17 @@ export class FederationService implements OnModuleDestroy {
           data: { curSeq: { increment: 1 } },
           select: { curSeq: true },
         });
+        if (incomingText?.quote && m.quoteTarget) {
+          const localQuoteSeq = await this.resolveLocalQuoteSeq(
+            tx,
+            threadId,
+            m.quoteTarget,
+          );
+          storedContent = stringifyTextMessageContent({
+            text: incomingText.text,
+            quote: { seq: localQuoteSeq },
+          });
+        }
         const msg = await tx.message.create({
           data: {
             contentType: m.contentType as ContentType,
@@ -3314,6 +3424,45 @@ export class FederationService implements OnModuleDestroy {
       );
     }
     return created;
+  }
+
+  private async resolveLocalQuoteSeq(
+    tx: Prisma.TransactionClient,
+    threadId: number,
+    target: S2SQuoteTarget,
+  ): Promise<number> {
+    const candidates = await tx.user.findMany({
+      where: { account: normalizeAccount(target.creator.account) },
+      select: { id: true, domain: true, isForeigner: true },
+    });
+    const creator = candidates.find(
+      (candidate) => this.effectiveDomain(candidate) === target.creator.domain,
+    );
+    if (!creator) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'quoted message creator is unknown',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const message = await tx.message.findUnique({
+      where: {
+        threadId_creator_originSeq: {
+          threadId,
+          creator: creator.id,
+          originSeq: target.originSeq,
+        },
+      },
+      select: { seq: true },
+    });
+    if (!message) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'quoted message is missing from the ordered pull stream',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return message.seq;
   }
 
   private async localizeForwardAssets(

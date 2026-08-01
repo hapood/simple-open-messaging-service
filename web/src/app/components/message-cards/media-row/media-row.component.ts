@@ -105,13 +105,10 @@ export class MediaRowComponent {
   );
   readonly totalH = computed(() => this.layout().totalH);
   readonly containerW = computed(() => this.layout().containerW);
-  readonly moreCount = computed(() => this.layout().moreCount);
 
   /** Per-cell render data. `kind` drives the inner content branch (background-image / <video> / placeholder). */
   readonly cells = computed(() => {
     const imgs = this.data().images ?? [];
-    const moreIdx =
-      this.layout().moreCount > 0 ? this.layout().rects.length - 1 : -1;
     const failed = this.unplayableVideos();
     const thr = this.threshold();
     this.downloads.tasks();
@@ -141,7 +138,6 @@ export class MediaRowComponent {
               : assetUrl(''),
         thumbnail,
         duration: m?.duration,
-        isMore: i === moreIdx,
         unplayable: kind === 'video' && failed.has(i),
         // Federated media localize status is message-level (all cells share it). Non-media defaults ready.
         status: this.data().mediaStatus ?? MEDIA_STATUS.READY,
@@ -157,45 +153,6 @@ export class MediaRowComponent {
         sizeText: formatBytes(size),
       };
     });
-  });
-
-  /** The +N tile replaces the last visible thumbnail, so aggregate every represented media item from
-   * that cell onward. Each file has equal weight; byte sizes deliberately do not skew the album rail. */
-  readonly moreTransfer = computed(() => {
-    this.downloads.tasks();
-    const images = this.data().images ?? [];
-    const shown = this.layout().rects.length;
-    if (this.layout().moreCount === 0 || shown === 0)
-      return { active: false, progress: 0, completed: 0, total: 0, failed: 0 };
-    const hidden = images.slice(shown - 1);
-    let completed = 0;
-    let partial = 0;
-    let failed = 0;
-    let active = false;
-    for (const media of hidden) {
-      const task = this.downloads.task(media);
-      if (!task) continue;
-      if (
-        task.status === 'loaded' ||
-        task.status === 'saving' ||
-        task.status === 'saved'
-      ) {
-        completed++;
-        partial++;
-      } else if (task.status === 'downloading') {
-        active = true;
-        partial += task.total > 0 ? Math.min(1, task.loaded / task.total) : 0;
-      } else if (task.status === 'failed') {
-        failed++;
-      }
-    }
-    return {
-      active: active || completed > 0 || failed > 0,
-      progress: hidden.length > 0 ? (partial / hidden.length) * 100 : 0,
-      completed,
-      total: hidden.length,
-      failed,
-    };
   });
 
   /** Indices of video cells whose <video> failed to decode (unsupported codec) → gray placeholder. */
@@ -245,7 +202,7 @@ export class MediaRowComponent {
       if (
         cell.status === MEDIA_STATUS.READY &&
         media &&
-        await this.nativeVideo.open(media.src)
+        (await this.nativeVideo.open(media.src))
       )
         return;
       if (cell.status === MEDIA_STATUS.READY)

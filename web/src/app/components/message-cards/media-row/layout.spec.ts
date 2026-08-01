@@ -9,7 +9,8 @@ import {
 } from './layout';
 
 describe('layoutAlbum', () => {
-  const mkFixed = (n: number, w = 400, h = 300) => Array.from({ length: n }, () => ({ w, h }));
+  const mkFixed = (n: number, w = 400, h = 300) =>
+    Array.from({ length: n }, () => ({ w, h }));
   const mkMixed = (wh: [number, number][]) => wh.map(([w, h]) => ({ w, h }));
 
   const MIN_H = ALBUM_W * ALBUM_MIN_ROW_H_RATIO; // 98
@@ -28,14 +29,18 @@ describe('layoutAlbum', () => {
       expect(r.wPct).toBeGreaterThan(0);
     }
     // Last row bottom aligns with totalH (no 1px gap)
-    expect(rects[rects.length - 1].yPx + rects[rects.length - 1].hPx).toBe(totalH);
+    expect(rects[rects.length - 1].yPx + rects[rects.length - 1].hPx).toBe(
+      totalH,
+    );
     // Pairwise non-overlapping
     for (let i = 0; i < rects.length; i++) {
       for (let j = i + 1; j < rects.length; j++) {
         const a = rects[i];
         const b = rects[j];
-        const overlapX = a.xPct < b.xPct + b.wPct - 1e-6 && b.xPct < a.xPct + a.wPct - 1e-6;
-        const overlapY = a.yPx < b.yPx + b.hPx - 1e-6 && b.yPx < a.yPx + a.hPx - 1e-6;
+        const overlapX =
+          a.xPct < b.xPct + b.wPct - 1e-6 && b.xPct < a.xPct + a.wPct - 1e-6;
+        const overlapY =
+          a.yPx < b.yPx + b.hPx - 1e-6 && b.yPx < a.yPx + a.hPx - 1e-6;
         expect(overlapX && overlapY).toBe(false);
       }
     }
@@ -43,10 +48,9 @@ describe('layoutAlbum', () => {
   };
 
   it('n=1 single 4:3: full width, totalH=210 (normal regime, full width)', () => {
-    const { rects, totalH, moreCount, containerW } = layoutAlbum(mkFixed(1));
+    const { rects, totalH, containerW } = layoutAlbum(mkFixed(1));
     expect(rects.length).toBe(1);
     expect(totalH).toBe(210); // rawH = 280*0.75 = 210 ∈ [98,240] → justified full width
-    expect(moreCount).toBe(0);
     expect(rects[0]).toEqual({ xPct: 0, yPx: 0, wPct: 100, hPx: 210 });
     expect(containerW).toBe(280); // normal regime keeps full baseW
   });
@@ -84,13 +88,11 @@ describe('layoutAlbum', () => {
     expect(layoutAlbum(mkFixed(6)).rects.length).toBe(6);
   });
 
-  it('>6 images: rects truncated to 6, moreCount = N-6', () => {
+  it('defensively truncates malformed albums above the six-item domain cap', () => {
     const r8 = layoutAlbum(mkFixed(8));
     expect(r8.rects.length).toBe(6);
-    expect(r8.moreCount).toBe(2);
     const r20 = layoutAlbum(mkFixed(20));
     expect(r20.rects.length).toBe(6);
-    expect(r20.moreCount).toBe(14);
   });
 
   it('non-overlapping/in-bounds/last-row-aligned invariants (n=1..6, 4:3)', () => {
@@ -99,7 +101,12 @@ describe('layoutAlbum', () => {
 
   it('mixed aspect ratio row (justified): two cells equal height, landscape cell width > portrait cell width', () => {
     // 16:9 landscape (r=0.5625) + 9:16 portrait (r=1.777...): rawH≈136 ∈ [112,320] → justified
-    const { rects } = assertInvariants(mkMixed([[16, 9], [9, 16]]));
+    const { rects } = assertInvariants(
+      mkMixed([
+        [16, 9],
+        [9, 16],
+      ]),
+    );
     expect(rects.length).toBe(2);
     expect(rects[0].hPx).toBe(rects[1].hPx); // equal height (same row)
     expect(rects[0].wPct).toBeGreaterThan(rects[1].wPct); // landscape wide, portrait narrow
@@ -107,7 +114,12 @@ describe('layoutAlbum', () => {
 
   it('all-portrait two-image row: row height clamped by maxH, does not blow up', () => {
     // Two 3:16 portrait (r=5.33): rawH≈847 > 320 → clamp 320
-    const { rects, totalH } = assertInvariants(mkMixed([[3, 16], [3, 16]]));
+    const { rects, totalH } = assertInvariants(
+      mkMixed([
+        [3, 16],
+        [3, 16],
+      ]),
+    );
     expect(rects[0].hPx).toBeLessThanOrEqual(MAX_H);
     expect(totalH).toBeLessThanOrEqual(MAX_H);
     expect(rects[1].xPct + rects[1].wPct).toBeCloseTo(100, 5);
@@ -150,8 +162,15 @@ describe('layoutAlbum', () => {
       mkMixed([[-1, 200]]),
       mkMixed([[NaN, 300]]),
       mkMixed([[400, NaN]]),
-      mkMixed([[0, 0], [400, 300]]), // a bad image mixed into the album
-      mkMixed([[400, 300], [0, 0], [9, 16]]),
+      mkMixed([
+        [0, 0],
+        [400, 300],
+      ]), // a bad image mixed into the album
+      mkMixed([
+        [400, 300],
+        [0, 0],
+        [9, 16],
+      ]),
     ];
     for (const imgs of cases) {
       const { rects, totalH } = layoutAlbum(imgs);
@@ -168,10 +187,9 @@ describe('layoutAlbum', () => {
     expect(layoutAlbum(mkMixed([[0, 0]])).totalH).toBe(210);
   });
 
-  it('empty array: returns empty rects, totalH=0, moreCount=0', () => {
-    const { rects, totalH, moreCount } = layoutAlbum([]);
+  it('empty array: returns empty rects and totalH=0', () => {
+    const { rects, totalH } = layoutAlbum([]);
     expect(rects.length).toBe(0);
     expect(totalH).toBe(0);
-    expect(moreCount).toBe(0);
   });
 });

@@ -286,6 +286,20 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Keep the exact album cell that owns the context menu visibly anchored. Paint-only styles preserve row measurements. */
+.msg-media-cell.msg-media-cell--context-active {
+  box-shadow: inset 0 0 0 3px var(--app-brand);
+}
+
+.msg-media-cell.msg-media-cell--context-active::after {
+  content: '';
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  background: color-mix(in srgb, var(--app-brand) 16%, transparent);
+  pointer-events: none;
+}
+
 // Shared CDK surface policy for transient modal overlays (file detail / invite detail). The overlay
 // service owns backdrop dismissal and focus lifecycle; hosted components render only their card/content.
 .cdk-overlay-backdrop.soms-overlay-backdrop {

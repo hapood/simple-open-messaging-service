@@ -352,6 +352,7 @@
     "nestedLevel": "第 {{level}} 层"
   },
   "chat": {
+    "messageNotFound": "消息不存在",
     "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
     "messageListAria": "对话消息",
@@ -369,6 +370,7 @@
       "copied": "已复制 {{count}} 条消息",
       "copyFailed": "复制失败",
       "forward": "转发",
+      "quote": "引用",
       "multiSelect": "多选"
     },
     "youPrefix": "你：{{text}}",

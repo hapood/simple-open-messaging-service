@@ -306,38 +306,6 @@ app-audio-player {
   }
 }
 
-// "+N" more badge (album >6: last cell covered with a translucent black overlay + a centered number).
-.msg-cell-more::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-}
-.msg-media-more {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 22px;
-  font-weight: 600;
-}
-
-.msg-media-more-count {
-  position: absolute;
-  z-index: 2;
-  left: 50%;
-  top: calc(50% + 22px);
-  transform: translateX(-50%);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 11px;
-  line-height: 14px;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
 // Passive download progress: message cards never own cancellation. The same task remains actionable in
 // the fullscreen viewer/global transfer surface; the row only paints its current state.
 .msg-media-progress {
@@ -358,13 +326,6 @@ app-audio-player {
     background: var(--app-brand);
     transition: width 120ms linear;
   }
-}
-
-.msg-media-progress--aggregate {
-  left: 8px;
-  right: 8px;
-  bottom: 8px;
-  border-radius: 3px;
 }
 
 .msg-media-progress--indeterminate > span {

@@ -79,7 +79,6 @@ import {
 } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
-import { InputDeviceService } from '../../services/input-device.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
@@ -110,6 +109,8 @@ import {
   selectedMessagesCopyText,
   type MessageCopyLabels,
 } from './message-copy';
+import { positionMessageContextMenu } from './message-context-menu-position';
+import { stringifyTextMessageContent } from '../../../../../shared/text-message-content';
 import {
   NativeComposerService,
   type NativeComposerEvent,
@@ -161,6 +162,11 @@ type PreparedWebAttachment =
     };
 
 let nativeComposerContextSequence = Date.now() * 1000;
+const MESSAGE_CONTEXT_MENU_WIDTH = 192;
+const MESSAGE_CONTEXT_MENU_ITEM_HEIGHT = 40;
+const MESSAGE_CONTEXT_MENU_CHROME_HEIGHT = 14;
+const MESSAGE_CONTEXT_MENU_ITEM_COUNT = 4;
+const MESSAGE_CONTEXT_MENU_INSET = 8;
 
 /**
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
@@ -231,7 +237,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly profileRepo = inject(ProfileRepository);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
-  readonly inputDevice = inject(InputDeviceService);
   private readonly galleryViewer = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
   private readonly nav = inject(NavStateMachineService);
@@ -303,10 +308,16 @@ export class MessageThreadComponent implements OnDestroy {
     CbItem<ChatItemData>
   >();
   readonly messageContextMenu = signal<{
-    item: CbItem<ChatItemData>;
+    sourceItem: CbItem<ChatItemData>;
+    targetItem: CbItem<ChatItemData>;
+    targetSeq: number;
+    memberId?: number;
     x: number;
     y: number;
   } | null>(null);
+  private lastMessageScrollTop = 0;
+  private contextMenuScrollTop = 0;
+  readonly composingQuote = signal<ChatMsgData['quote'] | null>(null);
 
   /** True when the kernel's mounted window is empty — the thread is open but has no messages (a fresh P2P
    *  friendship, a newly-created group, or after clear-history). Maintained from onScroll's `mounted` count:
@@ -995,6 +1006,7 @@ export class MessageThreadComponent implements OnDestroy {
       (event, selectedItem, pointer, memberId) =>
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
       (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
+      (seq) => this.onSearchJump(seq),
     );
     const selection = this.messageSelectionState(item);
     rendered.el.classList.toggle(
@@ -1006,6 +1018,13 @@ export class MessageThreadComponent implements OnDestroy {
       'cb-message--partially-selected',
       selection === 'some',
     );
+    const contextId = this.messageContextMenu()?.targetSeq;
+    const memberIds = this.messageMemberIds(item);
+    const hasContext = contextId !== undefined && memberIds.includes(contextId);
+    rendered.el.classList.toggle(
+      'cb-message--context-active',
+      hasContext && memberIds.length === 1,
+    );
     rendered.el.setAttribute('aria-selected', String(selection === 'all'));
     rendered.el
       .querySelectorAll<HTMLElement>('[data-media-message-id]')
@@ -1015,41 +1034,66 @@ export class MessageThreadComponent implements OnDestroy {
           'msg-media-cell--selected',
           this.selectionMode() && this.selectedMessageIds().has(memberId),
         );
+        cell.classList.toggle(
+          'msg-media-cell--context-active',
+          hasContext && memberId === contextId,
+        );
       });
     return rendered;
   }
 
   private onMessageInteraction(
-    event: 'activate' | 'contextmenu',
+    intent: 'select' | 'open-menu',
     item: CbItem<ChatItemData>,
     pointer?: { x: number; y: number },
     memberId?: number,
   ): void {
-    if (event === 'contextmenu' && this.inputDevice.hasPhysicalKeyboard()) {
-      const menuWidth = 192;
-      const menuHeight = 132;
-      const viewportInset = 8;
+    if (intent === 'open-menu') {
+      const menuHeight =
+        MESSAGE_CONTEXT_MENU_ITEM_COUNT * MESSAGE_CONTEXT_MENU_ITEM_HEIGHT +
+        MESSAGE_CONTEXT_MENU_CHROME_HEIGHT;
+      const contextItem =
+        memberId === undefined ? item : this.albumMemberItem(item, memberId);
+      const visualViewport = window.visualViewport;
+      const messageViewport =
+        this.viewportRef()?.nativeElement.getBoundingClientRect();
+      const bounds = {
+        left: Math.max(
+          visualViewport?.offsetLeft ?? 0,
+          messageViewport?.left ?? 0,
+        ),
+        // Header space is valid fallback room; only the screen edge and composer are forbidden.
+        top: visualViewport?.offsetTop ?? 0,
+        right: Math.min(
+          (visualViewport?.offsetLeft ?? 0) +
+            (visualViewport?.width ?? window.innerWidth),
+          messageViewport?.right ?? window.innerWidth,
+        ),
+        bottom: Math.min(
+          (visualViewport?.offsetTop ?? 0) +
+            (visualViewport?.height ?? window.innerHeight),
+          messageViewport?.bottom ?? window.innerHeight,
+        ),
+      };
+      const position = positionMessageContextMenu(
+        pointer ?? { x: bounds.left, y: bounds.top },
+        bounds,
+        { width: MESSAGE_CONTEXT_MENU_WIDTH, height: menuHeight },
+        MESSAGE_CONTEXT_MENU_INSET,
+      );
       this.messageContextMenu.set({
-        item,
-        x: Math.max(
-          viewportInset,
-          Math.min(
-            pointer?.x ?? viewportInset,
-            window.innerWidth - menuWidth - viewportInset,
-          ),
-        ),
-        y: Math.max(
-          viewportInset,
-          Math.min(
-            pointer?.y ?? viewportInset,
-            window.innerHeight - menuHeight - viewportInset,
-          ),
-        ),
+        sourceItem: item,
+        targetItem: contextItem,
+        targetSeq: contextItem.id,
+        memberId,
+        x: position.x,
+        y: position.y,
       });
+      this.contextMenuScrollTop = this.lastMessageScrollTop;
       this.syncMountedSelectionState();
       return;
     }
-    this.messageContextMenu.set(null);
+    this.closeContextMenu();
     if (!this.selectionMode()) this.selectionMode.set(true);
     if (memberId !== undefined) this.toggleAlbumMemberSelection(item, memberId);
     else this.toggleMessageSelection(item);
@@ -1058,13 +1102,18 @@ export class MessageThreadComponent implements OnDestroy {
   selectContextMessage(): void {
     const context = this.messageContextMenu();
     if (!context) return;
-    this.messageContextMenu.set(null);
+    this.closeContextMenu();
     this.selectionMode.set(true);
-    if (this.messageSelectionState(context.item) !== 'all')
-      this.toggleMessageSelection(context.item);
+    if (this.messageSelectionState(context.targetItem) !== 'all')
+      this.toggleMessageSelection(context.targetItem);
   }
 
   dismissContextMenu(): void {
+    this.closeContextMenu();
+  }
+
+  private closeContextMenu(): void {
+    if (!this.messageContextMenu()) return;
     this.messageContextMenu.set(null);
     this.syncMountedSelectionState();
   }
@@ -1072,12 +1121,27 @@ export class MessageThreadComponent implements OnDestroy {
   async copyContextMessage(): Promise<void> {
     const context = this.messageContextMenu();
     if (!context) return;
-    this.messageContextMenu.set(null);
+    this.closeContextMenu();
     await this.writeMessageClipboard(
-      messageCopyBody(context.item.data, this.messageCopyLabels()),
+      messageCopyBody(context.targetItem.data, this.messageCopyLabels()),
       1,
       false,
     );
+  }
+
+  quoteContextMessage(): void {
+    const context = this.messageContextMenu();
+    if (!context || context.targetSeq < 0) return;
+    const data = context.targetItem.data;
+    this.composingQuote.set({
+      seq: context.targetSeq,
+      preview: `${data.name}：${this.forwardSummary(data)}`.slice(0, 100),
+    });
+    this.closeContextMenu();
+  }
+
+  cancelQuote(): void {
+    this.composingQuote.set(null);
   }
 
   async copySelectedMessages(): Promise<void> {
@@ -1208,8 +1272,8 @@ export class MessageThreadComponent implements OnDestroy {
   openContextForwardDialog(): void {
     const context = this.messageContextMenu();
     if (!context) return;
-    this.messageContextMenu.set(null);
-    this.openForwardDialog([context.item]);
+    this.closeContextMenu();
+    this.openForwardDialog([context.targetItem]);
   }
 
   openSelectedForwardDialog(): void {
@@ -1340,7 +1404,7 @@ export class MessageThreadComponent implements OnDestroy {
   private syncMountedSelectionState(): void {
     const active = this.selectionMode();
     const selected = this.selectedMessageIds();
-    const contextId = this.messageContextMenu()?.item.id;
+    const contextId = this.messageContextMenu()?.targetSeq;
     this.contentRef()
       ?.nativeElement.querySelectorAll<HTMLElement>('[data-message-id]')
       .forEach((host) => {
@@ -1367,7 +1431,12 @@ export class MessageThreadComponent implements OnDestroy {
           'cb-message--partially-selected',
           active && state === 'some',
         );
-        host.classList.toggle('cb-message--context-active', id === contextId);
+        const hasContext =
+          contextId !== undefined && memberIds.includes(contextId);
+        host.classList.toggle(
+          'cb-message--context-active',
+          hasContext && memberIds.length === 1,
+        );
         host.setAttribute('aria-selected', String(active && state === 'all'));
         host
           .querySelectorAll<HTMLElement>('[data-media-message-id]')
@@ -1377,11 +1446,21 @@ export class MessageThreadComponent implements OnDestroy {
               'msg-media-cell--selected',
               active && selected.has(memberId),
             );
+            cell.classList.toggle(
+              'msg-media-cell--context-active',
+              hasContext && memberId === contextId,
+            );
           });
       });
   }
 
   private onScroll(info: CbScrollInfo): void {
+    if (
+      this.messageContextMenu() &&
+      Math.abs(info.scrollTop - this.contextMenuScrollTop) > 0.5
+    )
+      this.closeContextMenu();
+    this.lastMessageScrollTop = info.scrollTop;
     // Drain optimistic sends queued while the newer end was trimmed: noNewer means the mounted tail IS the
     // global newest, so tailAnchorId() is now a safe anchor. Runs before the UI updates below for promptness.
     if (info.noNewer && this.pendingOptimistic.length > 0) {
@@ -1590,6 +1669,8 @@ export class MessageThreadComponent implements OnDestroy {
     );
     item.data.textSegments = rendered.segments;
     item.data.mentionState = rendered.mentionState;
+    item.data.quote = this.composingQuote() ?? undefined;
+    this.composingQuote.set(null);
     this.dispatchPending(item);
     this.dispatchHttpSendText(item);
   }
@@ -1918,7 +1999,10 @@ export class MessageThreadComponent implements OnDestroy {
     firstValueFrom(
       this.msgService.sendMessage({
         threadId: tid,
-        content: item.data.wireText ?? item.data.text,
+        content: stringifyTextMessageContent({
+          text: item.data.wireText ?? item.data.text,
+          ...(item.data.quote ? { quote: { seq: item.data.quote.seq } } : {}),
+        }),
         contentType: 'PURE_TEXT',
         clientMessageId: cid,
       }),
@@ -2513,6 +2597,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.selectionMode.set(false);
     this.selectedMessageIds.set(new Set());
     this.messageContextMenu.set(null);
+    this.composingQuote.set(null);
     this.stableRead.reset();
     this.firstUnreadSeq = null;
     this.unreadBoundaryAbove.set(false);
@@ -2584,8 +2669,11 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Jump the kernel to a search match seq (from the search bar's prev/next). The kernel re-seeds around
    *  an unmounted seq and flashes the row via the existing highlight path. */
-  onSearchJump(id: number): void {
-    this.scroller?.scrollToIndex(id, 'center', true);
+  async onSearchJump(id: number): Promise<void> {
+    const found = await this.scroller?.scrollToIndex(id, 'center', true);
+    if (found === false) {
+      this.toast.warn(this.transloco.translate('chat.messageNotFound'));
+    }
   }
 
   /** Clear-history landed on the server: the now-empty view (filtered by the caller's clearedAt watermark)

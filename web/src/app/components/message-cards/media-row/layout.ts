@@ -49,8 +49,6 @@ export interface AlbumLayout {
   /** Container width (px). For a single media item the bubble narrows to the cell's computed width
    *  (so a 1:1 image is 240px wide, not the full baseW); for an album it is the full baseW. */
   containerW: number;
-  /** When >6 images, the last cell shows a "+moreCount" badge; 0 means none. */
-  moreCount: number;
 }
 
 export const ALBUM_W = 280;
@@ -95,7 +93,12 @@ interface RowCell {
  * Lay out one row of cells (equal height).
  * rawH ∈ [minH,maxH] → justified (ratio preserved, fills, no crop); otherwise clamp the row height + equal widths (cover crop).
  */
-function layoutRow(items: AlbumImageLike[], W: number, gap: number, baseW: number): { cells: RowCell[]; rowH: number } {
+function layoutRow(
+  items: AlbumImageLike[],
+  W: number,
+  gap: number,
+  baseW: number,
+): { cells: RowCell[]; rowH: number } {
   const minH = baseW * ALBUM_MIN_ROW_H_RATIO;
   const maxH = baseW * ALBUM_MAX_ROW_H_RATIO;
   const count = items.length;
@@ -144,9 +147,12 @@ function rowPlan(shown: number): number[] {
   }
 }
 
-export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLayout {
+export function layoutAlbum(
+  images: AlbumImageLike[],
+  baseW = ALBUM_W,
+): AlbumLayout {
   const n = images.length;
-  if (n === 0) return { rects: [], totalH: 0, containerW: baseW, moreCount: 0 };
+  if (n === 0) return { rects: [], totalH: 0, containerW: baseW };
 
   // Audio — a fixed slim horizontal voice bar (play btn + progress + duration), NOT an image aspect.
   // Audio is never album-aggregated (merge-items excludes it), so this is always a single cell. Fixed
@@ -155,17 +161,22 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
   if (n === 1 && images[0].kind === 'audio') {
     const totalH = VOICE_BAR_H;
     // Short clips stay compact; longer clips gain a little waveform room without growing unbounded.
-    const duration = Math.max(0, Number.isFinite(images[0].duration) ? images[0].duration ?? 0 : 0);
+    const duration = Math.max(
+      0,
+      Number.isFinite(images[0].duration) ? (images[0].duration ?? 0) : 0,
+    );
     const widthPx = Math.min(
       baseW,
       VOICE_BAR_MAX_W,
-      Math.max(VOICE_BAR_MIN_W, Math.round(VOICE_BAR_W + Math.min(duration, 52))),
+      Math.max(
+        VOICE_BAR_MIN_W,
+        Math.round(VOICE_BAR_W + Math.min(duration, 52)),
+      ),
     );
     return {
       rects: [{ xPct: 0, wPct: 100, yPx: 0, hPx: totalH }],
       totalH,
       containerW: widthPx,
-      moreCount: 0,
     };
   }
 
@@ -197,7 +208,6 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
       rects: [{ xPct: 0, wPct: 100, yPx: 0, hPx: totalH }],
       totalH,
       containerW: Math.round(widthPx),
-      moreCount: 0,
     };
   }
 
@@ -216,7 +226,12 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
     const yPx = Math.round(topPx);
     const hPx = Math.round(rowH);
     for (const c of cells) {
-      rects.push({ xPct: pct(c.leftPx, baseW), wPct: pct(c.widthPx, baseW), yPx, hPx });
+      rects.push({
+        xPct: pct(c.leftPx, baseW),
+        wPct: pct(c.widthPx, baseW),
+        yPx,
+        hPx,
+      });
     }
     topPx += rowH + gap;
   }
@@ -230,5 +245,5 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
     last.hPx = totalH - last.yPx;
   }
 
-  return { rects, totalH, containerW: baseW, moreCount: n > 6 ? n - 6 : 0 };
+  return { rects, totalH, containerW: baseW };
 }

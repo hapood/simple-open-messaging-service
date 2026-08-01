@@ -25,7 +25,6 @@ import { isDevMode } from '@angular/core';
 
 import type { CbSource } from './cb-source';
 
-
 export interface CbItem<T = unknown> {
   /** Real data id (the msgId from the source). Only a source cursor + read by createItem for data; **takes no part in position arithmetic** (kernel position uses the array index). */
   id: number;
@@ -43,7 +42,7 @@ export interface CbItem<T = unknown> {
    * image's msgId fails to find it (item.id only carries the head) and the viewport ends up empty
    * (jump-to-id bug). Read-only in the kernel; the source returns raw msgs and never sets this.
    */
-  ids?: (number)[];
+  ids?: number[];
   /**
    * Client-generated idempotency UUID for an optimistic send — the correlation key between the in-flight
    * optimistic transient and the confirmed real the server echoes back. Present on BOTH: the optimistic item
@@ -239,18 +238,26 @@ export interface ScrollerApi<T = unknown> {
   scrollToBottom(): void;
   scrollToTop(): void;
   /** Jump to id: if mounted, position directly; if not, reset the window around the id (re-seed) then position. anchor defaults to 'center'. highlight adds a one-shot flash to the target. */
-  scrollToIndex(id: number, anchor?: 'top' | 'center' | 'bottom', highlight?: boolean): void;
+  scrollToIndex(
+    id: number,
+    anchor?: 'top' | 'center' | 'bottom',
+    highlight?: boolean,
+  ): Promise<boolean>;
   /** Insert a single item immediately after the mounted entry representing afterId. No-op (returns false) if afterId
    *  is not currently mounted or a re-seed is in progress. Does NOT trigger balance (no checkpoint load, no trim) —
    *  Plan B only compensates scrollTop for any growth above the viewport so the viewport stays put; Plan A relies on
    *  overflow-anchor. By default the inserted item is transient (viewport-only, not registered with the source: a
    *  debug FAKE insert). Pass {optimistic:true} for a pending send — the entry is marked optimistic (in source.pending,
    *  returned by getNewer; skipped by cursors; protected from trim as part of the atomic optimistic block). */
-  insertAfter(afterId: number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean;
+  insertAfter(
+    afterId: number,
+    item: CbItem<T>,
+    opts?: { optimistic?: boolean },
+  ): boolean;
   /** Remove mounted entries by id — accepts one id or an array. A fake-id, pending-id, real-id, or any album-member id
    *  all resolve to the same mounted entry (album-aware). Each removed entry plays a cb-leave exit animation; the logical
    *  unmount is deferred to animationend. Returns the count of entries scheduled for removal (0 = none mounted). */
-  removeItem(ids: number | (number)[]): number;
+  removeItem(ids: number | number[]): number;
   /** Direct-mount path for live items (incoming messages). Caches via source.pushLive, then mounts the items at the
    *  tail (dedup by id; follows to the bottom if pinned). Production SSE and the playground's incoming-reply path use
    *  this. NOT the optimistic-confirm path — that goes through {@link onMessageSignal} (which pulls via getNewer and
@@ -427,9 +434,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /** Derived phase questions (read-only views over {@link state} — single source of truth, cannot drift). Getters, not
    *  flags, so each access is a FRESH read: the many post-`await` `destroyed` checks stay correct even though TypeScript
    *  (unsoundly) narrows a mutable member across `await`. */
-  private get steady(): boolean { return this.state === 'steady'; }
-  private get filling(): boolean { return this.state === 'filling'; }
-  private get destroyed(): boolean { return this.state === 'destroyed'; }
+  private get steady(): boolean {
+    return this.state === 'steady';
+  }
+  private get filling(): boolean {
+    return this.state === 'filling';
+  }
+  private get destroyed(): boolean {
+    return this.state === 'destroyed';
+  }
   /** Debug switch: turn off the mount checkpoint (balance will not trigger loadOlder/loadNewer). Guarded by isDevMode() inside balance → removed in prod AOT. Default false (checkpoint loads normally). */
   closeCheckpoint = false;
 
@@ -437,7 +450,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private pendingMeasure: Entry<T>[] = [];
 
   private vh = 0;
-  private shifting = false;   // suppresses scroll-direction misdetection + onElHeight compensation caused by programmatic scrollTop writes
+  private shifting = false; // suppresses scroll-direction misdetection + onElHeight compensation caused by programmatic scrollTop writes
   /** Set after a viewport-resize reflow re-pins to bottom. The programmatic pinToBottom write fires an async scroll
    *  event (after `shifting` has already reset synchronously); onNativeScroll consumes this flag once so that scroll
    *  event does not re-arm balance and load/trim at the bottom edge during a viewport shrink (e.g. the soft keyboard
@@ -492,7 +505,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  for the actual height, so the Samsung address-bar inflation of visualViewport.height never reaches the model. */
   private readonly onVisualViewportChange = (): void => {
     if (this.vvRafId || this.destroyed) return;
-    this.vvRafId = requestAnimationFrame(() => { this.vvRafId = 0; this.onViewportResize(); });
+    this.vvRafId = requestAnimationFrame(() => {
+      this.vvRafId = 0;
+      this.onViewportResize();
+    });
   };
 
   constructor(opts: CbOptions<T>) {
@@ -509,12 +525,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.viewportObs = new ResizeObserver(() => this.onViewportResize());
     this.measureVh();
     this.viewportObs.observe(this.viewport);
-    this.viewport.addEventListener('scroll', this.onNativeScroll, { passive: true });
+    this.viewport.addEventListener('scroll', this.onNativeScroll, {
+      passive: true,
+    });
     // visualViewport: the definitive keyboard-show/hide signal (see onVisualViewportChange). The viewport element's
     // own ResizeObserver fires only when its border-box changes, which on mobile keyboards it often does not (or does
     // so unreliably); this listener guarantees the re-pin runs on every visual-viewport change regardless.
-    window.visualViewport?.addEventListener('resize', this.onVisualViewportChange);
-    window.visualViewport?.addEventListener('scroll', this.onVisualViewportChange);
+    window.visualViewport?.addEventListener(
+      'resize',
+      this.onVisualViewportChange,
+    );
+    window.visualViewport?.addEventListener(
+      'scroll',
+      this.onVisualViewportChange,
+    );
     // Tail cap: created once, appended as the only/last child. Every later createEntry inserts before it (see createEntry),
     // so it stays the permanent last child of content across all mounts/re-seeds; removed only in destroy.
     this.tailCapEl = document.createElement('div');
@@ -541,7 +565,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.primeAndReplay();
       return;
     }
-    const batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
+    const batch = await this.source.init(
+      -1,
+      this.cfg.initBatch,
+      0,
+      this.initOpts,
+    );
     // A teardown / re-init can overtake this scroller during the await (the coordinator's teardownKernel/reset→reinit
     // fires while the fetch is in flight, destroy()ing this one and handing the shared content element to a newer
     // scroller). openAround guards this with a gen check after its await; the normal-init path must too — WITHOUT
@@ -590,7 +619,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       !this.noOlder &&
       this.mounted.length > 0
     ) {
-      if (await this.loadOlderIntoFresh(this.gen) === 0) break; // 0 = boundary reached / no data / overtaken by a jump
+      if ((await this.loadOlderIntoFresh(this.gen)) === 0) break; // 0 = boundary reached / no data / overtaken by a jump
       this.pinToBottom(); // a prepend grew content above → re-pin to the new bottom before the next async fetch yields to the painter
     }
     this.scrollToBottom();
@@ -624,15 +653,24 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // optimistic confirm) through onMessageSignal, which inserts reals at their true position and reconciles. Dedup by id
     // (an incoming that raced with a load is already mounted → skip).
     this.source.pushLive(rawItems);
-    if (this.filling) { this.emit(); return; }   // re-seed in progress: cached; mount on scroll-back
-    const remaining = rawItems.filter(it => this.indexOfId(it.id) < 0);
-    if (remaining.length === 0) { this.emit(); return; }
-    if (!this.noNewer) { this.emit(); return; }              // newer end trimmed → cache only (load on scroll-back)
+    if (this.filling) {
+      this.emit();
+      return;
+    } // re-seed in progress: cached; mount on scroll-back
+    const remaining = rawItems.filter((it) => this.indexOfId(it.id) < 0);
+    if (remaining.length === 0) {
+      this.emit();
+      return;
+    }
+    if (!this.noNewer) {
+      this.emit();
+      return;
+    } // newer end trimmed → cache only (load on scroll-back)
     const wasAtBottom = this.isAtBottom();
     const merged = this.mergeBatch(remaining);
-    this.mountBatch(merged, 'newer', true);                  // animate=true: a live message arriving is a "new message appears" event
-    this.noNewer = true;                                     // live items are the global newest
-    if (wasAtBottom) this.scrollToBottom();                  // at global newest → pin to reveal the new message
+    this.mountBatch(merged, 'newer', true); // animate=true: a live message arriving is a "new message appears" event
+    this.noNewer = true; // live items are the global newest
+    if (wasAtBottom) this.scrollToBottom(); // at global newest → pin to reveal the new message
     this.emit();
   }
 
@@ -650,7 +688,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // inflightNewer (orphaning its items off-window) and both flipMove the optimistic tail (leaking `animating`
     // and double-playing the shove). Collapse any overlap into ONE tail pass after the in-flight pass resolves, looping
     // until no further signal arrived during a pass (drains a whole burst, in arrival order, strictly non-overlapping).
-    if (this.signalInFlight) { this.signalQueued = true; return; }
+    if (this.signalInFlight) {
+      this.signalQueued = true;
+      return;
+    }
     this.signalInFlight = true;
     try {
       do {
@@ -671,7 +712,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (pendingSeq === null || this.destroyed) return;
     // Replay only if the saved high-water seq is NEWER than what init mounted — a signal for a message the
     // snapshot already had (seq ≤ newest mounted) needs no catch-up. Empty window (no mounted items) replays.
-    const newestMounted = this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : -Infinity;
+    const newestMounted =
+      this.mounted.length > 0
+        ? this.mounted[this.mounted.length - 1].item.id
+        : -Infinity;
     if (pendingSeq > newestMounted) void this.onMessageSignal();
   }
 
@@ -687,7 +731,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (!this.primed) {
         // Save the highest seq seen during the window (compare-before-set → keep the max; a seq-less signal
         // counts as +∞ so it still forces the replay).
-        this.pendingSignalBeforePrimeSeq = Math.max(this.pendingSignalBeforePrimeSeq ?? -Infinity, seq ?? Infinity);
+        this.pendingSignalBeforePrimeSeq = Math.max(
+          this.pendingSignalBeforePrimeSeq ?? -Infinity,
+          seq ?? Infinity,
+        );
       }
       return;
     }
@@ -698,17 +745,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // After those mutations, flipMove replays the surviving tail from these tops to its new position (the shove) in the
     // same synchronous task as the new reals' cb-enter-above (started in measurePending), so the pair shares one frame.
     // The await on getNewer never mutates the optimistic tail, so this snapshot stays valid across it.
-    const tailBefore = this.mounted.filter(e => e.optimistic && !e.leaving);
+    const tailBefore = this.mounted.filter((e) => e.optimistic && !e.leaving);
     const tailOldTop = new Map<Entry<T>, number>();
     if (tailBefore.length > 0) {
       this.flushPrefix();
-      for (const e of tailBefore) tailOldTop.set(e, this.topOf(this.mounted.indexOf(e)));
+      for (const e of tailBefore)
+        tailOldTop.set(e, this.topOf(this.mounted.indexOf(e)));
     }
 
-    const n = await this.loadNewer(true);                   // forced: the signal means new data is available; returns mounted + absorbed count (0 = nothing new this pass — mirrors the `n` used in followToNewest; an absorbed-only batch counts > 0 so its optimistic still gets reconciled)
+    const n = await this.loadNewer(true); // forced: the signal means new data is available; returns mounted + absorbed count (0 = nothing new this pass — mirrors the `n` used in followToNewest; an absorbed-only batch counts > 0 so its optimistic still gets reconciled)
     if (this.destroyed) return;
-    if (n === 0) return;                                    // nothing new mounted or absorbed → no shove to play, no new bottom to follow. Common for the tail-coalesced follow-up pass: by the time it runs, the in-flight pass already drained the live cache, so this one has nothing to do (also covers a genuine source-empty result). Safe to skip reconcileOptimistic/flip/trim/pin: mountNewerReals did not run (nothing was mounted AND nothing absorbed), so there is nothing to reconcile.
-    await this.reconcileOptimistic();                       // remove optimistic duplicates (synchronous) so the bottom is final
+    if (n === 0) return; // nothing new mounted or absorbed → no shove to play, no new bottom to follow. Common for the tail-coalesced follow-up pass: by the time it runs, the in-flight pass already drained the live cache, so this one has nothing to do (also covers a genuine source-empty result). Safe to skip reconcileOptimistic/flip/trim/pin: mountNewerReals did not run (nothing was mounted AND nothing absorbed), so there is nothing to reconcile.
+    await this.reconcileOptimistic(); // remove optimistic duplicates (synchronous) so the bottom is final
     if (this.destroyed) return;
 
     // FLIP "Play": animate the surviving optimistic tail from its pre-batch tops (the shove). No-op when nothing remains
@@ -716,7 +764,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // is the common case since a real confirms an optimistic of the same content. Runs before trim/ghost/cap, which only
     // touch the top end and do not affect the tail's layout positions.
     if (tailOldTop.size > 0) {
-      this.flipMove(this.mounted.filter(e => e.optimistic && !e.leaving), tailOldTop);
+      this.flipMove(
+        this.mounted.filter((e) => e.optimistic && !e.leaving),
+        tailOldTop,
+      );
     }
 
     // Trim + ghost + cap BEFORE the pin: these mutate content (remove top items → scrollHeight shrinks), so pinning to the
@@ -726,7 +777,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.trimOlder();
     this.updateGhost();
     this.updateTailCap();
-    if (wasAtBottom) this.pinToBottom();                     // follow to the FINAL bottom (after reconcile + trim): the removed optimistic duplicate and the trimmed top are already accounted for
+    if (wasAtBottom) this.pinToBottom(); // follow to the FINAL bottom (after reconcile + trim): the removed optimistic duplicate and the trimmed top are already accounted for
     this.emit();
   }
 
@@ -742,7 +793,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * for group-head/date to recompute (same lightweight rebuildEntry as the ghost reveal). Entries further down keep the
    * same prev item and need no rebuild. The new entry is marked transient (not a source cursor).
    */
-  insertAfter(afterId: number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean {
+  insertAfter(
+    afterId: number,
+    item: CbItem<T>,
+    opts?: { optimistic?: boolean },
+  ): boolean {
     if (!this.steady) return false;
     // Empty window: there is no anchor to insert "after", so the item becomes the sole entry (prev=null). This is the
     // first-message-in-an-empty-thread path — afterId is irrelevant there (and typically '' / the optimistic's own id,
@@ -760,7 +815,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       return true;
     }
     const idx = this.indexOfId(afterId);
-    if (idx < 0) return false;                  // not mounted → neglect the insert request
+    if (idx < 0) return false; // not mounted → neglect the insert request
     // Capture the anchor BEFORE the insert: an insert above the topmost-visible item pushes it down, and applyAnchor
     // follows (the fold content stays put); an insert at/below the fold leaves the anchor's topOf unchanged → no shift.
     // This replaces the two per-delta compensateAbove checks (new item + successor rebuild) with one anchor re-apply.
@@ -773,15 +828,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // before anchorEl; no successor → append). cb-pending hides it until measurePending settles the real height;
     // animate=true so it plays cb-enter once measured (a viewport-level insert is a "new message appears" event).
     const entry = this.createEntry(item, target.item, anchorEl, true);
-    if (opts?.optimistic) entry.optimistic = true;   // pending send: in source.pending, returned by getNewer, atomic
-    else entry.transient = true;                      // FAKE debug insert: viewport-only, never in the source
+    if (opts?.optimistic)
+      entry.optimistic = true; // pending send: in source.pending, returned by getNewer, atomic
+    else entry.transient = true; // FAKE debug insert: viewport-only, never in the source
     this.mounted.splice(idx + 1, 0, entry);
     if (successor) this.rebuildEntry(successor); // prev changed → recompute group-head/date (height reset, re-measured below)
 
     this.dirtyPrefix = true;
-    this.measurePending();                       // `measuring` suppresses onElHeight → unified applyAnchor below
-    this.applyAnchor(anchor);                     // above-fold insert pushed the fold → anchor follows; below-fold → no-op
-    this.updateTailCap();                         // keep the newer-edge cap in sync after a mounted mutation
+    this.measurePending(); // `measuring` suppresses onElHeight → unified applyAnchor below
+    this.applyAnchor(anchor); // above-fold insert pushed the fold → anchor follows; below-fold → no-op
+    this.updateTailCap(); // keep the newer-edge cap in sync after a mounted mutation
     return true;
   }
 
@@ -791,17 +847,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * height still counted, until then — so the height model stays exact). No `animating>0` guard: removes run concurrently
    * with each other and with inserts; only balance is gated by animating. Returns the count scheduled for removal.
    */
-  removeItem(ids: number | (number)[]): number {
+  removeItem(ids: number | number[]): number {
     if (!this.steady) return 0;
     const list = Array.isArray(ids) ? ids : [ids];
     const targets: Entry<T>[] = [];
     for (const id of list) {
-      const idx = this.indexOfId(id);                 // album-aware (itemHasId → whole album item)
+      const idx = this.indexOfId(id); // album-aware (itemHasId → whole album item)
       if (idx < 0) continue;
       const e = this.mounted[idx];
       if (!e.leaving && !targets.includes(e)) targets.push(e); // dedup (several album ids → same entry)
     }
-    for (const e of targets) this.leaveEntry(e);      // each starts its own concurrent cb-leave
+    for (const e of targets) this.leaveEntry(e); // each starts its own concurrent cb-leave
     if (targets.length > 0) this.emit();
     return targets.length;
   }
@@ -817,14 +873,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.animating++;
     entry.leaveRaf = requestAnimationFrame(() => {
       entry.leaveRaf = undefined;
-      if (this.destroyed || entry.leaveDone) { this.onAnimEnd(); return; } // torn down / cancelled mid-frame
+      if (this.destroyed || entry.leaveDone) {
+        this.onAnimEnd();
+        return;
+      } // torn down / cancelled mid-frame
       entry.el.classList.add('cb-leave');
       const onEnd = (): void => {
         if (entry.leaveDone) return;
         entry.leaveDone = true;
-        if (entry.leaveTimer !== undefined) { clearTimeout(entry.leaveTimer); entry.leaveTimer = undefined; }
+        if (entry.leaveTimer !== undefined) {
+          clearTimeout(entry.leaveTimer);
+          entry.leaveTimer = undefined;
+        }
         entry.el.classList.remove('cb-leave');
-        const i = this.mounted.indexOf(entry);          // re-find (concurrent removes shift indices)
+        const i = this.mounted.indexOf(entry); // re-find (concurrent removes shift indices)
         if (i >= 0) {
           // Capture BEFORE unmount: an above-fold removal shifts content up and the anchor follows (the fold stays put);
           // a below-fold removal leaves the anchor's topOf unchanged (no shift); if the leaving row WAS the anchor, its
@@ -834,7 +896,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           this.applyAnchor(anchor);
         }
         entry.leaving = false;
-        this.onAnimEnd();                               // drains animating; fires the deferred balance
+        this.onAnimEnd(); // drains animating; fires the deferred balance
       };
       entry.el.addEventListener('animationend', onEnd, { once: true });
       entry.leaveTimer = setTimeout(onEnd, ANIM_SAFETY_MS); // safety if animationend is swallowed
@@ -886,15 +948,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * height 0, which would make totalH() artificially low and the at-bottom test falsely true.
    */
   private captureAnchor(): Anchor {
-    if (this.steady && this.pendingMeasure.length === 0
-      && this.viewport.scrollTop + this.vh >= this.totalH() - 1) return { mode: 'bottom' };
+    if (
+      this.steady &&
+      this.pendingMeasure.length === 0 &&
+      this.viewport.scrollTop + this.vh >= this.totalH() - 1
+    )
+      return { mode: 'bottom' };
     const idx = this.topVisibleIdx();
     if (idx < 0) return { mode: 'bottom' };
     return {
       mode: 'item',
       id: this.mounted[idx].item.id,
       offset: this.viewport.scrollTop - this.topOf(idx),
-      fallbackId: idx + 1 < this.mounted.length ? this.mounted[idx + 1].item.id : null,
+      fallbackId:
+        idx + 1 < this.mounted.length ? this.mounted[idx + 1].item.id : null,
     };
   }
 
@@ -946,11 +1013,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const st = this.viewport.scrollTop;
     let idx = -1;
     for (let i = 0; i < this.mounted.length; i++) {
-      if (this.prefix[i] <= st) idx = i; else break;
+      if (this.prefix[i] <= st) idx = i;
+      else break;
     }
     return idx;
   }
-
 
   /**
    * Explicit go-to-bottom follow (started by scrollToBottom): keep loading one newer batch and re-pinning to the
@@ -960,10 +1027,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private async followToNewest(): Promise<void> {
     const g = this.gen;
     while (!this.noNewer && !this.destroyed && this.mounted.length > 0) {
-      const n = await this.loadNewer();              // pure core: one batch, mount + trim, NO follow
-      if (this.destroyed || g !== this.gen) return;  // jump re-seed overtook
-      if (n === 0) break;                            // boundary / no data
-      this.pinToBottom();                            // follow to the new bottom; loop continues while !noNewer
+      const n = await this.loadNewer(); // pure core: one batch, mount + trim, NO follow
+      if (this.destroyed || g !== this.gen) return; // jump re-seed overtook
+      if (n === 0) break; // boundary / no data
+      this.pinToBottom(); // follow to the new bottom; loop continues while !noNewer
     }
   }
 
@@ -978,17 +1045,23 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.emit();
   }
 
-  scrollToIndex(id: number, anchor: 'top' | 'center' | 'bottom' = 'center', highlight = false): void {
-    if (this.destroyed) return;
+  async scrollToIndex(
+    id: number,
+    anchor: 'top' | 'center' | 'bottom' = 'center',
+    highlight = false,
+  ): Promise<boolean> {
+    if (this.destroyed) return false;
     const idx = this.indexOfId(id);
-    if (isDevMode()) console.log('[JUMP] scrollToIndex id=', id, 'alreadyMounted idx=', idx);
-    if (idx >= 0) { // mounted: position directly
+    if (isDevMode())
+      console.log('[JUMP] scrollToIndex id=', id, 'alreadyMounted idx=', idx);
+    if (idx >= 0) {
+      // mounted: position directly
       this.positionMounted(idx, anchor);
       if (highlight) this.flashHighlight(idx);
-      return;
+      return true;
     }
     // Not mounted: reset the window around the id (re-seed), then position once done
-    void this.openAround(id, anchor, highlight, false);
+    return this.openAround(id, anchor, highlight, false);
   }
 
   /**
@@ -1006,19 +1079,50 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     highlight: boolean,
     fallbackToLatest: boolean,
     onFallbackToLatest?: () => void,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const g = ++this.gen;
-    if (isDevMode()) console.log('[JUMP] openAround start id=', id, 'gen=', g, 'vh=', this.vh, 'threshold=', this.threshold);
-    this.resetWindowState();
+    if (isDevMode())
+      console.log(
+        '[JUMP] openAround start id=',
+        id,
+        'gen=',
+        g,
+        'vh=',
+        this.vh,
+        'threshold=',
+        this.threshold,
+      );
+    this.state = 'filling';
     try {
-      const batch = await this.source.init(id, this.cfg.mountItem, this.cfg.mountItem, this.initOpts);
-      if (this.destroyed || g !== this.gen) { if (isDevMode()) console.log('[JUMP] bail: gen overtaken / destroyed'); return; } // overtaken by a newer jump / destroyed
+      const batch = await this.source.init(
+        id,
+        this.cfg.mountItem,
+        this.cfg.mountItem,
+        this.initOpts,
+      );
+      if (this.destroyed || g !== this.gen) {
+        if (isDevMode()) console.log('[JUMP] bail: gen overtaken / destroyed');
+        return false;
+      } // overtaken by a newer jump / destroyed
       const merged = this.mergeBatch(batch);
-      const key = String(id);
-      const hasTarget = merged.some(it => this.itemHasId(it, id));
-      if (isDevMode()) console.log('[JUMP] init batch merged=', merged.length, 'hasTarget=', hasTarget, 'ids=', merged.slice(0, 2).map(i => i.id), '..', merged.slice(-2).map(i => i.id), 'noOlder/noNewer=', this.noOlder, this.noNewer);
+      const hasTarget = merged.some((it) => this.itemHasId(it, id));
+      if (isDevMode())
+        console.log(
+          '[JUMP] init batch merged=',
+          merged.length,
+          'hasTarget=',
+          hasTarget,
+          'ids=',
+          merged.slice(0, 2).map((i) => i.id),
+          '..',
+          merged.slice(-2).map((i) => i.id),
+          'noOlder/noNewer=',
+          this.noOlder,
+          this.noNewer,
+        );
       if (merged.length === 0 || !hasTarget) {
         if (fallbackToLatest) {
+          this.resetWindowState();
           onFallbackToLatest?.();
           const latestRaw = await this.source.init(
             -1,
@@ -1026,7 +1130,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             0,
             this.initOpts,
           );
-          if (this.destroyed || g !== this.gen) return;
+          if (this.destroyed || g !== this.gen) return false;
           const latest = this.mergeBatch(latestRaw);
           if (latest.length === 0) {
             this.noOlder = true;
@@ -1039,16 +1143,22 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           this.updateGhost();
           this.scrollToBottom();
           this.emit();
-        } else {
-          this.updateGhost();
-          this.emit();
         }
-        return;
+        return false;
       }
+      this.resetWindowState();
       this.absorbBoundary(merged);
       this.mountBatch(merged, 'init');
       this.measurePending();
-      if (isDevMode()) console.log('[JUMP] after init mount+measure: mounted=', this.mounted.length, 'totalH=', Math.round(this.totalH()), 'sampleH=', this.mounted.slice(0, 5).map(e => Math.round(e.height)));
+      if (isDevMode())
+        console.log(
+          '[JUMP] after init mount+measure: mounted=',
+          this.mounted.length,
+          'totalH=',
+          Math.round(this.totalH()),
+          'sampleH=',
+          this.mounted.slice(0, 5).map((e) => Math.round(e.height)),
+        );
       // Pin the target to its anchor BEFORE the first async fill await yields to the painter.
       // resetWindowState left scrollTop=0; without this early pin the init batch paints at the window
       // top and the target only "arrives" via a visible scroll at the end (show-then-scroll glitch).
@@ -1058,15 +1168,37 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         if (initIdx >= 0) this.positionMounted(initIdx, anchor);
       }
       await this.fillAround(id, anchor, g); // fill both ways to threshold/2 each (boundary exceptions) + when one side hits a boundary fill the other to threshold; re-pin after each batch
-      if (this.destroyed || g !== this.gen) { if (isDevMode()) console.log('[JUMP] bail after fill: gen overtaken'); return; }
-      if (isDevMode()) console.log('[JUMP] fill done: mounted=', this.mounted.length, 'range=', this.mounted[0]?.item.id, '..', this.mounted[this.mounted.length - 1]?.item.id, 'totalH=', Math.round(this.totalH()), 'noOlder/noNewer=', this.noOlder, this.noNewer);
+      if (this.destroyed || g !== this.gen) {
+        if (isDevMode()) console.log('[JUMP] bail after fill: gen overtaken');
+        return false;
+      }
+      if (isDevMode())
+        console.log(
+          '[JUMP] fill done: mounted=',
+          this.mounted.length,
+          'range=',
+          this.mounted[0]?.item.id,
+          '..',
+          this.mounted[this.mounted.length - 1]?.item.id,
+          'totalH=',
+          Math.round(this.totalH()),
+          'noOlder/noNewer=',
+          this.noOlder,
+          this.noNewer,
+        );
       const idx = this.indexOfId(id);
       if (idx >= 0) {
         this.positionMounted(idx, anchor);
         if (highlight) this.flashHighlight(idx);
-      } else console.error('[JUMP] openAround: target id=', id, 'not mounted after fill (idx=-1) — jump produced no view');
+      } else
+        console.error(
+          '[JUMP] openAround: target id=',
+          id,
+          'not mounted after fill (idx=-1) — jump produced no view',
+        );
       this.updateGhost();
       this.emit();
+      return idx >= 0;
     } finally {
       this.state = 'steady';
     }
@@ -1084,19 +1216,34 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * gen guard drops batches overtaken by a newer jump. Iteration counts are surfaced once in the fill-done log — a spike
    * (e.g. up=200) would reveal a heights-read-as-0 regression without per-iteration spam.
    */
-  private async fillAround(targetId: number, anchor: 'top' | 'center' | 'bottom', g: number): Promise<void> {
+  private async fillAround(
+    targetId: number,
+    anchor: 'top' | 'center' | 'bottom',
+    g: number,
+  ): Promise<void> {
     const halfTh = this.threshold / 2;
     /** Re-anchor the target after a fill mutation (prefix changed). No-op clamp aside, keeps the target on its anchor. */
-    const pin = (): void => { const i = this.indexOfId(targetId); if (i >= 0) this.positionMounted(i, anchor); };
+    const pin = (): void => {
+      const i = this.indexOfId(targetId);
+      if (i >= 0) this.positionMounted(i, anchor);
+    };
     let upIter = 0;
-    while (this.aboveTarget(targetId) < halfTh && !this.noOlder && this.mounted.length > 0) {
+    while (
+      this.aboveTarget(targetId) < halfTh &&
+      !this.noOlder &&
+      this.mounted.length > 0
+    ) {
       const n = await this.loadOlderIntoFresh(g);
       upIter++;
       if (n === 0) break; // reached boundary / overtaken / no data
       pin(); // prepend drifted target down → re-center before the next fetch yields to the painter
     }
     let downIter = 0;
-    while (this.belowTarget(targetId) < halfTh && !this.noNewer && this.mounted.length > 0) {
+    while (
+      this.belowTarget(targetId) < halfTh &&
+      !this.noNewer &&
+      this.mounted.length > 0
+    ) {
       const n = await this.loadNewerIntoFresh(g);
       downIter++;
       if (n === 0) break;
@@ -1104,16 +1251,30 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     let compIter = 0;
     if (this.totalH() < this.threshold) {
-      const fillUp = this.noNewer && !this.noOlder;   // bottom reached → fill upward
+      const fillUp = this.noNewer && !this.noOlder; // bottom reached → fill upward
       const fillDown = this.noOlder && !this.noNewer; // top reached → fill downward
-      while (this.totalH() < this.threshold && (fillUp || fillDown) && this.mounted.length > 0) {
-        const n = fillUp ? await this.loadOlderIntoFresh(g) : await this.loadNewerIntoFresh(g);
+      while (
+        this.totalH() < this.threshold &&
+        (fillUp || fillDown) &&
+        this.mounted.length > 0
+      ) {
+        const n = fillUp
+          ? await this.loadOlderIntoFresh(g)
+          : await this.loadNewerIntoFresh(g);
         compIter++;
         if (n === 0) break; // other side also reached boundary
         pin();
       }
     }
-    if (isDevMode()) console.log('[JUMP] fill iters up/down/comp=', upIter, downIter, compIter, 'totalH=', Math.round(this.totalH()));
+    if (isDevMode())
+      console.log(
+        '[JUMP] fill iters up/down/comp=',
+        upIter,
+        downIter,
+        compIter,
+        'totalH=',
+        Math.round(this.totalH()),
+      );
   }
 
   /** Total height of all mounted entries above targetId (= topOf(targetIdx)). If the target is not in the window, treat everything as above. */
@@ -1131,7 +1292,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** Load one older batch into the building window (no compensation / no trim / no revalidate — viewport not positioned yet); includes the old ghost reveal rebuild. Empty batch → noOlder. Returns the number mounted (0 = hit boundary / overtaken / no data). */
   private async loadOlderIntoFresh(g: number): Promise<number> {
-    if (this.destroyed || g !== this.gen || this.noOlder || this.mounted.length === 0) return 0;
+    if (
+      this.destroyed ||
+      g !== this.gen ||
+      this.noOlder ||
+      this.mounted.length === 0
+    )
+      return 0;
     const cursor = this.olderCursorId();
     const batch = await this.source.getOlder(cursor, this.cfg.mountItem);
     if (this.destroyed || g !== this.gen) return 0;
@@ -1147,19 +1314,31 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.absorbBoundary(merged);
     const oldGhost = this.ghostEntry;
     this.mountBatch(merged, 'older');
-    if (oldGhost && this.mounted.indexOf(oldGhost) > 0) { oldGhost.el.classList.remove('cb-ghost'); this.rebuildEntry(oldGhost); }
+    if (oldGhost && this.mounted.indexOf(oldGhost) > 0) {
+      oldGhost.el.classList.remove('cb-ghost');
+      this.rebuildEntry(oldGhost);
+    }
     this.measurePending();
     this.updateGhost();
     return merged.length;
   }
   /** Load one newer batch into the building window (append). Empty batch → noNewer. Returns the number mounted (0 = hit boundary / overtaken / no data). */
   private async loadNewerIntoFresh(g: number): Promise<number> {
-    if (this.destroyed || g !== this.gen || this.noNewer || this.mounted.length === 0) return 0;
+    if (
+      this.destroyed ||
+      g !== this.gen ||
+      this.noNewer ||
+      this.mounted.length === 0
+    )
+      return 0;
     const cursor = this.newerCursorId();
     const batch = await this.source.getNewer(cursor, this.cfg.mountItem);
     if (this.destroyed || g !== this.gen) return 0;
     const merged = this.mergeBatch(batch);
-    if (merged.length === 0) { this.noNewer = true; return 0; }
+    if (merged.length === 0) {
+      this.noNewer = true;
+      return 0;
+    }
     this.absorbBoundary(merged);
     this.mountBatch(merged, 'newer');
     this.measurePending();
@@ -1170,17 +1349,49 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /** Positioning math for a mounted idx (shared by scrollToIndex / openAround) — now an explicit item {@link Anchor}
    *  applied via {@link applyAnchor}. offset is derived from the alignment + current vh each call (so a resize between
    *  calls is honored). `shifting` (inside applyAnchor) suppresses direction misdetection. */
-  private positionMounted(idx: number, anchor: 'top' | 'center' | 'bottom'): void {
+  private positionMounted(
+    idx: number,
+    anchor: 'top' | 'center' | 'bottom',
+  ): void {
     const topOfIdx = this.topOf(idx);
     const h = this.mounted[idx].height;
-    const offset = anchor === 'center' ? h / 2 - this.vh / 2 : anchor === 'bottom' ? h - this.vh : 0;
-    this.applyAnchor({ mode: 'item', id: this.mounted[idx].item.id, offset, fallbackId: null });
-    if (isDevMode()) console.log('[JUMP] positionMounted idx=', idx, 'id=', this.mounted[idx]?.item.id, 'topOf=', Math.round(topOfIdx), 'h=', Math.round(h), 'offset=', Math.round(offset), 'vh=', this.vh, '-> scrollTop=', Math.round(this.viewport.scrollTop));
+    const offset =
+      anchor === 'center'
+        ? h / 2 - this.vh / 2
+        : anchor === 'bottom'
+          ? h - this.vh
+          : 0;
+    this.applyAnchor({
+      mode: 'item',
+      id: this.mounted[idx].item.id,
+      offset,
+      fallbackId: null,
+    });
+    if (isDevMode())
+      console.log(
+        '[JUMP] positionMounted idx=',
+        idx,
+        'id=',
+        this.mounted[idx]?.item.id,
+        'topOf=',
+        Math.round(topOfIdx),
+        'h=',
+        Math.round(h),
+        'offset=',
+        Math.round(offset),
+        'vh=',
+        this.vh,
+        '-> scrollTop=',
+        Math.round(this.viewport.scrollTop),
+      );
   }
 
   /** Clear the window + reset all load/boundary state (called at the start of openAround). unmountAll already cleared mounted/prefix/pending/ghost. */
   private resetWindowState(): void {
-    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
     this.dirty = false;
     this.unmountAll();
     this.noOlder = false;
@@ -1202,7 +1413,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     el.classList.remove('cb-jump-highlight');
     void el.offsetWidth; // force reflow → restart the animation
     el.classList.add('cb-jump-highlight');
-    el.addEventListener('animationend', () => el.classList.remove('cb-jump-highlight'), { once: true });
+    el.addEventListener(
+      'animationend',
+      () => el.classList.remove('cb-jump-highlight'),
+      { once: true },
+    );
   }
 
   getInfo(): CbScrollInfo {
@@ -1211,7 +1426,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       scrollHeight: Math.round(this.content.scrollHeight),
       viewportHeight: this.vh,
       oldestId: this.mounted[0]?.item.id ?? null,
-      newestId: this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : null,
+      newestId:
+        this.mounted.length > 0
+          ? this.mounted[this.mounted.length - 1].item.id
+          : null,
       mounted: this.mounted.length,
       atTop: this.mounted.length > 0 && this.viewport.scrollTop <= 0,
       atBottom: this.mounted.length > 0 && this.isAtBottom(),
@@ -1222,7 +1440,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   refresh(): void {
     this.measureVh();
-    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
     this.dirty = false;
     this.balance();
   }
@@ -1237,7 +1458,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // re-render fires no onHeightChange → no reflow, no anchor compensation, no dirtyPrefix churn.
     const newItem: CbItem<T> = {
       ...entry.item,
-      data: { ...(entry.item.data as object), ...(patch as object) } as unknown as T,
+      data: {
+        ...(entry.item.data as object),
+        ...(patch as object),
+      } as unknown as T,
     };
     entry.item = newItem;
     entry.vs.update(newItem, prev);
@@ -1256,14 +1480,24 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   destroy(): void {
     this.state = 'destroyed';
     cancelAnimationFrame(this.rafId);
-    cancelAnimationFrame(this.vvRafId); this.vvRafId = 0;
-    window.visualViewport?.removeEventListener('resize', this.onVisualViewportChange);
-    window.visualViewport?.removeEventListener('scroll', this.onVisualViewportChange);
+    cancelAnimationFrame(this.vvRafId);
+    this.vvRafId = 0;
+    window.visualViewport?.removeEventListener(
+      'resize',
+      this.onVisualViewportChange,
+    );
+    window.visualViewport?.removeEventListener(
+      'scroll',
+      this.onVisualViewportChange,
+    );
     this.viewportObs.disconnect();
     this.tailCapObs.disconnect();
     this.viewport.removeEventListener('scroll', this.onNativeScroll);
     this.unmountAll();
-    if (this.tailCapEl) { this.tailCapEl.remove(); this.tailCapEl = null; } // cap persists across re-seed; torn down only here
+    if (this.tailCapEl) {
+      this.tailCapEl.remove();
+      this.tailCapEl = null;
+    } // cap persists across re-seed; torn down only here
     this.source.destroy();
   }
 
@@ -1274,17 +1508,29 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (!this.dirtyPrefix) return;
     const p = [0];
     let acc = 0;
-    for (const e of this.mounted) { acc += e.height; p.push(acc); }
+    for (const e of this.mounted) {
+      acc += e.height;
+      p.push(acc);
+    }
     this.prefix = p;
     this.dirtyPrefix = false;
   }
 
   /** Distance from the top of idx to the content top = Σ older-neighbor heights = prefix[idx]. */
-  private topOf(idx: number): number { this.flushPrefix(); return this.prefix[idx] ?? 0; }
+  private topOf(idx: number): number {
+    this.flushPrefix();
+    return this.prefix[idx] ?? 0;
+  }
 
   // totalH adds tailCapH (the cap is below every real item, so it never enters prefix[]/topOf — only the total). prefix
   // stays real-items-only; this keeps belowTarget/atBottom honest (the cap really is below the last real item) and topOf exact.
-  private totalH(): number { this.flushPrefix(); return (this.prefix.length > 0 ? this.prefix[this.prefix.length - 1] : 0) + this.tailCapH; }
+  private totalH(): number {
+    this.flushPrefix();
+    return (
+      (this.prefix.length > 0 ? this.prefix[this.prefix.length - 1] : 0) +
+      this.tailCapH
+    );
+  }
 
   // ---------- Mounting (array index; DOM follows mounted order) ----------
 
@@ -1298,14 +1544,26 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * older does not measure internally (loadOlder does the unified measure + ghost rebuild); init/newer measure at the end.
    * prev = the older neighbor: the previous one within the batch (ascending), or the old tail on append.
    */
-  private mountBatch(merged: CbItem<T>[], side: 'init' | 'older' | 'newer', animate = false): void {
+  private mountBatch(
+    merged: CbItem<T>[],
+    side: 'init' | 'older' | 'newer',
+    animate = false,
+  ): void {
     if (merged.length === 0) return;
     if (side === 'newer') {
       for (let i = 0; i < merged.length; i++) {
-        const prev = i > 0 ? merged[i - 1] : (this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item : null);
-        this.mounted.push(this.createEntry(merged[i], prev, undefined, animate));
+        const prev =
+          i > 0
+            ? merged[i - 1]
+            : this.mounted.length > 0
+              ? this.mounted[this.mounted.length - 1].item
+              : null;
+        this.mounted.push(
+          this.createEntry(merged[i], prev, undefined, animate),
+        );
       }
-    } else { // init / older both prepend (when init, mounted is empty, anchorEl = null → appendChild)
+    } else {
+      // init / older both prepend (when init, mounted is empty, anchorEl = null → appendChild)
       const anchorEl = this.mounted.length > 0 ? this.mounted[0].el : null;
       const fresh: Entry<T>[] = [];
       for (let i = 0; i < merged.length; i++) {
@@ -1326,27 +1584,50 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  bubble would render as a top spinner. When the slot is a skeleton and the consumer supplied createSkeleton, use it;
    *  otherwise fall back to createItem (legacy/no-skeleton behavior, e.g. the spec harness). */
   private createVs(item: CbItem<T>, prev: CbItem<T> | null): CbElement<T> {
-    const atOldestEdge = item.boundary === 'oldest' || item.boundary === 'both' || this.noOlder;
+    const atOldestEdge =
+      item.boundary === 'oldest' || item.boundary === 'both' || this.noOlder;
     const skeleton = prev === null && !atOldestEdge;
-    return skeleton && this.hooks.createSkeleton ? this.hooks.createSkeleton(item) : this.hooks.createItem(item, prev);
+    return skeleton && this.hooks.createSkeleton
+      ? this.hooks.createSkeleton(item)
+      : this.hooks.createItem(item, prev);
   }
 
   /** Create and mount one entry: createItem + DOM insert (before anchorEl / append) + pendingMeasure + subscribe to height.
    *  `animate` (default false) marks a mount that should play cb-enter after its height settles — only insertAfter and
    *  appendLive pass true; scroll-loaded history batches (init/older/newer) never animate. */
-  private createEntry(item: CbItem<T>, prev: CbItem<T> | null, anchorEl?: HTMLElement | null, animate = false): Entry<T> {
+  private createEntry(
+    item: CbItem<T>,
+    prev: CbItem<T> | null,
+    anchorEl?: HTMLElement | null,
+    animate = false,
+  ): Entry<T> {
     if (isDevMode()) this.mountTick++;
     const vs = this.createVs(item, prev);
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
-    if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
-    else if (this.tailCapEl) this.content.insertBefore(el, this.tailCapEl); // append path: keep the tail cap always last
+    if (anchorEl !== undefined && anchorEl !== null)
+      this.content.insertBefore(el, anchorEl);
+    else if (this.tailCapEl)
+      this.content.insertBefore(el, this.tailCapEl); // append path: keep the tail cap always last
     else this.content.appendChild(el);
-    const entry: Entry<T> = { item, el, vs, height: 0, unsub: () => {}, transient: false, optimistic: false, resortTarget: false, animate, enterAbove: false, leaving: false, leaveDone: false }; // real height set by measurePending()
+    const entry: Entry<T> = {
+      item,
+      el,
+      vs,
+      height: 0,
+      unsub: () => {},
+      transient: false,
+      optimistic: false,
+      resortTarget: false,
+      animate,
+      enterAbove: false,
+      leaving: false,
+      leaveDone: false,
+    }; // real height set by measurePending()
     el.classList.add('cb-pending');
     this.pendingMeasure.push(entry);
     this.mounting = true; // suppress the first report (same as id-based)
-    entry.unsub = vs.onHeightChange(h => this.onElHeight(entry, h));
+    entry.unsub = vs.onHeightChange((h) => this.onElHeight(entry, h));
     this.mounting = false;
     return entry;
   }
@@ -1385,7 +1666,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     newEl.classList.add('cb-pending');
     this.pendingMeasure.push(entry);
     this.mounting = true;
-    entry.unsub = newVs.onHeightChange(h => this.onElHeight(entry, h));
+    entry.unsub = newVs.onHeightChange((h) => this.onElHeight(entry, h));
     this.mounting = false;
     this.dirtyPrefix = true;
   }
@@ -1439,34 +1720,43 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  pending rAF has its timer still undefined). `animating` is decremented exactly once per animation. */
   private cancelEntryAnim(entry: Entry<T>): void {
     if (entry.enterTimer !== undefined) {
-      clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
+      clearTimeout(entry.enterTimer);
+      entry.enterTimer = undefined;
       entry.el.classList.remove('cb-enter', 'cb-enter-above'); // an entry plays exactly one of the two enter classes
       this.animating--;
     } else if (entry.enterRaf !== undefined) {
-      cancelAnimationFrame(entry.enterRaf); entry.enterRaf = undefined;
+      cancelAnimationFrame(entry.enterRaf);
+      entry.enterRaf = undefined;
       entry.el.classList.remove('cb-pending', 'cb-enter', 'cb-enter-above'); // cb-pending was held for the enter rAF
       this.animating--;
     }
     if (entry.leaveTimer !== undefined) {
-      clearTimeout(entry.leaveTimer); entry.leaveTimer = undefined;
-      entry.leaveDone = true; entry.el.classList.remove('cb-leave');
+      clearTimeout(entry.leaveTimer);
+      entry.leaveTimer = undefined;
+      entry.leaveDone = true;
+      entry.el.classList.remove('cb-leave');
       this.animating--;
     } else if (entry.leaveRaf !== undefined) {
-      cancelAnimationFrame(entry.leaveRaf); entry.leaveRaf = undefined;
-      entry.leaveDone = true; entry.el.classList.remove('cb-leave'); // mark consumed so a stale rAF can't double-decrement
+      cancelAnimationFrame(entry.leaveRaf);
+      entry.leaveRaf = undefined;
+      entry.leaveDone = true;
+      entry.el.classList.remove('cb-leave'); // mark consumed so a stale rAF can't double-decrement
       this.animating--;
     } else if (entry.leaving && !entry.leaveDone) {
       // Defensive: leaving flagged but neither branch above matched (e.g. leave completed between scheduling and here).
-      entry.leaveDone = true; entry.el.classList.remove('cb-leave');
+      entry.leaveDone = true;
+      entry.el.classList.remove('cb-leave');
       this.animating--;
     }
     if (entry.moveTimer !== undefined) {
-      clearTimeout(entry.moveTimer); entry.moveTimer = undefined;
+      clearTimeout(entry.moveTimer);
+      entry.moveTimer = undefined;
       entry.el.classList.remove('cb-move');
       entry.el.style.removeProperty('--cb-move-dy');
       this.animating--;
     } else if (entry.moveRaf !== undefined) {
-      cancelAnimationFrame(entry.moveRaf); entry.moveRaf = undefined;
+      cancelAnimationFrame(entry.moveRaf);
+      entry.moveRaf = undefined;
       entry.el.classList.remove('cb-move');
       entry.el.style.removeProperty('--cb-move-dy');
       this.animating--;
@@ -1495,14 +1785,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (isDevMode()) {
       const orphanCount = this.content.querySelectorAll('[data-cb-id]').length;
       if (orphanCount > 0) {
-        throw new Error(`[chat-box] unmountAll invariant violated: ${orphanCount} orphaned row(s) remain in content — a scroller mounted rows after being destroyed (re-audit the post-await \`destroyed\` guard in init()/openAround/load*)`);
+        throw new Error(
+          `[chat-box] unmountAll invariant violated: ${orphanCount} orphaned row(s) remain in content — a scroller mounted rows after being destroyed (re-audit the post-await \`destroyed\` guard in init()/openAround/load*)`,
+        );
       }
     }
   }
 
   /** Sync skeleton state (pure class): skeleton = mounted[0] (oldest mounted) when "not yet at the global oldest". Compared by entry reference. */
   private updateGhost(): void {
-    const target = !this.noOlder && this.mounted.length > 0 ? this.mounted[0] : null;
+    const target =
+      !this.noOlder && this.mounted.length > 0 ? this.mounted[0] : null;
     if (target === this.ghostEntry) return;
     this.ghostEntry?.el.classList.remove('cb-ghost');
     target?.el.classList.add('cb-ghost');
@@ -1536,7 +1829,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private updateTailCap(): void {
     const el = this.tailCapEl;
     if (!el) return;
-    const mode: 'hidden' | 'gap' | 'loading' = this.mounted.length === 0 ? 'hidden' : this.noNewer ? 'gap' : 'loading';
+    const mode: 'hidden' | 'gap' | 'loading' =
+      this.mounted.length === 0 ? 'hidden' : this.noNewer ? 'gap' : 'loading';
     el.classList.toggle('cb-tail-cap--gap', mode === 'gap');
     el.classList.toggle('cb-tail-cap--loading', mode === 'loading');
     this.tailCapH = el.offsetHeight;
@@ -1556,11 +1850,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.destroyed) return;
     // Immunity frame: a route-transition animation is in flight. Hold the current pin so the
     // message list does not jump under the sliding overlay; flushViewportResize runs this once on thaw.
-    if (this.isFrozen()) { this.resizeDeferred = true; return; }
-    const anchor = this.captureAnchor();      // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
-    this.measureVh();                          // apply the new vh
+    if (this.isFrozen()) {
+      this.resizeDeferred = true;
+      return;
+    }
+    const anchor = this.captureAnchor(); // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
+    this.measureVh(); // apply the new vh
     if (anchor.mode === 'bottom' && this.mounted.length > 0) {
-      this.applyAnchor(anchor);                // re-pin to the new bottom (new vh)
+      this.applyAnchor(anchor); // re-pin to the new bottom (new vh)
       // applyAnchor wrote scrollTop under shifting, but that guard resets synchronously — before the async scroll event
       // is dispatched. Set the one-shot flag so onNativeScroll swallows that event. This is the ONE site that needs it:
       // a shrink can pin at a bottom whose newer end is trimmed (noNewer=false), where an armed balance would loadNewer
@@ -1568,12 +1865,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.suppressScrollBalance = true;
       return;
     }
-    this.scheduleBalance();                    // mid-screen: scrollTop stays; re-check edges only
+    this.scheduleBalance(); // mid-screen: scrollTop stays; re-check edges only
   }
 
   private onNativeScroll = () => {
     if (this.shifting || this.destroyed) return;
-    if (this.suppressScrollBalance) { this.suppressScrollBalance = false; return; }  // consume the reflow-pin's scroll event
+    if (this.suppressScrollBalance) {
+      this.suppressScrollBalance = false;
+      return;
+    } // consume the reflow-pin's scroll event
     this.scheduleBalance();
   };
 
@@ -1581,9 +1881,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.dirty || this.destroyed) return;
     // An enter/exit animation is in flight: hold the checkpoint until it drains. Mount/unmount ops still proceed
     // (each manages `animating`), so concurrent add+remove keep animating — only the load/trim checkpoint waits.
-    if (this.animating > 0) { this.deferBalance = true; return; }
+    if (this.animating > 0) {
+      this.deferBalance = true;
+      return;
+    }
     this.dirty = true;
-    this.rafId = requestAnimationFrame(() => { this.dirty = false; this.balance(); });
+    this.rafId = requestAnimationFrame(() => {
+      this.dirty = false;
+      this.balance();
+    });
   }
 
   /** Animation completion drain (called from every enter/exit animationend). When the last one finishes, fire the
@@ -1604,17 +1910,28 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  `animating` is bumped when the rAF is scheduled (the move is "in flight" from this commit) and decremented exactly
    *  once by: animationend, the safety timeout, OR cancelEntryAnim cancelling the rAF / clearing enterTimer. enterRaf
    *  (rAF pending, class not added) and enterTimer (rAF fired, animation running) are mutually exclusive. */
-  private enterAnim(entry: Entry<T>, cls: 'cb-enter' | 'cb-enter-above' = 'cb-enter'): void {
-    if (entry.enterRaf !== undefined && entry.enterTimer === undefined) { cancelAnimationFrame(entry.enterRaf); entry.enterRaf = undefined; this.animating--; }
+  private enterAnim(
+    entry: Entry<T>,
+    cls: 'cb-enter' | 'cb-enter-above' = 'cb-enter',
+  ): void {
+    if (entry.enterRaf !== undefined && entry.enterTimer === undefined) {
+      cancelAnimationFrame(entry.enterRaf);
+      entry.enterRaf = undefined;
+      this.animating--;
+    }
     this.animating++;
     entry.enterRaf = requestAnimationFrame(() => {
       entry.enterRaf = undefined;
-      if (this.destroyed) { this.onAnimEnd(); return; } // torn down mid-frame → balance animating, no DOM write
+      if (this.destroyed) {
+        this.onAnimEnd();
+        return;
+      } // torn down mid-frame → balance animating, no DOM write
       entry.el.classList.remove('cb-pending');
       entry.el.classList.add(cls);
       const finish = () => {
         if (entry.enterTimer === undefined) return;
-        clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
+        clearTimeout(entry.enterTimer);
+        entry.enterTimer = undefined;
         entry.el.classList.remove(cls);
         this.onAnimEnd();
       };
@@ -1631,7 +1948,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.destroyed || this.mounted.length === 0) return;
     if (isDevMode() && this.closeCheckpoint) return; // debug: turn off the mount checkpoint (do not trigger loadOlder/loadNewer; removed in prod AOT)
     const t0 = isDevMode() ? performance.now() : 0;
-    const m0 = this.mountTick, u0 = this.unmountTick;
+    const m0 = this.mountTick,
+      u0 = this.unmountTick;
     const st = this.viewport.scrollTop;
     const dir = this.scrollDir(st);
     this.lastScrollTop = st;
@@ -1640,14 +1958,28 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const atTop = st < this.cfg.edge;
     const atBottom = total - this.vh - st < this.cfg.edge;
 
-    if (atTop && dir !== 'down' && !this.noOlder) { await this.loadOlder(); this.trimNewer(); }
-    else if (atBottom && dir !== 'up' && !this.noNewer) { await this.loadNewer(); await this.reconcileOptimistic(); this.trimOlder(); }
+    if (atTop && dir !== 'down' && !this.noOlder) {
+      await this.loadOlder();
+      this.trimNewer();
+    } else if (atBottom && dir !== 'up' && !this.noNewer) {
+      await this.loadNewer();
+      await this.reconcileOptimistic();
+      this.trimOlder();
+    }
 
     if (isDevMode() && this.onDebug) {
       this.onDebug({
-        ms: performance.now() - t0, mount: this.mountTick - m0, unmount: this.unmountTick - u0,
-        scrollTop: Math.round(st), oldestId: this.mounted[0]?.item.id ?? null, newestId: this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : null,
-        inflightOlder: this.inflightOlder, inflightNewer: this.inflightNewer,
+        ms: performance.now() - t0,
+        mount: this.mountTick - m0,
+        unmount: this.unmountTick - u0,
+        scrollTop: Math.round(st),
+        oldestId: this.mounted[0]?.item.id ?? null,
+        newestId:
+          this.mounted.length > 0
+            ? this.mounted[this.mounted.length - 1].item.id
+            : null,
+        inflightOlder: this.inflightOlder,
+        inflightNewer: this.inflightNewer,
       });
     }
     this.emit();
@@ -1726,7 +2058,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // message undelivered. Fetch the newest page directly via init(-1, …) — the canonical "newest N items" op —
       // which resolves from the live-cached reals. The empty-window case reaches this branch only via the forced
       // signal path (see the guard above); an unforced call bails earlier.
-      const hasReal = this.mounted.some(e => !e.transient && !e.optimistic && !e.leaving && !e.resortTarget);
+      const hasReal = this.mounted.some(
+        (e) => !e.transient && !e.optimistic && !e.leaving && !e.resortTarget,
+      );
       batch = hasReal
         ? await this.source.getNewer(this.newerCursorId(), this.cfg.mountItem)
         : await this.source.init(-1, this.cfg.mountItem, 0, this.initOpts);
@@ -1735,16 +2069,21 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.inflightNewer = false;
     }
     if (this.destroyed || g !== this.gen) return 0;
-    if (batch.length === 0) { this.noNewer = true; return 0; }
+    if (batch.length === 0) {
+      this.noNewer = true;
+      return 0;
+    }
     if (!force && !this.revalidateBottom()) return 0;
-    const wasAtNewest = this.noNewer;                        // pre-load edge state (transition gate for the optimistic dispatch)
+    const wasAtNewest = this.noNewer; // pre-load edge state (transition gate for the optimistic dispatch)
     this.absorbBoundary(batch); // phase 0: absorb boundary only after passing
     // Authoritative: a newer batch reaches the global newest iff it carries the 'newest' marker. A full page WITHOUT it
     // means more newer data remains (a large SSE backlog spans multiple pages) → noNewer=false so the next signal/balance
     // loads further. absorbBoundary is sticky (only ever sets true), so without this a partial backlog page left the kernel
     // falsely believing it was at the newest — stranding the remaining newer messages off-window and blocking further
     // loads (revalidateBottom is gated on !noNewer).
-    this.noNewer = batch.some(it => it.boundary === 'newest' || it.boundary === 'both');
+    this.noNewer = batch.some(
+      (it) => it.boundary === 'newest' || it.boundary === 'both',
+    );
 
     const count0 = this.mounted.length;
 
@@ -1770,7 +2109,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // mounted delta + absorbed: an absorbed item changes the view (album grew) and may need reconcile (its optimistic is
     // still mounted), so it counts as progress — without it, a pure-absorb signal would report 0 and onMessageSignal would
     // skip reconcileOptimistic, orphaning the absorbed item's optimistic bubble.
-    return (this.mounted.length - count0) + absorbed;
+    return this.mounted.length - count0 + absorbed;
   }
 
   /**
@@ -1785,9 +2124,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const idx = this.indexOfClientMsgId(p.clientMessageId);
       if (idx >= 0) {
         const e = this.mounted[idx];
-        if (e.transient) { e.transient = false; e.optimistic = true; } // promote (fast-path send now seen at the edge)
+        if (e.transient) {
+          e.transient = false;
+          e.optimistic = true;
+        } // promote (fast-path send now seen at the edge)
       } else {
-        const tail = this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item : null;
+        const tail =
+          this.mounted.length > 0
+            ? this.mounted[this.mounted.length - 1].item
+            : null;
         const entry = this.createEntry(p, tail, undefined, true);
         entry.optimistic = true;
         this.mounted.push(entry);
@@ -1805,7 +2150,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private unmountAllOptimistic(): void {
     let removed = false;
     for (let i = this.mounted.length - 1; i >= 0; i--) {
-      if (this.mounted[i].optimistic) { this.unmountAt(i); removed = true; }
+      if (this.mounted[i].optimistic) {
+        this.unmountAt(i);
+        removed = true;
+      }
     }
     if (removed) this.dirtyPrefix = true;
   }
@@ -1829,7 +2177,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     let insertIdx = 0;
     for (let i = this.mounted.length - 1; i >= 0; i--) {
       const e = this.mounted[i];
-      if (!e.transient && !e.optimistic && !e.leaving && !e.resortTarget) { insertIdx = i + 1; break; }
+      if (!e.transient && !e.optimistic && !e.leaving && !e.resortTarget) {
+        insertIdx = i + 1;
+        break;
+      }
     }
     // A trailing optimistic/transient block sits after the insert point. When it does, every new real must enter FROM
     // ABOVE (cb-enter-above): it descends into its slot from the newest-real side so it never travels DOWN through the
@@ -1844,7 +2195,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // fresh server id (≠ the optimistic's clientMessageId-as-id), so the pair is matched by clientMessageId, not id.
       // No clientMessageId → a plain incoming message (no optimistic bubble to settle). An already-mounted real (dup,
       // by id — an incoming that raced with a load) is skipped.
-      const confirm = this.itemFulfilledCids(item).some(c => this.indexOfClientMsgId(c) >= 0);
+      const confirm = this.itemFulfilledCids(item).some(
+        (c) => this.indexOfClientMsgId(c) >= 0,
+      );
       if (!confirm && this.indexOfId(item.id) >= 0) continue; // already-mounted real (dup) → skip
 
       // Cross-batch album absorb: an item the hook folds into the running newest real — `target` = mounted[insertIdx-1]
@@ -1860,7 +2213,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // self-sent image burst collapse into one album the same way an incoming burst does.
       if (absorb && insertIdx > 0) {
         const target = this.mounted[insertIdx - 1];
-        if (target && !target.optimistic && !target.transient && !target.leaving && !target.resortTarget) {
+        if (
+          target &&
+          !target.optimistic &&
+          !target.transient &&
+          !target.leaving &&
+          !target.resortTarget
+        ) {
           const merged = absorb(target.item, item);
           if (merged !== null) {
             this.measuring = true; // suppress onElHeight compensation/balance for the synchronous re-render (mirrors reconcilePending)
@@ -1868,7 +2227,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             const tp = insertIdx > 1 ? this.mounted[insertIdx - 2].item : null;
             target.vs.update(merged, tp);
             const h = target.el.offsetHeight; // real height after the album grew (integer — layout.ts Math.rounds every row)
-            if (h !== target.height) { target.height = h; this.dirtyPrefix = true; }
+            if (h !== target.height) {
+              target.height = h;
+              this.dirtyPrefix = true;
+            }
             this.measuring = false;
             absorbed++; // an absorbed item changes the view (album grew) without growing mounted[] — counted so a pure-absorb signal still reports progress (n > 0) and reconcile runs
             continue; // absorbed — no new entry; target is still the newest real (insertIdx unchanged)
@@ -1876,7 +2238,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         }
       }
 
-      const anchorEl = insertIdx < this.mounted.length ? this.mounted[insertIdx].el : null;
+      const anchorEl =
+        insertIdx < this.mounted.length ? this.mounted[insertIdx].el : null;
       const prev = insertIdx > 0 ? this.mounted[insertIdx - 1].item : null;
       // A confirm (matches an in-flight optimistic by clientMessageId) takes the optimistic's slot — same id, same
       // position — so it does NOT play a cb-enter: the bubble is already on screen as the optimistic; only the
@@ -1885,7 +2248,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // resortTarget so reconcileOptimistic removes the optimistic duplicate and tags this real cb-confirmed.
       const entry = this.createEntry(item, prev, anchorEl, !confirm);
       entry.enterAbove = enterAbove;
-      if (confirm) { entry.resortTarget = true; }
+      if (confirm) {
+        entry.resortTarget = true;
+      }
       this.mounted.splice(insertIdx, 0, entry);
       insertIdx++;
     }
@@ -1917,7 +2282,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const fulfilled = new Set<string>();
     const targets: Entry<T>[] = [];
     for (const e of this.mounted) {
-      if (e.transient || e.optimistic || e.leaving) continue;        // only reals fulfill an optimistic
+      if (e.transient || e.optimistic || e.leaving) continue; // only reals fulfill an optimistic
       for (const c of this.itemFulfilledCids(e.item)) fulfilled.add(c);
       if (e.resortTarget) targets.push(e);
     }
@@ -1927,7 +2292,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const toRemove: Entry<T>[] = [];
     for (const e of this.mounted) {
       if (!e.optimistic || e.leaving) continue;
-      if (e.item.clientMessageId !== undefined && fulfilled.has(e.item.clientMessageId)) toRemove.push(e);
+      if (
+        e.item.clientMessageId !== undefined &&
+        fulfilled.has(e.item.clientMessageId)
+      )
+        toRemove.push(e);
     }
     if (toRemove.length === 0 && targets.length === 0) return;
     this.resorting = true;
@@ -1998,9 +2367,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
     // 2. Morph: swap in the fresh item (new data ref ⇒ status changed) where the clientMessageId matches.
     const freshByCid = new Map<string, CbItem<T>>();
-    for (const f of fresh) if (f.clientMessageId !== undefined) freshByCid.set(f.clientMessageId, f);
+    for (const f of fresh)
+      if (f.clientMessageId !== undefined) freshByCid.set(f.clientMessageId, f);
     for (const e of suffix) {
-      const f = e.item.clientMessageId !== undefined ? freshByCid.get(e.item.clientMessageId) : undefined;
+      const f =
+        e.item.clientMessageId !== undefined
+          ? freshByCid.get(e.item.clientMessageId)
+          : undefined;
       if (f && f !== e.item) e.item = f;
     }
 
@@ -2011,17 +2384,23 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const desired: Entry<T>[] = [];
     for (const f of fresh) {
       if (f.clientMessageId === undefined) continue;
-      const e = suffix.find(x => x.item.clientMessageId === f.clientMessageId);
-      if (e && !used.has(e)) { desired.push(e); used.add(e); }
+      const e = suffix.find(
+        (x) => x.item.clientMessageId === f.clientMessageId,
+      );
+      if (e && !used.has(e)) {
+        desired.push(e);
+        used.add(e);
+      }
     }
     for (const e of suffix) if (!used.has(e)) desired.push(e);
     const reordered = desired.some((e, i) => e !== suffix[i]);
     if (reordered) {
       const suffixSet = new Set(suffix);
-      const rest = this.mounted.filter(e => !suffixSet.has(e));
+      const rest = this.mounted.filter((e) => !suffixSet.has(e));
       this.mounted = [...rest, ...desired];
       for (const e of desired) {
-        if (this.tailCapEl) this.content.insertBefore(e.el, this.tailCapEl); // keep the cap always last
+        if (this.tailCapEl)
+          this.content.insertBefore(e.el, this.tailCapEl); // keep the cap always last
         else this.content.appendChild(e.el);
       }
       this.dirtyPrefix = true;
@@ -2036,8 +2415,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (idx < 0) continue;
       const newPrev = idx > 0 ? this.mounted[idx - 1].item : null;
       e.vs.update(e.item, newPrev); // re-render data + recomputed grouping on the same node
-      const h = e.el.offsetHeight;   // real height after the re-render
-      if (h !== e.height) { e.height = h; this.dirtyPrefix = true; }
+      const h = e.el.offsetHeight; // real height after the re-render
+      if (h !== e.height) {
+        e.height = h;
+        this.dirtyPrefix = true;
+      }
     }
     this.measuring = false;
 
@@ -2062,7 +2444,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    */
   confirmPending(clientMessageId: string): void {
     if (!this.steady) return;
-    const e = this.mounted.find((x) => x.optimistic && !x.leaving && x.item.clientMessageId === clientMessageId);
+    const e = this.mounted.find(
+      (x) =>
+        x.optimistic &&
+        !x.leaving &&
+        x.item.clientMessageId === clientMessageId,
+    );
     if (!e || e.el.classList.contains('cb-confirmed')) return; // SSE echo already swapped it out, or already confirmed → play once
 
     // Defensive backstop for the "mount already loaded past the pending" invariant. The real that fulfills this
@@ -2079,8 +2466,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const real = this.mounted[fulfillerIdx];
       console.warn(
         `[chat-box] confirmPending: removed a stale optimistic (id=${e.item.id}, cid=${clientMessageId}) whose ` +
-        `fulfilling real (id=${real.item.id}) is already mounted — the mount loaded past the pending before it entered ` +
-        `its removal flow. Invariant violation: reconcileOptimistic should have removed it first. Please report.`,
+          `fulfilling real (id=${real.item.id}) is already mounted — the mount loaded past the pending before it entered ` +
+          `its removal flow. Invariant violation: reconcileOptimistic should have removed it first. Please report.`,
       );
       this.resorting = true; // rule-4a: keep trim away from the synchronous removal (mirrors reconcileOptimistic)
       try {
@@ -2096,7 +2483,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       return;
     }
 
-    const fresh = this.source.getPending().find((p) => p.clientMessageId === clientMessageId);
+    const fresh = this.source
+      .getPending()
+      .find((p) => p.clientMessageId === clientMessageId);
     if (!fresh) return; // source already dropped the entry — nothing to morph to
     const idx = this.mounted.indexOf(e);
     const prev = idx > 0 ? this.mounted[idx - 1].item : null;
@@ -2105,7 +2494,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     e.vs.update(fresh, prev); // re-render: status:'sent' renders the check + drops msg-sending (un-dims the bubble)
     e.el.classList.add('cb-confirmed'); // gates the spinner→check→fade choreography (_row-base.scss :host(.cb-confirmed))
     const h = e.el.offsetHeight; // status morph is icon/opacity-only → height is stable, but stay honest
-    if (h !== e.height) { e.height = h; this.dirtyPrefix = true; }
+    if (h !== e.height) {
+      e.height = h;
+      this.dirtyPrefix = true;
+    }
     this.measuring = false;
     this.emit();
   }
@@ -2135,7 +2527,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (movers.length === 0) return;
     // Invert data: each mover's old→new delta as a CSS var consumed by the cb-move @keyframes `from`. Set synchronously;
     // the class is added on the NEXT frame below.
-    for (const m of movers) m.el.style.setProperty('--cb-move-dy', `${m.delta}px`);
+    for (const m of movers)
+      m.el.style.setProperty('--cb-move-dy', `${m.delta}px`);
     // Play on the next requestAnimationFrame. rAF callbacks run BEFORE the next paint, so adding cb-move in the rAF
     // makes the @keyframes `from` (translateY(var) = old top) apply for the FIRST painted frame after the reorder —
     // no one-frame flash at the new layout position, and no forced synchronous reflow (the frame boundary commits the
@@ -2146,9 +2539,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // (moveRaf). Timer checked first for the same reason as cancelEntryAnim (the test rAF spy leaves a stale moveRaf
       // alongside a set moveTimer). The identity-token guard in finish() makes the prior closure no-op regardless.
       if (m.entry.moveTimer !== undefined) {
-        clearTimeout(m.entry.moveTimer); m.entry.moveTimer = undefined; this.animating--;
+        clearTimeout(m.entry.moveTimer);
+        m.entry.moveTimer = undefined;
+        this.animating--;
       } else if (m.entry.moveRaf !== undefined) {
-        cancelAnimationFrame(m.entry.moveRaf); m.entry.moveRaf = undefined; this.animating--;
+        cancelAnimationFrame(m.entry.moveRaf);
+        m.entry.moveRaf = undefined;
+        this.animating--;
       }
       this.animating++;
       // Identity-token guard: a finish closure acts only while it still owns the CURRENT moveTimer. A superseding
@@ -2165,7 +2562,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       };
       m.entry.moveRaf = requestAnimationFrame(() => {
         m.entry.moveRaf = undefined;
-        if (this.destroyed) { this.onAnimEnd(); return; } // torn down mid-frame → balance animating, no DOM write
+        if (this.destroyed) {
+          this.onAnimEnd();
+          return;
+        } // torn down mid-frame → balance animating, no DOM write
         m.el.classList.add('cb-move');
         myTimer = setTimeout(finish, ANIM_SAFETY_MS); // safety if animationend is swallowed
         m.entry.moveTimer = myTimer;
@@ -2191,8 +2591,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (last.transient || last.optimistic || last.leaving) break;
       this.flushPrefix();
       const h = last.height;
-      if (this.totalH() - h > this.threshold && (this.totalH() - h) - (this.viewport.scrollTop + this.vh) > this.cfg.edge) {
-        this.unmountBot(); trimmed = true;
+      if (
+        this.totalH() - h > this.threshold &&
+        this.totalH() - h - (this.viewport.scrollTop + this.vh) > this.cfg.edge
+      ) {
+        this.unmountBot();
+        trimmed = true;
       } else break;
     }
     if (trimmed) this.noNewer = false;
@@ -2212,9 +2616,19 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const first = this.mounted[0];
       // Never trim transient/optimistic/leaving, and rule 4b: never trim the global-newest real item (defensive — the
       // newest normally sits at the tail, but the guard holds regardless of position).
-      if (first.transient || first.optimistic || first.leaving || first.item.boundary === 'newest' || first.item.boundary === 'both') break;
+      if (
+        first.transient ||
+        first.optimistic ||
+        first.leaving ||
+        first.item.boundary === 'newest' ||
+        first.item.boundary === 'both'
+      )
+        break;
       const h = first.height;
-      if (this.totalH() - h > this.threshold && (this.viewport.scrollTop - cumH) - h > this.cfg.edge) {
+      if (
+        this.totalH() - h > this.threshold &&
+        this.viewport.scrollTop - cumH - h > this.cfg.edge
+      ) {
         this.unmountTop();
         cumH += h;
         trimmed = true;
@@ -2265,7 +2679,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** Current index of the entry representing id (onElHeight/scrollToIndex/openAround). O(n), low frequency. */
   private indexOfId(id: number): number {
-    return this.mounted.findIndex(e => this.itemHasId(e.item, id));
+    return this.mounted.findIndex((e) => this.itemHasId(e.item, id));
   }
 
   /** Index of the in-flight optimistic/transient entry carrying the given clientMessageId — the reconcile key
@@ -2273,7 +2687,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  be matched by id). Scans transient/optimistic entries only; -1 if none / cid absent. */
   private indexOfClientMsgId(cid: string | undefined): number {
     if (cid === undefined) return -1;
-    return this.mounted.findIndex(e => (e.transient || e.optimistic) && e.item.clientMessageId === cid);
+    return this.mounted.findIndex(
+      (e) => (e.transient || e.optimistic) && e.item.clientMessageId === cid,
+    );
   }
 
   /** All clientMessageIds this real item fulfills — the head's singular clientMessageId, PLUS every album member's cid
@@ -2302,7 +2718,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  stable source cursors. Used by loadOlder so such an entry at mounted[0] doesn't make getOlder return [] and falsely
    *  lock noOlder. Callers guarantee mounted is non-empty. */
   private olderCursorId(): number {
-    for (const e of this.mounted) if (!e.transient && !e.optimistic && !e.leaving) return e.item.id;
+    for (const e of this.mounted)
+      if (!e.transient && !e.optimistic && !e.leaving) return e.item.id;
     return this.mounted[0].item.id; // unreachable in practice (the insert/remove target is always a real neighbor)
   }
 
@@ -2334,24 +2751,36 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /** Revalidate: still at the top edge + direction not downward + oldest boundary not hit (breaks when single item and at oldest, preventing an init single-item infinite loop). */
   private revalidateTop(): boolean {
     const st = this.viewport.scrollTop;
-    return st < this.cfg.edge && this.scrollDir(st) !== 'down' && !(this.mounted.length <= 1 && this.noOlder);
+    return (
+      st < this.cfg.edge &&
+      this.scrollDir(st) !== 'down' &&
+      !(this.mounted.length <= 1 && this.noOlder)
+    );
   }
 
   /** Revalidate: still at the bottom edge + direction not upward + newest boundary not hit. */
   private revalidateBottom(): boolean {
     const st = this.viewport.scrollTop;
     const total = this.totalH();
-    return total - this.vh - st < this.cfg.edge && this.scrollDir(st) !== 'up' && !this.noNewer;
+    return (
+      total - this.vh - st < this.cfg.edge &&
+      this.scrollDir(st) !== 'up' &&
+      !this.noNewer
+    );
   }
 
   private absorbBoundary(items: CbItem<T>[]): void {
     for (const it of items) {
-      if (it.boundary === 'oldest' || it.boundary === 'both') this.noOlder = true;
-      if (it.boundary === 'newest' || it.boundary === 'both') this.noNewer = true;
+      if (it.boundary === 'oldest' || it.boundary === 'both')
+        this.noOlder = true;
+      if (it.boundary === 'newest' || it.boundary === 'both')
+        this.noNewer = true;
     }
   }
 
-  private measureVh(): void { this.vh = this.viewport.clientHeight; }
+  private measureVh(): void {
+    this.vh = this.viewport.clientHeight;
+  }
 
   private measurePending(): void {
     if (this.pendingMeasure.length === 0) return;
@@ -2364,18 +2793,30 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const h = entry.el.offsetHeight;
       if (isDevMode() && h === 0) zeros++;
       this.onElHeight(entry, h); // `measuring` suppresses compensation + balance (loadOlder does the unified compensation)
-      if (entry.animate) { // cb-enter kicks off on the next frame; keep cb-pending (hidden) until then so enterAnim
+      if (entry.animate) {
+        // cb-enter kicks off on the next frame; keep cb-pending (hidden) until then so enterAnim
         // can drop it atomically with the enter class — the first painted frame is the @keyframes `from` (opacity:0),
         // never a one-frame flash at the un-hidden natural state. Non-animated mounts drop cb-pending right here.
-        const cls: 'cb-enter' | 'cb-enter-above' = entry.enterAbove ? 'cb-enter-above' : 'cb-enter';
-        entry.animate = false; entry.enterAbove = false;
+        const cls: 'cb-enter' | 'cb-enter-above' = entry.enterAbove
+          ? 'cb-enter-above'
+          : 'cb-enter';
+        entry.animate = false;
+        entry.enterAbove = false;
         this.enterAnim(entry, cls);
       } else {
         entry.el.classList.remove('cb-pending');
       }
     }
     this.measuring = false;
-    if (isDevMode() && (zeros > 0 || this.filling)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
+    if (isDevMode() && (zeros > 0 || this.filling))
+      console.log(
+        '[JUMP] measure n=',
+        entries.length,
+        'zeroH=',
+        zeros,
+        'contentScrollH=',
+        this.content.scrollHeight,
+      );
     // Integer-height verification: totalH (Σ item offsetHeight + tailCap) vs content.scrollHeight. With the integer
     // line-height contract in _row-base.scss these must agree up to a CONSTANT sentinel offset — d must NOT grow with
     // the mounted count. Before that contract d drifted ~+11px over 63 items (summing rounded per-item heights vs one
@@ -2395,11 +2836,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // signal.
     if (isDevMode()) {
       const sh = this.content.scrollHeight;
-      if (sh > this.vh) { // min-height saturated → scrollHeight reflects true content height (valid independent check)
+      if (sh > this.vh) {
+        // min-height saturated → scrollHeight reflects true content height (valid independent check)
         const t = this.totalH();
         const d = Math.round(t - sh);
         if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
-          console.warn(`[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`);
+          console.warn(
+            `[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`,
+          );
         }
       }
     }

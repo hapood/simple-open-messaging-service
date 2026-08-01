@@ -259,7 +259,7 @@ Defer:
 
 - native mention suggestions;
 - native link-preview cards;
-- edit/reply banners;
+- reply banners;
 - GIF/sticker search;
 - lock-to-record;
 - rich clipboard attachment review.

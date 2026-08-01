@@ -27,10 +27,16 @@ export class SendMessageDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({ example: 'hello', description: 'Message content' })
+  @ApiProperty({
+    example: '{"text":"hello","quote":{"seq":31}}',
+    description:
+      'Message content. PURE_TEXT uses a JSON envelope with text and an optional quote seq.',
+  })
   @IsString()
   @IsNotEmpty()
-  @MaxLength(5000, { message: 'content must be at most 5000 characters' })
+  // JSON escaping can expand a 5,000-character text body substantially; the controller validates
+  // the decoded `text` field against the product limit.
+  @MaxLength(32000, { message: 'content envelope is too large' })
   content!: string;
 
   // Client-authorable content types ONLY. The other schema values are server-side and must never
@@ -330,8 +336,8 @@ export class SetAliasDto {
 /**
  * Search a conversation's message history by substring. Returns lightweight {id, createdAt} matches
  * (no full bodies) paginated by message-id cursor — the client jumps the kernel to each match and the
- * server renders the bubble on demand via the normal query-messages path. ILIKE + the Message content
- * trigram GIN index backs the substring scan. Non-text types never carry searchable content.
+ * server renders the bubble on demand via the normal query-messages path. Search extracts only the
+ * PURE_TEXT envelope's `text` field; non-text types never carry searchable content.
  */
 export class SearchMessagesDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })

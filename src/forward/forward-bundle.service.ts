@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma.service.js';
 import { ContentType, Prisma } from '../prisma/generated/client.js';
 import { extractDigestEntries } from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
+import { parseTextMessageContent } from '../../shared/text-message-content.js';
 
 export const FORWARD_MAX_DEPTH = 3;
 export const FORWARD_MAX_MESSAGES = 100;
@@ -668,7 +669,11 @@ export class ForwardBundleService {
               ? '[语音]'
               : message.contentType === ContentType.FORWARD
                 ? '[转发消息]'
-                : toDisplayText(message.content).replace(/\s+/g, ' ').trim();
+                : toDisplayText(
+                    parseTextMessageContent(message.content)?.text ?? '',
+                  )
+                    .replace(/\s+/g, ' ')
+                    .trim();
     return truncateGraphemes(
       `${message.sender.displayName}：${label}`,
       FORWARD_SUMMARY_CHARS,

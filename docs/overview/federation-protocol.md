@@ -27,7 +27,7 @@
 > read receipts (v0.2, a separate item — NOT best-effort, delivery is wanted), group
 > **rename/avatar/description** sync, a durable **active-liveness** leave backstop, origin death/re-homing.
 > Per-peer **quota** enforcement is now **BUILT** (unified local + peers — see
-> `docs/roadmap/federation-quotas.md`). **Edit/delete propagation is a non-goal**, not deferred — the origin has no
+> `docs/roadmap/federation-quotas.md`). **Delete propagation is a non-goal**, not deferred — the origin has no
 > authority over receiver-local data once delivered (§9).
 > These are flagged inline as **Deferred**. The per-section "Future" headers below that predate Steps 2/3
 > are retained as historical design notes — read them as **implemented** per the step-design docs unless
@@ -62,9 +62,9 @@ A **lightweight, JSON-based, IM-native federation protocol.** ActivityPub-inspir
 - **Not** conforming to Matrix / XMPP / ActivityPub. Bridges are separate adapter services.
 - **Not** open federation. Peers must be explicitly trusted, **and** users must be friends before any communication.
 - **Not** global ordering, DAG-based state resolution, or strong consistency.
-- **Not** remote edit/delete of delivered messages. The origin's authority ends at delivery — once a peer
+- **Not** remote deletion of delivered messages. The origin's authority ends at delivery — once a peer
   pulls + stores a message it is that receiver's local data (the delivered-immutability / email model).
-  A local edit/delete stays local; a deleted-by-sender message is a gap on the receiver, never a
+  A local delete stays local; a deleted-by-sender message is a gap on the receiver, never a
   remote-driven tombstone. (See `docs/roadmap/federation-step2-design.md` §9.)
 
 ### Why this design, not the alternatives
@@ -395,7 +395,7 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 - **Within a thread:** sort by `(ts, origin_seq)`. `ts` is the origin's clock; `origin_seq` (per-thread, monotonic on origin) breaks ties.
 - **`origin_seq`:** allocated by a per-thread counter on the origin server. No cross-thread coordination.
 - **Reply threading:** `prev` is display-only, not a DAG edge.
-- **Edits/deletes:** last-writer-wins by `ts`; an edit is a new message with `edit_of` referencing the original. No merge semantics.
+- **Deletes:** local-only after delivery; no federated tombstone is emitted.
 - **Clock skew:** tolerated at second granularity; ordering glitches are an accepted trade-off.
 - **Roster authority:** the origin server holds the canonical participant list; each server tracks its own local users' membership locally.
 - **No global ordering, ever.**

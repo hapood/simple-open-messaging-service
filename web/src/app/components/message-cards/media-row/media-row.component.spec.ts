@@ -71,9 +71,7 @@ describe('MediaRowComponent — deferred image loading', () => {
       '.msg-media-progress',
     ) as HTMLElement;
     expect(rail).not.toBeNull();
-    expect((rail.querySelector('span') as HTMLElement).style.width).toBe(
-      '40%',
-    );
+    expect((rail.querySelector('span') as HTMLElement).style.width).toBe('40%');
     expect(
       fixture.nativeElement.querySelector('.msg-media-cell button'),
     ).toBeNull();
@@ -104,40 +102,6 @@ describe('MediaRowComponent — deferred image loading', () => {
     ).toBe('40%');
   });
 
-  it('aggregates the +N tile by equal file count rather than byte size', async () => {
-    const images = Array.from({ length: 8 }, (_, index) =>
-      image(index + 1, index === 5 ? 50_000_000 : 1000),
-    );
-    // The +N tile replaces visible index 5 and represents indices 5..7: one complete, one halfway,
-    // one not started => (1 + .5 + 0) / 3 = 50%, regardless of the first file being 50 MB.
-    downloads.set(task(images[5], 'loaded', 50_000_000, 50_000_000));
-    downloads.set(task(images[6], 'downloading', 500, 1000));
-    const fixture = await render(images);
-
-    expect(fixture.componentInstance.moreTransfer()).toEqual(
-      jasmine.objectContaining({
-        active: true,
-        completed: 1,
-        total: 3,
-        progress: 50,
-      }),
-    );
-    expect(
-      (
-        fixture.nativeElement.querySelector(
-          '.msg-media-more-count',
-        ) as HTMLElement
-      ).textContent?.replace(/\s/g, ''),
-    ).toBe('1/3');
-    expect(
-      (
-        fixture.nativeElement.querySelector(
-          '.msg-media-progress--aggregate > span',
-        ) as HTMLElement
-      ).style.width,
-    ).toBe('50%');
-  });
-
   async function render(images: AlbumImage[]) {
     const fixture = TestBed.createComponent(MediaRowComponent);
     fixture.componentRef.setInput('data', message(images));
@@ -156,7 +120,9 @@ class FakeImageDownloads {
     return `${media.msgId ?? 0}:${media.src}`;
   }
 
-  task(media: Pick<AlbumImage, 'msgId' | 'src'>): ImageDownloadTask | undefined {
+  task(
+    media: Pick<AlbumImage, 'msgId' | 'src'>,
+  ): ImageDownloadTask | undefined {
     return this.byKey.get(this.key(media));
   }
 

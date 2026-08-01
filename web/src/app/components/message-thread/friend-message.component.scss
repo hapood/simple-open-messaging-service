@@ -76,7 +76,9 @@
   // translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
   // absolute skeleton, which rides the transform) and below the header (z-index:2) so lifted content slides
   // UNDER the header.
-  transform: translateY(calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px))));
+  transform: translateY(
+    calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px)))
+  );
   transition: transform var(--kbd-duration, 60ms) ease-out;
   overflow-x: hidden;
   overflow-y: auto;
@@ -132,9 +134,7 @@ app-chat-input {
 // Match ordinary self-message rows: when the "show my avatar" header is enabled, reserve its
 // 40px slot plus 8px gap instead of letting the tail-cap cards occupy that space.
 :host-context([data-show-self-avatar='true']) .msg-transfer-stack {
-  padding-inline-end: calc(
-    max(16px, calc((100% - 800px) / 2 + 16px)) + 48px
-  );
+  padding-inline-end: calc(max(16px, calc((100% - 800px) / 2 + 16px)) + 48px);
 }
 
 .msg-transfer-line {
@@ -548,7 +548,17 @@ app-chat-input {
     line-height: var(--app-line-height-body-small);
     font-weight: var(--app-font-weight-regular);
     cursor: pointer;
-    &:active { background: var(--app-pressed); }
+    overflow: hidden;
+    white-space: nowrap;
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &:active {
+      background: var(--app-pressed);
+    }
     &:focus-visible {
       outline: 2px solid var(--app-focus-ring);
       outline-offset: -2px;
@@ -557,7 +567,9 @@ app-chat-input {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .msg-context-menu button:hover { background: var(--app-hover); }
+  .msg-context-menu button:hover {
+    background: var(--app-hover);
+  }
 }
 
 .msg-selection-bar {
@@ -566,8 +578,7 @@ app-chat-input {
   bottom: 0;
   z-index: 5;
   min-height: var(--app-header-expanded);
-  padding:
-    0 max(var(--app-space-3), calc((100% - 800px) / 2))
+  padding: 0 max(var(--app-space-3), calc((100% - 800px) / 2))
     var(--soms-safe-bottom, 0px);
   box-sizing: border-box;
   display: flex;
@@ -635,7 +646,9 @@ app-chat-input {
   font-variant-numeric: tabular-nums;
 }
 
-.msg-selection-spacer { flex: 1 1 auto; }
+.msg-selection-spacer {
+  flex: 1 1 auto;
+}
 
 @media (hover: hover) and (pointer: fine) {
   .msg-selection-bar button:hover:not(:disabled) {
@@ -685,4 +698,36 @@ app-chat-input {
   display: block;
   width: 64px;
   height: 64px;
+}
+
+.msg-compose-quote {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px;
+  padding: 7px 10px;
+  border-left: 3px solid var(--app-primary);
+  background: var(--app-surface, #fff);
+}
+
+.msg-compose-quote span {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+}
+.msg-compose-quote strong {
+  color: var(--app-primary);
+}
+.msg-compose-quote span,
+.msg-compose-quote strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-compose-quote button {
+  border: 0;
+  background: transparent;
+  font-size: 22px;
+  cursor: pointer;
 }

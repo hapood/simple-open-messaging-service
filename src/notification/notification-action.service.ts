@@ -5,6 +5,7 @@ import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { ContentType } from '../prisma/generated/client.js';
 import type { ReportActionDto } from '../dto/notification.dto.js';
+import { stringifyTextMessageContent } from '../../shared/text-message-content.js';
 
 /**
  * Handles a notification action reported back via `POST /notifications/action` — the round-trip closure for
@@ -37,7 +38,8 @@ export class NotificationActionService {
       switch (dto.actionId) {
         case 'reply': {
           const text = dto.replyText?.trim();
-          if (dto.threadId != null && text) await this.reply(userId, dto.threadId, text);
+          if (dto.threadId != null && text)
+            await this.reply(userId, dto.threadId, text);
           return;
         }
         default:
@@ -46,14 +48,20 @@ export class NotificationActionService {
           return;
       }
     } catch (e) {
-      this.logger.warn(`notif action ${dto.actionId} failed: ${(e as Error).message}`);
+      this.logger.warn(
+        `notif action ${dto.actionId} failed: ${(e as Error).message}`,
+      );
     }
   }
 
   /** Send a PURE_TEXT reply through the unified send pipeline (seq allocation + fan-out + federation hint),
    *  consuming one 'messages' quota unit — identical to `POST /send-message`. Membership-gated + quota-
    *  gated; a quota exhaustion is a silent no-op (the user retries in-app, where the quota error surfaces). */
-  private async reply(userId: number, threadId: number, text: string): Promise<void> {
+  private async reply(
+    userId: number,
+    threadId: number,
+    text: string,
+  ): Promise<void> {
     const p = await this.participantService.findParticipant(userId, threadId);
     if (!p || p.leftAt !== null) return; // not an active member — refuse silently
     const q = await this.quota.tryTickLocal('messages');
@@ -61,7 +69,7 @@ export class NotificationActionService {
     const data = await this.messageService.writeMsgToThread(
       userId,
       threadId,
-      text,
+      stringifyTextMessageContent({ text }),
       ContentType.PURE_TEXT,
     );
     // Fire-and-forget fan-out (SSE + push + notif + federation) — same as the send-message controller.
