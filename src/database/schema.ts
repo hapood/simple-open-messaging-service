@@ -24,6 +24,17 @@ const bytea = customType<{ data: Buffer }>({
   dataType: () => 'bytea',
 });
 
+/**
+ * Store the wire-format JSON string as PostgreSQL jsonb while permanently
+ * keeping service and transport boundaries string-based. PostgreSQL's binary
+ * jsonb representation never leaks into HTTP, SSE, or federation payloads.
+ */
+const jsonbText = customType<{ data: string; driverData: unknown }>({
+  dataType: () => 'jsonb',
+  toDriver: (value) => JSON.parse(value) as unknown,
+  fromDriver: (value) => JSON.stringify(value),
+});
+
 export const adminRole = pgEnum('AdminRole', [
   'SUPER_ADMIN',
   'ADMIN',
@@ -407,7 +418,7 @@ export const message = pgTable(
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     seq: integer().notNull(),
     contentType: contentType().notNull(),
-    content: text().notNull(),
+    content: jsonbText().notNull(),
     threadId: integer().notNull(),
     creator: integer().notNull(),
     createdAt: timestamp({ precision: 3, mode: 'date' })

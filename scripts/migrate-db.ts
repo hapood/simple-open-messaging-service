@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
@@ -76,6 +76,84 @@ async function hasExistingSchema(client: PoolClient): Promise<boolean> {
   return result.rows[0]?.exists ?? false;
 }
 
+async function schemaSignature(
+  client: PoolClient,
+  schema: string,
+): Promise<string[]> {
+  await client.query(`SET LOCAL search_path TO "${schema}", pg_catalog`);
+  const result = await client.query<{ signature: string }>(
+    `
+    WITH objects AS (
+      SELECT 'column|' || c.relname || '|' || a.attnum || '|' || a.attname ||
+             '|' || format_type(a.atttypid, a.atttypmod) || '|' || a.attnotnull ||
+             '|' || coalesce(pg_get_expr(d.adbin, d.adrelid), '') AS signature
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid
+        LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+       WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
+         AND c.relname NOT IN ('schema_migrations', '_prisma_migrations')
+         AND a.attnum > 0 AND NOT a.attisdropped
+      UNION ALL
+      SELECT 'constraint|' || c.relname || '|' || con.conname || '|' ||
+             con.contype::text || '|' || pg_get_constraintdef(con.oid, true)
+        FROM pg_constraint con
+       JOIN pg_class c ON c.oid = con.conrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1
+         AND c.relname NOT IN ('schema_migrations', '_prisma_migrations')
+      UNION ALL
+      SELECT 'index|' || t.relname || '|' || i.relname || '|' ||
+             pg_get_indexdef(i.oid)
+        FROM pg_index x
+        JOIN pg_class i ON i.oid = x.indexrelid
+       JOIN pg_class t ON t.oid = x.indrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = $1
+         AND t.relname NOT IN ('schema_migrations', '_prisma_migrations')
+      UNION ALL
+      SELECT 'enum|' || typ.typname || '|' || e.enumsortorder || '|' || e.enumlabel
+        FROM pg_type typ
+        JOIN pg_namespace n ON n.oid = typ.typnamespace
+        JOIN pg_enum e ON e.enumtypid = typ.oid
+       WHERE n.nspname = $1
+    )
+    SELECT replace(replace(signature, quote_ident($1) || '.', ''), $1 || '.', '')
+           AS signature
+      FROM objects
+     ORDER BY signature
+  `,
+    [schema],
+  );
+  return result.rows.map((row) => row.signature);
+}
+
+async function verifySchemaParity(
+  client: PoolClient,
+  migrations: Migration[],
+): Promise<void> {
+  const reference = `soms_reference_${randomUUID().replaceAll('-', '')}`;
+  await client.query(`CREATE SCHEMA "${reference}"`);
+  await client.query(`SET LOCAL search_path TO "${reference}", pg_catalog`);
+  for (const migration of migrations) await client.query(migration.sql);
+
+  const actual = await schemaSignature(client, 'public');
+  const expected = await schemaSignature(client, reference);
+  const actualSet = new Set(actual);
+  const expectedSet = new Set(expected);
+  const missing = expected.filter((item) => !actualSet.has(item));
+  const extra = actual.filter((item) => !expectedSet.has(item));
+  if (missing.length || extra.length) {
+    const sample = [
+      ...missing.slice(0, 10).map((item) => `missing: ${item}`),
+      ...extra.slice(0, 10).map((item) => `extra: ${item}`),
+    ].join('\n');
+    throw new Error(
+      `database schema differs from SQL baseline (${missing.length} missing, ${extra.length} extra)\n${sample}`,
+    );
+  }
+}
+
 async function migrate(
   client: PoolClient,
   migrations: Migration[],
@@ -119,13 +197,26 @@ async function baseline(
   }
   const applied = await readApplied(client);
   verifyChecksums(migrations, applied);
-  for (const migration of migrations) {
-    if (applied.has(migration.version)) continue;
-    await client.query(
-      'INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)',
-      [migration.version, migration.checksum],
-    );
-    console.log(`baselined ${migration.version}`);
+  const pending = migrations.filter(({ version }) => !applied.has(version));
+  if (pending.length === 0) {
+    console.log('database schema is already baselined');
+    return;
+  }
+  await client.query('BEGIN');
+  try {
+    await verifySchemaParity(client, migrations);
+    await client.query('SET LOCAL search_path TO public, pg_catalog');
+    for (const migration of pending) {
+      await client.query(
+        'INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)',
+        [migration.version, migration.checksum],
+      );
+      console.log(`baselined ${migration.version}`);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
   }
 }
 

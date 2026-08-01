@@ -139,7 +139,7 @@ CREATE TABLE "Message" (
     "id" BIGSERIAL NOT NULL,
     "seq" INTEGER NOT NULL,
     "contentType" "ContentType" NOT NULL,
-    "content" TEXT NOT NULL,
+    "content" JSONB NOT NULL,
     "threadId" INTEGER NOT NULL,
     "creator" INTEGER NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
