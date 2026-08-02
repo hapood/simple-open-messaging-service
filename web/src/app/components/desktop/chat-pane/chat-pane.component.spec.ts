@@ -36,7 +36,12 @@ class StubThreadComponent {
   readonly userMsgTrd = input<ConversationItem>();
   readonly nativeComposerActive = input(false);
   readonly ready = output<number>();
-  readonly reset = jasmine.createSpy('reset');
+  /** A child-internal signal read by reset. The host must not accidentally subscribe to it merely because
+   *  it invokes reset from its coordinator effect (the real reset reads several input/view signals). */
+  readonly resetDependency = signal(0);
+  readonly reset = jasmine
+    .createSpy('reset')
+    .and.callFake(() => void this.resetDependency());
   readonly teardownKernel = jasmine.createSpy('teardownKernel');
   /** Defaults to WARM (the common post-promote / resident case); a test flips it false to simulate a close
    *  having idled the kernel, so the fg-resident branch's cold path can be exercised. */
@@ -244,6 +249,23 @@ describe('ChatPaneComponent A/B coordinator', () => {
 
     await ready(1);
     expect(comp.fgSlot()).toBe('B');
+  });
+
+  it('REGRESSION: child signals read by reset do not retrigger the coordinator', async () => {
+    await open(1);
+    await ready(1); // slot B = 1
+    await open(2);
+    await ready(2); // slot A = 2; thread 1 is background-resident
+    const pane1 = pane(1)!;
+
+    await open(1);
+    expect(pane1.reset).toHaveBeenCalledTimes(1);
+
+    // The real scroller init updates child signals after reset. If the command escaped untracked(), this
+    // write becomes a dependency of the host effect and starts the pane:init/scroller:init reset loop.
+    pane1.resetDependency.update((value) => value + 1);
+    await settle();
+    expect(pane1.reset).toHaveBeenCalledTimes(1);
   });
 
   it('re-selecting the open WARM foreground thread is a no-op (no reset, no cross-fade)', async () => {

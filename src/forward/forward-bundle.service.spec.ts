@@ -111,7 +111,11 @@ const messageServiceFake = {
               ...row,
               content: JSON.stringify({
                 ...content,
-                quote: { ...content.quote, preview: 'Alice：original' },
+                quote: {
+                  ...content.quote,
+                  author: 'Alice',
+                  body: 'original',
+                },
               }),
             }
           : row;
@@ -133,7 +137,11 @@ function forwardService(database: unknown) {
 
 describe('ForwardBundleService', () => {
   it('assigns every message an ordered id and links the reply to its selected target', async () => {
-    const target = textQueryRow(4, JSON.stringify({ text: 'original' }), 'Alice');
+    const target = textQueryRow(
+      4,
+      JSON.stringify({ text: 'original' }),
+      'Alice',
+    );
     const reply = textQueryRow(
       7,
       JSON.stringify({ text: 'reply', quote: { seq: 4 } }),
@@ -165,8 +173,7 @@ describe('ForwardBundleService', () => {
       'Bob',
     );
     const database = databaseFake(0) as ReturnType<typeof databaseFake>;
-    database.db.query.message.findFirst
-      .mockResolvedValueOnce(reply);
+    database.db.query.message.findFirst.mockResolvedValueOnce(reply);
     const service = forwardService(database);
 
     const prepared = await service.prepareFromMessages(9, [
@@ -212,26 +219,29 @@ describe('ForwardBundleService', () => {
   it.each([
     ['cleared history', 7, new Set<number>()],
     ['a blocked P2P creator', null, new Set([9])],
-  ])('rejects a source message hidden by %s', async (_label, clearedSeq, blocked) => {
-    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
-    database.db.query.threadParticipant.findMany.mockResolvedValueOnce([
-      {
-        threadId: 4,
-        clearedSeq,
-        messageThread: { type: 'P2P' },
-      },
-    ]);
-    userBlockServiceFake.blockedByMe.mockResolvedValueOnce(blocked);
-    messageServiceFake.attachQuotePreviews.mockClear();
-    const service = forwardService(database);
+  ])(
+    'rejects a source message hidden by %s',
+    async (_label, clearedSeq, blocked) => {
+      const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+      database.db.query.threadParticipant.findMany.mockResolvedValueOnce([
+        {
+          threadId: 4,
+          clearedSeq,
+          messageThread: { type: 'P2P' },
+        },
+      ]);
+      userBlockServiceFake.blockedByMe.mockResolvedValueOnce(blocked);
+      messageServiceFake.attachQuotePreviews.mockClear();
+      const service = forwardService(database);
 
-    await expect(
-      service.prepareFromMessages(9, [{ threadId: 4, seq: 7 }]),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
-      bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
-    });
-    expect(messageServiceFake.attachQuotePreviews).not.toHaveBeenCalled();
-  });
+      await expect(
+        service.prepareFromMessages(9, [{ threadId: 4, seq: 7 }]),
+      ).rejects.toMatchObject<Partial<BusinessException>>({
+        bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
+      });
+      expect(messageServiceFake.attachQuotePreviews).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     [
@@ -259,9 +269,9 @@ describe('ForwardBundleService', () => {
     const database = databaseFake(0);
     const service = forwardService(database);
 
-    await expect(
-      service.prepareFromMessages(9, sources),
-    ).rejects.toMatchObject<Partial<BusinessException>>({
+    await expect(service.prepareFromMessages(9, sources)).rejects.toMatchObject<
+      Partial<BusinessException>
+    >({
       bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
     });
     expect(database.db.query.message.findFirst).not.toHaveBeenCalled();

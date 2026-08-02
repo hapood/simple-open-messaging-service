@@ -70,7 +70,8 @@ class NativeComposerController(
         orientation = LinearLayout.VERTICAL
         visibility = View.GONE
         clipChildren = false
-        setPadding(dp(8), 0, dp(8), dp(8))
+        // Match the web .ci-input-bar outer padding: 8px vertical, 12px horizontal.
+        setPadding(dp(12), dp(8), dp(12), dp(8))
     }
     private val row = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL

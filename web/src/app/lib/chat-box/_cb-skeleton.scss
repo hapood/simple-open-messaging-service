@@ -6,7 +6,7 @@
 // a real conversation: the newest row pins just above the input bar and older rows stack upward — the skeleton
 // paints BOTTOM-TO-TOP, the way real .msg-content (also flex-end) lays out. Enough rows are provided to fill
 // upward past a tall viewport; overflow:hidden clips the OLDEST (top) rows so the viewport stays full yet never
-// scrolls. The 14px bottom padding matches .cb-tail-cap--gap (the real spacer between the last message and the
+// scrolls. The 0px bottom padding matches .cb-tail-cap--gap (the real spacer between the last message and the
 // input bar), so the skeleton's last row lands exactly where the last real message will — a seamless handoff when
 // the data resolves. Each row mirrors a real message group-start: a circular avatar + a rounded-rect bubble, avatar
 // and bubble top-aligned (align-items:flex-start, matching real .msg-avatar align-self:flex-start). Incoming rows put
@@ -23,7 +23,7 @@
   flex-direction: column;
   justify-content: flex-end; // BOTTOM-anchored — newest row hugs the input bar, older rows stack upward (paints bottom-to-top, mirroring real .msg-content flex-end). NOT top-down.
   gap: 10px;
-  padding: 14px 12px 14px; // 14px bottom = .cb-tail-cap--gap, the SAME gap real threads keep above the input bar → skeleton's last row lands where the last real message will (seamless handoff)
+  padding: 14px 12px 0; // 0px bottom = .cb-tail-cap--gap, so the skeleton's last row lands where the last real message will (seamless handoff)
   box-sizing: border-box;
   overflow: hidden; // surplus OLDEST rows (top, when there are more than the viewport shows) clip; the overlay never scrolls
 }

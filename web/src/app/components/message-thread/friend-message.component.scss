@@ -716,7 +716,9 @@ app-chat-input {
 }
 
 @keyframes msg-load-retry-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes msg-empty-fade {
@@ -749,7 +751,7 @@ app-chat-input {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  height: 30px;
+  min-height: 42px;
   box-sizing: border-box;
   margin: 2px 2px 2px 0;
   padding: 5px 6px 5px 8px;
@@ -758,20 +760,37 @@ app-chat-input {
   background: var(--app-hover);
 }
 
-.msg-compose-quote span {
+.msg-compose-quote-copy {
   display: grid;
   min-width: 0;
   flex: 1;
   font-size: 12px;
+  line-height: 15px;
 }
-.msg-compose-quote strong {
-  color: var(--app-primary);
+.msg-compose-quote-copy strong {
+  color: var(--app-text);
+  font-weight: 500;
 }
-.msg-compose-quote span,
-.msg-compose-quote strong {
+.msg-compose-quote-copy > span,
+.msg-compose-quote-copy strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.msg-compose-quote-copy > span {
+  color: var(--app-text-muted);
+}
+.msg-compose-quote-avatar,
+.msg-compose-quote-image {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.msg-compose-quote-avatar {
+  border-radius: 50%;
 }
 .msg-compose-quote button {
   border: 0;

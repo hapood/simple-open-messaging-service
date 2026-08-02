@@ -34,7 +34,9 @@ describe('SessionTokenService', () => {
     const resolve = async () => {
       if (table === user) {
         const created = prisma.sessionToken.create.mock.results.at(-1)?.value;
-        const row = created ? await created : { user: { mustChangePassword: false } };
+        const row = created
+          ? await created
+          : { user: { mustChangePassword: false } };
         return [{ mustChangePassword: row.user?.mustChangePassword ?? false }];
       }
       const rows = await prisma.sessionToken.findMany();
@@ -43,13 +45,20 @@ describe('SessionTokenService', () => {
         (await prisma.sessionToken.findFirst()) ??
         (await prisma.sessionToken.findUnique());
       if (!row) return [];
-      return [{ ...row, mustChangePassword: row.user?.mustChangePassword ?? false }];
+      return [
+        { ...row, mustChangePassword: row.user?.mustChangePassword ?? false },
+      ];
     };
     const query = {
-      from: (value: unknown) => { table = value; return query; },
+      from: (value: unknown) => {
+        table = value;
+        return query;
+      },
       innerJoin: () => query,
       where: () => query,
-      limit: () => ({ then: (fn: (rows: unknown[]) => unknown) => resolve().then(fn) }),
+      limit: () => ({
+        then: (fn: (rows: unknown[]) => unknown) => resolve().then(fn),
+      }),
       then: (fn: (rows: unknown[]) => unknown) => resolve().then(fn),
     };
     return query;
@@ -115,47 +124,44 @@ describe('SessionTokenService', () => {
   });
 
   describe('issue', () => {
-    it("app client → trusted by default + expiresAt null (permanent)", async () => {
-      const plaintext = await svc.issue(7, 'app', { device: 'pixel', ip: '10.0.0.1' });
+    it('uses the default 180-day inactivity deadline for every client', async () => {
+      const plaintext = await svc.issue(7, 'app', {
+        device: 'pixel',
+        ip: '10.0.0.1',
+      });
       expect(plaintext).toMatch(/^[0-9a-f]{64}$/); // 32 random bytes hex
       expect(prisma.sessionToken.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userId: 7,
           client: 'app',
-          trusted: true, // app is trusted by default (token in OS secure storage)
-          expiresAt: null,
+          autoTerminateDays: 30,
+          expiresAt: expect.any(Date),
           device: 'pixel',
           ip: '10.0.0.1',
           lastSeenIp: '10.0.0.1',
           tokenHash: expect.any(String),
         }),
       });
+      const expiresAt = prisma.sessionToken.create.mock.calls[0][0].data
+        .expiresAt as Date;
+      expect(expiresAt.getTime()).toBeGreaterThan(
+        Date.now() + 29 * 24 * 3600 * 1000,
+      );
       expect(kv.initPersistent).toHaveBeenCalledTimes(1);
     });
 
-    it('untrusted web/desktop → trusted false + expiresAt ~14d out (sliding) + persistent persisted', async () => {
-      await svc.issue(7, 'web', { persistent: true });
+    it('client metadata does not introduce trusted or persistent lifetime branches', async () => {
+      await svc.issue(7, 'web');
       let arg = prisma.sessionToken.create.mock.calls[0][0].data;
       expect(arg.client).toBe('web');
-      expect(arg.trusted).toBe(false); // web is never trusted
-      expect(arg.persistent).toBe(true);
+      expect(arg).not.toHaveProperty('trusted');
+      expect(arg).not.toHaveProperty('persistent');
       expect(arg.expiresAt).toBeInstanceOf(Date);
-      expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
 
-      await svc.issue(7, 'desktop', { persistent: false }); // no trusted opt-in
+      await svc.issue(7, 'desktop');
       arg = prisma.sessionToken.create.mock.calls[1][0].data;
       expect(arg.client).toBe('desktop');
-      expect(arg.trusted).toBe(false);
-      expect(arg.persistent).toBe(false);
-      expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
-    });
-
-    it('trusted desktop opt-in → trusted true + expiresAt null (permanent, revocation-only)', async () => {
-      await svc.issue(7, 'desktop', { trusted: true });
-      const arg = prisma.sessionToken.create.mock.calls[0][0].data;
-      expect(arg.client).toBe('desktop');
-      expect(arg.trusted).toBe(true);
-      expect(arg.expiresAt).toBeNull();
+      expect(arg.autoTerminateDays).toBe(30);
     });
 
     it('stores the sha256 hash, never the plaintext', async () => {
@@ -172,9 +178,10 @@ describe('SessionTokenService', () => {
       overrides: Partial<{
         id: number;
         userId: number;
-        expiresAt: Date | null;
+        expiresAt: Date;
         revokedAt: Date | null;
         lastSeenAt: Date;
+        autoTerminateDays: 7 | 30 | 90 | 180 | 365;
       }> = {},
     ) {
       return {
@@ -183,7 +190,7 @@ describe('SessionTokenService', () => {
         expiresAt: new Date(Date.now() + 3600_000),
         revokedAt: null,
         lastSeenAt: new Date(),
-        persistent: true,
+        autoTerminateDays: 180,
         user: { mustChangePassword: false },
         ...overrides,
       };
@@ -196,7 +203,7 @@ describe('SessionTokenService', () => {
         userId: 7,
         sessionId: 101,
         slid: false,
-        persistent: true,
+        autoTerminateDays: 180,
         mustChangePassword: false,
       });
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1);
@@ -210,7 +217,7 @@ describe('SessionTokenService', () => {
           userId: 7,
           sessionId: 101,
           exp: Date.now() + 3600_000,
-          persistent: true,
+          autoTerminateDays: 180,
           mustChangePassword: false,
           nextTouchAt: Date.now() + 60_000,
         }),
@@ -219,21 +226,10 @@ describe('SessionTokenService', () => {
         userId: 7,
         sessionId: 101,
         slid: false,
-        persistent: true,
+        autoTerminateDays: 180,
         mustChangePassword: false,
       });
       expect(prisma.sessionToken.findUnique).not.toHaveBeenCalled();
-    });
-
-    it('app token (expiresAt null) never expires (and never sets slid)', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(makeRow({ expiresAt: null }));
-      await expect(svc.validate('b'.repeat(64))).resolves.toEqual({
-        userId: 7,
-        sessionId: 101,
-        slid: false,
-        persistent: true,
-        mustChangePassword: false,
-      });
     });
 
     it('rejects an expired web token (expiresAt in the past)', async () => {
@@ -244,7 +240,9 @@ describe('SessionTokenService', () => {
     });
 
     it('rejects a revoked token', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(makeRow({ revokedAt: new Date() }));
+      prisma.sessionToken.findUnique.mockResolvedValue(
+        makeRow({ revokedAt: new Date() }),
+      );
       await expect(svc.validate('d'.repeat(64))).resolves.toBe(null);
     });
 
@@ -261,7 +259,7 @@ describe('SessionTokenService', () => {
           userId: 7,
           sessionId: 101,
           exp: stale.expiresAt!.getTime(),
-          persistent: true,
+          autoTerminateDays: 180,
           mustChangePassword: false,
           nextTouchAt: Date.now() - 1,
         }),
@@ -272,25 +270,29 @@ describe('SessionTokenService', () => {
       const data = prisma.sessionToken.update.mock.calls[0][0].data;
       expect(data.lastSeenAt).toBeInstanceOf(Date);
       expect(data.lastSeenIp).toBe('203.0.113.7');
-      expect(data.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
+      expect(data.expiresAt.getTime()).toBeGreaterThan(
+        Date.now() + 179 * 24 * 3600 * 1000,
+      );
       expect(kv.updatePersistent).toHaveBeenCalledTimes(1);
     });
 
-    it('refreshes lastSeenAt/lastSeenIp for an APP token too (no expiresAt in the write)', async () => {
-      // Regression: the activity write used to be gated on exp !== null, so app tokens never refreshed
-      // lastSeenAt — the device list showed them frozen at sign-in. Now every client refreshes.
-      const stale = makeRow({ expiresAt: null, lastSeenAt: new Date(Date.now() - 10 * 60_000) });
+    it('refreshes lastSeenAt, lastSeenIp and expiresAt for an app token too', async () => {
+      const stale = makeRow({
+        lastSeenAt: new Date(Date.now() - 10 * 60_000),
+      });
       prisma.sessionToken.findUnique.mockResolvedValue(stale);
       await svc.validate('app1'.repeat(16), { ip: '198.51.100.4' });
       expect(prisma.sessionToken.update).toHaveBeenCalledTimes(1);
       const data = prisma.sessionToken.update.mock.calls[0][0].data;
       expect(data.lastSeenAt).toBeInstanceOf(Date);
       expect(data.lastSeenIp).toBe('198.51.100.4');
-      expect(data.expiresAt).toBeUndefined(); // app token: deadline not touched
+      expect(data.expiresAt).toBeInstanceOf(Date);
     });
 
     it('does NOT write when lastSeenAt is recent', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(makeRow({ lastSeenAt: new Date() }));
+      prisma.sessionToken.findUnique.mockResolvedValue(
+        makeRow({ lastSeenAt: new Date() }),
+      );
       await svc.validate('g'.repeat(64));
       expect(prisma.sessionToken.update).not.toHaveBeenCalled();
     });
@@ -300,7 +302,11 @@ describe('SessionTokenService', () => {
         makeRow({ user: { mustChangePassword: true } }),
       );
       await expect(svc.validate('p'.repeat(32))).resolves.toEqual(
-        expect.objectContaining({ userId: 7, sessionId: 101, mustChangePassword: true }),
+        expect.objectContaining({
+          userId: 7,
+          sessionId: 101,
+          mustChangePassword: true,
+        }),
       );
     });
 

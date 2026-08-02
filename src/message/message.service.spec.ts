@@ -97,7 +97,7 @@ describe('MessageService.attachMediaStatus', () => {
     );
     const content = JSON.stringify({
       text: 'reply',
-      quote: { seq: 4, preview: 'Alice：original' },
+      quote: { seq: 4, author: 'Alice', body: 'original' },
     });
     const input = mk({
       id: 9n,
@@ -247,7 +247,12 @@ describe('MessageService.queryMessages quote previews', () => {
 
     expect(JSON.parse(out.content)).toEqual({
       text: 'reply',
-      quote: { seq: 4, preview: 'Alice：original' },
+      quote: {
+        seq: 4,
+        author: 'Alice',
+        body: 'original',
+        contentType: 'PURE_TEXT',
+      },
     });
     expect(reply.content).toBe(replyContent);
     expect(prisma.message.findMany).toHaveBeenCalledTimes(2);
@@ -285,6 +290,82 @@ describe('MessageService.queryMessages quote previews', () => {
       text: 'reply',
       quote: { seq: 4 },
     });
+  });
+
+  it('combines the shared image summary with independent reply visual metadata', async () => {
+    const reply = mk({
+      id: 9n,
+      seq: 12,
+      contentType: 'PURE_TEXT',
+      content: replyContent,
+    });
+    const target = {
+      ...mk({
+        id: 4n,
+        seq: 4,
+        contentType: 'IMAGE',
+        content: JSON.stringify({
+          url: '/uploads/shards/aa/bb/asset.jpg',
+          size: 2048,
+        }),
+      }),
+      user: { name: 'Alice' },
+    };
+    const svc = new MessageService(
+      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
+    );
+
+    const [out] = await svc.attachQuotePreviews([reply]);
+
+    expect(JSON.parse(out.content).quote).toEqual({
+      seq: 4,
+      author: 'Alice',
+      body: '[Photo]',
+      contentType: 'IMAGE',
+      image: '/uploads/shards/aa/bb/asset.jpg',
+      imageSize: 2048,
+      imageShape: 'thumbnail',
+    });
+  });
+
+  it('uses the group identity and avatar for an invite reply visual', async () => {
+    const reply = mk({
+      id: 9n,
+      seq: 12,
+      contentType: 'PURE_TEXT',
+      content: replyContent,
+    });
+    const target = {
+      ...mk({
+        id: 4n,
+        seq: 4,
+        contentType: 'INVITE',
+        content: JSON.stringify({
+          type: 'GROUP_INVITE',
+          group: '!group-account',
+          groupName: 'Design Team',
+          groupAvatar: '/uploads/avatars/group.webp',
+        }),
+      }),
+      user: { name: 'Alice' },
+    };
+    const svc = new MessageService(
+      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
+    );
+
+    const [out] = await svc.attachQuotePreviews([reply]);
+
+    expect(JSON.parse(out.content).quote).toEqual(
+      expect.objectContaining({
+        contentType: 'INVITE',
+        image: '/uploads/avatars/group.webp',
+        imageLabel: 'Design Team',
+        imageIdentity: '!group-account',
+        imageShape: 'avatar',
+      }),
+    );
   });
 });
 
@@ -366,6 +447,7 @@ describe('MessageService unified attention queries', () => {
     const queryRaw = vi.fn().mockResolvedValue([
       {
         lastReadSeq: 9,
+        readRevision: 4,
         unread: 1000,
         mentionContents: [
           JSON.stringify({ text: '[@所有人](soms://audience/all?v=1)' }),
@@ -383,6 +465,7 @@ describe('MessageService unified attention queries', () => {
 
     await expect(svc.commitReadState(42, 7, 9)).resolves.toEqual({
       lastReadSeq: 9,
+      readRevision: 4,
       count: 1000,
       mention: ['all', 'me'],
     });

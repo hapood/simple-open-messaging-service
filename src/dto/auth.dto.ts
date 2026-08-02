@@ -1,6 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
-  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -11,6 +10,7 @@ import {
 import { Transform, Type } from 'class-transformer';
 import { IsDisplayName } from '../common/validators.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
+import { AUTO_TERMINATE_DAYS } from '../auth/session-policy.js';
 
 /**
  * Auth request DTOs. Validation rules are ported 1:1 from the original inline controller checks to avoid
@@ -45,31 +45,11 @@ export class LoginDto {
     enum: ['app', 'web', 'desktop'],
     default: 'web',
     description:
-      "Client kind = device platform: 'app' (native), 'web' (browser), or 'desktop' (Tauri). Informational — persisted on the row for the device-list icon/label; the lifetime is driven by `trusted`, not `client`. Omitted → 'web'.",
+      "Client kind = device platform: 'app' (native), 'web' (browser), or 'desktop' (Tauri). Informational and does not affect session lifetime. Omitted → 'web'.",
   })
   @IsIn(['app', 'web', 'desktop'])
   @IsOptional()
   client?: 'app' | 'web' | 'desktop';
-
-  @ApiProperty({
-    required: false,
-    default: true,
-    description:
-      'Cookie persistence for the pure-httpOnly browser path: true (default) → 14-day sliding cookie; false → session cookie (dropped when the browser closes, honoring "don\'t keep me logged in"). Native clients ignore the cookie and this flag.',
-  })
-  @IsBoolean()
-  @IsOptional()
-  persistent?: boolean;
-
-  @ApiProperty({
-    required: false,
-    default: false,
-    description:
-      "Trust this device: request a permanent (revocation-only) session whose token the client will keep in OS secure storage. Honored only for the 'desktop' client (OS keyring); ignored for 'web' (a browser can't store a bearer token securely) and implicit-true for 'app' (the native app is always trusted).",
-  })
-  @IsBoolean()
-  @IsOptional()
-  trusted?: boolean;
 }
 
 /**
@@ -83,11 +63,13 @@ export class RegisterDto {
   // @Matches enforces the grammar. The DB column is VarChar(31), so 31 is the hard ceiling.
   @ApiProperty({
     example: 'alice',
-    description: 'Login unique name: 3-31 chars, letters + digits + dots, must start with a letter, case-insensitive',
+    description:
+      'Login unique name: 3-31 chars, letters + digits + dots, must start with a letter, case-insensitive',
   })
   @Transform(({ value }) => normalizeAccount(value))
   @Matches(USER_ACCOUNT_RE, {
-    message: 'account must be 3-31 chars: letters + digits + dots, start with a letter (no leading/trailing/consecutive dots)',
+    message:
+      'account must be 3-31 chars: letters + digits + dots, start with a letter (no leading/trailing/consecutive dots)',
   })
   account!: string;
 
@@ -115,12 +97,18 @@ export class RegisterDto {
 /** One-time-code (admin-issued) login input — available on every platform. The code is bound to the
  *  account at issue time, so the user enters their account + the 6-digit code. */
 export class OtpLoginDto {
-  @ApiProperty({ example: 'alice', description: 'Account the one-time code was issued for.' })
+  @ApiProperty({
+    example: 'alice',
+    description: 'Account the one-time code was issued for.',
+  })
   @Transform(({ value }) => normalizeAccount(value))
   @Matches(USER_ACCOUNT_RE, { message: 'invalid account' })
   account!: string;
 
-  @ApiProperty({ example: '123456', description: 'The 6-digit one-time login code (admin-issued).' })
+  @ApiProperty({
+    example: '123456',
+    description: 'The 6-digit one-time login code (admin-issued).',
+  })
   @IsString()
   @IsNotEmpty()
   @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
@@ -131,21 +119,22 @@ export class OtpLoginDto {
     default: 'app',
     required: false,
     description:
-      "Client kind for the issued session: 'app' (Android), 'desktop' (Tauri), or 'web' (browser). Defaults to 'app'. Trusted native clients (app/desktop) get a permanent session; web gets a 14-day sliding one.",
+      "Client kind for the issued session: 'app' (Android), 'desktop' (Tauri), or 'web' (browser). Defaults to 'app'.",
   })
   @IsIn(['app', 'web', 'desktop'])
   @IsOptional()
   client?: 'app' | 'web' | 'desktop';
 
-  @ApiProperty({ required: false, description: 'Human-readable device label (shown in the device list).' })
+  @ApiProperty({
+    required: false,
+    description: 'Human-readable device label (shown in the device list).',
+  })
   @IsString()
   @IsOptional()
   device?: string;
 }
 
-/** QR-login create input. `client` is the device platform: 'app' (Android), 'desktop' (Tauri), or 'web'
- *  (browser) — QR is available on every platform. `trusted` opts a `desktop` into a permanent session (its
- *  keyring must be available); `app` is always trusted, `web` is never trusted. */
+/** QR-login create input. `client` is the device platform. */
 export class QrCreateDto {
   @ApiProperty({
     enum: ['app', 'web', 'desktop'],
@@ -157,27 +146,22 @@ export class QrCreateDto {
   @IsIn(['app', 'web', 'desktop'])
   @IsOptional()
   client?: 'app' | 'web' | 'desktop';
-
-  @ApiProperty({
-    required: false,
-    default: false,
-    description:
-      "Trust this desktop: mint a permanent (revocation-only) session whose token the desktop keeps in OS keyring. Honored only for 'desktop' when its keyring is available; 'app' is always trusted, 'web' is never trusted.",
-  })
-  @IsBoolean()
-  @IsOptional()
-  trusted?: boolean;
 }
 
 /** QR-login poll input (desktop/web) — check a token's status; on 'confirmed' the response carries the
  *  session token. Polled at ~1.5s. */
 export class QrPollDto {
-  @ApiProperty({ description: 'The QR sign-in token returned by /auth/qr/create.' })
+  @ApiProperty({
+    description: 'The QR sign-in token returned by /auth/qr/create.',
+  })
   @IsString()
   @IsNotEmpty()
   qrToken!: string;
 
-  @ApiProperty({ required: false, description: 'Human-readable device label (shown in the device list).' })
+  @ApiProperty({
+    required: false,
+    description: 'Human-readable device label (shown in the device list).',
+  })
   @IsString()
   @IsOptional()
   device?: string;
@@ -186,7 +170,9 @@ export class QrPollDto {
 /** QR-login scan/confirm input (the phone side, authenticated) — the token the phone scanned from the
  *  desktop's QR. */
 export class QrTokenDto {
-  @ApiProperty({ description: 'The QR sign-in token scanned from the desktop QR.' })
+  @ApiProperty({
+    description: 'The QR sign-in token scanned from the desktop QR.',
+  })
   @IsString()
   @IsNotEmpty()
   qrToken!: string;
@@ -240,9 +226,22 @@ export class SetPasswordDto {
 export class RevokeSessionDto {
   @ApiProperty({
     example: 42,
-    description: 'id of the SessionToken row to revoke, as shown in GET /auth/sessions',
+    description:
+      'id of the SessionToken row to revoke, as shown in GET /auth/sessions',
   })
   @Type(() => Number)
   @IsInt()
   id!: number;
+}
+
+export class AutoTerminateSessionsDto {
+  @ApiProperty({
+    enum: AUTO_TERMINATE_DAYS,
+    example: 30,
+    description: 'Terminate sessions after this many days without activity.',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @IsIn(AUTO_TERMINATE_DAYS)
+  days!: 7 | 30 | 90 | 180 | 365;
 }

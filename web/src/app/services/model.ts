@@ -66,9 +66,15 @@ export type ConversationItem = Omit<
 export interface ThreadReadState {
   threadId: number;
   lastReadSeq: number;
+  readRevision: number;
   /** 1000 means 1000 or more. */
   unreadCount: number;
   mentionUnread: Array<'all' | 'me'>;
+}
+
+export interface ThreadReadDelta {
+  readRevision: number;
+  items: ThreadReadState[];
 }
 
 /**

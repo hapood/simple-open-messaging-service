@@ -29,6 +29,7 @@ import {
   type Subscription,
 } from 'rxjs';
 import dayjs from 'dayjs';
+import { isDevMode } from '@angular/core';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
@@ -171,6 +172,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.sseSub = repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
+        if (isDevMode())
+          console.info('[chat-tailcap] sse-new-message', {
+            threadId: this.conv.threadId,
+            seq: s.seq,
+            loadedSeq: this.loadedSeq,
+            initializingDb: this.initializingDb,
+            newerWaiters: this.newerWaiters.size,
+          });
         if (!this.initializingDb && s.seq > this.loadedSeq)
           this.onNewerAvailable(s.seq);
         this.requestNewerPump();
@@ -344,17 +353,16 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   ): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
     const truncateSeq = this.repo.getNewerTruncateSeq(this.conv.threadId);
+    // The mounted cursor already proves that this source is at the repository's frozen newest row.
+    // Keep the demand pending until SSE advances that ceiling. Edge walks stay unbounded; only the
+    // repository may truncate an internal gap at a real cached row.
+    if (truncateSeq !== undefined && cursorId >= truncateSeq) {
+      this.noNewer = true;
+      return [];
+    }
     const { data, hasMore, failed } = await this.repo.queryMessages(
       this.conv.threadId,
-      {
-        skip: 1,
-        take,
-        lastSeq: cursorId,
-        orderBy: 'asc',
-        truncate: truncateSeq !== undefined,
-        // API cutoffs are exclusive; +1 makes the frozen newest seq itself part of this walk.
-        truncateSeq: truncateSeq === undefined ? undefined : truncateSeq + 1,
-      },
+      { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' },
       this.conv.clearedSeq,
       this.initializingDb,
     );
@@ -409,16 +417,35 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // shares the same source contract without changing the completion semantics.
       for (const waiter of [...this.newerWaiters]) {
         if (!this.newerWaiters.has(waiter)) continue;
+        const startedAt = performance.now();
         try {
           const items =
             waiter.cursorId === -1
               ? await this.init(-1, waiter.count, 0)
               : await this.getNewer(waiter.cursorId, waiter.count);
+          if (isDevMode())
+            console.info('[chat-tailcap] source-newer-query', {
+              threadId: this.conv.threadId,
+              cursor: waiter.cursorId,
+              returned: items.length,
+              remainsWaiting: items.length === 0,
+              elapsedMs: Math.round(performance.now() - startedAt),
+            });
           if (!this.newerWaiters.has(waiter) || items.length === 0) continue;
           this.newerWaiters.delete(waiter);
           waiter.subscriber.next({ kind: 'items', items });
           waiter.subscriber.complete();
         } catch (error) {
+          if (isDevMode())
+            console.info('[chat-tailcap] source-newer-query-error', {
+              threadId: this.conv.threadId,
+              cursor: waiter.cursorId,
+              errorName: error instanceof Error ? error.name : typeof error,
+              errorMessage:
+                error instanceof Error ? error.message : String(error),
+              errorStack: error instanceof Error ? error.stack : undefined,
+              elapsedMs: Math.round(performance.now() - startedAt),
+            });
           if (!this.newerWaiters.delete(waiter)) continue;
           waiter.subscriber.next({ kind: 'error', error });
           waiter.subscriber.complete();
@@ -581,6 +608,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
     if (targetSeq > this.loadedSeq) {
       this.repo.retainNewestSeq(this.conv.threadId, targetSeq);
+      this.onNewerAvailable(targetSeq);
     }
     this.requestNewerPump();
   }
@@ -696,7 +724,33 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       quote: textContent?.quote
         ? {
             seq: textContent.quote.seq,
-            preview: textContent.quote.preview ?? '',
+            ...(textContent.quote.author !== undefined
+              ? { author: textContent.quote.author }
+              : {}),
+            ...(textContent.quote.body !== undefined
+              ? { body: textContent.quote.body }
+              : {}),
+            ...(textContent.quote.contentType !== undefined
+              ? {
+                  contentType: textContent.quote
+                    .contentType as ChatMsgData['contentType'],
+                }
+              : {}),
+            ...(textContent.quote.image !== undefined
+              ? { image: textContent.quote.image }
+              : {}),
+            ...(textContent.quote.imageLabel !== undefined
+              ? { imageLabel: textContent.quote.imageLabel }
+              : {}),
+            ...(textContent.quote.imageIdentity !== undefined
+              ? { imageIdentity: textContent.quote.imageIdentity }
+              : {}),
+            ...(textContent.quote.imageSize !== undefined
+              ? { imageSize: textContent.quote.imageSize }
+              : {}),
+            ...(textContent.quote.imageShape !== undefined
+              ? { imageShape: textContent.quote.imageShape }
+              : {}),
           }
         : undefined,
     };

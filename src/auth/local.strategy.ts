@@ -100,10 +100,22 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
       const user = await this.authService.validateUser(account, password);
       if (user === undefined) {
         // Failure: record one count in each dimension, take the later of the two newly-triggered deadlines.
-        const ipBan = this.bruteForce.registerFailure(RULES.ip.dimension, ip, RULES.ip.steps);
-        const userBan = this.bruteForce.registerFailure(RULES.user.dimension, account, RULES.user.steps);
+        const ipBan = this.bruteForce.registerFailure(
+          RULES.ip.dimension,
+          ip,
+          RULES.ip.steps,
+        );
+        const userBan = this.bruteForce.registerFailure(
+          RULES.user.dimension,
+          account,
+          RULES.user.steps,
+        );
         const until = maxDefined(ipBan, userBan);
-        return { status: 1, account, ...(until !== undefined ? { bannedUntil: until } : {}) };
+        return {
+          status: 1,
+          account,
+          ...(until !== undefined ? { bannedUntil: until } : {}),
+        };
       }
       // Success: clear this account's failure log (the window would expire it anyway, but clearing at once
       // is better UX). Do not clear the IP dimension — under NAT, that IP may have other people still being
@@ -119,7 +131,10 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
       // PASSWORD_NOT_SET: a no-password account tried password login. NOT a wrong-password guess (nothing
       // to brute-force), so it MUST NOT be counted toward the ban — surface a distinct status so the client
       // shows "contact the administrator to set the initial password".
-      if (e instanceof BusinessException && e.bizCode === BusinessCode.PASSWORD_NOT_SET) {
+      if (
+        e instanceof BusinessException &&
+        e.bizCode === BusinessCode.PASSWORD_NOT_SET
+      ) {
         return { status: 2, account };
       }
       throw e;

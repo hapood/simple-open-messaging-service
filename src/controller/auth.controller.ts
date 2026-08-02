@@ -9,6 +9,8 @@ import {
   Res,
   HttpStatus,
   HttpCode,
+  Get,
+  Put,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -29,13 +31,17 @@ import {
 import { LoginAuthInfo } from '../auth/local.strategy.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { Public, MustChangePasswordEscapeHatch } from '../common/public.decorator.js';
+import {
+  Public,
+  MustChangePasswordEscapeHatch,
+} from '../common/public.decorator.js';
 import {
   LoginDto,
   LogoutDto,
   ChangePasswordDto,
   SetPasswordDto,
   RevokeSessionDto,
+  AutoTerminateSessionsDto,
 } from '../dto/auth.dto.js';
 
 @ApiTags('auth')
@@ -54,7 +60,9 @@ export class AuthController {
   @UseGuards(PasswordLoginEnabledGuard, LocalAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
-  @ApiOperation({ summary: 'Login (issue a long-lived per-device session token)' })
+  @ApiOperation({
+    summary: 'Login (issue a long-lived per-device session token)',
+  })
   // Login credentials are verified by LocalStrategy; the @Body DTO only consumes `device`/`client`, and
   // is whitelisted through the global ValidationPipe.
   @ApiBody({ type: LoginDto })
@@ -75,16 +83,12 @@ export class AuthController {
       // long-lived session credential. Lifetime is decided by `trusted` (see SessionTokenService.issue):
       // trusted → permanent (the native app, or an opted-in desktop); untrusted → sliding 14-day.
       const client: SessionClient = body.client ?? 'web';
-      const persistent = body.persistent !== false; // default true (14d sliding cookie); false → session cookie
-      // Trust gating: the native app is always trusted; a desktop is trusted only on explicit opt-in
-      // (it stores the token in OS keyring); web can never be trusted (no OS secure storage for a bearer).
-      const trusted = client === 'app' || (client === 'desktop' && body.trusted === true);
       const session_token = await this.sessionTokens.issue(
         authInfo.userId!,
         client,
-        { device: body.device, userAgent, ip, persistent, trusted },
+        { device: body.device, userAgent, ip },
       );
-      setSessionCookies(reply, session_token, persistent);
+      setSessionCookies(reply, session_token);
       // mustChangePassword flags an admin-generated INITIAL password the user must change before the
       // app is usable — the client forces the set-password screen.
       return {
@@ -95,7 +99,10 @@ export class AuthController {
     if (authInfo.status === 2) {
       // PASSWORD_NOT_SET: the account has no password (OTP/QR-only). The client shows "contact the
       // administrator to set the initial password". Thrown → AllExceptionsFilter renders HTTP 200 + code.
-      throw new BusinessException(BusinessCode.PASSWORD_NOT_SET, 'password not set');
+      throw new BusinessException(
+        BusinessCode.PASSWORD_NOT_SET,
+        'password not set',
+      );
     }
     // status 1: invalid credentials, or banned mid-window. Both are HTTP 200 + business code (the client
     // branches on `code` in its success callback); the global AllExceptionsFilter renders the body.
@@ -109,7 +116,10 @@ export class AuthController {
         { bannedUntil: authInfo.bannedUntil },
       );
     }
-    throw new BusinessException(BusinessCode.INVALID_CREDENTIALS, 'invalid credentials');
+    throw new BusinessException(
+      BusinessCode.INVALID_CREDENTIALS,
+      'invalid credentials',
+    );
   }
 
   @Public()
@@ -147,7 +157,10 @@ export class AuthController {
     @Request() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<void> {
-    await this.authService.invalidateAllSessions(req.user.userId, 'all_devices');
+    await this.authService.invalidateAllSessions(
+      req.user.userId,
+      'all_devices',
+    );
     clearSessionCookies(reply);
   }
 
@@ -155,7 +168,9 @@ export class AuthController {
   @Throttle(10, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/change-password')
-  @ApiOperation({ summary: 'Change password (revoke every session — the client re-logs in)' })
+  @ApiOperation({
+    summary: 'Change password (revoke every session — the client re-logs in)',
+  })
   async changePassword(
     @Request() req: FastifyRequest,
     @Body() dto: ChangePasswordDto,
@@ -168,7 +183,10 @@ export class AuthController {
     );
     if (!r.ok) {
       // Old-password mismatch → HTTP 200 + VALIDATION_FAILED (the global AllExceptionsFilter renders it).
-      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'old password wrong');
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'old password wrong',
+      );
     }
     // Every session (including this device's) is revoked → the media cookie is dead; clear it. The
     // client re-logs in for a fresh session token.
@@ -180,13 +198,23 @@ export class AuthController {
   @Throttle(10, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/set-password')
-  @ApiOperation({ summary: "Set the user's own password (forced first-time set after an initial password; clears mustChangePassword)" })
-  async setPassword(@Request() req: FastifyRequest, @Body() dto: SetPasswordDto): Promise<void> {
+  @ApiOperation({
+    summary:
+      "Set the user's own password (forced first-time set after an initial password; clears mustChangePassword)",
+  })
+  async setPassword(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetPasswordDto,
+  ): Promise<void> {
     // No old password: the caller is already session-authenticated. Establishes the user's own password and
     // clears the mustChangePassword flag so the app unlocks. Sessions are kept (unlike change-password).
     // sessionId is threaded so setPassword can bust this token's validate cache (the cleared flag must be
     // seen immediately, not after the 60s cache TTL).
-    await this.authService.setPassword(req.user.userId, dto.newPassword, req.user.sessionId ?? undefined);
+    await this.authService.setPassword(
+      req.user.userId,
+      dto.newPassword,
+      req.user.sessionId ?? undefined,
+    );
   }
 
   @ApiBearerAuth()
@@ -201,10 +229,34 @@ export class AuthController {
   }
 
   @ApiBearerAuth()
+  @Get('auth/session-settings')
+  @ApiOperation({ summary: 'Get automatic old-session termination settings' })
+  async sessionSettings(@Request() req: FastifyRequest) {
+    return {
+      autoTerminateDays: await this.sessionTokens.getAutoTerminateDays(
+        req.user.userId,
+      ),
+    };
+  }
+
+  @ApiBearerAuth()
+  @Put('auth/session-settings')
+  @ApiOperation({
+    summary: 'Set when inactive sessions are automatically terminated',
+  })
+  async updateSessionSettings(
+    @Request() req: FastifyRequest,
+    @Body() dto: AutoTerminateSessionsDto,
+  ): Promise<void> {
+    await this.sessionTokens.setAutoTerminateDays(req.user.userId, dto.days);
+  }
+
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/revoke-session')
   @ApiOperation({
-    summary: 'Revoke a single session by its device-list id (belonging to the current user)',
+    summary:
+      'Revoke a single session by its device-list id (belonging to the current user)',
   })
   async revokeSession(
     @Request() req: FastifyRequest,

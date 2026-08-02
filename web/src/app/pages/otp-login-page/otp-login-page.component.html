@@ -11,9 +11,6 @@
       <h1 class="login-title">{{ 'auth.otpTitle' | transloco }}</h1>
       <p class="login-sub">{{ 'auth.otpSub' | transloco }}</p>
 
-      @if (!isTauri()) {
-      <div class="notice" role="status">{{ 'auth.webSessionNotice' | transloco }}</div>}
-
       <mat-form-field class="field" appearance="fill">
         <mat-label>{{ 'auth.account' | transloco }}</mat-label>
         <input matInput name="account" autocomplete="username" enterkeyhint="next" autofocus

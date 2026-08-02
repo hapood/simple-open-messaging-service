@@ -31,7 +31,10 @@ const generatedPaths: string[] = [];
  * @param envName  the override env var, e.g. JWT_ADMIN_SECRET / SOMS_2FA_KEY.
  * @param filename the on-disk filename under ./data, e.g. 'jwt-admin.key'.
  */
-export function resolvePersistentSecret(envName: string, filename: string): string {
+export function resolvePersistentSecret(
+  envName: string,
+  filename: string,
+): string {
   // (1) Operator-managed env wins — explicit configuration always takes precedence.
   const fromEnv = process.env[envName];
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();

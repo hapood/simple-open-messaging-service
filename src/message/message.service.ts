@@ -48,6 +48,17 @@ import {
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
 
+interface ReplyPreview {
+  author: string;
+  body: string;
+  contentType: ContentType;
+  image?: string;
+  imageLabel?: string;
+  imageIdentity?: string;
+  imageSize?: number;
+  imageShape?: 'thumbnail' | 'avatar';
+}
+
 export type UnreadMentionState = Array<'all' | 'me'>;
 export type Message = typeof message.$inferSelect;
 export interface MessageQueryParams {
@@ -65,6 +76,7 @@ export interface ThreadAttentionState {
 
 export interface CommittedThreadReadState extends ThreadAttentionState {
   lastReadSeq: number;
+  readRevision: number;
 }
 
 export interface AwayThreadAttentionState extends ThreadAttentionState {
@@ -221,7 +233,10 @@ export class MessageService implements OnModuleInit {
     clientMessageId?: string,
     forwardBundleId?: string,
     beforeMessageCreate?: (tx: DatabaseTransaction) => Promise<void>,
-    quoteVisibility?: { clearedThroughSeq?: number | null; hideCreatorIds?: number[] },
+    quoteVisibility?: {
+      clearedThroughSeq?: number | null;
+      hideCreatorIds?: number[];
+    },
   ): Promise<Omit<Message, 'id'>> {
     if (clientMessageId !== undefined) {
       const existing = await this.findByClientMessageId(clientMessageId);
@@ -658,7 +673,10 @@ export class MessageService implements OnModuleInit {
     //  - hideCreatorIds: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
     //    by the controller (group threads leave blocked members visible).
     const conditions: SQL[] = [eq(message.threadId, threadId)];
-    if (filters?.clearedThroughSeq !== null && filters?.clearedThroughSeq !== undefined)
+    if (
+      filters?.clearedThroughSeq !== null &&
+      filters?.clearedThroughSeq !== undefined
+    )
       conditions.push(gt(message.seq, filters.clearedThroughSeq));
     if (filters?.hideCreatorIds?.length)
       conditions.push(notInArray(message.creator, filters.hideCreatorIds));
@@ -698,13 +716,80 @@ export class MessageService implements OnModuleInit {
     );
   }
 
+  private deriveReplyText(
+    author: string,
+    contentType: ContentType,
+    content: string,
+  ): Pick<ReplyPreview, 'author' | 'body' | 'contentType'> {
+    const body = truncateText(derivePreview(contentType, content), 100);
+    return {
+      author,
+      body,
+      contentType,
+    };
+  }
+
+  private async resolveReplyVisual(
+    contentType: ContentType,
+    rawContent: string,
+  ): Promise<
+    Pick<
+      ReplyPreview,
+      'image' | 'imageLabel' | 'imageIdentity' | 'imageSize' | 'imageShape'
+    >
+  > {
+    try {
+      const content = JSON.parse(rawContent) as Record<string, unknown>;
+      if (
+        contentType === ContentType.IMAGE &&
+        typeof content['url'] === 'string'
+      )
+        return {
+          image: content['url'],
+          imageSize:
+            typeof content['size'] === 'number' ? content['size'] : undefined,
+          imageShape: 'thumbnail',
+        };
+      if (contentType === ContentType.INVITE)
+        return {
+          image:
+            typeof content['groupAvatar'] === 'string'
+              ? content['groupAvatar']
+              : undefined,
+          imageLabel:
+            typeof content['groupName'] === 'string'
+              ? content['groupName']
+              : undefined,
+          imageIdentity:
+            typeof content['group'] === 'string' ? content['group'] : undefined,
+          imageShape: 'avatar',
+        };
+      if (contentType === ContentType.LINK) {
+        const wire = await this.linkPreview.enrichForWire(
+          contentType,
+          rawContent,
+        );
+        const link = JSON.parse(wire) as Record<string, unknown>;
+        return typeof link['image'] === 'string'
+          ? { image: link['image'], imageShape: 'thumbnail' }
+          : {};
+      }
+    } catch {
+      // Malformed legacy content degrades to a text-only reply summary.
+    }
+    return {};
+  }
+
   /** Batch-enrich stored `{text, quote:{seq}}` envelopes without persisting a preview. Cross-thread
    * callers may provide viewer visibility independently for each source thread. */
   async attachQuotePreviews<T extends Message>(
     msgs: T[],
     filters?:
       | { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }
-      | Map<number, { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }>,
+      | Map<
+          number,
+          { clearedThroughSeq?: number | null; hideCreatorIds?: number[] }
+        >,
   ): Promise<T[]> {
     const refs = new Map<number, Set<number>>();
     for (const message of msgs) {
@@ -739,18 +824,27 @@ export class MessageService implements OnModuleInit {
         viewerFilters?.hideCreatorIds?.includes(target.creator)
       );
     });
-    const byKey = new Map(
-      visibleTargets.map((target) => [
-        `${target.threadId}:${target.seq}`,
-        truncateText(
-          `${target.user.name}：${derivePreview(
-            target.contentType,
-            target.content,
-          )}`,
-          100,
-        ),
-      ]),
+    const previews = await Promise.all(
+      visibleTargets.map(async (target): Promise<[string, ReplyPreview]> => {
+        const text = this.deriveReplyText(
+          target.user.name,
+          target.contentType,
+          target.content,
+        );
+        const visual = await this.resolveReplyVisual(
+          target.contentType,
+          target.content,
+        );
+        return [
+          `${target.threadId}:${target.seq}`,
+          {
+            ...text,
+            ...visual,
+          },
+        ];
+      }),
     );
+    const byKey = new Map(previews);
     return msgs.map((message) => {
       if (message.contentType !== ContentType.PURE_TEXT) return message;
       const content = parseTextMessageContent(message.content);
@@ -762,7 +856,7 @@ export class MessageService implements OnModuleInit {
           text: content.text,
           quote: {
             seq: content.quote.seq,
-            ...(preview === undefined ? {} : { preview }),
+            ...(preview ?? {}),
           },
         }),
       };
@@ -783,7 +877,13 @@ export class MessageService implements OnModuleInit {
     const byMsg = new Map<bigint, string[]>();
     const allDigests = new Set<string>();
     for (const m of msgs) {
-      const ds = extractDigests(m.content);
+      // Reply previews on PURE_TEXT messages may contain a target thumbnail URL. That target owns
+      // the MediaMessage authorization row; it must not make the text reply itself look like a
+      // failed media upload.
+      const ds =
+        m.contentType === ContentType.PURE_TEXT
+          ? []
+          : extractDigests(m.content);
       byMsg.set(m.id, ds);
       for (const d of ds) allDigests.add(d);
     }
@@ -1289,18 +1389,27 @@ export class MessageService implements OnModuleInit {
     const rows = await this.queryRaw<
       Array<{
         lastReadSeq: number;
+        readRevision: number;
         unread: number;
         mentionContents: string[];
         account: string;
       }>
     >`
-      WITH advanced AS (
-        UPDATE "ThreadParticipant"
-        SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", -1), ${localReadHwm})
-        WHERE "userId" = ${userId}
-          AND "threadId" = ${threadId}
-          AND "leftAt" IS NULL
-        RETURNING "lastReadSeq"
+      WITH bumped AS (
+        UPDATE "User"
+        SET "readRevision" = "readRevision" + 1
+        WHERE id = ${userId}
+        RETURNING "readRevision"
+      ), advanced AS (
+        UPDATE "ThreadParticipant" AS participant
+        SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", -1), ${localReadHwm}),
+            "readRevision" = bumped."readRevision",
+            "updatedAt" = CURRENT_TIMESTAMP
+        FROM bumped
+        WHERE participant."userId" = ${userId}
+          AND participant."threadId" = ${threadId}
+          AND participant."leftAt" IS NULL
+        RETURNING participant."lastReadSeq", participant."readRevision"
       ), sample AS (
         SELECT m.seq, m.content, m."contentType"
         FROM "Message" m, advanced a
@@ -1312,6 +1421,7 @@ export class MessageService implements OnModuleInit {
       )
       SELECT
         a."lastReadSeq" AS "lastReadSeq",
+        a."readRevision" AS "readRevision",
         COUNT(s.seq)::int AS unread,
         COALESCE(
           ARRAY_AGG(s.content::text) FILTER (
@@ -1327,15 +1437,62 @@ export class MessageService implements OnModuleInit {
       FROM advanced a
       JOIN "User" u ON u.id = ${userId}
       LEFT JOIN sample s ON TRUE
-      GROUP BY a."lastReadSeq", u.account
+      GROUP BY a."lastReadSeq", a."readRevision", u.account
     `;
     const row = rows[0];
     if (!row) return null;
     return {
       lastReadSeq: row.lastReadSeq,
+      readRevision: row.readRevision,
       count: row.unread,
       mention: this.mentionState(row.mentionContents ?? [], row.account),
     };
+  }
+
+  /** Current last-write-wins read states changed in `(fromRevision, toRevision]`. */
+  async queryReadDelta(
+    userId: number,
+    fromRevision: number,
+    toRevision: number,
+  ) {
+    const participants =
+      await this.database.db.query.threadParticipant.findMany({
+        where: and(
+          eq(threadParticipant.userId, userId),
+          isNull(threadParticipant.leftAt),
+          gt(threadParticipant.readRevision, fromRevision),
+          lte(threadParticipant.readRevision, toRevision),
+        ),
+        columns: { threadId: true, lastReadSeq: true, readRevision: true },
+        orderBy: asc(threadParticipant.readRevision),
+      });
+    if (participants.length === 0) return [];
+    const self = await this.database.db.query.user.findFirst({
+      where: eq(user.id, userId),
+      columns: { account: true },
+    });
+    const attention = self
+      ? await this.unreadAttentionByThread(
+          userId,
+          self.account,
+          participants.map((p) => p.threadId),
+        )
+      : new Map();
+    return participants.map((p) => ({
+      threadId: p.threadId,
+      lastReadSeq: p.lastReadSeq ?? -1,
+      readRevision: p.readRevision,
+      unreadCount: attention.get(p.threadId)?.count ?? 0,
+      mentionUnread: attention.get(p.threadId)?.mention ?? [],
+    }));
+  }
+
+  async currentReadRevision(userId: number): Promise<number> {
+    const row = await this.database.db.query.user.findFirst({
+      where: eq(user.id, userId),
+      columns: { readRevision: true },
+    });
+    return row?.readRevision ?? 0;
   }
 
   /**

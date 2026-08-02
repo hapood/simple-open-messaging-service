@@ -36,7 +36,7 @@ import { ThreadSearchInputComponent } from '../../thread-search-input/thread-sea
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: var(--app-surface);
+      background: var(--app-thread-list-bg);
       box-sizing: border-box;
       overflow: hidden;
       /* No border-right here: the inter-pane divider is owned by the shell, not the pane. On desktop the

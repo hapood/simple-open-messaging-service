@@ -21,9 +21,7 @@ import { OtpLoginDto } from '../dto/auth.dto.js';
  * One-time-code (admin-issued) login — available on every platform. Distinct from the password-login
  * {@link AuthController} (its own throttle surface + it bypasses LocalStrategy's brute-force ban).
  * `@Public()` (callable pre-auth) with a `@Throttle` ceiling so a guessed 6-digit code can't be brute-
- * forced. The session `client` comes from the body (default 'app'); a trusted native client (app/desktop)
- * gets a permanent session, the browser a 14-day sliding one. Full device attestation is deferred
- * hardening — today the client claim is trusted (the frontend sends the real platform).
+ * forced. The session `client` comes from the body (default 'app') and is informational only.
  */
 @ApiTags('auth')
 @Public()
@@ -35,7 +33,10 @@ export class AuthOtpController {
   @Throttle(10, 60) // 10 attempts/min per IP — brute-force ceiling on the 6-digit space (10^6)
   @HttpCode(HttpStatus.OK)
   @Post('auth/otp/login')
-  @ApiOperation({ summary: 'Login with an admin-issued one-time code (Android → long-term app session)' })
+  @ApiOperation({
+    summary:
+      'Login with an admin-issued one-time code (Android → long-term app session)',
+  })
   async otpLogin(
     @Body() dto: OtpLoginDto,
     @Headers('user-agent') userAgent: string,
@@ -44,13 +45,17 @@ export class AuthOtpController {
   ) {
     // verifyAndLogin throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on failure → the
     // global filter renders it as HTTP 200 + business code (consistent with the rest of the auth surface).
-    const { token, mustChangePassword } = await this.otpLoginService.verifyAndLogin(dto.account, dto.code, {
-      device: dto.device,
-      userAgent,
-      ip,
-      client: dto.client,
-    });
-    setSessionCookies(reply, token, true);
-    return { session_token: token, ...(mustChangePassword ? { mustChangePassword: true } : {}) };
+    const { token, mustChangePassword } =
+      await this.otpLoginService.verifyAndLogin(dto.account, dto.code, {
+        device: dto.device,
+        userAgent,
+        ip,
+        client: dto.client,
+      });
+    setSessionCookies(reply, token);
+    return {
+      session_token: token,
+      ...(mustChangePassword ? { mustChangePassword: true } : {}),
+    };
   }
 }

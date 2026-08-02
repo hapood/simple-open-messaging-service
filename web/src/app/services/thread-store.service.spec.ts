@@ -75,6 +75,8 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let sessionProfile: ReturnType<typeof signal<User | undefined>>;
   let establishSessionSpy: jasmine.Spy;
   let queryThreadDeltaSpy: jasmine.Spy;
+  let queryReadDeltaSpy: jasmine.Spy;
+  let queryUserInfoSpy: jasmine.Spy;
   let advanceCursorSpy: jasmine.Spy;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: jasmine.Spy;
@@ -114,7 +116,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .and.resolveTo({ items: [], hasMore: false, nextCursor: null }),
           },
         },
-        { provide: WebsocketService, useValue: { eventSubject } },
+        {
+          provide: WebsocketService,
+          useValue: { eventSubject, reconnect$: new Subject<void>() },
+        },
         {
           provide: UserService,
           useValue: {
@@ -135,6 +140,14 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .and.callFake((r: number) => cursorSignal.set(r))),
             queryThreadDelta: (queryThreadDeltaSpy =
               jasmine.createSpy('queryThreadDelta')),
+            queryReadDelta: (queryReadDeltaSpy = jasmine
+              .createSpy('queryReadDelta')
+              .and.returnValue(
+                of({ code: 0, data: { readRevision: 0, items: [] } }),
+              )),
+            queryUserInfo: (queryUserInfoSpy = jasmine
+              .createSpy('queryUserInfo')
+              .and.returnValue(of({ code: 0, data: [] }))),
             syncPeerProfile: () => of({ code: 0 }),
             markRead: () => of({ code: 0 }),
           },
@@ -191,6 +204,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     profileRev?: number;
     friendReqRev?: number | null;
     friendReqAckRev?: number;
+    readRevision?: number;
   }): void {
     eventSubject.next({ event: 'HELLO', data });
   }
@@ -737,7 +751,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── PEER_PROFILE_UPDATED (a friend changed avatar/name/bio) ───────────────────────────────────
 
-  it('PEER_PROFILE_UPDATED patches the matching P2P row by peerUser.id and writes the profile through', async () => {
+  it('PEER_PROFILE_UPDATED pulls and patches the matching P2P profile', async () => {
     await populate([
       p2p(1, 11, {
         peerUser: {
@@ -755,23 +769,33 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
       }),
     ]);
 
+    queryUserInfoSpy.and.returnValue(
+      of({
+        code: 0,
+        data: [
+          {
+            id: 11,
+            name: 'New',
+            account: 'u11',
+            avatar: '/new.webp',
+            bio: 'b',
+            isForeigner: false,
+            domain: '',
+            createdAt: 0,
+            updatedAt: 0,
+            isDeleted: false,
+            profileRev: 2,
+          } as User,
+        ],
+      }),
+    );
     eventSubject.next({
       event: 'PEER_PROFILE_UPDATED',
-      data: {
-        id: 11,
-        name: 'New',
-        account: 'u11',
-        avatar: '/new.webp',
-        bio: 'b',
-        isForeigner: false,
-        domain: '',
-        createdAt: 0,
-        updatedAt: 0,
-        isDeleted: false,
-      },
+      data: { userId: 11 },
     });
     await flush();
 
+    expect(queryUserInfoSpy).toHaveBeenCalledWith({ userIds: [11] });
     expect(repo.items()[0].peerUser.name).toBe('New');
     // Profile write-through fires for the embedded peer profile.
     expect(putProfileSpy).toHaveBeenCalledWith(
@@ -811,6 +835,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     repo.applyReadState({
       threadId: 1,
       lastReadSeq: 7,
+      readRevision: 1,
       unreadCount: 1,
       mentionUnread: ['all'],
     });
@@ -822,6 +847,68 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         mentionUnread: ['all'],
       }),
     );
+  });
+
+  it('applies an adjacent THREAD_READ_UPDATED revision and ignores its replay', async () => {
+    await populate([p2p(1, 11, { lastReadSeq: 5, unreadCount: 3 })]);
+    await webdb.putMeta('readRevision', 4);
+    emitHello({ userId: 1, threadRevision: 0, readRevision: 4 });
+    await flush(20);
+
+    const state = {
+      threadId: 1,
+      lastReadSeq: 7,
+      readRevision: 5,
+      unreadCount: 1,
+      mentionUnread: ['me'] as Array<'all' | 'me'>,
+    };
+    eventSubject.next({ event: 'THREAD_READ_UPDATED', data: state });
+    eventSubject.next({ event: 'THREAD_READ_UPDATED', data: state });
+    await flush();
+
+    expect(repo.items()[0]).toEqual(
+      jasmine.objectContaining({
+        lastReadSeq: 7,
+        unreadCount: 1,
+        mentionUnread: ['me'],
+      }),
+    );
+    expect(await webdb.getMeta('readRevision')).toBe(5);
+    expect(queryReadDeltaSpy).not.toHaveBeenCalled();
+  });
+
+  it('pulls read delta when HELLO exposes a revision gap', async () => {
+    await populate([p2p(1, 11, { lastReadSeq: 2, unreadCount: 4 })]);
+    await webdb.putMeta('readRevision', 2);
+    queryReadDeltaSpy.and.returnValue(
+      of({
+        code: 0,
+        data: {
+          readRevision: 5,
+          items: [
+            {
+              threadId: 1,
+              lastReadSeq: 6,
+              readRevision: 5,
+              unreadCount: 0,
+              mentionUnread: [],
+            },
+          ],
+        },
+      }),
+    );
+
+    emitHello({ userId: 1, threadRevision: 0, readRevision: 5 });
+    await flush(20);
+
+    expect(queryReadDeltaSpy).toHaveBeenCalledWith({
+      fromRevision: 2,
+      toRevision: 5,
+    });
+    expect(repo.items()[0]).toEqual(
+      jasmine.objectContaining({ lastReadSeq: 6, unreadCount: 0 }),
+    );
+    expect(await webdb.getMeta('readRevision')).toBe(5);
   });
 
   it('the missed-summary pull applies the authoritative per-thread unreadCount', async () => {
@@ -918,7 +1005,11 @@ describe('rawPreview', () => {
         'PURE_TEXT',
         JSON.stringify({
           text: '你好 [@张三](soms://user/zhangsan%40example.com?v=1)',
-          quote: { seq: 7, preview: '李四：不应进入会话摘要' },
+          quote: {
+            seq: 7,
+            author: '李四',
+            body: '不应进入会话摘要',
+          },
         }),
       ),
     ).toBe('你好 @张三');

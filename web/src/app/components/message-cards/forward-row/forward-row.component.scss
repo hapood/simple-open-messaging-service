@@ -12,26 +12,18 @@
   // did not expose that native paint, which made the bug viewport-specific.
   appearance: none;
   -webkit-appearance: none;
-  background: var(--im-bubble-other);
-  color: var(--im-bubble-text);
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-.forward-card.msg-self {
-  background: var(--im-bubble-self);
-}
-
-.forward-card.msg-other {
-  background: var(--im-bubble-other);
 }
 
 .forward-card:disabled {
   // A malformed/legacy card still renders its explanatory fallback. Do not let
   // the desktop UA disabled-button palette hide that content.
   opacity: 1;
-  color: var(--im-bubble-text);
+  color: var(--bubble-text);
   -webkit-text-fill-color: currentColor;
   cursor: default;
 }
@@ -59,7 +51,7 @@
 
 .forward-line {
   min-width: 0;
-  color: var(--app-text-muted);
+  color: var(--bubble-muted);
   font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
@@ -75,7 +67,7 @@
   border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
   margin-top: 8px;
   padding-top: 6px;
-  color: var(--app-text-muted);
+  color: var(--bubble-muted);
   font-size: 11px;
   line-height: 14px;
 }

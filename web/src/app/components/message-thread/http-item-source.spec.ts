@@ -156,8 +156,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       sessionProfile: () => ({ id: 1, account: 'me@example.com' }),
     } as unknown as UserService;
     const profiles = jasmine.createSpy('onProfile');
+    const newerAvailable = jasmine.createSpy('onNewerAvailable');
     const src = new HttpItemSource(conv(tid), repo, userService, outbox, {
       onProfile: profiles,
+      onNewerAvailable: newerAvailable,
     });
     return {
       src,
@@ -166,6 +168,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       reconnectSignal$,
       mediaStatusLive$,
       profiles,
+      newerAvailable,
       outbox,
       queryUserInfo,
     };
@@ -291,14 +294,18 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.finishLocalInit(12);
     await Promise.resolve();
     expect(
-      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1]
-        .truncateSeq,
-    ).toBe(13);
+      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1],
+    ).toEqual({
+      skip: 1,
+      take: 50,
+      lastSeq: 10,
+      orderBy: 'asc',
+    });
     subscription.unsubscribe();
   });
 
   it('signals a backend fill when durable thread metadata leads an empty local messages cache', async () => {
-    const { src, repo } = setup({
+    const { src, repo, newerAvailable } = setup({
       code: 0,
       message: 'ok',
       data: [],
@@ -310,6 +317,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const subscription = src.requestNewer(-1, 50).subscribe();
     src.finishLocalInit(undefined, 258);
     await Promise.resolve();
+    expect(newerAvailable).toHaveBeenCalledOnceWith(258);
     expect((repo.queryMessages as jasmine.Spy).calls.count()).toBeGreaterThan(
       before,
     );
@@ -333,13 +341,17 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.finishLocalInit(12, 11);
     await Promise.resolve();
     expect(
-      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1]
-        .truncateSeq,
-    ).toBe(13);
+      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1],
+    ).toEqual({
+      skip: 1,
+      take: 50,
+      lastSeq: 10,
+      orderBy: 'asc',
+    });
     subscription.unsubscribe();
   });
 
-  it('bounds the post-init newer walk at the frozen message-db latest seq', async () => {
+  it('keeps the right-edge HTTP walk unbounded when the HWM is ahead', async () => {
     const { src, repo } = setup({
       code: 0,
       message: 'ok',
@@ -357,12 +369,35 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       take: 50,
       lastSeq: 11,
       orderBy: 'asc',
-      truncate: true,
-      truncateSeq: 21,
     });
   });
 
-  it('reads the shared thread cutoff again for every newer request', async () => {
+  it('keeps the newer demand pending without querying when its cursor is already newest', async () => {
+    const { src, repo, liveSignal$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(50, 2)],
+      hasMore: false,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+
+    await src.init(-1, 50, 0);
+    src.finishLocalInit(undefined, 50);
+    liveSignal$.next({ threadId: 42, seq: 50 });
+    const callsAfterInit = queryMessages.calls.count();
+    const subscription = src.requestNewer(50, 50).subscribe();
+    await Promise.resolve();
+
+    expect(queryMessages.calls.count()).toBe(callsAfterInit);
+
+    queryMessages.and.resolveTo({ data: [row(51, 2)], hasMore: false });
+    liveSignal$.next({ threadId: 42, seq: 51 });
+    await Promise.resolve();
+    expect(queryMessages.calls.count()).toBe(callsAfterInit + 1);
+    subscription.unsubscribe();
+  });
+
+  it('uses the shared HWM only to decide whether a newer request is needed', async () => {
     const { src, repo, liveSignal$ } = setup({
       code: 0,
       message: 'ok',
@@ -380,8 +415,11 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       queryMessages.calls
         .allArgs()
         .slice(-2)
-        .map((args) => args[1].truncateSeq),
-    ).toEqual([21, 26]);
+        .map((args) => args[1]),
+    ).toEqual([
+      { skip: 1, take: 50, lastSeq: 10, orderBy: 'asc' },
+      { skip: 1, take: 50, lastSeq: 20, orderBy: 'asc' },
+    ]);
   });
 
   it('uses an unbounded newer walk after the repository reconnects', async () => {
@@ -402,8 +440,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       take: 50,
       lastSeq: 10,
       orderBy: 'asc',
-      truncate: false,
-      truncateSeq: undefined,
     });
   });
 
@@ -788,12 +824,17 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(items[0].data.status).toBeUndefined();
   });
 
-  it('rawToItems preserves the server-authored quote preview and jump target', async () => {
+  it('rawToItems preserves the server-authored structured reply and jump target', async () => {
     const quoted = {
       ...row(101, 2),
       content: JSON.stringify({
         text: 'reply',
-        quote: { seq: 44, preview: 'Alice：original message' },
+        quote: {
+          seq: 44,
+          author: 'Alice',
+          body: 'original message',
+          contentType: 'PURE_TEXT',
+        },
       }),
     };
     const { src } = setup({
@@ -807,7 +848,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     expect(items[0].data.quote).toEqual({
       seq: 44,
-      preview: 'Alice：original message',
+      author: 'Alice',
+      body: 'original message',
+      contentType: 'PURE_TEXT',
     });
   });
 
@@ -842,7 +885,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     const items = await src.init(-1, 50, 0);
 
-    expect(items[0].data.quote).toEqual({ seq: 44, preview: '' });
+    expect(items[0].data.quote).toEqual({ seq: 44 });
   });
 
   it('restores a persisted AUDIO message as a playable voice card after reopening the thread', async () => {

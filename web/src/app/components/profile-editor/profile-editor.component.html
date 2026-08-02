@@ -1,3 +1,7 @@
+@if (avatarDraft(); as file) {
+  <app-avatar-editor class="embedded-avatar-editor" [file]="file" [embedded]="true"
+    (canceled)="cancelAvatarEdit()" (completed)="finishAvatarEdit($event)" />
+} @else {
 <div class="profile-editor" [class.safe-area-header]="respectTopSafeArea()">
   <div class="msg-header">
     <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
@@ -78,3 +82,4 @@
     </div>
   </div>
 </div>
+}

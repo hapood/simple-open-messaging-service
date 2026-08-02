@@ -5,7 +5,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { IS_PUBLIC, IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH } from '../common/public.decorator.js';
+import {
+  IS_PUBLIC,
+  IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH,
+} from '../common/public.decorator.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BearerAuthService } from './bearer-auth.service.js';
@@ -43,7 +46,11 @@ export class SessionAuthGuard implements CanActivate {
       headers: Record<string, unknown>;
       cookies?: Record<string, string | undefined>;
       ip?: string;
-      user?: { userId: number; sessionId: number | null; mustChangePassword: boolean };
+      user?: {
+        userId: number;
+        sessionId: number | null;
+        mustChangePassword: boolean;
+      };
     }>();
     // Cookie-first (httpOnly media_token), Bearer fallback — same resolution as the /uploads/* validator.
     const fromCookie = req.cookies?.[MEDIA_TOKEN_COOKIE];
@@ -83,7 +90,7 @@ export class SessionAuthGuard implements CanActivate {
     // it returns/throws; the interceptor mutates the response). Only PERSISTENT web/desktop sessions that
     // slid this call; session cookies live for the browser session already, native/Bearer carry no cookie,
     // app tokens never slide.
-    if (principal.slid && principal.persistent && fromCookie) {
+    if (principal.slid && fromCookie) {
       (req as { sessionSlideToken?: string }).sessionSlideToken = fromCookie;
     }
     return true;

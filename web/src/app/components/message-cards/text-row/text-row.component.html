@@ -60,23 +60,77 @@
           <button
             type="button"
             class="msg-quote"
+            [class.msg-quote--visual]="
+              quote.imageShape === 'avatar' || quote.image
+            "
             (click)="quoteJump.emit(quote.seq)"
           >
-            @if (quotePreview().author; as author) {
-              <strong>{{ author }}</strong>
+            @if (quote.imageShape === 'avatar') {
+              <app-user-avatar
+                class="msg-quote-visual msg-quote-avatar"
+                [type]="UserAvatarType.GROUP"
+                [name]="quote.imageLabel"
+                [identityId]="quote.imageIdentity"
+                [colorIdentityId]="quote.imageIdentity || quote.imageLabel"
+                [src]="quote.image"
+              />
+            } @else if (quote.image && isReplyImageGated(quote)) {
+              <span
+                class="msg-quote-visual msg-quote-placeholder"
+                aria-hidden="true"
+              ></span>
+            } @else if (quote.image) {
+              <img
+                class="msg-quote-visual"
+                [src]="replyImageSrc(quote)"
+                alt=""
+              />
             }
-            <span>{{
-              quotePreview().body || ('chat.messageNotFound' | transloco)
-            }}</span>
+            <span class="msg-quote-copy">
+              @if (quotePreview().author; as author) {
+                <strong>{{ author }}</strong>
+              }
+              <span>{{
+                quotePreview().body || ('chat.messageNotFound' | transloco)
+              }}</span>
+            </span>
           </button>
         } @else {
-          <div class="msg-quote">
-            @if (quotePreview().author; as author) {
-              <strong>{{ author }}</strong>
+          <div
+            class="msg-quote"
+            [class.msg-quote--visual]="
+              quote.imageShape === 'avatar' || quote.image
+            "
+          >
+            @if (quote.imageShape === 'avatar') {
+              <app-user-avatar
+                class="msg-quote-visual msg-quote-avatar"
+                [type]="UserAvatarType.GROUP"
+                [name]="quote.imageLabel"
+                [identityId]="quote.imageIdentity"
+                [colorIdentityId]="quote.imageIdentity || quote.imageLabel"
+                [src]="quote.image"
+              />
+            } @else if (quote.image && isReplyImageGated(quote)) {
+              <span
+                class="msg-quote-visual msg-quote-placeholder"
+                aria-hidden="true"
+              ></span>
+            } @else if (quote.image) {
+              <img
+                class="msg-quote-visual"
+                [src]="replyImageSrc(quote)"
+                alt=""
+              />
             }
-            <span>{{
-              quotePreview().body || ('chat.messageNotFound' | transloco)
-            }}</span>
+            <span class="msg-quote-copy">
+              @if (quotePreview().author; as author) {
+                <strong>{{ author }}</strong>
+              }
+              <span>{{
+                quotePreview().body || ('chat.messageNotFound' | transloco)
+              }}</span>
+            </span>
           </div>
         }
       }

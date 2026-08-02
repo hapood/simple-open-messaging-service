@@ -1,4 +1,11 @@
-import { Component, signal, computed, inject, OnDestroy, DestroyRef } from '@angular/core';
+import {
+  Component,
+  signal,
+  computed,
+  inject,
+  OnDestroy,
+  DestroyRef,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -7,7 +14,10 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
-import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import {
+  IconComponent,
+  AppIconType,
+} from '../../components/icon/icon.component';
 import { QrCodeComponent } from '../../components/qr-code/qr-code.component';
 import { AuthService } from '../../services/auth.service';
 import { ConfigService } from '../../services/config.service';
@@ -81,14 +91,14 @@ export class QrLoginPageComponent implements OnDestroy {
     const seconds = Math.max(0, this.qrRemainingSec());
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   });
-  /** Permanent-session trust for THIS QR: a trusted native client (Android app / desktop — both keep the
-   *  token in OS secure storage) gets a permanent session; the browser gets a 14-day sliding one. The
-   *  platform is the trust signal (no opt-in toggle). Drives the session lifetime + the notice shown. */
-  readonly qrTrusted = isTauri();
-  readonly canPassword = computed(() => this.config.methodsForPlatform().includes('password'));
+  readonly canPassword = computed(() =>
+    this.config.methodsForPlatform().includes('password'),
+  );
   /** OTP login is offered as a switcher when enabled — always so under the alt modes (both methods on every
    *  platform). */
-  readonly canOtp = computed(() => this.config.methodsForPlatform().includes('otp'));
+  readonly canOtp = computed(() =>
+    this.config.methodsForPlatform().includes('otp'),
+  );
 
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private countdownTimer: ReturnType<typeof setInterval> | undefined;
@@ -127,26 +137,27 @@ export class QrLoginPageComponent implements OnDestroy {
     this.view.set('loading');
     // client follows the real platform (app/web/desktop) and trust follows the platform's capability —
     // both are constant for this app session, so the QR is minted once at the right level (no toggle).
-    this.auth.qrCreate(sessionClient(), this.qrTrusted)
+    this.auth
+      .qrCreate(sessionClient())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-      next: (res) => {
-        if (res.code === 0 && res.data) {
-          this.consecutiveCreateFailures = 0;
-          this.qrToken.set(res.data.qrToken);
-          this.qrDeadline = res.data.expiresAt;
-          this.qrTotalMs = Math.max(1, res.data.expiresAt - Date.now());
-          this.qrRemainingPct.set(100);
-          this.qrRemainingSec.set(Math.ceil(this.qrTotalMs / 1000));
-          this.view.set('pending');
-          this.beginCountdown();
-          this.beginPoll();
-        } else {
-          this.handleCreateFailure();
-        }
-      },
-      error: () => this.handleCreateFailure(),
-    });
+        next: (res) => {
+          if (res.code === 0 && res.data) {
+            this.consecutiveCreateFailures = 0;
+            this.qrToken.set(res.data.qrToken);
+            this.qrDeadline = res.data.expiresAt;
+            this.qrTotalMs = Math.max(1, res.data.expiresAt - Date.now());
+            this.qrRemainingPct.set(100);
+            this.qrRemainingSec.set(Math.ceil(this.qrTotalMs / 1000));
+            this.view.set('pending');
+            this.beginCountdown();
+            this.beginPoll();
+          } else {
+            this.handleCreateFailure();
+          }
+        },
+        error: () => this.handleCreateFailure(),
+      });
   }
 
   /** A qrCreate failure (network drop or non-zero code). Give it a bounded number of linear-backoff retries
@@ -154,13 +165,17 @@ export class QrLoginPageComponent implements OnDestroy {
    *  gone, surface the recoverable error view instead of looping forever. */
   private handleCreateFailure(): void {
     this.consecutiveCreateFailures += 1;
-    if (this.consecutiveCreateFailures > QrLoginPageComponent.MAX_CREATE_RETRIES) {
+    if (
+      this.consecutiveCreateFailures > QrLoginPageComponent.MAX_CREATE_RETRIES
+    ) {
       this.consecutiveCreateFailures = 0;
       this.view.set('error');
       return;
     }
     this.view.set('loading');
-    const delay = QrLoginPageComponent.CREATE_RETRY_BASE_MS * this.consecutiveCreateFailures;
+    const delay =
+      QrLoginPageComponent.CREATE_RETRY_BASE_MS *
+      this.consecutiveCreateFailures;
     this.refreshTimer = setTimeout(() => this.start(), delay);
   }
 
@@ -175,7 +190,10 @@ export class QrLoginPageComponent implements OnDestroy {
     this.qrRemainingPct.set(0);
     this.qrRemainingSec.set(0);
     this.view.set('loading');
-    this.refreshTimer = setTimeout(() => this.start(), QrLoginPageComponent.EXPIRY_REFRESH_DELAY_MS);
+    this.refreshTimer = setTimeout(
+      () => this.start(),
+      QrLoginPageComponent.EXPIRY_REFRESH_DELAY_MS,
+    );
   }
 
   private stopRefresh(): void {
@@ -188,14 +206,17 @@ export class QrLoginPageComponent implements OnDestroy {
     if (!token) return;
     this.stopPoll();
     this.pollTimer = setInterval(() => {
-      this.auth.qrPoll(token, undefined, this.qrTrusted)
+      this.auth
+        .qrPoll(token)
         .pipe(takeUntilDestroyed(this.destroyRef))
         .subscribe({
           next: (res) => {
             if (res.code === 0 && res.data?.session_token) {
               this.stopPoll();
               this.routeService.redirect(
-                res.data?.mustChangePassword ? RoutePage.AUTH_SET_PASSWORD : RoutePage.HOME,
+                res.data?.mustChangePassword
+                  ? RoutePage.AUTH_SET_PASSWORD
+                  : RoutePage.HOME,
               );
             } else if (res.code === 0 && res.data?.status === 'scanned') {
               // Scanned → "confirm on phone". The token is NOT consumed at scan (only at confirm's atomic

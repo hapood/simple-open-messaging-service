@@ -32,6 +32,38 @@ describe('SseService', () => {
     return writes.some((w) => w.includes('event: FORCE_LOGOUT'));
   }
 
+  it('broadcasts THREAD_READ_UPDATED to every connection of the same user', () => {
+    const svc = new SseService({} as never, {} as never, {} as never);
+    const a = mockRes();
+    const b = mockRes();
+    (svc as unknown as { clients: Record<number, unknown[]> }).clients[7] = [
+      {
+        res: a.res,
+        ping: setInterval(() => undefined, 60_000),
+        since: 0,
+        sessionId: 1,
+      },
+      {
+        res: b.res,
+        ping: setInterval(() => undefined, 60_000),
+        since: 0,
+        sessionId: 2,
+      },
+    ];
+
+    svc.onThreadReadUpdated(7, {
+      threadId: 9,
+      lastReadSeq: 12,
+      readRevision: 4,
+      unreadCount: 0,
+      mentionUnread: [],
+    });
+
+    expect(a.writes.join('')).toContain('event: THREAD_READ_UPDATED');
+    expect(b.writes.join('')).toContain('"readRevision":4');
+    svc.onModuleDestroy();
+  });
+
   it('onSessionRevoked disconnects ONLY the matching session (other devices survive)', () => {
     const svc = new SseService();
     const a = mockRes(); // session 11
@@ -78,7 +110,7 @@ describe('SseService', () => {
     expect(svc.isUserOnline(7)).toBe(false);
   });
 
-  it('onSessionsInvalidated kicks ALL of the user\'s sessions (broadcast)', () => {
+  it("onSessionsInvalidated kicks ALL of the user's sessions (broadcast)", () => {
     const svc = new SseService();
     const a = mockRes();
     const b = mockRes();
@@ -97,7 +129,11 @@ describe('SseService', () => {
     const a = mockRes();
     svc.register(7, 11, a.res);
 
-    svc.onSessionRevoked({ userId: 7, sessionId: 999, reason: 'device_revoke' });
+    svc.onSessionRevoked({
+      userId: 7,
+      sessionId: 999,
+      reason: 'device_revoke',
+    });
 
     expect(gotForceLogout(a.writes)).toBe(false);
     expect(a.res.end).not.toHaveBeenCalled();

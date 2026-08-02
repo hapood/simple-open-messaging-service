@@ -1,18 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, lte, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { sessionToken, user } from '../database/schema.js';
+import { sessionToken, user, userPreference } from '../database/schema.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
+import {
+  AUTO_TERMINATE_PREFERENCE_KEY,
+  DEFAULT_AUTO_TERMINATE_DAYS,
+  isAutoTerminateDays,
+  type AutoTerminateDays,
+} from './session-policy.js';
 
-/** Untrusted-session deadline + how long it slides forward on each (throttled) use. Active sessions
- *  stay alive indefinitely; an idle one expires 14 days after its last request. TRUSTED-device tokens
- *  (the native app, or a desktop that opted in via OS keyring) carry no deadline (Telegram-style —
- *  revocation-only); their `lastSeenAt` activity tracking still runs (the sliding-window capability is
- *  retained) but `expiresAt` is never set. */
-const WEB_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** Throttle for the activity+sliding write: refresh lastSeenAt/lastSeenIp (all clients) and extend
- *  the web/desktop deadline at most once per 5 minutes per token. Persistent cache entries carry the
+ *  the inactivity deadline at most once per 5 minutes per token. Persistent cache entries carry the
  *  next touch deadline, so validate() does not write to the DB on every request. */
 const WEB_SESSION_SLIDING_TOUCH_MS = 5 * 60 * 1000;
 const CACHE_PREFIX = 'session:';
@@ -20,8 +24,8 @@ const CACHE_PREFIX = 'session:';
 interface SessionCacheEntry {
   userId: number;
   sessionId: number;
-  exp: number | null;
-  persistent: boolean;
+  exp: number;
+  autoTerminateDays: AutoTerminateDays;
   mustChangePassword: boolean;
   nextTouchAt: number;
 }
@@ -32,8 +36,7 @@ function encodeCacheEntry(entry: SessionCacheEntry): string {
 
 /** Client kind = the device platform ('app' native / 'web' browser / 'desktop' Tauri). Persisted on the
  *  row so the device list can render an icon/label per credential. It is INFORMATIONAL only — the
- *  token's lifetime is driven by `trusted`, not `client` (see {@link issue}). The native `app` client
- *  is trusted by default (its token lives in OS secure storage). */
+ *  client value does not affect the session lifetime policy. */
 export type SessionClient = 'app' | 'web' | 'desktop';
 
 function hashToken(token: string): string {
@@ -44,8 +47,8 @@ function hashToken(token: string): string {
  * Issues + validates long-lived, revocable, per-device session credentials (the single credential that
  * replaces the legacy access+refresh pair). Stores only the sha256 hash; the plaintext is returned once,
  * generalized to:
- *  - a nullable `expiresAt` (app = never; web = sliding 14d);
- *  - a `lastSeenAt` sliding-window tracker for web;
+ *  - a required sliding `expiresAt` for every client;
+ *  - a `lastSeenAt` activity tracker;
  *  - an issue-initialized validation cache so the hot REST path avoids a DB read.
  *
  * Used by {@link BearerAuthService}, which is the single source of truth shared by the global
@@ -62,18 +65,8 @@ export class SessionTokenService {
     private readonly kvStore: KvStoreService,
   ) {}
 
-  /**
-   * Mint a session token. Lifetime is driven by `trusted`, not by platform: a TRUSTED device (token
-   * stored in OS secure storage) → `expiresAt=null` (no lifecycle; valid until explicitly revoked); an
-   * UNTRUSTED device → `expiresAt=now+14d`, sliding (extended on use). `trusted` defaults to
-   * `client === 'app'` (the native app stores its token in OS secure storage, so it is trusted by
-   * default); a `desktop` client is trusted only when the caller opts in (it has OS keyring storage and
-   * the user chose "trust this device"); `web` is never trusted (a browser can't store a bearer token
-   * in OS secure storage). `persistent` (untrusted web/desktop) selects a 14-day cookie ("keep me
-   * logged in") vs a session cookie — only persistent cookies are refreshed on slide. The plaintext is
-   * returned ONCE; only the sha256 hash is stored. Prior tokens are NOT revoked — a user may have
-   * several (one per device, including multiple trusted devices); each is independently revocable.
-   */
+  /** Mint a session token using the user's inactivity policy (30 days by default). Client is metadata
+   * only. The plaintext is returned once; only its sha256 hash is stored. */
   async issue(
     userId: number,
     client: SessionClient,
@@ -81,65 +74,72 @@ export class SessionTokenService {
       device?: string;
       userAgent?: string;
       ip?: string;
-      persistent?: boolean;
-      trusted?: boolean;
     } = {},
   ): Promise<string> {
     const plaintext = randomBytes(32).toString('hex');
-    // Lifetime by trust, not platform: the native app is trusted by default; a desktop opts in; web never.
-    const trusted = opts.trusted ?? client === 'app';
-    const expiresAt = trusted
-      ? null
-      : new Date(Date.now() + WEB_SESSION_TTL_MS);
     const tokenHash = hashToken(plaintext);
-    const persistent = opts.persistent ?? true;
-    const [created, principal] = await Promise.all([
-      this.database.db
-        .insert(sessionToken)
-        .values({
-          userId,
-          tokenHash,
-          client,
-          device: opts.device ?? null,
-          userAgent: opts.userAgent ?? null,
-          ip: opts.ip ?? null,
-          lastSeenIp: opts.ip ?? null,
-          expiresAt,
-          persistent,
-          trusted,
-        })
-        .returning({ id: sessionToken.id })
-        .then((rows) => rows[0]),
+    const [principal, preference] = await Promise.all([
       this.database.db
         .select({ mustChangePassword: user.mustChangePassword })
         .from(user)
         .where(eq(user.id, userId))
         .limit(1)
         .then((rows) => rows[0]),
+      this.database.db
+        .select({ value: userPreference.value })
+        .from(userPreference)
+        .where(
+          and(
+            eq(userPreference.userId, userId),
+            eq(userPreference.key, AUTO_TERMINATE_PREFERENCE_KEY),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]),
     ]);
-    if (!created || !principal) throw new Error('session issue failed');
+    if (!principal) throw new Error('session issue failed');
+    const autoTerminateDays = isAutoTerminateDays(preference?.value)
+      ? preference.value
+      : DEFAULT_AUTO_TERMINATE_DAYS;
+    const expiresAt = new Date(
+      Date.now() + autoTerminateDays * 24 * 60 * 60 * 1000,
+    );
+    const created = await this.database.db
+      .insert(sessionToken)
+      .values({
+        userId,
+        tokenHash,
+        client,
+        device: opts.device ?? null,
+        userAgent: opts.userAgent ?? null,
+        ip: opts.ip ?? null,
+        lastSeenIp: opts.ip ?? null,
+        expiresAt,
+        autoTerminateDays,
+      })
+      .returning({ id: sessionToken.id })
+      .then((rows) => rows[0]);
+    if (!created) throw new Error('session issue failed');
     await this.kvStore
       .initPersistent(
         `${CACHE_PREFIX}${tokenHash}`,
         encodeCacheEntry({
           userId,
           sessionId: created.id,
-          exp: expiresAt?.getTime() ?? null,
-          persistent,
+          exp: expiresAt.getTime(),
+          autoTerminateDays,
           mustChangePassword: principal.mustChangePassword,
           nextTouchAt: Date.now() + WEB_SESSION_SLIDING_TOUCH_MS,
         }),
-        expiresAt?.getTime() ?? null,
+        expiresAt.getTime(),
       )
       .catch(() => {});
     return plaintext;
   }
 
   /**
-   * Validate a presented token. Returns `{ userId, sessionId, slid, persistent }` on success (the row
-   * id lets the device list flag the requesting session as "current"; `slid` signals the untrusted
-   * deadline moved this call — the auth guard uses it to re-issue the browser cookie; `persistent` is
-   * the cookie-persistence choice), or null (not-found / revoked / expired). The cache is initialized
+   * Validate a presented token. `slid` signals that the inactivity deadline moved, allowing the browser
+   * cookie to be re-issued. Returns null for unknown, revoked, or expired credentials. The cache is initialized
    * only by issue(); validate may update an existing entry after an activity/sliding touch but never
    * recreates a missing entry. That contract makes revoke deletion final even when a validation DB read
    * was already in flight: its update fails instead of resurrecting the deleted cache entry.
@@ -151,7 +151,7 @@ export class SessionTokenService {
     userId: number;
     sessionId: number;
     slid: boolean;
-    persistent: boolean;
+    autoTerminateDays: AutoTerminateDays;
     mustChangePassword: boolean;
   } | null> {
     const h = hashToken(raw);
@@ -166,7 +166,7 @@ export class SessionTokenService {
           userId: entry.userId,
           sessionId: entry.sessionId,
           slid: false,
-          persistent: entry.persistent,
+          autoTerminateDays: entry.autoTerminateDays,
           mustChangePassword: entry.mustChangePassword,
         };
       }
@@ -179,7 +179,7 @@ export class SessionTokenService {
         expiresAt: sessionToken.expiresAt,
         revokedAt: sessionToken.revokedAt,
         lastSeenAt: sessionToken.lastSeenAt,
-        persistent: sessionToken.persistent,
+        autoTerminateDays: sessionToken.autoTerminateDays,
         mustChangePassword: user.mustChangePassword,
       })
       .from(sessionToken)
@@ -188,26 +188,33 @@ export class SessionTokenService {
       .limit(1)
       .then((rows) => rows[0]);
     if (!rec || rec.revokedAt !== null) return null;
-    const exp = rec.expiresAt?.getTime() ?? null;
-    if (exp !== null && exp <= Date.now()) return null;
+    const exp = rec.expiresAt.getTime();
+    if (exp <= Date.now()) {
+      await this.database.db
+        .update(sessionToken)
+        .set({ revokedAt: new Date(), revokeReason: 'auto_terminated' })
+        .where(
+          and(eq(sessionToken.id, rec.id), isNull(sessionToken.revokedAt)),
+        );
+      return null;
+    }
 
-    // Activity refresh (all clients) + sliding deadline (untrusted only), throttled by nextTouchAt in
+    // Activity refresh + sliding deadline for every client, throttled by nextTouchAt in
     // the persistent cache. A cache miss (for example after a process restart) still validates against
     // the database, but deliberately does not recreate the cache: only issue() has create semantics.
     let cachedExp = exp;
     let slid = false;
     let nextTouchAt = Date.now() + WEB_SESSION_SLIDING_TOUCH_MS;
     if (Date.now() - rec.lastSeenAt.getTime() > WEB_SESSION_SLIDING_TOUCH_MS) {
-      const data: { lastSeenAt: Date; lastSeenIp?: string; expiresAt?: Date } =
-        {
-          lastSeenAt: new Date(),
-        };
+      const data: { lastSeenAt: Date; lastSeenIp?: string; expiresAt: Date } = {
+        lastSeenAt: new Date(),
+        expiresAt: new Date(
+          Date.now() + rec.autoTerminateDays * 24 * 60 * 60 * 1000,
+        ),
+      };
       if (opts.ip) data.lastSeenIp = opts.ip;
-      if (exp !== null) {
-        cachedExp = Date.now() + WEB_SESSION_TTL_MS;
-        data.expiresAt = new Date(cachedExp);
-        slid = true;
-      }
+      cachedExp = data.expiresAt.getTime();
+      slid = true;
       try {
         await this.database.db
           .update(sessionToken)
@@ -234,7 +241,7 @@ export class SessionTokenService {
             userId: rec.userId,
             sessionId: rec.id,
             exp: cachedExp,
-            persistent: rec.persistent,
+            autoTerminateDays: rec.autoTerminateDays as AutoTerminateDays,
             mustChangePassword: rec.mustChangePassword,
             nextTouchAt,
           }),
@@ -250,9 +257,91 @@ export class SessionTokenService {
       userId: rec.userId,
       sessionId: rec.id,
       slid,
-      persistent: rec.persistent,
+      autoTerminateDays: rec.autoTerminateDays as AutoTerminateDays,
       mustChangePassword: rec.mustChangePassword,
     };
+  }
+
+  async getAutoTerminateDays(userId: number): Promise<AutoTerminateDays> {
+    const preference = await this.database.db
+      .select({ value: userPreference.value })
+      .from(userPreference)
+      .where(
+        and(
+          eq(userPreference.userId, userId),
+          eq(userPreference.key, AUTO_TERMINATE_PREFERENCE_KEY),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
+    return isAutoTerminateDays(preference?.value)
+      ? preference.value
+      : DEFAULT_AUTO_TERMINATE_DAYS;
+  }
+
+  async setAutoTerminateDays(
+    userId: number,
+    days: AutoTerminateDays,
+  ): Promise<void> {
+    const now = new Date();
+    const sessions = await this.database.db
+      .select({ tokenHash: sessionToken.tokenHash })
+      .from(sessionToken)
+      .where(
+        and(eq(sessionToken.userId, userId), isNull(sessionToken.revokedAt)),
+      );
+    if (sessions.length > 0) {
+      try {
+        await this.kvStore.delPersistent(
+          ...sessions.map(({ tokenHash }) => `${CACHE_PREFIX}${tokenHash}`),
+        );
+      } catch (error) {
+        this.logger.error(
+          `refusing session-lifetime update because cache invalidation failed for user ${userId}: ${String(error)}`,
+        );
+        throw new ServiceUnavailableException(
+          'session settings are temporarily unavailable',
+        );
+      }
+    }
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .insert(userPreference)
+        .values({
+          userId,
+          key: AUTO_TERMINATE_PREFERENCE_KEY,
+          value: days,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [userPreference.userId, userPreference.key],
+          set: {
+            value: days,
+            revision: sql`${userPreference.revision} + 1`,
+            updatedAt: now,
+          },
+        });
+      await tx
+        .update(sessionToken)
+        .set({
+          autoTerminateDays: days,
+          expiresAt: sql`${sessionToken.lastSeenAt} + (${days} * interval '1 day')`,
+        })
+        .where(
+          and(eq(sessionToken.userId, userId), isNull(sessionToken.revokedAt)),
+        )
+        .returning({ tokenHash: sessionToken.tokenHash });
+      await tx
+        .update(sessionToken)
+        .set({ revokedAt: now, revokeReason: 'auto_terminated' })
+        .where(
+          and(
+            eq(sessionToken.userId, userId),
+            isNull(sessionToken.revokedAt),
+            lte(sessionToken.expiresAt, now),
+          ),
+        );
+    });
   }
 
   /** Revoke a single presented token (self-revoke on logout). Idempotent — a not-found or

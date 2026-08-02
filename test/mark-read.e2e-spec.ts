@@ -11,6 +11,7 @@ import {
   message,
   messageThread,
   threadParticipant,
+  user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { seedSession, seedUser } from './seed';
@@ -87,16 +88,26 @@ describe('POST /thread/mark-read authoritative state', () => {
       .send({ threadId, localReadHwm });
   }
 
-  it('takes max(server, local), caps at 1000, excludes self, and returns mention kinds as a set', async () => {
+  function readDelta(fromRevision: number, toRevision: number) {
+    return request(app.getHttpServer())
+      .post('/api/v1/thread/read-delta')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fromRevision, toRevision });
+  }
+
+  it('returns ACK-only, advances readRevision, and exposes authoritative state through read delta', async () => {
     const capped = await commit(0);
     expect(capped.body.code).toBe(0);
-    expect(capped.body.data).toMatchObject({
+    expect(capped.body.data).toBeUndefined();
+    const firstDelta = await readDelta(0, 1);
+    expect(firstDelta.body.data.readRevision).toBe(1);
+    expect(firstDelta.body.data.items[0]).toMatchObject({
       threadId,
       lastReadSeq: 0,
+      readRevision: 1,
       unreadCount: 1000,
     });
-    expect(capped.body.data.mentionUnread).toHaveLength(2);
-    expect(new Set(capped.body.data.mentionUnread)).toEqual(
+    expect(new Set(firstDelta.body.data.items[0].mentionUnread)).toEqual(
       new Set(['all', 'me']),
     );
 
@@ -111,15 +122,35 @@ describe('POST /thread/mark-read authoritative state', () => {
         ),
       );
     const monotonic = await commit(0);
-    expect(monotonic.body.data.lastReadSeq).toBe(3);
-    expect(monotonic.body.data.unreadCount).toBe(1000);
-    expect(monotonic.body.data.mentionUnread).toEqual([]);
+    expect(monotonic.body.data).toBeUndefined();
+    const secondDelta = await readDelta(1, 2);
+    expect(secondDelta.body.data.items[0]).toMatchObject({
+      lastReadSeq: 3,
+      readRevision: 2,
+      unreadCount: 1000,
+      mentionUnread: [],
+    });
 
     // Below the cap the response is exact: seq 1001..1004 are four peer-authored unread messages.
     const exact = await commit(1000);
-    expect(exact.body.data).toMatchObject({
+    expect(exact.body.data).toBeUndefined();
+    const thirdDelta = await readDelta(2, 3);
+    expect(thirdDelta.body.data.items[0]).toMatchObject({
       lastReadSeq: 1000,
+      readRevision: 3,
       unreadCount: 4,
     });
+
+    const [viewer, participant] = await Promise.all([
+      database.db.query.user.findFirst({ where: eq(user.id, viewerId) }),
+      database.db.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.userId, viewerId),
+          eq(threadParticipant.threadId, threadId),
+        ),
+      }),
+    ]);
+    expect(viewer?.readRevision).toBe(3);
+    expect(participant?.readRevision).toBe(3);
   });
 });

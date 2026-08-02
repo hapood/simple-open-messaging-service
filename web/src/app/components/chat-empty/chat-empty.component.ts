@@ -26,7 +26,7 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
       height: 100%;
       padding: 48px 24px;
       box-sizing: border-box;
-      background: var(--app-surface);
+      background: var(--app-chat-pane-bg);
     }
     .empty-main { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
   `],

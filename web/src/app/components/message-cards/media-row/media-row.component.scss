@@ -57,11 +57,11 @@
 // Audio is a real message bubble, not a media placeholder. Match text-message ownership colors instead
 // of inheriting the generic gray image/video loading canvas.
 .msg-media.msg-self .msg-media-cell--audio {
-  background: var(--im-bubble-self);
+  background: var(--bubble-bg);
 }
 
 .msg-media.msg-other .msg-media-cell--audio {
-  background: var(--im-bubble-other);
+  background: var(--bubble-bg);
 }
 
 .msg-media-image {
@@ -227,18 +227,18 @@ app-audio-player {
   min-height: 18px;
   // Opaque so chat wallpaper cannot show through and make the strip look detached from the media edge.
   background: var(--app-surface, #fff);
-  color: var(--im-bubble-text);
+  color: var(--bubble-text);
   font-size: 11px;
   line-height: 14px;
 }
 
 // Keep sender identity in the footer strip while the album gutters remain neutral.
 .msg-media.msg-self .msg-media-meta {
-  background: var(--im-bubble-self);
+  background: var(--bubble-bg);
 }
 
 .msg-media.msg-other .msg-media-meta {
-  background: var(--im-bubble-other);
+  background: var(--bubble-bg);
 }
 
 .msg-media-meta-count {
@@ -294,7 +294,7 @@ app-audio-player {
   gap: 3px;
   font-size: 11px;
   line-height: 14px;
-  color: var(--im-bubble-text);
+  color: var(--bubble-text);
   .mat-icon {
     font-size: 13px;
     width: 13px;

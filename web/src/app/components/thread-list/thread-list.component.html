@@ -66,7 +66,7 @@
                     <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
                   </span>
                 }
-                @if (thread.unreadCount > 0 && (thread.mentionUnread?.length ?? 0) > 0) {
+                @if (thread.unreadCount > 0 && thread.mentionUnread.length > 0) {
                   <span class="mention-unread-badge"
                     [title]="'threadList.mentionedYou' | transloco"
                     aria-hidden="true">@</span>

@@ -3,6 +3,7 @@ import { AuthProvider } from '@/auth/auth-context'
 import { ProtectedRoute } from '@/components/route/protected-route'
 import { LoginPage } from '@/routes/login/login-page'
 import { NotFoundPage } from '@/routes/not-found-page'
+import { RouteErrorPage } from '@/routes/route-error-page'
 import { UsersLayout } from '@/routes/users/users-layout'
 import { SessionsLayout } from '@/routes/sessions/sessions-layout'
 import { FederationLayout } from '@/routes/federation/federation-layout'
@@ -42,6 +43,7 @@ function RootLayout() {
 export const router = createBrowserRouter([
   {
     element: <RootLayout />,
+    errorElement: <RouteErrorPage />,
     children: [
       { path: '/login', element: <LoginPage /> },
       {

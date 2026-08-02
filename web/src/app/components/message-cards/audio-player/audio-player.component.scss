@@ -22,7 +22,7 @@
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: var(--app-brand);
+  background: var(--bubble-accent);
   color: #fff;
   display: flex;
   align-items: center;
@@ -33,7 +33,7 @@
     transform: scale(0.92);
   }
   &:disabled {
-    background: var(--app-text-muted);
+    background: var(--bubble-muted);
     cursor: not-allowed;
   }
 }
@@ -70,7 +70,7 @@
   border: 0;
   background: repeating-linear-gradient(
     90deg,
-    color-mix(in srgb, var(--im-bubble-text) 32%, transparent) 0 2px,
+    color-mix(in srgb, var(--bubble-text) 32%, transparent) 0 2px,
     transparent 2px 5px
   );
   mask: linear-gradient(
@@ -93,7 +93,7 @@
   height: 100%;
   background: repeating-linear-gradient(
     90deg,
-    var(--app-brand) 0 2px,
+    var(--bubble-accent) 0 2px,
     transparent 2px 5px
   );
   transition: width 0.1s linear;
@@ -104,7 +104,7 @@
   gap: 4px;
   font-size: 10px;
   line-height: 12px;
-  color: var(--app-text-muted);
+  color: var(--bubble-muted);
   font-variant-numeric: tabular-nums;
 }
 .ap-meta-end {
@@ -116,7 +116,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--app-brand);
+  background: var(--bubble-accent);
 }
 .ap-rate {
   position: relative;
@@ -126,7 +126,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--app-text-muted);
+  color: var(--bubble-muted);
   font-size: 10px;
   font-weight: 600;
   cursor: pointer;
@@ -138,20 +138,20 @@
   height: 4px;
   border-radius: 2px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--app-brand) 24%, var(--app-surface, #fff));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-brand) 14%, transparent);
+  background: color-mix(in srgb, var(--bubble-accent) 24%, var(--bubble-bg));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bubble-accent) 14%, transparent);
   pointer-events: none;
 
   > span {
     display: block;
     height: 100%;
     border-radius: inherit;
-    background: var(--app-brand);
+    background: var(--bubble-accent);
     transition: width 0.12s linear;
   }
 }
 .ap-transfer--download {
-  background: color-mix(in srgb, var(--app-brand) 30%, var(--app-surface, #fff));
+  background: color-mix(in srgb, var(--bubble-accent) 30%, var(--bubble-bg));
 }
 .ap-transfer--indeterminate > span {
   animation: ap-transfer-slide 1.1s ease-in-out infinite;
@@ -165,7 +165,7 @@
   }
 }
 .ap--failed .ap-wave-fill {
-  background: var(--app-text-muted);
+  background: var(--bubble-muted);
 }
 
 // The <audio> element has no controls — it is the playback engine only. Hidden (still plays + fires events).

@@ -1181,6 +1181,45 @@ describe('MessageRepository', () => {
     });
   });
 
+  it('does not persist a synthetic exclusive cutoff as a message section boundary', async () => {
+    await webdb.putMessages([msg(42, 50)], {
+      threadId: 42,
+      left: 50,
+      right: 50,
+    });
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [],
+        hasMore: false,
+        truncated: true,
+      }),
+    );
+
+    const res = await repo.queryMessages(42, {
+      skip: 1,
+      take: 50,
+      lastSeq: 50,
+      orderBy: 'asc',
+      truncate: true,
+      truncateSeq: 51,
+    });
+
+    expect(res).toEqual({
+      data: [],
+      hasMore: false,
+      truncated: true,
+    });
+    expect(
+      await (await webdb.messageDb()).get('messages', [42, 51]),
+    ).toBeUndefined();
+    expect((await webdb.getMessageCoverage(42))?.coveredTail).toEqual({
+      left: 50,
+      right: 50,
+    });
+  });
+
   it('keeps the caller frozen ceiling after crossing a nearer local segment', async () => {
     await webdb.putMessages([msg(42, 10), msg(42, 15), msg(42, 20)]);
     queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) =>

@@ -7,6 +7,12 @@
   box-sizing: border-box;
 }
 
+.embedded-avatar-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 .profile-editor {
   display: flex;
   flex-direction: column;

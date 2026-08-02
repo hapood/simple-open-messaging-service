@@ -219,16 +219,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
   /** Drive a password login with the given trust flag, flush the issued token, and drain activateSession
    *  (it awaits `set_session_token` before the login flag flips). */
-  async function passwordLogin(
-    token: string,
-    trustDevice: boolean,
-  ): Promise<void> {
+  async function passwordLogin(token: string): Promise<void> {
     svc
       .login({
         account: 'alice',
         password: 'pw',
-        isKeep: trustDevice,
-        trustDevice,
       })
       .subscribe();
     // login() runs through pickThen = `defer(() => pickLoginOrigin()).pipe(mergeMap(...))` — on the Tauri
@@ -244,7 +239,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   describe('desktop (Tauri) keyring path', () => {
     it('a trusted login pushes the token to ProxyState + the keyring and NEVER writes plaintext localStorage', async () => {
       desktopGlobals({ secureSetOk: true });
-      await passwordLogin('st-trusted', /* trustDevice */ true);
+      await passwordLogin('st-trusted');
       expect(svc.loggedIn()).toBe(true);
       // Always under Tauri: set_session_token (ProxyState.token, so api_request injects the Bearer).
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
@@ -257,18 +252,16 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(localStorage.getItem('session_token')).toBeNull(); // no plaintext at rest
     });
 
-    it('an untrusted desktop login pushes the token to ProxyState but skips the keyring — no plaintext', async () => {
+    it('every desktop login persists to the keyring without plaintext storage', async () => {
       desktopGlobals();
-      await passwordLogin('st-mem', /* trustDevice */ false);
+      await passwordLogin('st-mem');
       expect(svc.loggedIn()).toBe(true);
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-mem',
       });
-      // Untrusted + !isKeep → no keyring write (memory-only; ProxyState.token still set for the session).
-      expect(invokeSpy).not.toHaveBeenCalledWith(
-        'secure_set_token',
-        jasmine.any(Object),
-      );
+      expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
+        token: 'st-mem',
+      });
       expect(localStorage.getItem('session_token')).toBeNull();
     });
 
@@ -281,8 +274,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         .login({
           account: 'newbie',
           password: 'pw',
-          isKeep: true,
-          trustDevice: false,
         })
         .subscribe();
       await drain(); // login() runs through pickThen → the POST fires on the next microtask, not synchronously
@@ -302,7 +293,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
     it('clearToken clears the keyring + ProxyState.token + the login flag', async () => {
       desktopGlobals();
-      await passwordLogin('st-x', true);
+      await passwordLogin('st-x');
       await svc.clearToken();
       // secure_clear_token idempotently drops the keyring entry; clear_session_token drops ProxyState.token.
       expect(invokeSpy).toHaveBeenCalledWith('secure_clear_token', undefined);
@@ -319,7 +310,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
     it('logout detaches the native token with begin_logout and does not issue a JS HTTP revoke', async () => {
       desktopGlobals();
-      await passwordLogin('st-logout', true);
+      await passwordLogin('st-logout');
 
       svc.logout().subscribe();
       await drain();
@@ -331,26 +322,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
     });
 
-    it('a trusted login whose keyring write FAILS revokes the permanent token (no orphan) + notices + bounces', async () => {
-      desktopGlobals({ secureSetOk: false }); // secure_set_token rejects
-      await passwordLogin('st-orphan', /* trustDevice */ true); // trusted → permanent token; set_session_token awaited
-      await drain(); // secure_set_token rejects → catch → revokeAndBounce posts /auth/logout
-      const logoutReq = httpMock.expectOne((r) =>
-        /\/auth\/logout$/.test(r.url),
-      );
-      // The body carries NO token — JS never holds one. The backend resolves the session from the Bearer
-      // (ProxyState.token, set by set_session_token above) the Rust transport injects.
-      expect(logoutReq.request.body.sessionToken).toBeUndefined();
-      logoutReq.flush({ code: 0, message: 'ok' });
-      await drain(); // revokeAndBounce finish (clearToken + toast + redirect)
-      expect(svc.loggedIn()).toBe(false);
-      // The bounce surfaces its reason as a global toast (longer duration), not the old per-page notice.
-      expect(toastWarn).toHaveBeenCalledWith(
-        'auth.notice.trustPersistFailed',
-        jasmine.any(Number),
-      );
-    });
-
     it('a keep-only (untrusted) login whose keyring write FAILS warns via toast but does NOT revoke or bounce', async () => {
       desktopGlobals({ secureSetOk: false }); // secure_set_token rejects
       // Keep-but-untrusted (e.g. the register flow): isKeep true, trustDevice false → a SLIDING token that IS
@@ -359,8 +330,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         .login({
           account: 'newbie',
           password: 'pw',
-          isKeep: true,
-          trustDevice: false,
         })
         .subscribe();
       await drain(); // login() runs through pickThen → the POST fires on the next microtask, not synchronously
@@ -382,7 +351,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await svc.restoreSession();
       expect(svc.loggedIn()).toBe(true);
       expect(svc.isLoggedIn()).toBe(true);
-      expect(svc.canTrust).toBe(true); // keyring reachable → device may be trusted
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-restored',
       });
@@ -394,7 +362,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await svc.restoreSession();
       expect(svc.loggedIn()).toBe(false);
       expect(svc.isLoggedIn()).toBe(false);
-      expect(svc.canTrust).toBe(true);
     });
 
     it('restoreSession with an UNREACHABLE keyring sets canTrust false (toggle hidden → no orphan session)', async () => {
@@ -402,7 +369,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // toggle stays hidden and the user can't request a permanent token the client then can't persist.
       desktopGlobals({ secureGetOk: false });
       await svc.restoreSession();
-      expect(svc.canTrust).toBe(false);
       expect(svc.loggedIn()).toBe(false);
     });
   });
@@ -410,7 +376,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   describe('Android EncryptedSharedPreferences path', () => {
     it('a login pushes the token to SomsFcm AND ProxyState and NEVER writes plaintext localStorage', async () => {
       const { set } = androidGlobals(null);
-      await passwordLogin('st-android', true); // trustDevice is moot on Android (the app client is always trusted)
+      await passwordLogin('st-android');
       expect(svc.loggedIn()).toBe(true);
       expect(set).toHaveBeenCalledWith('st-android');
       // Android now ALSO reaches set_session_token (ProxyState.token) — api_request runs on Android too.
@@ -426,7 +392,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(get).toHaveBeenCalledTimes(1);
       expect(svc.loggedIn()).toBe(true);
       expect(svc.isLoggedIn()).toBe(true);
-      expect(svc.canTrust).toBe(true); // Android is always trusted
     });
 
     it('restoreSession with no stored token leaves the user logged out', async () => {
@@ -448,13 +413,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       delete (window as unknown as { SomsFcm?: unknown }).SomsFcm; // bridge missing
       // Awaiting must not throw — a rejection aborts the APP_INITIALIZER → a blank webview.
       await svc.restoreSession();
-      expect(svc.canTrust).toBe(false);
       expect(svc.loggedIn()).toBe(false);
     });
 
     it('clearToken calls SomsFcm.setSessionToken(null) + clears ProxyState.token', async () => {
       const { set } = androidGlobals('st-y');
-      await passwordLogin('st-y', true);
+      await passwordLogin('st-y');
       expect(await svc.clearToken()).toBe(true); // Android clear (SomsFcm sync JNI + clear_session_token) succeeds
       expect(set).toHaveBeenCalledWith(null);
       expect(invokeSpy).toHaveBeenCalledWith('clear_session_token', undefined);
@@ -463,7 +427,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
     it('logout clears the Android secure token before beginning the captured native revoke', async () => {
       const { set } = androidGlobals('st-logout');
-      await passwordLogin('st-logout', true);
+      await passwordLogin('st-logout');
 
       svc.logout().subscribe();
       await drain();

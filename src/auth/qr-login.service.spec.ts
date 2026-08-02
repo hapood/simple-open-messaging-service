@@ -55,7 +55,7 @@ describe('QrLoginService', () => {
       expect(sessionTokens.issue).toHaveBeenCalledWith(
         42,
         'desktop',
-        expect.objectContaining({ ip: '1.2.3.4', persistent: true }),
+        expect.objectContaining({ ip: '1.2.3.4' }),
       );
 
       // A second poll finds the key already claimed (del returns 0) → expired. Issue-once is enforced.
@@ -66,32 +66,25 @@ describe('QrLoginService', () => {
     it('polls an unknown token → expired', async () => {
       expect((await svc.poll('nonexistent', {})).status).toBe('expired');
     });
-  });
 
-  describe('trust follows the client platform', () => {
-    // Each helper runs the full create→scan→confirm→poll so the issued session's `trusted` reflects what
-    // `create` baked into the KV state.
-    const issueFor = async (client: 'app' | 'web' | 'desktop', trusted = false) => {
-      const { qrToken } = await svc.create(client, trusted);
-      await svc.scan(qrToken, 7);
-      await svc.confirm(qrToken, 7);
-      await svc.poll(qrToken, {});
-      return sessionTokens.issue.mock.calls.at(-1)!;
-    };
+    describe('client metadata does not affect lifetime', () => {
+      const issueFor = async (client: 'app' | 'web' | 'desktop') => {
+        const { qrToken } = await svc.create(client);
+        await svc.scan(qrToken, 7);
+        await svc.confirm(qrToken, 7);
+        await svc.poll(qrToken, {});
+        return sessionTokens.issue.mock.calls.at(-1)!;
+      };
 
-    it("'app' (Android) is always trusted → issues a permanent (trusted) session", async () => {
-      const [, client, opts] = await issueFor('app');
-      expect(client).toBe('app');
-      expect(opts).toMatchObject({ trusted: true, persistent: true });
-    });
-
-    it("'desktop' is trusted only when opted in (else a 14-day sliding session)", async () => {
-      expect((await issueFor('desktop'))[2]).toMatchObject({ trusted: false });
-      expect((await issueFor('desktop', true))[2]).toMatchObject({ trusted: true });
-    });
-
-    it("'web' is never trusted even when requested", async () => {
-      expect((await issueFor('web', true))[2]).toMatchObject({ trusted: false });
+      it.each(['app', 'web', 'desktop'] as const)(
+        'issues %s without a trust or persistence override',
+        async (client) => {
+          const [, issuedClient, opts] = await issueFor(client);
+          expect(issuedClient).toBe(client);
+          expect(opts).not.toHaveProperty('trusted');
+          expect(opts).not.toHaveProperty('persistent');
+        },
+      );
     });
   });
 

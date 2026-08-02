@@ -59,9 +59,8 @@ export interface IssuedLoginCode extends LoginCodeView {
 
 /**
  * Admin-issued one-time login codes → an OTP login method available on every platform. The admin mints a
- * 6-digit code for an account; the user enters it to obtain a session whose lifetime follows the platform's
- * trust (a trusted native client — `app`/`desktop` — gets a permanent session; the browser gets a 14-day
- * sliding one).
+ * 6-digit code for an account; the user enters it to obtain a session under the same inactivity policy as
+ * every other login method.
  *
  * Codes are argon2-hashed at rest; the plaintext is returned ONCE at issue and never stored. Single-use is
  * enforced by an `updateMany` guard at verify time (only the first concurrent verifier flips `consumedAt`).
@@ -140,9 +139,7 @@ export class OtpLoginService {
   /** Verify a one-time code for an account and issue a session. Accepts ANY active (unconsumed + unrevoked)
    *  code whose argon2 hash matches the entered value — multiple codes may be active per account (multi-
    *  issue). Enforces single-use via an updateMany guard on the matched code (only the first concurrent
-   *  verifier wins). The session's lifetime follows the platform's trust: a trusted native client
-   *  (`opts.client` 'app'/'desktop', the default 'app') gets a permanent session; the browser ('web') gets a
-   *  14-day sliding one. Prior sessions are NOT revoked — multiple devices may coexist, each independently
+   *  verifier wins). Prior sessions are NOT revoked — multiple devices may coexist, each independently
    *  revocable from the device list. Records the produced session id on the consumed code for audit. Returns
    *  the plaintext session token + the user's `mustChangePassword` flag (proactive set-password routing).
    *  Throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any failure. */
@@ -252,16 +249,11 @@ export class OtpLoginService {
       );
     }
 
-    // OTP is the trusted-platform method: a trusted native client ('app', the default, / 'desktop') gets a
-    // permanent session; the browser ('web') gets a 14-day sliding one. [Device attestation is deferred
-    // hardening — see the plan notes.]
     const client = opts.client ?? 'app';
     const token = await this.sessionTokens.issue(user.id, client, {
       device: opts.device,
       userAgent: opts.userAgent,
       ip: opts.ip,
-      persistent: true,
-      trusted: client !== 'web',
     });
     // Record the produced session id on the code for audit (best-effort link; never the token value).
     const sessionId = await this.sessionTokens.idOfToken(token);

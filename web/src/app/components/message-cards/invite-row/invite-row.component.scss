@@ -10,13 +10,17 @@
 // See the --invite-bg token in _tokens.scss.
 .msg-bubble.invite.msg-self,
 .msg-bubble.invite.msg-other {
+  --bubble-bg: var(--invite-bg);
+  --bubble-text: var(--app-text);
+  --bubble-muted: var(--app-text-muted);
+  --bubble-accent: var(--app-brand);
   // The invite is a solid brand-tinted card riding the normal chat-bubble shape. The brand watermark +
   // title carry the invite identity; the bottom meta bar carries the valid/expired status + time.
   padding: 0;
   display: block;
   position: relative;        // positioning context for the watermark
   overflow: hidden;          // clip the watermark that bleeds past the edges
-  background: var(--invite-bg) !important;
+  background: var(--bubble-bg) !important;
   box-shadow: none;        // flat card — drop the bubble elevation shadow (from _row-base .msg-bubble) so no dark seam lands on the flush meta bar
   // Square the bottom corners so the flush meta bar below meets the card without a seam. Include the side
   // class to outrank row-base's grouped `.msg-bubble.msg-{side}.msg-body` selector: a consecutive second
@@ -49,7 +53,7 @@
   text-align: left;          // reset the UA button text-align:center → every text line in the card is left-aligned
 }
 .invite-tappable:focus-visible {
-  outline: 2px solid var(--app-brand, #2196f3);
+  outline: 2px solid var(--bubble-accent);
   outline-offset: 2px;
 }
 
@@ -90,7 +94,7 @@
 .invite-title {
   font-size: 12px;
   line-height: 14px; // integer px — see the integer-height contract in _row-base.scss
-  color: var(--app-text-muted);
+  color: var(--bubble-muted);
   margin: 0 0 6px;
   text-align: left;
 }
@@ -116,7 +120,7 @@
   font-size: 15px;
   line-height: 18px; // integer px
   font-weight: 600;
-  color: var(--app-text);
+  color: var(--bubble-text);
   flex: 1 1 auto;
   min-width: 0;              // allow shrink so an over-long name truncates inside the fixed-width card
   white-space: nowrap;       // truncate an over-long group name with an ellipsis (the detail dialog wraps it)
@@ -139,7 +143,7 @@
   max-width: 100%;
   box-sizing: border-box;
   background: rgba(127, 127, 127, 0.16);
-  color: var(--im-bubble-text);
+  color: var(--bubble-text);
   font-size: 11px;
   line-height: 14px;
   border-radius: 0 0 16px 16px;
@@ -158,7 +162,7 @@
   gap: 5px;
   font-size: 11px;
   line-height: 14px; // integer px — matches the meta-bar time font
-  color: inherit;    // same color as the time text (the meta bar's --im-bubble-text); only the dot carries state
+  color: inherit;    // same color as the meta-bar text; only the dot carries state
   opacity: 0.6;
 }
 .invite-status-dot {
@@ -166,7 +170,7 @@
   height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background-color: var(--app-brand);
+  background-color: var(--bubble-accent);
 }
 .invite-status--expired .invite-status-dot {
   background-color: var(--app-text-faint);

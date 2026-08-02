@@ -82,7 +82,11 @@
       </div>
       @if (initialLoadFailed()) {
         <div class="msg-load-failed-overlay">
-          <button type="button" class="msg-load-retry" (click)="retryInitialLoad()">
+          <button
+            type="button"
+            class="msg-load-retry"
+            (click)="retryInitialLoad()"
+          >
             <span class="msg-load-retry-ring" aria-hidden="true"></span>
             <span>{{ 'chat.historyLoadFailed' | transloco }}</span>
           </button>
@@ -473,7 +477,28 @@
         >
           @if (composingQuote(); as quote) {
             <div composer-prefix class="msg-compose-quote">
-              <span>{{ quote.preview }}</span>
+              @if (quote.imageShape === 'avatar') {
+                <app-user-avatar
+                  class="msg-compose-quote-avatar"
+                  [type]="UserAvatarType.GROUP"
+                  [name]="quote.imageLabel"
+                  [identityId]="quote.imageIdentity"
+                  [colorIdentityId]="quote.imageIdentity || quote.imageLabel"
+                  [src]="quote.image"
+                />
+              } @else if (quote.image) {
+                <img
+                  class="msg-compose-quote-image"
+                  [src]="assetUrl(quote.image)"
+                  alt=""
+                />
+              }
+              <span class="msg-compose-quote-copy">
+                @if (quote.author) {
+                  <strong>{{ quote.author }}</strong>
+                }
+                <span>{{ quote.body }}</span>
+              </span>
               <button
                 type="button"
                 (click)="cancelQuote()"

@@ -41,6 +41,14 @@ import { PasswordHasher } from './password-hasher.service.js';
     // idiomatic guard-decides / interceptor-mutates split). See session-cookie.interceptor.ts.
     { provide: APP_INTERCEPTOR, useClass: SessionCookieInterceptor },
   ],
-  exports: [AuthService, SessionTokenService, BearerAuthService, BruteForceService, OtpLoginService, QrLoginService, PasswordHasher],
+  exports: [
+    AuthService,
+    SessionTokenService,
+    BearerAuthService,
+    BruteForceService,
+    OtpLoginService,
+    QrLoginService,
+    PasswordHasher,
+  ],
 })
 export class AuthModule {}

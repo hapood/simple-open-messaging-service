@@ -75,21 +75,15 @@ type LogoutRes = { code: number; message: string };
   providedIn: 'root',
 })
 export class AuthService {
-  private _isKeep = false;
   /** Whether this session's token is durable — kept in OS secure storage (Android EncryptedSharedPreferences,
    *  or the desktop OS keyring) and therefore server-issued as permanent (revocation-only). False on web
    *  (cookie-only) and on an untrusted desktop (memory-only, sliding). */
-  private _trusted = false;
   /** Whether THIS client is capable of being a trusted device — i.e. it has a working OS secure store
    *  (Android EncryptedSharedPreferences always; the desktop OS keyring when a boot-time probe reaches it;
    *  never on web). Gates the "Trust this device" toggle so a desktop without a usable keyring can't request
    *  a permanent token it then can't persist (which would orphan a server-side permanent session). */
-  private _canTrust = false;
   /** True when this client has a working OS secure store and may therefore be trusted (hold a permanent
    *  token). Probed once at boot by {@link restoreSession}. */
-  get canTrust(): boolean {
-    return this._canTrust;
-  }
   /** Reactive login state — true while a session is active. Drives the realtime transport's
    *  connect/disconnect lifecycle (WebsocketService's login effect) + the auth guards. On native this is
    *  the single source of truth for login (the token value is never held in JS); on browser it mirrors the
@@ -147,28 +141,18 @@ export class AuthService {
     return defer(() => pickLoginOrigin()).pipe(mergeMap(() => req));
   }
 
-  login(params: {
-    account: string;
-    password: string;
-    isKeep: boolean;
-    trustDevice?: boolean;
-  }) {
-    const { isKeep, trustDevice, ...credentials } = params;
+  login(params: { account: string; password: string }) {
     // `client` is the device platform (badge in the device list); the token's lifetime is driven by
     // `trusted`, not `client`. `trusted`: the native app is always trusted (its token lives in OS secure
     // storage); a desktop is trusted only on explicit opt-in (OS keyring); web can never be trusted.
     // `persistent` maps "keep me logged in" to the cookie lifetime on the pure-httpOnly browser path.
     const client = this.resolveClient();
-    const trusted =
-      client === 'app' || (client === 'desktop' && trustDevice === true);
     return this.pickThen(
       this.http
         .post<LoginRes>(`${apiPrefix()}/auth/login`, {
-          ...credentials,
+          ...params,
           client,
           device: this.getDeviceLabel(),
-          persistent: isKeep,
-          trusted,
         })
         .pipe(
           mergeMap(async (res) => {
@@ -176,10 +160,7 @@ export class AuthService {
               // Await activation so Rust's ProxyState.token is populated BEFORE this observable emits — the
               // caller's post-login navigation then issues its first authenticated request with the Bearer
               // already in place (closes the login race; no JS-side token needed on the wire).
-              await this.activateSession(res.data.session_token, {
-                isKeep,
-                trusted,
-              });
+              await this.activateSession(res.data.session_token);
             }
             return res;
           }),
@@ -203,10 +184,7 @@ export class AuthService {
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {
-              await this.activateSession(res.data.session_token, {
-                isKeep: true,
-                trusted: client !== 'web',
-              });
+              await this.activateSession(res.data.session_token);
             }
             return res;
           }),
@@ -217,18 +195,18 @@ export class AuthService {
   /** QR-login: a client mints a sign-in token to render as a QR. `client` is the real platform
    *  ('app'/'web'/'desktop' — see {@link sessionClient}); `trusted` opts a desktop into a permanent session
    *  (its token kept in OS keyring), is implicit-true for 'app', and ignored for 'web' (never trusted). */
-  qrCreate(client: 'app' | 'web' | 'desktop', trusted = false) {
+  qrCreate(client: 'app' | 'web' | 'desktop') {
     return this.pickThen(
       this.http.post<{
         code: number;
         data?: { qrToken: string; expiresAt: number };
-      }>(`${apiPrefix()}/auth/qr/create`, { client, trusted }),
+      }>(`${apiPrefix()}/auth/qr/create`, { client }),
     );
   }
 
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a permanent session (if `trusted` was chosen at create) or a 14-day sliding one. */
-  qrPoll(qrToken: string, device?: string, trusted = false) {
+  qrPoll(qrToken: string, device?: string) {
     return this.pickThen(
       this.http
         .post<{
@@ -245,10 +223,7 @@ export class AuthService {
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {
-              await this.activateSession(res.data.session_token, {
-                isKeep: true,
-                trusted,
-              });
+              await this.activateSession(res.data.session_token);
             }
             return res;
           }),
@@ -275,12 +250,7 @@ export class AuthService {
    *  `ProxyState.token` (so `api_request` can inject the Bearer) — AWAITED so the token is live before this
    *  resolves — and fires the push + web-push login hooks. Extracted so the password, OTP, and QR login
    *  paths activate identically. The token is never stored in JS. */
-  private async activateSession(
-    token: string,
-    opts: { isKeep: boolean; trusted: boolean },
-  ): Promise<void> {
-    this._isKeep = opts.isKeep;
-    this._trusted = opts.trusted;
+  private async activateSession(token: string): Promise<void> {
     this.userService.prepareFreshCache();
     if (isTauri()) {
       // A real login starts a fresh cache generation. Ordinary native DB commands never create or repair
@@ -321,7 +291,6 @@ export class AuthService {
    *  The token passes THROUGH JS only to reach Rust/Kotlin/the keyring; it is never retained. */
   private async setSessionToken(token: string): Promise<void> {
     if (isAndroidNative()) {
-      this._trusted = true;
       window.SomsFcm!.setSessionToken(token);
     }
     if (isTauri()) {
@@ -334,18 +303,9 @@ export class AuthService {
       // failure revokes a TRUSTED (permanent) token server-side (no orphan) + bounces to login; a keep-only
       // token gets a toast. set_session_token above already set ProxyState.token to THIS token, so
       // revokeAndBounce's logout POST (Bearer-injected by Rust) revokes exactly it.
-      if (!isAndroidNative() && (this._isKeep || this._trusted)) {
+      if (!isAndroidNative()) {
         tauriInvoke('secure_set_token', { token }).catch(() => {
-          if (this._trusted) {
-            void this.revokeAndBounce('auth.notice.trustPersistFailed');
-          } else {
-            // Keep-only (sliding) token: valid in-memory for THIS session, self-expires server-side in 14d,
-            // so no permanent orphan. The keyring write failed → memory-only → next restart finds nothing.
-            // Warn (do NOT advise "Trust this device": the keyring is the broken piece, so a trusted write
-            // would ALSO fail and take the revoke+bounce path — strictly worse; the token is never
-            // downgraded to plaintext storage).
-            this.toast.warn(this.t('auth.notice.keepPersistFailed'));
-          }
+          this.toast.warn(this.t('auth.notice.keepPersistFailed'));
         });
       }
     }
@@ -389,25 +349,21 @@ export class AuthService {
     }
     if (isAndroidNative()) {
       try {
-        this._canTrust = true; // EncryptedSharedPreferences is always available on Android
         const t = window.SomsFcm!.getSessionToken(); // synchronous JNI
         if (t) await this.restoreNativeSession(t);
       } catch {
         // SomsFcm bridge missing (shell wiring bug / renderer reclaimed before the @JavascriptInterface
         // registered). Stay logged out + canTrust false rather than reject the APP_INITIALIZER — a rejection
         // aborts bootstrap → a blank webview with no recovery path.
-        this._canTrust = false;
       }
     } else if (isTauri()) {
       try {
         const t = await tauriInvoke<string | null>('secure_get_token');
-        this._canTrust = true; // keyring reachable → this desktop CAN be trusted (the boot probe)
         if (t) await this.restoreNativeSession(t);
       } catch {
         // Keyring unavailable (e.g. headless Linux without Secret Service): this desktop CANNOT be
         // trusted → the trust toggle stays hidden, so the user can't request a permanent token the client
         // then can't persist (which would orphan a server-side permanent session).
-        this._canTrust = false;
       }
     }
     // Browser: _canTrust stays false (web can never be trusted).
@@ -417,8 +373,6 @@ export class AuthService {
    *  path login uses) + flip the login flag. A restored token is by definition durable/trusted (it came
    *  from the keyring / EncryptedSharedPreferences). */
   private async applyRestoredToken(token: string): Promise<void> {
-    this._trusted = true;
-    this._isKeep = true;
     await this.setSessionToken(token);
     this.loggedIn.set(true);
   }
@@ -435,33 +389,10 @@ export class AuthService {
     await this.applyRestoredToken(token);
   }
 
-  /** Revoke the just-issued session server-side (POST /auth/logout — the backend resolves the session from
-   *  the Bearer Rust injects, so no token is placed in the body) and bounce to the login page, surfacing
-   *  the reason as a global toast. Used when a trusted (permanent) token couldn't be persisted to the
-   *  keyring: revoking eliminates the orphan permanent row (it would otherwise live forever); the toast
-   *  tells the user why they're back at the sign-in screen. set_session_token already set ProxyState.token
-   *  to this token, so the Bearer carries it. */
-  private async revokeAndBounce(noticeKey: string): Promise<void> {
-    try {
-      await firstValueFrom(
-        this.http.post<{ code: number }>(`${apiPrefix()}/auth/logout`, {}),
-      );
-    } catch {
-      /* best-effort: if the revoke itself fails, the row is still revocable from the device page */
-    }
-    this.toast.warn(this.t(noticeKey), IMPORTANT_NOTICE_MS);
-    this.announceSessionEnding();
-    void this.clearToken();
-    void this.userService.clearSession().catch(() => {});
-    this.sendOutbox.clear();
-    this.routeService.redirect(RoutePage.AUTH_LOGIN);
-  }
-
   /** Synchronous local-state clear: flip the login flag + drop the in-memory trust/keep flags. Does NOT
    *  touch the native token (Rust `ProxyState.token` / OS secure store) — an in-flight authenticated
    *  request must still carry the Bearer, so the native clear is ordered after it (see {@link logout}). */
   private clearLocalSessionState(): void {
-    this._trusted = false;
     this.loggedIn.set(false);
   }
 
@@ -608,6 +539,21 @@ export class AuthService {
     }>(`${apiPrefix()}/auth/sessions`, {});
   }
 
+  getSessionSettings() {
+    return this.http.get<{
+      code: number;
+      message: string;
+      data?: { autoTerminateDays: AutoTerminateDays };
+    }>(`${apiPrefix()}/auth/session-settings`);
+  }
+
+  setSessionAutoTerminateDays(days: AutoTerminateDays) {
+    return this.http.put<{ code: number; message: string }>(
+      `${apiPrefix()}/auth/session-settings`,
+      { days },
+    );
+  }
+
   /** Revoke a single session by its device-list row id. Ownership is verified server-side. */
   revokeSession(id: number) {
     return this.http.post<{ code: number; message: string }>(
@@ -663,6 +609,7 @@ export class AuthService {
 /** The client kind, selecting the session-token lifetime policy server-side and shown as a badge in the
  *  device list. Mirrors the backend LoginDto.client union. */
 export type SessionClient = 'app' | 'web' | 'desktop';
+export type AutoTerminateDays = 7 | 30 | 90 | 180 | 365;
 
 /** One row of GET /auth/sessions — the active-session credential behind the "Devices" settings page.
  *  Dates arrive as ISO strings (Prisma DateTime over the wire); `expiresAt` is null for trusted (permanent)
@@ -678,6 +625,6 @@ export interface SessionInfo {
   createdAt: string;
   lastSeenAt: string;
   expiresAt: string | null;
-  trusted: boolean;
+  autoTerminateDays: AutoTerminateDays;
   isCurrent: boolean;
 }

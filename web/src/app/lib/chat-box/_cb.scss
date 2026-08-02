@@ -39,112 +39,142 @@
   }
 }
 
-// Spinner ring shared by the top ghost (.cb-ghost-loading) and the tail cap (.cb-tail-cap--loading). Factored so
-// the two loading edges stay visually identical; emit inside a ::before rule.
-@mixin cb-spin-ring {
-  content: '';
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2.5px solid var(--cb-spin-track);
-  border-top-color: var(
-    --cb-spin-fg
-  ); // only the top arc is highlighted → rotates as a spinner
-  animation: cb-spin 0.8s linear infinite;
-}
-
 // .cb-ghost-loading: ghost loading indicator — the centered spinner used by mainstream chat apps for the incremental
 // "load older messages upward" indicator (WhatsApp style; Telegram's skeleton is for initial blank fill, not this case).
 // A skeleton / message-shaped placeholder does not fit here: only one row, and the self/other/content type is unknown, so
 // the shape can only be guessed. A spinner is content-agnostic, light, and semantically precise (loading). The structure is
-// produced by createGhostCbElement (empty host + ::before ring). Fixed height (GHOST_H inlined by JS) → never stretched by
+// produced by createGhostCbElement (empty host + the kernel-owned chat status SVG). Fixed height (GHOST_H inlined by JS) → never stretched by
 // content; host offsetHeight is constant = estimateHeight, the rebuildDelta is compensated by the kernel. Design choice: the
 // spinner is a centered ring (border ring + top-arc highlight + rotation); fg uses --app-text-faint (same neutral-gray tier as
 // the timestamp), track is a light gray.
 .cb-ghost-loading {
-  --cb-spin-track: rgba(0, 0, 0, 0.12);
-  --cb-spin-fg: var(
-    --app-text-faint
-  ); // neutral gray (same tier as timestamp / placeholder)
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
 
-  &::before { display: none; }
-}
-
-.cb-edge-status-ring {
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
-  color: var(--app-primary);
-  overflow: visible;
-}
-
-.cb-tail-cap > .cb-edge-status-ring { display: none; }
-.cb-tail-cap--loading > .cb-edge-status-ring,
-.cb-tail-cap--failed > .cb-edge-status-ring { display: block; }
-
-.cb-edge-status-ring__spin {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: cb-edge-status-spin 1.6s linear infinite;
-}
-
-.cb-edge-status-ring__track,
-.cb-edge-status-ring__arc {
-  fill: none;
-  stroke-width: 3;
-}
-
-.cb-edge-status-ring__track {
-  stroke: color-mix(in srgb, currentColor 22%, transparent);
-}
-
-.cb-edge-status-ring__arc {
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-dasharray: 24 76;
-  animation: cb-edge-status-arc 1.4s ease-in-out infinite;
-}
-
-.cb-edge-failed .cb-edge-status-ring,
-.cb-tail-cap--failed .cb-edge-status-ring {
-  color: var(--app-warning);
-}
-
-.cb-edge-failed .cb-edge-status-ring__spin,
-.cb-tail-cap--failed .cb-edge-status-ring__spin {
-  animation-duration: 0.9s;
-}
-
-// Retryable page failure: keep the same connection-status ring motion, but switch from the neutral loading
-// palette to amber and make the edge an explicit interaction target. Ordinary scrolling cannot clear this state.
-.cb-ghost-loading.cb-edge-failed,
-.cb-tail-cap--failed {
-  --cb-spin-track: color-mix(in srgb, var(--app-warning) 24%, transparent);
-  --cb-spin-fg: var(--app-warning);
-  cursor: pointer;
-
-  &:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--app-warning) 60%, transparent);
-    outline-offset: -2px;
+  &::before {
+    display: none;
   }
 }
 
+// Pagination status is intentionally separate from the realtime/SSE connection ring. Loading is a compact neutral
+// spinner; failure is a static retry glyph in a subtle button surface, so it cannot be mistaken for active work.
+.cb-load-status {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  transition:
+    color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
 
-// Dark mode ([data-theme="dark"]): the spinner track token flips to a light tint (discernible on the WhatsApp dark base
-// #0b141a; fg via --app-text-faint is already adaptive).
-[data-theme='dark'] .cb-ghost-loading {
-  --cb-spin-track: rgba(255, 255, 255, 0.14);
+.cb-load-icon {
+  width: 20px;
+  height: 20px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cb-load-icon__spinner,
+.cb-load-icon__retry {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 160ms ease,
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cb-load-icon__spinner {
+  opacity: 1;
+  animation: cb-chat-load-spin 0.8s linear infinite;
+}
+
+.cb-load-icon__track {
+  stroke: color-mix(in srgb, var(--app-text-faint) 24%, transparent);
+}
+
+.cb-load-icon__arc {
+  stroke: var(--app-text-faint);
+  stroke-dasharray: 22 54;
+}
+
+.cb-load-icon__retry {
+  opacity: 0;
+  transform: scale(0.65) rotate(-35deg);
+}
+
+.cb-edge-failed .cb-load-icon__spinner,
+.cb-tail-cap--failed .cb-load-icon__spinner {
+  opacity: 0;
+  transform: scale(0.65) rotate(35deg);
+  animation: none;
+}
+
+.cb-edge-failed .cb-load-icon__retry,
+.cb-tail-cap--failed .cb-load-icon__retry {
+  opacity: 1;
+  transform: scale(1) rotate(0);
+}
+
+.cb-tail-cap > .cb-load-status {
+  display: none;
+}
+.cb-tail-cap--loading > .cb-load-status,
+.cb-tail-cap--failed > .cb-load-status {
+  display: inline-grid;
+}
+
+.cb-ghost-loading.cb-edge-failed,
+.cb-tail-cap--failed {
+  color: var(--app-text-muted);
+  cursor: pointer;
+
+  > .cb-load-status {
+    background: var(--app-surface-elevated);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.1),
+      0 2px 7px rgba(0, 0, 0, 0.08);
+  }
+
+  &:hover > .cb-load-status {
+    color: var(--app-primary);
+    transform: scale(1.08);
+    background: var(--app-active);
+    box-shadow:
+      0 2px 4px rgba(0, 0, 0, 0.12),
+      0 4px 10px rgba(0, 0, 0, 0.09);
+  }
+
+  &:focus-visible > .cb-load-status {
+    color: var(--app-primary);
+    box-shadow: 0 0 0 2px
+      color-mix(in srgb, var(--app-primary) 28%, transparent);
+  }
+
+  &:active > .cb-load-status {
+    transform: scale(0.92);
+  }
+}
+
+@keyframes cb-chat-load-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 // .cb-tail-cap: the tail cap — a kernel-managed persistent non-message element that is always the last child of content
 //  (never in mounted[], so it neither corrupts the newer cursor mounted[last].item.id nor shifts any real item's topOf).
 //  Two modes, switched by the kernel from the newer boundary:
-//   ① noNewer (at the global newest) = gap: a small spacer between the last message and the input bar;
-//   ② !noNewer (more newer to load)  = loading: the same spinner as the top ghost (reuses @mixin cb-spin-ring).
+//   ① noNewer (at the global newest) = gap: currently no extra spacer beyond the composer reserve;
+//   ② retry in flight = loading: the chat pagination spinner (independent from the SSE connection indicator).
 //  The height is MEASURED by the kernel (offsetHeight); CSS owns the dimension, the kernel reads it, so totalH stays
 //  exact even if the gap/spinner size is tuned here. It does NOT reuse .cb-ghost-loading: the playground sticky-date
 //  query targets .cb-ghost-loading (chatbox-playground.component.ts) meaning the TOP ghost — tagging the cap with it
@@ -164,12 +194,10 @@
 }
 .cb-tail-cap--gap {
   height: calc(
-    14px + var(--cb-composer-reserve)
-  ); // breathing room + floating composer reserve
+    0px + var(--cb-composer-reserve)
+  ); // no extra gap for now; keep only the floating composer reserve
 }
 .cb-tail-cap--loading {
-  --cb-spin-track: rgba(0, 0, 0, 0.12);
-  --cb-spin-fg: var(--app-text-faint);
   height: calc(
     48px + var(--cb-composer-reserve)
   ); // spinner row (GHOST_H) + floating composer reserve
@@ -178,6 +206,7 @@
   // include the (potentially large) composer reserve and push the spinner into the middle of the viewport.
   align-items: flex-start;
   justify-content: center;
+  padding-top: 8px;
 
   &::before {
     display: none;
@@ -188,20 +217,11 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
+  padding-top: 8px;
 
   &::before {
     display: none;
   }
-}
-
-@keyframes cb-edge-status-spin { to { transform: rotate(360deg); } }
-@keyframes cb-edge-status-arc {
-  0%, 100% { stroke-dasharray: 18 82; }
-  50% { stroke-dasharray: 34 66; }
-}
-// Dark mode: spinner track flips to a light tint (fg via --app-text-faint is already adaptive).
-[data-theme='dark'] .cb-tail-cap--loading {
-  --cb-spin-track: rgba(255, 255, 255, 0.14);
 }
 
 @keyframes cb-shimmer {
@@ -211,12 +231,6 @@
   100% {
     background-position: -200% 0;
   } // slides to outside on the left (shimmer flows right → left)
-}
-
-@keyframes cb-spin {
-  to {
-    transform: rotate(360deg);
-  } // ring spinner rotates at constant speed
 }
 
 // .cb-jump-highlight: a one-shot highlight added to the target host after jumping to a specific message (triggered by the
@@ -257,10 +271,7 @@
   } // fades back to normal
 }
 
-[data-theme='dark']
-  .cb-jump-highlight
-  > .msg-row
-  > .msg-highlight-layer {
+[data-theme='dark'] .cb-jump-highlight > .msg-row > .msg-highlight-layer {
   animation-name: cb-jump-flash-dark;
 }
 
@@ -300,10 +311,7 @@
   .cb-jump-highlight-target {
     animation: cb-jump-media-target-reduced 0.25s ease-out;
   }
-  [data-theme='dark']
-    .cb-jump-highlight
-    > .msg-row
-    > .msg-highlight-layer {
+  [data-theme='dark'] .cb-jump-highlight > .msg-row > .msg-highlight-layer {
     animation-name: cb-jump-flash-reduced-dark;
   }
   :is(.cb-message--selected, .cb-message--partially-selected).cb-jump-highlight

@@ -100,6 +100,7 @@ export class SseService implements OnModuleDestroy {
           where: eq(userTable.id, userId),
           columns: {
             threadRevision: true,
+            readRevision: true,
             profileRev: true,
             friendReqAckRev: true,
           },
@@ -135,6 +136,7 @@ export class SseService implements OnModuleDestroy {
         // (cursor, this] on each subsequent THREAD_REVISION_UPDATED — the SOLE revision source now that
         // the snapshot endpoint is gone.
         threadRevision: user?.threadRevision ?? 0,
+        readRevision: user?.readRevision ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
         // cache) or a changed rev still fetches. PROFILE_REV_UPDATED advances it live (multi-device).
@@ -272,6 +274,12 @@ export class SseService implements OnModuleDestroy {
    */
   onThreadMeta(userId: number, data: unknown) {
     this.pushToUser(userId, 'THREAD_META', data);
+  }
+
+  /** A per-user read cursor changed. Broadcast the authoritative derived state to every connection owned
+   *  by the account, including the connection that issued mark-read, so all clients use one update path. */
+  onThreadReadUpdated(userId: number, data: unknown) {
+    this.pushToUser(userId, 'THREAD_READ_UPDATED', data);
   }
 
   /**

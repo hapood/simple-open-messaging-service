@@ -17,8 +17,8 @@
   align-items: center;
   justify-content: center;
   border-radius: 11px;
-  color: var(--app-brand);
-  background: color-mix(in srgb, var(--app-brand) 13%, transparent);
+  color: var(--bubble-accent);
+  background: color-mix(in srgb, var(--bubble-accent) 13%, transparent);
 
   svg {
     width: 20px;
@@ -57,7 +57,7 @@
   display: flex;
   align-items: center;
   overflow: hidden;
-  color: var(--im-time);
+  color: var(--bubble-muted);
   font-size: 11px;
   line-height: 14px;
   text-overflow: ellipsis;

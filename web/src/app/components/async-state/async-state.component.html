@@ -1,0 +1,14 @@
+<div class="async-state" role="status" aria-live="polite">
+  @if (state() === 'loading') {
+    <mat-progress-spinner
+      mode="indeterminate"
+      [diameter]="40"
+      [attr.aria-label]="'common.loading' | transloco"
+    />
+  } @else {
+    <p>{{ errorMessageKey() | transloco }}</p>
+    <button mat-stroked-button type="button" (click)="retry.emit()">
+      {{ retryKey() | transloco }}
+    </button>
+  }
+</div>

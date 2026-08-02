@@ -101,7 +101,7 @@ describe('AuthService (session-token contract, browser path)', () => {
 
   it('login() sends client:web + a friendly device label; on the pure-httpOnly browser path no token is held in JS', async () => {
     expect(svc.isLoggedIn()).toBe(false); // no presence cookie before login
-    svc.login({ account: 'alice', password: 'pw', isKeep: false }).subscribe();
+    svc.login({ account: 'alice', password: 'pw' }).subscribe();
     // login() runs through pickThen = `defer(() => pickLoginOrigin()).pipe(mergeMap(...))`. Even on the
     // browser path pickLoginOrigin() is `Promise.resolve(apiOrigin())`, so the POST fires on the next
     // microtask — NOT synchronously. Let that hop settle before asserting on the request (logout() and
@@ -110,9 +110,10 @@ describe('AuthService (session-token contract, browser path)', () => {
 
     const req = httpMock.expectOne((r) => /\/auth\/login$/.test(r.url));
     expect(req.request.body.account).toBe('alice');
-    // Headless browser test env → isTauri() false → client 'web'; web can never be trusted.
+    // Headless browser test env → isTauri() false → client metadata is 'web'.
     expect(req.request.body.client).toBe('web');
-    expect(req.request.body.trusted).toBe(false);
+    expect(req.request.body.trusted).toBeUndefined();
+    expect(req.request.body.persistent).toBeUndefined();
     expect(typeof req.request.body.device).toBe('string');
     expect(req.request.body.device.length).toBeGreaterThan(0);
 

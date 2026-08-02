@@ -153,10 +153,7 @@ export class AuthService {
       where: and(
         eq(sessionToken.userId, userId),
         isNull(sessionToken.revokedAt),
-        or(
-          isNull(sessionToken.expiresAt),
-          gt(sessionToken.expiresAt, new Date()),
-        ),
+        gt(sessionToken.expiresAt, new Date()),
       ),
       orderBy: desc(sessionToken.lastSeenAt),
       columns: {
@@ -169,7 +166,7 @@ export class AuthService {
         createdAt: true,
         lastSeenAt: true,
         expiresAt: true,
-        trusted: true,
+        autoTerminateDays: true,
       },
     });
     return rows.map((r) => ({
@@ -182,7 +179,7 @@ export class AuthService {
       createdAt: r.createdAt,
       lastSeenAt: r.lastSeenAt,
       expiresAt: r.expiresAt,
-      trusted: r.trusted,
+      autoTerminateDays: r.autoTerminateDays,
       isCurrent: currentSessionId !== null && r.id === currentSessionId,
     }));
   }
@@ -251,10 +248,7 @@ export class AuthService {
   }) {
     const where = and(
       isNull(sessionToken.revokedAt),
-      or(
-        isNull(sessionToken.expiresAt),
         gt(sessionToken.expiresAt, new Date()),
-      ),
       opts.userId ? eq(sessionToken.userId, opts.userId) : undefined,
       opts.ip
         ? or(
@@ -276,7 +270,7 @@ export class AuthService {
           createdAt: sessionToken.createdAt,
           lastSeenAt: sessionToken.lastSeenAt,
           expiresAt: sessionToken.expiresAt,
-          trusted: sessionToken.trusted,
+          autoTerminateDays: sessionToken.autoTerminateDays,
           account: userTable.account,
         })
         .from(sessionToken)
@@ -307,10 +301,7 @@ export class AuthService {
       .where(
         and(
           isNull(sessionToken.revokedAt),
-          or(
-            isNull(sessionToken.expiresAt),
-            gt(sessionToken.expiresAt, new Date()),
-          ),
+          gt(sessionToken.expiresAt, new Date()),
         ),
       );
     const userIds = new Set(sessionUsers.map((r) => r.userId));

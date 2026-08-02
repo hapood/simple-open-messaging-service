@@ -1,15 +1,30 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { forkJoin, firstValueFrom } from 'rxjs';
 import dayjs from 'dayjs';
-import { AuthService, type SessionClient, type SessionInfo } from '../../services/auth.service';
+import {
+  AuthService,
+  type AutoTerminateDays,
+  type SessionClient,
+  type SessionInfo,
+} from '../../services/auth.service';
 import { RouteService, PopupType } from '../../services/route.service';
 import { LanguageService } from '../../services/language.service';
 import { QrScannerService } from '../../services/qr-scanner.service';
 import { isAndroidNative } from '../../services/runtime';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { AsyncStateComponent } from '../async-state/async-state.component';
 
 /**
  * Settings → Devices sub-page: the "where am I logged in" list (industry-standard session management —
@@ -25,7 +40,13 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
  */
 @Component({
   selector: 'app-settings-devices',
-  imports: [MatButtonModule, IconComponent, TranslocoPipe],
+  imports: [
+    MatButtonModule,
+    MatProgressSpinnerModule,
+    IconComponent,
+    TranslocoPipe,
+    AsyncStateComponent,
+  ],
   templateUrl: './settings-devices.component.html',
   styleUrl: './settings-devices.component.scss',
 })
@@ -36,34 +57,90 @@ export class SettingsDevicesComponent implements OnInit {
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
   private readonly snackbar = inject(MatSnackBar);
+  private readonly destroyRef = inject(DestroyRef);
 
   readonly AppIconType = AppIconType;
   protected readonly isAndroidNative = isAndroidNative;
   readonly list = signal<SessionInfo[]>([]);
   readonly loading = signal(true);
+  readonly loadError = signal(false);
+  readonly savingDays = signal<AutoTerminateDays | null>(null);
+  readonly autoTerminateDays = signal<AutoTerminateDays | null>(null);
+  readonly autoTerminateOptions: readonly AutoTerminateDays[] = [
+    7, 30, 90, 180, 365,
+  ];
+  private loadVersion = 0;
 
   /** Count of sessions other than the current one — drives the "sign out everywhere else" affordance. */
-  readonly othersCount = computed(() => this.list().filter((s) => !s.isCurrent).length);
+  readonly othersCount = computed(
+    () => this.list().filter((s) => !s.isCurrent).length,
+  );
 
   ngOnInit(): void {
     this.load();
   }
 
   load(): void {
+    const version = ++this.loadVersion;
     this.loading.set(true);
-    this.auth.getSessions().subscribe({
-      next: (res) => {
-        this.loading.set(false);
-        if (res.code === 0) this.list.set(res.data ?? []);
-      },
-      error: () => this.loading.set(false),
-    });
+    this.loadError.set(false);
+    forkJoin({
+      sessions: this.auth.getSessions(),
+      settings: this.auth.getSessionSettings(),
+    })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: ({ sessions, settings }) => {
+          if (version !== this.loadVersion) return;
+          if (sessions.code === 0 && settings.code === 0 && settings.data) {
+            this.list.set(sessions.data ?? []);
+            this.autoTerminateDays.set(settings.data.autoTerminateDays);
+            this.loading.set(false);
+          } else {
+            this.loading.set(false);
+            this.loadError.set(true);
+          }
+        },
+        error: () => {
+          if (version !== this.loadVersion) return;
+          this.loading.set(false);
+          this.loadError.set(true);
+        },
+      });
+  }
+
+  setAutoTerminateDays(days: AutoTerminateDays): void {
+    if (this.savingDays() !== null || days === this.autoTerminateDays()) return;
+    this.savingDays.set(days);
+    this.auth
+      .setSessionAutoTerminateDays(days)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (res) => {
+          this.savingDays.set(null);
+          if (res.code === 0) this.load();
+          else this.toast('session.autoTerminateSaveFailed');
+        },
+        error: () => {
+          this.savingDays.set(null);
+          this.toast('session.autoTerminateSaveFailed');
+        },
+      });
+  }
+
+  autoTerminateLabel(days: AutoTerminateDays): string {
+    return this.transloco.translate(`session.autoTerminate${days}`);
   }
 
   /** Localized client badge label (re-renders on a language switch). */
   clientLabel(c: SessionClient): string {
     void this.language.lang();
-    const key = c === 'app' ? 'session.clientApp' : c === 'desktop' ? 'session.clientDesktop' : 'session.clientWeb';
+    const key =
+      c === 'app'
+        ? 'session.clientApp'
+        : c === 'desktop'
+          ? 'session.clientDesktop'
+          : 'session.clientWeb';
     return this.transloco.translate(key);
   }
 
@@ -104,7 +181,8 @@ export class SettingsDevicesComponent implements OnInit {
         danger: true,
       },
       (ok) => {
-        if (ok) this.auth.revokeSession(s.id).subscribe({ next: () => this.load() });
+        if (ok)
+          this.auth.revokeSession(s.id).subscribe({ next: () => this.load() });
       },
     );
   }
@@ -123,7 +201,9 @@ export class SettingsDevicesComponent implements OnInit {
       },
       (ok) => {
         if (!ok) return;
-        forkJoin(others.map((o) => this.auth.revokeSession(o.id))).subscribe({ next: () => this.load() });
+        forkJoin(others.map((o) => this.auth.revokeSession(o.id))).subscribe({
+          next: () => this.load(),
+        });
       },
     );
   }
@@ -158,11 +238,19 @@ export class SettingsDevicesComponent implements OnInit {
     // Step 2 — confirm: authorize the sign-in (the desktop's next poll mints its session).
     this.route.popupDlg(
       PopupType.CONFIRM,
-      { messageKey: 'session.linkDeviceConfirm', confirmKey: 'session.linkDeviceAuthorize' },
+      {
+        messageKey: 'session.linkDeviceConfirm',
+        confirmKey: 'session.linkDeviceAuthorize',
+      },
       (ok) => {
         if (!ok) return;
         this.auth.qrConfirm(content).subscribe({
-          next: (res) => this.toast(res.code === 0 ? 'session.linkDeviceSuccess' : 'session.linkDeviceFailed'),
+          next: (res) =>
+            this.toast(
+              res.code === 0
+                ? 'session.linkDeviceSuccess'
+                : 'session.linkDeviceFailed',
+            ),
           error: () => this.toast('session.linkDeviceFailed'),
         });
       },
@@ -170,6 +258,8 @@ export class SettingsDevicesComponent implements OnInit {
   }
 
   private toast(key: string): void {
-    this.snackbar.open(this.transloco.translate(key), undefined, { duration: 3000 });
+    this.snackbar.open(this.transloco.translate(key), undefined, {
+      duration: 3000,
+    });
   }
 }

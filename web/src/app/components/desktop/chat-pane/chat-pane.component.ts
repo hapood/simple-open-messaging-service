@@ -127,7 +127,7 @@ type SlotKey = 'A' | 'B';
         min-height: 0;
         overflow: hidden;
         /* Solid ground behind both panes — shown through the outgoing pane as it dissolves. */
-        background: var(--app-surface);
+        background: var(--app-chat-pane-bg);
       }
       @media (prefers-reduced-motion: reduce) {
         .chat-pane {
@@ -149,7 +149,7 @@ type SlotKey = 'A' | 'B';
         display: flex;
         flex-direction: column;
         min-height: 0;
-        background: var(--app-surface);
+        background: var(--app-chat-pane-bg);
         opacity: 0;
         visibility: hidden;
         z-index: 1;
@@ -197,7 +197,7 @@ type SlotKey = 'A' | 'B';
        the old 80px full-page spinner through the route transition. */
       .pane-loading {
         box-sizing: border-box;
-        background: var(--app-surface);
+        background: var(--app-chat-pane-bg);
         align-items: center;
         justify-content: center;
         padding-bottom: 12vh;
@@ -343,7 +343,9 @@ export class ChatPaneComponent implements OnDestroy {
         // through the slide; on desktop there is no slide.
         this.clearPending();
         this.clearTeardown();
-        (fgKey === 'A' ? this.threadA() : this.threadB())?.teardownKernel();
+        untracked(() =>
+          (fgKey === 'A' ? this.threadA() : this.threadB())?.teardownKernel(),
+        );
         this.loadAttemptedFor = undefined;
         return;
       }
@@ -354,11 +356,13 @@ export class ChatPaneComponent implements OnDestroy {
         // thread was re-opened) — drive `reset()` to re-initialize in place. Without the warmth guard, every
         // promote (which flips fgSlot and re-triggers this effect) would spuriously reset an already-warm
         // foreground pane on every switch. The pane stays foreground in both cases.
-        const fg = fgKey === 'A' ? this.threadA() : this.threadB();
+        const fg = untracked(
+          fgKey === 'A' ? () => this.threadA() : () => this.threadB(),
+        );
         this.clearPending();
-        if (fg && !fg.isWarm()) {
+        if (fg && !untracked(() => fg.isWarm())) {
           this.armPending(target, fgKey);
-          fg.reset();
+          untracked(() => fg.reset());
         }
         return;
       }
@@ -381,7 +385,9 @@ export class ChatPaneComponent implements OnDestroy {
         // explicitly (warm → ready now, preserving the instant fast-flip-back; cold → reinit → ready); the
         // emitted `ready` (onReady) promotes it with the cross-fade.
         this.armPending(target, bgKey);
-        (bgKey === 'A' ? this.threadA() : this.threadB())?.reset();
+        untracked(() =>
+          (bgKey === 'A' ? this.threadA() : this.threadB())?.reset(),
+        );
         return;
       }
 

@@ -285,7 +285,7 @@ async function registerStaticServing(
         };
         // Cookie sliding (same as the SessionAuthGuard): a cookie-authed persistent session that just slid its
         // deadline re-issues the cookie so its maxAge tracks the session. Media loads count as activity.
-        if (principal.slid && principal.persistent && fromCookie) {
+        if (principal.slid && fromCookie) {
           refreshSessionCookies(reply, fromCookie);
         }
 

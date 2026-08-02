@@ -201,6 +201,9 @@ export class ThreadRepository {
         case 'THREAD_META':
           this.onThreadMeta(m.data as ThreadMetaPayload | undefined);
           break;
+        case 'THREAD_READ_UPDATED':
+          this.onThreadReadUpdated(m.data as ThreadReadState);
+          break;
         case 'THREAD_REVISION_UPDATED':
           if (m.data !== undefined)
             this.onThreadRevisionUpdated(
@@ -232,7 +235,7 @@ export class ThreadRepository {
           break;
         case 'PEER_PROFILE_UPDATED':
           if (m.data !== undefined)
-            this.onPeerProfileUpdated(m.data as unknown as User);
+            this.onPeerProfileUpdated(m.data as { userId?: number } | User);
           break;
       }
     });
@@ -273,6 +276,9 @@ export class ThreadRepository {
     this.bufferedNewMessage.clear();
     this._missedCursor.set(null);
     this._threadHwms.set({});
+    this.readRevision = undefined;
+    this.readSyncInFlight = false;
+    this.readSyncTarget = 0;
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
     clearTimeout(this.pullTimer);
     this.pullArmedAt = 0;
@@ -526,7 +532,10 @@ export class ThreadRepository {
       serverMentions.set(i.threadId, i.mentionUnread ?? []);
       if (i.latestMessage) {
         previews.set(i.threadId, {
-          text: rawPreview(i.latestMessage.contentType, i.latestMessage.content),
+          text: rawPreview(
+            i.latestMessage.contentType,
+            i.latestMessage.content,
+          ),
           creator: i.latestMessage.creator,
         });
       }
@@ -576,6 +585,7 @@ export class ThreadRepository {
     if (d.lastReadSeq < confirmed) return;
     this.serverLastReadSeq.set(d.threadId, d.lastReadSeq);
     const local = this.localStableReadSeq.get(d.threadId);
+    const coversLocal = local === undefined || d.lastReadSeq >= local;
     if (local !== undefined && d.lastReadSeq >= local)
       this.localStableReadSeq.delete(d.threadId);
     let changed: ConversationItem | undefined;
@@ -591,6 +601,7 @@ export class ThreadRepository {
       return list.map((t) => (t.threadId === d.threadId ? changed! : t));
     });
     if (changed) void this.persistThread(changed);
+    if (coversLocal) this.finishReadCommit(d.threadId);
   }
 
   /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
@@ -678,15 +689,36 @@ export class ThreadRepository {
     });
   }
 
-  /** PEER_PROFILE_UPDATED — a friend changed avatar/name/bio. Patch the matching P2P row by peerUser.id. */
-  private onPeerProfileUpdated(u: User): void {
-    if (typeof u?.id !== 'number') return;
+  /** PEER_PROFILE_UPDATED is a signal-only `{ userId }` frame. Pull the authoritative profile, then
+   * patch the matching P2P row. Accepting a full User as well keeps replay compatibility with older
+   * servers that briefly sent the hydrated payload. */
+  private onPeerProfileUpdated(d: { userId?: number } | User): void {
+    if ('id' in d && typeof d.id === 'number') {
+      this.applyPeerProfile(d);
+      return;
+    }
+    const userId = 'userId' in d ? d.userId : undefined;
+    if (typeof userId !== 'number') return;
+    this.userService.queryUserInfo({ userIds: [userId] }).subscribe({
+      next: (res) => {
+        const user = res.code === 0 ? res.data?.[0] : undefined;
+        if (user) this.applyPeerProfile(user);
+      },
+      error: () => {
+        /* best-effort — reconnect / the next profile signal retries */
+      },
+    });
+  }
+
+  private applyPeerProfile(u: User): void {
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
       const found = list.find(
         (t) => t.type === 'P2P' && t.peerUser?.id === u.id,
       );
       if (!found) return list;
+      // Concurrent pulls may finish out of order; never regress an already-applied profile.
+      if ((u.profileRev ?? 0) < (found.peerUser.profileRev ?? 0)) return list;
       changed = { ...found, peerUser: u };
       return list.map((t) =>
         t.type === 'P2P' && t.peerUser?.id === u.id ? changed! : t,
@@ -805,6 +837,9 @@ export class ThreadRepository {
    *  MissedSyncService's single-flight no-op discard it. */
   private pullInFlight = false;
   private pullPending = false;
+  private readRevision: number | undefined;
+  private readSyncInFlight = false;
+  private readSyncTarget = 0;
   /** Epoch-ms the current debounce window opened (0 = no window armed). Lets a mid-window [schedulePull]
    *  compute how much of the max-wait budget remains from the leading edge. */
   private pullArmedAt = 0;
@@ -865,6 +900,14 @@ export class ThreadRepository {
     // 2. Load the persisted missed-summary cursor (the walk's `from`) + the per-thread dismiss-HWM map.
     await this.loadMissedCursor();
     await this.loadThreadHwms();
+    const persistedReadRevision = await this.webdb.getMeta('readRevision');
+    if (this.readRevision === undefined)
+      this.readRevision =
+        typeof persistedReadRevision === 'number' && persistedReadRevision >= 0
+          ? persistedReadRevision
+          : 0;
+    if (typeof d.readRevision === 'number')
+      await this.syncReadDelta(d.readRevision);
     // 3. Delta-replay the thread list: full `(0, rev]` on first connect (cursor unseeded → seed 0),
     //    incremental `(cursor, rev]` on reconnect. The server plans (last-op-wins) + hydrates.
     if (typeof d.threadRevision === 'number') {
@@ -883,6 +926,56 @@ export class ThreadRepository {
     }
     // 6. Re-derive previews from the local message store.
     void this.hydratePreviews();
+  }
+
+  private onThreadReadUpdated(state: ThreadReadState): void {
+    if (!state || typeof state.readRevision !== 'number') return;
+    const current = this.readRevision;
+    if (current === undefined) {
+      this.readSyncTarget = Math.max(this.readSyncTarget, state.readRevision);
+      return;
+    }
+    if (state.readRevision <= current) return;
+    if (state.readRevision === current + 1) {
+      this.applyReadState(state);
+      this.advanceReadRevision(state.readRevision);
+      return;
+    }
+    void this.syncReadDelta(state.readRevision);
+  }
+
+  private async syncReadDelta(target: number): Promise<void> {
+    this.readSyncTarget = Math.max(this.readSyncTarget, target);
+    if (this.readSyncInFlight || this.readRevision === undefined) return;
+    this.readSyncInFlight = true;
+    try {
+      while (this.readRevision < this.readSyncTarget) {
+        const fromRevision = this.readRevision;
+        const toRevision = this.readSyncTarget;
+        const res = await firstValueFrom(
+          this.userService.queryReadDelta({ fromRevision, toRevision }),
+        );
+        if (res.code !== 0 || !res.data) break;
+        for (const item of res.data.items) this.applyReadState(item);
+        this.advanceReadRevision(res.data.readRevision);
+        if (res.data.readRevision <= fromRevision) break;
+      }
+    } catch {
+      // HELLO or the next live revision retries from the durable cursor.
+    } finally {
+      this.readSyncInFlight = false;
+      if (
+        this.readRevision !== undefined &&
+        this.readRevision < this.readSyncTarget
+      )
+        void this.syncReadDelta(this.readSyncTarget);
+    }
+  }
+
+  private advanceReadRevision(revision: number): void {
+    if ((this.readRevision ?? -1) >= revision) return;
+    this.readRevision = revision;
+    void this.webdb.putMeta('readRevision', revision);
   }
 
   /** Set the walk's upper bound `to` + schedule the debounced catch-up walk (a burst of signals collapses). */
@@ -1170,6 +1263,7 @@ interface HelloPayload {
   userId?: number;
   latestMessage?: { threadId: number; seq: number; ts: number } | null;
   threadRevision?: number;
+  readRevision?: number;
   profileRev?: number;
   friendReqRev?: number | null;
   friendReqAckRev?: number;

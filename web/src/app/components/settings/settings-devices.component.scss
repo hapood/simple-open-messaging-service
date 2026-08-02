@@ -10,11 +10,78 @@
 }
 
 .state {
+  display: flex;
+  justify-content: center;
   padding: 40px 0;
   line-height: 20px;
   font-size: 13px;
   color: var(--app-text-muted);
   text-align: center;
+}
+
+.terminate-card {
+  padding: 16px;
+}
+
+.terminate-title {
+  color: var(--app-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.terminate-heading,
+.saving-state {
+  display: flex;
+  align-items: center;
+}
+
+.terminate-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.saving-state {
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+}
+
+.terminate-hint {
+  margin-top: 4px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.terminate-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.terminate-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md, 12px);
+  color: var(--app-text);
+  background: var(--app-surface);
+  cursor: pointer;
+
+  &.selected {
+    border-color: var(--app-brand);
+    color: var(--app-brand);
+    background: var(--app-brand-soft);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
 }
 
 // The "sign out everywhere else" affordance sits in its own surface above the list, separated by the

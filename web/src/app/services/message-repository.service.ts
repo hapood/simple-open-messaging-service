@@ -676,8 +676,16 @@ export class MessageRepository {
       }
     }
     const committed = await fill;
-    if (waiterLifetime.aborted)
+    if (waiterLifetime.aborted) {
+      if (isDevMode())
+        console.info('[chat-tailcap] repository-failure', {
+          threadId,
+          phase: 'waiter-lifetime-aborted',
+          lastSeq: q.lastSeq ?? null,
+          orderBy: q.orderBy,
+        });
       return { data: [], hasMore: true, failed: true };
+    }
     if (committed.failed) return committed;
 
     const data: Message[] = [];
@@ -712,16 +720,42 @@ export class MessageRepository {
     let res: StandardResponse<Message[]>;
     try {
       res = await firstValueFrom(this.msg.queryMessageLog({ threadId, ...q }));
-    } catch {
+    } catch (error) {
+      if (isDevMode())
+        console.info('[chat-tailcap] repository-failure', {
+          threadId,
+          phase: 'request-threw',
+          lastSeq: q.lastSeq ?? null,
+          orderBy: q.orderBy,
+          errorName: error instanceof Error ? error.name : typeof error,
+          errorMessage: error instanceof Error ? error.message : undefined,
+        });
       return { data: [], hasMore: true, failed: true };
     }
     // A clear-cache operation may have completed while this request was in flight. Its response belongs
     // to the old cache lifetime: do not mutate repository ceilings, return rows to a closing chatbox, or
     // write them into the freshly-created database.
     if (cacheLifetime.aborted) {
+      if (isDevMode())
+        console.info('[chat-tailcap] repository-failure', {
+          threadId,
+          phase: 'cache-lifetime-aborted-after-response',
+          lastSeq: q.lastSeq ?? null,
+          orderBy: q.orderBy,
+        });
       return { data: [], hasMore: true, failed: true };
     }
-    if (res.code !== 0) return { data: [], hasMore: true, failed: true };
+    if (res.code !== 0) {
+      if (isDevMode())
+        console.info('[chat-tailcap] repository-failure', {
+          threadId,
+          phase: 'business-code',
+          lastSeq: q.lastSeq ?? null,
+          orderBy: q.orderBy,
+          code: res.code,
+        });
+      return { data: [], hasMore: true, failed: true };
+    }
     const data = res.data ?? [];
     if (data.length === 0) {
       if (res.truncated && q.truncateSeq === undefined)
@@ -741,18 +775,27 @@ export class MessageRepository {
         newest = Math.max(newest ?? -1, max);
       }
     }
-    const endpoint =
+    const confirmedEndSeq =
       res.truncated && q.truncateSeq !== undefined
         ? q.truncateSeq
         : data[data.length - 1]?.seq;
+    // `truncateSeq` is an exclusive wire cutoff. It may be a synthetic sentinel (for example,
+    // knownNewestSeq + 1), so it is not necessarily the seq of a row that can anchor a persisted
+    // section. A real cached cutoff is safe to use; otherwise end the section at the last returned
+    // row. Empty responses at a synthetic cutoff confirm the request endpoint but create no section.
+    const persistedCutoff =
+      res.truncated && q.truncateSeq !== undefined
+        ? await this.getOne(threadId, q.truncateSeq)
+        : undefined;
+    const sectionEndpoint = persistedCutoff?.seq ?? data[data.length - 1]?.seq;
     let confirmedSection:
       | { threadId: number; left: number; right: number }
       | undefined;
-    if (q.lastSeq !== undefined && endpoint !== undefined) {
+    if (q.lastSeq !== undefined && sectionEndpoint !== undefined) {
       confirmedSection = {
         threadId,
-        left: Math.min(q.lastSeq, endpoint),
-        right: Math.max(q.lastSeq, endpoint),
+        left: Math.min(q.lastSeq, sectionEndpoint),
+        right: Math.max(q.lastSeq, sectionEndpoint),
       };
     } else if (data.length > 0) {
       const seqs = data.map((m) => m.seq);
@@ -778,14 +821,30 @@ export class MessageRepository {
           cacheLifetime,
         );
       } catch (error) {
-        if (cacheLifetime.aborted)
+        if (cacheLifetime.aborted) {
+          if (isDevMode())
+            console.info('[chat-tailcap] repository-failure', {
+              threadId,
+              phase: 'cache-lifetime-aborted-during-commit',
+              lastSeq: q.lastSeq ?? null,
+              orderBy: q.orderBy,
+            });
           return { data: [], hasMore: true, failed: true };
+        }
         throw error;
       }
       // Recreation waits for the admitted write, but may begin immediately after it commits. Do not publish
       // old-lifetime memory state or rows to the caller once that lifetime has been aborted.
-      if (cacheLifetime.aborted)
+      if (cacheLifetime.aborted) {
+        if (isDevMode())
+          console.info('[chat-tailcap] repository-failure', {
+            threadId,
+            phase: 'cache-lifetime-aborted-after-commit',
+            lastSeq: q.lastSeq ?? null,
+            orderBy: q.orderBy,
+          });
         return { data: [], hasMore: true, failed: true };
+      }
       if (newest !== undefined) this.advanceCeiling(threadId, newest, false);
       const active = this.activeCoverage.get(threadId);
       if (active && coverage) active.state = coverage;
@@ -794,7 +853,7 @@ export class MessageRepository {
       data,
       hasMore: res.hasMore ?? data.length >= q.take,
       truncated: res.truncated,
-      confirmedEndSeq: endpoint,
+      confirmedEndSeq,
     };
   }
 

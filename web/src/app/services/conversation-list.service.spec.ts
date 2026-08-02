@@ -14,6 +14,7 @@ describe('ConversationListService stable markRead flush', () => {
   let commitLocalRead: jasmine.Spy;
   let markRead: jasmine.Spy;
   let applyReadState: jasmine.Spy;
+  let finishReadCommit: jasmine.Spy;
 
   beforeEach(() => {
     commitLocalRead = jasmine
@@ -21,6 +22,7 @@ describe('ConversationListService stable markRead flush', () => {
       .and.returnValue(true);
     markRead = jasmine.createSpy('markRead').and.returnValue(of({ code: 0 }));
     applyReadState = jasmine.createSpy('applyReadState');
+    finishReadCommit = jasmine.createSpy('finishReadCommit');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -31,8 +33,10 @@ describe('ConversationListService stable markRead flush', () => {
             commitLocalRead,
             applyReadState,
             beginReadCommit: jasmine.createSpy('beginReadCommit'),
-            finishReadCommit: jasmine.createSpy('finishReadCommit'),
-            readCommitPending: signal<ReadonlySet<number>>(new Set()).asReadonly(),
+            finishReadCommit,
+            readCommitPending: signal<ReadonlySet<number>>(
+              new Set(),
+            ).asReadonly(),
             setOpenThread: jasmine.createSpy('setOpenThread'),
             openThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
@@ -43,7 +47,10 @@ describe('ConversationListService stable markRead flush', () => {
             load: jasmine.createSpy('load'),
           },
         },
-        { provide: UserService, useValue: { markRead, sessionUserId: signal<number | null>(null) } },
+        {
+          provide: UserService,
+          useValue: { markRead, sessionUserId: signal<number | null>(null) },
+        },
         { provide: GroupService, useValue: {} },
       ],
     });
@@ -77,19 +84,23 @@ describe('ConversationListService stable markRead flush', () => {
     expect(markRead).not.toHaveBeenCalled();
   });
 
-  it('applies the server-authoritative badge returned on close', () => {
-    const state = {
-      threadId: 7,
-      lastReadSeq: 5,
-      unreadCount: 2,
-      mentionUnread: ['all'] as Array<'all' | 'me'>,
-    };
-    markRead.and.returnValue(of({ code: 0, data: state }));
+  it('flushRead sends the current stable position without waiting for close', () => {
+    convList.markReadStable(7, 5);
+    expect(markRead).not.toHaveBeenCalled();
 
+    convList.flushRead(7);
+
+    expect(markRead).toHaveBeenCalledOnceWith({
+      threadId: 7,
+      localReadHwm: 5,
+    });
+  });
+
+  it('keeps the syncing state until the authoritative SSE arrives', () => {
     convList.markReadStable(7, 5);
     convList.close();
-
-    expect(applyReadState).toHaveBeenCalledOnceWith(state);
+    expect(applyReadState).not.toHaveBeenCalled();
+    expect(finishReadCommit).not.toHaveBeenCalled();
   });
 });
 
@@ -122,7 +133,9 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
             status: signal('LOADING').asReadonly(),
             error: signal('').asReadonly(),
             openThreadId: signal(undefined).asReadonly(),
-            readCommitPending: signal<ReadonlySet<number>>(new Set()).asReadonly(),
+            readCommitPending: signal<ReadonlySet<number>>(
+              new Set(),
+            ).asReadonly(),
             topInserted: signal(null).asReadonly(),
             setOpenThread: jasmine.createSpy('setOpenThread'),
             missedCursor,
@@ -132,7 +145,13 @@ describe('ConversationListService (cursor + threadHwms delegation)', () => {
             clearThreadDismiss,
           },
         },
-        { provide: UserService, useValue: { markRead: () => of({ code: 0 }), sessionUserId: signal<number | null>(null) } },
+        {
+          provide: UserService,
+          useValue: {
+            markRead: () => of({ code: 0 }),
+            sessionUserId: signal<number | null>(null),
+          },
+        },
         { provide: GroupService, useValue: {} },
       ],
     });

@@ -7,14 +7,11 @@
         <span class="qr-title-lead">{{ 'auth.qrTitleLead' | transloco }}</span>
       </h1>
 
-      @if (qrTrusted) {
-        <p class="notice">{{ 'auth.qrTrustedNotice' | transloco }}</p>
-      } @else {
-        <p class="notice">{{ 'auth.webSessionNotice' | transloco }}</p>
-      }
-
       <div class="qr-stage">
-        <div class="qr-frame" [class.has-progress]="view() === 'pending' || view() === 'scanned'">
+        <div
+          class="qr-frame"
+          [class.has-progress]="view() === 'pending' || view() === 'scanned'"
+        >
           @if (view() === 'pending' || view() === 'scanned') {
             <p class="progress-time">
               {{ 'auth.qrExpiresIn' | transloco: { time: qrRemainingText() } }}
@@ -38,15 +35,24 @@
             @switch (view()) {
               @case ('pending') {
                 <div class="qr-canvas">
-                  <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+                  <app-qr-code
+                    [value]="qrToken() ?? ''"
+                    [ariaLabel]="'auth.qrTitle' | transloco"
+                  />
                 </div>
               }
               @case ('scanned') {
                 <div class="qr-canvas">
-                  <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+                  <app-qr-code
+                    [value]="qrToken() ?? ''"
+                    [ariaLabel]="'auth.qrTitle' | transloco"
+                  />
                 </div>
                 <span class="qr-scan-badge" aria-hidden="true">
-                  <app-icon [type]="AppIcon.CHECK" [style]="{ width: '40px', height: '40px' }" />
+                  <app-icon
+                    [type]="AppIcon.CHECK"
+                    [style]="{ width: '40px', height: '40px' }"
+                  />
                 </span>
               }
               @case ('loading') {
@@ -56,17 +62,32 @@
               }
               @case ('error') {
                 <div class="qr-error" role="alert">
-                  <app-icon class="qr-error__icon" [type]="AppIcon.REPORT" [style]="{ width: '28px', height: '28px' }" />
-                  <p class="qr-error__text">{{ 'auth.qrCreateError' | transloco }}</p>
-                  <button mat-flat-button color="primary" type="button" class="qr-retry-btn" (click)="retry()">
-                    <app-icon matButtonIcon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
+                  <app-icon
+                    class="qr-error__icon"
+                    [type]="AppIcon.REPORT"
+                    [style]="{ width: '28px', height: '28px' }"
+                  />
+                  <p class="qr-error__text">
+                    {{ 'auth.qrCreateError' | transloco }}
+                  </p>
+                  <button
+                    mat-flat-button
+                    color="primary"
+                    type="button"
+                    class="qr-retry-btn"
+                    (click)="retry()"
+                  >
+                    <app-icon
+                      matButtonIcon
+                      [type]="AppIcon.REFRESH"
+                      [style]="{ width: '18px', height: '18px' }"
+                    />
                     {{ 'auth.qrRetry' | transloco }}
                   </button>
                 </div>
               }
             }
           </div>
-
         </div>
 
         <!-- Persistent live region for the two in-flight states whose instruction belongs BELOW the square
@@ -75,14 +96,17 @@
           The error is announced separately by the role=alert block inside the square. -->
         <p class="qr-state" role="status" aria-live="polite">
           @switch (view()) {
-            @case ('loading') { {{ 'auth.qrLoading' | transloco }} }
-            @case ('scanned') { {{ 'auth.qrScanned' | transloco }} }
+            @case ('loading') {
+              {{ 'auth.qrLoading' | transloco }}
+            }
+            @case ('scanned') {
+              {{ 'auth.qrScanned' | transloco }}
+            }
           }
         </p>
       </div>
 
       <p class="qr-title-path">{{ 'auth.qrTitlePath' | transloco }}</p>
-
     </div>
 
     <!-- Footer row below the card: login-method switchers on the LEFT, server-config link on the RIGHT
@@ -103,7 +127,11 @@
       </div>
       @if (isTauri()) {
         <a mat-button class="server-link" routerLink="/config" replaceUrl>
-          <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+          <app-icon
+            matButtonIcon
+            [type]="AppIcon.SETTINGS"
+            [style]="{ width: '18px', height: '18px' }"
+          />
           {{ 'serverConfig.entry' | transloco }}
         </a>
       }

@@ -201,6 +201,7 @@ export const user = pgTable(
     profileRev: integer().default(0).notNull(),
     remoteProfileRev: integer(),
     threadRevision: integer().default(0).notNull(),
+    readRevision: integer().default(0).notNull(),
     mustChangePassword: boolean().default(false).notNull(),
     friendReqAckRev: timestamp({ precision: 3, mode: 'date' })
       .default(sql`'1970-01-01 00:00:00'`)
@@ -219,6 +220,34 @@ export const user = pgTable(
   ],
 );
 
+export const userPreference = pgTable(
+  'UserPreference',
+  {
+    userId: integer().notNull(),
+    key: varchar({ length: 100 }).notNull(),
+    value: jsonb().$type<unknown>().notNull(),
+    revision: integer().default(0).notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.key] }),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'UserPreference_userId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    check(
+      'UserPreference_value_not_json_null_check',
+      sql`${table.value} <> 'null'::jsonb`,
+    ),
+    check('UserPreference_revision_check', sql`${table.revision} >= 0`),
+  ],
+);
+
 export const threadParticipant = pgTable(
   'ThreadParticipant',
   {
@@ -226,6 +255,7 @@ export const threadParticipant = pgTable(
     userId: integer().notNull(),
     threadId: integer().notNull(),
     lastReadSeq: integer(),
+    readRevision: integer().default(0).notNull(),
     role: groupRole(),
     joinedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -257,6 +287,11 @@ export const threadParticipant = pgTable(
       'btree',
       table.userId.asc().nullsLast().op('int4_ops'),
       table.pinned.asc().nullsLast().op('bool_ops'),
+    ),
+    index('ThreadParticipant_userId_readRevision_idx').using(
+      'btree',
+      table.userId.asc().nullsLast().op('int4_ops'),
+      table.readRevision.asc().nullsLast().op('int4_ops'),
     ),
     uniqueIndex('ThreadParticipant_userId_threadId_key').using(
       'btree',
@@ -927,7 +962,7 @@ export const sessionToken = pgTable(
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }),
+    expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
     lastSeenAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -935,8 +970,7 @@ export const sessionToken = pgTable(
     revokeReason: varchar({ length: 32 }),
     client: varchar({ length: 16 }).notNull(),
     lastSeenIp: varchar({ length: 64 }),
-    persistent: boolean().default(true).notNull(),
-    trusted: boolean().default(false).notNull(),
+    autoTerminateDays: integer().default(30).notNull(),
   },
   (table) => [
     index('SessionToken_lastSeenAt_active_idx')
@@ -964,6 +998,10 @@ export const sessionToken = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
+    check(
+      'SessionToken_auto_terminate_days_check',
+      sql`${table.autoTerminateDays} IN (7, 30, 90, 180, 365)`,
+    ),
   ],
 );
 

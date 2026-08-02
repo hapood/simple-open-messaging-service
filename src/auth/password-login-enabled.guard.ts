@@ -1,7 +1,10 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { isPasswordLoginEnabled, PUBLIC_CONFIG } from '../config/public-config.js';
+import {
+  isPasswordLoginEnabled,
+  PUBLIC_CONFIG,
+} from '../config/public-config.js';
 
 /**
  * Rejects password login BEFORE `LocalAuthGuard` runs the expensive argon2 verify + brute-force
@@ -18,7 +21,10 @@ import { isPasswordLoginEnabled, PUBLIC_CONFIG } from '../config/public-config.j
 export class PasswordLoginEnabledGuard implements CanActivate {
   canActivate(_context: ExecutionContext): boolean {
     if (!isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode)) {
-      throw new BusinessException(BusinessCode.LOGIN_METHOD_DISABLED, 'password login is disabled');
+      throw new BusinessException(
+        BusinessCode.LOGIN_METHOD_DISABLED,
+        'password login is disabled',
+      );
     }
     return true;
   }

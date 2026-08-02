@@ -140,10 +140,7 @@ export class ForwardBundleService {
     for (let index = 1; index < sources.length; index++) {
       const previous = sources[index - 1];
       const current = sources[index];
-      if (
-        current.threadId !== sourceThreadId ||
-        current.seq <= previous.seq
-      ) {
+      if (current.threadId !== sourceThreadId || current.seq <= previous.seq) {
         throw new BusinessException(
           BusinessCode.FORWARD_INVALID_BUNDLE,
           'source messages must belong to one thread and be strictly ordered by seq',
@@ -304,9 +301,14 @@ export class ForwardBundleService {
         ...(parseTextMessageContent(enrichedRows[index].content)?.quote
           ? {
               quote: {
-                preview:
-                  parseTextMessageContent(enrichedRows[index].content)?.quote
-                    ?.preview ?? '',
+                preview: (() => {
+                  const reply = parseTextMessageContent(
+                    enrichedRows[index].content,
+                  )?.quote;
+                  return reply
+                    ? `${reply.author ?? ''}：${reply.body ?? ''}`
+                    : '';
+                })(),
                 ...(selectedIndex.get(
                   `${message.threadId}:${parseTextMessageContent(message.content)!.quote!.seq}`,
                 ) !== undefined
@@ -565,7 +567,10 @@ export class ForwardBundleService {
       const usesMessageIds = bundle.manifest.messages.some(
         (message) => message.id !== undefined,
       );
-      for (const [messageIndex, message] of bundle.manifest.messages.entries()) {
+      for (const [
+        messageIndex,
+        message,
+      ] of bundle.manifest.messages.entries()) {
         if (
           (usesMessageIds && message.id !== messageIndex + 1) ||
           typeof message.content !== 'string' ||

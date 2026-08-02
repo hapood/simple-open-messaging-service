@@ -141,7 +141,7 @@ describe('OtpLoginService', () => {
   });
 
   describe('verifyAndLogin', () => {
-    it('verifies a correct code (default client app → trusted/permanent), records producedSessionId', async () => {
+    it('verifies a correct code with the default app client and records producedSessionId', async () => {
       const { code, codeHash } = await issueAndCaptureHash();
       prisma.user.findUnique.mockResolvedValue({
         id: 42,
@@ -163,8 +163,6 @@ describe('OtpLoginService', () => {
         'app',
         expect.objectContaining({
           ip: '1.2.3.4',
-          persistent: true,
-          trusted: true,
         }),
       );
       expect(prisma.loginCode.update).toHaveBeenCalledWith({
@@ -202,7 +200,7 @@ describe('OtpLoginService', () => {
       expect(prisma.loginCode.updateMany).toHaveBeenCalledTimes(1);
     });
 
-    it("client 'web' → untrusted (14-day); 'desktop' → trusted (permanent)", async () => {
+    it('passes client metadata without lifetime overrides', async () => {
       const codeHash = await argon2.hash('333333');
       prisma.user.findUnique.mockResolvedValue({
         id: 42,
@@ -220,7 +218,7 @@ describe('OtpLoginService', () => {
       expect(sessionTokens.issue).toHaveBeenLastCalledWith(
         42,
         'web',
-        expect.objectContaining({ trusted: false }),
+        expect.not.objectContaining({ trusted: expect.anything() }),
       );
 
       prisma.loginCode.updateMany.mockClear();
@@ -229,7 +227,7 @@ describe('OtpLoginService', () => {
       expect(sessionTokens.issue).toHaveBeenLastCalledWith(
         42,
         'desktop',
-        expect.objectContaining({ trusted: true }),
+        expect.not.objectContaining({ trusted: expect.anything() }),
       );
     });
 

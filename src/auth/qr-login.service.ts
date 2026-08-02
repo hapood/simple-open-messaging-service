@@ -11,19 +11,12 @@ const QR_PREFIX = 'qr:';
 const QR_TTL_MS = 3 * 60 * 1000;
 
 type QrStatus = 'pending' | 'scanned' | 'confirmed';
-/** The client kind a QR-issued session is minted for: 'app' (Android), 'desktop' (Tauri), or 'web'
- *  (browser). QR is available on every platform; the resulting session's lifetime follows the platform's
- *  trust (see {@link create}): the trusted native clients (`app`, `desktop`) get a permanent session, the
- *  browser a 14-day sliding one. */
+/** The client kind is retained as device-list metadata and does not affect lifetime. */
 type QrClient = 'app' | 'web' | 'desktop';
 
 interface QrState {
   status: QrStatus;
   client: QrClient;
-  /** Trust baked in at create: `app` (Android) and `desktop` are trusted platforms (token kept in OS secure
-   *  storage) → permanent session; `web` is never trusted → 14-day sliding. On desktop trust is gated on the
-   *  boot keyring probe (a desktop without a working keyring can't safely hold a permanent token). */
-  trusted: boolean;
   /** Set at confirm — the scanner's account becomes the QR-displaying client's session owner. */
   userId?: number;
   /** The scanner's userId at scan (audit). */
@@ -44,12 +37,9 @@ export interface QrPollResult {
 }
 
 /**
- * QR-scan login → a session confirmed by an already-logged-in phone. Available on every platform; the
- * session's lifetime follows the platform's trust: the trusted native clients (`app`/Android and `desktop`,
- * which keep the token in OS secure storage) get a permanent, revocation-only session; the browser gets a
- * 14-day sliding session (a browser can't safely hold a permanent bearer token). Ephemeral by design: the
+ * QR-scan login → a session confirmed by an already-logged-in phone. Ephemeral by design: the
  * pending state lives in the in-process KV (seconds-to-minutes lifetime), NOT a database table — the issued
- * session is the durable artifact (its SessionToken row records device/ip/client/trusted for audit).
+ * session is the durable artifact (its SessionToken row records device/ip/client for audit).
  *
  * Two-step (WeChat/DingTalk-style): scan → 'scanned' (QR-displaying client shows "confirm on phone") →
  * confirm → 'confirmed' (its next poll claims + issues). Issue-once is enforced by an atomic `del` claim:
@@ -80,29 +70,26 @@ export class QrLoginService {
   }
 
   private async write(token: string, state: QrState): Promise<void> {
-    await this.kv.setex(this.key(token), this.remaining(state), JSON.stringify(state));
+    await this.kv.setex(
+      this.key(token),
+      this.remaining(state),
+      JSON.stringify(state),
+    );
   }
 
-  /** A client begins a QR login: mint a 256-bit token + pending state. The client renders the token as a QR
-   *  and polls for its status. Trust follows the platform: `app` (Android) is always trusted; `desktop` is
-   *  trusted when its OS keyring is available (the boot probe — without it a permanent token can't be
-   *  stored, so it falls back to the 14-day sliding session); `web` is never trusted. */
-  async create(client: QrClient, trusted = false): Promise<QrCreateResult> {
+  /** A client begins a QR login: mint a 256-bit token + pending state. */
+  async create(client: QrClient): Promise<QrCreateResult> {
     const qrToken = randomBytes(32).toString('hex');
     const expiresAt = Date.now() + QR_TTL_MS;
     await this.write(qrToken, {
       status: 'pending',
       client,
-      trusted: client === 'app' || (client === 'desktop' && trusted),
       expiresAt,
     });
     return { qrToken, expiresAt };
   }
 
-  /** The QR-displaying client polls its token. Returns the status; when 'confirmed' it CLAIMS the token
-   *  (atomic del) and issues a session for the scanner's account — permanent for a trusted native client
-   *  (`app`/`desktop`), else a 14-day sliding session. The claim guarantees the session is issued exactly
-   *  once even under concurrent polls. */
+  /** The QR-displaying client polls its token. A confirmed poll atomically claims it and issues once. */
   async poll(
     qrToken: string,
     opts: { device?: string; userAgent?: string; ip?: string },
@@ -117,13 +104,15 @@ export class QrLoginService {
     const claimed = await this.kv.del(this.key(qrToken));
     if (claimed === 0) return { status: 'expired' };
 
-    const sessionToken = await this.sessionTokens.issue(state.userId!, state.client, {
-      device: opts.device,
-      userAgent: opts.userAgent,
-      ip: opts.ip,
-      persistent: true,
-      trusted: state.trusted,
-    });
+    const sessionToken = await this.sessionTokens.issue(
+      state.userId!,
+      state.client,
+      {
+        device: opts.device,
+        userAgent: opts.userAgent,
+        ip: opts.ip,
+      },
+    );
     return { status: 'confirmed', sessionToken };
   }
 
@@ -131,21 +120,43 @@ export class QrLoginService {
    *  "confirm on phone". Only a pending token can be scanned. */
   async scan(qrToken: string, scannerUserId: number): Promise<void> {
     const state = await this.read(qrToken);
-    if (!state) throw new BusinessException(BusinessCode.QR_EXPIRED, 'sign-in code expired');
+    if (!state)
+      throw new BusinessException(
+        BusinessCode.QR_EXPIRED,
+        'sign-in code expired',
+      );
     if (state.status !== 'pending') {
-      throw new BusinessException(BusinessCode.QR_INVALID, 'sign-in code is not pending');
+      throw new BusinessException(
+        BusinessCode.QR_INVALID,
+        'sign-in code is not pending',
+      );
     }
-    await this.write(qrToken, { ...state, status: 'scanned', scannedBy: scannerUserId });
+    await this.write(qrToken, {
+      ...state,
+      status: 'scanned',
+      scannedBy: scannerUserId,
+    });
   }
 
   /** The phone confirms → marks the token 'confirmed' with the scanner's userId (the desktop session will
    *  belong to THIS account). Only a scanned token can be confirmed — the two-step gate. */
   async confirm(qrToken: string, scannerUserId: number): Promise<void> {
     const state = await this.read(qrToken);
-    if (!state) throw new BusinessException(BusinessCode.QR_EXPIRED, 'sign-in code expired');
+    if (!state)
+      throw new BusinessException(
+        BusinessCode.QR_EXPIRED,
+        'sign-in code expired',
+      );
     if (state.status !== 'scanned') {
-      throw new BusinessException(BusinessCode.QR_INVALID, 'sign-in code must be scanned first');
+      throw new BusinessException(
+        BusinessCode.QR_INVALID,
+        'sign-in code must be scanned first',
+      );
     }
-    await this.write(qrToken, { ...state, status: 'confirmed', userId: scannerUserId });
+    await this.write(qrToken, {
+      ...state,
+      status: 'confirmed',
+      userId: scannerUserId,
+    });
   }
 }

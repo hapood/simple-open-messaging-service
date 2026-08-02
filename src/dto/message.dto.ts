@@ -288,6 +288,19 @@ export class MarkReadDto {
   localReadHwm!: number;
 }
 
+/** Pull per-thread read states changed in a bounded per-user revision range. */
+export class ReadDeltaDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  fromRevision!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  toRevision!: number;
+}
+
 /** Toggle mute for a conversation (the caller's ThreadParticipant row). */
 export class SetMutedDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })

@@ -20,7 +20,7 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { MessageResponseDto, ThreadReadStateDto } from '../dto/response.dto.js';
+import { MessageResponseDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
@@ -38,6 +38,7 @@ import {
   QueryMediaStagesDto,
   QueryMessagesDto,
   MarkReadDto,
+  ReadDeltaDto,
   MediaStatusDto,
   RelocalizeMediaDto,
   SetMutedDto,
@@ -472,7 +473,10 @@ export class MessageController {
     // Per-viewer filters: clearedSeq hides the caller's "clear history" prefix (P2P + GROUP), and on P2P
     // threads a blocked peer's messages are hidden (group threads leave blocked members visible —
     // WhatsApp neutral-ground). blockedByMe is empty for ~all users, so the creator filter is skipped.
-    const filters: { clearedThroughSeq?: number | null; hideCreatorIds?: number[] } = {
+    const filters: {
+      clearedThroughSeq?: number | null;
+      hideCreatorIds?: number[];
+    } = {
       clearedThroughSeq: req.threadAccess.participant.clearedSeq,
     };
     if (req.threadAccess.threadType === 'P2P') {
@@ -525,14 +529,12 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('thread/mark-read')
   @ApiOperation({
-    summary:
-      'Commit a local read HWM and return the authoritative unread state',
+    summary: 'Commit a local read HWM',
   })
-  @ApiResultResponse(ThreadReadStateDto)
   async markRead(
     @Request() req: FastifyRequest,
     @Body() dto: MarkReadDto,
-  ): Promise<ThreadReadStateDto> {
+  ): Promise<void> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
     // participant row is on req.threadAccess.participant.
     const msg = await this.messageService.findMessageBySeq(
@@ -550,11 +552,37 @@ export class MessageController {
       dto.threadId,
       msg.seq,
     );
-    return {
+    this.sseService.onThreadReadUpdated(req.user.userId, {
       threadId: dto.threadId,
       lastReadSeq: state?.lastReadSeq ?? msg.seq,
       unreadCount: state?.count ?? 0,
       mentionUnread: state?.mention ?? [],
+      readRevision: state?.readRevision ?? 0,
+    });
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(60, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/read-delta')
+  @ApiOperation({
+    summary: 'Fetch read-state delta in (fromRevision, toRevision]',
+  })
+  async readDelta(@Request() req: FastifyRequest, @Body() dto: ReadDeltaDto) {
+    const current = await this.messageService.currentReadRevision(
+      req.user.userId,
+    );
+    const toRevision = Math.min(dto.toRevision, current);
+    if (toRevision <= dto.fromRevision)
+      return { readRevision: toRevision, items: [] };
+    return {
+      readRevision: toRevision,
+      items: await this.messageService.queryReadDelta(
+        req.user.userId,
+        dto.fromRevision,
+        toRevision,
+      ),
     };
   }
 

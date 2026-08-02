@@ -2835,7 +2835,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const caps = content.querySelectorAll('.cb-tail-cap');
     expect(caps.length).toBe(1);
     expect(content.lastElementChild).toBe(caps[0]); // always last: every append inserts before it
-    expect(caps[0].querySelector('.cb-edge-status-ring')).not.toBeNull();
+    expect(caps[0].querySelector('.cb-load-status')).not.toBeNull();
+    expect(caps[0].querySelector('.cb-edge-status-ring')).toBeNull();
   });
 
   it('newer demand failure becomes an amber manual retry and ordinary balance does not retry', async () => {
@@ -2863,6 +2864,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
     expect(requests).toBe(1);
     expect(cap.classList.contains('cb-tail-cap--failed')).toBeTrue();
+    expect(cap.querySelector('.cb-load-icon__retry')).not.toBeNull();
     expect(cap.getAttribute('role')).toBe('button');
     expect(cap.getAttribute('aria-label')).toContain('Retry');
     viewport.dispatchEvent(new Event('scroll'));
@@ -3051,7 +3053,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
     expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
     expect(cap.classList.contains('cb-tail-cap--loading')).toBe(false);
-    expect(cap.offsetHeight).toBe(14); // MEASURED: CSS owns the dimension, the kernel reads offsetHeight
+    expect(cap.offsetHeight).toBe(0); // MEASURED: CSS owns the dimension, the kernel reads offsetHeight
     expect(sumChildrenHeight(content)).toBe(100 * 100 + 14); // cap height folded into the content total
   });
 
@@ -3092,7 +3094,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
     expect(cap.classList.contains('cb-tail-cap--loading')).toBe(false);
     expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
-    expect(cap.offsetHeight).toBe(14);
+    expect(cap.offsetHeight).toBe(0);
   });
 
   it('tail cap: an idle waiter remains a gap while scrollToBottom reaches newest', async () => {
@@ -3120,7 +3122,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().noNewer).toBe(true);
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
     expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
-    expect(cap.offsetHeight).toBe(14); // height re-measured 48→14 on the batch that reached newest
+    expect(cap.offsetHeight).toBe(0); // height re-measured 48→0 on the batch that reached newest
   });
 
   it('tail cap: never in mounted[] — newestId is the last real item, the cap carries no data-cb-id', async () => {

@@ -4,20 +4,21 @@ describe('StableReadTracker', () => {
   beforeEach(() => jasmine.clock().install());
   afterEach(() => jasmine.clock().uninstall());
 
-  it('waits for 500ms of scroll quiet and commits only the maximum fully-visible seq', () => {
+  it('commits the initial fully-visible HWM on start, then waits for 200ms of scroll quiet', () => {
     const commit = jasmine.createSpy('commit');
     const tracker = new StableReadTracker(commit);
 
     tracker.noteFullyVisible([10, 11]);
     jasmine.clock().tick(300);
-    tracker.noteScroll();
-    jasmine.clock().tick(499);
     expect(commit).not.toHaveBeenCalled();
-    jasmine.clock().tick(1);
+    tracker.start();
     expect(commit).toHaveBeenCalledOnceWith(11);
 
     tracker.noteFullyVisible([9, 12]);
-    jasmine.clock().tick(500);
+    tracker.noteScroll();
+    jasmine.clock().tick(199);
+    expect(commit).toHaveBeenCalledTimes(1);
+    jasmine.clock().tick(1);
     expect(commit).toHaveBeenCalledWith(12);
   });
 
@@ -25,9 +26,24 @@ describe('StableReadTracker', () => {
     const commit = jasmine.createSpy('commit');
     const tracker = new StableReadTracker(commit);
     tracker.noteFullyVisible([7]);
-    jasmine.clock().tick(250);
+    tracker.start();
+    commit.calls.reset();
+    tracker.noteFullyVisible([8]);
+    jasmine.clock().tick(100);
     tracker.reset();
-    jasmine.clock().tick(500);
+    jasmine.clock().tick(200);
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('flush commits the latest fully-visible HWM before teardown', () => {
+    const commit = jasmine.createSpy('commit');
+    const tracker = new StableReadTracker(commit);
+    tracker.noteFullyVisible([4]);
+    tracker.start();
+    tracker.noteFullyVisible([6]);
+
+    tracker.flush();
+
+    expect(commit.calls.allArgs()).toEqual([[4], [6]]);
   });
 });

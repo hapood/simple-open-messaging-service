@@ -17,7 +17,12 @@ export const BAN_DIM_OTP = 'otp'; // one-time-code account dimension
 export const BAN_DIM_ADMIN_PWD = 'admin_pwd'; // admin console password-login account dimension
 export const BAN_DIM_ADMIN_2FA = 'admin_2fa'; // admin console TOTP / backup-code account dimension
 /** Dimensions keyed by an account string (cleared together on an account unban — see {@link unban}). */
-const ACCOUNT_DIMENSIONS = [BAN_DIM_USER, BAN_DIM_OTP, BAN_DIM_ADMIN_PWD, BAN_DIM_ADMIN_2FA];
+const ACCOUNT_DIMENSIONS = [
+  BAN_DIM_USER,
+  BAN_DIM_OTP,
+  BAN_DIM_ADMIN_PWD,
+  BAN_DIM_ADMIN_2FA,
+];
 
 /** A failure-count threshold within {@link WINDOW_MS} and the ban duration once exceeded. Steps within a
  *  dimension are ascending; the highest matched tier takes effect (progressive banning). */
@@ -82,10 +87,16 @@ export class BruteForceService implements OnModuleDestroy {
 
   /** Record one failure for (dimension, value) under the given ascending steps; return the ban deadline iff a
    *  tier is newly crossed this call (else undefined). Only failures within {@link WINDOW_MS} are counted. */
-  registerFailure(dimension: string, value: string, steps: readonly BanStep[]): number | undefined {
+  registerFailure(
+    dimension: string,
+    value: string,
+    steps: readonly BanStep[],
+  ): number | undefined {
     const now = Date.now();
     const key = keyOf(dimension, value);
-    const fresh = (this._failLog.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
+    const fresh = (this._failLog.get(key) ?? []).filter(
+      (t) => now - t < WINDOW_MS,
+    );
     fresh.push(now);
     this._failLog.set(key, fresh);
     // Highest matched tier wins (steps are ascending; a later tier overwrites an earlier ban deadline).
@@ -148,7 +159,8 @@ export class BruteForceService implements OnModuleDestroy {
     const keys: BanKey[] = [];
     if (opts.ip) keys.push({ dimension: BAN_DIM_IP, value: opts.ip });
     if (opts.account) {
-      for (const dim of ACCOUNT_DIMENSIONS) keys.push({ dimension: dim, value: opts.account });
+      for (const dim of ACCOUNT_DIMENSIONS)
+        keys.push({ dimension: dim, value: opts.account });
     }
     for (const { dimension, value } of keys) {
       const key = keyOf(dimension, value);

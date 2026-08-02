@@ -18,15 +18,10 @@
       }
     </div>
 
-    <label class="controls">
-      <span class="zoom-label">{{ 'profile.zoom' | transloco }}</span>
+    <p class="gesture-hint">{{ 'profile.avatarAdjustHint' | transloco }}</p>
+    <label class="controls" [attr.aria-label]="'profile.zoom' | transloco">
       <input class="zoom" type="range" min="0" max="1" step="0.01"
         [value]="zoom()" (input)="onRange($event)" [disabled]="!canSave()" />
     </label>
-
-    <div class="preview-row">
-      <span class="preview-label">{{ 'profile.preview' | transloco }}</span>
-      <canvas #preview class="preview" [width]="PREVIEW" [height]="PREVIEW"></canvas>
-    </div>
   </div>
 </div>

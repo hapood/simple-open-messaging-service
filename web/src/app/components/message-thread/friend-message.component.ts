@@ -221,6 +221,8 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
   styleUrl: './friend-message.component.scss',
 })
 export class MessageThreadComponent implements OnDestroy {
+  readonly assetUrl = assetUrl;
+  readonly UserAvatarType = UserAvatarType;
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
   /** The A/B host keeps two threads mounted; only the foreground layer may own the one native composer. */
@@ -302,9 +304,14 @@ export class MessageThreadComponent implements OnDestroy {
   private kernelReady = false;
   /** Frozen at chat-open before any local/server read cursor advances. */
   private firstUnreadSeq: number | null = null;
+  /** The unread anchor missed the local-only init and must be positioned after the post-init catch-up. */
+  private pendingUnreadReanchor = false;
   private readonly stableRead = new StableReadTracker((seq) => {
     const threadId = this.threadId();
-    if (threadId !== undefined) this.convList.markReadStable(threadId, seq);
+    if (threadId !== undefined) {
+      this.convList.markReadStable(threadId, seq);
+      this.convList.flushRead(threadId);
+    }
   });
 
   readonly atBottom = signal(true);
@@ -566,6 +573,13 @@ export class MessageThreadComponent implements OnDestroy {
       this.initScroller(vp.nativeElement, ct.nativeElement, trd);
       this.currentTrdId = trd.id;
     });
+    // A background A/B pane may finish initialization before it is promoted. Only the foreground pane starts
+    // read tracking; start() immediately commits the fully-visible HWM collected during kernel layout.
+    effect(() => {
+      const active = this.nativeComposerActive();
+      const loading = this.initialLoading();
+      if (active && !loading && this.kernelReady) this.stableRead.start();
+    });
     // Immunity frame drain: when a route-transition freeze ends, apply any viewport resize the kernel
     // deferred so the message list re-pins to the post-animation viewport exactly once.
     effect(() => {
@@ -594,7 +608,10 @@ export class MessageThreadComponent implements OnDestroy {
       const composingQuote = this.composingQuote();
       const quote =
         composingQuote?.seq !== undefined
-          ? { seq: composingQuote.seq, preview: composingQuote.preview }
+          ? {
+              seq: composingQuote.seq,
+              preview: `${composingQuote.author ?? ''}: ${composingQuote.body ?? ''}`,
+            }
           : undefined;
       if (this.nativeComposerThreadId === threadId) {
         if (this.nativeComposerContextId !== null)
@@ -889,6 +906,7 @@ export class MessageThreadComponent implements OnDestroy {
         onNewerAvailable: () => {
           if (!this.atBottom())
             this.newMessageCount.update((count) => count + 1);
+          this.scroller?.notifyNewerAvailable?.();
         },
         // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
         // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
@@ -916,6 +934,7 @@ export class MessageThreadComponent implements OnDestroy {
       viewport,
       content,
       source: this.source,
+      initOpts: { chatId: trd.threadId },
       hooks: {
         createItem: (item, prev) => this.createItem(item, prev),
         createSkeleton: () => createGhostCbElement(),
@@ -968,8 +987,9 @@ export class MessageThreadComponent implements OnDestroy {
           ? {
               ...openOptions,
               onFallbackToLatest: () => {
-                this.firstUnreadSeq = null;
-                this.unreadBoundaryAbove.set(false);
+                // A local-only init miss is not evidence that the server-side unread anchor disappeared.
+                // Keep the frozen boundary and position it after finishLocalInit drives the catch-up demand.
+                this.pendingUnreadReanchor = true;
               },
             }
           : undefined,
@@ -1154,9 +1174,13 @@ export class MessageThreadComponent implements OnDestroy {
     const context = this.messageContextMenu();
     if (!context || context.targetSeq < 0) return;
     const data = context.targetItem.data;
+    const visual = this.replyVisual(data);
     this.composingQuote.set({
       seq: context.targetSeq,
-      preview: `${data.name}：${this.forwardSummary(data)}`.slice(0, 100),
+      author: data.name,
+      body: this.forwardSummary(data),
+      contentType: data.contentType,
+      ...visual,
     });
     this.closeContextMenu();
   }
@@ -1388,6 +1412,44 @@ export class MessageThreadComponent implements OnDestroy {
     );
   }
 
+  private replyVisual(
+    message: ChatMsgData,
+  ): Pick<
+    NonNullable<ChatMsgData['quote']>,
+    'image' | 'imageLabel' | 'imageIdentity' | 'imageSize' | 'imageShape'
+  > {
+    if (message.contentType === 'IMAGE' && message.images?.[0]?.src)
+      return {
+        image: message.images[0].src,
+        imageSize: message.images[0].size,
+        imageShape: 'thumbnail',
+      };
+    if (message.contentType !== 'INVITE' && message.contentType !== 'LINK')
+      return {};
+    try {
+      const card = JSON.parse(message.text) as Record<string, unknown>;
+      if (message.contentType === 'INVITE')
+        return {
+          image:
+            typeof card['groupAvatar'] === 'string'
+              ? card['groupAvatar']
+              : undefined,
+          imageLabel:
+            typeof card['groupName'] === 'string'
+              ? card['groupName']
+              : undefined,
+          imageIdentity:
+            typeof card['group'] === 'string' ? card['group'] : undefined,
+          imageShape: 'avatar',
+        };
+      return typeof card['image'] === 'string'
+        ? { image: card['image'], imageShape: 'thumbnail' }
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
   private syncMountedSelectionState(): void {
     const active = this.selectionMode();
     const selected = this.selectedMessageIds();
@@ -1432,6 +1494,18 @@ export class MessageThreadComponent implements OnDestroy {
     this.probe.schedule(this.threadId() ?? 0);
     this.updateUnreadBoundaryPosition(info);
     this.stableRead.noteScroll();
+    const unread = this.firstUnreadSeq;
+    if (
+      this.pendingUnreadReanchor &&
+      unread !== null &&
+      info.oldestId !== null &&
+      info.newestId !== null &&
+      info.oldestId <= unread &&
+      unread <= info.newestId
+    ) {
+      this.pendingUnreadReanchor = false;
+      queueMicrotask(() => void jumpToMessage(this.scroller, unread, 'top'));
+    }
   }
 
   private updateUnreadBoundaryPosition(info: CbScrollInfo): void {
@@ -2650,8 +2724,10 @@ export class MessageThreadComponent implements OnDestroy {
     this.selectedMessageIds.set(new Set());
     this.messageContextMenu.set(null);
     this.composingQuote.set(null);
+    this.stableRead.flush();
     this.stableRead.reset();
     this.firstUnreadSeq = null;
+    this.pendingUnreadReanchor = false;
     this.unreadBoundaryAbove.set(false);
     this.probe.destroy();
     this.mountedMessageCount.set(0);

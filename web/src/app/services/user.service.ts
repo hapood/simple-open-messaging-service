@@ -8,7 +8,7 @@ import {
   Invite,
   InviteDetail,
   StandardResponse,
-  ThreadReadState,
+  ThreadReadDelta,
 } from './model';
 import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
@@ -541,10 +541,17 @@ export class UserService {
     );
   }
 
-  /** Commit the viewport's local read HWM and receive the server-authoritative badge state. */
+  /** Commit the viewport's local read HWM. Authoritative state arrives on THREAD_READ_UPDATED. */
   markRead(params: { threadId: number; localReadHwm: number }) {
-    return this.http.post<StandardResponse<ThreadReadState>>(
+    return this.http.post<StandardResponse>(
       `${apiPrefix()}/thread/mark-read`,
+      params,
+    );
+  }
+
+  queryReadDelta(params: { fromRevision: number; toRevision: number }) {
+    return this.http.post<StandardResponse<ThreadReadDelta>>(
+      `${apiPrefix()}/thread/read-delta`,
       params,
     );
   }

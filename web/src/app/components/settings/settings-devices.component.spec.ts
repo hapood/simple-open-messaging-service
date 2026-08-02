@@ -2,7 +2,10 @@ import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
-import { InlineTranslocoLoader, translations } from '../../i18n/transloco.loader';
+import {
+  InlineTranslocoLoader,
+  translations,
+} from '../../i18n/transloco.loader';
 import { of } from 'rxjs';
 import { SettingsDevicesComponent } from './settings-devices.component';
 import { AuthService, type SessionInfo } from '../../services/auth.service';
@@ -26,6 +29,8 @@ import { LanguageService } from '../../services/language.service';
 describe('SettingsDevicesComponent', () => {
   let comp: SettingsDevicesComponent;
   let getSessions: jasmine.Spy;
+  let getSessionSettings: jasmine.Spy;
+  let setSessionAutoTerminateDays: jasmine.Spy;
   let revokeSession: jasmine.Spy;
   let confirmCb: ((result: unknown) => void) | undefined;
 
@@ -41,7 +46,7 @@ describe('SettingsDevicesComponent', () => {
       createdAt: '2026-01-01T00:00:00Z',
       lastSeenAt: '2026-01-02T00:00:00Z',
       expiresAt: '2026-02-01T00:00:00Z',
-      trusted: false,
+      autoTerminateDays: 30,
       isCurrent: false,
       ...overrides,
     };
@@ -50,35 +55,66 @@ describe('SettingsDevicesComponent', () => {
   beforeEach(() => {
     TestBed.resetTestingModule();
     confirmCb = undefined;
-    getSessions = jasmine.createSpy('getSessions').and.returnValue(of({ code: 0, message: 'ok', data: [] as SessionInfo[] }));
-    revokeSession = jasmine.createSpy('revokeSession').and.returnValue(of({ code: 0, message: 'ok' }));
+    getSessions = jasmine
+      .createSpy('getSessions')
+      .and.returnValue(
+        of({ code: 0, message: 'ok', data: [] as SessionInfo[] }),
+      );
+    getSessionSettings = jasmine
+      .createSpy('getSessionSettings')
+      .and.returnValue(
+        of({ code: 0, message: 'ok', data: { autoTerminateDays: 30 } }),
+      );
+    setSessionAutoTerminateDays = jasmine
+      .createSpy('setSessionAutoTerminateDays')
+      .and.returnValue(of({ code: 0, message: 'ok' }));
+    revokeSession = jasmine
+      .createSpy('revokeSession')
+      .and.returnValue(of({ code: 0, message: 'ok' }));
 
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: '简体中文' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
           loader: InlineTranslocoLoader,
         }),
         SettingsDevicesComponent,
-        { provide: AuthService, useValue: { getSessions, revokeSession } as unknown as AuthService },
+        {
+          provide: AuthService,
+          useValue: {
+            getSessions,
+            getSessionSettings,
+            setSessionAutoTerminateDays,
+            revokeSession,
+          } as unknown as AuthService,
+        },
         {
           provide: RouteService,
           useValue: {
-            popupDlg: jasmine.createSpy('popupDlg').and.callFake((_t: PopupType, _i: unknown, cb?: (r: unknown) => void) => {
-              confirmCb = cb;
-              return { id: 0 };
-            }),
+            popupDlg: jasmine
+              .createSpy('popupDlg')
+              .and.callFake(
+                (_t: PopupType, _i: unknown, cb?: (r: unknown) => void) => {
+                  confirmCb = cb;
+                  return { id: 0 };
+                },
+              ),
           } as unknown as RouteService,
         },
-        { provide: LanguageService, useValue: { lang: signal('en') } as unknown as LanguageService },
+        {
+          provide: LanguageService,
+          useValue: { lang: signal('en') } as unknown as LanguageService,
+        },
       ],
-    })
-      .overrideComponent(SettingsDevicesComponent, { set: { template: '' } });
+    }).overrideComponent(SettingsDevicesComponent, { set: { template: '' } });
     comp = TestBed.createComponent(SettingsDevicesComponent).componentInstance;
 
     // Prime the `en` dictionary synchronously so translate() resolves the real strings.
@@ -104,13 +140,19 @@ describe('SettingsDevicesComponent', () => {
 
   it('expiresLabel(): null → "No expiry"; otherwise a formatted date', () => {
     expect(comp.expiresLabel(row(1, { expiresAt: null }))).toBe('No expiry');
-    const labelled = comp.expiresLabel(row(2, { expiresAt: '2026-02-01T00:00:00Z' }));
+    const labelled = comp.expiresLabel(
+      row(2, { expiresAt: '2026-02-01T00:00:00Z' }),
+    );
     expect(labelled).toMatch(/2026-02-0/); // dayjs YYYY-MM-DD in the formatted string
   });
 
   it('location(): prefers lastSeenIp, then ip, then "-"', () => {
-    expect(comp.location(row(1, { lastSeenIp: '1.1.1.1', ip: '2.2.2.2' }))).toBe('1.1.1.1');
-    expect(comp.location(row(2, { lastSeenIp: null, ip: '2.2.2.2' }))).toBe('2.2.2.2');
+    expect(
+      comp.location(row(1, { lastSeenIp: '1.1.1.1', ip: '2.2.2.2' })),
+    ).toBe('1.1.1.1');
+    expect(comp.location(row(2, { lastSeenIp: null, ip: '2.2.2.2' }))).toBe(
+      '2.2.2.2',
+    );
     expect(comp.location(row(3, { lastSeenIp: null, ip: null }))).toBe('-');
   });
 

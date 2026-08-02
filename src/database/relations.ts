@@ -8,6 +8,7 @@ import {
   messageThread,
   threadParticipant,
   user,
+  userPreference,
   mediaMessage,
   userBlock,
   pushToken,
@@ -136,6 +137,14 @@ export const userRelations = relations(user, ({ one, many }) => ({
   loginCodes: many(loginCode),
   sessionTokens: many(sessionToken),
   diagnosticsReports: many(diagnosticsReport),
+  preferences: many(userPreference),
+}));
+
+export const userPreferenceRelations = relations(userPreference, ({ one }) => ({
+  user: one(user, {
+    fields: [userPreference.userId],
+    references: [user.id],
+  }),
 }));
 
 export const mediaMessageRelations = relations(mediaMessage, ({ one }) => ({

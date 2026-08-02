@@ -55,9 +55,6 @@ export class ConversationListService {
     this.markReadInFlight.add(threadId);
     this.repo.beginReadCommit(threadId);
     this.userService.markRead({ threadId, localReadHwm: seq }).subscribe({
-      next: (res) => {
-        if (res.code === 0 && res.data) this.repo.applyReadState(res.data);
-      },
       error: () => {
         this.markReadInFlight.delete(threadId);
         this.pendingMarkRead.set(
@@ -69,7 +66,6 @@ export class ConversationListService {
       complete: () => {
         this.markReadInFlight.delete(threadId);
         if (this.pendingMarkRead.has(threadId)) this.flushMarkRead(threadId);
-        else this.repo.finishReadCommit(threadId);
       },
     });
   }
@@ -192,6 +188,11 @@ export class ConversationListService {
         Math.max(this.pendingMarkRead.get(threadId) ?? -1, seq),
       );
     }
+  }
+
+  /** Send the highest locally committed fully-visible cursor now. In-flight requests still coalesce by MAX. */
+  flushRead(threadId: number): void {
+    this.flushMarkRead(threadId);
   }
 
   // ── delegated data mutations (the repo owns IDB write-through + SSE-derived ordering) ──

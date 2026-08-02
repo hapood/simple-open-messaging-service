@@ -60,7 +60,7 @@ import { LanguageService } from '../../../services/language.service';
       width: 68px;
       height: 100%;
       padding: 12px 0;
-      background: var(--app-bg-muted);
+      background: var(--app-nav-rail-bg);
       border-right: 1px solid var(--app-border);
       box-sizing: border-box;
     }
@@ -88,7 +88,7 @@ import { LanguageService } from '../../../services/language.service';
       height: 9px;
       border-radius: 50%;
       background: #e53935;
-      border: 2px solid var(--app-bg-muted);
+      border: 2px solid var(--app-nav-rail-bg);
     }
     .avatar { margin-bottom: 12px; border-radius: 8px; overflow: hidden; }
   `]

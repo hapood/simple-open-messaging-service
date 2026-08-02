@@ -2,10 +2,10 @@ import { Component, signal, computed, inject, effect, input, output, DestroyRef 
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { AvatarEditorComponent } from '../avatar-editor/avatar-editor.component';
 
 /**
  * Host-agnostic profile-editing body: avatar + display name + read-only handle + bio + account actions
@@ -23,12 +23,11 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
  */
 @Component({
   selector: 'app-profile-editor',
-  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent, TranslocoPipe],
+  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent, AvatarEditorComponent, TranslocoPipe],
   templateUrl: './profile-editor.component.html',
   styleUrl: './profile-editor.component.scss',
 })
 export class ProfileEditorComponent {
-  private readonly routeService = inject(RouteService)
   private readonly userService = inject(UserService)
   private readonly transloco = inject(TranslocoService)
   private readonly destroyRef = inject(DestroyRef)
@@ -50,6 +49,7 @@ export class ProfileEditorComponent {
   readonly nameHint = signal('')
   readonly isNameValid = signal(true)
   readonly uploading = signal(false)
+  readonly avatarDraft = signal<File | null>(null)
   readonly saving = signal(false)
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false)
@@ -114,10 +114,17 @@ export class ProfileEditorComponent {
     const file = input.files?.[0]
     input.value = '' // clear so the same file can be picked again
     if (!file) return
-    // Hand the raw file to the cropper; upload only the cropped square it returns.
-    this.routeService.popupDlg(PopupType.AVATAR_EDITOR, { file }, (res) => {
-      if (res?.file) this.uploadAvatarFile(res.file)
-    })
+    // Keep avatar adjustment in this profile surface so the form is not covered by a second dialog.
+    this.avatarDraft.set(file)
+  }
+
+  cancelAvatarEdit() {
+    this.avatarDraft.set(null)
+  }
+
+  finishAvatarEdit(file: File) {
+    this.avatarDraft.set(null)
+    this.uploadAvatarFile(file)
   }
 
   private uploadAvatarFile(file: File) {

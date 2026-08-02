@@ -9,11 +9,11 @@ describe('text message content protocol', () => {
   it('round-trips text and a server-authored quote', () => {
     const wire = stringifyTextMessageContent({
       text: 'hello',
-      quote: { seq: 31, preview: 'Alice：original' },
+      quote: { seq: 31, author: 'Alice', body: 'original' },
     });
     expect(parseTextMessageContent(wire)).toEqual({
       text: 'hello',
-      quote: { seq: 31, preview: 'Alice：original' },
+      quote: { seq: 31, author: 'Alice', body: 'original' },
     });
     expect(requireTextMessageContent(wire).text).toBe('hello');
   });
@@ -25,7 +25,7 @@ describe('text message content protocol', () => {
     '{"text":"hello","quote":null}',
     '{"text":"hello","quote":{"seq":-1}}',
     '{"text":"hello","quote":{"seq":1.5}}',
-    '{"text":"hello","quote":{"seq":1,"preview":2}}',
+    '{"text":"hello","quote":{"seq":1,"author":2}}',
   ])('rejects malformed content: %s', (content) => {
     expect(parseTextMessageContent(content)).toBeNull();
     expect(() => requireTextMessageContent(content)).toThrow(

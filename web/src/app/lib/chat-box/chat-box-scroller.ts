@@ -24,7 +24,7 @@
 import { isDevMode } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { applyJumpHighlight } from './jump-highlight';
-import { createStatusRing } from '../status-ring';
+import { createChatEdgeStatus } from './chat-edge-status';
 import { EdgeDemandState, type ActiveCbDemand } from './edge-demand-state';
 import {
   alignedItemOffset,
@@ -236,6 +236,8 @@ export interface ScrollerApi<T = unknown> {
   backfillOlder?(): Promise<void>;
   retryOlder?(): void;
   retryNewer?(): void;
+  /** A cached/live/durable ceiling advanced beyond the mounted tail; create a newer demand immediately. */
+  notifyNewerAvailable?(): void;
   /** Pin to the global newest edge. highlight flashes the newest message once it is reached. */
   scrollToBottom(highlight?: boolean): void;
   scrollToTop(): void;
@@ -413,6 +415,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  duplicated, across batches — every append inserts before it, so it is continuously the last child (no accumulation). */
   private tailCapEl: HTMLElement | null = null;
   private tailCapH = 0;
+  /** Dev diagnostic state: log only actual tail-cap mode transitions, not every layout refresh. */
+  private tailCapMode: 'hidden' | 'gap' | 'loading' | 'failed' | null = null;
+  private tailCapModeChangedAt = Number.NEGATIVE_INFINITY;
+  private newerDemandSerial = 0;
   private readonly tailCapObs: ResizeObserver = new ResizeObserver(() =>
     this.onTailCapResize(),
   );
@@ -514,7 +520,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // so it stays the permanent last child of content across all mounts/re-seeds; removed only in destroy.
     this.tailCapEl = document.createElement('div');
     this.tailCapEl.className = 'cb-tail-cap';
-    this.tailCapEl.appendChild(createStatusRing());
+    this.tailCapEl.appendChild(createChatEdgeStatus());
     this.content.appendChild(this.tailCapEl);
     this.tailCapObs.observe(this.tailCapEl);
   }
@@ -1541,8 +1547,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     target?.el.classList.add('cb-ghost');
     if (target) {
-      if (!target.el.querySelector('.cb-edge-status-ring'))
-        target.el.appendChild(createStatusRing());
+      if (!target.el.querySelector('.cb-load-status'))
+        target.el.appendChild(createChatEdgeStatus());
       target.el.classList.toggle(
         'cb-edge-failed',
         this.olderDemand.error !== null,
@@ -1605,6 +1611,21 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           : this.newerDemand.retrying
             ? 'loading'
             : 'gap';
+    const modeChanged = mode !== this.tailCapMode;
+    if (modeChanged) this.tailCapModeChangedAt = performance.now();
+    if (isDevMode() && modeChanged) {
+      console.info('[chat-tailcap] mode', {
+        threadId: this.initOpts.chatId ?? null,
+        from: this.tailCapMode,
+        to: mode,
+        mounted: this.mounted.length,
+        noNewer: this.noNewer,
+        demandActive: this.newerDemand.active !== null,
+        retrying: this.newerDemand.retrying,
+        hasError: this.newerDemand.error !== null,
+      });
+    }
+    this.tailCapMode = mode;
     el.classList.toggle('cb-tail-cap--gap', mode === 'gap');
     el.classList.toggle('cb-tail-cap--loading', mode === 'loading');
     el.classList.toggle('cb-tail-cap--failed', mode === 'failed');
@@ -1910,6 +1931,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const g = this.gen;
     let batch: CbItem<T>[];
     let demand: ActiveCbDemand<T> | null = null;
+    const demandId = ++this.newerDemandSerial;
+    const startedAt = performance.now();
     try {
       // No real cursor exists when the window is empty (the FIRST incoming message on a brand-new thread — receiver
       // side) OR entirely optimistic/transient (the first send in an empty thread — sender side): newerCursorId()
@@ -1922,9 +1945,26 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         (e) => !e.transient && !e.optimistic && !e.leaving && !e.resortTarget,
       );
       const cursor = hasReal ? this.newerCursorId() : -1;
+      if (isDevMode())
+        console.info('[chat-tailcap] newer-demand:start', {
+          threadId: this.initOpts.chatId ?? null,
+          demandId,
+          cursor,
+          mounted: this.mounted.length,
+          noNewer: this.noNewer,
+          retrying: edge.retrying,
+        });
       demand = edge.begin(this.source.requestNewer(cursor, this.cfg.mountItem));
       this.updateTailCap();
       const result = await demand.promise;
+      if (isDevMode())
+        console.info('[chat-tailcap] newer-demand:result', {
+          threadId: this.initOpts.chatId ?? null,
+          demandId,
+          kind: result.kind,
+          itemCount: result.kind === 'items' ? result.items.length : 0,
+          elapsedMs: Math.round(performance.now() - startedAt),
+        });
       if (!edge.isCurrent(demand)) return 0;
       if (result.kind === 'error') {
         edge.error = result.error;
@@ -1937,6 +1977,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       edge.error = null;
       if (this.destroyed || g !== this.gen) return 0; // jump re-seed overtook → drop the in-flight batch
     } catch (error) {
+      if (isDevMode())
+        console.info('[chat-tailcap] newer-demand:throw', {
+          threadId: this.initOpts.chatId ?? null,
+          demandId,
+          cancelled: error instanceof CbDemandCancelled,
+          elapsedMs: Math.round(performance.now() - startedAt),
+        });
       if (demand && !edge.isCurrent(demand)) return 0;
       if (!(error instanceof CbDemandCancelled)) {
         edge.error = error;
@@ -2026,9 +2073,21 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   retryNewer(): void {
     if (this.newerDemand.error === null || this.destroyed) return;
+    if (isDevMode())
+      console.info('[chat-tailcap] retry-newer', {
+        threadId: this.initOpts.chatId ?? null,
+        mounted: this.mounted.length,
+        noNewer: this.noNewer,
+      });
     this.newerDemand.error = null;
     this.newerDemand.retrying = true;
     this.updateTailCap();
+    this.startNewerDemand();
+  }
+
+  notifyNewerAvailable(): void {
+    if (this.destroyed || !this.steady) return;
+    this.noNewer = false;
     this.startNewerDemand();
   }
 
@@ -2750,8 +2809,48 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         const t = this.totalH();
         const d = Math.round(t - sh);
         if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
+          const measuredRows = this.mounted.map((entry, index) => ({
+            index,
+            id: entry.item.id,
+            cached: entry.height,
+            actual: entry.el.offsetHeight,
+          }));
+          const rowMismatches = measuredRows.filter(
+            (row) => row.cached !== row.actual,
+          );
+          const actualRowsH = measuredRows.reduce(
+            (sum, row) => sum + row.actual,
+            0,
+          );
+          const tailCapActualH = this.tailCapEl?.offsetHeight ?? 0;
+          const sentinel = this.content.querySelector<HTMLElement>(
+            '.msg-sentinel, .pg-sentinel',
+          );
+          const msSinceTailCapModeChange =
+            performance.now() - this.tailCapModeChangedAt;
           console.warn(
             `[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`,
+            {
+              rows: {
+                cachedTotal: this.mounted.reduce(
+                  (sum, entry) => sum + entry.height,
+                  0,
+                ),
+                actualTotal: actualRowsH,
+                mismatches: rowMismatches,
+              },
+              tailCap: {
+                mode: this.tailCapMode,
+                cachedHeight: this.tailCapH,
+                actualHeight: tailCapActualH,
+                msSinceModeChange: Math.round(msSinceTailCapModeChange),
+                changedThisFrame: msSinceTailCapModeChange <= 20,
+              },
+              sentinel: {
+                className: sentinel?.className ?? null,
+                offsetHeight: sentinel?.offsetHeight ?? 0,
+              },
+            },
           );
         }
       }

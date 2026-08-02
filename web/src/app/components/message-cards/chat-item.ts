@@ -79,7 +79,14 @@ export interface ChatMsgData {
   quote?: {
     /** Jump target in the current message source; absent for a display-only snapshot. */
     seq?: number;
-    preview: string;
+    author?: string;
+    body?: string;
+    contentType?: ChatMsgData['contentType'];
+    image?: string;
+    imageLabel?: string;
+    imageIdentity?: string;
+    imageSize?: number;
+    imageShape?: 'thumbnail' | 'avatar';
   };
   /** Parsed PURE_TEXT body. Stable mention identity is retained for recipient-relative rendering. */
   textSegments?: ChatTextSegment[];

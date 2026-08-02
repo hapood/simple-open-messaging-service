@@ -1,21 +1,73 @@
 <section class="settings-group">
   @if (isAndroidNative()) {
     <div class="link-device-card">
-      <button mat-flat-button color="primary" type="button" (click)="linkDevice()">
-        <app-icon matButtonIcon [type]="AppIconType.DEVICES" [style]="{ width: '18px', height: '18px' }" />
+      <button
+        mat-flat-button
+        color="primary"
+        type="button"
+        (click)="linkDevice()"
+      >
+        <app-icon
+          matButtonIcon
+          [type]="AppIconType.DEVICES"
+          [style]="{ width: '18px', height: '18px' }"
+        />
         {{ 'session.linkDevice' | transloco }}
       </button>
     </div>
   }
   @if (loading()) {
-    <div class="state">{{ 'common.loading' | transloco }}</div>
+    <app-async-state state="loading" />
+  } @else if (loadError()) {
+    <app-async-state
+      state="error"
+      errorMessageKey="session.loadFailed"
+      (retry)="load()"
+    />
   } @else if (list().length === 0) {
     <div class="state">{{ 'session.noSessions' | transloco }}</div>
   } @else {
+    <div class="settings-card terminate-card">
+      <div class="terminate-heading">
+        <div class="terminate-title">
+          {{ 'session.autoTerminateTitle' | transloco }}
+        </div>
+        @if (savingDays() !== null) {
+          <div
+            class="saving-state"
+            role="status"
+            [attr.aria-label]="'session.saving' | transloco"
+          >
+            <mat-progress-spinner mode="indeterminate" [diameter]="18" />
+          </div>
+        }
+      </div>
+      <div class="terminate-hint">
+        {{ 'session.autoTerminateHint' | transloco }}
+      </div>
+      <div class="terminate-options">
+        @for (days of autoTerminateOptions; track days) {
+          <button
+            type="button"
+            class="terminate-option"
+            [class.selected]="autoTerminateDays() === days"
+            [disabled]="savingDays() !== null"
+            (click)="setAutoTerminateDays(days)"
+          >
+            <span>{{ autoTerminateLabel(days) }}</span>
+          </button>
+        }
+      </div>
+    </div>
     @if (othersCount() > 0) {
       <div class="danger-card">
-        <button mat-stroked-button color="warn" type="button" (click)="terminateOthers()">
-          {{ 'session.terminateOthers' | transloco:{ count: othersCount() } }}
+        <button
+          mat-stroked-button
+          color="warn"
+          type="button"
+          (click)="terminateOthers()"
+        >
+          {{ 'session.terminateOthers' | transloco: { count: othersCount() } }}
         </button>
       </div>
     }
@@ -24,29 +76,45 @@
       @for (s of list(); track s.id) {
         <div class="dev-row" [class.current]="s.isCurrent">
           <div class="dev-head">
-            <app-icon class="lead" [type]="AppIconType.DEVICES" [style]="{ width: '22px', height: '22px' }"></app-icon>
+            <app-icon
+              class="lead"
+              [type]="AppIconType.DEVICES"
+              [style]="{ width: '22px', height: '22px' }"
+            ></app-icon>
             <span class="dev-name">{{ deviceLabel(s) }}</span>
             @if (s.isCurrent) {
-              <span class="status-pill active">{{ 'common.thisDevice' | transloco }}</span>
+              <span class="status-pill active">{{
+                'common.thisDevice' | transloco
+              }}</span>
             } @else {
               <span class="status-pill">{{ clientLabel(s.client) }}</span>
-            }
-            @if (s.trusted) {
-              <span class="status-pill trusted">{{ 'session.trusted' | transloco }}</span>
             }
           </div>
 
           @if (s.userAgent) {
             <div class="dev-ua">{{ s.userAgent }}</div>
           }
-          <div class="dev-meta">{{ 'session.ip' | transloco:{ ip: location(s) } }}</div>
-          <div class="dev-meta">{{ 'session.signedIn' | transloco:{ date: fmt(s.createdAt) } }}</div>
-          <div class="dev-meta">{{ 'session.lastActive' | transloco:{ date: fmt(s.lastSeenAt) } }}</div>
-          <div class="dev-meta">{{ 'session.expires' | transloco:{ date: expiresLabel(s) } }}</div>
+          <div class="dev-meta">
+            {{ 'session.ip' | transloco: { ip: location(s) } }}
+          </div>
+          <div class="dev-meta">
+            {{ 'session.signedIn' | transloco: { date: fmt(s.createdAt) } }}
+          </div>
+          <div class="dev-meta">
+            {{ 'session.lastActive' | transloco: { date: fmt(s.lastSeenAt) } }}
+          </div>
+          <div class="dev-meta">
+            {{ 'session.expires' | transloco: { date: expiresLabel(s) } }}
+          </div>
 
           @if (!s.isCurrent) {
             <div class="dev-foot">
-              <button mat-stroked-button color="warn" type="button" (click)="revoke(s)">
+              <button
+                mat-stroked-button
+                color="warn"
+                type="button"
+                (click)="revoke(s)"
+              >
                 {{ 'session.revoke' | transloco }}
               </button>
             </div>

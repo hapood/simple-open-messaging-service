@@ -225,6 +225,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     const creator = stableIdentityId(
       `${message.sender.account}@${message.sender.domain}`,
     );
+    const replySeparator = message.quote?.preview.search(/[：:]/) ?? -1;
     return {
       type: 'msg',
       msgId: id,
@@ -249,7 +250,14 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       createdAtMs: message.sentAt,
       quote: message.quote
         ? {
-            preview: message.quote.preview,
+            author:
+              replySeparator > 0
+                ? message.quote.preview.slice(0, replySeparator).trim()
+                : '',
+            body:
+              replySeparator > 0
+                ? message.quote.preview.slice(replySeparator + 1).trim()
+                : message.quote.preview,
             ...(message.quote.targetId !== undefined
               ? { seq: message.quote.targetId }
               : {}),

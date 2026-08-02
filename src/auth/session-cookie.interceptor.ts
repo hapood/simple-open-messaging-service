@@ -1,4 +1,9 @@
-import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  NestInterceptor,
+} from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { Observable } from 'rxjs';
 import { refreshSessionCookies } from './media-token.js';
@@ -32,7 +37,10 @@ export class SessionCookieInterceptor implements NestInterceptor {
     const req = context.switchToHttp().getRequest<SessionSlideRequest>();
     const token = req.sessionSlideToken;
     if (token) {
-      refreshSessionCookies(context.switchToHttp().getResponse<FastifyReply>(), token);
+      refreshSessionCookies(
+        context.switchToHttp().getResponse<FastifyReply>(),
+        token,
+      );
     }
     return next.handle();
   }

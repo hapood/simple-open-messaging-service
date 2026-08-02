@@ -24,6 +24,11 @@ import { resolvePersistentSecret } from './jwt-secret.js';
  * server-generated tokens — backup codes — instead use a fast HMAC keyed by the 2FA key; the slow KDF is
  * pointless there. See src/admin/two-factor.service.ts.)
  */
-const PASSWORD_PEPPER_MATERIAL = resolvePersistentSecret('SOMS_PASSWORD_PEPPER', 'password-pepper.key');
+const PASSWORD_PEPPER_MATERIAL = resolvePersistentSecret(
+  'SOMS_PASSWORD_PEPPER',
+  'password-pepper.key',
+);
 
-export const passwordPepper: Buffer = createHash('sha256').update(PASSWORD_PEPPER_MATERIAL).digest();
+export const passwordPepper: Buffer = createHash('sha256')
+  .update(PASSWORD_PEPPER_MATERIAL)
+  .digest();

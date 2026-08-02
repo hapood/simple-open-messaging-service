@@ -66,7 +66,10 @@ const FED_ROWS: { key: keyof DashboardFederation; tone: string }[] = [
 export function DashboardPage() {
   const { t } = useTranslation()
   const { data, isLoading, error } = useDashboard()
-  const loading = isLoading && !data
+  // An initial request error leaves `data` undefined while React Query sets
+  // `isLoading` to false. Keep rendering placeholders until data exists so the
+  // error banner can be shown without dereferencing an absent response.
+  const loading = isLoading || !data
 
   return (
     <div className="flex flex-col gap-6">

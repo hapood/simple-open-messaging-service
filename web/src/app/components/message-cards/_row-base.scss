@@ -213,13 +213,21 @@
   align-items: center;
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
   &.msg-self {
-    background: var(--im-bubble-self);
-    color: var(--im-bubble-text);
+    --bubble-bg: var(--chat-bubble-outgoing);
+    --bubble-text: var(--chat-text-outgoing);
+    --bubble-muted: var(--chat-meta-outgoing);
+    --bubble-subtle: var(--chat-subtle-outgoing);
+    --bubble-accent: var(--chat-accent-outgoing);
   }
   &.msg-other {
-    background: var(--im-bubble-other);
-    color: var(--im-bubble-text);
+    --bubble-bg: var(--chat-bubble-incoming);
+    --bubble-text: var(--chat-text-incoming);
+    --bubble-muted: var(--chat-meta-incoming);
+    --bubble-subtle: var(--chat-subtle-incoming);
+    --bubble-accent: var(--chat-accent-incoming);
   }
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
   &.msg-other.msg-head { border-top-left-radius: 6px; }
   &.msg-other.msg-body {
     border-top-left-radius: 6px;
@@ -255,7 +263,7 @@
   height: 14px;
   font-size: 11px;
   white-space: nowrap;
-  color: var(--im-time);
+  color: var(--bubble-muted);
 }
 
 // Hidden timestamp shadow: same text, same width, invisible but occupies space → forces the last line to leave the
@@ -292,7 +300,7 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   justify-content: center;
   width: 13px;
   height: 13px;
-  color: var(--im-time);
+  color: var(--bubble-muted);
   &::before {
     content: '';
     width: 12px;

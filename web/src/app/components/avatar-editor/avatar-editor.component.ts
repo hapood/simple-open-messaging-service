@@ -1,4 +1,4 @@
-import { Component, input, signal, computed, effect, inject, OnInit, OnDestroy, ElementRef, viewChild } from '@angular/core';
+import { Component, input, output, signal, computed, effect, inject, OnInit, OnDestroy, ElementRef, viewChild } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
@@ -33,13 +33,16 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
 
   /** picked file, supplied via popupDlg(PopupType.AVATAR_EDITOR, { file }). */
   readonly file = input.required<File>()
+  /** Embedded mode keeps the cropper inside its parent surface instead of closing a popup. */
+  readonly embedded = input(false)
+  readonly canceled = output<void>()
+  readonly completed = output<File>()
   readonly AppIconType = AppIconType
   readonly fitOpts = { minHeight: 360 } as const
 
   /** Backing-store side of the square frame. Output quality comes from the source
    *  bitmap, not the preview, so this only needs to be comfortable on screen. */
   readonly FRAME = 288
-  readonly PREVIEW = 96
   /** Never emit wider than this: 2× the largest backend size (512) → crisp
    *  downscale headroom, well under the 10 MB multipart / 16 MP pixel-bomb guards. */
   private readonly MAX_OUT = 1024
@@ -55,7 +58,6 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
   readonly canSave = computed(() => this.decoded() && !this.busy() && !this.error())
 
   private readonly cropCanvas = viewChild<ElementRef<HTMLCanvasElement>>('crop')
-  private readonly previewCanvas = viewChild<ElementRef<HTMLCanvasElement>>('preview')
 
   private bmp: ImageBitmap | null = null
   private iw = 0
@@ -66,7 +68,6 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
   private minScale = 0
   private maxScale = 0
   private ctx: CanvasRenderingContext2D | null = null
-  private pctx: CanvasRenderingContext2D | null = null
   private hostCanvas: HTMLCanvasElement | null = null
   private wired = false
 
@@ -88,12 +89,10 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
       this.draw()
     })
 
-    // viewChild canvases resolve after view init; grab contexts + wire listeners
-    // once both exist, and draw if the image beat the view (zoneless-safe).
+    // The canvas may resolve after the image; grab its context and draw once both exist.
     effect(() => {
       const crop = this.cropCanvas()
-      const prev = this.previewCanvas()
-      if (crop && prev) {
+      if (crop) {
         this.ensureContexts()
         if (this.bmp) this.draw()
       }
@@ -149,12 +148,10 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
   /** Resolve the 2D contexts and attach the always-on gesture listeners. Idempotent. */
   private ensureContexts() {
     const crop = this.cropCanvas()?.nativeElement
-    const prev = this.previewCanvas()?.nativeElement
     if (crop && !this.ctx) {
       this.ctx = crop.getContext('2d')
       this.hostCanvas = crop
     }
-    if (prev && !this.pctx) this.pctx = prev.getContext('2d')
     if (this.hostCanvas && !this.wired) {
       this.wired = true
       this.hostCanvas.addEventListener('pointerdown', this.onPointerDown)
@@ -272,7 +269,8 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
   }
 
   cancel() {
-    this.routeService.closeDlg()
+    if (this.embedded()) this.canceled.emit()
+    else this.routeService.closeDlg()
   }
 
   async save() {
@@ -288,7 +286,9 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
       octx.drawImage(this.bmp, r.sx, r.sy, r.sw, r.sh, 0, 0, r.out, r.out)
       const blob = await new Promise<Blob | null>((res) => oc.toBlob(res, 'image/png'))
       if (!blob) throw new Error('encode failed')
-      this.routeService.closeDlg({ file: new File([blob], 'avatar.png', { type: 'image/png' }) })
+      const file = new File([blob], 'avatar.png', { type: 'image/png' })
+      if (this.embedded()) this.completed.emit(file)
+      else this.routeService.closeDlg({ file })
     } catch {
       this.error.set(this.transloco.translate('profile.avatarErrorProcess'))
     } finally {
@@ -314,18 +314,5 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
     // The crop region is the full square canvas, so there's nothing to darken
     // outside it. The rounded-square outer shape comes from the CSS border-radius
     // on `.crop`, matching how a real avatar renders (see avatar-editor.scss).
-    this.drawPreview()
-  }
-
-  private drawPreview() {
-    const pctx = this.pctx
-    if (!pctx || !this.bmp || !this.scale) return
-    const r = computeCropRect(this.iw, this.ih, this.FRAME, this.scale, this.ox, this.oy, this.MAX_OUT)
-    pctx.setTransform(1, 0, 0, 1, 0, 0)
-    pctx.clearRect(0, 0, this.PREVIEW, this.PREVIEW)
-    pctx.imageSmoothingQuality = 'high'
-    // No circular clip: the preview is the full square, and the rounded-square
-    // avatar look comes from the CSS `border-radius: 20%` on `.preview`.
-    pctx.drawImage(this.bmp, r.sx, r.sy, r.sw, r.sh, 0, 0, this.PREVIEW, this.PREVIEW)
   }
 }

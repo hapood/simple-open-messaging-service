@@ -807,6 +807,12 @@
     "desc": "Page not found",
     "back": "Back to User Management"
   },
+  "routeError": {
+    "title": "Something went wrong",
+    "desc": "The administration console could not display this page. Reload it or return to the dashboard.",
+    "reload": "Reload page",
+    "home": "Back to dashboard"
+  },
   "security": {
     "title": "My Account",
     "desc": "Manage your own sign-in security — two-factor authentication and recovery codes.",
