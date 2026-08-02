@@ -168,7 +168,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     content = `${threadId}:${seq}`,
     creator = threadId * 11,
   ): Promise<void> {
-    const db = await webdb.db();
+    const db = await webdb.messageDb();
     const tx = db.transaction('messages', 'readwrite');
     await tx.store.put({
       threadId,
@@ -672,7 +672,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     await seedMessage(1, 2);
     await seedMessage(2, 1);
 
-    const db = await webdb.db();
+    const db = await webdb.messageDb();
     const msgCount = async (threadId: number): Promise<number> => {
       let n = 0;
       let cursor = await db

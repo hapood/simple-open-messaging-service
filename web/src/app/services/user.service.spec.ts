@@ -2,10 +2,13 @@ import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient, HttpRequest } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { firstValueFrom } from 'rxjs';
 import { UserService } from './user.service';
-import { WebdbService } from './webdb.service';
+import { LocalCacheVersionMismatchError, WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { User } from './model';
 import { PreferenceStore } from './preference-store.service';
@@ -27,7 +30,13 @@ const isSyncSelfProfile = (req: HttpRequest<unknown>): boolean =>
 const profile = (over: Partial<User>): { code: number; data: User } => ({
   code: 0,
   data: {
-    id: 1, name: 'A', avatar: '', bio: '', domain: '', threadRevision: 5, ...over,
+    id: 1,
+    name: 'A',
+    avatar: '',
+    bio: '',
+    domain: '',
+    threadRevision: 5,
+    ...over,
   } as User,
 });
 
@@ -48,15 +57,29 @@ describe('UserService profile refresh', () => {
         {
           provide: WebdbService,
           useValue: {
-            openForUser: jasmine.createSpy('openForUser').and.resolveTo(undefined),
-            closeAndDelete: jasmine.createSpy('closeAndDelete').and.resolveTo(undefined),
+            openForUser: jasmine
+              .createSpy('openForUser')
+              .and.resolveTo(undefined),
+            openExistingForUser: jasmine
+              .createSpy('openExistingForUser')
+              .and.resolveTo(undefined),
+            recreateForUser: jasmine
+              .createSpy('recreateForUser')
+              .and.resolveTo(undefined),
+            closeAndDelete: jasmine
+              .createSpy('closeAndDelete')
+              .and.resolveTo(undefined),
             getMeta: jasmine.createSpy('getMeta').and.resolveTo(undefined),
             putMeta: jasmine.createSpy('putMeta').and.resolveTo(undefined),
           },
         },
         {
           provide: ProfileRepository,
-          useValue: { putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined) },
+          useValue: {
+            putProfile: jasmine
+              .createSpy('putProfile')
+              .and.resolveTo(undefined),
+          },
         },
       ],
     });
@@ -126,10 +149,11 @@ describe('UserService profile refresh', () => {
     svc.sessionProfile.set(profile({ id: 1 }).data);
     await preferences.set('account:1', 'soms.chat.emojiRecents', ['😀']);
     await preferences.set('device', 'theme', 'dark');
-    svc.clearSession();
-    await flush(50);
+    await svc.clearSession();
     expect(svc.sessionProfile()).toBeUndefined();
-    expect(await preferences.get('account:1', 'soms.chat.emojiRecents')).toBeUndefined();
+    expect(
+      await preferences.get('account:1', 'soms.chat.emojiRecents'),
+    ).toBeUndefined();
     expect(await preferences.get('device', 'theme')).toBe('dark');
     await preferences.remove('device', 'theme');
   });
@@ -147,7 +171,11 @@ describe('UserService profile refresh', () => {
     // Opening the panel: optimistic local clear (ack → rev) + POSTs /invite/mark-read (server bumps + pushes).
     svc.markFriendReqRead();
     expect(svc.friendReqBadge()).toBe(false); // optimistic clear
-    httpMock.expectOne((r) => r.method === 'POST' && r.url.endsWith('/invite/mark-read')).flush({ code: 0, message: 'ok' });
+    httpMock
+      .expectOne(
+        (r) => r.method === 'POST' && r.url.endsWith('/invite/mark-read'),
+      )
+      .flush({ code: 0, message: 'ok' });
 
     // A later FRIEND_REQ_REV_UPDATED (new request, ack unchanged) re-arms it.
     svc.applyFriendReqRev(3000, 2000);
@@ -160,6 +188,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   let httpMock: HttpTestingController;
   let webdb: {
     openForUser: jasmine.Spy;
+    openExistingForUser: jasmine.Spy;
+    recreateForUser: jasmine.Spy;
     closeAndDelete: jasmine.Spy;
     getMeta: jasmine.Spy;
     putMeta: jasmine.Spy;
@@ -175,19 +205,41 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         {
           provide: WebdbService,
           useValue: {
-            openForUser: jasmine.createSpy('openForUser').and.resolveTo(undefined),
-            closeAndDelete: jasmine.createSpy('closeAndDelete').and.resolveTo(undefined),
+            openForUser: jasmine
+              .createSpy('openForUser')
+              .and.resolveTo(undefined),
+            openExistingForUser: jasmine
+              .createSpy('openExistingForUser')
+              .and.resolveTo(undefined),
+            recreateForUser: jasmine
+              .createSpy('recreateForUser')
+              .and.resolveTo(undefined),
+            closeAndDelete: jasmine
+              .createSpy('closeAndDelete')
+              .and.resolveTo(undefined),
             // Cache-hit self profile for {id:1, profileRev:0} → gateSelfProfile short-circuits with NO
             // fetch in these tests (the profile gate is orthogonal — covered by the refresh suite above).
             // A user/rev that cache-misses (account switch to id:2) falls through to a real fetch, matched
             // explicitly in that test.
             getMeta: jasmine.createSpy('getMeta').and.resolveTo({
-              id: 1, profileRev: 0, name: 'A', avatar: '', bio: '', domain: '',
+              id: 1,
+              profileRev: 0,
+              name: 'A',
+              avatar: '',
+              bio: '',
+              domain: '',
             }),
             putMeta: jasmine.createSpy('putMeta').and.resolveTo(undefined),
           },
         },
-        { provide: ProfileRepository, useValue: { putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined) } },
+        {
+          provide: ProfileRepository,
+          useValue: {
+            putProfile: jasmine
+              .createSpy('putProfile')
+              .and.resolveTo(undefined),
+          },
+        },
       ],
     });
     svc = TestBed.inject(UserService);
@@ -203,24 +255,43 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
     await svc.establishSession(1, 0, null, 0);
-    expect(webdb.openForUser).toHaveBeenCalledWith('1');
+    expect(webdb.openExistingForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
-    expect(await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId')).toBe(1);
+    expect(
+      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
+    ).toBe(1);
+  });
+
+  it('fresh login drops and initializes the cache before strictly opening it', async () => {
+    svc.prepareFreshCache();
+
+    await svc.establishSession(1, 0, null, 0);
+
+    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('1');
+    expect(webdb.openExistingForUser).toHaveBeenCalledOnceWith('1');
+  });
+
+  it('rebuilds an unreadable cache discovered when HELLO establishes the session', async () => {
+    webdb.openExistingForUser.and.rejectWith(new Error('unreadable cache'));
+
+    await expectAsync(svc.establishSession(1, 0, null, 0)).toBeResolved();
+
+    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('1');
   });
 
   it('establishSession is idempotent for the same user (reconnect: no re-open, badge refreshed)', async () => {
     await svc.establishSession(1, 0, null, 0);
-    webdb.openForUser.calls.reset();
+    webdb.openExistingForUser.calls.reset();
     // Same user (a reconnect) → short-circuit: the webdb is already open, just refresh the badge.
     await svc.establishSession(1, 0, 1000, 0);
-    expect(webdb.openForUser).not.toHaveBeenCalled();
+    expect(webdb.openExistingForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBe(1);
   });
 
   it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
     await svc.establishSession(1, 0, null, 0);
     webdb.closeAndDelete.calls.reset();
-    webdb.openForUser.calls.reset();
+    webdb.openExistingForUser.calls.reset();
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
     const done = svc.establishSession(2, 0, null, 0);
@@ -229,31 +300,79 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await done;
 
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1'); // previous user's DB torn down
-    expect(webdb.openForUser).toHaveBeenCalledWith('2'); // new user's DB opened
+    expect(webdb.openExistingForUser).toHaveBeenCalledWith('2'); // new user's DB opened
     expect(svc.sessionUserId()).toBe(2);
-    expect(await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId')).toBe(2);
+    expect(
+      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
+    ).toBe(2);
   });
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
     await svc.establishSession(1, 0, null, 0);
     webdb.closeAndDelete.calls.reset();
 
-    svc.clearSession();
+    await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBeNull();
     await flush();
-    expect(await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId')).toBeUndefined();
+    expect(
+      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
+    ).toBeUndefined();
+  });
+
+  it('keeps the session retryable when durable cache deletion fails', async () => {
+    await svc.establishSession(1, 0, null, 0);
+    webdb.closeAndDelete.and.rejectWith(new Error('cache busy'));
+
+    await expectAsync(svc.clearSession()).toBeRejectedWithError('cache busy');
+    expect(svc.sessionUserId()).toBe(1);
+    expect(
+      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
+    ).toBe(1);
+
+    webdb.closeAndDelete.and.resolveTo(undefined);
+    await svc.clearSession();
+    expect(webdb.closeAndDelete).toHaveBeenCalledTimes(2);
+    expect(svc.sessionUserId()).toBeNull();
   });
 
   it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    const cached = profile({ id: 7, name: 'Cached Alice', avatar: '/cached.webp' }).data;
+    const cached = profile({
+      id: 7,
+      name: 'Cached Alice',
+      avatar: '/cached.webp',
+    }).data;
     webdb.getMeta.and.resolveTo(cached);
     await svc.restoreWebdb();
-    expect(webdb.openForUser).toHaveBeenCalledWith('7');
+    expect(webdb.openExistingForUser).toHaveBeenCalledWith('7');
     expect(webdb.getMeta).toHaveBeenCalledWith('selfProfile');
     expect(svc.sessionProfile()).toEqual(cached);
     // sessionUserId is NOT set by restoreWebdb — it stays HELLO-driven (establishSession owns it on HELLO).
+    expect(svc.sessionUserId()).toBeNull();
+  });
+
+  it('restoreWebdb rebuilds any invalid cache without ending the session', async () => {
+    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
+    webdb.openExistingForUser.and.rejectWith(
+      new LocalCacheVersionMismatchError('soms-webdb-u7'),
+    );
+    webdb.getMeta.and.resolveTo(undefined);
+
+    await svc.restoreWebdb();
+
+    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('7');
+    expect(svc.sessionUserId()).toBeNull();
+  });
+
+  it('restoreWebdb also rebuilds a missing or unreadable cache', async () => {
+    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
+    webdb.openExistingForUser.and.rejectWith(new Error('unreadable cache'));
+    webdb.getMeta.and.resolveTo(undefined);
+
+    await svc.restoreWebdb();
+
+    expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 
@@ -266,6 +385,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('restoreWebdb is a no-op when no userId was persisted (first-ever launch)', async () => {
     await svc.restoreWebdb();
-    expect(webdb.openForUser).not.toHaveBeenCalled();
+    expect(webdb.openExistingForUser).not.toHaveBeenCalled();
   });
 });

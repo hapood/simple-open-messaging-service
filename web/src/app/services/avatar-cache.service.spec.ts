@@ -7,9 +7,11 @@ import { UserService } from './user.service';
 import { WebdbService } from './webdb.service';
 import { AvatarRepository } from './avatar-cache.service';
 
-/** Flush microtasks + the macrotask queue so an async getBlob reaches its HttpClient call. */
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+/** Flush enough task turns for the IndexedDB read to settle and reach HttpClient. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 describe('AvatarRepository', () => {

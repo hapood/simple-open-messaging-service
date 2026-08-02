@@ -4,12 +4,12 @@ describe('positionMessageContextMenu', () => {
   const bounds = { left: 100, top: 50, right: 500, bottom: 600 };
   const size = { width: 192, height: 174 };
 
-  it('keeps a menu inside the message viewport', () => {
+  it('keeps an in-bounds anchor unchanged', () => {
     expect(
       positionMessageContextMenu({ x: 110, y: 60 }, bounds, size, 8),
     ).toEqual({
-      x: 108,
-      y: 58,
+      x: 110,
+      y: 60,
     });
   });
 

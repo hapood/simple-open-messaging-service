@@ -1,7 +1,10 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TranslocoService } from '@jsverse/transloco';
 import { AuthService } from './auth.service';
 import { RouteService } from './route.service';
@@ -41,12 +44,48 @@ describe('AuthService (session-token contract, browser path)', () => {
         // AuthService resolves i18n keys for its rare keyring-failure toasts; stub the translator (returns
         // the key) so the spec has no transloco-config dependency. The browser path never reaches those
         // toasts, but the constructor deps must still resolve.
-        { provide: TranslocoService, useValue: { translate: (k: string) => k } },
-        { provide: ToastService, useValue: { warn: jasmine.createSpy('warn'), info: jasmine.createSpy('info') } },
-        { provide: RouteService, useValue: { redirect: jasmine.createSpy('redirect'), openSettings: () => {} } },
-        { provide: PushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
-        { provide: WebPushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
-        { provide: UserService, useValue: { clearSession: jasmine.createSpy('clearSession') } },
+        {
+          provide: TranslocoService,
+          useValue: { translate: (k: string) => k },
+        },
+        {
+          provide: ToastService,
+          useValue: {
+            warn: jasmine.createSpy('warn'),
+            info: jasmine.createSpy('info'),
+          },
+        },
+        {
+          provide: RouteService,
+          useValue: {
+            redirect: jasmine.createSpy('redirect'),
+            openSettings: () => {},
+          },
+        },
+        {
+          provide: PushService,
+          useValue: {
+            onLogin: jasmine.createSpy('onLogin'),
+            unregister: jasmine.createSpy('unregister'),
+          },
+        },
+        {
+          provide: WebPushService,
+          useValue: {
+            onLogin: jasmine.createSpy('onLogin'),
+            unregister: jasmine.createSpy('unregister'),
+          },
+        },
+        {
+          provide: UserService,
+          useValue: {
+            clearSession: jasmine.createSpy('clearSession'),
+            prepareFreshCache: jasmine.createSpy('prepareFreshCache'),
+            restoreWebdb: jasmine
+              .createSpy('restoreWebdb')
+              .and.resolveTo(undefined),
+          },
+        },
       ],
     });
     svc = TestBed.inject(AuthService);
@@ -87,13 +126,14 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(svc.isLoggedIn()).toBe(true);
   });
 
-  it('logout() resolves the session from the httpOnly cookie (no JS token to send) and clears the presence cookie', () => {
+  it('logout() resolves the session from the httpOnly cookie (no JS token to send) and clears the presence cookie', async () => {
     // Simulate a logged-in browser: the backend set the `logged_in` presence cookie at login; the session
     // token is JS-unreadable (httpOnly), so logout identifies the session via the cookie, not a JS-held token.
     document.cookie = 'logged_in=1; Path=/';
     expect(svc.isLoggedIn()).toBe(true);
 
     svc.logout().subscribe();
+    await Promise.resolve();
     const req = httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url));
     // The logout body carries NO token — JS never holds one. The backend resolves the session from the
     // httpOnly cookie (browser) / Bearer (native). No refresh token (single session-token model).
@@ -105,9 +145,73 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(svc.isLoggedIn()).toBe(false);
   });
 
+  it('does not clear login state or start remote logout before local cache deletion succeeds', async () => {
+    document.cookie = 'logged_in=1; Path=/';
+    let finishCacheClear!: () => void;
+    const cacheClear = new Promise<void>((resolve) => {
+      finishCacheClear = resolve;
+    });
+    const user = TestBed.inject(UserService) as unknown as {
+      clearSession: jasmine.Spy;
+    };
+    user.clearSession.and.returnValue(cacheClear);
+    const exited = jasmine.createSpy('exited');
+
+    svc.logout().subscribe(exited);
+
+    expect(svc.isLoggedIn()).toBe(true);
+    expect(exited).not.toHaveBeenCalled();
+    httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
+
+    finishCacheClear();
+    await Promise.resolve();
+
+    expect(svc.isLoggedIn()).toBe(false);
+    expect(exited).toHaveBeenCalledTimes(1);
+    httpMock
+      .expectOne((request) => /\/auth\/logout$/.test(request.url))
+      .flush({ code: 0, message: 'ok' });
+  });
+
+  it('keeps login state and skips remote logout when local cache deletion fails', async () => {
+    document.cookie = 'logged_in=1; Path=/';
+    const user = TestBed.inject(UserService) as unknown as {
+      clearSession: jasmine.Spy;
+    };
+    user.clearSession.and.rejectWith(new Error('cache busy'));
+
+    svc.logout().subscribe({ error: () => {} });
+    await Promise.resolve();
+
+    expect(svc.isLoggedIn()).toBe(true);
+    httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
+    expect(TestBed.inject(ToastService).warn).toHaveBeenCalled();
+  });
+
+  it('keeps the authenticated session when local-cache initialization fails', async () => {
+    document.cookie = 'logged_in=1; Path=/';
+    const user = TestBed.inject(UserService) as unknown as {
+      restoreWebdb: jasmine.Spy;
+      clearSession: jasmine.Spy;
+    };
+    user.restoreWebdb.and.rejectWith(new Error('missing cache'));
+
+    await svc.restoreSession();
+
+    expect(user.clearSession).not.toHaveBeenCalled();
+    expect(TestBed.inject(RouteService).redirect).not.toHaveBeenCalled();
+    httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
+    expect(TestBed.inject(ToastService).warn).toHaveBeenCalledWith(
+      'auth.notice.localCacheUnavailable',
+    );
+    expect(svc.isLoggedIn()).toBe(true);
+  });
+
   it('revokeSession(id) sends { id } (by row id, not jti)', () => {
     svc.revokeSession(42).subscribe();
-    const req = httpMock.expectOne((r) => /\/auth\/revoke-session$/.test(r.url));
+    const req = httpMock.expectOne((r) =>
+      /\/auth\/revoke-session$/.test(r.url),
+    );
     expect(req.request.body.id).toBe(42);
     req.flush({ code: 0, message: 'ok' });
   });

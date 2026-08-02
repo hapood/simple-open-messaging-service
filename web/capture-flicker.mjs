@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer-core';
-const URL = 'https://192.168.2.7:4200/playground/chatbox-a';
+const URL = 'https://192.168.2.7:4200/playground/chatbox';
 const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox','--disable-gpu','--ignore-certificate-errors'], ignoreHTTPSErrors: true });
 const page = await browser.newPage();
 await page.setViewport({ width: 1280, height: 900 });

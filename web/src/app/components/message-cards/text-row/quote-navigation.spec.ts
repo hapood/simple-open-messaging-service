@@ -62,6 +62,9 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     });
     ref.setInput('data', data);
     ref.changeDetectorRef.detectChanges();
+    const host = ref.location.nativeElement as HTMLElement;
+    document.body.appendChild(host);
+    ref.onDestroy(() => host.remove());
     return ref;
   }
 

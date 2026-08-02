@@ -191,6 +191,15 @@ export class NavStateMachineService {
     this.searchOpen.set(false);
   }
 
+  /** Return to the thread list and discard every chat/settings descendant. Cache maintenance uses this
+   * before replacing the message database so destroying ChatBox instances cancels their subscriptions and
+   * prevents a hidden pane from immediately issuing new reads against the replacement cache. */
+  returnToThreadList(): void {
+    this.closeChat();
+    this.settingsCategoryStack.set([]);
+    this.topSection.set('chats');
+  }
+
   // --- aside layer ---
   /** Open a chat-scoped overlay panel (peer-profile / group-info), replacing any current aside. */
   openAside(panel: AsidePanel): void {

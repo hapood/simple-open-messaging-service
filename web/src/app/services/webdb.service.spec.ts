@@ -1,7 +1,59 @@
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { WebdbService } from './webdb.service';
+import { openDB } from 'idb';
+import type { Message } from './model';
+import {
+  LocalCacheVersionMismatchError,
+  mergeCoveredTail,
+  WebdbService,
+} from './webdb.service';
+
+describe('mergeCoveredTail', () => {
+  it('normalizes the first interval and preserves the right-most disjoint interval', () => {
+    expect(mergeCoveredTail(null, { left: 9, right: 3 })).toEqual({
+      left: 3,
+      right: 9,
+    });
+    expect(
+      mergeCoveredTail({ left: 20, right: 30 }, { left: 1, right: 10 }),
+    ).toEqual({
+      left: 20,
+      right: 30,
+    });
+    expect(
+      mergeCoveredTail({ left: 1, right: 10 }, { left: 20, right: 30 }),
+    ).toEqual({
+      left: 20,
+      right: 30,
+    });
+  });
+
+  it('merges overlap, adjacency, containment, and extensions in both directions', () => {
+    const tail = { left: 10, right: 20 };
+    expect(mergeCoveredTail(tail, { left: 15, right: 18 })).toEqual(tail);
+    expect(mergeCoveredTail(tail, { left: 5, right: 10 })).toEqual({
+      left: 5,
+      right: 20,
+    });
+    expect(mergeCoveredTail(tail, { left: 20, right: 25 })).toEqual({
+      left: 10,
+      right: 25,
+    });
+    expect(mergeCoveredTail(tail, { left: 5, right: 25 })).toEqual({
+      left: 5,
+      right: 25,
+    });
+    expect(mergeCoveredTail(tail, { left: 1, right: 9 })).toEqual({
+      left: 1,
+      right: 20,
+    });
+    expect(mergeCoveredTail(tail, { left: 21, right: 30 })).toEqual({
+      left: 10,
+      right: 30,
+    });
+  });
+});
 
 describe('WebdbService', () => {
   describe('IDB-backed storage (fake-indexeddb)', () => {
@@ -22,7 +74,7 @@ describe('WebdbService', () => {
       }
     });
 
-    it('opens a per-user DB (name embeds the user) with the 5 stores and signals ready', async () => {
+    it('opens separate per-user core and message DBs and signals ready', async () => {
       const db = await webdb.openForUser('1');
       expect(db).withContext('opened handle').toBeTruthy();
       expect(db!.name)
@@ -30,12 +82,68 @@ describe('WebdbService', () => {
         .toBe('soms-webdb-u1');
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
-        'messages',
-        'meta',
         'profiles',
+        'settings',
         'threads',
       ]);
+      const messageDb = await webdb.messageDb();
+      expect(messageDb.name).toBe('soms-msgdb-u1');
+      expect([...messageDb.objectStoreNames].sort()).toEqual([
+        'messages',
+        'settings',
+      ]);
+      expect((await messageDb.get('settings', 'schemaVersion'))?.value).toBe(1);
+      expect(await webdb.getMeta('schemaVersion')).toBe(1);
       expect(webdb.ready()).toBe(true);
+    });
+
+    it('strict startup open does not create missing databases', async () => {
+      await expectAsync(webdb.openExistingForUser('1')).toBeRejected();
+
+      const names = (await indexedDB.databases()).map(
+        (database) => database.name,
+      );
+      expect(names).not.toContain('soms-webdb-u1');
+      expect(names).not.toContain('soms-msgdb-u1');
+      expect(webdb.ready()).toBe(false);
+    });
+
+    it('strict startup open preserves an existing valid cache', async () => {
+      await webdb.openForUser('1');
+      await webdb.putMeta('sentinel', 'kept');
+      await webdb.close();
+
+      await webdb.openExistingForUser('1');
+
+      expect(await webdb.getMeta('sentinel')).toBe('kept');
+    });
+
+    it('strict startup open reports a version mismatch without deleting the cache', async () => {
+      await webdb.openForUser('1');
+      await webdb.putMeta('schemaVersion', 99);
+      await webdb.putMeta('sentinel', 'still-present');
+      await webdb.close();
+
+      await expectAsync(webdb.openExistingForUser('1')).toBeRejectedWithError(
+        LocalCacheVersionMismatchError,
+      );
+      const raw = await openDB('soms-webdb-u1');
+      expect((await raw.get('settings', 'sentinel')).value).toBe(
+        'still-present',
+      );
+      raw.close();
+    });
+
+    it('drops and reinitializes a cache whose stable metadata version is not current', async () => {
+      await webdb.openForUser('1');
+      await webdb.putMeta('schemaVersion', 99);
+      await webdb.putMeta('sentinel', 'old-cache');
+      await webdb.close();
+
+      await webdb.openForUser('1');
+
+      expect(await webdb.getMeta('schemaVersion')).toBe(1);
+      expect(await webdb.getMeta('sentinel')).toBeUndefined();
     });
 
     it('stores and reads an avatar by identity', async () => {
@@ -88,6 +196,17 @@ describe('WebdbService', () => {
       expect(rec!.lastRender).toBeGreaterThan(1);
     });
 
+    it('counts only cached message rows', async () => {
+      await webdb.openForUser('1');
+      await webdb.putMessages([
+        { threadId: 7, seq: 1 } as Message,
+        { threadId: 7, seq: 2 } as Message,
+        { threadId: 9, seq: 1 } as Message,
+      ]);
+
+      expect(await webdb.countCachedMessages()).toBe(3);
+    });
+
     it('closeAndDelete physically removes the database (per-user wipe)', async () => {
       await webdb.openForUser('1');
       await webdb.putAvatar({
@@ -117,6 +236,56 @@ describe('WebdbService', () => {
       expect(webdb.ready()).toBe(false);
     });
 
+    it('logout wins a race with full recreation and the stale reset cannot reopen either DB', async () => {
+      await webdb.openForUser('1');
+      const lifetime = webdb.captureMessageLifetime();
+
+      const recreate = webdb.recreateForUser('1');
+      const logout = webdb.closeAndDelete('1');
+      await Promise.all([recreate, logout]);
+
+      expect(lifetime.aborted).toBe(true);
+      expect(webdb.ready()).toBe(false);
+      await expectAsync(webdb.db()).toBeRejected();
+      const names = (await indexedDB.databases()).map(
+        (database) => database.name,
+      );
+      expect(names).not.toContain('soms-webdb-u1');
+      expect(names).not.toContain('soms-msgdb-u1');
+    });
+
+    it('full recreation blocks new core operations and waits for an admitted core read', async () => {
+      await webdb.openForUser('1');
+      await webdb.putThread({ threadId: 7, type: 'P2P' } as never);
+      const liveDb = await webdb.db();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const dbSpy = spyOn(webdb, 'db').and.callFake(async () => {
+        await held;
+        return liveDb;
+      });
+
+      const read = webdb.getThreads();
+      await Promise.resolve();
+      let recreated = false;
+      const recreate = webdb
+        .recreateForUser('1')
+        .then(() => (recreated = true));
+
+      await expectAsync(
+        webdb.putThread({ threadId: 8, type: 'P2P' } as never),
+      ).toBeRejectedWithError('account cache lifetime expired');
+      expect(recreated).toBe(false);
+
+      release();
+      await read;
+      dbSpy.and.callThrough();
+      await recreate;
+
+      expect(recreated).toBe(true);
+      expect(await webdb.getThreads()).toEqual([]);
+    });
+
     it('commits a thread delta and its revision together', async () => {
       await webdb.openForUser('1');
       const item = { threadId: 7, type: 'P2P' } as never;
@@ -124,15 +293,78 @@ describe('WebdbService', () => {
         [{ threadId: 7, direction: 'ADD', item }],
         12,
       );
-      expect((await webdb.getThreads()).map((thread) => thread.threadId)).toEqual([7]);
+      expect(
+        (await webdb.getThreads()).map((thread) => thread.threadId),
+      ).toEqual([7]);
       expect(await webdb.getMeta('threadRevision')).toBe(12);
 
-      await webdb.applyThreadDelta(
-        [{ threadId: 7, direction: 'DELETE' }],
-        13,
-      );
+      await webdb.applyThreadDelta([{ threadId: 7, direction: 'DELETE' }], 13);
       expect(await webdb.getThreads()).toEqual([]);
       expect(await webdb.getMeta('threadRevision')).toBe(13);
+    });
+
+    it('recreates only the message DB and preserves the core cache', async () => {
+      await webdb.openForUser('1');
+      await webdb.putMeta('sentinel', 'core');
+      await webdb.putMessages(
+        [{ threadId: 7, seq: 1 } as never],
+        { threadId: 7, left: 1, right: 1 },
+        { threadId: 7, seq: 1 },
+      );
+
+      await webdb.recreateMessageCache();
+
+      expect(await webdb.getMeta('sentinel')).toBe('core');
+      expect(await webdb.getMessage(7, 1)).toBeUndefined();
+      expect(await webdb.getMessageCoverage(7)).toBeUndefined();
+    });
+
+    it('aborts the old lifetime, closes admission, and waits for active message operations before recreating', async () => {
+      await webdb.openForUser('1');
+      const liveDb = await webdb.messageDb();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      spyOn(webdb, 'messageDb').and.callFake(async () => {
+        await held;
+        return liveDb;
+      });
+
+      const lifetime = webdb.captureMessageLifetime();
+      const read = webdb.queryCachedMessages(7, 'desc', 10);
+      await Promise.resolve();
+      let recreated = false;
+      const recreate = webdb
+        .recreateMessageCache()
+        .then(() => (recreated = true));
+
+      expect(lifetime.aborted).toBe(true);
+      await expectAsync(webdb.getMessage(7, 1)).toBeRejected();
+      await Promise.resolve();
+      expect(recreated).toBe(false);
+
+      release();
+      await read;
+      await recreate;
+      expect(recreated).toBe(true);
+      expect(lifetime.aborted).toBe(true);
+      expect(webdb.captureMessageLifetime().aborted).toBe(false);
+    });
+
+    it('rejects an old-lifetime write after message-cache recreation', async () => {
+      await webdb.openForUser('1');
+      const lifetime = webdb.captureMessageLifetime();
+
+      await webdb.recreateMessageCache();
+
+      await expectAsync(
+        webdb.putMessages(
+          [{ threadId: 7, seq: 1 } as never],
+          undefined,
+          undefined,
+          lifetime,
+        ),
+      ).toBeRejectedWithError('message cache lifetime expired');
+      expect(await webdb.getMessage(7, 1)).toBeUndefined();
     });
   });
 });

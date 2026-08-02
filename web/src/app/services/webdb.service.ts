@@ -1,5 +1,11 @@
 import { Injectable, OnDestroy, signal } from '@angular/core';
-import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
+import {
+  openDB,
+  deleteDB,
+  type DBSchema,
+  type IDBPDatabase,
+  type IDBPTransaction,
+} from 'idb';
 import type { ConversationItem, Message } from './model';
 import type { HydratedThreadDeltaOp } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
@@ -7,7 +13,7 @@ import { isTauri, tauriInvoke } from './runtime';
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
  * strict 3-tier architecture (UI ↔ repositories ↔ backend). This service is PURE STORAGE: it owns the
- * per-user database, the 5 object stores, avatar persistence, and exposes the typed `idb` handle via
+ * per-user core and message databases, avatar persistence, and exposes typed `idb` handles via
  * {@link db}. It does NO HTTP, consumes NO SSE, and depends on NO domain service — opening/closing the
  * per-user DB is driven imperatively by the session owner (UserService's lifecycle effect calls
  * {@link openForUser} / {@link closeAndDelete}). Repositories read/write through
@@ -46,7 +52,7 @@ export interface ProfileRecord {
   profileRev: number;
 }
 
-/** A value persisted in the `meta` store (keyPath `'key'`). The sole key today is `'missedCursor'` — the
+/** A value persisted in the stable `settings` store (keyPath `'key'`). One key is `'missedCursor'` — the
  *  `{threadId, seq}` forward cursor for the missed-summary pull, written by {@link ThreadRepository} on
  *  each pull. `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
  *  The thread-list revision cursor stays in-memory in UserService (seeded from /user/my-profile each boot) —
@@ -56,22 +62,130 @@ export interface MetaRecord {
   value: unknown;
 }
 
-/** The 5-store schema. */
+export type CachedMessage = Message & {
+  /** Sparse local-only completeness markers; absent on non-edge rows. */
+  sectionLeft?: 1;
+  sectionRight?: 1;
+};
+
+export interface MessageSection {
+  left: number;
+  right: number;
+}
+
+/** Per-thread O(1) summary of the complete section ending at the known server newest message. */
+export interface MessageCoverageState {
+  threadId: number;
+  knownNewestSeq: number;
+  /** Right-most server-confirmed complete interval. It may lag knownNewestSeq after an identity-only SSE. */
+  coveredTail: MessageSection | null;
+}
+
+/** Select the right-most complete interval, joining touching intervals. Pure so both the storage behavior
+ * and its edge cases can be exhaustively unit-tested independently of IndexedDB. */
+export function mergeCoveredTail(
+  current: MessageSection | null | undefined,
+  incoming: MessageSection | null | undefined,
+): MessageSection | null {
+  if (!incoming) return current ?? null;
+  const next = {
+    left: Math.min(incoming.left, incoming.right),
+    right: Math.max(incoming.left, incoming.right),
+  };
+  if (!current) return next;
+  const tail = {
+    left: Math.min(current.left, current.right),
+    right: Math.max(current.left, current.right),
+  };
+  if (next.right < tail.left - 1) return tail;
+  if (next.left > tail.right + 1) return next;
+  return {
+    left: Math.min(tail.left, next.left),
+    right: Math.max(tail.right, next.right),
+  };
+}
+
+function parseMessageCoverage(
+  value: unknown,
+): MessageCoverageState | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<MessageCoverageState>;
+  if (
+    typeof raw.threadId !== 'number' ||
+    typeof raw.knownNewestSeq !== 'number' ||
+    !('coveredTail' in raw)
+  ) {
+    throw new Error('invalid message coverage state');
+  }
+  let coveredTail: MessageSection | null = null;
+  if (
+    raw.coveredTail &&
+    typeof raw.coveredTail.left === 'number' &&
+    typeof raw.coveredTail.right === 'number'
+  ) {
+    coveredTail = mergeCoveredTail(null, raw.coveredTail);
+  } else if (raw.coveredTail !== null) {
+    throw new Error('invalid message coverage tail');
+  }
+  return {
+    threadId: raw.threadId,
+    knownNewestSeq: raw.knownNewestSeq,
+    coveredTail,
+  };
+}
+
+function messageCoverageKey(threadId: number): string {
+  return `messageCoverage:${threadId}`;
+}
+
+/** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
   profiles: { key: string; value: ProfileRecord };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
-  meta: { key: string; value: MetaRecord };
+  settings: { key: string; value: MetaRecord };
+}
+
+export interface MessageDbSchema extends DBSchema {
+  /** Stable KV store. Its shape is fixed; schemaVersion and coverage values live here. */
+  settings: { key: string; value: MetaRecord };
   /** One record per message, keyed by `[threadId, seq]` (both fields are the keyPath). */
-  messages: { key: [number, number]; value: Message };
+  messages: {
+    key: [number, number];
+    value: CachedMessage;
+    indexes: {
+      sectionLeft: [number, number, number];
+      sectionRight: [number, number, number];
+    };
+  };
 }
 
 const DB_PREFIX = 'soms-webdb-u';
-const DB_VERSION = 2;
+const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
+const CACHE_SCHEMA_VERSION = 1;
+const IDB_FORMAT_VERSION = 1;
+
+export class LocalCacheUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LocalCacheUnavailableError';
+  }
+}
+
+export class LocalCacheVersionMismatchError extends Error {
+  constructor(name: string) {
+    super(`local cache schema version mismatch: ${name}`);
+    this.name = 'LocalCacheVersionMismatchError';
+  }
+}
 
 function dbName(userId: string): string {
   return `${DB_PREFIX}${userId}`;
+}
+
+function messageDbName(userId: string): string {
+  return `${MESSAGE_DB_PREFIX}${userId}`;
 }
 
 function idbAvailable(): boolean {
@@ -82,6 +196,31 @@ function idbAvailable(): boolean {
 export class WebdbService implements OnDestroy {
   /** The currently-open database promise (resolves to the live handle), or null when no user / closed. */
   private dbPromise: Promise<IDBPDatabase<WebdbSchema>> | null = null;
+  private messageDbPromise: Promise<IDBPDatabase<MessageDbSchema>> | null =
+    null;
+  /** Message-cache maintenance barrier. Every public message operation is counted until its Promise
+   * settles; recreation closes the admission gate, waits for this count to reach zero, then replaces the
+   * store. JavaScript runs the admission check + increment synchronously, so recreation cannot slip
+   * between them. */
+  private messageOperations = 0;
+  private messageResetting = false;
+  private messageIdleWaiters: Array<() => void> = [];
+  private messageResetPromise: Promise<void> | null = null;
+  /** Monotonic account-cache lifetime. Logout/close/full recreation increments it synchronously, so an
+   * older async open/recreate can observe that it lost ownership and must never publish/reopen handles. */
+  private cacheEpoch = 0;
+  private accountResetPromise: Promise<IDBPDatabase<WebdbSchema> | null> | null =
+    null;
+  private accountResetUserId: string | null = null;
+  /** Full account-cache operation barrier. Core and message operations are admitted synchronously; full
+   * recreation/logout closes admission and waits for every admitted native/IDB operation to settle. */
+  private accountOperations = 0;
+  private accountMaintenance = false;
+  private accountIdleWaiters: Array<() => void> = [];
+  /** Aborted before message-cache maintenance starts. Network work captures this signal and must pass it
+   * back when entering a write operation, so a response from the old cache lifetime cannot populate the
+   * replacement database. */
+  private messageLifetime = new AbortController();
   /** The userId whose DB is open (or being opened). */
   private currentUserId: string | null = null;
   /** Whether `navigator.storage.persist()` has been requested for this origin. */
@@ -96,46 +235,293 @@ export class WebdbService implements OnDestroy {
    */
   async openForUser(userId: string): Promise<IDBPDatabase<WebdbSchema> | null> {
     if (!idbAvailable()) return null;
+    if (this.accountResetPromise) await this.accountResetPromise;
+    const epoch = this.cacheEpoch;
     if (this.currentUserId === userId && this.dbPromise) return this.dbPromise;
     if (this.currentUserId != null && this.currentUserId !== userId) {
       await this.closeAndDelete(this.currentUserId);
     }
     this.currentUserId = userId;
-    this.dbPromise = openDB<WebdbSchema>(dbName(userId), DB_VERSION, {
-      upgrade(db, oldVersion, _newVersion, transaction) {
-        // v2 is deliberately destructive for the rebuildable thread/profile/sync caches.
-        if (oldVersion > 0 && oldVersion < 2) {
-          if (db.objectStoreNames.contains('profiles')) db.deleteObjectStore('profiles');
-          if (db.objectStoreNames.contains('threads')) transaction.objectStore('threads').clear();
-          if (db.objectStoreNames.contains('meta')) transaction.objectStore('meta').clear();
-        }
-        if (!db.objectStoreNames.contains('avatars')) {
-          db.createObjectStore('avatars', { keyPath: 'identity' });
-        }
-        if (!db.objectStoreNames.contains('profiles')) {
-          db.createObjectStore('profiles', { keyPath: 'identity' });
-        }
-        if (!db.objectStoreNames.contains('threads')) {
-          db.createObjectStore('threads', { keyPath: 'threadId' });
-        }
-        if (!db.objectStoreNames.contains('meta')) {
-          db.createObjectStore('meta', { keyPath: 'key' });
-        }
-        if (!db.objectStoreNames.contains('messages')) {
-          // Composite key for range reads: getAll over [threadId, 0]..[threadId, cursor].
-          db.createObjectStore('messages', { keyPath: ['threadId', 'seq'] });
-        }
-      },
-    });
+    this.dbPromise = this.openValidatedOrRecreate(dbName(userId));
+    this.messageDbPromise = this.openValidatedMessageDbOrRecreate(
+      messageDbName(userId),
+    );
     try {
-      const db = await this.dbPromise;
+      const [db, messages] = await Promise.all([
+        this.dbPromise,
+        this.messageDbPromise,
+      ]);
+      if (epoch !== this.cacheEpoch || this.currentUserId !== userId) {
+        db.close();
+        messages.close();
+        throw new Error('webdb: stale open discarded');
+      }
+      this.activateMessageLifetime();
       void this.requestPersistence();
       this.ready.set(true);
       return db;
     } catch (e) {
       this.dbPromise = null;
+      this.messageDbPromise = null;
       this.ready.set(false);
       throw e;
+    }
+  }
+
+  /** Cold-start path: open only databases that already exist and match the current v1 schema. This path
+   * never creates, upgrades, deletes, or repairs storage. */
+  async openExistingForUser(
+    userId: string,
+  ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    if (!idbAvailable()) return null;
+    if (this.accountResetPromise) await this.accountResetPromise;
+    const epoch = this.cacheEpoch;
+    if (this.currentUserId === userId && this.dbPromise) return this.dbPromise;
+    if (this.currentUserId != null && this.currentUserId !== userId)
+      await this.close();
+    this.currentUserId = userId;
+    this.dbPromise = this.openExistingCore(dbName(userId));
+    this.messageDbPromise = this.openExistingMessages(messageDbName(userId));
+    try {
+      const [db, messages] = await Promise.all([
+        this.dbPromise,
+        this.messageDbPromise,
+      ]);
+      if (epoch !== this.cacheEpoch || this.currentUserId !== userId) {
+        db.close();
+        messages.close();
+        throw new Error('webdb: stale existing-cache open discarded');
+      }
+      this.activateMessageLifetime();
+      this.ready.set(true);
+      return db;
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
+  }
+
+  /** Fresh-login path: explicitly drop both browser cache databases, then initialize the current v1
+   * schema. Authentication remains valid; only rebuildable local data is replaced. */
+  async recreateForUser(
+    userId: string,
+  ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    if (!idbAvailable()) return null;
+    if (this.accountResetPromise) {
+      if (this.accountResetUserId === userId) return this.accountResetPromise;
+      await this.accountResetPromise;
+    }
+    const epoch = ++this.cacheEpoch;
+    this.accountResetUserId = userId;
+    this.beginAccountMaintenance();
+    const reset = this.doRecreateForUser(userId, epoch);
+    this.accountResetPromise = reset;
+    try {
+      return await reset;
+    } finally {
+      if (this.accountResetPromise === reset) this.accountResetPromise = null;
+      if (this.accountResetUserId === userId) this.accountResetUserId = null;
+    }
+  }
+
+  private async doRecreateForUser(
+    userId: string,
+    epoch: number,
+  ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    await this.waitForAccountIdle();
+    await this.closeHandles();
+    await Promise.all([
+      deleteDB(dbName(userId)),
+      deleteDB(messageDbName(userId)),
+    ]);
+    if (epoch !== this.cacheEpoch) return null;
+    this.currentUserId = userId;
+    const core = this.openValidatedOrRecreate(dbName(userId));
+    const message = this.openValidatedMessageDbOrRecreate(
+      messageDbName(userId),
+    );
+    this.dbPromise = core;
+    this.messageDbPromise = message;
+    const [db, messages] = await Promise.all([core, message]);
+    if (epoch !== this.cacheEpoch || this.currentUserId !== userId) {
+      db.close();
+      messages.close();
+      return null;
+    }
+    this.activateMessageLifetime();
+    this.ready.set(true);
+    void this.requestPersistence();
+    return db;
+  }
+
+  private async databaseExists(name: string): Promise<boolean> {
+    const factory = indexedDB as IDBFactory & {
+      databases?: () => Promise<Array<{ name?: string }>>;
+    };
+    if (!factory.databases)
+      throw new LocalCacheUnavailableError(
+        'IndexedDB database enumeration is unavailable',
+      );
+    return (await factory.databases()).some(
+      (database) => database.name === name,
+    );
+  }
+
+  private async openExistingCore(
+    name: string,
+  ): Promise<IDBPDatabase<WebdbSchema>> {
+    if (!(await this.databaseExists(name)))
+      throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
+    const db = await openDB<WebdbSchema>(name);
+    if (!db.objectStoreNames.contains('settings')) {
+      db.close();
+      throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
+    }
+    try {
+      if (
+        (await db.get('settings', 'schemaVersion'))?.value !==
+        CACHE_SCHEMA_VERSION
+      ) {
+        db.close();
+        throw new LocalCacheVersionMismatchError(name);
+      }
+    } catch (error) {
+      db.close();
+      if (error instanceof LocalCacheVersionMismatchError) throw error;
+      throw new LocalCacheUnavailableError(`unreadable local cache: ${name}`);
+    }
+    if (await this.isCurrentSchema(db)) return db;
+    db.close();
+    throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
+  }
+
+  private async openExistingMessages(
+    name: string,
+  ): Promise<IDBPDatabase<MessageDbSchema>> {
+    if (!(await this.databaseExists(name)))
+      throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
+    const db = await openDB<MessageDbSchema>(name);
+    if (!db.objectStoreNames.contains('settings')) {
+      db.close();
+      throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
+    }
+    try {
+      if (
+        (await db.get('settings', 'schemaVersion'))?.value !==
+        CACHE_SCHEMA_VERSION
+      ) {
+        db.close();
+        throw new LocalCacheVersionMismatchError(name);
+      }
+    } catch (error) {
+      db.close();
+      if (error instanceof LocalCacheVersionMismatchError) throw error;
+      throw new LocalCacheUnavailableError(`unreadable local cache: ${name}`);
+    }
+    if (await this.isCurrentMessageSchema(db)) return db;
+    db.close();
+    throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
+  }
+
+  /** Open the current cache without requesting an IndexedDB upgrade. The stable `meta` KV store owns the
+   *  application schema version. Any old/missing/damaged rebuildable cache is deleted and initialized from
+   *  scratch; there are deliberately no incremental data migrations. */
+  private async openValidatedOrRecreate(
+    name: string,
+  ): Promise<IDBPDatabase<WebdbSchema>> {
+    const existing = await openDB<WebdbSchema>(name);
+    if (await this.isCurrentSchema(existing)) return existing;
+    existing.close();
+    await deleteDB(name);
+    return this.createCurrentSchema(name);
+  }
+
+  private async isCurrentSchema(
+    db: IDBPDatabase<WebdbSchema>,
+  ): Promise<boolean> {
+    const required = ['avatars', 'profiles', 'threads', 'settings'] as const;
+    if (required.some((store) => !db.objectStoreNames.contains(store)))
+      return false;
+    if (db.objectStoreNames.length !== required.length) return false;
+    try {
+      const version = await db.get('settings', 'schemaVersion');
+      return version?.value === CACHE_SCHEMA_VERSION;
+    } catch {
+      return false;
+    }
+  }
+
+  private createCurrentSchema(
+    name: string,
+  ): Promise<IDBPDatabase<WebdbSchema>> {
+    return openDB<WebdbSchema>(name, IDB_FORMAT_VERSION, {
+      upgrade(db, oldVersion, _newVersion, transaction) {
+        if (oldVersion !== 0)
+          throw new Error('cache recreation expected an empty IndexedDB');
+        db.createObjectStore('avatars', { keyPath: 'identity' });
+        db.createObjectStore('profiles', { keyPath: 'identity' });
+        db.createObjectStore('threads', { keyPath: 'threadId' });
+        db.createObjectStore('settings', { keyPath: 'key' });
+        transaction.objectStore('settings').put({
+          key: 'schemaVersion',
+          value: CACHE_SCHEMA_VERSION,
+        });
+      },
+    });
+  }
+
+  private async openValidatedMessageDbOrRecreate(
+    name: string,
+  ): Promise<IDBPDatabase<MessageDbSchema>> {
+    const existing = await openDB<MessageDbSchema>(name);
+    if (await this.isCurrentMessageSchema(existing)) return existing;
+    existing.close();
+    await deleteDB(name);
+    return openDB<MessageDbSchema>(name, IDB_FORMAT_VERSION, {
+      upgrade(db, oldVersion, _newVersion, transaction) {
+        if (oldVersion !== 0)
+          throw new Error(
+            'message cache recreation expected an empty IndexedDB',
+          );
+        db.createObjectStore('settings', { keyPath: 'key' });
+        const messages = db.createObjectStore('messages', {
+          keyPath: ['threadId', 'seq'],
+        });
+        messages.createIndex('sectionLeft', ['threadId', 'sectionLeft', 'seq']);
+        messages.createIndex('sectionRight', [
+          'threadId',
+          'sectionRight',
+          'seq',
+        ]);
+        transaction.objectStore('settings').put({
+          key: 'schemaVersion',
+          value: CACHE_SCHEMA_VERSION,
+        });
+      },
+    });
+  }
+
+  private async isCurrentMessageSchema(
+    db: IDBPDatabase<MessageDbSchema>,
+  ): Promise<boolean> {
+    if (
+      db.objectStoreNames.length !== 2 ||
+      !db.objectStoreNames.contains('settings') ||
+      !db.objectStoreNames.contains('messages')
+    )
+      return false;
+    try {
+      if (
+        (await db.get('settings', 'schemaVersion'))?.value !==
+        CACHE_SCHEMA_VERSION
+      )
+        return false;
+      const indexes = db.transaction('messages').store.indexNames;
+      return (
+        indexes.contains('sectionLeft') && indexes.contains('sectionRight')
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -144,8 +530,90 @@ export class WebdbService implements OnDestroy {
    *  cannot re-open THIS user's database via the stale id (`db()`'s lazy re-open reads `currentUserId`).
    *  The actual handle close + on-disk delete are awaited below. */
   async closeAndDelete(userId: string): Promise<void> {
+    ++this.cacheEpoch;
+    this.beginAccountMaintenance();
     const closing = this.dbPromise;
+    const closingMessages = this.messageDbPromise;
     this.dbPromise = null;
+    this.messageDbPromise = null;
+    this.currentUserId = null;
+    this.ready.set(false);
+    await this.waitForAccountIdle();
+    if (closing) {
+      try {
+        (await closing).close();
+      } catch {
+        /* already closed */
+      }
+    }
+    if (closingMessages) {
+      try {
+        (await closingMessages).close();
+      } catch {
+        /* already closed */
+      }
+    }
+    // A reset may be waiting for the handles captured above to close before its deleteDB resolves. Close
+    // them first, then join the reset; reversing this order deadlocks logout against full recreation.
+    if (this.accountResetPromise) {
+      try {
+        await this.accountResetPromise;
+      } catch {
+        /* deletion below remains authoritative */
+      }
+    }
+    if (idbAvailable()) await deleteDB(dbName(userId));
+    if (idbAvailable()) await deleteDB(messageDbName(userId));
+    if (isTauri()) {
+      await tauriInvoke('native_db_clear_user', { userId: Number(userId) });
+    }
+  }
+
+  /** Close the live WebView handle without deleting durable data (normal app/page teardown). */
+  async close(): Promise<void> {
+    ++this.cacheEpoch;
+    this.beginAccountMaintenance();
+    const closing = this.dbPromise;
+    const closingMessages = this.messageDbPromise;
+    this.dbPromise = null;
+    this.messageDbPromise = null;
+    this.currentUserId = null;
+    this.ready.set(false);
+    await this.waitForAccountIdle();
+    if (closing) {
+      try {
+        (await closing).close();
+      } catch {
+        /* already closed */
+      }
+    }
+    if (closingMessages) {
+      try {
+        (await closingMessages).close();
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+
+  private beginAccountMaintenance(): void {
+    this.accountMaintenance = true;
+    this.messageResetting = true;
+    this.messageLifetime.abort();
+    this.ready.set(false);
+  }
+
+  private activateMessageLifetime(): void {
+    this.messageLifetime = new AbortController();
+    this.messageResetting = false;
+    this.accountMaintenance = false;
+  }
+
+  private async closeHandles(): Promise<void> {
+    const closing = this.dbPromise;
+    const closingMessages = this.messageDbPromise;
+    this.dbPromise = null;
+    this.messageDbPromise = null;
     this.currentUserId = null;
     this.ready.set(false);
     if (closing) {
@@ -155,21 +623,9 @@ export class WebdbService implements OnDestroy {
         /* already closed */
       }
     }
-    if (idbAvailable()) await deleteDB(dbName(userId));
-    if (isTauri()) {
-      await tauriInvoke('native_db_clear_user', { userId: Number(userId) });
-    }
-  }
-
-  /** Close the live WebView handle without deleting durable data (normal app/page teardown). */
-  async close(): Promise<void> {
-    const closing = this.dbPromise;
-    this.dbPromise = null;
-    this.currentUserId = null;
-    this.ready.set(false);
-    if (closing) {
+    if (closingMessages) {
       try {
-        (await closing).close();
+        (await closingMessages).close();
       } catch {
         /* already closed */
       }
@@ -191,24 +647,151 @@ export class WebdbService implements OnDestroy {
     throw new Error('webdb: no user / unavailable');
   }
 
-  // ---- meta store: keyed scalars (the global message HWM today) ---------------------------
+  /** Internal message-cache handle; separate so clearing chat history never drops core cache data. */
+  async messageDb(): Promise<IDBPDatabase<MessageDbSchema>> {
+    if (this.messageDbPromise) return this.messageDbPromise;
+    if (this.currentUserId != null && idbAvailable()) {
+      await this.openForUser(this.currentUserId);
+      if (this.messageDbPromise) return this.messageDbPromise;
+    }
+    throw new Error('message db: no user / unavailable');
+  }
 
-  /** Read a value from the `meta` store, or `undefined` when absent / IDB unavailable. The sole key today
+  /** Lifetime captured by cache-populating network work. Abortion is synchronous and observable by all
+   * holders; callers must also pass it into the eventual write to close the check/admission race. */
+  captureMessageLifetime(): AbortSignal {
+    return this.messageLifetime.signal;
+  }
+
+  private async runMessageOperation<T>(
+    operation: () => Promise<T>,
+    lifetime?: AbortSignal,
+  ): Promise<T> {
+    return this.runAccountOperation(async () => {
+      if (this.messageResetting || lifetime?.aborted)
+        throw new Error('message cache lifetime expired');
+      this.messageOperations++;
+      try {
+        return await operation();
+      } finally {
+        this.messageOperations--;
+        if (this.messageOperations === 0) {
+          const waiters = this.messageIdleWaiters;
+          this.messageIdleWaiters = [];
+          for (const resolve of waiters) resolve();
+        }
+      }
+    });
+  }
+
+  private async runAccountOperation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (this.accountMaintenance)
+      throw new Error('account cache lifetime expired');
+    this.accountOperations++;
+    try {
+      return await operation();
+    } finally {
+      this.accountOperations--;
+      if (this.accountOperations === 0) {
+        const waiters = this.accountIdleWaiters;
+        this.accountIdleWaiters = [];
+        for (const resolve of waiters) resolve();
+      }
+    }
+  }
+
+  private waitForAccountIdle(): Promise<void> {
+    if (this.accountOperations === 0) return Promise.resolve();
+    return new Promise((resolve) => this.accountIdleWaiters.push(resolve));
+  }
+
+  private waitForMessageIdle(): Promise<void> {
+    if (this.messageOperations === 0) return Promise.resolve();
+    return new Promise((resolve) => this.messageIdleWaiters.push(resolve));
+  }
+
+  /** Number of cached message rows for the active user. Coverage/settings rows are deliberately excluded. */
+  async countCachedMessages(): Promise<number> {
+    return this.runMessageOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        return tauriInvoke<number>('native_db_count_messages', {
+          userId: Number(this.currentUserId),
+        });
+      }
+      return (await this.messageDb()).count('messages');
+    });
+  }
+
+  /** Drop and recreate only message data plus its coverage metadata. Core threads/profiles/avatars survive. */
+  async recreateMessageCache(): Promise<void> {
+    if (this.messageResetPromise) return this.messageResetPromise;
+    if (this.currentUserId == null)
+      throw new Error('message db: no active user');
+    const epoch = this.cacheEpoch;
+    this.messageResetting = true;
+    this.messageLifetime.abort();
+    this.messageResetPromise = this.doRecreateMessageCache();
+    try {
+      await this.messageResetPromise;
+    } finally {
+      this.messageResetPromise = null;
+      if (epoch === this.cacheEpoch && this.currentUserId != null)
+        this.activateMessageLifetime();
+    }
+  }
+
+  private async doRecreateMessageCache(): Promise<void> {
+    await this.waitForMessageIdle();
+    if (this.currentUserId == null)
+      throw new Error('message db: no active user');
+    if (isTauri()) {
+      await tauriInvoke('native_db_recreate_messages');
+      return;
+    }
+    const userId = this.currentUserId;
+    const closing = this.messageDbPromise;
+    this.messageDbPromise = null;
+    if (closing) {
+      try {
+        (await closing).close();
+      } catch {
+        /* already closed */
+      }
+    }
+    await deleteDB(messageDbName(userId));
+    if (this.currentUserId !== userId) return;
+    this.messageDbPromise = this.openValidatedMessageDbOrRecreate(
+      messageDbName(userId),
+    );
+    await this.messageDbPromise;
+  }
+
+  // ---- core settings store: keyed synchronization scalars ---------------------------------
+
+  /** Read a value from the `settings` store, or `undefined` when absent / IDB unavailable. One key
    *  is `'missedCursor'` (the `{threadId, seq}` forward cursor for the missed-summary pull). The value is
    *  opaque to the store — the caller owns its shape + narrowing. */
   async getMeta(key: string): Promise<unknown> {
+    return this.runAccountOperation(() => this.getMetaInternal(key));
+  }
+
+  private async getMetaInternal(key: string): Promise<unknown> {
     if (isTauri() && this.currentUserId != null) {
       try {
-        return (await tauriInvoke('native_db_get_meta', {
-          userId: Number(this.currentUserId),
-          key,
-        })) ?? undefined;
+        return (
+          (await tauriInvoke('native_db_get_meta', {
+            userId: Number(this.currentUserId),
+            key,
+          })) ?? undefined
+        );
       } catch {
         return undefined;
       }
     }
     try {
-      const rec = await (await this.db()).get('meta', key);
+      const rec = await (await this.db()).get('settings', key);
       return rec?.value;
     } catch {
       return undefined;
@@ -219,6 +802,10 @@ export class WebdbService implements OnDestroy {
    *  graceful no-op (the value is also held in memory by its writer; a missed persist just re-fetches one
    *  idempotent page on the next catch-up). */
   async putMeta(key: string, value: unknown): Promise<void> {
+    return this.runAccountOperation(() => this.putMetaInternal(key, value));
+  }
+
+  private async putMetaInternal(key: string, value: unknown): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       try {
         await tauriInvoke('native_db_put_meta', {
@@ -232,7 +819,7 @@ export class WebdbService implements OnDestroy {
       return;
     }
     try {
-      await (await this.db()).put('meta', { key, value });
+      await (await this.db()).put('settings', { key, value });
     } catch {
       /* best-effort */
     }
@@ -242,6 +829,12 @@ export class WebdbService implements OnDestroy {
 
   /** Read an avatar blob by identity and refresh its last-render metadata. */
   async getAvatar(identity: string): Promise<AvatarRecord | undefined> {
+    return this.runAccountOperation(() => this.getAvatarInternal(identity));
+  }
+
+  private async getAvatarInternal(
+    identity: string,
+  ): Promise<AvatarRecord | undefined> {
     if (isTauri() && this.currentUserId != null) {
       const record = await tauriInvoke<{
         identity: string;
@@ -267,13 +860,17 @@ export class WebdbService implements OnDestroy {
     const now = Date.now();
     if (rec.lastRender !== now) {
       rec.lastRender = now;
-      void db.put('avatars', rec).catch(() => {}); // fire-and-forget recency write
+      await db.put('avatars', rec).catch(() => {});
     }
     return rec;
   }
 
   /** Store/overwrite an avatar blob under its stable identity. */
   async putAvatar(record: AvatarRecord): Promise<void> {
+    return this.runAccountOperation(() => this.putAvatarInternal(record));
+  }
+
+  private async putAvatarInternal(record: AvatarRecord): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       await tauriInvoke('native_db_put_avatar', {
         userId: Number(this.currentUserId),
@@ -290,6 +887,10 @@ export class WebdbService implements OnDestroy {
   }
 
   async getThreads(): Promise<ConversationItem[]> {
+    return this.runAccountOperation(() => this.getThreadsInternal());
+  }
+
+  private async getThreadsInternal(): Promise<ConversationItem[]> {
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<ConversationItem[]>('native_db_threads', {
         userId: Number(this.currentUserId),
@@ -299,6 +900,12 @@ export class WebdbService implements OnDestroy {
   }
 
   async replaceThreads(items: ConversationItem[]): Promise<void> {
+    return this.runAccountOperation(() => this.replaceThreadsInternal(items));
+  }
+
+  private async replaceThreadsInternal(
+    items: ConversationItem[],
+  ): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       await tauriInvoke('native_db_replace_threads', {
         userId: Number(this.currentUserId),
@@ -313,6 +920,10 @@ export class WebdbService implements OnDestroy {
   }
 
   async putThread(item: ConversationItem): Promise<void> {
+    return this.runAccountOperation(() => this.putThreadInternal(item));
+  }
+
+  private async putThreadInternal(item: ConversationItem): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       await tauriInvoke('native_db_put_thread', {
         userId: Number(this.currentUserId),
@@ -325,6 +936,10 @@ export class WebdbService implements OnDestroy {
   }
 
   async deleteThread(threadId: number): Promise<void> {
+    return this.runAccountOperation(() => this.deleteThreadInternal(threadId));
+  }
+
+  private async deleteThreadInternal(threadId: number): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       await tauriInvoke('native_db_delete_thread', {
         userId: Number(this.currentUserId),
@@ -336,7 +951,19 @@ export class WebdbService implements OnDestroy {
   }
 
   /** Apply one server-planned thread delta and its revision in the same durable transaction. */
-  async applyThreadDelta(delta: HydratedThreadDeltaOp[], revision: number): Promise<void> {
+  async applyThreadDelta(
+    delta: HydratedThreadDeltaOp[],
+    revision: number,
+  ): Promise<void> {
+    return this.runAccountOperation(() =>
+      this.applyThreadDeltaInternal(delta, revision),
+    );
+  }
+
+  private async applyThreadDeltaInternal(
+    delta: HydratedThreadDeltaOp[],
+    revision: number,
+  ): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       await tauriInvoke('native_db_apply_thread_delta', {
         userId: Number(this.currentUserId),
@@ -346,16 +973,25 @@ export class WebdbService implements OnDestroy {
       return;
     }
     const db = await this.db();
-    const tx = db.transaction(['threads', 'meta'], 'readwrite');
+    const tx = db.transaction(['threads', 'settings'], 'readwrite');
     for (const op of delta) {
-      if (op.direction === 'DELETE') await tx.objectStore('threads').delete(op.threadId);
+      if (op.direction === 'DELETE')
+        await tx.objectStore('threads').delete(op.threadId);
       else await tx.objectStore('threads').put(op.item);
     }
-    await tx.objectStore('meta').put({ key: 'threadRevision', value: revision });
+    await tx
+      .objectStore('settings')
+      .put({ key: 'threadRevision', value: revision });
     await tx.done;
   }
 
   async getProfile(identity: string): Promise<ProfileRecord | undefined> {
+    return this.runAccountOperation(() => this.getProfileInternal(identity));
+  }
+
+  private async getProfileInternal(
+    identity: string,
+  ): Promise<ProfileRecord | undefined> {
     if (isTauri() && this.currentUserId != null) {
       return (
         (await tauriInvoke<ProfileRecord | null>('native_db_get_profile', {
@@ -368,6 +1004,10 @@ export class WebdbService implements OnDestroy {
   }
 
   async putProfile(record: ProfileRecord): Promise<boolean> {
+    return this.runAccountOperation(() => this.putProfileInternal(record));
+  }
+
+  private async putProfileInternal(record: ProfileRecord): Promise<boolean> {
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<boolean>('native_db_put_profile', {
         userId: Number(this.currentUserId),
@@ -392,6 +1032,17 @@ export class WebdbService implements OnDestroy {
     take: number,
     anchor?: number,
   ): Promise<Message[]> {
+    return this.runMessageOperation(() =>
+      this.queryCachedMessagesInternal(threadId, orderBy, take, anchor),
+    );
+  }
+
+  private async queryCachedMessagesInternal(
+    threadId: number,
+    orderBy: 'desc' | 'asc',
+    take: number,
+    anchor?: number,
+  ): Promise<Message[]> {
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<Message[]>('native_db_query_messages', {
         userId: Number(this.currentUserId),
@@ -401,8 +1052,9 @@ export class WebdbService implements OnDestroy {
         take,
       });
     }
-    const db = await this.db();
-    const lower = anchor === undefined || orderBy === 'desc' ? -Infinity : anchor;
+    const db = await this.messageDb();
+    const lower =
+      anchor === undefined || orderBy === 'desc' ? -Infinity : anchor;
     const upper = anchor === undefined || orderBy === 'asc' ? Infinity : anchor;
     const range = IDBKeyRange.bound(
       [threadId, lower],
@@ -411,32 +1063,389 @@ export class WebdbService implements OnDestroy {
       orderBy === 'desc' && anchor !== undefined,
     );
     const out: Message[] = [];
-    let cursor = await db
-      .transaction('messages')
-      .store.openCursor(range, orderBy === 'desc' ? 'prev' : 'next');
+    const tx = db.transaction('messages', 'readonly');
+    let cursor = await tx.store.openCursor(
+      range,
+      orderBy === 'desc' ? 'prev' : 'next',
+    );
     while (cursor && out.length < take) {
       out.push(cursor.value);
       cursor = await cursor.continue();
     }
+    await tx.done;
     return out;
   }
 
-  /** Idempotently store a batch by the `(threadId, seq)` key. */
-  async putMessages(messages: Message[]): Promise<void> {
-    if (messages.length === 0) return;
-    if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_put_messages', {
-        userId: Number(this.currentUserId),
-        messages,
-      });
-      return;
-    }
-    const tx = (await this.db()).transaction('messages', 'readwrite');
-    for (const message of messages) await tx.store.put(message);
-    await tx.done;
+  /** Idempotently store messages and atomically merge an optional server-confirmed complete section. */
+  async putMessages(
+    messages: Message[],
+    confirmedSection?: { threadId: number; left: number; right: number },
+    knownNewest?: { threadId: number; seq: number },
+    lifetime?: AbortSignal,
+  ): Promise<MessageCoverageState | undefined> {
+    return this.runMessageOperation(
+      () => this.putMessagesInternal(messages, confirmedSection, knownNewest),
+      lifetime,
+    );
   }
 
-  async getMessage(threadId: number, seq: number): Promise<Message | undefined> {
+  private async putMessagesInternal(
+    messages: Message[],
+    confirmedSection?: { threadId: number; left: number; right: number },
+    knownNewest?: { threadId: number; seq: number },
+  ): Promise<MessageCoverageState | undefined> {
+    if (messages.length === 0 && !confirmedSection && knownNewest === undefined)
+      return undefined;
+    if (isTauri() && this.currentUserId != null) {
+      return (
+        (await tauriInvoke<MessageCoverageState | null>(
+          'native_db_put_messages',
+          {
+            userId: Number(this.currentUserId),
+            messages,
+            confirmedSection: confirmedSection ?? null,
+            knownNewestSeq: knownNewest?.seq ?? null,
+            coverageThreadId: knownNewest?.threadId ?? null,
+          },
+        )) ?? undefined
+      );
+    }
+    const tx = (await this.messageDb()).transaction(
+      ['messages', 'settings'],
+      'readwrite',
+    );
+    const messageStore = tx.objectStore('messages');
+    const incoming = new Map<string, Message>();
+    const existing = new Set<string>();
+    for (const message of messages) {
+      const key = `${message.threadId}:${message.seq}`;
+      incoming.set(key, message);
+    }
+    // HTTP cache fills are additive. A repeated/overlapping response must not rewrite every row it
+    // happens to contain: only absent rows are inserted here. Once the final merged section is known,
+    // its two boundary rows are the sole existing rows eligible for an authoritative refresh below.
+    for (const [key, message] of incoming) {
+      const old = await messageStore.get([message.threadId, message.seq]);
+      if (old) {
+        existing.add(key);
+        continue;
+      }
+      await messageStore.put(message);
+    }
+    const threadId =
+      confirmedSection?.threadId ??
+      knownNewest?.threadId ??
+      messages[0]?.threadId;
+    const key =
+      threadId === undefined ? undefined : messageCoverageKey(threadId);
+    const old = key
+      ? parseMessageCoverage((await tx.objectStore('settings').get(key))?.value)
+      : undefined;
+    const merged = confirmedSection
+      ? await this.mergeSectionInTx(tx, confirmedSection, old?.coveredTail)
+      : undefined;
+    if (merged && confirmedSection) {
+      for (const seq of new Set([merged.left, merged.right])) {
+        const mapKey = `${confirmedSection.threadId}:${seq}`;
+        const message = incoming.get(mapKey);
+        if (!message || !existing.has(mapKey)) continue;
+        const current = await messageStore.get([
+          confirmedSection.threadId,
+          seq,
+        ]);
+        if (!current) throw new Error('merged message boundary is missing');
+        await messageStore.put({
+          ...message,
+          ...(current.sectionLeft ? { sectionLeft: 1 as const } : {}),
+          ...(current.sectionRight ? { sectionRight: 1 as const } : {}),
+        });
+      }
+    }
+    let coverage: MessageCoverageState | undefined;
+    if (threadId !== undefined && key !== undefined) {
+      const knownNewestSeq = Math.max(
+        knownNewest?.seq ?? -1,
+        old?.knownNewestSeq ?? -1,
+        merged?.right ?? -1,
+      );
+      if (knownNewestSeq >= 0) {
+        coverage = {
+          threadId,
+          knownNewestSeq,
+          coveredTail: mergeCoveredTail(old?.coveredTail, merged),
+        };
+        await tx.objectStore('settings').put({ key, value: coverage });
+      }
+    }
+    await tx.done;
+    return coverage;
+  }
+
+  private async mergeSectionInTx(
+    tx: IDBPTransaction<MessageDbSchema, ['messages', 'settings'], 'readwrite'>,
+    section: { threadId: number; left: number; right: number },
+    coveredTail?: MessageSection | null,
+  ): Promise<MessageSection> {
+    const store = tx.objectStore('messages');
+    let left = Math.min(section.left, section.right);
+    let right = Math.max(section.left, section.right);
+    if (coveredTail && left >= coveredTail.left && right <= coveredTail.right) {
+      return coveredTail;
+    }
+    if (coveredTail && left > coveredTail.right) {
+      if (left === coveredTail.right + 1) left = coveredTail.left;
+      // coveredTail is the right-most persisted section. A disjoint range to its right cannot meet
+      // another old section, while an adjacent range joins it directly.
+    } else if (coveredTail && right >= coveredTail.left - 1) {
+      // The incoming range reaches the tail from its left or starts inside it. Its right edge is known
+      // without a lookup; only an incoming left edge outside the tail can connect farther left.
+      if (left < coveredTail.left)
+        left = await this.resolveMergedLeft(tx, section.threadId, left);
+      else left = coveredTail.left;
+      right = Math.max(right, coveredTail.right);
+    } else {
+      // Disjoint to the left of coveredTail (or no tail): only the nearest typed edge at each endpoint
+      // can affect the outer result. Sections crossed between them are internal and need no read.
+      left = await this.resolveMergedLeft(tx, section.threadId, left);
+      right = await this.resolveMergedRight(tx, section.threadId, right);
+    }
+
+    const touched = new Map<number, CachedMessage>();
+    for (const indexName of ['sectionLeft', 'sectionRight'] as const) {
+      const index = store.index(indexName);
+      let cursor = await index.openCursor(
+        IDBKeyRange.bound(
+          [section.threadId, 1, left],
+          [section.threadId, 1, right],
+        ),
+      );
+      while (cursor) {
+        touched.set(cursor.value.seq, cursor.value);
+        cursor = await cursor.continue();
+      }
+    }
+    for (const edge of touched.values()) {
+      const next = { ...edge };
+      delete next.sectionLeft;
+      delete next.sectionRight;
+      await store.put(next);
+    }
+    const leftRow = (await store.get([section.threadId, left]))!;
+    const rightRow = (await store.get([section.threadId, right]))!;
+    if (!leftRow || !rightRow)
+      throw new Error('merged message section boundary is missing');
+    if (left === right) {
+      await store.put({ ...leftRow, sectionLeft: 1, sectionRight: 1 });
+    } else {
+      await store.put({ ...leftRow, sectionLeft: 1 });
+      await store.put({ ...rightRow, sectionRight: 1 });
+    }
+    return { left, right };
+  }
+
+  private async resolveMergedLeft(
+    tx: IDBPTransaction<MessageDbSchema, ['messages', 'settings'], 'readwrite'>,
+    threadId: number,
+    seq: number,
+  ): Promise<number> {
+    const edge = await this.nearestMessageEdge(tx, threadId, seq, 'before');
+    if (!edge) return seq;
+    if (edge.sectionLeft && !edge.sectionRight) return edge.seq;
+    if (edge.seq < seq - 1 || !edge.sectionRight) return seq;
+    const paired = await tx
+      .objectStore('messages')
+      .index('sectionLeft')
+      .openCursor(
+        IDBKeyRange.bound([threadId, 1, -Infinity], [threadId, 1, edge.seq]),
+        'prev',
+      );
+    if (!paired) throw new Error('message section right edge has no left');
+    const matchingRight = await tx
+      .objectStore('messages')
+      .index('sectionRight')
+      .openCursor(
+        IDBKeyRange.bound(
+          [threadId, 1, paired.value.seq],
+          [threadId, 1, Infinity],
+        ),
+      );
+    if (matchingRight?.value.seq !== edge.seq)
+      throw new Error('message section edges are not paired');
+    return paired.value.seq;
+  }
+
+  private async resolveMergedRight(
+    tx: IDBPTransaction<MessageDbSchema, ['messages', 'settings'], 'readwrite'>,
+    threadId: number,
+    seq: number,
+  ): Promise<number> {
+    const edge = await this.nearestMessageEdge(tx, threadId, seq, 'after');
+    if (!edge) return seq;
+    if (edge.sectionRight) return edge.seq;
+    if (edge.seq > seq + 1 || !edge.sectionLeft) return seq;
+    const paired = await tx
+      .objectStore('messages')
+      .index('sectionRight')
+      .openCursor(
+        IDBKeyRange.bound([threadId, 1, edge.seq], [threadId, 1, Infinity]),
+      );
+    if (!paired) throw new Error('message section left edge has no right');
+    const matchingLeft = await tx
+      .objectStore('messages')
+      .index('sectionLeft')
+      .openCursor(
+        IDBKeyRange.bound(
+          [threadId, 1, -Infinity],
+          [threadId, 1, paired.value.seq],
+        ),
+        'prev',
+      );
+    if (matchingLeft?.value.seq !== edge.seq)
+      throw new Error('message section edges are not paired');
+    return paired.value.seq;
+  }
+
+  private async nearestMessageEdge(
+    tx: IDBPTransaction<MessageDbSchema, ['messages', 'settings'], 'readwrite'>,
+    threadId: number,
+    seq: number,
+    direction: 'before' | 'after',
+  ): Promise<CachedMessage | undefined> {
+    const range =
+      direction === 'before'
+        ? IDBKeyRange.bound([threadId, 1, -Infinity], [threadId, 1, seq])
+        : IDBKeyRange.bound([threadId, 1, seq], [threadId, 1, Infinity]);
+    const cursorDirection = direction === 'before' ? 'prev' : 'next';
+    const [left, right] = await Promise.all([
+      tx
+        .objectStore('messages')
+        .index('sectionLeft')
+        .openCursor(range, cursorDirection),
+      tx
+        .objectStore('messages')
+        .index('sectionRight')
+        .openCursor(range, cursorDirection),
+    ]);
+    if (!left) return right?.value;
+    if (!right) return left.value;
+    if (left.value.seq === right.value.seq)
+      return { ...left.value, sectionLeft: 1, sectionRight: 1 };
+    return direction === 'before'
+      ? left.value.seq > right.value.seq
+        ? left.value
+        : right.value
+      : left.value.seq < right.value.seq
+        ? left.value
+        : right.value;
+  }
+
+  async getMessageCoverage(
+    threadId: number,
+  ): Promise<MessageCoverageState | undefined> {
+    return this.runMessageOperation(() =>
+      this.getMessageCoverageInternal(threadId),
+    );
+  }
+
+  private async getMessageCoverageInternal(
+    threadId: number,
+  ): Promise<MessageCoverageState | undefined> {
+    if (isTauri() && this.currentUserId != null) {
+      return (
+        (await tauriInvoke<MessageCoverageState | null>(
+          'native_db_message_coverage',
+          {
+            userId: Number(this.currentUserId),
+            threadId,
+          },
+        )) ?? undefined
+      );
+    }
+    return parseMessageCoverage(
+      (
+        await (
+          await this.messageDb()
+        ).get('settings', messageCoverageKey(threadId))
+      )?.value,
+    );
+  }
+
+  private async sectionStartingAtInTx(
+    tx: IDBPTransaction<
+      MessageDbSchema,
+      ['messages'],
+      'readonly' | 'readwrite'
+    >,
+    threadId: number,
+    left: number,
+  ): Promise<MessageSection | undefined> {
+    const cursor = await tx
+      .objectStore('messages')
+      .index('sectionRight')
+      .openCursor(
+        IDBKeyRange.bound([threadId, 1, left], [threadId, 1, Infinity]),
+        'next',
+      );
+    return cursor ? { left, right: cursor.value.seq } : undefined;
+  }
+
+  async getMessageSection(
+    threadId: number,
+    seq: number,
+  ): Promise<MessageSection | undefined> {
+    return this.runMessageOperation(() =>
+      this.getMessageSectionInternal(threadId, seq),
+    );
+  }
+
+  private async getMessageSectionInternal(
+    threadId: number,
+    seq: number,
+  ): Promise<MessageSection | undefined> {
+    if (isTauri() && this.currentUserId != null) {
+      const section = await tauriInvoke<MessageSection | null>(
+        'native_db_message_section',
+        {
+          userId: Number(this.currentUserId),
+          threadId,
+          seq,
+        },
+      );
+      return section ? { left: section.left, right: section.right } : undefined;
+    }
+    const tx = (await this.messageDb()).transaction('messages', 'readonly');
+    const left = await tx.store
+      .index('sectionLeft')
+      .openCursor(
+        IDBKeyRange.bound([threadId, 1, -Infinity], [threadId, 1, seq]),
+        'prev',
+      );
+    if (!left) {
+      await tx.done;
+      return undefined;
+    }
+    const section = await this.sectionStartingAtInTx(
+      tx,
+      threadId,
+      left.value.seq,
+    );
+    await tx.done;
+    return section && seq <= section.right ? section : undefined;
+  }
+
+  async getMessage(
+    threadId: number,
+    seq: number,
+  ): Promise<Message | undefined> {
+    return this.runMessageOperation(() =>
+      this.getMessageInternal(threadId, seq),
+    );
+  }
+
+  private async getMessageInternal(
+    threadId: number,
+    seq: number,
+  ): Promise<Message | undefined> {
     if (isTauri() && this.currentUserId != null) {
       return (
         (await tauriInvoke<Message | null>('native_db_get_message', {
@@ -446,10 +1455,18 @@ export class WebdbService implements OnDestroy {
         })) ?? undefined
       );
     }
-    return (await this.db()).get('messages', [threadId, seq]);
+    return (await this.messageDb()).get('messages', [threadId, seq]);
   }
 
   async getNewestMessages(threadIds: number[]): Promise<Message[]> {
+    return this.runMessageOperation(() =>
+      this.getNewestMessagesInternal(threadIds),
+    );
+  }
+
+  private async getNewestMessagesInternal(
+    threadIds: number[],
+  ): Promise<Message[]> {
     if (threadIds.length === 0) return [];
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<Message[]>('native_db_newest_messages', {
@@ -457,7 +1474,7 @@ export class WebdbService implements OnDestroy {
         threadIds,
       });
     }
-    const tx = (await this.db()).transaction('messages', 'readonly');
+    const tx = (await this.messageDb()).transaction('messages', 'readonly');
     const messages = await Promise.all(
       threadIds.map(async (threadId) => {
         const cursor = await tx.store.openCursor(
@@ -467,10 +1484,21 @@ export class WebdbService implements OnDestroy {
         return cursor?.value;
       }),
     );
-    return messages.filter((message): message is Message => message !== undefined);
+    await tx.done;
+    return messages.filter(
+      (message): message is Message => message !== undefined,
+    );
   }
 
   async deleteMessagesByThread(threadId: number): Promise<void> {
+    return this.runMessageOperation(() =>
+      this.deleteMessagesByThreadInternal(threadId),
+    );
+  }
+
+  private async deleteMessagesByThreadInternal(
+    threadId: number,
+  ): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       await tauriInvoke('native_db_delete_messages_by_thread', {
         userId: Number(this.currentUserId),
@@ -478,10 +1506,14 @@ export class WebdbService implements OnDestroy {
       });
       return;
     }
-    const tx = (await this.db()).transaction('messages', 'readwrite');
-    await tx.store.delete(
-      IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+    const tx = (await this.messageDb()).transaction(
+      ['messages', 'settings'],
+      'readwrite',
     );
+    await tx
+      .objectStore('messages')
+      .delete(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]));
+    await tx.objectStore('settings').delete(messageCoverageKey(threadId));
     await tx.done;
   }
 

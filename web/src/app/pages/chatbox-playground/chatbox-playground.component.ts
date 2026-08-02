@@ -3,12 +3,12 @@ import {
   ElementRef,
   OnDestroy,
   inject,
-  isDevMode,
   signal,
   viewChild,
   ChangeDetectionStrategy,
   ViewEncapsulation,
   EnvironmentInjector,
+  isDevMode,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import {
@@ -17,11 +17,8 @@ import {
   CbElement,
   CbItem,
   CbConfig,
-  CbOptions,
   CbScrollInfo,
-  CbDebugStats,
 } from '../../lib/chat-box/chat-box-scroller';
-import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
 import {
   pickStickyDateLabel,
   stickyDateRowOpacity,
@@ -30,7 +27,6 @@ import {
   STICKY_DATE_COLLISION_TOP_PX,
   STICKY_DATE_PICK_FUZZ_PX,
 } from '../../lib/sticky-date';
-import { ActivatedRoute } from '@angular/router';
 import { LayoutService } from '../../services/layout.service';
 import { ThemeService } from '../../services/theme.service';
 import {
@@ -114,7 +110,6 @@ const CB_DEFAULTS: Required<CbConfig> = {
 })
 export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly layout = inject(LayoutService);
-  private readonly route = inject(ActivatedRoute);
   /** EnvironmentInjector for dynamically creating message components (zoneless: createComponent + detectChanges drives rendering). */
   private readonly envInjector = inject(EnvironmentInjector);
   /** Album click → fullscreen gallery viewer (CDK Overlay, service-hosted; no per-host template mounting needed). */
@@ -122,10 +117,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** File-card click → fullscreen file-detail overlay (same transient-overlay pattern as the gallery). */
   private readonly fileDetail = inject(FileDetailService);
   private readonly popupRoute = inject(RouteService);
-  /** Plan A (browser overflow-anchor) is selected by route data.useNativeAnchor: the -a route sets it true; -b (default) uses Plan B (manual compensation). */
-  readonly useNativeAnchor =
-    (this.route.snapshot.data as { useNativeAnchor?: boolean })
-      .useNativeAnchor === true;
   /** Desktop-class viewport (wide screen ≥1280px, width-only): true = persistent side rail; false = mobile drawer + FAB. */
   readonly isDesktop = this.layout.isDesktop;
   /** Mobile control-panel drawer toggle. */
@@ -164,8 +155,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly viewportBelow = signal(0);
   /** Whether pinned to the bottom (decides whether to follow on new messages). */
   readonly atBottom = signal(true);
-  /** Debug mode: enables FAB badges + balance diagnostics to the console; all off in performance mode. */
-  readonly debugMode = signal(true);
   /** Debug: disables mount checkpoints (balance won't trigger loadOlder/loadNewer). Default false (checkpoints load normally). Dev-only (kernel isDevMode()-guarded; stripped by production AOT). */
   readonly closeCheckpoint = signal(false);
   /** Source get latency (ms, simulates slow IO). Default 200; adjustable to 0/1s/5s to test loading/compensation behavior. */
@@ -175,7 +164,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** Mock WS reply delay (ms): time after confirm before the other party's message is pushed via appendLive. Default 1500. */
   readonly replyDelay = signal(1500);
   /** Mock WS push-signal delay (ms): time after the server caches the confirmed message before the WS signal delivers
-   *  it (onMessageSignal → reconcile). Models broadcast latency — during it the optimistic bubble keeps showing the
+   *  it (source demand → reconcile). Models broadcast latency — during it the optimistic bubble keeps showing the
    *  'sending' spinner. Default 0 (reconcile on the next tick, as before). */
   readonly pushSignalDelay = signal(0);
   /** Opponent-interleave scenario: on each send, deliver an opponent message in the same confirm batch, ordered
@@ -185,7 +174,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** How many opponent (incoming) messages are pushed after each send. 0 = none — only your self-sent message confirms
    *  (the optimistic-send → check-fade flow in isolation, with no replies cluttering the chat). N > 0 = N opponent
    *  messages arrive per send. Does NOT affect the confirm reconcile itself (the server echo of your own message still
-   *  arrives via onMessageSignal); only the "incoming reply" side of the mock WS. Default 1 (one below-reply). */
+   *  arrives via a source notification); only the "incoming reply" side of the mock WS. Default 1 (one below-reply). */
   readonly opponentPushCount = signal(1);
   /** Persistent setting: when on, EVERY send's confirm fails (network/timeout model) — the optimistic bubble is rebuilt
    *  as a failed bubble (retry glyph) instead of confirming. Stays on until toggled off, so the failure/retry flow can be
@@ -304,7 +293,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   };
 
   private lastEmit = 0;
-  private lastDebugLog = 0;
 
   // FAB drag state
   private fabDragging = false;
@@ -324,13 +312,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
         new MockUserService(),
         1,
       );
-      // Pick the kernel implementation from route data: Plan A (browser overflow-anchor) or Plan B (manual compensation); both conform to ScrollerApi.
-      const Ctor: new (
-        opts: CbOptions<ChatItemData>,
-      ) => ScrollerApi<ChatItemData> = this.useNativeAnchor
-        ? ChatBoxScrollerAnchor
-        : ChatBoxScroller;
-      this.scroller = new Ctor({
+      this.scroller = new ChatBoxScroller({
         viewport,
         content,
         source: this.source,
@@ -342,7 +324,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
           absorbTail: absorbAlbumTail,
         },
         onScroll: (info) => this.onScroll(info),
-        onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
       this.applyCloseCheckpoint();
       this.hasData.set(true);
@@ -525,16 +506,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       if (ids.length === 1) return String(ids[0]);
     }
     return String(d.msgId);
-  }
-
-  /** balance diagnostics → console.debug (debug mode + only when there is mount/unmount activity + throttled, to avoid flooding when idle). */
-  private onBalanceDebug(s: CbDebugStats) {
-    if (!this.debugMode()) return;
-    if (s.mount + s.unmount === 0) return;
-    const now = performance.now();
-    if (now - this.lastDebugLog < 200) return;
-    this.lastDebugLog = now;
-    console.debug('[vs balance]', s);
   }
 
   private onScroll(info: CbScrollInfo) {
@@ -814,7 +785,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       return this.makeMockItem(phrase, false, 'PURE_TEXT', null);
     });
     this.source?.pushLive(items);
-    void scroller.onMessageSignal();
   }
 
   /**
@@ -991,12 +961,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       ]);
       above = 1;
     }
-    this.source?.pushLive([realItem]);
-
-    // WS push delivery, optionally delayed to model broadcast latency. On a non-zero delay the optimistic bubble keeps
-    // showing the 'sending' spinner until the signal arrives and reconcile reveals the real (check → CSS fade).
+    // WS delivery, optionally delayed to model broadcast latency. Updating the source is sufficient: its pending
+    // newer demand resolves when the real becomes available; no kernel retry event is emitted.
     const signalTimer = setTimeout(() => {
-      void scroller.onMessageSignal();
+      this.source?.pushLive([realItem]);
     }, this.pushSignalDelay());
     this.confirmTimers.push(signalTimer);
 

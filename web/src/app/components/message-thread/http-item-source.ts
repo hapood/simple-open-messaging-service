@@ -17,20 +17,30 @@
  * [Dedup] incoming pushes are identity-only signals; message bodies have a single authoritative path through
  *  queryMessages. This source therefore does not suppress queried ids. Cursor paging keeps pages disjoint,
  *  while the kernel rejects overlap with rows that are currently mounted.
- * [SSE] onSseEvent receives NEW_MESSAGE and fires onSignal — SIGNAL-ONLY (the body is not shaped/cached
- *  here; the conversation-list preview reads the body in its own subscriber). The component's onSignal calls
- *  kernel.onMessageSignal, which pulls from the DB via getNewer / init(-1).
+ * [SSE] NEW_MESSAGE advances the repository-owned per-thread newer ceiling and re-checks this viewport's
+ *  pending newer demand. It never asks the kernel to retry; the kernel only observes a demand resolving
+ *  with actual items.
  */
-import { firstValueFrom, filter, type Subscription } from 'rxjs';
+import {
+  firstValueFrom,
+  filter,
+  Observable,
+  type Subscriber,
+  type Subscription,
+} from 'rxjs';
 import dayjs from 'dayjs';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
-import { WebsocketService } from '../../services/websocket.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
+import type {
+  CbDemand,
+  CbDemandResult,
+  CbSource,
+  CbSourceInitOpts,
+} from '../../lib/chat-box/cb-source';
 import type {
   AlbumImage,
   ChatItemData,
@@ -61,13 +71,8 @@ export class MessagePageLoadError extends Error {
 }
 
 export interface HttpItemSourceLiveOpts {
-  /** Live-arrival signal: a NEW_MESSAGE SSE frame landed for this thread (or a reconnect backfill is due).
-   *  Signal-only — the SSE body is NOT shaped/cached here. The conversation-list preview lives in a separate
-   *  subscriber (ConversationListService.onNewMessage reads the body); the chatbox treats the frame purely as
-   *  "newer data exists, go pull it" and lets the kernel fetch from the DB via getNewer / init(-1) on the next
-   *  onMessageSignal. Shaping happens only at pull time, so a self-send echo / incoming reply on an empty
-   *  (just-added-friend) thread reconciles correctly. */
-  onSignal: (seq: number) => void;
+  /** Presentation-only notice for the unread/new-message badge. It never invokes a kernel load or retry. */
+  onNewerAvailable?: (seq: number) => void;
   /** A mediaStatus change landed for this thread (MEDIA_STATUS SSE / scroll probe / retry ack) — the
    *  kernel re-renders that one card in place via updateItemData (height-neutral). */
   onMediaStatus?: (seq: number, status: MediaStatus) => void;
@@ -85,6 +90,7 @@ export interface HttpItemSourceLiveOpts {
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
+  private coverageRetained = true;
   /** DB cursors (oldest/newest loaded msgId). */
   private oldestMsgId: number | null = null;
   private newestMsgId: number | null = null;
@@ -114,24 +120,33 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       isSelf: boolean;
     },
   ) => void;
-  private readonly onSignal: (seq: number) => void;
+  private readonly onNewerAvailable: (seq: number) => void;
   private readonly seqsByCreator = new Map<number, Set<number>>();
   private readonly profilesInFlight = new Set<number>();
   private readonly profileBacklog: Message[] = [];
   private initializingDb = true;
   private loadedSeq = -1;
-  /** Frozen upper bound for the current newer-than-cursor walk. A later signal may advance it. */
-  private newerTruncateSeq: number | undefined;
+  /** Newer-edge demands are long-lived: at the current newest they remain pending until a real item exists. */
+  private readonly newerWaiters = new Set<{
+    cursorId: number;
+    count: number;
+    subscriber: Subscriber<CbDemandResult<ChatItemData>>;
+  }>();
+  private pumpingNewer = false;
+  private newerPumpVersion = 0;
 
   constructor(
     private readonly conv: ConversationItem,
     private readonly repo: MessageRepository,
     private readonly userService: UserService,
-    wsService: WebsocketService,
     private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
     private readonly profileRepo?: ProfileRepository,
   ) {
+    this.repo.retainCoverage(
+      this.conv.threadId,
+      this.conv.lastMessageSeq ?? undefined,
+    );
     const self = userService.sessionProfile?.();
     if (self)
       this.profiles.set(self.id, {
@@ -146,18 +161,19 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         isSelf: conv.peerUser.id === this.selfUserId,
       });
     this.pending = outbox.forThread(conv.threadId);
-    this.onSignal = live.onSignal;
     this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onProfile = live.onProfile ?? (() => {});
+    this.onNewerAvailable = live.onNewerAvailable ?? (() => {});
     // The DB-layer MessageRepository owns the identity-only NEW_MESSAGE SSE and emits liveSignal$.
     // The kernel's subsequent getNewer is the single message-body path (IDB cache hit or backend gap-fill).
-    // Filter to THIS thread (one source per open thread).
+    // Filter to THIS thread. Multiple mounted sources share the repository's thread state while keeping
+    // their viewport demand/cancellation lifecycle independent.
     this.sseSub = repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
-        if (this.initializingDb || s.seq <= this.loadedSeq) return;
-        this.advanceNewerTruncate(s.seq);
-        this.onSignal(s.seq);
+        if (!this.initializingDb && s.seq > this.loadedSeq)
+          this.onNewerAvailable(s.seq);
+        this.requestNewerPump();
       });
     // mediaStatus changes (MEDIA_STATUS SSE / scroll probe / manual-retry ack) → re-render that one card
     // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
@@ -166,11 +182,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       .subscribe((s) => this.onMediaStatus(s.seq, s.status));
     // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
     // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
-    this.reconnectSub = wsService.reconnect$.subscribe(() => {
-      // No exact remote ceiling accompanies reconnect$. Leave this recovery walk unbounded; the next
-      // concrete NEW_MESSAGE signal (or a future init) freezes a new exact ceiling again.
-      this.newerTruncateSeq = undefined;
-      this.onSignal(Number.MAX_SAFE_INTEGER);
+    this.reconnectSub = repo.reconnectSignal$.subscribe(() => {
+      this.requestNewerPump();
     });
   }
 
@@ -322,17 +335,15 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return items;
   }
 
-  /** Fetch `count` messages newer than cursorId (already ascending). out[last] is tagged 'newest'
-   *  when the DB ceiling is reached. Called by the kernel's loadNewer — for scroll-driven loads (balance /
-   *  followToNewest) AND for the forced pull triggered by an SSE live-arrival signal (onMessageSignal). The
-   *  kernel's loadNewer already guards `if (!force && this.noNewer) return 0` before calling, so no noNewer
-   *  guard is needed here — and none COULD be, since a signal must be able to pull past "at newest" (that is
-   *  the whole point: a NEW_MESSAGE arrived, so there IS newer data even though noNewer was true). */
+  /** Fetch `count` messages newer than cursorId (already ascending). The active source demand decides whether the
+   * returned range satisfies its requested count; at the current newest it remains pending until SSE/cache updates make
+   * progress possible. */
   async getNewer(
     cursorId: number,
     count: number,
   ): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
+    const truncateSeq = this.repo.getNewerTruncateSeq(this.conv.threadId);
     const { data, hasMore, failed } = await this.repo.queryMessages(
       this.conv.threadId,
       {
@@ -340,12 +351,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         take,
         lastSeq: cursorId,
         orderBy: 'asc',
-        truncate: this.newerTruncateSeq !== undefined,
+        truncate: truncateSeq !== undefined,
         // API cutoffs are exclusive; +1 makes the frozen newest seq itself part of this walk.
-        truncateSeq:
-          this.newerTruncateSeq === undefined
-            ? undefined
-            : this.newerTruncateSeq + 1,
+        truncateSeq: truncateSeq === undefined ? undefined : truncateSeq + 1,
       },
       this.conv.clearedSeq,
       this.initializingDb,
@@ -369,11 +377,66 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return items;
   }
 
-  /** No-op. Live arrivals are signal-only: the DB-layer {@link MessageRepository} caches the NEW_MESSAGE body
-   *  and emits `liveSignal$`, which the constructor pipes to {@link onSignal}; the kernel then pulls the cached
-   *  body via getNewer / init(-1). Kept to satisfy the CbSource interface (the kernel's appendLive calls it;
-   *  production never routes live arrivals through appendLive — only through the signal path — so this is never
-   *  reached in production). The playground's MockItemSource implements a real pushLive for its cursor model. */
+  requestOlder(cursorId: number, count: number): CbDemand<ChatItemData> {
+    return sourceDemand(async () => {
+      const items = await this.getOlder(cursorId, count);
+      return items.length > 0 ? { kind: 'items', items } : { kind: 'boundary' };
+    });
+  }
+
+  requestNewer(cursorId: number, count: number): CbDemand<ChatItemData> {
+    return new Observable((subscriber) => {
+      const waiter = { cursorId, count, subscriber };
+      this.newerWaiters.add(waiter);
+      this.requestNewerPump();
+      return () => {
+        this.newerWaiters.delete(waiter);
+      };
+    });
+  }
+
+  private async pumpNewerWaiters(): Promise<void> {
+    if (
+      this.pumpingNewer ||
+      this.initializingDb ||
+      this.newerWaiters.size === 0
+    )
+      return;
+    this.pumpingNewer = true;
+    const pumpVersion = this.newerPumpVersion;
+    try {
+      // The viewport owns at most one newer demand. Keep the loop general so a future second consumer
+      // shares the same source contract without changing the completion semantics.
+      for (const waiter of [...this.newerWaiters]) {
+        if (!this.newerWaiters.has(waiter)) continue;
+        try {
+          const items =
+            waiter.cursorId === -1
+              ? await this.init(-1, waiter.count, 0)
+              : await this.getNewer(waiter.cursorId, waiter.count);
+          if (!this.newerWaiters.has(waiter) || items.length === 0) continue;
+          this.newerWaiters.delete(waiter);
+          waiter.subscriber.next({ kind: 'items', items });
+          waiter.subscriber.complete();
+        } catch (error) {
+          if (!this.newerWaiters.delete(waiter)) continue;
+          waiter.subscriber.next({ kind: 'error', error });
+          waiter.subscriber.complete();
+        }
+      }
+    } finally {
+      this.pumpingNewer = false;
+      if (this.newerPumpVersion !== pumpVersion) void this.pumpNewerWaiters();
+    }
+  }
+
+  private requestNewerPump(): void {
+    this.newerPumpVersion++;
+    if (!this.initializingDb) void this.pumpNewerWaiters();
+  }
+
+  /** Production SSE data is cached by {@link MessageRepository}; its update event pumps active source demands. The
+   * explicit push entry point is therefore a no-op for this repository-backed implementation. */
   pushLive(_rawItems: CbItem<ChatItemData>[]): void {
     /* signal-only: no cache */
   }
@@ -485,12 +548,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   destroy(): void {
+    if (this.coverageRetained) {
+      this.coverageRetained = false;
+      this.repo.releaseCoverage(this.conv.threadId);
+    }
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
     this.mediaStatusSub?.unsubscribe();
     this.mediaStatusSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
+    for (const waiter of this.newerWaiters) waiter.subscriber.complete();
+    this.newerWaiters.clear();
   }
 
   /**
@@ -511,19 +580,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.hydrateProfiles(this.profileBacklog.splice(0));
     const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
     if (targetSeq > this.loadedSeq) {
-      this.advanceNewerTruncate(targetSeq);
-      this.onSignal(targetSeq);
+      this.repo.retainNewestSeq(this.conv.threadId, targetSeq);
     }
-  }
-
-  private advanceNewerTruncate(seq: number): void {
-    if (
-      Number.isSafeInteger(seq) &&
-      seq >= 0 &&
-      (this.newerTruncateSeq === undefined || seq > this.newerTruncateSeq)
-    ) {
-      this.newerTruncateSeq = seq;
-    }
+    this.requestNewerPump();
   }
 
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
@@ -709,6 +768,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       }
     })();
   }
+}
+
+function sourceDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
+  // Unsubscribe detaches the viewport observer; it deliberately does not abort the shared cache-fill HTTP operation.
+  // A later demand may reuse the repository result. Introduce AbortSignal only if repository requests become
+  // per-consumer rather than cache-populating work.
+  return new Observable((subscriber) => {
+    void work()
+      .catch((error): CbDemandResult<T> => ({ kind: 'error', error }))
+      .then((result) => {
+        if (subscriber.closed) return;
+        subscriber.next(result);
+        subscriber.complete();
+      });
+  });
 }
 
 // ---------- helpers ----------

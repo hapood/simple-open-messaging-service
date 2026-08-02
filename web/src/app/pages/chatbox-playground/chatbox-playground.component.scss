@@ -137,18 +137,13 @@
   transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
   transition: transform var(--kbd-duration, 60ms) ease-out;
   overflow-y: auto;
-  // Plan B (default -b route): the kernel manages scrollTop anchor compensation
-  // itself, so browser scroll anchoring is disabled to avoid fighting it.
+  // The kernel owns scrollTop anchor compensation, so browser scroll anchoring is disabled to avoid fighting it.
   overflow-anchor: none;
   background: transparent;   // wallpaper is carried by the non-scrolling .pg-stage; the viewport shows it through
   outline: none;
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
 }
-// Plan A (-a route, .pg--native-anchor): lean on browser scroll anchoring;
-// re-enable overflow-anchor.
-.pg--native-anchor .pg-viewport { overflow-anchor: auto; }
-
 // Content layer + top sentinel: the kernel handles mount/unmount and anchor compensation; no message-row styling here.
 // Bottom-aligned (WhatsApp / Telegram): when content is shorter than the viewport (empty thread or few messages),
 // messages stack against the BOTTOM (just above the input bar) with the empty space ABOVE — not hanging at the top.

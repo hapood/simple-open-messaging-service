@@ -440,75 +440,8 @@ fn is_spa_route_key(key: &str) -> bool {
 }
 
 #[cfg(test)]
-mod ota_asset_tests {
-    use super::{is_spa_route_key, read_active_web_state, ACTIVE_STATE_FILENAME};
-    use std::fs;
-
-    #[test]
-    fn angular_history_routes_use_the_active_entry_document() {
-        assert!(is_spa_route_key(""));
-        assert!(is_spa_route_key("/"));
-        assert!(is_spa_route_key("/auth/login"));
-        assert!(is_spa_route_key("settings/devices/"));
-    }
-
-    #[test]
-    fn static_asset_requests_do_not_fall_back_to_the_entry_document() {
-        assert!(!is_spa_route_key("index.html"));
-        assert!(!is_spa_route_key("/main-ABC123.js"));
-        assert!(!is_spa_route_key("assets/icons/app.svg"));
-    }
-
-    #[test]
-    fn active_web_state_reads_version_and_hash_together() {
-        let root = std::env::temp_dir().join(format!(
-            "soms-active-web-state-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos(),
-        ));
-        fs::create_dir_all(&root).expect("create temp web root");
-        fs::write(
-            root.join(ACTIVE_STATE_FILENAME),
-            r#"{"version":"0.2.0","sha256":"ABCDEF"}"#,
-        )
-        .expect("write active state");
-
-        let state = read_active_web_state(&root).expect("read active state");
-        assert_eq!(state.version, "0.2.0");
-        assert_eq!(state.sha256, "ABCDEF");
-
-        fs::remove_dir_all(&root).expect("remove temp web root");
-    }
-
-    #[test]
-    fn active_web_state_rejects_partial_or_invalid_state() {
-        let root = std::env::temp_dir().join(format!(
-            "soms-invalid-active-web-state-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos(),
-        ));
-        fs::create_dir_all(&root).expect("create temp web root");
-
-        fs::write(root.join(ACTIVE_STATE_FILENAME), r#"{"version":"0.2.0"}"#)
-            .expect("write partial active state");
-        assert!(read_active_web_state(&root).is_none());
-
-        fs::write(
-            root.join(ACTIVE_STATE_FILENAME),
-            r#"{"version":"","sha256":"abc"}"#,
-        )
-        .expect("write empty-version active state");
-        assert!(read_active_web_state(&root).is_none());
-
-        fs::remove_dir_all(&root).expect("remove temp web root");
-    }
-}
+#[path = "tests/ota_asset_tests.rs"]
+mod ota_asset_tests;
 
 /// Read one asset (`key`, e.g. `index.html` / `assets/x.js` — the leading slash Tauri may include is
 /// stripped, matching how `AssetKey` is requested) from an OTA bundle dir. Path-traversal-hardened: the
@@ -707,12 +640,18 @@ pub fn run() {
                     native_db::native_db_get_preference,
                     native_db::native_db_put_preference,
                     native_db::native_db_delete_preference,
+                    native_db::native_db_recreate_cache,
+                    native_db::native_db_validate_cache,
+                    native_db::native_db_recreate_messages,
+                    native_db::native_db_count_messages,
                     native_db::native_db_clear_user,
                     native_db::native_db_clear_all,
                     native_db::native_db_get_avatar,
                     native_db::native_db_put_avatar,
                     native_db::native_db_query_messages,
                     native_db::native_db_put_messages,
+                    native_db::native_db_message_section,
+                    native_db::native_db_message_coverage,
                     native_db::native_db_get_message,
                     native_db::native_db_newest_messages,
                     native_db::native_db_delete_messages_by_thread,
@@ -766,12 +705,18 @@ pub fn run() {
                     native_db::native_db_get_preference,
                     native_db::native_db_put_preference,
                     native_db::native_db_delete_preference,
+                    native_db::native_db_recreate_cache,
+                    native_db::native_db_validate_cache,
+                    native_db::native_db_recreate_messages,
+                    native_db::native_db_count_messages,
                     native_db::native_db_clear_user,
                     native_db::native_db_clear_all,
                     native_db::native_db_get_avatar,
                     native_db::native_db_put_avatar,
                     native_db::native_db_query_messages,
                     native_db::native_db_put_messages,
+                    native_db::native_db_message_section,
+                    native_db::native_db_message_coverage,
                     native_db::native_db_get_message,
                     native_db::native_db_newest_messages,
                     native_db::native_db_delete_messages_by_thread,
@@ -1205,62 +1150,6 @@ async fn pick_origin_race(state: &ProxyState) -> Option<String> {
         log::info!("origin race: selected={origin} mode={mode:?}");
     }
     Some(origin)
-}
-
-/// The outcome of a runtime `maybe_switch` — drives the caller's next step (the SSE supervisor: reopen vs
-/// enter the reconnecting backoff). Desktop-only (the SSE supervisor + runtime_switch are desktop; on
-/// Android Rust is passive — Kotlin decides).
-#[cfg(desktop)]
-enum SwitchOutcome {
-    /// The current origin is still healthy (the failure was transient) — reopen it.
-    Stayed,
-    /// The current is down; flipped to the other (which is reachable) — reopen the new active.
-    Flipped,
-    /// Both origins are down — enter the reconnecting backoff; the retry will `pick_origin_race`.
-    BothDown,
-    /// No secondary configured — nothing to switch (single-origin: the caller just retries the one).
-    NoFallback,
-}
-
-#[cfg(desktop)]
-/// Runtime smooth switch (NOT a race): probe the CURRENT active; if healthy → `Stayed` (transient). If down
-/// → probe the OTHER (single, sequential); if reachable → `Flipped` (adopt it); else `BothDown`. Used by
-/// the desktop transports + the SSE supervisor on a single-point failure. Android Rust is passive (Kotlin
-/// decides + signals via `set_active_origin`).
-async fn maybe_switch(state: &ProxyState) -> SwitchOutcome {
-    let Some(secondary) = state
-        .api_origin_secondary
-        .lock()
-        .expect("secondary lock")
-        .clone()
-    else {
-        return SwitchOutcome::NoFallback; // no fallback → nothing to switch
-    };
-    let active = state.api_origin.lock().expect("origin lock").clone();
-    if probe_health(&active).await {
-        return SwitchOutcome::Stayed; // current is fine — transient failure, reopen it
-    }
-    // Current is down → the OTHER origin + its mode (primary↔secondary).
-    let on_secondary = *state.origin_mode.lock().expect("mode lock") == OriginMode::Secondary;
-    let (other, mode) = if on_secondary {
-        (
-            state
-                .api_origin_primary
-                .lock()
-                .expect("primary lock")
-                .clone(),
-            OriginMode::Primary,
-        )
-    } else {
-        (secondary, OriginMode::Secondary)
-    };
-    if probe_health(&other).await {
-        activate_origin(state, &other, mode);
-        SwitchOutcome::Flipped
-    } else {
-        warn!("maybe_switch: both origins down → BothDown (reconnect will race)");
-        SwitchOutcome::BothDown
-    }
 }
 
 /// Desktop-only runtime switch (the transports + diagnostics call this on a network failure). On Android
@@ -2173,57 +2062,8 @@ fn trim_webview_console_front(path: &Path, keep: usize) {
 }
 
 #[cfg(test)]
-mod webview_console_trim_tests {
-    use super::*;
-
-    /// A unique temp path per pid + counter so parallel test processes don't collide.
-    fn tmp_path(label: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "soms-trim-{}-{}-{}.log",
-            std::process::id(),
-            n,
-            label
-        ))
-    }
-
-    #[test]
-    fn trim_drops_oldest_lines_on_a_boundary_keeps_an_exact_tail() {
-        // Five 11-byte lines ("0123456789\n"); keep ~2 lines worth so the front two+ are dropped.
-        let content: Vec<u8> = b"0123456789\n".repeat(5); // 55 bytes
-        let path = tmp_path("basic");
-        fs::write(&path, &content).unwrap();
-        trim_webview_console_front(&path, 22);
-        let result = fs::read(&path).unwrap();
-        assert!(result.len() < content.len(), "trim must drop bytes");
-        assert!(
-            result.starts_with(b"0123456789\n"),
-            "the kept head must begin on a line boundary (a whole line), never mid-line"
-        );
-        assert!(
-            content.ends_with(&result),
-            "the kept bytes must be an exact tail of the original — no line mutated, none invented"
-        );
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn trim_is_a_noop_when_already_at_or_under_cap() {
-        let path = tmp_path("noop");
-        fs::write(&path, b"short\n").unwrap();
-        trim_webview_console_front(&path, 100);
-        assert_eq!(fs::read(&path).unwrap(), b"short\n");
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn trim_a_missing_file_is_silent() {
-        // A nonexistent path must never panic (best-effort contract — diagnostics must not break the app).
-        trim_webview_console_front(&tmp_path("missing"), 10);
-    }
-}
+#[path = "tests/webview_console_trim_tests.rs"]
+mod webview_console_trim_tests;
 
 /// Raise/lower the process-wide native log cap alongside the web debug-tools gate. The plugin's sink is
 /// configured for Debug, so this cheap facade-level filter prevents message formatting and file I/O in
@@ -2984,90 +2824,8 @@ fn merge_cached_hello(
 }
 
 #[cfg(all(test, desktop))]
-mod cached_hello_merge_tests {
-    use super::merge_cached_hello;
-    use std::sync::{Arc, Mutex};
-
-    fn cache() -> Arc<Mutex<Option<serde_json::Value>>> {
-        Arc::new(Mutex::new(None))
-    }
-
-    fn get(c: &Arc<Mutex<Option<serde_json::Value>>>) -> serde_json::Value {
-        c.lock().unwrap().clone().unwrap()
-    }
-
-    #[test]
-    fn hello_seeds_then_incremental_frames_patch_their_fields() {
-        let c = cache();
-        merge_cached_hello(
-            &c,
-            "HELLO",
-            &serde_json::json!({"userId":1,"threadRevision":5,"profileRev":2,"friendReqRev":1000,"friendReqAckRev":0,"latestMessage":null}),
-        );
-        assert_eq!(get(&c)["userId"], 1);
-        assert_eq!(get(&c)["threadRevision"], 5);
-
-        merge_cached_hello(
-            &c,
-            "THREAD_REVISION_UPDATED",
-            &serde_json::json!({"threadRevision":6}),
-        );
-        assert_eq!(get(&c)["threadRevision"], 6);
-
-        merge_cached_hello(
-            &c,
-            "PROFILE_REV_UPDATED",
-            &serde_json::json!({"profileRev":3}),
-        );
-        assert_eq!(get(&c)["profileRev"], 3);
-
-        // A newer state pair advances both friendReqRev + friendReqAckRev.
-        merge_cached_hello(
-            &c,
-            "FRIEND_REQ_REV_UPDATED",
-            &serde_json::json!({"friendReqRev":2000,"friendReqAckRev":1500}),
-        );
-        assert_eq!(get(&c)["friendReqRev"], 2000);
-        assert_eq!(get(&c)["friendReqAckRev"], 1500);
-
-        merge_cached_hello(
-            &c,
-            "NEW_MESSAGE",
-            &serde_json::json!({"threadId":7,"seq":9,"ts":123}),
-        );
-        assert_eq!(get(&c)["latestMessage"]["threadId"], 7);
-        assert_eq!(get(&c)["latestMessage"]["seq"], 9);
-    }
-
-    #[test]
-    fn friendreq_revisions_are_monotonic_out_of_order_dropped() {
-        let c = cache();
-        merge_cached_hello(
-            &c,
-            "HELLO",
-            &serde_json::json!({"userId":1,"friendReqRev":2000,"friendReqAckRev":1500}),
-        );
-        // An OLDER pair (stale/out-of-order) must not regress either cursor.
-        merge_cached_hello(
-            &c,
-            "FRIEND_REQ_REV_UPDATED",
-            &serde_json::json!({"friendReqRev":1000,"friendReqAckRev":1000}),
-        );
-        assert_eq!(get(&c)["friendReqRev"], 2000);
-        assert_eq!(get(&c)["friendReqAckRev"], 1500);
-    }
-
-    #[test]
-    fn incremental_before_hello_is_dropped_no_partial_cache() {
-        let c = cache();
-        merge_cached_hello(
-            &c,
-            "THREAD_REVISION_UPDATED",
-            &serde_json::json!({"threadRevision":6}),
-        );
-        assert!(c.lock().unwrap().is_none());
-    }
-}
+#[path = "tests/cached_hello_merge_tests.rs"]
+mod cached_hello_merge_tests;
 
 /// Open + consume one SSE stream until it ends (clean close / error / stale / cancel / force-logout).
 #[cfg(desktop)]
@@ -3306,308 +3064,27 @@ fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
 // the trickiest new code in the supervisor: line-end forms, frame boundaries, multi-line data join,
 // comment lines, malformed-JSON handling. Run with `cargo test` (the docker desktop build).
 #[cfg(all(test, desktop))]
-mod sse_parser_tests {
-    use super::*;
-
-    #[test]
-    fn line_end_at_handles_all_forms() {
-        assert_eq!(line_end_at(b"a\nb", 1), (true, 1)); // \n
-        assert_eq!(line_end_at(b"a\rb", 1), (true, 1)); // \r alone
-        assert_eq!(line_end_at(b"a\r\nb", 1), (true, 2)); // \r\n (one logical end, len 2)
-        assert_eq!(line_end_at(b"ab", 0), (false, 1)); // ordinary byte
-        assert_eq!(line_end_at(b"a", 9), (false, 1)); // past end is safe (no panic)
-    }
-
-    #[test]
-    fn take_frame_lf_boundary_consumes_through_it() {
-        let mut buf = b"event: ping\ndata: {}\n\nrest".to_vec();
-        let frame = take_sse_frame(&mut buf).expect("complete frame");
-        assert_eq!(frame, b"event: ping\ndata: {}"); // content, boundary NOT included
-        assert_eq!(buf, b"rest"); // boundary consumed, remainder stays
-    }
-
-    #[test]
-    fn take_frame_crlf_boundary() {
-        let mut buf = b"event: x\r\ndata: 1\r\n\r\nz".to_vec();
-        let frame = take_sse_frame(&mut buf).expect("complete frame");
-        assert_eq!(frame, b"event: x\r\ndata: 1");
-        assert_eq!(buf, b"z");
-    }
-
-    #[test]
-    fn take_frame_returns_none_and_leaves_buf_when_incomplete() {
-        let mut buf = b"event: ping\ndata: {}".to_vec(); // no blank-line terminator yet
-        assert!(take_sse_frame(&mut buf).is_none());
-        assert_eq!(
-            buf, b"event: ping\ndata: {}",
-            "incomplete buffer must be untouched"
-        ); // chunk-split safe
-    }
-
-    #[test]
-    fn take_frame_drains_multiple_frames_in_order() {
-        let mut buf = b":comment\n\nevent:b\ndata:c\n\n".to_vec();
-        let f1 = take_sse_frame(&mut buf).unwrap();
-        let f2 = take_sse_frame(&mut buf).unwrap();
-        assert!(take_sse_frame(&mut buf).is_none());
-        assert_eq!(f1, b":comment");
-        assert_eq!(f2, b"event:b\ndata:c");
-    }
-
-    #[test]
-    fn parse_basic_event_and_json_data() {
-        let f = parse_sse_frame(b"event: NEW_MESSAGE\ndata: {\"id\":5}").unwrap();
-        assert_eq!(f.event, "NEW_MESSAGE");
-        assert_eq!(f.data, serde_json::json!({"id": 5}));
-    }
-
-    #[test]
-    fn parse_multi_data_lines_join_with_newline_before_json() {
-        // A frame split across two `data:` lines must join with `\n` then parse — the value can wrap.
-        let f = parse_sse_frame(b"event: x\ndata: {\"a\":\ndata: 1}").unwrap();
-        assert_eq!(f.data, serde_json::json!({"a": 1}));
-    }
-
-    #[test]
-    fn parse_strips_exactly_one_leading_space_after_colon() {
-        // `event: x` (one space) → "x". `data: {}` (one space) → "{}".
-        let f = parse_sse_frame(b"event: x\ndata: {}").unwrap();
-        assert_eq!(f.event, "x");
-        assert_eq!(f.data, serde_json::json!({}));
-    }
-
-    #[test]
-    fn parse_comment_line_is_ignored_but_event_still_parsed() {
-        // The leading `: connected` heartbeat frame has no `event:` → dropped (next test). But a comment
-        // INSIDE a real frame is ignored without breaking the parse.
-        let f = parse_sse_frame(b": keepalive\nevent: x\ndata: 1").unwrap();
-        assert_eq!(f.event, "x");
-        assert_eq!(f.data, serde_json::json!(1));
-    }
-
-    #[test]
-    fn parse_frame_with_no_event_is_dropped() {
-        // The connect heartbeat (`: connected`) and a bare `data:` frame have no event → None.
-        assert!(parse_sse_frame(b": connected").is_none());
-        assert!(parse_sse_frame(b"data: hello").is_none());
-    }
-
-    #[test]
-    fn parse_empty_data_is_null_not_dropped() {
-        // `event: ping\ndata:` → event kept, data Null. Critical: a ping must NOT be dropped (it arms the
-        // watchdog), so empty data must yield Null, not None.
-        let f = parse_sse_frame(b"event: ping\ndata:").unwrap();
-        assert_eq!(f.event, "ping");
-        assert!(f.data.is_null());
-    }
-
-    #[test]
-    fn parse_malformed_json_data_drops_the_frame_keeps_stream_alive() {
-        // A bad payload returns None (drop the frame) — NOT a throw that kills the stream (the JS worker's
-        // JSON.parse fragility we deliberately did not port).
-        assert!(parse_sse_frame(b"event: x\ndata: {not json").is_none());
-    }
-
-    #[test]
-    fn parse_force_logout_carries_message_for_extraction() {
-        // parse_sse_frame returns the structure; open_one_stream extracts data.message into the reason.
-        let f =
-            parse_sse_frame(b"event: FORCE_LOGOUT\ndata: {\"message\":\"device_revoke\"}").unwrap();
-        assert_eq!(f.event, "FORCE_LOGOUT");
-        let reason = f.data.get("message").and_then(|v| v.as_str());
-        assert_eq!(reason, Some("device_revoke"));
-    }
-}
+#[path = "tests/sse_parser_tests.rs"]
+mod sse_parser_tests;
 
 // Origin parsing + TLS posture — the security boundary that decides whether a backend origin gets
 // strict TLS validation or permissive (self-signed/cleartext accepted). Pure (no reqwest client, no
 // network), so these run on EVERY target — unlike the desktop-only `sse_parser_tests` above.
 #[cfg(test)]
-mod origin_tests {
-    use super::*;
-
-    #[test]
-    fn tls_posture_https_dns_host_is_strict() {
-        assert_eq!(tls_posture_for("https://example.com"), TlsPosture::Strict);
-        assert_eq!(
-            tls_posture_for("https://soms.example.com:8443/api"),
-            TlsPosture::Strict
-        );
-    }
-
-    #[test]
-    fn tls_posture_http_scheme_is_permissive_regardless_of_host() {
-        // Cleartext http → never strict, even for a DNS host that would be strict over https.
-        assert_eq!(
-            tls_posture_for("http://example.com"),
-            TlsPosture::Permissive
-        );
-        assert_eq!(
-            tls_posture_for("http://10.0.0.5:3000"),
-            TlsPosture::Permissive
-        );
-    }
-
-    #[test]
-    fn tls_posture_ip_host_is_permissive_even_over_https() {
-        // LAN self-hosted over HTTPS+IP → permissive (no valid cert expected for a bare-IP host).
-        assert_eq!(tls_posture_for("https://10.0.0.5"), TlsPosture::Permissive);
-        assert_eq!(
-            tls_posture_for("https://192.168.88.8:8443"),
-            TlsPosture::Permissive
-        );
-        assert_eq!(
-            tls_posture_for("https://[::1]:3000"),
-            TlsPosture::Permissive
-        );
-    }
-
-    #[test]
-    fn tls_posture_unparseable_origin_is_permissive() {
-        // Defensive default (matches the historical unwrap_or(true)); validate_origin gates persistence
-        // so a malformed origin never reaches here in practice.
-        assert_eq!(tls_posture_for("not a url"), TlsPosture::Permissive);
-        assert_eq!(tls_posture_for(""), TlsPosture::Permissive);
-    }
-
-    #[test]
-    fn validate_origin_accepts_http_https_and_strips_trailing_slash() {
-        assert_eq!(
-            validate_origin("https://example.com/"),
-            Some("https://example.com".to_string())
-        );
-        assert_eq!(
-            validate_origin("http://10.0.0.5:3000"),
-            Some("http://10.0.0.5:3000".to_string())
-        );
-        // Surrounding whitespace tolerated (real input from a settings field).
-        assert_eq!(
-            validate_origin("  https://example.com  "),
-            Some("https://example.com".to_string())
-        );
-    }
-
-    #[test]
-    fn validate_origin_rejects_non_http_schemes_and_schemeless_garbage() {
-        assert_eq!(validate_origin("ftp://example.com"), None);
-        assert_eq!(validate_origin("file:///etc/passwd"), None);
-        assert_eq!(validate_origin("example.com"), None); // no scheme → relative URL, rejected
-        assert_eq!(validate_origin("garbage"), None);
-        assert_eq!(validate_origin(""), None);
-    }
-
-    #[test]
-    fn origin_host_is_ip_detects_v4_v6_and_rejects_dns() {
-        assert!(origin_host_is_ip("http://192.168.1.10"));
-        assert!(origin_host_is_ip("https://10.0.0.5:3000"));
-        assert!(origin_host_is_ip("https://[::1]:8443"));
-        assert!(!origin_host_is_ip("https://example.com"));
-        assert!(!origin_host_is_ip("garbage"));
-    }
-}
+#[path = "tests/origin_tests.rs"]
+mod origin_tests;
 
 // send_with_headers_deadline — the bounded-headers send shared by api_request + media_request. The
 // contract that matters: a connected-but-silent upstream yields `HeadersError::Timeout` (→ HTTP 504),
 // NOT a connect failure. Driven with a real socket so no mock-server crate is needed — just std::net
 // + a thread that accepts then holds the connection open without responding.
 #[cfg(test)]
-mod headers_deadline_tests {
-    use super::*;
-
-    /// A peer that completes the TCP handshake then never sends a byte — reqwest is "connected" but
-    /// waits for headers that never arrive, so the deadline fires.
-    struct SilentPeer {
-        _addr: std::net::SocketAddr,
-        _thread: std::thread::JoinHandle<()>,
-    }
-
-    impl SilentPeer {
-        fn spawn() -> Self {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            // Accept and then hold the socket open without responding: `io::copy` from the stream blocks
-            // until the client closes (which happens when the deadline drops the reqwest future), so the
-            // thread ends cleanly with the test — no leak.
-            let thread = std::thread::spawn(move || {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    let _ = std::io::copy(&mut stream, &mut std::io::sink());
-                }
-            });
-            Self {
-                _addr: addr,
-                _thread: thread,
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn deadline_yields_timeout_when_upstream_accepts_but_never_responds() {
-        let peer = SilentPeer::spawn();
-        let client = reqwest::Client::new();
-        let url = format!("http://{}/", peer._addr);
-        let outcome =
-            send_with_headers_deadline(client.get(&url), Duration::from_millis(200)).await;
-        assert!(
-            matches!(outcome, Err(HeadersError::Timeout)),
-            "a silent upstream past the deadline must be Timeout (→504), got {outcome:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn deadline_yields_send_failed_for_an_unreachable_host() {
-        // A port with no listener on the loopback → ECONNREFUSED at connect (a SendFailed, NOT a Timeout)
-        // — this is the case that must stay an `Err` (→ JS "network"), proving the 504 path is gated to
-        // connected-but-silent only. Bind+drop to claim a free port, then connect to the now-closed port.
-        let addr = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        // (listener dropped here — port closed)
-        let client = reqwest::Client::new();
-        let url = format!("http://{addr}/");
-        let outcome = send_with_headers_deadline(client.get(&url), Duration::from_secs(2)).await;
-        assert!(
-            matches!(outcome, Err(HeadersError::SendFailed(_))),
-            "an unreachable host must be SendFailed (→network), not Timeout, got {outcome:?}"
-        );
-    }
-}
+#[path = "tests/headers_deadline_tests.rs"]
+mod headers_deadline_tests;
 
 #[cfg(test)]
-mod select_origin_tests {
-    use super::*;
-
-    /// The correctness boundary for origin fallback: a connect-level failure (ECONNREFUSED on a closed
-    /// loopback port) must classify as a network failure → a select_origin re-race candidate. An HTTP
-    /// status (incl. 401) never reaches `is_network_failure` (it's an `Ok(Response)`, not an `Err`), so
-    /// fallback never triggers on a reachable server. Bind+drop to claim a free port, then connect to it.
-    #[tokio::test]
-    async fn is_network_failure_classifies_a_connect_failure_as_switchable() {
-        let addr = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        // listener dropped here — port is closed → ECONNREFUSED at connect
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(2))
-            .build()
-            .unwrap();
-        let err = client
-            .get(format!("http://{addr}/api/v1/health"))
-            .send()
-            .await
-            .expect_err("connecting to a closed port must error");
-        assert!(
-            is_network_failure(&err),
-            "a connect failure must be a network failure: {err}"
-        );
-        // Sanity: the closed-port case is a CONNECT failure specifically (the boundary is is_connect || is_timeout).
-        assert!(
-            err.is_connect(),
-            "expected is_connect for ECONNREFUSED: {err}"
-        );
-    }
-}
+#[path = "tests/select_origin_tests.rs"]
+mod select_origin_tests;
 
 // --- shell dynamic-update: init_* + window lifecycle ---------------------------------------
 

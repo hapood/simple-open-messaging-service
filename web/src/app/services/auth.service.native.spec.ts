@@ -195,7 +195,10 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         {
           provide: UserService,
           useValue: {
-            clearSession: jasmine.createSpy('clearSession'),
+            clearSession: jasmine
+              .createSpy('clearSession')
+              .and.resolveTo(undefined),
+            prepareFreshCache: jasmine.createSpy('prepareFreshCache'),
             restoreWebdb: jasmine
               .createSpy('restoreWebdb')
               .and.resolveTo(undefined),

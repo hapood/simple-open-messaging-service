@@ -1,10 +1,11 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
+const CACHE_SCHEMA_VERSION: i64 = 1;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -15,14 +16,106 @@ fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(DB_FILENAME))
 }
 
-fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
-    let conn = Connection::open(db_path(app)?).map_err(|e| format!("open native db: {e}"))?;
+fn configure(conn: &Connection) -> Result<(), String> {
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| format!("configure native db: {e}"))?;
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+        .map_err(|e| format!("configure native db: {e}"))
+}
+
+/// Device preferences must be available before authentication. This is the only ordinary open path
+/// allowed to create the SQLite file, and it creates only the device-scoped preference table.
+fn open_preferences(app: &tauri::AppHandle) -> Result<Connection, String> {
+    let conn = Connection::open(db_path(app)?).map_err(|e| format!("open preference db: {e}"))?;
+    configure(&conn)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS client_preferences (
+           scope TEXT NOT NULL,
+           key TEXT NOT NULL,
+           value_json TEXT NOT NULL,
+           updated_at INTEGER NOT NULL,
+           PRIMARY KEY (scope, key)
+         );",
+    )
+    .map_err(|e| format!("initialize preference db: {e}"))?;
+    Ok(conn)
+}
+
+/// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
+/// database file and never repairs missing tables during a read/write command.
+fn open_cache(app: &tauri::AppHandle) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(
+        db_path(app)?,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("open existing native cache: {e}"))?;
+    configure(&conn)?;
+    validate_cache_schema(&conn)?;
+    Ok(conn)
+}
+
+// Account-cache commands use the strict existing-schema path. Kept as a short local alias so every
+// command below cannot accidentally regain rusqlite's create-on-open behavior.
+fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
+    open_cache(app)
+}
+
+fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
+    let version: i64 = conn
+        .query_row(
+            "SELECT CAST(value_json AS INTEGER) FROM client_preferences
+             WHERE scope='cache' AND key='schemaVersion'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("read native cache schema version: {e}"))?;
+    if version != CACHE_SCHEMA_VERSION {
+        return Err(format!(
+            "native cache schema version mismatch: expected {CACHE_SCHEMA_VERSION}, got {version}"
+        ));
+    }
+    for object in [
+        "threads",
+        "profiles",
+        "sync_state",
+        "notification_global_state",
+        "notification_thread_state",
+        "avatars",
+        "messages",
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [object],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("validate native cache table {object}: {e}"))?;
+        if !exists {
+            return Err(format!("native cache schema missing table: {object}"));
+        }
+    }
+    for index in [
+        "messages_user_thread_seq",
+        "messages_section_left",
+        "messages_section_right",
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                [index],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("validate native cache index {index}: {e}"))?;
+        if !exists {
+            return Err(format!("native cache schema missing index: {index}"));
+        }
+    }
+    Ok(())
+}
+
+fn create_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS threads (
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,
@@ -41,13 +134,6 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
           key TEXT NOT NULL,
           value_json TEXT NOT NULL,
           PRIMARY KEY (user_id, key)
-        );
-        CREATE TABLE IF NOT EXISTS client_preferences (
-          scope TEXT NOT NULL,
-          key TEXT NOT NULL,
-          value_json TEXT NOT NULL,
-          updated_at INTEGER NOT NULL,
-          PRIMARY KEY (scope, key)
         );
         CREATE TABLE IF NOT EXISTS notification_global_state (
           account_id INTEGER PRIMARY KEY,
@@ -77,14 +163,124 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
           seq INTEGER NOT NULL,
           created_at INTEGER NOT NULL,
           payload_json TEXT NOT NULL,
+          section_left INTEGER,
+          section_right INTEGER,
           PRIMARY KEY (user_id, thread_id, seq)
         );
         CREATE INDEX IF NOT EXISTS messages_user_thread_seq
           ON messages(user_id, thread_id, seq);
         ",
     )
-    .map_err(|e| format!("migrate native db: {e}"))?;
-    Ok(conn)
+    .map_err(|e| format!("initialize native cache: {e}"))?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS messages_section_left
+           ON messages(user_id, thread_id, seq) WHERE section_left = 1;
+         CREATE INDEX IF NOT EXISTS messages_section_right
+           ON messages(user_id, thread_id, seq) WHERE section_right = 1;",
+    )
+    .map_err(|e| format!("initialize native cache indexes: {e}"))?;
+    conn.execute(
+        "INSERT INTO client_preferences(scope,key,value_json,updated_at)
+         VALUES('cache','schemaVersion',?1,?2)
+         ON CONFLICT(scope,key) DO UPDATE SET
+           value_json=excluded.value_json, updated_at=excluded.updated_at",
+        params![CACHE_SCHEMA_VERSION.to_string(), chrono_millis()],
+    )
+    .map_err(|e| format!("set native cache schema version: {e}"))?;
+    Ok(())
+}
+
+fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS threads;
+         DROP TABLE IF EXISTS profiles;
+         DROP TABLE IF EXISTS sync_state;
+         DROP TABLE IF EXISTS notification_global_state;
+         DROP TABLE IF EXISTS notification_thread_state;
+         DROP TABLE IF EXISTS avatars;
+         DROP TABLE IF EXISTS messages;
+         DELETE FROM client_preferences WHERE scope='cache' AND key='schemaVersion';",
+    )
+    .map_err(|e| format!("drop native cache: {e}"))
+}
+
+/// Explicit fresh-login initialization. Device preferences survive; all rebuildable account cache tables
+/// are dropped and recreated as one schema operation.
+#[tauri::command]
+pub(crate) async fn native_db_recreate_cache(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open_preferences(&app)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(|e| format!("begin native cache recreation: {e}"))?;
+        drop_cache_schema(&tx)?;
+        create_cache_schema(&tx)?;
+        tx.commit()
+            .map_err(|e| format!("commit native cache recreation: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join native cache initialization: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_validate_cache(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_cache(&app).map(drop))
+        .await
+        .map_err(|e| format!("join native cache validation: {e}"))?
+}
+
+/// Rebuild only chat messages and their derived coverage state. SQLite DDL runs in one exclusive
+/// transaction, so existing statements finish first and new database writers cannot interleave.
+#[tauri::command]
+pub(crate) async fn native_db_recreate_messages(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open_cache(&app)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(|e| format!("begin message cache recreation: {e}"))?;
+        tx.execute_batch(
+            "DROP TABLE messages;
+             DELETE FROM sync_state WHERE key LIKE 'messageCoverage:%';
+             CREATE TABLE messages (
+               user_id INTEGER NOT NULL,
+               thread_id INTEGER NOT NULL,
+               seq INTEGER NOT NULL,
+               created_at INTEGER NOT NULL,
+               payload_json TEXT NOT NULL,
+               section_left INTEGER,
+               section_right INTEGER,
+               PRIMARY KEY (user_id, thread_id, seq)
+             );
+             CREATE INDEX messages_user_thread_seq ON messages(user_id, thread_id, seq);
+             CREATE INDEX messages_section_left
+               ON messages(user_id, thread_id, seq) WHERE section_left = 1;
+             CREATE INDEX messages_section_right
+               ON messages(user_id, thread_id, seq) WHERE section_right = 1;",
+        )
+        .map_err(|e| format!("recreate message cache: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("commit message cache recreation: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join message cache recreation: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_count_messages(
+    app: tauri::AppHandle,
+    user_id: i64,
+) -> Result<i64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        open_cache(&app)?
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE user_id = ?1",
+                [user_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("count cached messages: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join cached message count: {e}"))?
 }
 
 #[tauri::command]
@@ -94,7 +290,7 @@ pub(crate) async fn native_db_get_preference(
     key: String,
 ) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let value = open(&app)?
+        let value = open_preferences(&app)?
             .query_row(
                 "SELECT value_json FROM client_preferences WHERE scope = ?1 AND key = ?2",
                 params![scope, key],
@@ -116,7 +312,7 @@ pub(crate) async fn native_db_put_preference(
     value: Value,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        open(&app)?
+        open_preferences(&app)?
             .execute(
                 "INSERT INTO client_preferences(scope, key, value_json, updated_at)
                  VALUES(?1, ?2, ?3, ?4)
@@ -139,7 +335,7 @@ pub(crate) async fn native_db_delete_preference(
     key: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        open(&app)?
+        open_preferences(&app)?
             .execute(
                 "DELETE FROM client_preferences WHERE scope = ?1 AND key = ?2",
                 params![scope, key],
@@ -540,11 +736,18 @@ pub(crate) async fn native_db_put_messages(
     app: tauri::AppHandle,
     user_id: i64,
     messages: Vec<Value>,
-) -> Result<(), String> {
+    confirmed_section: Option<MessageSection>,
+    known_newest_seq: Option<i64>,
+    coverage_thread_id: Option<i64>,
+) -> Result<Option<MessageCoverageState>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open(&app)?;
+        let message_thread_id = messages
+            .first()
+            .and_then(|message| message.get("threadId"))
+            .and_then(Value::as_i64);
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin message write: {e}"))?;
         for message in messages {
             let thread_id = message
@@ -569,11 +772,424 @@ pub(crate) async fn native_db_put_messages(
             )
             .map_err(|e| format!("put message: {e}"))?;
         }
+        let merged = confirmed_section
+            .map(|section| merge_message_section(&tx, user_id, section))
+            .transpose()?;
+        let thread_id = confirmed_section
+            .map(|section| section.thread_id)
+            .or(coverage_thread_id)
+            .or(message_thread_id);
+        let coverage = thread_id
+            .map(|thread_id| {
+                update_message_coverage(&tx, user_id, thread_id, known_newest_seq, merged)
+            })
+            .transpose()?
+            .flatten();
         tx.commit()
-            .map_err(|e| format!("commit message write: {e}"))
+            .map_err(|e| format!("commit message write: {e}"))?;
+        Ok(coverage)
     })
     .await
     .map_err(|e| format!("join message write: {e}"))?
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MessageSection {
+    thread_id: i64,
+    left: i64,
+    right: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MessageCoverageState {
+    thread_id: i64,
+    known_newest_seq: i64,
+    #[serde(default)]
+    covered_tail: Option<CoveredInterval>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CoveredInterval {
+    left: i64,
+    right: i64,
+}
+
+fn merge_message_section(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    section: MessageSection,
+) -> Result<MessageSection, String> {
+    let mut left = section.left.min(section.right);
+    let mut right = section.left.max(section.right);
+    let covered_tail = tx
+        .query_row(
+            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
+            params![user_id, message_coverage_key(section.thread_id)],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("get message coverage for section merge: {e}"))?
+        .map(|json| serde_json::from_str::<MessageCoverageState>(&json))
+        .transpose()
+        .map_err(|e| format!("parse message coverage for section merge: {e}"))?
+        .and_then(|state| state.covered_tail);
+    if let Some(tail) = covered_tail {
+        if left >= tail.left && right <= tail.right {
+            return Ok(MessageSection {
+                thread_id: section.thread_id,
+                left: tail.left,
+                right: tail.right,
+            });
+        }
+        if left > tail.right {
+            if left == tail.right.saturating_add(1) {
+                left = tail.left;
+            }
+            // coveredTail is the right-most persisted section. A disjoint range to its right cannot
+            // meet another old section, while an adjacent range joins it directly.
+        } else if right >= tail.left.saturating_sub(1) {
+            // The incoming range reaches the tail from its left or starts inside it. Its right edge
+            // is known without a lookup; only an incoming left edge outside the tail can connect
+            // farther left.
+            if left < tail.left {
+                left = resolve_merged_left(tx, user_id, section.thread_id, left)?;
+            } else {
+                left = tail.left;
+            }
+            right = right.max(tail.right);
+        } else {
+            left = resolve_merged_left(tx, user_id, section.thread_id, left)?;
+            right = resolve_merged_right(tx, user_id, section.thread_id, right)?;
+        }
+    } else {
+        left = resolve_merged_left(tx, user_id, section.thread_id, left)?;
+        right = resolve_merged_right(tx, user_id, section.thread_id, right)?;
+    }
+    tx.execute(
+        "UPDATE messages SET section_left=NULL, section_right=NULL
+         WHERE user_id=?1 AND thread_id=?2 AND seq BETWEEN ?3 AND ?4
+           AND (section_left=1 OR section_right=1)",
+        params![user_id, section.thread_id, left, right],
+    )
+    .map_err(|e| format!("clear merged message edges: {e}"))?;
+    let left_updated = tx
+        .execute(
+            "UPDATE messages SET section_left=1
+         WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
+            params![user_id, section.thread_id, left],
+        )
+        .map_err(|e| format!("set message left edge: {e}"))?;
+    if left_updated != 1 {
+        return Err("set message left edge affected no row".to_string());
+    }
+    let right_updated = tx
+        .execute(
+            "UPDATE messages SET section_right=1
+         WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
+            params![user_id, section.thread_id, right],
+        )
+        .map_err(|e| format!("set message right edge: {e}"))?;
+    if right_updated != 1 {
+        return Err("set message right edge affected no row".to_string());
+    }
+    Ok(MessageSection {
+        thread_id: section.thread_id,
+        left,
+        right,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct MessageEdge {
+    seq: i64,
+    is_left: bool,
+    is_right: bool,
+}
+
+fn nearest_message_edge(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+    before: bool,
+) -> Result<Option<MessageEdge>, String> {
+    let comparison = if before { "<=" } else { ">=" };
+    let ordering = if before { "DESC" } else { "ASC" };
+    let nearest = |column: &str| -> Result<Option<i64>, String> {
+        tx.query_row(
+            &format!(
+                "SELECT seq FROM messages
+                 WHERE user_id=?1 AND thread_id=?2 AND {column}=1 AND seq {comparison} ?3
+                 ORDER BY seq {ordering} LIMIT 1"
+            ),
+            params![user_id, thread_id, seq],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("find nearest message {column} edge: {e}"))
+    };
+    let left = nearest("section_left")?;
+    let right = nearest("section_right")?;
+    let edge = match (left, right) {
+        (None, None) => None,
+        (Some(seq), None) => Some(MessageEdge {
+            seq,
+            is_left: true,
+            is_right: false,
+        }),
+        (None, Some(seq)) => Some(MessageEdge {
+            seq,
+            is_left: false,
+            is_right: true,
+        }),
+        (Some(left), Some(right)) if left == right => Some(MessageEdge {
+            seq: left,
+            is_left: true,
+            is_right: true,
+        }),
+        (Some(left), Some(right)) => {
+            let pick_left = if before { left > right } else { left < right };
+            Some(MessageEdge {
+                seq: if pick_left { left } else { right },
+                is_left: pick_left,
+                is_right: !pick_left,
+            })
+        }
+    };
+    Ok(edge)
+}
+
+fn resolve_merged_left(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+) -> Result<i64, String> {
+    let Some(edge) = nearest_message_edge(tx, user_id, thread_id, seq, true)? else {
+        return Ok(seq);
+    };
+    if edge.is_left && !edge.is_right {
+        return Ok(edge.seq);
+    }
+    if edge.seq < seq.saturating_sub(1) || !edge.is_right {
+        return Ok(seq);
+    }
+    let paired_left = tx
+        .query_row(
+            "SELECT seq FROM messages
+             WHERE user_id=?1 AND thread_id=?2 AND section_left=1 AND seq<=?3
+             ORDER BY seq DESC LIMIT 1",
+            params![user_id, thread_id, edge.seq],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| format!("find paired message left edge: {e}"))?
+        .ok_or_else(|| "message section right edge has no left".to_string())?;
+    let matching_right = tx
+        .query_row(
+            "SELECT seq FROM messages
+             WHERE user_id=?1 AND thread_id=?2 AND section_right=1 AND seq>=?3
+             ORDER BY seq ASC LIMIT 1",
+            params![user_id, thread_id, paired_left],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| format!("validate paired message right edge: {e}"))?;
+    if matching_right != Some(edge.seq) {
+        return Err("message section edges are not paired".to_string());
+    }
+    Ok(paired_left)
+}
+
+fn resolve_merged_right(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+) -> Result<i64, String> {
+    let Some(edge) = nearest_message_edge(tx, user_id, thread_id, seq, false)? else {
+        return Ok(seq);
+    };
+    if edge.is_right {
+        return Ok(edge.seq);
+    }
+    if edge.seq > seq.saturating_add(1) || !edge.is_left {
+        return Ok(seq);
+    }
+    let paired_right = tx
+        .query_row(
+            "SELECT seq FROM messages
+             WHERE user_id=?1 AND thread_id=?2 AND section_right=1 AND seq>=?3
+             ORDER BY seq ASC LIMIT 1",
+            params![user_id, thread_id, edge.seq],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| format!("find paired message right edge: {e}"))?
+        .ok_or_else(|| "message section left edge has no right".to_string())?;
+    let matching_left = tx
+        .query_row(
+            "SELECT seq FROM messages
+             WHERE user_id=?1 AND thread_id=?2 AND section_left=1 AND seq<=?3
+             ORDER BY seq DESC LIMIT 1",
+            params![user_id, thread_id, paired_right],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| format!("validate paired message left edge: {e}"))?;
+    if matching_left != Some(edge.seq) {
+        return Err("message section edges are not paired".to_string());
+    }
+    Ok(paired_right)
+}
+
+fn message_coverage_key(thread_id: i64) -> String {
+    format!("messageCoverage:{thread_id}")
+}
+
+fn update_message_coverage(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    thread_id: i64,
+    known_newest_seq: Option<i64>,
+    merged: Option<MessageSection>,
+) -> Result<Option<MessageCoverageState>, String> {
+    let key = message_coverage_key(thread_id);
+    let old = tx
+        .query_row(
+            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
+            params![user_id, key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("get message coverage: {e}"))?
+        .map(|json| serde_json::from_str::<MessageCoverageState>(&json))
+        .transpose()
+        .map_err(|e| format!("parse message coverage: {e}"))?;
+    let known_newest_seq = known_newest_seq
+        .into_iter()
+        .chain(old.map(|s| s.known_newest_seq))
+        .chain(merged.map(|s| s.right))
+        .max();
+    let Some(known_newest_seq) = known_newest_seq else {
+        return Ok(None);
+    };
+    let incoming = merged.map(|section| CoveredInterval {
+        left: section.left,
+        right: section.right,
+    });
+    let state = MessageCoverageState {
+        thread_id,
+        known_newest_seq,
+        covered_tail: merge_covered_tail(old.and_then(|s| s.covered_tail), incoming),
+    };
+    tx.execute(
+        "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
+         ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+        params![
+            user_id,
+            key,
+            serde_json::to_string(&state)
+                .map_err(|e| format!("serialize message coverage: {e}"))?
+        ],
+    )
+    .map_err(|e| format!("put message coverage: {e}"))?;
+    Ok(Some(state))
+}
+
+fn merge_covered_tail(
+    current: Option<CoveredInterval>,
+    incoming: Option<CoveredInterval>,
+) -> Option<CoveredInterval> {
+    let Some(incoming) = incoming else {
+        return current;
+    };
+    let next = CoveredInterval {
+        left: incoming.left.min(incoming.right),
+        right: incoming.left.max(incoming.right),
+    };
+    let Some(current) = current else {
+        return Some(next);
+    };
+    let tail = CoveredInterval {
+        left: current.left.min(current.right),
+        right: current.left.max(current.right),
+    };
+    if next.right < tail.left.saturating_sub(1) {
+        return Some(tail);
+    }
+    if next.left > tail.right.saturating_add(1) {
+        return Some(next);
+    }
+    Some(CoveredInterval {
+        left: tail.left.min(next.left),
+        right: tail.right.max(next.right),
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_message_coverage(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<Option<MessageCoverageState>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let value = open(&app)?
+            .query_row(
+                "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
+                params![user_id, message_coverage_key(thread_id)],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("get message coverage: {e}"))?;
+        value
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|e| format!("parse message coverage: {e}"))
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|e| format!("join message coverage read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_message_section(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+) -> Result<Option<MessageSection>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        let left = conn
+            .query_row(
+                "SELECT seq FROM messages WHERE user_id=?1 AND thread_id=?2
+                 AND section_left=1 AND seq<=?3 ORDER BY seq DESC LIMIT 1",
+                params![user_id, thread_id, seq],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|e| format!("find message left edge: {e}"))?;
+        let Some(left) = left else { return Ok(None) };
+        let right = conn
+            .query_row(
+                "SELECT seq FROM messages WHERE user_id=?1 AND thread_id=?2
+                 AND section_right=1 AND seq>=?3 ORDER BY seq ASC LIMIT 1",
+                params![user_id, thread_id, left],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("find message right edge: {e}"))?;
+        Ok((seq <= right).then_some(MessageSection {
+            thread_id,
+            left,
+            right,
+        }))
+    })
+    .await
+    .map_err(|e| format!("join message-section read: {e}"))?
 }
 
 #[tauri::command]
@@ -637,13 +1253,22 @@ pub(crate) async fn native_db_delete_messages_by_thread(
     thread_id: i64,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        open(&app)?
-            .execute(
-                "DELETE FROM messages WHERE user_id = ?1 AND thread_id = ?2",
-                params![user_id, thread_id],
-            )
-            .map_err(|e| format!("delete thread messages: {e}"))?;
-        Ok(())
+        let mut conn = open(&app)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("begin delete thread messages: {e}"))?;
+        tx.execute(
+            "DELETE FROM messages WHERE user_id = ?1 AND thread_id = ?2",
+            params![user_id, thread_id],
+        )
+        .map_err(|e| format!("delete thread messages: {e}"))?;
+        tx.execute(
+            "DELETE FROM sync_state WHERE user_id=?1 AND key=?2",
+            params![user_id, message_coverage_key(thread_id)],
+        )
+        .map_err(|e| format!("delete message coverage: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("commit delete thread messages: {e}"))
     })
     .await
     .map_err(|e| format!("join thread-message delete: {e}"))?
@@ -689,3 +1314,7 @@ pub(crate) async fn native_db_clear_all(app: tauri::AppHandle) -> Result<(), Str
     .await
     .map_err(|e| format!("join native db clear: {e}"))?
 }
+
+#[cfg(test)]
+#[path = "tests/native_db_tests.rs"]
+mod tests;

@@ -35,6 +35,7 @@ const LAST_USER_ID_KEY = 'soms.lastUserId';
   providedIn: 'root',
 })
 export class UserService {
+  /** Fatal startup/open failure (missing or unreadable stable cache, excluding a handled version reset). */
   sessionProfile = signal<User | undefined>(undefined);
   /** The authenticated user's id — sourced from the HELLO connect handshake (the session token is OPAQUE,
    *  server-side-lookup only, so HELLO is the client's sole pre-profile-fetch source of its own userId).
@@ -69,24 +70,34 @@ export class UserService {
   private readonly preferences = inject(PreferenceStore);
   /** The user key whose DB is currently open (or null) — tracks {@link establishSession} / {@link clearSession}. */
   private webdbUserKey: string | null = null;
+  /** Set only by a real credential/OTP/QR login. Cold-start restore and reconnect never set it. */
+  private freshCachePending = false;
 
   constructor(private http: HttpClient) {}
+
+  /** Mark the next HELLO-established user partition for drop + clean v1 initialization. */
+  prepareFreshCache(): void {
+    this.freshCachePending = true;
+  }
 
   /** Tear down the in-memory session (logout / account switch). Clears sessionUserId + sessionProfile →
    *  every DB-layer repository's session-end effect (watching sessionUserId) resets its cache; the per-user
    *  IDB is closed + deleted. Also wipes user-scoped client preferences such as recent emoji. */
-  clearSession(): void {
+  async clearSession(): Promise<void> {
     const prev = this.webdbUserKey;
     const previousUserId = this.sessionProfile()?.id;
+    // Keep LAST_USER_ID until the durable cache wipe succeeds. If deletion fails, retaining that key makes
+    // the same partition discoverable on retry/restart instead of orphaning undeleted account data.
+    if (prev != null) await this.webdb.closeAndDelete(prev);
+    await this.clearClientPreferences(previousUserId);
     this.webdbUserKey = null;
+    this.freshCachePending = false;
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
     this._threadRevCursor.set(undefined);
     this.friendReqRev.set(null);
     this.friendReqAckRev.set(null);
     this.profileFetch = undefined;
-    void this.clearClientPreferences(previousUserId);
-    if (prev != null) void this.webdb.closeAndDelete(prev);
   }
 
   /** Establish the session from the HELLO connect handshake — the cold-start / login entry point. Opens
@@ -103,6 +114,11 @@ export class UserService {
     friendReqRev: number | null,
     friendReqAckRev: number,
   ): Promise<void> {
+    if (this.freshCachePending) {
+      this.freshCachePending = false;
+      await this.webdb.recreateForUser(String(userId));
+      this.webdbUserKey = null;
+    }
     if (this.sessionUserId() === userId) {
       // Re-establish on reconnect (same user): the webdb is already open — re-apply the server-state badge
       // pair (the badge re-derives friendReqRev > friendReqAckRev).
@@ -116,7 +132,13 @@ export class UserService {
     this.webdbUserKey = String(userId);
     this.sessionUserId.set(userId);
     this.persistLastUserId(userId); // remember for the next boot's eager IDB paint (pre-HELLO)
-    await this.webdb.openForUser(String(userId)); // webdb open — callers can now read IDB
+    try {
+      await this.webdb.openExistingForUser(String(userId)); // strict read on the normal path
+    } catch {
+      // Every local-cache validation/open failure is rebuildable state. The Webdb epoch prevents this
+      // recreation from publishing handles if logout/account-switch wins while it is in flight.
+      await this.webdb.recreateForUser(String(userId));
+    }
     // Apply HELLO's server-state badge pair. Profile gate runs async — the threadlist needs only the open
     // webdb, not the profile.
     this.applyFriendReqRev(friendReqRev, friendReqAckRev);
@@ -204,7 +226,11 @@ export class UserService {
     // Track the open user so clearSession can close it (a pre-HELLO logout) + establishSession can detect
     // a token-swap (close+reopen when HELLO's userId differs from the optimistic lastUserId).
     this.webdbUserKey = String(userId);
-    await this.webdb.openForUser(String(userId));
+    try {
+      await this.webdb.openExistingForUser(String(userId));
+    } catch {
+      await this.webdb.recreateForUser(String(userId));
+    }
     const cached = (await this.webdb.getMeta('selfProfile')) as
       | User
       | null

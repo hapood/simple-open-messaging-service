@@ -10,7 +10,10 @@ describe('WebdbService native SQLite routing', () => {
     __TAURI_INTERNALS__?: unknown;
     __TAURI__?: {
       core: {
-        invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+        invoke: (
+          cmd: string,
+          args?: Record<string, unknown>,
+        ) => Promise<unknown>;
       };
     };
   };
@@ -54,22 +57,34 @@ describe('WebdbService native SQLite routing', () => {
     await service.replaceThreads([thread]);
     await service.deleteThread(9);
 
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_threads',
-      args: { userId: 42 },
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_put_thread',
-      args: jasmine.objectContaining({ userId: 42, threadId: 9, item: thread }),
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_replace_threads',
-      args: { userId: 42, items: [thread] },
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_delete_thread',
-      args: { userId: 42, threadId: 9 },
-    }));
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_threads',
+        args: { userId: 42 },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_put_thread',
+        args: jasmine.objectContaining({
+          userId: 42,
+          threadId: 9,
+          item: thread,
+        }),
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_replace_threads',
+        args: { userId: 42, items: [thread] },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_delete_thread',
+        args: { userId: 42, threadId: 9 },
+      }),
+    );
   });
 
   it('sends the complete delta and revision through one atomic native command', async () => {
@@ -107,8 +122,9 @@ describe('WebdbService native SQLite routing', () => {
     await service.putMeta('threadRevision', 12);
     expect(await service.getMeta('threadRevision')).toBe(12);
 
-    expect(calls.find((call) => call.cmd === 'native_db_put_profile')?.args)
-      .toEqual(jasmine.objectContaining({ userId: 42, profileRev: 6, profile }));
+    expect(
+      calls.find((call) => call.cmd === 'native_db_put_profile')?.args,
+    ).toEqual(jasmine.objectContaining({ userId: 42, profileRev: 6, profile }));
   });
 
   it('converts avatar blobs at the IPC boundary and reconstructs a Blob on read', async () => {
@@ -119,13 +135,15 @@ describe('WebdbService native SQLite routing', () => {
       lastRender: 10,
     });
     const put = calls.find((call) => call.cmd === 'native_db_put_avatar');
-    expect(put?.args).toEqual(jasmine.objectContaining({
-      userId: 42,
-      identity: 'u8',
-      path: '/a.webp',
-      mime: 'image/webp',
-      data: Array.from(new TextEncoder().encode('avatar')),
-    }));
+    expect(put?.args).toEqual(
+      jasmine.objectContaining({
+        userId: 42,
+        identity: 'u8',
+        path: '/a.webp',
+        mime: 'image/webp',
+        data: Array.from(new TextEncoder().encode('avatar')),
+      }),
+    );
 
     responses.set('native_db_get_avatar', {
       identity: 'u8',
@@ -153,39 +171,111 @@ describe('WebdbService native SQLite routing', () => {
     responses.set('native_db_query_messages', [message]);
     responses.set('native_db_get_message', message);
     responses.set('native_db_newest_messages', [message]);
+    responses.set('native_db_message_section', {
+      threadId: 9,
+      left: 3,
+      right: 8,
+    });
+    responses.set('native_db_message_coverage', {
+      threadId: 9,
+      knownNewestSeq: 8,
+      coveredTail: { left: 3, right: 8 },
+    });
 
-    expect(await service.queryCachedMessages(9, 'desc', 20, 10)).toEqual([message]);
+    expect(await service.queryCachedMessages(9, 'desc', 20, 10)).toEqual([
+      message,
+    ]);
     await service.putMessages([message]);
+    await service.putMessages([message], { threadId: 9, left: 3, right: 8 });
     expect(await service.getMessage(9, 3)).toEqual(message);
+    expect(await service.getMessageSection(9, 5)).toEqual({
+      left: 3,
+      right: 8,
+    });
+    expect(await service.getMessageCoverage(9)).toEqual({
+      threadId: 9,
+      knownNewestSeq: 8,
+      coveredTail: { left: 3, right: 8 },
+    });
     expect(await service.getNewestMessages([9])).toEqual([message]);
     await service.deleteMessagesByThread(9);
 
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_query_messages',
-      args: { userId: 42, threadId: 9, anchor: 10, orderBy: 'desc', take: 20 },
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_put_messages',
-      args: { userId: 42, messages: [message] },
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_get_message',
-      args: { userId: 42, threadId: 9, seq: 3 },
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_newest_messages',
-      args: { userId: 42, threadIds: [9] },
-    }));
-    expect(calls).toContain(jasmine.objectContaining({
-      cmd: 'native_db_delete_messages_by_thread',
-      args: { userId: 42, threadId: 9 },
-    }));
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_query_messages',
+        args: {
+          userId: 42,
+          threadId: 9,
+          anchor: 10,
+          orderBy: 'desc',
+          take: 20,
+        },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_put_messages',
+        args: {
+          userId: 42,
+          messages: [message],
+          confirmedSection: null,
+          knownNewestSeq: null,
+          coverageThreadId: null,
+        },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_put_messages',
+        args: {
+          userId: 42,
+          messages: [message],
+          confirmedSection: { threadId: 9, left: 3, right: 8 },
+          knownNewestSeq: null,
+          coverageThreadId: null,
+        },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_message_section',
+        args: { userId: 42, threadId: 9, seq: 5 },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_get_message',
+        args: { userId: 42, threadId: 9, seq: 3 },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_newest_messages',
+        args: { userId: 42, threadIds: [9] },
+      }),
+    );
+    expect(calls).toContain(
+      jasmine.objectContaining({
+        cmd: 'native_db_delete_messages_by_thread',
+        args: { userId: 42, threadId: 9 },
+      }),
+    );
   });
 
   it('deletes the native user partition on logout cleanup', async () => {
     await service.closeAndDelete('42');
     expect(calls.at(-1)).toEqual({
       cmd: 'native_db_clear_user',
+      args: { userId: 42 },
+    });
+  });
+
+  it('counts cached messages in the active native user partition', async () => {
+    responses.set('native_db_count_messages', 23);
+
+    expect(await service.countCachedMessages()).toBe(23);
+    expect(calls.at(-1)).toEqual({
+      cmd: 'native_db_count_messages',
       args: { userId: 42 },
     });
   });

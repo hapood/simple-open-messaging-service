@@ -1,5 +1,4 @@
-<div class="pg" [class.pg--mobile]="!isDesktop()" [class.pg--desktop]="isDesktop()"
-     [class.pg--native-anchor]="useNativeAnchor">
+<div class="pg" [class.pg--mobile]="!isDesktop()" [class.pg--desktop]="isDesktop()">
   <div class="pg-stage" appKbdOffset>
     <!-- Top header: chat header + top-right theme toggle -->
     <header class="pg-header" #pgHeader>
@@ -7,7 +6,7 @@
         <div class="pg-header-avatar"><app-user-avatar [name]="'Alice'" /></div>
         <div class="pg-header-meta">
           <span class="pg-header-name">Alice</span>
-          <span class="pg-header-sub">Playground · {{ useNativeAnchor ? 'Plan A · browser anchor' : 'Plan B · manual offset' }}</span>
+          <span class="pg-header-sub">Playground · manual anchor</span>
         </div>
       </div>
       <button type="button" class="pg-icon-btn pg-theme-toggle" (click)="cycleTheme()" aria-label="Toggle theme">
@@ -126,7 +125,6 @@
         <circle cx="12" cy="12" r="3" />
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
       </svg>
-      <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
     <!-- Input bar: flex child of the stage column. Lifts above the soft keyboard via the same --kbd-lift
@@ -223,7 +221,7 @@
       </section>
       <section>
         <h4>Push signal delay</h4>
-        <p class="pg-hint">Delay before the WS signal delivers the confirm (onMessageSignal).</p>
+        <p class="pg-hint">Delay before the source notification makes the confirm demand-ready.</p>
         <div class="pg-btns">
           <button (click)="setPushSignalDelay(0)" [class.active]="pushSignalDelay() === 0">0</button>
           <button (click)="setPushSignalDelay(500)" [class.active]="pushSignalDelay() === 500">500ms</button>
@@ -269,13 +267,6 @@
 
     <details class="pg-group">
       <summary>Engine &amp; diagnostics</summary>
-      <section>
-        <h4>Run mode</h4>
-        <div class="pg-btns">
-          <button (click)="debugMode.set(false)" [class.active]="!debugMode()">Performance</button>
-          <button (click)="debugMode.set(true)" [class.active]="debugMode()">Debug</button>
-        </div>
-      </section>
       <section>
         <h4>Mount checkpoint</h4>
         <div class="pg-btns">

@@ -8,7 +8,9 @@
   @include auth-card;
   // Center the QR stage / title / notices horizontally — the one card-level difference from the
   // password / OTP form cards, which left-align their form fields.
-  align-items: center;
+  & {
+    align-items: center;
+  }
 }
 
 .qr-frame {

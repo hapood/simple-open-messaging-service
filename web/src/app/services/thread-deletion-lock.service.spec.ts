@@ -1,7 +1,14 @@
+import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 describe('ThreadDeletionLockService', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection()],
+    });
+  });
+
   it('locks once and emits release only after the matching lock is removed', () => {
     const service = TestBed.inject(ThreadDeletionLockService);
     const released: number[] = [];

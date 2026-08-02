@@ -14,6 +14,12 @@ function flush(ms = 0): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100 && !condition(); attempt++)
+    await flush(1);
+  expect(condition()).toBeTrue();
+}
+
 /** A minimal Message row (seq is the IDB key second component + the cursor the kernel uses). */
 function msg(threadId: number, seq: number, content = `m${seq}`): Message {
   return {
@@ -32,23 +38,26 @@ describe('MessageRepository', () => {
   let repo: MessageRepository;
   let webdb: WebdbService;
   let eventSubject: Subject<{ event: string; status: number; data?: unknown }>;
+  let reconnect$: Subject<void>;
   let queryMessageLogSpy: jasmine.Spy;
   /** The sessionProfile signal the repo's session-end effect watches (logout = set undefined). */
   let sessionProfile: ReturnType<typeof signal<{ id: number } | undefined>>;
 
   beforeEach(async () => {
     eventSubject = new Subject();
+    reconnect$ = new Subject();
     sessionProfile = signal<{ id: number } | undefined>({ id: 1 });
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         MessageRepository,
         WebdbService,
-        { provide: WebsocketService, useValue: { eventSubject } },
+        { provide: WebsocketService, useValue: { eventSubject, reconnect$ } },
         {
           provide: MsgService,
           useValue: {
-            queryMessageLog: (queryMessageLogSpy = jasmine.createSpy('queryMessageLog')),
+            queryMessageLog: (queryMessageLogSpy =
+              jasmine.createSpy('queryMessageLog')),
           },
         },
         { provide: UserService, useValue: { sessionProfile } },
@@ -67,11 +76,37 @@ describe('MessageRepository', () => {
     }
   });
 
+  it('shares the newest truncate ceiling per thread and clears it before reconnect wake-up', () => {
+    const observed: Array<number | undefined> = [];
+    repo.retainNewestSeq(42, 10);
+    repo.retainNewestSeq(42, 8);
+    repo.retainNewestSeq(7, 30);
+    repo.reconnectSignal$.subscribe(() => {
+      observed.push(repo.getNewerTruncateSeq(42));
+    });
+
+    expect(repo.getNewerTruncateSeq(42)).toBe(10);
+    expect(repo.getNewerTruncateSeq(7)).toBe(30);
+    reconnect$.next();
+
+    expect(observed).toEqual([undefined]);
+    expect(repo.getNewerTruncateSeq(7)).toBeUndefined();
+  });
+
   /** Count messages cached for a thread in IDB. */
   async function dbCount(threadId: number): Promise<number> {
-    const db = await webdb.db();
+    const db = await webdb.messageDb();
     let n = 0;
-    let cursor = await db.transaction('messages').store.openCursor(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity], false, false));
+    let cursor = await db
+      .transaction('messages')
+      .store.openCursor(
+        IDBKeyRange.bound(
+          [threadId, -Infinity],
+          [threadId, Infinity],
+          false,
+          false,
+        ),
+      );
     while (cursor) {
       n++;
       cursor = await cursor.continue();
@@ -79,17 +114,385 @@ describe('MessageRepository', () => {
     return n;
   }
 
+  it('persists sparse complete-section edges and restores them after reopening IDB', async () => {
+    await webdb.putMessages([msg(42, 5), msg(42, 10)], {
+      threadId: 42,
+      left: 5,
+      right: 10,
+    });
+
+    expect(await webdb.getMessageSection(42, 7)).toEqual({
+      left: 5,
+      right: 10,
+    });
+    await webdb.close();
+    await webdb.openForUser('1');
+    expect(await webdb.getMessageSection(42, 7)).toEqual({
+      left: 5,
+      right: 10,
+    });
+
+    const db = await webdb.messageDb();
+    const left = await db.get('messages', [42, 5]);
+    const right = await db.get('messages', [42, 10]);
+    expect(left?.sectionLeft).toBe(1);
+    expect(left?.sectionRight).toBeUndefined();
+    expect(right?.sectionRight).toBe(1);
+    expect(right?.sectionLeft).toBeUndefined();
+  });
+
+  it('atomically merges bridged sections and removes their internal edges', async () => {
+    await webdb.putMessages([msg(42, 10), msg(42, 20)], {
+      threadId: 42,
+      left: 10,
+      right: 20,
+    });
+    await webdb.putMessages([msg(42, 30), msg(42, 40)], {
+      threadId: 42,
+      left: 30,
+      right: 40,
+    });
+    await webdb.putMessages([], { threadId: 42, left: 20, right: 30 });
+
+    expect(await webdb.getMessageSection(42, 25)).toEqual({
+      left: 10,
+      right: 40,
+    });
+    const db = await webdb.messageDb();
+    expect((await db.get('messages', [42, 20]))?.sectionRight).toBeUndefined();
+    expect((await db.get('messages', [42, 30]))?.sectionLeft).toBeUndefined();
+  });
+
+  it('updates only the merged section boundaries and leaves outside sections untouched', async () => {
+    for (const [left, right] of [
+      [1, 5],
+      [10, 20],
+      [30, 40],
+      [50, 60],
+    ]) {
+      await webdb.putMessages([msg(42, left), msg(42, right)], {
+        threadId: 42,
+        left,
+        right,
+      });
+    }
+    await webdb.putMessages(
+      [msg(42, 18, 'incoming-left'), msg(42, 32, 'incoming-right')],
+      { threadId: 42, left: 18, right: 32 },
+    );
+
+    expect(await webdb.getMessageSection(42, 25)).toEqual({
+      left: 10,
+      right: 40,
+    });
+    const db = await webdb.messageDb();
+    expect((await db.get('messages', [42, 1]))?.sectionLeft).toBe(1);
+    expect((await db.get('messages', [42, 5]))?.sectionRight).toBe(1);
+    expect((await db.get('messages', [42, 50]))?.sectionLeft).toBe(1);
+    expect((await db.get('messages', [42, 60]))?.sectionRight).toBe(1);
+    expect((await db.get('messages', [42, 1]))?.content).toBe('m1');
+    expect((await db.get('messages', [42, 60]))?.content).toBe('m60');
+  });
+
+  it('inserts missing HTTP rows but refreshes only existing final boundary rows', async () => {
+    await webdb.putMessages(
+      [
+        msg(42, 10, 'old-left'),
+        msg(42, 15, 'old-middle'),
+        msg(42, 20, 'old-right'),
+      ],
+      { threadId: 42, left: 10, right: 20 },
+    );
+
+    await webdb.putMessages(
+      [
+        msg(42, 10, 'new-left'),
+        msg(42, 12, 'new-insert'),
+        msg(42, 15, 'new-middle'),
+        msg(42, 20, 'new-right'),
+      ],
+      { threadId: 42, left: 10, right: 20 },
+    );
+
+    const db = await webdb.messageDb();
+    expect((await db.get('messages', [42, 10]))?.content).toBe('new-left');
+    expect((await db.get('messages', [42, 12]))?.content).toBe('new-insert');
+    expect((await db.get('messages', [42, 15]))?.content).toBe('old-middle');
+    expect((await db.get('messages', [42, 20]))?.content).toBe('new-right');
+  });
+
+  it('joins a left-adjacent coveredTail by resolving only the incoming left edge', async () => {
+    await webdb.putMessages([msg(42, 10), msg(42, 20)], {
+      threadId: 42,
+      left: 10,
+      right: 20,
+    });
+    await webdb.putMessages([msg(42, 30), msg(42, 40)], {
+      threadId: 42,
+      left: 30,
+      right: 40,
+    });
+
+    await webdb.putMessages([msg(42, 21), msg(42, 29)], {
+      threadId: 42,
+      left: 21,
+      right: 29,
+    });
+
+    expect(await webdb.getMessageSection(42, 25)).toEqual({
+      left: 10,
+      right: 40,
+    });
+    expect((await webdb.getMessageCoverage(42))?.coveredTail).toEqual({
+      left: 10,
+      right: 40,
+    });
+  });
+
+  it('resolves both endpoint neighbors for a range disjoint left of coveredTail', async () => {
+    for (const [left, right] of [
+      [10, 20],
+      [30, 40],
+      [50, 60],
+    ]) {
+      await webdb.putMessages([msg(42, left), msg(42, right)], {
+        threadId: 42,
+        left,
+        right,
+      });
+    }
+
+    await webdb.putMessages([msg(42, 18), msg(42, 32)], {
+      threadId: 42,
+      left: 18,
+      right: 32,
+    });
+
+    expect(await webdb.getMessageSection(42, 25)).toEqual({
+      left: 10,
+      right: 40,
+    });
+    expect((await webdb.getMessageCoverage(42))?.coveredTail).toEqual({
+      left: 50,
+      right: 60,
+    });
+  });
+
+  it('extends a right-adjacent coveredTail without scanning other sections', async () => {
+    await webdb.putMessages([msg(42, 50), msg(42, 60)], {
+      threadId: 42,
+      left: 50,
+      right: 60,
+    });
+    await webdb.putMessages([msg(42, 61), msg(42, 70)], {
+      threadId: 42,
+      left: 61,
+      right: 70,
+    });
+
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 70,
+      coveredTail: { left: 50, right: 70 },
+    });
+    expect(await webdb.getMessageSection(42, 65)).toEqual({
+      left: 50,
+      right: 70,
+    });
+  });
+
+  it('keeps a disjoint old tail section when a farther-right range becomes coveredTail', async () => {
+    await webdb.putMessages([msg(42, 50), msg(42, 60)], {
+      threadId: 42,
+      left: 50,
+      right: 60,
+    });
+    await webdb.putMessages([msg(42, 70), msg(42, 80)], {
+      threadId: 42,
+      left: 70,
+      right: 80,
+    });
+
+    expect(await webdb.getMessageSection(42, 55)).toEqual({
+      left: 50,
+      right: 60,
+    });
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 80,
+      coveredTail: { left: 70, right: 80 },
+    });
+  });
+
+  it('stores a one-message complete section as both sparse edges', async () => {
+    await webdb.putMessages([msg(42, 7)], { threadId: 42, left: 7, right: 7 });
+    const row = await (await webdb.messageDb()).get('messages', [42, 7]);
+    expect(row?.sectionLeft).toBe(1);
+    expect(row?.sectionRight).toBe(1);
+    expect(await webdb.getMessageSection(42, 7)).toEqual({ left: 7, right: 7 });
+  });
+
+  it('persists the complete-tail summary in the same message transaction', async () => {
+    await webdb.putMessages(
+      [msg(42, 5), msg(42, 10)],
+      { threadId: 42, left: 5, right: 10 },
+      { threadId: 42, seq: 10 },
+    );
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 10,
+      coveredTail: { left: 5, right: 10 },
+    });
+    await webdb.close();
+    await webdb.openForUser('1');
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 10,
+      coveredTail: { left: 5, right: 10 },
+    });
+  });
+
+  it('keeps coveredTail while known newest advances, then bridges it atomically', async () => {
+    await webdb.putMessages(
+      [msg(42, 10), msg(42, 20)],
+      { threadId: 42, left: 10, right: 20 },
+      { threadId: 42, seq: 20 },
+    );
+    await webdb.putMessages([], undefined, { threadId: 42, seq: 25 });
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 25,
+      coveredTail: { left: 10, right: 20 },
+    });
+
+    await webdb.putMessages(
+      [msg(42, 25)],
+      { threadId: 42, left: 20, right: 25 },
+      { threadId: 42, seq: 25 },
+    );
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 25,
+      coveredTail: { left: 10, right: 25 },
+    });
+    expect(await webdb.getMessageSection(42, 22)).toEqual({
+      left: 10,
+      right: 25,
+    });
+  });
+
+  it('keeps a newer disjoint tail and replaces it only with a farther-right section', async () => {
+    await webdb.putMessages(
+      [msg(42, 20), msg(42, 30)],
+      { threadId: 42, left: 20, right: 30 },
+      { threadId: 42, seq: 40 },
+    );
+    await webdb.putMessages([msg(42, 1), msg(42, 10)], {
+      threadId: 42,
+      left: 1,
+      right: 10,
+    });
+    expect((await webdb.getMessageCoverage(42))?.coveredTail).toEqual({
+      left: 20,
+      right: 30,
+    });
+
+    await webdb.putMessages([msg(42, 35), msg(42, 40)], {
+      threadId: 42,
+      left: 35,
+      right: 40,
+    });
+    expect(await webdb.getMessageCoverage(42)).toEqual({
+      threadId: 42,
+      knownNewestSeq: 40,
+      coveredTail: { left: 35, right: 40 },
+    });
+  });
+
+  it('rolls back the coverage summary when the section transaction fails', async () => {
+    await expectAsync(
+      webdb.putMessages(
+        [],
+        { threadId: 42, left: 5, right: 10 },
+        { threadId: 42, seq: 10 },
+      ),
+    ).toBeRejected();
+    expect(await webdb.getMessageCoverage(42)).toBeUndefined();
+  });
+
+  it('uses mounted chatbox tail coverage without a section-index query and releases it on close', async () => {
+    await webdb.putMessages(
+      [msg(42, 5), msg(42, 10)],
+      { threadId: 42, left: 5, right: 10 },
+      { threadId: 42, seq: 10 },
+    );
+    const sectionSpy = spyOn(webdb, 'getMessageSection').and.callThrough();
+    repo.retainCoverage(42, 10);
+    await flush();
+    expect(await (repo as any).isCompleteRange(42, 6, 9)).toBeTrue();
+    expect(sectionSpy).not.toHaveBeenCalled();
+
+    repo.releaseCoverage(42);
+    expect(await (repo as any).isCompleteRange(42, 6, 9)).toBeTrue();
+    expect(sectionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates message/section transaction failures instead of reporting a network edge', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, 7)],
+        hasMore: false,
+      }),
+    );
+    spyOn(webdb, 'putMessages').and.rejectWith(
+      new Error('section write failed'),
+    );
+
+    await expectAsync(
+      repo.queryMessages(42, { skip: 0, take: 10, orderBy: 'desc' }),
+    ).toBeRejectedWithError('section write failed');
+  });
+
+  it('rejects an empty success without a truncate or directional endpoint', async () => {
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({
+        code: 0,
+        message: 'ok',
+        data: [],
+        hasMore: true,
+      }),
+    );
+    const putSpy = spyOn(webdb, 'putMessages').and.callThrough();
+
+    await expectAsync(
+      repo.queryMessages(42, {
+        skip: 1,
+        take: 10,
+        lastSeq: 7,
+        orderBy: 'desc',
+      }),
+    ).toBeRejectedWithError('empty message response has no confirmed endpoint');
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
   it('cold init treats an empty IDB result as ready and revalidates in the background', async () => {
     const refresh$ = new Subject<StandardResponse<Message[]>>();
     queryMessageLogSpy.and.returnValue(refresh$);
     const signals: { threadId: number; seq: number }[] = [];
     repo.liveSignal$.subscribe((s) => signals.push(s));
 
-    const res = await repo.queryMessages(42, {
-      skip: 0,
-      take: 3,
-      orderBy: 'desc',
-    }, undefined, true);
+    const res = await repo.queryMessages(
+      42,
+      {
+        skip: 0,
+        take: 3,
+        orderBy: 'desc',
+      },
+      undefined,
+      true,
+    );
 
     expect(res).toEqual({ data: [], hasMore: false });
     expect(queryMessageLogSpy).not.toHaveBeenCalled();
@@ -100,6 +503,7 @@ describe('MessageRepository', () => {
       { skip: 0, take: 3, orderBy: 'desc' },
       undefined,
     );
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
     refresh$.next({
       code: 0,
@@ -136,6 +540,7 @@ describe('MessageRepository', () => {
     });
     expect(warm.data.map((m) => m.seq)).toEqual([3, 2, 1]);
     expect(warm.hasMore).toBe(true);
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
 
     refresh$.next({
@@ -236,6 +641,7 @@ describe('MessageRepository', () => {
 
     expect(warm.data.map((m) => m.seq)).toEqual([3]);
     expect(warm.data.every((m) => m.seq > 2)).toBe(true);
+    await flush(20); // let the intentionally background refresh finish before closing the test DB
   });
 
   it('getOlder (skip:1) is a cache HIT for a contiguous held range → no backend call', async () => {
@@ -249,6 +655,8 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 5, orderBy: 'desc' });
+    await webdb.close();
+    await webdb.openForUser('1');
     queryMessageLogSpy.calls.reset();
 
     // getOlder(cursor=6, take=3): the cache holds [3,4,5] contiguously below 6 → served from IDB.
@@ -264,7 +672,8 @@ describe('MessageRepository', () => {
   });
 
   it('getOlder GAP-FILLS when the cache lacks the range → backend called + cached', async () => {
-    // Empty cache; getOlder(cursor=6, take=3) must backfill from the API.
+    // The mounted cursor is cached; the requested older range is absent and must be backfilled.
+    await webdb.putMessages([msg(42, 6)]);
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
@@ -281,7 +690,293 @@ describe('MessageRepository', () => {
     });
     expect(res.data.map((m) => m.seq)).toEqual([5, 4, 3]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
-    expect(await dbCount(42)).toBe(3); // gap-fill persisted → next time is a cache hit
+    expect(await dbCount(42)).toBe(4); // cursor + gap-fill persisted → next time is a cache hit
+  });
+
+  it('coalesces same-start same-direction fills and reloads their committed DB rows', async () => {
+    await webdb.putMessages([msg(42, 6)]);
+    const response = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(response);
+    const query = {
+      skip: 1 as const,
+      take: 3,
+      lastSeq: 6,
+      orderBy: 'desc' as const,
+    };
+
+    const first = repo.queryMessages(42, query);
+    const second = repo.queryMessages(42, query);
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+
+    response.next({
+      code: 0,
+      message: 'ok',
+      data: [5, 4, 3].map((seq) => msg(42, seq)),
+      hasMore: true,
+    });
+    response.complete();
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.data.map((message) => message.seq)).toEqual([5, 4, 3]);
+    expect(b.data.map((message) => message.seq)).toEqual([5, 4, 3]);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares a smaller inflight fill, then recursively requests a larger waiter remainder', async () => {
+    await webdb.putMessages([msg(42, 6)]);
+    const firstResponse = new Subject<StandardResponse<Message[]>>();
+    const secondResponse = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValues(firstResponse, secondResponse);
+
+    const smaller = repo.queryMessages(42, {
+      skip: 1,
+      take: 1,
+      lastSeq: 6,
+      orderBy: 'desc',
+    });
+    const larger = repo.queryMessages(42, {
+      skip: 1,
+      take: 3,
+      lastSeq: 6,
+      orderBy: 'desc',
+    });
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+
+    firstResponse.next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 5)],
+      hasMore: true,
+    });
+    firstResponse.complete();
+    expect((await smaller).data.map((message) => message.seq)).toEqual([5]);
+    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+    expect(
+      queryMessageLogSpy.calls.allArgs().map((args) => args[0].lastSeq),
+    ).toEqual([6, 5]);
+    expect(
+      queryMessageLogSpy.calls.allArgs().map((args) => args[0].take),
+    ).toEqual([1, 2]);
+
+    secondResponse.next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 4), msg(42, 3)],
+      hasMore: true,
+    });
+    secondResponse.complete();
+    expect((await larger).data.map((message) => message.seq)).toEqual([
+      5, 4, 3,
+    ]);
+  });
+
+  it('propagates one coalesced HTTP failure without recursively retrying', async () => {
+    await webdb.putMessages([msg(42, 6)]);
+    const response = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(response);
+    const query = {
+      skip: 1 as const,
+      take: 2,
+      lastSeq: 6,
+      orderBy: 'desc' as const,
+    };
+
+    const first = repo.queryMessages(42, query);
+    const second = repo.queryMessages(42, query);
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    response.error(new Error('offline'));
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.failed).toBeTrue();
+    expect(b.failed).toBeTrue();
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces different truncateSeq values and applies each waiter boundary after commit', async () => {
+    await webdb.putMessages([msg(42, 10), msg(42, 20)]);
+    const response = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(response);
+
+    const farther = repo.queryMessages(42, {
+      skip: 1,
+      take: 10,
+      lastSeq: 20,
+      orderBy: 'desc',
+      truncate: true,
+      truncateSeq: 10,
+    });
+    const nearer = repo.queryMessages(42, {
+      skip: 1,
+      take: 10,
+      lastSeq: 20,
+      orderBy: 'desc',
+      truncate: true,
+      truncateSeq: 15,
+    });
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+
+    response.next({
+      code: 0,
+      message: 'ok',
+      data: [19, 18, 17, 16, 15, 14, 13, 12, 11].map((seq) => msg(42, seq)),
+      hasMore: false,
+      truncated: true,
+    });
+    response.complete();
+
+    const [a, b] = await Promise.all([farther, nearer]);
+    expect(a.data.map((message) => message.seq)).toEqual([
+      19, 18, 17, 16, 15, 14, 13, 12, 11,
+    ]);
+    expect(b.data.map((message) => message.seq)).toEqual([19, 18, 17, 16]);
+    expect(a.truncated).toBeTrue();
+    expect(b.truncated).toBeTrue();
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not coalesce opposite directions at the same start', async () => {
+    await webdb.putMessages([msg(42, 20)]);
+    const responses: Subject<StandardResponse<Message[]>>[] = [];
+    queryMessageLogSpy.and.callFake(() => {
+      const response = new Subject<StandardResponse<Message[]>>();
+      responses.push(response);
+      return response;
+    });
+
+    const older = repo.queryMessages(42, {
+      skip: 1,
+      take: 1,
+      lastSeq: 20,
+      orderBy: 'desc',
+    });
+    const newer = repo.queryMessages(42, {
+      skip: 1,
+      take: 1,
+      lastSeq: 20,
+      orderBy: 'asc',
+    });
+    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+
+    responses[0].next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 19)],
+      hasMore: true,
+    });
+    responses[0].complete();
+    responses[1].next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 21)],
+      hasMore: true,
+    });
+    responses[1].complete();
+
+    expect((await older).data[0].seq).toBe(19);
+    expect((await newer).data[0].seq).toBe(21);
+  });
+
+  it('rejects all coalesced waiters when the shared DB transaction fails', async () => {
+    await webdb.putMessages([msg(42, 6)]);
+    const response = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(response);
+    spyOn(webdb, 'putMessages').and.rejectWith(new Error('commit failed'));
+    const query = {
+      skip: 1 as const,
+      take: 1,
+      lastSeq: 6,
+      orderBy: 'desc' as const,
+    };
+
+    const first = repo.queryMessages(42, query);
+    const second = repo.queryMessages(42, query);
+    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    response.next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 5)],
+      hasMore: true,
+    });
+    response.complete();
+
+    await expectAsync(first).toBeRejectedWithError('commit failed');
+    await expectAsync(second).toBeRejectedWithError('commit failed');
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows different starts in the same thread to fetch concurrently', async () => {
+    await webdb.putMessages([msg(42, 10), msg(42, 20)]);
+    const responses = new Map<number, Subject<StandardResponse<Message[]>>>();
+    queryMessageLogSpy.and.callFake(({ lastSeq }: { lastSeq: number }) => {
+      const response = new Subject<StandardResponse<Message[]>>();
+      responses.set(lastSeq, response);
+      return response;
+    });
+
+    const first = repo.queryMessages(42, {
+      skip: 1,
+      take: 1,
+      lastSeq: 10,
+      orderBy: 'desc',
+    });
+    const second = repo.queryMessages(42, {
+      skip: 1,
+      take: 1,
+      lastSeq: 20,
+      orderBy: 'desc',
+    });
+    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+
+    for (const [start, seq] of [
+      [10, 9],
+      [20, 19],
+    ]) {
+      responses.get(start)!.next({
+        code: 0,
+        message: 'ok',
+        data: [msg(42, seq)],
+        hasMore: true,
+      });
+      responses.get(start)!.complete();
+    }
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.data[0].seq).toBe(9);
+    expect(b.data[0].seq).toBe(19);
+  });
+
+  it('does not serialize fills belonging to different threads', async () => {
+    await webdb.putMessages([msg(42, 6), msg(43, 6)]);
+    const responses = new Map<number, Subject<StandardResponse<Message[]>>>();
+    queryMessageLogSpy.and.callFake(({ threadId }: { threadId: number }) => {
+      const response = new Subject<StandardResponse<Message[]>>();
+      responses.set(threadId, response);
+      return response;
+    });
+    const query = {
+      skip: 1 as const,
+      take: 1,
+      lastSeq: 6,
+      orderBy: 'desc' as const,
+    };
+
+    const first = repo.queryMessages(42, query);
+    const second = repo.queryMessages(43, query);
+    await waitFor(() => queryMessageLogSpy.calls.count() === 2);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(2);
+
+    for (const threadId of [42, 43]) {
+      responses.get(threadId)!.next({
+        code: 0,
+        message: 'ok',
+        data: [msg(threadId, 5)],
+        hasMore: true,
+      });
+      responses.get(threadId)!.complete();
+    }
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.data[0].threadId).toBe(42);
+    expect(b.data[0].threadId).toBe(43);
   });
 
   it('getOlder floor: a contiguous cache reaching seq 0 reports hasMore=false (no backend)', async () => {
@@ -312,7 +1007,7 @@ describe('MessageRepository', () => {
   it('getOlder with a fragmented cache (gap below cursor) gap-fills instead of serving a gapped range', async () => {
     // Seed only [5, 3] (missing 4 — e.g. a jump-to-message left a gap). getOlder(cursor=6, take=3) must NOT
     // serve the gapped [5, 3] — it backfills the contiguous truth from the API.
-    await webdb.putMessages([msg(42, 5), msg(42, 3)]);
+    await webdb.putMessages([msg(42, 6), msg(42, 5), msg(42, 3)]);
 
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
@@ -344,6 +1039,8 @@ describe('MessageRepository', () => {
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 5, orderBy: 'desc' });
+    await webdb.close();
+    await webdb.openForUser('1');
     queryMessageLogSpy.calls.reset();
 
     const res = await repo.queryMessages(42, {
@@ -358,7 +1055,7 @@ describe('MessageRepository', () => {
   });
 
   it('assembles asc remote-gap + local-tail without requesting or rewriting the cached cutoff row', async () => {
-    await webdb.putMessages([msg(42, 15), msg(42, 16)]);
+    await webdb.putMessages([msg(42, 10), msg(42, 15), msg(42, 16)]);
     queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) => {
       expect(q.truncateSeq).toBe(15);
       return of<StandardResponse<Message[]>>({
@@ -388,11 +1085,16 @@ describe('MessageRepository', () => {
       truncate: true,
       truncateSeq: 15,
     });
-    expect(await dbCount(42)).toBe(6); // 2 existing + only the 4 missing rows
+    expect(await dbCount(42)).toBe(7); // cursor + 2 existing + only the 4 missing rows
   });
 
   it('walks multiple asc gaps using only the remaining count for each remote request', async () => {
-    await webdb.putMessages([msg(42, 15), msg(42, 16), msg(42, 20)]);
+    await webdb.putMessages([
+      msg(42, 10),
+      msg(42, 15),
+      msg(42, 16),
+      msg(42, 20),
+    ]);
     queryMessageLogSpy.and.callFake(
       (q: { truncateSeq?: number; take: number }) =>
         of<StandardResponse<Message[]>>({
@@ -417,17 +1119,17 @@ describe('MessageRepository', () => {
     expect(res.data.map((m) => m.seq)).toEqual([
       11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
-    expect(queryMessageLogSpy.calls.allArgs().map((args) => args[0].take)).toEqual([
-      10, 4,
-    ]);
-    expect(queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq)).toEqual([
-      15, 20,
-    ]);
-    expect(await dbCount(42)).toBe(10);
+    expect(
+      queryMessageLogSpy.calls.allArgs().map((args) => args[0].take),
+    ).toEqual([10, 4]);
+    expect(
+      queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq),
+    ).toEqual([15, 20]);
+    expect(await dbCount(42)).toBe(11);
   });
 
   it('assembles desc remote-gap + local-tail with the closest lower cached seq as cutoff', async () => {
-    await webdb.putMessages([msg(42, 15), msg(42, 14)]);
+    await webdb.putMessages([msg(42, 21), msg(42, 15), msg(42, 14)]);
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
@@ -447,10 +1149,11 @@ describe('MessageRepository', () => {
 
     expect(res.data.map((m) => m.seq)).toEqual([20, 19, 18, 17, 16, 15, 14]);
     expect(queryMessageLogSpy.calls.first().args[0].truncateSeq).toBe(15);
-    expect(await dbCount(42)).toBe(7);
+    expect(await dbCount(42)).toBe(8);
   });
 
   it('omits the local cutoff when no cached neighbor exists in the requested direction', async () => {
+    await webdb.putMessages([msg(42, 10)]);
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
@@ -479,7 +1182,7 @@ describe('MessageRepository', () => {
   });
 
   it('keeps the caller frozen ceiling after crossing a nearer local segment', async () => {
-    await webdb.putMessages([msg(42, 15)]);
+    await webdb.putMessages([msg(42, 10), msg(42, 15), msg(42, 20)]);
     queryMessageLogSpy.and.callFake((q: { truncateSeq?: number }) =>
       of<StandardResponse<Message[]>>({
         code: 0,
@@ -506,9 +1209,9 @@ describe('MessageRepository', () => {
     ]);
     expect(res.hasMore).toBe(false);
     expect(res.truncated).toBe(true);
-    expect(queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq)).toEqual([
-      15, 20,
-    ]);
+    expect(
+      queryMessageLogSpy.calls.allArgs().map((args) => args[0].truncateSeq),
+    ).toEqual([15, 20]);
   });
 
   it('middle-anchor init reuses a cached anchor and bounds the older gap at its nearest local neighbor', async () => {
@@ -695,6 +1398,8 @@ describe('MessageRepository', () => {
     );
     await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' });
     await repo.deleteByThread(42); // purge the cached body + clear maxSeenSeq
+    // A real source only paginates from a mounted/cached cursor. Re-seed that cursor after the GC.
+    await webdb.putMessages([msg(42, 5)]);
     queryMessageLogSpy.calls.reset();
 
     queryMessageLogSpy.and.returnValue(
@@ -768,4 +1473,28 @@ describe('MessageRepository', () => {
     expect(queryMessageLogSpy.calls.first().args[0].lastSeq).toBe(7);
   });
 
+  it('does not return or cache an HTTP response from the lifetime before recreation', async () => {
+    const response = new Subject<StandardResponse<Message[]>>();
+    queryMessageLogSpy.and.returnValue(response);
+    const query = repo.queryMessages(42, {
+      skip: 0,
+      take: 10,
+      orderBy: 'desc',
+    });
+    while (queryMessageLogSpy.calls.count() === 0) await flush();
+
+    await webdb.recreateMessageCache();
+    response.next({
+      code: 0,
+      message: 'ok',
+      data: [msg(42, 9)],
+      hasMore: false,
+    });
+    response.complete();
+
+    const result = await query;
+    expect(result.failed).toBe(true);
+    expect(result.data).toEqual([]);
+    expect(await webdb.getMessage(42, 9)).toBeUndefined();
+  });
 });

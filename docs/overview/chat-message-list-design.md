@@ -2,7 +2,7 @@
 
 This document codifies the visual and layout design specification for SOMS's **mobile 1-to-1 chat "message list"**, serving as the single source of truth for the frontend implementation (`MsgGroupComponent` and its surrounding code). All values, structure, and colors are governed by this document.
 
-> **Status**: Verified in the virtual scroll playground (`/playground/chatbox-a`); pending phase-4 to land as the real message component. See the [Decision Record](#decision-record) at the end for the evolution of key design decisions.
+> **Status**: Verified in the virtual scroll playground (`/playground/chatbox`); pending phase-4 to land as the real message component. See the [Decision Record](#decision-record) at the end for the evolution of key design decisions.
 
 ## Table of Contents
 

@@ -1,5 +1,5 @@
 /**
- * ChatBoxScroller (Plan B · array index) unit tests.
+ * ChatBoxScroller (manual anchor · array index) unit tests.
  *
  * The kernel is framework-agnostic and only interacts via the CbElement + CbSource interfaces, so the tests drive it
  * with mocks:
@@ -7,12 +7,28 @@
  *  - fakeSource: N msgs (0 oldest .. N-1 newest), cursor getOlder/getNewer, ascending return.
  * content.scrollHeight / viewport.clientHeight / scrollTop are fixed via getter/setter; RAF is mocked synchronous.
  *
- * Focus: Plan B scrollTop compensation (viewport does not jump after loadOlder prepend), ghost rebuild (createItem
+ * Focus: manual scrollTop compensation (viewport does not jump after loadOlder prepend), ghost rebuild (createItem
  * re-invoked with the new prev), and phase-0 noOlder absorb timing. The msgId cursor verifies that the kernel index is
  * decoupled from the source id.
  */
 import { ChatBoxScroller, CbElement, CbItem } from './chat-box-scroller';
-import type { CbSource } from './cb-source';
+import type { CbDemand, CbDemandResult, CbSource } from './cb-source';
+import { Observable, of, type Subscriber } from 'rxjs';
+
+function testDemand<T>(
+  work: () => Promise<CbItem<T>[]>,
+  boundaryOnEmpty = false,
+): CbDemand<T> {
+  return new Observable((subscriber) => {
+    void work().then((items) => {
+      if (subscriber.closed || (items.length === 0 && !boundaryOnEmpty)) return;
+      subscriber.next(
+        items.length > 0 ? { kind: 'items', items } : { kind: 'boundary' },
+      );
+      subscriber.complete();
+    });
+  });
+}
 
 function sumChildrenHeight(el: HTMLElement): number {
   let s = 0;
@@ -215,6 +231,22 @@ function liveSource(N: number): CbSource<number> & { live: CbItem<number>[] } {
     return out;
   };
   const live: CbItem<number>[] = [];
+  const newerWaiters = new Set<{
+    cursorId: number;
+    count: number;
+    subscriber: Subscriber<CbDemandResult<number>>;
+  }>();
+  const itemsAfter = (cursorId: number, count: number): CbItem<number>[] =>
+    live.filter((item) => item.id > cursorId).slice(0, count);
+  const pumpNewer = (): void => {
+    for (const waiter of Array.from(newerWaiters)) {
+      const items = itemsAfter(waiter.cursorId, waiter.count);
+      if (items.length === 0) continue;
+      newerWaiters.delete(waiter);
+      waiter.subscriber.next({ kind: 'items', items });
+      waiter.subscriber.complete();
+    }
+  };
   const src: CbSource<number> = {
     init: async (anchorId, olderCount) => {
       if (anchorId !== -1) return [];
@@ -226,26 +258,98 @@ function liveSource(N: number): CbSource<number> & { live: CbItem<number>[] } {
       }
       return out;
     },
-    getOlder: async (cursorId, count) => {
-      const k = cursorId;
-      const out = slice(k - count, k);
-      if (out.length && k - count <= 0)
-        out[0] = { ...out[0], boundary: 'oldest' };
-      return out;
-    },
-    getNewer: async () => {
-      if (live.length === 0) return [];
-      const out = live.map((it) => ({ ...it }));
-      out[out.length - 1] = { ...out[out.length - 1], boundary: 'newest' };
-      return out;
+    requestOlder: (cursorId, count) =>
+      testDemand(async () => {
+        const k = cursorId;
+        const out = slice(k - count, k);
+        if (out.length && k - count <= 0)
+          out[0] = { ...out[0], boundary: 'oldest' };
+        return out;
+      }, true),
+    requestNewer: (cursorId, count) => {
+      return new Observable((subscriber) => {
+        const items = itemsAfter(cursorId, count);
+        if (items.length > 0) {
+          subscriber.next({ kind: 'items', items });
+          subscriber.complete();
+          return undefined;
+        }
+        const waiter = { cursorId, count, subscriber };
+        newerWaiters.add(waiter);
+        return () => {
+          newerWaiters.delete(waiter);
+        };
+      });
     },
     pushLive: (items) => {
       for (const it of items) live.push(it);
+      pumpNewer();
     },
     getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, { live });
+}
+
+/** Source-driven live updates for kernel tests. requestNewer stays pending until pushLive makes
+ * matching cached items available, mirroring HttpItemSource's long-lived newer demand. */
+function pushedSource(base: CbSource<number>): CbSource<number> {
+  const live: CbItem<number>[] = [];
+  let newerHighWater = -Infinity;
+  const waiters = new Set<{
+    cursorId: number;
+    count: number;
+    subscriber: Subscriber<CbDemandResult<number>>;
+  }>();
+  const available = (cursorId: number, count: number) =>
+    live
+      .filter((item) => item.id > Math.max(cursorId, newerHighWater))
+      .slice(0, count);
+  const isReady = (items: CbItem<number>[], count: number) =>
+    items.length >= count ||
+    items.some(
+      (item) => item.boundary === 'newest' || item.boundary === 'both',
+    );
+  const pump = () => {
+    for (const waiter of Array.from(waiters)) {
+      const items = available(waiter.cursorId, waiter.count);
+      if (!isReady(items, waiter.count)) continue;
+      waiters.delete(waiter);
+      newerHighWater = Math.max(
+        newerHighWater,
+        ...items.map((item) => item.id),
+      );
+      waiter.subscriber.next({ kind: 'items', items });
+      waiter.subscriber.complete();
+    }
+  };
+  return {
+    ...base,
+    requestNewer: (cursorId, count) => {
+      return new Observable((subscriber) => {
+        const items = available(cursorId, count);
+        if (isReady(items, count)) {
+          newerHighWater = Math.max(
+            newerHighWater,
+            ...items.map((item) => item.id),
+          );
+          subscriber.next({ kind: 'items', items });
+          subscriber.complete();
+          return undefined;
+        } else {
+          const waiter = { cursorId, count, subscriber };
+          waiters.add(waiter);
+          return () => {
+            waiters.delete(waiter);
+          };
+        }
+      });
+    },
+    pushLive: (items) => {
+      live.push(...items);
+      pump();
+    },
+  };
 }
 
 /** Fake source: N msgs (0 oldest .. N-1 newest). Cursor getOlder/getNewer, ascending return. */
@@ -281,16 +385,18 @@ function fakeSource(
       const newerEnd = Math.min(N, idx + 1 + newer);
       return [...slice(olderStart, idx + 1), ...slice(idx + 1, newerEnd)];
     },
-    getOlder: async (cursorId, count) => {
-      gets++;
-      const k = cursorId;
-      return slice(k - count, k);
-    },
-    getNewer: async (cursorId, count) => {
-      newers++;
-      const k = cursorId;
-      return slice(k + 1, k + 1 + count);
-    },
+    requestOlder: (cursorId, count) =>
+      testDemand(async () => {
+        gets++;
+        const k = cursorId;
+        return slice(k - count, k);
+      }, true),
+    requestNewer: (cursorId, count) =>
+      testDemand(async () => {
+        newers++;
+        const k = cursorId;
+        return slice(k + 1, k + 1 + count);
+      }),
     pushLive: (_items) => {
       /* cache-only: direct-mount path mounts the raw items; the signal path uses getNewer */
     },
@@ -330,14 +436,16 @@ function controllableInitSource(N: number): CbSource<number> & {
       new Promise<CbItem<number>[]>((resolve) => {
         queue.push(resolve);
       }),
-    getOlder: async (c, k) => {
-      const i = c;
-      return slice(i - k, i);
-    },
-    getNewer: async (c, k) => {
-      const i = c;
-      return slice(i + 1, i + 1 + k);
-    },
+    requestOlder: (c, k) =>
+      testDemand(async () => {
+        const i = c;
+        return slice(i - k, i);
+      }, true),
+    requestNewer: (c, k) =>
+      testDemand(async () => {
+        const i = c;
+        return slice(i + 1, i + 1 + k);
+      }),
     pushLive: (_items) => {
       /* cache-only: direct-mount path mounts the raw items; the signal path uses getNewer */
     },
@@ -386,19 +494,24 @@ function controllableSource(N: number): CbSource<number> & {
   let gets = 0;
   const src: CbSource<number> = {
     init: async (_r, older) => slice(N - older, N),
-    getOlder: function (cursorId, count) {
+    requestOlder: function (cursorId, count) {
       gets++;
       const k = cursorId;
       pendingRange = { lo: k - count, hi: k };
-      return new Promise((resolve) => {
-        resolver = (items?: CbItem<number>[]) =>
-          resolve(items ?? slice(pendingRange.lo, pendingRange.hi));
-      });
+      return testDemand(
+        () =>
+          new Promise((resolve) => {
+            resolver = (items?: CbItem<number>[]) =>
+              resolve(items ?? slice(pendingRange.lo, pendingRange.hi));
+          }),
+        true,
+      );
     },
-    getNewer: async (cursorId, count) => {
-      const k = cursorId;
-      return slice(k + 1, k + 1 + count);
-    },
+    requestNewer: (cursorId, count) =>
+      testDemand(async () => {
+        const k = cursorId;
+        return slice(k + 1, k + 1 + count);
+      }),
     pushLive: (_items) => {
       /* cache-only: direct-mount path mounts the raw items; the signal path uses getNewer */
     },
@@ -421,6 +534,19 @@ function controllableSource(N: number): CbSource<number> & {
 /** Drain microtasks (openAround/fillAround multi-hop async await): scrollToIndex is fire-and-forget, so flush manually. */
 async function flush(n = 30): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve();
+}
+
+/** Wait for an observable kernel/source condition instead of guessing how many async hops it needs. */
+async function waitFor(
+  condition: () => boolean,
+  description: string,
+  maxTurns = 200,
+): Promise<void> {
+  for (let turn = 0; turn < maxTurns; turn++) {
+    if (condition()) return;
+    await Promise.resolve();
+  }
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 /** Replace the viewport's fixed clientHeight getter with a mutable one (simulate a viewport shrink/grow, e.g. the soft
@@ -447,7 +573,25 @@ function reflow(s: ChatBoxScroller<number>): void {
   (s as unknown as { onViewportResize: () => void }).onViewportResize();
 }
 
-describe('ChatBoxScroller (Plan B · array index)', () => {
+type EdgeStateView = {
+  active: object | null;
+  error: unknown | null;
+  retrying: boolean;
+};
+
+function edgeState(
+  s: ChatBoxScroller<number>,
+  direction: 'older' | 'newer',
+): EdgeStateView {
+  return (s as unknown as Record<string, EdgeStateView>)[`${direction}Demand`];
+}
+
+function newestHighlightPending(s: ChatBoxScroller<number>): boolean {
+  return (s as unknown as { highlightNewestWhenReached: boolean })
+    .highlightNewestWhenReached;
+}
+
+describe('ChatBoxScroller (manual anchor · array index)', () => {
   let viewport: HTMLDivElement;
   let content: HTMLDivElement;
   let scroller: ChatBoxScroller<number> | undefined;
@@ -591,11 +735,12 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
               resolveInitFn = r;
             })
           : Promise.resolve([]),
-      getOlder: async () => [], // no older fill — keep the test focused on the init batch
-      getNewer: async (c, k) => {
-        newerCalls++;
-        return slice(c + 1, c + 1 + k);
-      },
+      requestOlder: () => testDemand(async () => [], true), // no older fill — keep the test focused on the init batch
+      requestNewer: (c, k) =>
+        testDemand(async () => {
+          newerCalls++;
+          return slice(c + 1, c + 1 + k);
+        }),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -618,7 +763,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
 
     // A message (id 100) arrives during the window + its signal fires (would be DROPPED before the fix).
     top = 100;
-    scroller.onMessageSignal(100);
+    // The source's pending newer demand observes the arrival directly.
 
     // init resolves with the pre-arrival snapshot (id 100 missed it).
     resolveInitFn!(snapshot);
@@ -631,10 +776,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller!.getInfo().newestId).toBe(100);
   });
 
-  it('a window signal whose seq init already mounted is NOT replayed (the max-seq gate skips it)', async () => {
-    // Same deferred-init source, but the signal is for a seq the snapshot already contains (99 ≤ newestMounted
-    // 99). primeAndReplay's gate (pendingSeq > newestMounted) skips the replay — no spurious loadNewer. This
-    // is the accuracy max-seq tracking buys over a blind "any signal → replay" boolean.
+  it('a newest init snapshot still establishes one persistent newer demand', async () => {
     let resolveInitFn: ((items: CbItem<number>[]) => void) | null = null;
     let newerCalls = 0;
     const item = (i: number): CbItem<number> =>
@@ -656,11 +798,12 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
               resolveInitFn = r;
             })
           : Promise.resolve([]),
-      getOlder: async () => [],
-      getNewer: async (c, k) => {
-        newerCalls++;
-        return slice(c + 1, c + 1 + k);
-      },
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: (c, k) =>
+        testDemand(async () => {
+          newerCalls++;
+          return slice(c + 1, c + 1 + k);
+        }),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -676,15 +819,15 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     const initP = scroller.init();
     await flush();
     // Signal for seq 99 — which the snapshot (80..99) already includes. Saved max-seq = 99.
-    scroller.onMessageSignal(99);
+    // No kernel signal is needed; the init snapshot already contains this high-water mark.
     const snapshot = slice(80, 100); // ids 80..99, 99 = newest → newestMounted = 99
     resolveInitFn!(snapshot);
     resolveInitFn = null;
     await initP;
     await flush();
 
-    // Gate: 99 > 99 is false → no replay → no getNewer, newestId stays 99.
-    expect(newerCalls).toBe(0);
+    // The lower region always owns a cancellable newer waiter, including at the known newest edge.
+    expect(newerCalls).toBe(1);
     expect(scroller!.getInfo().newestId).toBe(99);
   });
 
@@ -701,14 +844,13 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     const oldestBefore = scroller.getInfo().oldestId!;
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event('scroll'));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(src.gets()).toBeGreaterThan(0);
     // older mounted: oldestId index is smaller (older); after trim the window may scroll further, so oldestId can be even older
     expect(scroller.getInfo().oldestId!).toBeLessThanOrEqual(oldestBefore);
   });
 
-  it('Plan B: scrollTop compensation after loadOlder (viewport does not jump)', async () => {
+  it('manually compensates scrollTop after an older prepend without jumping', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -719,8 +861,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     await scroller.init();
     viewport.scrollTop = 50;
     viewport.dispatchEvent(new Event('scroll'));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     // loadOlder prepends above the viewport → scrollTop must be += the mounted height (> 50, not 0)
     expect(viewport.scrollTop).toBeGreaterThan(50);
   });
@@ -745,22 +886,22 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     const getsAtBoundary = src.gets();
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event('scroll'));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(src.gets()).toBe(getsAtBoundary);
   });
 
-  it('appendLive (WS) mounts at the bottom and follows', async () => {
+  it('a source live update mounts at the bottom and follows', async () => {
     const { hooks } = controllableHooks();
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
       hooks,
-      source: fakeSource(500),
+      source: src,
     });
     await scroller.init();
-    scroller.appendLive([{ id: 700, data: -1 }]);
-    await Promise.resolve();
+    src.pushLive([{ id: 700, data: -1, boundary: 'newest' }]);
+    await flush();
     const info = scroller.getInfo();
     expect(info.newestId).toBe(700);
     expect(info.atBottom).toBe(true);
@@ -787,7 +928,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // mount (models the pre-render measure before the RO reports the real height).
     setHeight(701, 20);
     source.pushLive([{ id: 701, data: 99 }]);
-    await scroller.onMessageSignal(); // mounts live-1 (h=20) + pinToBottom → scrollTop = (1000 + 20) - 600 = 420
+    await flush(); // the source demand mounts live-1 and pins to the updated bottom
     expect(scroller.getInfo().atBottom).toBe(true); // pinned at the placeholder bottom right after mount
 
     // The live item's real height settles asynchronously (RO fire) — AFTER pinToBottom ran.
@@ -945,8 +1086,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // scroll up to trigger loadOlder (mount older m-300..m-399): ghostId gains an older neighbor → rebuild
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event('scroll'));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     const forGhost = calls.filter((c) => c.id === ghostId);
     expect(forGhost.length).toBe(2); // mount + rebuild
@@ -981,8 +1121,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // authoritative floor signal. Merely setting noOlder used to leave the skeleton component mounted.
     const source: CbSource<number> = {
       init: async () => [{ id: 7, data: 7, boundary: 'newest' }],
-      getOlder: async () => [],
-      getNewer: async () => [],
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -1072,9 +1212,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // scroll up → loadOlder: prepend older + trimNewer trims the newest end (incl. the global newest m-499)
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event('scroll'));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(scroller.getInfo().noNewer).toBe(false); // trimNewer reset → loadNewer can load it back
+    await flush();
+    expect(scroller.getInfo().noNewer).toBe(false); // the viewport left the lower region, so the newer demand was cancelled
   });
 
   it('destroy clears all mounted elements', async () => {
@@ -1213,11 +1352,12 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
         { id: 100, data: 1000 },
         { id: 101, data: 1001, boundary: 'newest' as const },
       ],
-      getOlder: async () => [],
-      getNewer: async (cursor) => {
-        newerCursor = cursor;
-        return [];
-      },
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: (cursor) =>
+        testDemand(async () => {
+          newerCursor = cursor;
+          return [];
+        }),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -1235,7 +1375,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     });
     await scroller.init();
 
-    await scroller.onMessageSignal();
+    await flush();
 
     expect(newerCursor).toBe(101);
   });
@@ -1391,12 +1531,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller.getInfo().newestId!).toBeGreaterThan(newestBefore); // advances toward newest
   });
 
-  // Regression: a balance-triggered loadNewer (user scrolling to the bottom edge of a trimmed-newer window) must NOT
-  // follow/chain to the global newest. Previously loadNewer did `if (wasAtBottom) scrollToBottom()`, which re-armed the
-  // bottom edge and chain-jumped to the global newest ("accelerate to bottom"). Follow is now method-separated: balance
-  // calls the pure loadNewer core (no follow); only scrollToBottom→followToNewest follows. Anchored at the jump-to-id
-  // fix: jumping to a mid-history id lands in a trimmed-newer state, so scrolling down from there exposed this.
-  it('scrolling to the bottom edge (balance) loads only one newer batch, no chain-jump to the global newest (no follow)', async () => {
+  it('remaining in the bottom load-more region continues demands until newest', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScroller<number>({
@@ -1415,11 +1550,17 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // scroll down to the bottom edge (balance-triggered loadNewer, NOT scrollToBottom)
     viewport.scrollTop = content.scrollHeight - 600;
     viewport.dispatchEvent(new Event('scroll'));
-    await flush();
-    expect(src.newers()).toBe(1); // exactly one batch, no chain
-    expect(scroller.getInfo().newestId!).toBe(newestBefore + 50); // exactly one mountItem batch
-    expect(scroller.getInfo().noNewer).toBe(false); // did not reach the global newest
-    expect(viewport.scrollTop + 600).toBeLessThan(content.scrollHeight); // viewport not pinned to the absolute bottom
+    await waitFor(() => {
+      const info = scroller!.getInfo();
+      return info.noNewer && info.newestId === 499 && info.atBottom;
+    }, 'the lower-region demand chain to reach newest');
+    expect(src.newers()).toBeGreaterThan(1);
+    expect(scroller.getInfo().newestId!).toBe(499);
+    expect(scroller.getInfo().newestId!).toBeGreaterThan(newestBefore);
+    expect(scroller.getInfo().noNewer).toBe(true);
+    expect(viewport.scrollTop + 600).toBeGreaterThanOrEqual(
+      content.scrollHeight - 1,
+    );
   });
 
   it('scrollToBottom (go-to-bottom) chains through a trimmed newer end to the global newest (followToNewest)', async () => {
@@ -1446,16 +1587,17 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     ); // pinned to the absolute bottom
   });
 
-  // appendLive must NOT mount when the newer end is trimmed (!noNewer): mounting at the window tail would create a
+  // A live source update must NOT mount when the newer end is trimmed (!noNewer): mounting at the window tail would create a
   // cursor-order gap (live item before the unmounted m-251.. history) and let scrollToBottom→followToNewest chain to the
   // bottom. Cache only; items load in order when scrolling back down.
-  it('appendLive with a trimmed newer end (noNewer=false) caches only, no mount, no jump to bottom', async () => {
+  it('a live update with a trimmed newer end caches only, no mount, no jump to bottom', async () => {
     const { hooks } = controllableHooks();
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
       hooks,
-      source: fakeSource(500),
+      source: src,
     });
     await scroller.init(); // m-400..m-499 pinned to bottom, noNewer=true
     // scroll up: trim the newest end → noNewer=false (window is back in mid-history)
@@ -1466,7 +1608,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     const mountedBefore = scroller.getInfo().mounted;
     const scrollTopBefore = viewport.scrollTop;
     // WS new message arrives (window in mid-history): cache only, no mount, no scrollToBottom
-    scroller.appendLive([{ id: 702, data: 999 }]);
+    src.pushLive([{ id: 702, data: 999, boundary: 'newest' }]);
     await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore); // not mounted (prevents an order gap with m-251..)
     expect(viewport.scrollTop).toBe(scrollTopBefore); // no jump to bottom
@@ -1479,8 +1621,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
         { id: 1, data: 1 },
         { id: 2, data: 2 },
       ], // missing the target
-      getOlder: async () => [],
-      getNewer: async () => [],
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -1547,7 +1689,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(info.newestId).toBe(250);
   });
 
-  // ── insertAfter: mid-window insert with NO balance + scrollTop compensation (Plan B) ──
+  // ── insertAfter: mid-window insert with no balance + manual scrollTop compensation ──
 
   it('insertAfter on a non-mounted id → no-op (returns false, no mount, no load)', async () => {
     const { hooks } = controllableHooks();
@@ -1565,7 +1707,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller.getInfo().mounted).toBe(mountedBefore);
     expect(content.querySelector('[data-cb-id="-1"]')).toBeNull();
     expect(src.gets()).toBe(0); // no balance → no loadOlder
-    expect(src.newers()).toBe(0); // no loadNewer
+    expect(src.newers()).toBe(1); // the persistent lower-region waiter is unrelated to insertAfter
   });
 
   it('insertAfter mid-window → mounts at idx+1 in the right DOM position (between target and successor)', async () => {
@@ -1608,7 +1750,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(succ[1].prev).toBe(-1); // rebuilt with prev = the new item
   });
 
-  it('Plan B: insert above the viewport → scrollTop += new height (viewport pinned), no balance triggered', async () => {
+  it('manually compensates an insert above the viewport without triggering balance', async () => {
     const { hooks } = controllableHooks(); // 100px/item
     const src = fakeSource(500);
     scroller = new ChatBoxScroller<number>({
@@ -1623,10 +1765,10 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(ok).toBe(true);
     expect(viewport.scrollTop).toBe(stBefore + 100); // += newH (successor m-401 rebuild delta is 0)
     expect(src.gets()).toBe(0); // no balance → no loadOlder/loadNewer
-    expect(src.newers()).toBe(0);
+    expect(src.newers()).toBe(1); // existing lower-region waiter is independent from the insert
   });
 
-  it('Plan B: insert below the viewport → scrollTop unchanged (content above the fold is untouched)', async () => {
+  it('leaves scrollTop unchanged for an insert below the viewport', async () => {
     const { hooks } = controllableHooks(); // 100px/item
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -1644,7 +1786,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   // Regression: a transient inserted at the tail must NOT become the getNewer cursor. Without the cursor guard,
   // loadNewer would call getNewer('ins') → the source can't find it → [] → noNewer falsely locked → newer history
   // never loads. newerCursorId skips transient entries, so the real tail id is used instead.
-  it('cursor guard: a transient at the tail does not poison loadNewer (no false noNewer lock)', async () => {
+  it('cursor guard: a transient at the tail does not poison loadNewer', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScroller<number>({
@@ -1668,17 +1810,25 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     content
       .querySelector<HTMLElement>('[data-cb-id="-1"]')
       ?.dispatchEvent(new Event('animationend'));
-    // scroll down to the bottom edge → balance triggers loadNewer; cursor must skip the transient
+    // scroll down to the bottom edge → demand triggers loadNewer; cursor must skip the transient
     viewport.scrollTop = content.scrollHeight - 600;
     viewport.dispatchEvent(new Event('scroll'));
-    await flush();
+    await waitFor(
+      () => src.newers() > 0 && scroller!.getInfo().noNewer,
+      'the transient-safe newer demand to reach its boundary',
+    );
     expect(src.newers()).toBeGreaterThan(0); // getNewer was called with the real cursor (skipped 'ins')
     expect(scroller.getInfo().newestId).toBe(-1); // transient stays at the tail (reals insert before the tail block)
-    expect(scroller.getInfo().noNewer).toBe(false); // NOT falsely locked (would be true without the guard)
-    // reals were loaded before the transient: the item just newer than the original tail is now mounted
-    expect(
-      content.querySelector(`[data-cb-id="${tailId + 1}"]`),
-    ).not.toBeNull();
+    // Remaining in the lower load-more region keeps requesting until the real newest boundary. Reaching that
+    // boundary is expected; cursor poisoning is ruled out by the source call and mounted successor assertions.
+    expect(scroller.getInfo().noNewer).toBe(true);
+    // A newer real remains immediately above the transient tail. The exact first successor may have been trimmed once
+    // the persistent demand reached newest, so assert ordering instead of pinning the test to one retained window item.
+    const transient = content.querySelector<HTMLElement>('[data-cb-id="-1"]')!;
+    const precedingRealId = Number(
+      transient.previousElementSibling?.getAttribute('data-cb-id'),
+    );
+    expect(precedingRealId).toBeGreaterThan(tailId);
   });
 
   // ── Phase A/B/C: enter animation, transient-safe trim, settle (optimistic→confirmed), removeItem (exit animation) ──
@@ -1722,16 +1872,17 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(el?.classList.contains('cb-enter')).toBe(false);
   });
 
-  it('Phase A: appendLive plays cb-enter on the live row', async () => {
+  it('Phase A: a source live update plays cb-enter on the live row', async () => {
     const { hooks } = controllableHooks();
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
       hooks,
-      source: fakeSource(500),
+      source: src,
     });
     await scroller.init();
-    scroller.appendLive([{ id: 700, data: -1 }]);
+    src.pushLive([{ id: 700, data: -1, boundary: 'newest' }]);
     await flush();
     expect(
       content
@@ -1740,7 +1891,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     ).toBe(true);
   });
 
-  it('Phase A: while cb-enter is in flight, balance is deferred; it resumes on animationend', async () => {
+  it('Phase A: source demand remains active while cb-enter balance work is deferred', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScroller<number>({
@@ -1755,8 +1906,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     viewport.scrollTop = 0; // top edge → loadOlder would fire if balance ran
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
-    expect(src.gets()).toBe(getsBefore); // deferred (animating>0)
-    animEnd('-1'); // drain → balance resumes → loadOlder
+    expect(src.gets()).toBeGreaterThan(getsBefore); // subscription is independent from the animation gate
+    animEnd('-1');
     await flush();
     expect(src.gets()).toBeGreaterThan(getsBefore);
   });
@@ -1782,13 +1933,10 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.querySelector('[data-cb-id="-1"]')).not.toBeNull();
   });
 
-  // appendLive (direct-mount path) dedups by id: an incoming item matching a mounted transient/optimistic is skipped
-  // (no duplicate mount). The optimistic→confirmed reconcile now goes through onMessageSignal + reconcileOptimistic
-  // (covered in the signal/reconcile tests below), not appendLive.
-  it('Phase B: appendLive dedups an item matching a mounted optimistic (no duplicate mount)', async () => {
+  // A source update behind the active cursor is not delivered by the newer waiter.
+  it('Phase B: a stale live item does not duplicate a mounted optimistic', async () => {
     const { hooks } = controllableHooks();
-    const base = fakeSource(500);
-    const src: CbSource<number> = { ...base, pushLive: () => {} };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -1800,33 +1948,22 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     scroller.insertAfter(499, { id: -1, data: -1 }, { optimistic: true }); // optimistic at tail
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1);
     animEnd('-1'); // drain its enter animation
-    scroller.appendLive([{ id: -1, data: 777 }]); // same id → dedup skips (no mount, no settle)
+    src.pushLive([{ id: -1, data: 777 }]);
     await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1); // no duplicate
     expect(content.querySelector('[data-cb-id="-1"]')).not.toBeNull();
   });
 
-  // Optimistic→confirmed via the signal path: onMessageSignal pulls the real confirm via getNewer, mounts it visibly at
+  // Optimistic→confirmed via source demand: the newer demand pulls the real confirm, mounts it visibly at
   // its true position, then reconcileOptimistic synchronously removes the optimistic duplicate and tags the real
   // cb-confirmed. Height model and mount count stay exact (one entry for the id throughout).
-  it('onMessageSignal reconciles an optimistic send into its confirmed real (no duplicate, real revealed)', async () => {
+  it('a newer source demand reconciles an optimistic send into its confirmed real', async () => {
     const { hooks } = controllableHooks();
     // getNewer returns the real confirm: a FRESH server id + the SAME clientMessageId as the optimistic (the reconcile
     // key — the kernel pairs them by clientMessageId, not id, since the real's id is brand-new). boundary newest so
     // noNewer is re-absorbed true.
     const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => [
-        {
-          id: 600,
-          data: 777,
-          clientMessageId: 'cid-0',
-          boundary: 'newest' as const,
-        },
-      ],
-      pushLive: () => {},
-    };
+    const src = pushedSource(base);
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -1842,9 +1979,14 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     ); // optimistic bubble at the tail (tracked by cid-0)
     animEnd('-1'); // drain its cb-enter
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1);
-    const p = scroller.onMessageSignal(); // confirm arrives → loadNewer + reconcile
-    await flush(); // let loadNewer mount the real; reconcile is synchronous (no slide to drain)
-    await p;
+    src.pushLive([
+      {
+        id: 600,
+        data: 777,
+        clientMessageId: 'cid-0',
+        boundary: 'newest',
+      },
+    ]);
     await flush();
     // optimistic (pending-0) removed, real (real-0) revealed → the confirmed real remains at the tail — not trimmed.
     expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(0);
@@ -1856,33 +1998,13 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     ).toBe(true); // real tagged cb-confirmed
   });
 
-  // Regression (first-send scrollTop bug): after onMessageSignal reconciles the optimistic into its real, the confirmed
+  // Regression (first-send scrollTop bug): after a newer demand reconciles the optimistic into its real, the confirmed
   // real MUST be pinned to the bottom (scrollTop = scrollHeight − vh). The bug: pinToBottom-after-reconcile left the real
   // below the fold on the FIRST send, subsequent sends correct. This pins both the first and a subsequent send.
-  it('onMessageSignal pins the confirmed real to the bottom (first send AND subsequent)', async () => {
+  it('a newer source demand pins the confirmed real to the bottom for first and subsequent sends', async () => {
     const { hooks } = controllableHooks();
-    const queue: { realId: number; cid: string }[] = [
-      { realId: 600, cid: 'cid-0' },
-      { realId: 601, cid: 'cid-1' },
-    ];
     const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => {
-        const n = queue.shift();
-        return n
-          ? [
-              {
-                id: n.realId,
-                data: 777,
-                clientMessageId: n.cid,
-                boundary: 'newest' as const,
-              },
-            ]
-          : [];
-      },
-      pushLive: () => {},
-    };
+    const src = pushedSource(base);
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -1899,7 +2021,9 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     );
     animEnd('-1');
     scroller.scrollToBottom();
-    await scroller.onMessageSignal();
+    src.pushLive([
+      { id: 600, data: 777, clientMessageId: 'cid-0', boundary: 'newest' },
+    ]);
     await flush();
     const i1 = scroller.getInfo();
     expect(content.querySelectorAll('[data-cb-id="600"]').length).toBe(1);
@@ -1914,7 +2038,9 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     );
     animEnd('-1');
     scroller.scrollToBottom();
-    await scroller.onMessageSignal();
+    src.pushLive([
+      { id: 601, data: 777, clientMessageId: 'cid-1', boundary: 'newest' },
+    ]);
     await flush();
     const i2 = scroller.getInfo();
     expect(content.querySelectorAll('[data-cb-id="601"]').length).toBe(1);
@@ -1924,30 +2050,14 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
 
   // Regression (overlap race, the user-reported "opponent msg inserts between pending / a msg sinks under viewport"):
   // two signals landing in the same microtask window (two onSignal callbacks back-to-back).
-  // The bug: onMessageSignal had no single-flight guard, so the second call's loadNewer bailed on inflightNewer (the
+  // The bug: the source-demand path had no single-flight guard, so the second pull bailed on the active demand (the
   // in-flight first call owned it) → the second live item never mounted until the NEXT signal (orphaned), AND both calls'
   // flipMove overlapped on the surviving optimistic tail (moveTimer overwritten → animating leaked; the shove double-played
   // and a deferred balance never drained). Source flavor under test: a caching source whose getNewer SPLICES the live
   // cache synchronously (the playground mock's model) — the kernel must coalesce regardless of how the source holds data.
-  it('overlapping onMessageSignal calls drain both items (no orphan), stay pinned, and balance animating', async () => {
+  it('overlapping source notifications coalesce and drain both items without leaking animation state', async () => {
     const { hooks } = controllableHooks(40);
-    const full = fakeSource(500);
-    const live: CbItem<number>[] = [];
-    const src: CbSource<number> = {
-      ...full,
-      getNewer: async () => {
-        if (live.length === 0) return [];
-        const out = live.splice(0); // drain a caching source's live buffer
-        out[out.length - 1] = {
-          ...out[out.length - 1],
-          boundary: 'newest' as const,
-        };
-        return out;
-      },
-      pushLive: (items) => {
-        for (const it of items) live.push(it);
-      },
-    };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -1965,15 +2075,10 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     animEnd('-1');
     scroller.scrollToBottom();
 
-    // Two SSE frames land in the same microtask window: op-1 is cached AFTER the first onMessageSignal's getNewer
+    // Two SSE frames land in the same microtask window: op-1 is cached AFTER the first newer demand
     // sync-drained [op-0] but BEFORE its loadNewer resolves — exactly the one-microtask race window.
-    src.pushLive([{ id: 800, data: 100 }]); // frame 1
-    const p1 = scroller.onMessageSignal(); // sync part: getNewer drains [op-0], then awaits
-    src.pushLive([{ id: 801, data: 101 }]); // frame 2 — cached during p1's await (the race)
-    const p2 = scroller.onMessageSignal(); // overlaps p1 (collapses into a tail pass)
-    await flush();
-    await p1;
-    await p2;
+    src.pushLive([{ id: 800, data: 100 }]); // partial frame: waiter remains pending
+    src.pushLive([{ id: 801, data: 101, boundary: 'newest' as const }]); // boundary makes the accumulated demand satisfiable
     await flush();
 
     // Both opponent messages must be mounted (without the fix, op-1 is orphaned in the live cache until the next signal).
@@ -2000,7 +2105,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
 
   // Symmetric optimistic lifecycle: a push that extends the newest (a non-newest page lands while pinned at the newest)
   // UNMOUNTS the in-flight optimistic tail (they're recoverable via getPending); reaching the newest again RE-MOUNTS them.
-  it('onMessageSignal unmounts optimistic on a non-newest push, re-mounts on reaching newest (getPending)', async () => {
+  it('a partial newer demand restores optimistic items only after reaching newest', async () => {
     const { hooks } = controllableHooks();
     // Backlog source: getNewer drains a queue (page 1 = 50 reals WITHOUT 'newest', page 2 = reals WITH 'newest');
     // getPending returns the in-flight optimistic sends the kernel (re)mounts at the newest edge.
@@ -2013,13 +2118,10 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
         boundary: 'newest' as const,
       })),
     ];
-    const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => batches.shift() ?? [],
-      pushLive: () => {},
+    const src = pushedSource({
+      ...fakeSource(500),
       getPending: () => pending.slice(),
-    };
+    });
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2038,7 +2140,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="-2"]').length).toBe(1);
 
     // Push #1: a 50-real page WITHOUT 'newest' (large backlog). wasAtNewest=true → noNewer=false → optimistic unmounted.
-    await scroller.onMessageSignal();
+    src.pushLive(batches.shift()!);
+    await flush();
     await flush();
     expect(scroller.getInfo().noNewer).toBe(false);
     expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(0); // unmounted (recoverable via getPending)
@@ -2046,6 +2149,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="649"]').length).toBe(1); // the 50 backlog reals did mount
 
     // Scroll back to the newest → followToNewest loads page 2 (newest) → elevatePending re-mounts the in-flight sends.
+    src.pushLive(batches.shift()!);
     scroller.scrollToBottom();
     await flush();
     expect(scroller.getInfo().noNewer).toBe(true);
@@ -2056,13 +2160,16 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
 
   // Regression: a SMALL push (the page reaches the global newest) does NOT unmount optimistic — noNewer stays true,
   // elevatePending skips already-mounted sends. Only a non-newest push (the backlog case above) unmounts them.
-  it('onMessageSignal with a newest-reaching page keeps optimistic mounted (small push → no unmount)', async () => {
+  it('a newest-reaching demand keeps optimistic items mounted', async () => {
     const { hooks } = controllableHooks();
     const pending: CbItem<number>[] = [];
     const base = fakeSource(500);
     const src: CbSource<number> = {
       ...base,
-      getNewer: async () => [{ id: 600, data: 0, boundary: 'newest' as const }],
+      requestNewer: () =>
+        testDemand(async () => [
+          { id: 600, data: 0, boundary: 'newest' as const },
+        ]),
       pushLive: () => {},
       getPending: () => pending.slice(),
     };
@@ -2077,7 +2184,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     pending.push(optA);
     scroller.insertAfter(499, optA, { optimistic: true });
     animEnd('-1');
-    await scroller.onMessageSignal();
+    await flush();
     await flush();
     expect(scroller.getInfo().noNewer).toBe(true);
     expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(1); // survived (elevate skipped it — already mounted)
@@ -2088,21 +2195,10 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   // position — so it does NOT play a cb-enter: the bubble is already on screen as the optimistic; only the cb-confirmed
   // spinner→check choreography plays (reconcileOptimistic tags it). The optimistic duplicate is removed synchronously
   // (no two-bubble flash). (A PLAIN incoming real — no clientMessageId — still enters from above; see the next test.)
-  it('onMessageSignal: a confirmed real does NOT enter-animate — it settles in place (cb-confirmed only)', async () => {
+  it('a confirmed real from a newer demand settles without an enter animation', async () => {
     const { hooks } = controllableHooks();
     const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => [
-        {
-          id: 600,
-          data: 777,
-          clientMessageId: 'cid-0',
-          boundary: 'newest' as const,
-        },
-      ],
-      pushLive: () => {},
-    };
+    const src = pushedSource(base);
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2116,9 +2212,14 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { optimistic: true },
     ); // tail bubble tracked by cid-0
     animEnd('-1'); // drain the optimistic's own cb-enter
-    const p = scroller.onMessageSignal(); // real-0 confirms cid-0
-    await flush();
-    await p;
+    src.pushLive([
+      {
+        id: 600,
+        data: 777,
+        clientMessageId: 'cid-0',
+        boundary: 'newest',
+      },
+    ]);
     await flush();
     const real = content.querySelector<HTMLElement>('[data-cb-id="600"]');
     expect(real).not.toBeNull();
@@ -2336,16 +2437,9 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   // survives and is shoved DOWN by the real's height. That shove is non-zero → the surviving tail gets a cb-move FLIP, and
   // the incoming real enters from above (cb-enter-above) for the same cover-avoidance reason. This exercises the tail-shove
   // branch of the coordinated animation (the confirm case above has a zero shove since real and optimistic share content).
-  it('onMessageSignal: a plain incoming real above an optimistic tail shoves the tail (cb-move) and enters from above', async () => {
+  it('a plain incoming real from a newer demand moves the optimistic tail and enters from above', async () => {
     const { hooks } = controllableHooks(100);
-    const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => [
-        { id: 602, data: 777, boundary: 'newest' as const },
-      ],
-      pushLive: () => {},
-    };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2359,9 +2453,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { optimistic: true },
     ); // tail bubble NOT confirmed by real-X
     animEnd('-1');
-    const p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive([{ id: 602, data: 777, boundary: 'newest' as const }]);
     await flush();
     // The incoming real entered from above (tail present → cover avoidance), NOT from below.
     expect(
@@ -2403,12 +2495,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       [{ id: 700, data: 1001, boundary: 'newest' as const }],
       [{ id: 701, data: 1002, boundary: 'newest' as const }],
     ];
-    const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => batches.shift() ?? [],
-      pushLive: () => {},
-    };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2418,15 +2505,12 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     await scroller.init();
     const createsAfterInit = t.createCount();
 
-    let p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batches.shift()!);
     await flush(); // img1 mounts (newest wasn't an image → no absorb)
     expect(t.createCount()).toBe(createsAfterInit + 1);
+    animEnd('700');
 
-    p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batches.shift()!);
     await flush(); // img2 → newest IS img1 → ABSORB
     expect(t.createCount()).toBe(createsAfterInit + 1); // no new mount
     expect(t.updateCount()).toBe(1); // img1 morphed in place
@@ -2445,13 +2529,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { id: 702, data: 5 }, // non-image: breaks the run
       { id: 703, data: 1003, boundary: 'newest' as const }, // after the text → must NOT absorb back into img1
     ];
-    const queue: CbItem<number>[][] = [batch];
-    const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => queue.shift() ?? [],
-      pushLive: () => {},
-    };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2461,9 +2539,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     await scroller.init();
     const createsAfterInit = t.createCount();
 
-    const p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batch);
     await flush();
     expect(t.createCount() - createsAfterInit).toBe(3); // img1, txt, img3 mounted (img2 absorbed)
     expect(t.updateCount()).toBe(1); // only img2 absorbed into img1
@@ -2517,12 +2593,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
         },
       ],
     ];
-    const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => batches.shift() ?? [],
-      pushLive: () => {},
-    };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2538,9 +2609,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-a' },
       { optimistic: true },
     );
-    let p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batches.shift()!);
     await flush(); // real-a confirms cid-a
     expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(0); // opt-a reconciled (removed)
     expect(content.querySelectorAll('[data-cb-id="600"]').length).toBe(1); // real-a mounted once
@@ -2549,6 +2618,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
         .querySelector('[data-cb-id="600"]')
         ?.classList.contains('cb-confirmed'),
     ).toBe(true);
+    animEnd('600');
 
     // Send image B: another optimistic (cid-b). real-b's target IS real-a (an image) → it ABSORBS instead of mounting.
     const createsBeforeB = t.createCount();
@@ -2557,9 +2627,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-b' },
       { optimistic: true },
     );
-    p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batches.shift()!);
     await flush(); // real-b absorbed into real-a
     expect(t.createCount()).toBe(createsBeforeB + 1); // only opt-b created (real-b ABSORBED, not mounted)
     expect(t.updateCount()).toBe(1); // real-a morphed in place
@@ -2569,7 +2637,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="600"]').length).toBe(1); // the album endures
   });
 
-  // The absorbed-only signal must still report progress (n > 0) so onMessageSignal runs reconcileOptimistic — otherwise
+  // An absorbed-only demand must still report progress so the demand callback runs optimistic reconciliation — otherwise
   // opt-b would orphan. This is the same flow as the test above, isolated to the B signal with an explicit mount-count
   // check that mounted.length did NOT grow (the only progress was the absorb).
   it('a pure-absorb signal reports progress (n>0) even though mounted[] did not grow → reconcile still runs', async () => {
@@ -2593,12 +2661,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
         },
       ],
     ];
-    const base = fakeSource(500);
-    const src: CbSource<number> = {
-      ...base,
-      getNewer: async () => batches.shift() ?? [],
-      pushLive: () => {},
-    };
+    const src = pushedSource(fakeSource(500));
     scroller = new ChatBoxScroller<number>({
       viewport,
       content,
@@ -2611,9 +2674,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-a' },
       { optimistic: true },
     );
-    let p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batches.shift()!);
     await flush();
     const mountedAfterA = scroller.getInfo().mounted;
     // Add opt-b BEFORE its real arrives, then deliver real-b in a pure-absorb signal.
@@ -2622,16 +2683,14 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-b' },
       { optimistic: true },
     );
-    p = scroller.onMessageSignal();
-    await flush();
-    await p;
+    src.pushLive(batches.shift()!);
     await flush();
     // mounted[] count is UNCHANGED (real-b absorbed, no new entry), yet opt-b was still reconciled → reconcile ran.
     expect(scroller.getInfo().mounted).toBe(mountedAfterA);
     expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(0); // opt-b removed (not orphaned)
   });
 
-  it('onMessageSignal with a trimmed newer end (noNewer=false) caches only — no load, no mount', async () => {
+  it('a source notification at a trimmed newer end caches only without loading or mounting', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScroller<number>({
@@ -2647,7 +2706,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller.getInfo().noNewer).toBe(false);
     const mountedBefore = scroller.getInfo().mounted;
     const newersBefore = src.newers();
-    await scroller.onMessageSignal();
+    await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore); // nothing mounted (cached only; loaded on scroll-back)
     expect(src.newers()).toBe(newersBefore); // getNewer not called (gate: !noNewer → return)
   });
@@ -2740,8 +2799,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     viewport.scrollTop = 0; // top edge → loadOlder would fire if balance ran
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
-    expect(src.gets()).toBe(getsBefore); // deferred
-    animEnd('400'); // drain → balance resumes → loadOlder
+    expect(src.gets()).toBeGreaterThan(getsBefore); // demand subscription is not animation-gated
+    animEnd('400');
     await flush();
     expect(src.gets()).toBeGreaterThan(getsBefore);
   });
@@ -2776,6 +2835,207 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     const caps = content.querySelectorAll('.cb-tail-cap');
     expect(caps.length).toBe(1);
     expect(content.lastElementChild).toBe(caps[0]); // always last: every append inserts before it
+    expect(caps[0].querySelector('.cb-edge-status-ring')).not.toBeNull();
+  });
+
+  it('newer demand failure becomes an amber manual retry and ordinary balance does not retry', async () => {
+    const { hooks } = controllableHooks();
+    let requests = 0;
+    const source = fakeSource(1);
+    source.requestNewer = () => {
+      requests++;
+      return requests === 1
+        ? of({ kind: 'error', error: new Error('offline') })
+        : of({
+            kind: 'items',
+            items: [{ id: 1, data: 1, boundary: 'newest' }],
+          });
+    };
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init();
+    await flush();
+
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    expect(requests).toBe(1);
+    expect(cap.classList.contains('cb-tail-cap--failed')).toBeTrue();
+    expect(cap.getAttribute('role')).toBe('button');
+    expect(cap.getAttribute('aria-label')).toContain('Retry');
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(requests).toBe(1);
+
+    cap.click();
+    await flush();
+    expect(requests).toBeGreaterThanOrEqual(2);
+    expect(cap.classList.contains('cb-tail-cap--failed')).toBeFalse();
+  });
+
+  it('cancels the persistent newer demand after leaving the lower load-more region', async () => {
+    const { hooks } = controllableHooks();
+    let cancelled = 0;
+    const source = fakeSource(100);
+    source.requestNewer = () =>
+      new Observable(() => {
+        return () => {
+          cancelled++;
+        };
+      });
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init();
+    await flush();
+    expect(content.querySelector('.cb-tail-cap--loading')).toBeNull();
+    expect(content.querySelector('.cb-tail-cap--gap')).not.toBeNull();
+
+    viewport.scrollTop = 3000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(cancelled).toBe(1);
+  });
+
+  it('demand invariant: repeated viewport notifications keep one active demand per direction', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(500);
+    let requests = 0;
+    source.requestNewer = () => {
+      requests++;
+      return testDemand(() => new Promise(() => {}));
+    };
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init();
+    viewport.dispatchEvent(new Event('scroll'));
+    viewport.dispatchEvent(new Event('scroll'));
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+
+    expect(requests).toBe(1);
+    expect(edgeState(scroller, 'newer').active).not.toBeNull();
+  });
+
+  it('demand invariant: a cancelled stale completion cannot mount or clear its replacement', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(500);
+    const resolvers: Array<(result: CbDemandResult<number>) => void> = [];
+    source.requestNewer = () =>
+      new Observable((subscriber) => {
+        // Deliberately retain this sender after teardown; RxJS still prevents delivery to the closed observer.
+        resolvers.push((result) => subscriber.next(result));
+      });
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init();
+    await flush();
+    expect(resolvers.length).toBe(1);
+
+    viewport.scrollTop = 3000;
+    viewport.dispatchEvent(new Event('scroll')); // cancels demand #1
+    viewport.scrollTop = content.scrollHeight - viewport.clientHeight;
+    viewport.dispatchEvent(new Event('scroll')); // starts demand #2 immediately
+    await flush();
+    expect(resolvers.length).toBe(2);
+    const replacement = edgeState(scroller, 'newer').active;
+
+    resolvers[0]({ kind: 'items', items: [{ id: 700, data: 700 }] });
+    await flush();
+    expect(content.querySelector('[data-cb-id="700"]')).toBeNull();
+    expect(edgeState(scroller, 'newer').active).toBe(replacement);
+  });
+
+  it('demand invariant: an error preserves boundaries and retry creates exactly one replacement', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(500);
+    let requests = 0;
+    source.requestNewer = () => {
+      requests++;
+      return requests === 1
+        ? of({ kind: 'error', error: new Error('offline') })
+        : testDemand(() => new Promise(() => {}));
+    };
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init();
+    const boundaryBefore = scroller.getInfo().noNewer;
+    await flush();
+    expect(scroller.getInfo().noNewer).toBe(boundaryBefore);
+
+    scroller.retryNewer();
+    scroller.retryNewer();
+    await flush();
+    expect(requests).toBe(2);
+    expect(edgeState(scroller, 'newer').active).not.toBeNull();
+  });
+
+  it('newest highlight intent is cancelled on lower-region exit, re-seed, and destroy', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(5000);
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init({ startMsgId: 2500, anchor: 'center' });
+    source.requestNewer = () => testDemand(() => new Promise(() => {}));
+
+    scroller.scrollToBottom(true);
+    expect(newestHighlightPending(scroller)).toBeTrue();
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(newestHighlightPending(scroller)).toBeFalse();
+
+    scroller.scrollToBottom(true);
+    void scroller.scrollToIndex(100, 'center');
+    expect(newestHighlightPending(scroller)).toBeFalse();
+
+    scroller.scrollToBottom(true);
+    scroller.destroy();
+    expect(newestHighlightPending(scroller)).toBeFalse();
+    scroller = undefined;
+  });
+
+  it('newest highlight intent is cancelled when its newer demand fails', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(5000);
+    let resolveNewer!: (result: CbDemandResult<number>) => void;
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+    });
+    await scroller.init({ startMsgId: 2500, anchor: 'center' });
+    source.requestNewer = () =>
+      new Observable((subscriber) => {
+        resolveNewer = (result) => subscriber.next(result);
+      });
+    scroller.scrollToBottom(true);
+    expect(newestHighlightPending(scroller)).toBeTrue();
+
+    resolveNewer({ kind: 'error', error: new Error('offline') });
+    await flush();
+    expect(newestHighlightPending(scroller)).toBeFalse();
   });
 
   it('tail cap: gap mode at the global newest (noNewer) — cb-tail-cap--gap, height measured + folded into totalH', async () => {
@@ -2819,7 +3079,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller.getInfo().atBottom).toBe(true);
   });
 
-  it('tail cap: loading mode (!noNewer) after a mid-history jump — cb-tail-cap--loading spinner', async () => {
+  it('tail cap: an idle newer waiter after a mid-history jump stays a quiet gap', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -2830,12 +3090,12 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     await scroller.init({ startMsgId: 2500, anchor: 'center' }); // mid-history → noNewer=false
     expect(scroller.getInfo().noNewer).toBe(false);
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
-    expect(cap.classList.contains('cb-tail-cap--loading')).toBe(true);
-    expect(cap.classList.contains('cb-tail-cap--gap')).toBe(false);
-    expect(cap.offsetHeight).toBe(48); // same row height as the top ghost spinner
+    expect(cap.classList.contains('cb-tail-cap--loading')).toBe(false);
+    expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
+    expect(cap.offsetHeight).toBe(14);
   });
 
-  it('tail cap: loading→gap when scrollToBottom reaches the global newest (re-measured on the reaching batch)', async () => {
+  it('tail cap: an idle waiter remains a gap while scrollToBottom reaches newest', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -2850,10 +3110,13 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(
       content
         .querySelector('.cb-tail-cap')!
-        .classList.contains('cb-tail-cap--loading'),
+        .classList.contains('cb-tail-cap--gap'),
     ).toBe(true);
-    scroller.scrollToBottom(); // followToNewest chains to the global newest
-    await flush();
+    scroller.scrollToBottom(); // the lower-region demand chain reaches the global newest
+    await waitFor(
+      () => scroller!.getInfo().noNewer,
+      'scrollToBottom to reach the newest boundary',
+    );
     expect(scroller.getInfo().noNewer).toBe(true);
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
     expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
@@ -3259,38 +3522,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   });
 
   it('empty thread: optimistic send → confirm signal → real replaces the optimistic bubble at the bottom', async () => {
-    // Faithful MockItemSource shape for an empty thread (no history): sequence = live (confirmed reals). init(-1)
-    // returns the newest page; getNewer resolves only REAL cursors (returns [] for an optimistic id — the original bug).
-    const live: CbItem<number>[] = [];
-    const src: CbSource<number> = {
-      init: async (_a, olderCount) => {
-        const start = Math.max(0, live.length - olderCount);
-        const out = live.slice(start).map((it) => ({ ...it }));
-        if (out.length)
-          out[out.length - 1] = {
-            ...out[out.length - 1],
-            boundary: 'newest' as const,
-          };
-        return out;
-      },
-      getOlder: async () => [],
-      getNewer: async (cursorId) => {
-        const idx = live.findIndex((it) => String(it.id) === String(cursorId));
-        if (idx < 0) return []; // optimistic cursor unresolvable → [] (strands the real without the init fallback)
-        const out = live.slice(idx + 1).map((it) => ({ ...it }));
-        if (out.length)
-          out[out.length - 1] = {
-            ...out[out.length - 1],
-            boundary: 'newest' as const,
-          };
-        return out;
-      },
-      pushLive: (items) => {
-        for (const it of items) live.push(it);
-      },
-      getPending: () => [],
-      destroy: () => {},
-    };
+    const src = pushedSource(fakeSource(0));
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -3309,8 +3541,10 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.querySelector('[data-cb-id="-1"]')).not.toBeNull();
 
     // Server confirm: cache the real (fresh server id, SAME clientMessageId) then deliver the WS signal.
-    src.pushLive([{ id: 0, data: 42, clientMessageId: 'cid-1' }]);
-    await scroller.onMessageSignal();
+    src.pushLive([
+      { id: 0, data: 42, clientMessageId: 'cid-1', boundary: 'newest' },
+    ]);
+    await flush();
 
     // The optimistic duplicate is reconciled away; the real is the sole mounted item, pinned at the bottom, cb-confirmed.
     const info = scroller.getInfo();
@@ -3331,36 +3565,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // it must fall through to the init(-1) newest-page fallback and mount the just-cached real. Pre-fix the guard
     // returned 0 and the first message was silently dropped (empty chatbox); only the SECOND message showed, because
     // by then mounted.length > 0.
-    const live: CbItem<number>[] = [];
-    const src: CbSource<number> = {
-      init: async (_a, olderCount) => {
-        const start = Math.max(0, live.length - olderCount);
-        const out = live.slice(start).map((it) => ({ ...it }));
-        if (out.length)
-          out[out.length - 1] = {
-            ...out[out.length - 1],
-            boundary: 'newest' as const,
-          };
-        return out;
-      },
-      getOlder: async () => [],
-      getNewer: async (cursorId) => {
-        const idx = live.findIndex((it) => String(it.id) === String(cursorId));
-        if (idx < 0) return [];
-        const out = live.slice(idx + 1).map((it) => ({ ...it }));
-        if (out.length)
-          out[out.length - 1] = {
-            ...out[out.length - 1],
-            boundary: 'newest' as const,
-          };
-        return out;
-      },
-      pushLive: (items) => {
-        for (const it of items) live.push(it);
-      },
-      getPending: () => [],
-      destroy: () => {},
-    };
+    const src = pushedSource(fakeSource(0));
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -3373,8 +3578,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(scroller.getInfo().noNewer).toBe(true);
 
     // Receiver: the first message arrives live (SSE → repo cache → signal). NO optimistic bubble is mounted.
-    src.pushLive([{ id: 0, data: 42 }]);
-    await scroller.onMessageSignal();
+    src.pushLive([{ id: 0, data: 42, boundary: 'newest' }]);
+    await flush();
 
     // The first incoming message MUST mount and pin to the bottom — pre-fix this stayed mounted===0.
     const info = scroller.getInfo();
@@ -3390,34 +3595,21 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // is saved, then replayed once init primes — but the replay routes back into loadNewer(true) on mounted===[],
     // which pre-fix bailed at the guard. One root cause, two symptoms; this test pins the second. Mirrors the
     // non-empty "signal in the init-fetch window" test, but the snapshot resolves EMPTY (a brand-new thread).
-    const live: CbItem<number>[] = [];
     let resolveInitFn: ((items: CbItem<number>[]) => void) | null = null;
-    let initCalls = 0;
-    const src: CbSource<number> = {
+    const base: CbSource<number> = {
       init: async (anchorId) => {
         if (anchorId !== -1) return [];
-        // 1st call (kernel init): deferred — resolves with the empty pre-arrival snapshot.
-        // 2nd call (loadNewer's init(-1) fallback after the replay): return the now-cached live message.
-        if (initCalls++ === 0)
-          return new Promise((r) => {
-            resolveInitFn = r;
-          });
-        const out = live.slice().map((it) => ({ ...it }));
-        if (out.length)
-          out[out.length - 1] = {
-            ...out[out.length - 1],
-            boundary: 'newest' as const,
-          };
-        return out;
+        return new Promise((r) => {
+          resolveInitFn = r;
+        });
       },
-      getOlder: async () => [],
-      getNewer: async () => [],
-      pushLive: (items) => {
-        for (const it of items) live.push(it);
-      },
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: () => testDemand(async () => []),
+      pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
     };
+    const src = pushedSource(base);
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({
       viewport,
@@ -3431,8 +3623,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(resolveInitFn).not.toBeNull(); // init's initial fetch is still in flight
 
     // The first message (id 0) arrives during the window + its signal fires (saved by runMessageSignal's !primed arm).
-    src.pushLive([{ id: 0, data: 42 }]);
-    scroller.onMessageSignal(0);
+    src.pushLive([{ id: 0, data: 42, boundary: 'newest' }]);
 
     // init resolves with the EMPTY pre-arrival snapshot (id 0 missed it).
     resolveInitFn!([]);
@@ -3455,14 +3646,16 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     let newerCalls = 0;
     const src: CbSource<number> = {
       init: async () => [{ ...sole }],
-      getOlder: async () => {
-        olderCalls++;
-        return [];
-      },
-      getNewer: async () => {
-        newerCalls++;
-        return [];
-      },
+      requestOlder: () =>
+        testDemand(async () => {
+          olderCalls++;
+          return [];
+        }, true),
+      requestNewer: () =>
+        testDemand(async () => {
+          newerCalls++;
+          return [];
+        }),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -3483,9 +3676,9 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     // item → noOlder stayed false → a single-message thread showed a permanent top ghost + triggered a wasted loadOlder.
     expect(info.noOlder).toBe(true);
     expect(info.noNewer).toBe(true);
-    // Both edges known at init → no fill loop (getOlder) and no followToNewest (getNewer).
+    // Both edges known at init → no older fill. The lower region still owns one persistent newer waiter.
     expect(olderCalls).toBe(0);
-    expect(newerCalls).toBe(0);
+    expect(newerCalls).toBe(1);
   });
 
   it('updateItemData morphs a mounted item in place (vs.update, no recreate) — object data, like ChatItemData', async () => {
@@ -3521,8 +3714,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     items[19] = { ...items[19], boundary: 'newest' as const };
     const src: CbSource<D> = {
       init: async () => items.slice(),
-      getOlder: async () => [],
-      getNewer: async () => [],
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},
@@ -3584,8 +3777,8 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     };
     const src: CbSource<D> = {
       init: async () => [album],
-      getOlder: async () => [],
-      getNewer: async () => [],
+      requestOlder: () => testDemand(async () => [], true),
+      requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
       getPending: () => [],
       destroy: () => {},

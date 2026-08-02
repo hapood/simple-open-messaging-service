@@ -1,6 +1,6 @@
 import { Injectable, inject, effect, isDevMode } from '@angular/core';
 import { Subject, filter, firstValueFrom } from 'rxjs';
-import { WebdbService } from './webdb.service';
+import { MessageCoverageState, WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import { MsgService } from './message.service';
 import { UserService } from './user.service';
@@ -9,6 +9,7 @@ import {
   QueryMessageLogParams,
   MEDIA_STATUS,
   MediaStatus,
+  StandardResponse,
 } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
@@ -24,6 +25,10 @@ export interface MessagePage {
   truncated?: boolean;
   /** Transport/business failure: never interpret an empty data array as a confirmed edge. */
   failed?: boolean;
+}
+
+interface CommittedFill extends MessagePage {
+  confirmedEndSeq?: number;
 }
 
 /** The client's stored media-status state for one message: its current status + the monotonic version of
@@ -68,7 +73,9 @@ export function reduceMediaStatus(
  * **Persistence model:** messages are mirrored to IDB (`messages` store, composite key `[threadId, seq]`,
  * one record per message). Reads are **cache-first + gap-fill**: a held range is served from IDB with no
  * network; only a range the cache genuinely lacks is backfilled from the API (no duplicate pulls of held
- * data). Writes dedup by key (idempotent `put`). Add-only PER MESSAGE — there is no server-side delete
+ * data). Server-confirmed complete blocks are persisted as sparse `sectionLeft` / `sectionRight` markers
+ * on their endpoint messages, so legitimate seq gaps remain reusable after a restart. Writes dedup by key
+ * (idempotent `put`). Add-only PER MESSAGE — there is no server-side delete
  * command, so individual messages are never removed; the ONE exception is whole-thread cache GC when a
  * thread leaves the user's roster (see {@link deleteByThread}).
  *
@@ -92,11 +99,15 @@ export class MessageRepository {
 
   /**
    * Fires `{threadId, seq}` AFTER a NEW_MESSAGE body has been cached for that thread. The per-thread
-   * {@link HttpItemSource} filters to its `threadId` and treats it as "newer data exists, go pull" — the
-   * kernel then reads the just-cached body from IDB via `queryMessages` (a cache hit).
+   * Each {@link HttpItemSource} filters to its `threadId` and treats it as "newer data exists, go pull".
+   * Multiple chatboxes therefore share one cutoff/fill lane but retain independent viewport demands.
    */
   private readonly signal$ = new Subject<{ threadId: number; seq: number }>();
   readonly liveSignal$ = this.signal$.asObservable();
+
+  /** Successful transport reconnect. The repository clears the finite HTTP cutoff before waking views. */
+  private readonly reconnectSignal = new Subject<void>();
+  readonly reconnectSignal$ = this.reconnectSignal.asObservable();
 
   /**
    * Fires `{threadId, seq}` after a message's mediaStatus changed in IDB (a MEDIA_STATUS terminal, a
@@ -114,8 +125,16 @@ export class MessageRepository {
   /** Per-thread highest seq observed (via NEW_MESSAGE or a backend response body). In-memory only —
    *  re-established by the init backend-probe each session. Drives the getNewer cache-hit ceiling test. */
   private readonly maxSeenSeq = new Map<number, number>();
-  /** Complete seq intervals confirmed by successful server pages in this visibility session. */
-  private readonly completeRanges = new Map<number, Array<[number, number]>>();
+  /** Shared finite upper bound for a newer walk. Reconnect clears it because frames may be missing. */
+  private readonly newerTruncateSeq = new Map<number, number>();
+  /** Coverage summaries exist in memory only while at least one chatbox source retains the thread. */
+  private readonly activeCoverage = new Map<
+    number,
+    { refs: number; state?: MessageCoverageState; loading: Promise<void> }
+  >();
+  /** Same-start HTTP fills share one request regardless of count/cutoff. The promise resolves only after
+   *  its response has committed to DB; every waiter then reloads its own rows from DB. */
+  private readonly inflightFills = new Map<string, Promise<CommittedFill>>();
 
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
@@ -169,6 +188,11 @@ export class MessageRepository {
         }
       });
 
+    this.ws.reconnect$.subscribe(() => {
+      this.newerTruncateSeq.clear();
+      this.reconnectSignal.next();
+    });
+
     // Session-end reset: maxSeenSeq is documented "in-memory only — re-established by the init
     // backend-probe each session", so it must not survive an account switch (a stale ceiling from the
     // previous user could make getNewer falsely report the cache reached its ceiling). The IDB messages
@@ -185,7 +209,77 @@ export class MessageRepository {
   /** Drop in-memory session state (logout / account switch). IDB is wiped per-user by WebdbService. */
   private reset(): void {
     this.maxSeenSeq.clear();
-    this.completeRanges.clear();
+    this.newerTruncateSeq.clear();
+    this.activeCoverage.clear();
+    // Requests already on the wire are not cancelled, but a new session must never subscribe to them.
+    // Their captured cache lifetime prevents their eventual response from writing the recreated DB.
+    this.inflightFills.clear();
+  }
+
+  /** Shared finite cutoff for all chatboxes mounted on the same thread. */
+  getNewerTruncateSeq(threadId: number): number | undefined {
+    return this.newerTruncateSeq.get(threadId);
+  }
+
+  /** Reconcile conversation metadata/live init state into the shared per-thread ceiling. */
+  retainNewestSeq(threadId: number, seq: number): void {
+    if (Number.isSafeInteger(seq) && seq >= 0)
+      this.advanceCeiling(threadId, seq, false);
+  }
+
+  /** Open-chat lifecycle hook: hydrate the durable O(1) tail summary once for this mounted thread. */
+  retainCoverage(threadId: number, knownNewestSeq?: number): void {
+    const active = this.activeCoverage.get(threadId);
+    if (active) {
+      active.refs++;
+      if (knownNewestSeq !== undefined)
+        this.advanceCeiling(threadId, knownNewestSeq);
+      return;
+    }
+    const entry: {
+      refs: number;
+      state?: MessageCoverageState;
+      loading: Promise<void>;
+    } = {
+      refs: 1,
+      loading: Promise.resolve(),
+    };
+    this.activeCoverage.set(threadId, entry);
+    entry.loading = this.webdb
+      .getMessageCoverage(threadId)
+      .then(async (stored) => {
+        if (this.activeCoverage.get(threadId) !== entry) return;
+        const newestSeq = Math.max(
+          stored?.knownNewestSeq ?? -1,
+          knownNewestSeq ?? -1,
+          this.maxSeenSeq.get(threadId) ?? -1,
+        );
+        if (newestSeq < 0) return;
+        this.maxSeenSeq.set(threadId, newestSeq);
+        entry.state =
+          stored?.knownNewestSeq === newestSeq
+            ? stored
+            : {
+                threadId,
+                knownNewestSeq: newestSeq,
+                coveredTail: stored?.coveredTail ?? null,
+              };
+        if (stored?.knownNewestSeq !== newestSeq) {
+          const coverage = await this.webdb.putMessages([], undefined, {
+            threadId,
+            seq: newestSeq,
+          });
+          if (this.activeCoverage.get(threadId) === entry && coverage)
+            entry.state = coverage;
+        }
+      });
+  }
+
+  /** Close-chat lifecycle hook: the durable summary remains, only its memory acceleration is released. */
+  releaseCoverage(threadId: number): void {
+    const active = this.activeCoverage.get(threadId);
+    if (!active) return;
+    if (--active.refs === 0) this.activeCoverage.delete(threadId);
   }
 
   /**
@@ -200,6 +294,17 @@ export class MessageRepository {
    *   known (floor = seq 0 present; ceiling = maxSeenSeq); gap-fill from the API otherwise.
    */
   async queryMessages(
+    threadId: number,
+    q: MessageQuery,
+    clearedThroughSeq?: number | null,
+    localOnly = false,
+  ): Promise<MessagePage> {
+    if (localOnly)
+      return this.queryMessagesInternal(threadId, q, clearedThroughSeq, true);
+    return this.queryMessagesInternal(threadId, q, clearedThroughSeq, false);
+  }
+
+  private async queryMessagesInternal(
     threadId: number,
     q: MessageQuery,
     clearedThroughSeq?: number | null,
@@ -262,7 +367,7 @@ export class MessageRepository {
       q.orderBy === 'desc'
         ? await this.rangeDesc(threadId, anchor, q.take, clearedThroughSeq)
         : await this.rangeAsc(threadId, anchor, q.take, clearedThroughSeq);
-    const verdict = this.cacheVerdict(
+    const verdict = await this.cacheVerdict(
       cached,
       anchor,
       q.take,
@@ -311,7 +416,11 @@ export class MessageRepository {
       truncateSeq: boundary,
     });
     if (first.failed) return first;
-    if (!first.truncated || first.data.length >= q.take || boundary === q.truncateSeq)
+    if (
+      !first.truncated ||
+      first.data.length >= q.take ||
+      boundary === q.truncateSeq
+    )
       return first;
 
     const step = q.orderBy === 'desc' ? -1 : 1;
@@ -362,7 +471,11 @@ export class MessageRepository {
       let localCursor = cursor;
       while (
         localCount < cached.length &&
-        this.isCompleteRange(threadId, localCursor, cached[localCount].seq) &&
+        (await this.isCompleteRange(
+          threadId,
+          localCursor,
+          cached[localCount].seq,
+        )) &&
         this.withinRequestedTruncate(cached[localCount].seq, q)
       ) {
         localCursor = cached[localCount].seq;
@@ -485,33 +598,29 @@ export class MessageRepository {
       : Math.max(...candidates);
   }
 
-  private isCompleteRange(threadId: number, a: number, b: number): boolean {
+  private async isCompleteRange(
+    threadId: number,
+    a: number,
+    b: number,
+  ): Promise<boolean> {
     const from = Math.min(a, b);
     const to = Math.max(a, b);
-    return (
-      // Migration fallback for rows cached before interval tracking existed. It is intentionally limited
-      // to a single seq step; any wider numeric gap requires a server-confirmed interval.
-      to - from === 1 ||
-      (this.completeRanges.get(threadId) ?? []).some(
-        ([knownFrom, knownTo]) => knownFrom <= from && knownTo >= to,
+    // There is no integer seq between adjacent rows, so this hop is intrinsically complete even for
+    // pre-v3 cached messages that have not acquired persisted section markers yet.
+    if (to - from === 1) return true;
+    const active = this.activeCoverage.get(threadId);
+    if (active) {
+      await active.loading;
+      const tail = active.state;
+      if (
+        tail?.coveredTail != null &&
+        from >= tail.coveredTail.left &&
+        to <= tail.coveredTail.right
       )
-    );
-  }
-
-  private recordCompleteRange(threadId: number, a: number, b: number): void {
-    let from = Math.min(a, b);
-    let to = Math.max(a, b);
-    const out: Array<[number, number]> = [];
-    for (const [knownFrom, knownTo] of this.completeRanges.get(threadId) ?? []) {
-      if (knownTo < from || knownFrom > to) out.push([knownFrom, knownTo]);
-      else {
-        from = Math.min(from, knownFrom);
-        to = Math.max(to, knownTo);
-      }
+        return true;
     }
-    out.push([from, to]);
-    out.sort((x, y) => x[0] - y[0]);
-    this.completeRanges.set(threadId, out);
+    const section = await this.webdb.getMessageSection(threadId, a);
+    return section !== undefined && from >= section.left && to <= section.right;
   }
 
   /**
@@ -531,7 +640,7 @@ export class MessageRepository {
    */
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);
-    this.completeRanges.delete(threadId);
+    this.activeCoverage.delete(threadId);
     try {
       await this.webdb.deleteMessagesByThread(threadId);
     } catch {
@@ -544,54 +653,168 @@ export class MessageRepository {
     threadId: number,
     q: MessageQuery,
   ): Promise<MessagePage> {
-    try {
-      const res = await firstValueFrom(
-        this.msg.queryMessageLog({ threadId, ...q }),
-      );
-      if (res.code !== 0) return { data: [], hasMore: true, failed: true };
-      const data = res.data ?? [];
-      if (data.length > 0) {
-        await this.putMany(data);
-        // A local-gap cutoff is not a server ceiling. Only an unbounded response, or a newest-page
-        // revalidation (desc/no cursor, whose first row is globally newest), may advance maxSeenSeq.
-        if (
-          !q.truncate ||
-          (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined)
-        ) {
-          const max = data.reduce((mx, m) => (m.seq > mx ? m.seq : mx), -1);
-          const cur = this.maxSeenSeq.get(threadId) ?? -1;
-          if (max > cur) this.maxSeenSeq.set(threadId, max);
-        }
-      }
-      const endpoint =
-        res.truncated && q.truncateSeq !== undefined
-          ? q.truncateSeq
-          : data[data.length - 1]?.seq;
-      if (q.lastSeq !== undefined && endpoint !== undefined) {
-        this.recordCompleteRange(threadId, q.lastSeq, endpoint);
-      } else if (data.length > 0) {
-        const seqs = data.map((m) => m.seq);
-        this.recordCompleteRange(
-          threadId,
-          Math.min(...seqs),
-          Math.max(...seqs),
+    const waiterLifetime = this.webdb.captureMessageLifetime();
+    const key =
+      q.lastSeq === undefined
+        ? undefined
+        : `${threadId}:${q.lastSeq}:${q.orderBy}`;
+    let fill = key === undefined ? undefined : this.inflightFills.get(key);
+    if (!fill) {
+      fill = this.fetchAndCommit(threadId, q);
+      if (key !== undefined) {
+        this.inflightFills.set(key, fill);
+        void fill.then(
+          () => {
+            if (this.inflightFills.get(key) === fill)
+              this.inflightFills.delete(key);
+          },
+          () => {
+            if (this.inflightFills.get(key) === fill)
+              this.inflightFills.delete(key);
+          },
         );
-        if (res.truncated && q.truncateSeq !== undefined)
-          this.recordCompleteRange(threadId, q.truncateSeq, data[0].seq);
       }
-      return {
-        data,
-        hasMore: res.hasMore ?? data.length >= q.take,
-        truncated: res.truncated,
-      };
+    }
+    const committed = await fill;
+    if (waiterLifetime.aborted)
+      return { data: [], hasMore: true, failed: true };
+    if (committed.failed) return committed;
+
+    const data: Message[] = [];
+    for (const row of committed.data) {
+      const stored = await this.getOne(threadId, row.seq);
+      if (!stored) throw new Error('committed HTTP message is missing from DB');
+      if (this.withinRequestedTruncate(stored.seq, q)) data.push(stored);
+    }
+    const reachedOwnBoundary =
+      q.truncate === true &&
+      q.truncateSeq !== undefined &&
+      committed.confirmedEndSeq !== undefined &&
+      (q.orderBy === 'asc'
+        ? committed.confirmedEndSeq >= q.truncateSeq
+        : committed.confirmedEndSeq <= q.truncateSeq);
+    return {
+      data: data.slice(0, q.take),
+      hasMore: reachedOwnBoundary
+        ? false
+        : committed.truncated
+          ? true
+          : committed.hasMore,
+      truncated: reachedOwnBoundary,
+    };
+  }
+
+  private async fetchAndCommit(
+    threadId: number,
+    q: MessageQuery,
+  ): Promise<CommittedFill> {
+    const cacheLifetime = this.webdb.captureMessageLifetime();
+    let res: StandardResponse<Message[]>;
+    try {
+      res = await firstValueFrom(this.msg.queryMessageLog({ threadId, ...q }));
     } catch {
       return { data: [], hasMore: true, failed: true };
     }
+    // A clear-cache operation may have completed while this request was in flight. Its response belongs
+    // to the old cache lifetime: do not mutate repository ceilings, return rows to a closing chatbox, or
+    // write them into the freshly-created database.
+    if (cacheLifetime.aborted) {
+      return { data: [], hasMore: true, failed: true };
+    }
+    if (res.code !== 0) return { data: [], hasMore: true, failed: true };
+    const data = res.data ?? [];
+    if (data.length === 0) {
+      if (res.truncated && q.truncateSeq === undefined)
+        throw new Error('message response truncated without a boundary');
+      if (!res.truncated && res.hasMore !== false)
+        throw new Error('empty message response has no confirmed endpoint');
+    }
+    let newest = this.maxSeenSeq.get(threadId);
+    if (data.length > 0) {
+      // A local-gap cutoff is not a server ceiling. Only an unbounded response, or a newest-page
+      // revalidation (desc/no cursor, whose first row is globally newest), may advance maxSeenSeq.
+      if (
+        !q.truncate ||
+        (q.skip === 0 && q.orderBy === 'desc' && q.lastSeq === undefined)
+      ) {
+        const max = data.reduce((mx, m) => (m.seq > mx ? m.seq : mx), -1);
+        newest = Math.max(newest ?? -1, max);
+      }
+    }
+    const endpoint =
+      res.truncated && q.truncateSeq !== undefined
+        ? q.truncateSeq
+        : data[data.length - 1]?.seq;
+    let confirmedSection:
+      | { threadId: number; left: number; right: number }
+      | undefined;
+    if (q.lastSeq !== undefined && endpoint !== undefined) {
+      confirmedSection = {
+        threadId,
+        left: Math.min(q.lastSeq, endpoint),
+        right: Math.max(q.lastSeq, endpoint),
+      };
+    } else if (data.length > 0) {
+      const seqs = data.map((m) => m.seq);
+      const endpoints = [
+        ...seqs,
+        ...(res.truncated && q.truncateSeq !== undefined
+          ? [q.truncateSeq]
+          : []),
+      ];
+      confirmedSection = {
+        threadId,
+        left: Math.min(...endpoints),
+        right: Math.max(...endpoints),
+      };
+    }
+    if (data.length > 0 || confirmedSection) {
+      let coverage: MessageCoverageState | undefined;
+      try {
+        coverage = await this.putMany(
+          data,
+          confirmedSection,
+          newest === undefined ? undefined : { threadId, seq: newest },
+          cacheLifetime,
+        );
+      } catch (error) {
+        if (cacheLifetime.aborted)
+          return { data: [], hasMore: true, failed: true };
+        throw error;
+      }
+      // Recreation waits for the admitted write, but may begin immediately after it commits. Do not publish
+      // old-lifetime memory state or rows to the caller once that lifetime has been aborted.
+      if (cacheLifetime.aborted)
+        return { data: [], hasMore: true, failed: true };
+      if (newest !== undefined) this.advanceCeiling(threadId, newest, false);
+      const active = this.activeCoverage.get(threadId);
+      if (active && coverage) active.state = coverage;
+    }
+    return {
+      data,
+      hasMore: res.hasMore ?? data.length >= q.take,
+      truncated: res.truncated,
+      confirmedEndSeq: endpoint,
+    };
   }
 
   /** Refresh a locally completed latest page and wake the open kernel when the server has any data beyond
    *  the local tail. `cachedNewestSeq === undefined` is the valid empty-cache case. */
   async refreshLatest(
+    threadId: number,
+    q: MessageQuery,
+    cachedNewestSeq: number | undefined,
+    cachedOldestSeq?: number,
+  ): Promise<void> {
+    return this.refreshLatestInternal(
+      threadId,
+      q,
+      cachedNewestSeq,
+      cachedOldestSeq,
+    );
+  }
+
+  private async refreshLatestInternal(
     threadId: number,
     q: MessageQuery,
     cachedNewestSeq: number | undefined,
@@ -621,9 +844,27 @@ export class MessageRepository {
   }
 
   /** Advance the per-thread seq ceiling (drives the getNewer cache-hit test) if `seq` is newer. */
-  private advanceCeiling(threadId: number, seq: number): void {
+  private advanceCeiling(threadId: number, seq: number, persist = true): void {
+    const truncateSeq = this.newerTruncateSeq.get(threadId) ?? -1;
+    if (seq > truncateSeq) this.newerTruncateSeq.set(threadId, seq);
     const cur = this.maxSeenSeq.get(threadId) ?? -1;
-    if (seq > cur) this.maxSeenSeq.set(threadId, seq);
+    if (seq <= cur) return;
+    this.maxSeenSeq.set(threadId, seq);
+    const active = this.activeCoverage.get(threadId);
+    if (active?.state && seq > active.state.knownNewestSeq)
+      active.state = { ...active.state, knownNewestSeq: seq };
+    if (persist)
+      void this.webdb
+        .putMessages([], undefined, { threadId, seq })
+        .then((coverage) => {
+          const current = this.activeCoverage.get(threadId);
+          if (
+            current &&
+            coverage &&
+            coverage.knownNewestSeq >= (current.state?.knownNewestSeq ?? -1)
+          )
+            current.state = coverage;
+        });
   }
 
   /** The newest cached message (highest seq) for EACH threadId, fetched in ONE read transaction: one reverse
@@ -649,17 +890,17 @@ export class MessageRepository {
    * anchor; asc: lowest-first above it). A numeric seq gap may be legitimate under viewer filtering, so
    * completeness comes from successful server pages rather than arithmetic adjacency alone.
    */
-  private cacheVerdict(
+  private async cacheVerdict(
     cached: Message[],
     anchor: number,
     take: number,
     orderBy: 'desc' | 'asc',
     threadId: number,
-  ): { hit: boolean; hasMore: boolean } {
+  ): Promise<{ hit: boolean; hasMore: boolean }> {
     if (cached.length === 0) return { hit: false, hasMore: true };
     let cursor = anchor;
     for (let i = 0; i < cached.length; i++) {
-      if (!this.isCompleteRange(threadId, cursor, cached[i].seq))
+      if (!(await this.isCompleteRange(threadId, cursor, cached[i].seq)))
         return { hit: false, hasMore: true }; // gap
       cursor = cached[i].seq;
     }
@@ -739,12 +980,18 @@ export class MessageRepository {
     }
   }
 
-  private async putMany(msgs: Message[]): Promise<void> {
-    try {
-      await this.webdb.putMessages(msgs);
-    } catch {
-      /* best-effort */
-    }
+  private async putMany(
+    msgs: Message[],
+    confirmedSection?: { threadId: number; left: number; right: number },
+    knownNewest?: { threadId: number; seq: number },
+    lifetime?: AbortSignal,
+  ): Promise<MessageCoverageState | undefined> {
+    return this.webdb.putMessages(
+      msgs,
+      confirmedSection,
+      knownNewest,
+      lifetime,
+    );
   }
 
   /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is

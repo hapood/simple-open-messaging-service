@@ -12,13 +12,7 @@ import { Routes } from '@angular/router';
  */
 export const devRoutes: Routes = [
   {
-    path: 'playground/chatbox-a',
-    loadComponent: () =>
-      import('./pages/chatbox-playground/chatbox-playground.component').then((m) => m.ChatboxPlaygroundComponent),
-    data: { useNativeAnchor: true },
-  },
-  {
-    path: 'playground/chatbox-b',
+    path: 'playground/chatbox',
     loadComponent: () =>
       import('./pages/chatbox-playground/chatbox-playground.component').then((m) => m.ChatboxPlaygroundComponent),
   },

@@ -6,6 +6,7 @@ import { WebsocketService, ConnectionState } from '../../services/websocket.serv
 import { LanguageService } from '../../services/language.service';
 import { IndicatorSlotService } from '../../services/indicator-slot.service';
 import { prefersReducedMotion, springGradient } from '../../lib/motion-utils';
+import { statusRingTemplate } from '../../lib/status-ring';
 
 /** The rendered visual state of the chip. `closed` is only surfaced when a `demoState` override is set
  *  (the playground); in production `closed` = logged out and the shell navigates away, so it stays hidden. */
@@ -76,10 +77,7 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
           <svg class="ic" viewBox="0 0 24 24" fill="none">
             <!-- The revolving spinner: track + arc. The group rotates via CSS; its visibility is owned by the
                  [data-state] CSS rules (opacity transition), NOT Motion — see the styles block. -->
-            <g class="spin">
-              <circle class="track" cx="12" cy="12" r="9" pathLength="100" />
-              <circle class="arc"   cx="12" cy="12" r="9" pathLength="100" />
-            </g>
+            ${statusRingTemplate('spin', 'track', 'arc')}
             <!-- Recovered check. Drawn on by CSS (stroke-dashoffset 100 → 0) when data-state="recovered". -->
             <path class="check" d="M7 12.8l3.1 3.1L17 9" pathLength="100" />
             <!-- Offline glyph. Drawn on together when the chip is in the 'closed' state. -->

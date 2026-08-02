@@ -8,16 +8,45 @@
  *
  * Date separators are NOT produced by the data layer (derived by the front-end createItem).
  */
-import { of, firstValueFrom, type Observable } from 'rxjs';
+import { of, firstValueFrom, Observable, type Subscriber } from 'rxjs';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
-import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
+import type {
+  CbDemand,
+  CbDemandResult,
+  CbSource,
+  CbSourceInitOpts,
+} from '../../lib/chat-box/cb-source';
+import type {
+  AlbumImage,
+  ChatItemData,
+  ChatMsgData,
+} from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
 
 /** Mock user table (id → User). Mirrors the production backend user table; MockItemSource.ensureProfiles looks up by creator here. */
 const MOCK_USERS: ReadonlyMap<number, User> = new Map([
-  [1, { id: 1, account: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
-  [2, { id: 2, account: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
+  [
+    1,
+    {
+      id: 1,
+      account: 'Me',
+      isForeigner: false,
+      createdAt: 0,
+      updatedAt: 0,
+      isDeleted: false,
+    } as User,
+  ],
+  [
+    2,
+    {
+      id: 2,
+      account: 'Alice',
+      isForeigner: false,
+      createdAt: 0,
+      updatedAt: 0,
+      isDeleted: false,
+    } as User,
+  ],
 ]);
 
 /**
@@ -27,8 +56,12 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
  */
 export class MockUserService {
   /** Returns User[] for the given userIds (`of` synchronous, simulating HTTP). */
-  queryUserInfo(params: { userIds: number[] }): Observable<StandardResponse<User[]>> {
-    const data = params.userIds.map(id => MOCK_USERS.get(id)).filter((u): u is User => !!u);
+  queryUserInfo(params: {
+    userIds: number[];
+  }): Observable<StandardResponse<User[]>> {
+    const data = params.userIds
+      .map((id) => MOCK_USERS.get(id))
+      .filter((u): u is User => !!u);
     return of({ code: 0, message: 'ok', data });
   }
 }
@@ -77,9 +110,24 @@ export class MockItemSource implements CbSource<ChatItemData> {
   /** Current user id (isSelf is decided as creator === userId). */
   private readonly userId: number;
   /** User-info cache (creator → name/isSelf), filled by ensureProfiles looking up creators on userService — mirrors HttpItemSource.profiles. */
-  private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
+  private readonly profiles = new Map<
+    number,
+    { name: string; isSelf: boolean }
+  >();
+  private readonly newerWaiters = new Set<{
+    cursorId: number;
+    count: number;
+    subscriber: Subscriber<CbDemandResult<ChatItemData>>;
+  }>();
+  private readonly pumpingWaiters = new WeakSet<object>();
+  private liveRevision = 0;
 
-  constructor(total: number, latency: number, userService: MockUserService, userId: number) {
+  constructor(
+    total: number,
+    latency: number,
+    userService: MockUserService,
+    userId: number,
+  ) {
     this.full = buildItems(total);
     this.latency = latency;
     this.userService = userService;
@@ -95,7 +143,12 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *    slice, merge ascending (mirrors HttpItemSource's bidirectional fetch); older reaching the sequence start →
    *    out[0] tagged 'oldest'; newer reaching the end → out[last] tagged 'newest'.
    */
-  async init(anchorId: number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
+  async init(
+    anchorId: number,
+    olderCount: number,
+    newerCount: number,
+    _opts?: CbSourceInitOpts,
+  ): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
     if (anchorId === -1) {
@@ -104,56 +157,71 @@ export class MockItemSource implements CbSource<ChatItemData> {
       const raw = seq.slice(start);
       if (raw.length === 0) return [];
       await this.ensureProfiles(raw); // look up creators on userService to fill profiles (mirrors production)
-      const items = raw.map(it => this.shape(it));
+      const items = raw.map((it) => this.shape(it));
       // init(-1) always anchors at the newest (the last item is the global newest); start===0 means it also reached the
       // oldest. A length-1 batch spanning both edges is a sole item → mark 'both' (the boundary field is single-valued;
       // naive items[0]='oldest' then items[last]='newest' would collide on it and lose the oldest marker → noOlder never
       // set → a permanent top ghost on a single-message thread).
       const atOldest = start === 0;
-      if (atOldest && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+      if (atOldest && items.length === 1)
+        items[0] = { ...items[0], boundary: 'both' };
       else {
         if (atOldest) items[0] = { ...items[0], boundary: 'oldest' };
-        items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+        items[items.length - 1] = {
+          ...items[items.length - 1],
+          boundary: 'newest',
+        };
       }
       this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from source.pending
       return items;
     }
     // Real msgId: bidirectional slice (older includes anchorId = olderCount items; newer = newerCount items)
-    const idx = seq.findIndex(it => it.id === anchorId);
+    const idx = seq.findIndex((it) => it.id === anchorId);
     if (idx < 0) return [];
     const olderTake = Math.min(olderCount, MAX_PAGE);
     const newerTake = Math.min(newerCount, MAX_PAGE);
     const olderStart = Math.max(0, idx - olderTake + 1);
     const newerEnd = Math.min(seq.length, idx + 1 + newerTake);
-    const raw = [...seq.slice(olderStart, idx + 1), ...seq.slice(idx + 1, newerEnd)]; // [older..anchorId] ++ (anchorId..newer]
+    const raw = [
+      ...seq.slice(olderStart, idx + 1),
+      ...seq.slice(idx + 1, newerEnd),
+    ]; // [older..anchorId] ++ (anchorId..newer]
     if (raw.length === 0) return [];
     await this.ensureProfiles(raw);
-    const items = raw.map(it => this.shape(it));
+    const items = raw.map((it) => this.shape(it));
     // Bidirectional fetch: olderStart===0 → reached oldest; newerEnd===seq.length → reached newest. A length-1 batch
     // spanning both edges → 'both' (see init(-1) above for why the sole item can't carry two single-valued markers).
     const atOldest = olderStart === 0;
     const atNewest = newerEnd === seq.length;
-    if (atOldest && atNewest && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+    if (atOldest && atNewest && items.length === 1)
+      items[0] = { ...items[0], boundary: 'both' };
     else {
       if (atOldest) items[0] = { ...items[0], boundary: 'oldest' };
-      if (atNewest) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      if (atNewest)
+        items[items.length - 1] = {
+          ...items[items.length - 1],
+          boundary: 'newest',
+        };
     }
     this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from source.pending
     return items;
   }
 
   /** Fetch `count` items older than cursorId (ascending; excludes the cursor). Reaching the sequence start → out[0] tagged 'oldest'. */
-  async getOlder(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getOlder(
+    cursorId: number,
+    count: number,
+  ): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
-    const idx = seq.findIndex(it => it.id === cursorId);
+    const idx = seq.findIndex((it) => it.id === cursorId);
     if (idx < 0) return [];
     const take = Math.min(count, MAX_PAGE);
     const start = Math.max(0, idx - take);
     const raw = seq.slice(start, idx);
     if (raw.length === 0) return [];
     await this.ensureProfiles(raw);
-    const items = raw.map(it => this.shape(it));
+    const items = raw.map((it) => this.shape(it));
     if (start === 0) items[0] = { ...items[0], boundary: 'oldest' };
     return items;
   }
@@ -164,10 +232,13 @@ export class MockItemSource implements CbSource<ChatItemData> {
    * effect, reconciles pending: any pending entry whose clientMessageId matches a returned real is dropped (the
    * confirm arrived). Tags the last returned item 'newest' when the real batch reached the sequence end.
    */
-  async getNewer(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getNewer(
+    cursorId: number,
+    count: number,
+  ): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
-    const idx = seq.findIndex(it => it.id === cursorId);
+    const idx = seq.findIndex((it) => it.id === cursorId);
     if (idx < 0) return [];
     const take = Math.min(count, MAX_PAGE);
     const end = Math.min(seq.length, idx + 1 + take);
@@ -187,24 +258,79 @@ export class MockItemSource implements CbSource<ChatItemData> {
 
     // Tag the last item 'newest' when the real batch reached the sequence end.
     if (reachedEnd) {
-      items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      items[items.length - 1] = {
+        ...items[items.length - 1],
+        boundary: 'newest',
+      };
     }
     return items;
   }
 
+  requestOlder(cursorId: number, count: number): CbDemand<ChatItemData> {
+    return mockDemand(async () => {
+      const items = await this.getOlder(cursorId, count);
+      return items.length > 0 ? { kind: 'items', items } : { kind: 'boundary' };
+    });
+  }
+
+  requestNewer(cursorId: number, count: number): CbDemand<ChatItemData> {
+    return new Observable((subscriber) => {
+      const waiter = { cursorId, count, subscriber };
+      this.newerWaiters.add(waiter);
+      void this.pumpNewerWaiter(waiter);
+      return () => {
+        this.newerWaiters.delete(waiter);
+      };
+    });
+  }
+
+  private async pumpNewerWaiter(waiter: {
+    cursorId: number;
+    count: number;
+    subscriber: Subscriber<CbDemandResult<ChatItemData>>;
+  }): Promise<void> {
+    if (this.pumpingWaiters.has(waiter)) return;
+    this.pumpingWaiters.add(waiter);
+    const revision = this.liveRevision;
+    try {
+      const items =
+        waiter.cursorId === -1
+          ? await this.init(-1, waiter.count, 0)
+          : await this.getNewer(waiter.cursorId, waiter.count);
+      if (!this.newerWaiters.has(waiter) || items.length === 0) return;
+      this.newerWaiters.delete(waiter);
+      waiter.subscriber.next({ kind: 'items', items });
+      waiter.subscriber.complete();
+    } catch (error) {
+      if (!this.newerWaiters.delete(waiter)) return;
+      waiter.subscriber.next({ kind: 'error', error });
+      waiter.subscriber.complete();
+    } finally {
+      this.pumpingWaiters.delete(waiter);
+      if (this.newerWaiters.has(waiter) && this.liveRevision !== revision)
+        void this.pumpNewerWaiter(waiter);
+    }
+  }
+
   /** Return the in-flight optimistic sends (the `pending` array) — the backing store the kernel (re)mounts at the
    *  global newest edge. A defensive copy so the kernel can iterate freely. Empty when none are in flight. */
-  getPending(): CbItem<ChatItemData>[] { return this.pending.slice(); }
+  getPending(): CbItem<ChatItemData>[] {
+    return this.pending.slice();
+  }
 
   /** Cache a live (WS-pushed) real message into `live`. Cache-only — no merge, no shape, no return; the kernel
    *  pulls it back via getNewer on the next signal (where pending reconcile + shape happen). id = the caller-given
    *  msgId (playground makeMockItem / the confirmed optimistic id). */
   pushLive(rawItems: CbItem<ChatItemData>[]): void {
     for (const raw of rawItems) this.live.push(raw);
+    this.liveRevision++;
+    for (const waiter of this.newerWaiters) void this.pumpNewerWaiter(waiter);
   }
 
   /** Store an in-flight optimistic message (separate from the reloadable sequence). */
-  addPending(item: CbItem<ChatItemData>): void { this.pending.push(item); }
+  addPending(item: CbItem<ChatItemData>): void {
+    this.pending.push(item);
+  }
 
   /**
    * Mark an in-flight optimistic send FAILED and sink it to the END of the pending queue. The source owns pending
@@ -220,10 +346,15 @@ export class MockItemSource implements CbSource<ChatItemData> {
    * the same mutation belongs there too.
    */
   failPending(clientMessageId: string): boolean {
-    const i = this.pending.findIndex(p => p.clientMessageId === clientMessageId);
+    const i = this.pending.findIndex(
+      (p) => p.clientMessageId === clientMessageId,
+    );
     if (i < 0) return false;
     const entry = this.pending.splice(i, 1)[0];
-    const failed: CbItem<ChatItemData> = { ...entry, data: { ...entry.data, status: 'failed', kind: undefined } };
+    const failed: CbItem<ChatItemData> = {
+      ...entry,
+      data: { ...entry.data, status: 'failed', kind: undefined },
+    };
     this.pending.push(failed); // sink to the end of the pending queue
     return true;
   }
@@ -235,9 +366,14 @@ export class MockItemSource implements CbSource<ChatItemData> {
    * updated item (the caller re-arms the confirm timer with it), or undefined if no pending entry matches.
    */
   retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
-    const i = this.pending.findIndex(p => p.clientMessageId === clientMessageId);
+    const i = this.pending.findIndex(
+      (p) => p.clientMessageId === clientMessageId,
+    );
     if (i < 0) return undefined;
-    const retrying: CbItem<ChatItemData> = { ...this.pending[i], data: { ...this.pending[i].data, status: 'sending', kind: 'pending' } };
+    const retrying: CbItem<ChatItemData> = {
+      ...this.pending[i],
+      data: { ...this.pending[i].data, status: 'sending', kind: 'pending' },
+    };
     this.pending[i] = retrying; // stay at the current position (the end)
     return retrying;
   }
@@ -245,13 +381,20 @@ export class MockItemSource implements CbSource<ChatItemData> {
   /** Allocate the next server msgId for a confirmed optimistic send (mock autoincrement, mirroring production
    *  `Message.seq`). The playground's confirmPending calls this to mint the real seq that replaces the optimistic's
    *  synthetic negative placeholder id. */
-  allocateMsgId(): number { return this.nextMsgId++; }
+  allocateMsgId(): number {
+    return this.nextMsgId++;
+  }
 
   /** Whether any optimistic message is still awaiting confirmation (used to gate simulated replies so the demo's
    *  chronological order stays clean while an insert is in flight). */
-  hasPending(): boolean { return this.pending.length > 0; }
+  hasPending(): boolean {
+    return this.pending.length > 0;
+  }
 
-  destroy(): void {}
+  destroy(): void {
+    for (const waiter of this.newerWaiters) waiter.subscriber.complete();
+    this.newerWaiters.clear();
+  }
 
   // ---------- Logical sequence ----------
 
@@ -263,11 +406,18 @@ export class MockItemSource implements CbSource<ChatItemData> {
   /** Collect missing creators → look them up on userService to fill `profiles` (mirrors HttpItemSource.ensureProfiles). */
   private async ensureProfiles(items: CbItem<ChatItemData>[]): Promise<void> {
     const missing = new Set<number>();
-    for (const it of items) if (!this.profiles.has(it.data.creator)) missing.add(it.data.creator);
+    for (const it of items)
+      if (!this.profiles.has(it.data.creator)) missing.add(it.data.creator);
     if (missing.size === 0) return;
-    const res = await firstValueFrom(this.userService.queryUserInfo({ userIds: [...missing] }));
+    const res = await firstValueFrom(
+      this.userService.queryUserInfo({ userIds: [...missing] }),
+    );
     if (res.code === 0 && res.data) {
-      for (const u of res.data) this.profiles.set(u.id, { name: u.account, isSelf: u.id === this.userId });
+      for (const u of res.data)
+        this.profiles.set(u.id, {
+          name: u.account,
+          isSelf: u.id === this.userId,
+        });
     }
   }
 
@@ -276,8 +426,14 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  real returned by getNewer still carries it — shape must not strip the correlation key the kernel pairs on. */
   private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
     const p = this.profiles.get(it.data.creator);
-    const data: ChatMsgData = { ...it.data, name: p?.name ?? 'Unknown', isSelf: p?.isSelf ?? it.data.creator === this.userId };
-    return it.clientMessageId !== undefined ? { id: it.id, data, clientMessageId: it.clientMessageId } : { id: it.id, data };
+    const data: ChatMsgData = {
+      ...it.data,
+      name: p?.name ?? 'Unknown',
+      isSelf: p?.isSelf ?? it.data.creator === this.userId,
+    };
+    return it.clientMessageId !== undefined
+      ? { id: it.id, data, clientMessageId: it.clientMessageId }
+      : { id: it.id, data };
   }
 
   /** Drop any in-flight optimistic (pending) entry whose clientMessageId matches a returned real — the confirm arrived.
@@ -288,36 +444,61 @@ export class MockItemSource implements CbSource<ChatItemData> {
   private reconcilePending(reals: CbItem<ChatItemData>[]): void {
     for (const r of reals) {
       if (r.clientMessageId === undefined) continue;
-      const pi = this.pending.findIndex(p => p.clientMessageId === r.clientMessageId);
+      const pi = this.pending.findIndex(
+        (p) => p.clientMessageId === r.clientMessageId,
+      );
       if (pi >= 0) this.pending.splice(pi, 1);
     }
   }
 
   private wait(): Promise<void> {
-    return new Promise(r => setTimeout(r, this.latency));
+    return new Promise((r) => setTimeout(r, this.latency));
   }
+}
+
+function mockDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
+  return new Observable((subscriber) => {
+    void work()
+      .catch((error): CbDemandResult<T> => ({ kind: 'error', error }))
+      .then((result) => {
+        if (subscriber.closed) return;
+        subscriber.next(result);
+        subscriber.complete();
+      });
+  });
 }
 
 // ---------- Data generation (deterministic) ----------
 
 const PHRASES = [
-  'You there?', 'The virtual scroll kernel is running', 'Is the list smooth on your side?', 'I switched the container to a fixed height',
-  "Telegram's approach is rock solid", 'Bubbles use the project design tokens', "Let's review the feel tonight", 'Got it',
-  'Wheel inertia still needs tuning', 'This list holds tens of thousands now', 'Check the "mounted nodes" on the right', 'Switch the data volume, it stays flat',
+  'You there?',
+  'The virtual scroll kernel is running',
+  'Is the list smooth on your side?',
+  'I switched the container to a fixed height',
+  "Telegram's approach is rock solid",
+  'Bubbles use the project design tokens',
+  "Let's review the feel tonight",
+  'Got it',
+  'Wheel inertia still needs tuning',
+  'This list holds tens of thousands now',
+  'Check the "mounted nodes" on the right',
+  'Switch the data volume, it stays flat',
 ];
 
 /** mulberry32: a seeded PRNG — the same seed yields the same sequence, so generate(count) is deterministic. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
-    a = (a + 0x6D2B79F5) >>> 0;
+    a = (a + 0x6d2b79f5) >>> 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-function pad2(n: number): string { return String(n).padStart(2, '0'); }
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
 
 function formatTime(d: Date): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
@@ -330,7 +511,8 @@ function placeholderImage(seed: number, rw: number, rh: number): string {
   // SVG sized to the real aspect ratio (long edge = 400), so the placeholder's own ratio matches the data w/h → justified row-layout verification stays realistic.
   const W = rw >= rh ? 400 : Math.round((400 * rw) / rh);
   const H = rh >= rw ? 400 : Math.round((400 * rh) / rw);
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}'>` +
+  const svg =
+    `<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}'>` +
     `<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>` +
     `<stop offset='0' stop-color='hsl(${h1},65%,58%)'/><stop offset='1' stop-color='hsl(${h2},55%,40%)'/>` +
     `</linearGradient></defs>` +
@@ -371,7 +553,10 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
   let msgSinceDay = 0; // msgs produced so far today; at `step` a new day begins (spreads createdAtMs across days → the front-end cross-day check has something to do)
 
   const startMs = new Date(2025, 0, 1).getTime();
-  const targetDays = Math.max(1, Math.round((Date.now() - startMs) / 86_400_000));
+  const targetDays = Math.max(
+    1,
+    Math.round((Date.now() - startMs) / 86_400_000),
+  );
   const step = Math.max(1, Math.round(count / targetDays));
 
   while (items.length < count) {
@@ -379,7 +564,9 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
     // msgs' createdAtMs across days; the front-end createItem factory renders the date pill from the cross-day check
     // (see message-cards/date-format.ts).
     if (items.length > 0 && msgSinceDay >= step) {
-      day++; msgSinceDay = 0; lastCreator = null;
+      day++;
+      msgSinceDay = 0;
+      lastCreator = null;
     }
     let creator: number;
     if (lastCreator === null) creator = rand() < 0.5 ? 1 : 2;
@@ -397,8 +584,20 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
         const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
         const [rw, rh] = RATIOS[Math.floor(rand() * RATIOS.length)];
         const id = items.length;
-        const imgs: AlbumImage[] = [{ kind: 'image', src: placeholderImage(imgSeed++, rw, rh), w: rw * 100, h: rh * 100, size: 200_000 + Math.floor(rand() * 2_800_000), msgId: id }];
-        items.push({ id, data: makeSeedMsg(creator, '', 'IMAGE', imgs, date, id) });
+        const imgs: AlbumImage[] = [
+          {
+            kind: 'image',
+            src: placeholderImage(imgSeed++, rw, rh),
+            w: rw * 100,
+            h: rh * 100,
+            size: 200_000 + Math.floor(rand() * 2_800_000),
+            msgId: id,
+          },
+        ];
+        items.push({
+          id,
+          data: makeSeedMsg(creator, '', 'IMAGE', imgs, date, id),
+        });
       }
     } else {
       minutes += 1 + Math.floor(rand() * 4);
@@ -406,15 +605,26 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
       msgSinceDay++;
       const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
       let text = PHRASES[(items.length * 7) % PHRASES.length];
-      if (rand() < 0.3) text = `${PHRASES[(items.length * 7) % PHRASES.length]}. ${PHRASES[(items.length * 7 + 3) % PHRASES.length]}`;
+      if (rand() < 0.3)
+        text = `${PHRASES[(items.length * 7) % PHRASES.length]}. ${PHRASES[(items.length * 7 + 3) % PHRASES.length]}`;
       const id = items.length;
-      items.push({ id, data: makeSeedMsg(creator, text, 'PURE_TEXT', null, date, id) });
+      items.push({
+        id,
+        data: makeSeedMsg(creator, text, 'PURE_TEXT', null, date, id),
+      });
     }
   }
   return items;
 }
 
-function makeSeedMsg(creator: number, text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, date: Date, id: number): ChatMsgData {
+function makeSeedMsg(
+  creator: number,
+  text: string,
+  contentType: ChatMsgData['contentType'],
+  images: AlbumImage[] | null,
+  date: Date,
+  id: number,
+): ChatMsgData {
   // Raw msg: carries no name/isSelf (placeholder); MockItemSource.shape fills them from `profiles` by creator — mirrors production toMsgData.
   return {
     type: 'msg',

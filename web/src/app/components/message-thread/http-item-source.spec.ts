@@ -4,7 +4,7 @@
  * The DB-layer {@link MessageRepository} owns the identity-only NEW_MESSAGE SSE and emits `liveSignal$`;
  * this source filters that signal to its thread and treats it as "newer data exists, go pull." The kernel
  * pulls the body via queryMessages (IDB cache hit or backend gap-fill) on the next
- * onMessageSignal, and rawToItems shapes messages only at pull time. This is what keeps a self-send echo /
+ * source demand, and rawToItems shapes messages only at pull time. This is what keeps a self-send echo /
  * incoming reply on an empty (just-added-friend) thread mountable.
  *
  * The repository is stubbed (HttpItemSource only calls queryMessages + liveSignal$); UserService is stubbed
@@ -12,11 +12,10 @@
  * — here the repo is a simple canned data source so this spec stays focused on the source's shaping,
  * boundary, remounting, and optimistic-pending reconcile.
  */
-import { Subject, of } from 'rxjs';
+import { firstValueFrom, Subject, of } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
 import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
-import { WebsocketService } from '../../services/websocket.service';
 import type {
   ConversationItem,
   Message,
@@ -78,15 +77,21 @@ function pendingItem(cid: string, id = -1) {
   };
 }
 
-describe('HttpItemSource (signal-only live contract over MessageRepository)', () => {
-  /** Build a source whose repository returns `dbResult` for every queryMessages call, with a drivable
-   *  liveSignal$. `onSignal` is captured. */
+describe('HttpItemSource (source-owned live demand over MessageRepository)', () => {
+  /** Build a source whose repository returns `dbResult` for every queryMessages call, with a drivable liveSignal$. */
   function setup(
     dbResult: StandardResponse<Message[]>,
     tid = 42,
     outbox = new ThreadSendOutbox(),
   ) {
     const liveSignal$ = new Subject<{ threadId: number; seq: number }>();
+    const reconnectSignal$ = new Subject<void>();
+    let truncateSeq: number | undefined;
+    liveSignal$.subscribe((signal) => {
+      if (signal.threadId === tid)
+        truncateSeq = Math.max(truncateSeq ?? -1, signal.seq);
+    });
+    reconnectSignal$.subscribe(() => (truncateSeq = undefined));
     // The constructor also subscribes to repo.mediaStatusLive$ (a MEDIA_STATUS re-render signal); the stub
     // must expose it or new HttpItemSource throws "Cannot read properties of undefined (reading 'pipe')".
     const mediaStatusLive$ = new Subject<{
@@ -101,7 +106,16 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     const repo = {
       queryMessages,
       liveSignal$,
+      reconnectSignal$,
       mediaStatusLive$,
+      retainCoverage: jasmine.createSpy('retainCoverage'),
+      releaseCoverage: jasmine.createSpy('releaseCoverage'),
+      getNewerTruncateSeq: () => truncateSeq,
+      retainNewestSeq: jasmine
+        .createSpy('retainNewestSeq')
+        .and.callFake((_threadId: number, seq: number) => {
+          truncateSeq = Math.max(truncateSeq ?? -1, seq);
+        }),
     } as unknown as MessageRepository;
     const users: User[] = [
       {
@@ -141,29 +155,39 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
       sessionUserId: () => 1,
       sessionProfile: () => ({ id: 1, account: 'me@example.com' }),
     } as unknown as UserService;
-    const ws = {
-      reconnect$: new Subject<void>(),
-    } as unknown as WebsocketService;
-    const signals = jasmine.createSpy('onSignal');
     const profiles = jasmine.createSpy('onProfile');
-    const src = new HttpItemSource(conv(tid), repo, userService, ws, outbox, {
-      onSignal: signals,
+    const src = new HttpItemSource(conv(tid), repo, userService, outbox, {
       onProfile: profiles,
     });
     return {
       src,
       repo,
       liveSignal$,
+      reconnectSignal$,
       mediaStatusLive$,
-      signals,
       profiles,
       outbox,
       queryUserInfo,
     };
   }
 
-  it('liveSignal$ fires onSignal only for THIS thread (the repo already filtered NEW_MESSAGE)', () => {
-    const { src, liveSignal$, signals } = setup({
+  it('retains coverage for the chatbox lifetime and releases it exactly once', () => {
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    expect(repo.retainCoverage).toHaveBeenCalledTimes(1);
+    expect(repo.retainCoverage).toHaveBeenCalledWith(42, undefined);
+    src.destroy();
+    src.destroy();
+    expect(repo.releaseCoverage).toHaveBeenCalledTimes(1);
+    expect(repo.releaseCoverage).toHaveBeenCalledWith(42);
+  });
+
+  it('liveSignal$ does not issue HTTP when no newer demand is mounted', async () => {
+    const { src, repo, liveSignal$ } = setup({
       code: 0,
       message: 'ok',
       data: [],
@@ -172,14 +196,85 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     src.finishLocalInit(undefined);
 
     liveSignal$.next({ threadId: 99, seq: 100 }); // different thread → ignored
-    expect(signals.calls.count()).toBe(0);
+    liveSignal$.next({ threadId: 42, seq: 100 });
+    await Promise.resolve();
+    expect((repo.queryMessages as jasmine.Spy).calls.count()).toBe(0);
+  });
 
-    liveSignal$.next({ threadId: 42, seq: 100 }); // THIS thread → signal
-    expect(signals.calls.count()).toBe(1);
+  it('keeps a newer demand pending at newest and resolves it after source data updates', async () => {
+    const { src, repo, liveSignal$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    src.finishLocalInit(undefined);
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+    const demand = src.requestNewer(100, 50);
+    let settled = false;
+    const resultPromise = firstValueFrom(demand).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBeFalse();
+
+    queryMessages.and.resolveTo({
+      data: [row(101, 2)],
+      hasMore: false,
+    });
+    liveSignal$.next({ threadId: 42, seq: 101 });
+
+    const result = await resultPromise;
+    expect(result.kind).toBe('items');
+    expect(
+      result.kind === 'items' ? result.items.map((item) => item.id) : [],
+    ).toEqual([101]);
+  });
+
+  it('cancels a pending newer demand without waiting for source data', async () => {
+    const { src, repo, liveSignal$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    src.finishLocalInit(undefined);
+    const subscription = src.requestNewer(100, 50).subscribe();
+    subscription.unsubscribe();
+    const calls = (repo.queryMessages as jasmine.Spy).calls.count();
+    liveSignal$.next({ threadId: 42, seq: 101 });
+    await Promise.resolve();
+    expect((repo.queryMessages as jasmine.Spy).calls.count()).toBe(calls);
+  });
+
+  it('emits an error result for a failed newer demand and SSE does not implicitly retry it', async () => {
+    const { src, repo, liveSignal$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    src.finishLocalInit(undefined);
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+    queryMessages.and.resolveTo({ data: [], hasMore: true, failed: true });
+
+    expect((await firstValueFrom(src.requestNewer(100, 50))).kind).toBe(
+      'error',
+    );
+    const failedCalls = queryMessages.calls.count();
+    liveSignal$.next({ threadId: 42, seq: 101 });
+    await Promise.resolve();
+    expect(queryMessages.calls.count()).toBe(failedCalls);
+
+    queryMessages.and.resolveTo({ data: [row(101, 2)], hasMore: false });
+    const retried = await firstValueFrom(src.requestNewer(100, 50));
+    expect(
+      retried.kind === 'items' ? retried.items.map((item) => item.id) : [],
+    ).toEqual([101]);
   });
 
   it('ignores live seqs during DB init and reconciles the global HWM after init', async () => {
-    const { src, liveSignal$, signals } = setup({
+    const { src, repo, liveSignal$ } = setup({
       code: 0,
       message: 'ok',
       data: [row(10, 2)],
@@ -187,16 +282,23 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     });
 
     liveSignal$.next({ threadId: 42, seq: 12 });
-    expect(signals).not.toHaveBeenCalled();
-
     await src.init(-1, 50, 0);
+    (repo.queryMessages as jasmine.Spy).and.resolveTo({
+      data: [],
+      hasMore: false,
+    });
+    const subscription = src.requestNewer(10, 50).subscribe();
     src.finishLocalInit(12);
-
-    expect(signals).toHaveBeenCalledOnceWith(12);
+    await Promise.resolve();
+    expect(
+      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1]
+        .truncateSeq,
+    ).toBe(13);
+    subscription.unsubscribe();
   });
 
   it('signals a backend fill when durable thread metadata leads an empty local messages cache', async () => {
-    const { src, signals } = setup({
+    const { src, repo } = setup({
       code: 0,
       message: 'ok',
       data: [],
@@ -204,13 +306,18 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     });
 
     await src.init(-1, 50, 0);
+    const before = (repo.queryMessages as jasmine.Spy).calls.count();
+    const subscription = src.requestNewer(-1, 50).subscribe();
     src.finishLocalInit(undefined, 258);
-
-    expect(signals).toHaveBeenCalledOnceWith(258);
+    await Promise.resolve();
+    expect((repo.queryMessages as jasmine.Spy).calls.count()).toBeGreaterThan(
+      before,
+    );
+    subscription.unsubscribe();
   });
 
   it('reconciles against the greater of the durable thread seq and live-session HWM', async () => {
-    const { src, signals } = setup({
+    const { src, repo } = setup({
       code: 0,
       message: 'ok',
       data: [row(10, 2)],
@@ -218,9 +325,18 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     });
 
     await src.init(-1, 50, 0);
+    (repo.queryMessages as jasmine.Spy).and.resolveTo({
+      data: [],
+      hasMore: false,
+    });
+    const subscription = src.requestNewer(10, 50).subscribe();
     src.finishLocalInit(12, 11);
-
-    expect(signals).toHaveBeenCalledOnceWith(12);
+    await Promise.resolve();
+    expect(
+      (repo.queryMessages as jasmine.Spy).calls.mostRecent().args[1]
+        .truncateSeq,
+    ).toBe(13);
+    subscription.unsubscribe();
   });
 
   it('bounds the post-init newer walk at the frozen message-db latest seq', async () => {
@@ -246,8 +362,53 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     });
   });
 
+  it('reads the shared thread cutoff again for every newer request', async () => {
+    const { src, repo, liveSignal$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+
+    src.finishLocalInit(undefined, 20);
+    await src.getNewer(10, 50);
+    liveSignal$.next({ threadId: 42, seq: 25 });
+    await src.getNewer(20, 50);
+
+    expect(
+      queryMessages.calls
+        .allArgs()
+        .slice(-2)
+        .map((args) => args[1].truncateSeq),
+    ).toEqual([21, 26]);
+  });
+
+  it('uses an unbounded newer walk after the repository reconnects', async () => {
+    const { src, repo, reconnectSignal$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    const queryMessages = repo.queryMessages as jasmine.Spy;
+
+    src.finishLocalInit(undefined, 20);
+    reconnectSignal$.next();
+    await src.getNewer(10, 50);
+
+    expect(queryMessages.calls.mostRecent().args[1]).toEqual({
+      skip: 1,
+      take: 50,
+      lastSeq: 10,
+      orderBy: 'asc',
+      truncate: false,
+      truncateSeq: undefined,
+    });
+  });
+
   it('does not signal when the local DB tail already reaches both remote ceilings', async () => {
-    const { src, signals } = setup({
+    const { src } = setup({
       code: 0,
       message: 'ok',
       data: [row(12, 2)],
@@ -256,8 +417,6 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
 
     await src.init(-1, 50, 0);
     src.finishLocalInit(12, 11);
-
-    expect(signals).not.toHaveBeenCalled();
   });
 
   it('allows a post-ready getOlder top-up to backfill a one-row local cache from the backend', async () => {
@@ -338,7 +497,7 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     // reconciles instead of sticking "sending".
     const cid = 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b';
     const echo = row(100, 1, cid);
-    const { src, liveSignal$, signals } = setup({
+    const { src, liveSignal$ } = setup({
       code: 0,
       message: 'ok',
       data: [echo],
@@ -367,7 +526,6 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     expect(src.getPending().length).toBe(1);
 
     liveSignal$.next({ threadId: 42, seq: 100 }); // repo cached the echo body → signal (no shaping here)
-    expect(signals).not.toHaveBeenCalled(); // DB-init signals are intentionally ignored; HWM reconciles after init
     expect(src.getPending().length).toBe(1); // pending NOT touched by the signal — only init reconciles
 
     const items = await src.init(-1, 50, 0); // kernel pulls the cached body via the repo

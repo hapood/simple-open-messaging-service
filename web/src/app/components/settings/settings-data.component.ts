@@ -1,10 +1,10 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject, OnInit, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { LocalDataManagementService } from '../../services/local-data-management.service';
-import { LogoutService } from '../../services/logout.service';
 import { PopupType, RouteService } from '../../services/route.service';
+import { ToastService } from '../../services/toast.service';
 
 @Component({
   selector: 'app-settings-data',
@@ -14,53 +14,113 @@ import { PopupType, RouteService } from '../../services/route.service';
       <div class="settings-card">
         <mat-list>
           <mat-list-item>
-            <span matListItemTitle>{{ 'settings.deleteAllData' | transloco }}</span>
-            <span matListItemLine class="hint">{{ 'settings.deleteAllDataDesc' | transloco }}</span>
-            <button mat-button matListItemMeta type="button" [disabled]="deleting()" (click)="confirmDelete()">
-              {{ (deleting() ? 'settings.deletingAllData' : 'settings.deleteAllDataAction') | transloco }}
+            <span matListItemTitle>{{
+              'settings.cachedMessages' | transloco
+            }}</span>
+            <span matListItemMeta>{{ loading() ? '…' : messageCount() }}</span>
+          </mat-list-item>
+          <mat-list-item>
+            <span matListItemTitle>{{
+              'settings.cachedMediaFiles' | transloco
+            }}</span>
+            <span matListItemMeta>{{ mediaUsage() }}</span>
+          </mat-list-item>
+          <mat-list-item>
+            <span matListItemTitle>{{
+              'settings.clearChatCache' | transloco
+            }}</span>
+            <span matListItemLine class="hint">{{
+              'settings.clearChatCacheDesc' | transloco
+            }}</span>
+            <button
+              mat-button
+              matListItemMeta
+              type="button"
+              [disabled]="clearing()"
+              (click)="confirmClear()"
+            >
+              {{
+                (clearing()
+                  ? 'settings.clearingChatCache'
+                  : 'settings.clearChatCacheAction'
+                ) | transloco
+              }}
             </button>
           </mat-list-item>
         </mat-list>
       </div>
-      @if (failed()) {
-        <span class="hint">{{ 'settings.deleteAllDataFailed' | transloco }}</span>
-      }
+      <span class="hint">{{ 'settings.cacheStorageHint' | transloco }}</span>
     </section>
   `,
   styleUrl: './sub-page.scss',
 })
-export class SettingsDataComponent {
+export class SettingsDataComponent implements OnInit {
   private readonly route = inject(RouteService);
   private readonly localData = inject(LocalDataManagementService);
-  private readonly logout = inject(LogoutService);
-  readonly deleting = signal(false);
-  readonly failed = signal(false);
+  private readonly toast = inject(ToastService);
+  private readonly transloco = inject(TranslocoService);
+  readonly loading = signal(true);
+  readonly clearing = signal(false);
+  readonly messageCount = signal(0);
+  readonly mediaBytes = signal<number | null>(null);
 
-  confirmDelete(): void {
+  readonly mediaUsage = () => {
+    const bytes = this.mediaBytes();
+    if (bytes === null)
+      return this.transloco.translate('settings.browserMediaCacheUnavailable');
+    return this.formatBytes(bytes);
+  };
+
+  ngOnInit(): void {
+    void this.refresh();
+  }
+
+  confirmClear(): void {
     this.route.popupDlg(
       PopupType.CONFIRM,
       {
-        titleKey: 'settings.deleteAllData',
-        messageKey: 'settings.deleteAllDataConfirm',
-        confirmKey: 'settings.deleteAllDataAction',
+        titleKey: 'settings.clearChatCache',
+        messageKey: 'settings.clearChatCacheConfirm',
+        confirmKey: 'settings.clearChatCacheAction',
         danger: true,
       },
       (confirmed) => {
-        if (confirmed) void this.deleteAll();
+        if (confirmed) void this.clearCache();
       },
     );
   }
 
-  private async deleteAll(): Promise<void> {
-    if (this.deleting()) return;
-    this.deleting.set(true);
-    this.failed.set(false);
+  private async refresh(): Promise<void> {
     try {
-      await this.localData.clearAll();
-      this.logout.logout();
+      const stats = await this.localData.stats();
+      this.messageCount.set(stats.messageCount);
+      this.mediaBytes.set(stats.mediaBytes);
     } catch {
-      this.failed.set(true);
-      this.deleting.set(false);
+      this.toast.warn(this.transloco.translate('settings.cacheStatsFailed'));
+    } finally {
+      this.loading.set(false);
     }
+  }
+
+  private async clearCache(): Promise<void> {
+    if (this.clearing()) return;
+    this.clearing.set(true);
+    try {
+      await this.localData.clearChatCache();
+      this.toast.info(this.transloco.translate('settings.chatCacheCleared'));
+    } catch {
+      this.toast.warn(
+        this.transloco.translate('settings.clearChatCacheFailed'),
+      );
+      this.clearing.set(false);
+    }
+  }
+
+  private formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024)
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 }

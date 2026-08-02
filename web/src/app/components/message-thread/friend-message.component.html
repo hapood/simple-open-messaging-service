@@ -80,7 +80,14 @@
       <div class="msg-content" #content role="list">
         <div class="msg-sentinel" #topSentinel></div>
       </div>
-      @if (!initialLoading() && threadEmpty()) {
+      @if (initialLoadFailed()) {
+        <div class="msg-load-failed-overlay">
+          <button type="button" class="msg-load-retry" (click)="retryInitialLoad()">
+            <span class="msg-load-retry-ring" aria-hidden="true"></span>
+            <span>{{ 'chat.historyLoadFailed' | transloco }}</span>
+          </button>
+        </div>
+      } @else if (!initialLoading() && threadEmpty()) {
         <!-- Empty-thread hero placeholder (WhatsApp/Discord style): an overlay sibling of .msg-content, so it
              NEVER enters the kernel's measured-height model
              (totalH()/prefix-sum stays exact). Shown only once init has settled with zero mounted items — a

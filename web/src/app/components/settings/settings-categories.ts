@@ -72,14 +72,20 @@ export interface SettingsCategoryDeps {
  * drill-in) and {@link SettingsDialogComponent} (desktop/tablet, two-column flat) — the single source of
  * truth for what categories exist, their order, icons, summaries, and sub-page components.
  */
-export function buildSettingsCategories(d: SettingsCategoryDeps): readonly SettingsCategory[] {
+export function buildSettingsCategories(
+  d: SettingsCategoryDeps,
+): readonly SettingsCategory[] {
   // Category summary helpers — read their service's signal (and the language signal, so a language
   // switch re-renders the translated summary) keeping the list reactive.
   const themeModeLabel = (): string => {
     void d.language.lang();
     const m = d.theme.mode();
     const key =
-      m === 'system' ? 'settings.themeSystem' : m === 'light' ? 'settings.themeLight' : 'settings.themeDark';
+      m === 'system'
+        ? 'settings.themeSystem'
+        : m === 'light'
+          ? 'settings.themeLight'
+          : 'settings.themeDark';
     return d.transloco.translate(key);
   };
   const thresholdLabel = (kb: number): string => {
@@ -91,14 +97,17 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
   const pushSummary = (): string => {
     void d.language.lang();
     return d.transloco.translate(
-      d.bgSync.fcmStatus().hasToken ? 'settings.fcmActive' : 'settings.fcmUnavailable',
+      d.bgSync.fcmStatus().hasToken
+        ? 'settings.fcmActive'
+        : 'settings.fcmUnavailable',
     );
   };
   const notifSummary = (): string => {
     void d.language.lang();
     const p = d.webPush.permission();
     if (p === 'granted') return d.transloco.translate('settings.notifOn');
-    if (p === 'unsupported') return d.transloco.translate('settings.notifUnavailable');
+    if (p === 'unsupported')
+      return d.transloco.translate('settings.notifUnavailable');
     return d.transloco.translate('settings.notifOff'); // 'default' | 'denied'
   };
   const connectionSummary = (): string => {
@@ -207,7 +216,7 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
     {
       id: 'data',
       icon: AppIconType.TRASH,
-      titleKey: 'settings.data',
+      titleKey: 'settings.storage',
       summary: () => {
         void d.language.lang();
         return d.transloco.translate('settings.dataHint');

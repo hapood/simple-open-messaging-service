@@ -684,6 +684,41 @@ app-chat-input {
   animation: msg-empty-fade 180ms ease-out;
 }
 
+.msg-load-failed-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+}
+
+.msg-load-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 20px;
+  color: var(--app-warning);
+  background: color-mix(in srgb, var(--app-warning) 16%, var(--app-surface));
+  cursor: pointer;
+}
+
+.msg-load-retry-ring {
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 2.5px solid color-mix(in srgb, var(--app-warning) 24%, transparent);
+  border-top-color: var(--app-warning);
+  border-radius: 50%;
+  animation: msg-load-retry-spin 0.9s linear infinite;
+}
+
+@keyframes msg-load-retry-spin {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes msg-empty-fade {
   from {
     opacity: 0;

@@ -195,10 +195,9 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
  *
  * Optimistic send (ported from the playground, adapted to HTTP): the ChatInputComponent emits a structured
  * ChatSendIntent; this component builds an optimistic bubble (insertAfter, transient), registers it with the
- * source's pending area, and fires the HTTP send. CONFIRMATION is the SSE echo (the backend always re-fans
- * NEW_MESSAGE to the sender, including for idempotent retries), routed through the kernel's onMessageSignal
- * (NOT appendLive — that direct-mounts and would double-mount the real beside the optimistic). On HTTP failure
- * the optimistic is morphed to a failed bubble (reconcilePending) with a retry affordance.
+ * source's pending area, and fires the HTTP send. The SSE echo updates the repository-backed source; its active newer
+ * demand then delivers the confirmed real through the same range-loading path as history. On HTTP failure the
+ * optimistic is morphed to a failed bubble (reconcilePending) with a retry affordance.
  *
  * zoneless: viewChild is initialized in an effect (ngAfterViewInit is unreliable zoneless — see the
  * zoneless-viewchild-init-effect memory). Switching conversations (same component, input change): tear down
@@ -322,6 +321,7 @@ export class MessageThreadComponent implements OnDestroy {
   /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Used only to
    *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
   readonly initialLoading = signal(true);
+  readonly initialLoadFailed = signal(false);
   readonly selectionMode = signal(false);
   readonly selectedMessageIds = signal<ReadonlySet<number>>(new Set());
   readonly selectedCount = computed(() => this.selectedMessageIds().size);
@@ -884,25 +884,11 @@ export class MessageThreadComponent implements OnDestroy {
       trd,
       this.msgRepo,
       this.userService,
-      this.wsService,
       this.sendOutbox,
-      // SSE live path is SIGNAL-ONLY: onSseEvent filters by threadId and fires onSignal — the body is not
-      // shaped/cached here (the conversation-list preview reads it in its own subscriber; the chatbox treats
-      // the frame as "newer data exists, go pull it"). onMessageSignal pulls from the DB via getNewer /
-      // init(-1), which is also where rawToItems runs once (so ids register once — no double-registration to
-      // dedup away a self-send echo / reply on an empty thread). onMessageSignal is the optimistic-confirm
-      // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
       {
-        onSignal: (seq: number) => {
+        onNewerAvailable: () => {
           if (!this.atBottom())
             this.newMessageCount.update((count) => count + 1);
-          // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
-          // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
-          // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
-          // window to decide whether a post-init replay is actually needed.
-          void this.scroller
-            ?.onMessageSignal(seq)
-            .catch((e) => console.error('[chat] onMessageSignal rejected', e));
         },
         // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
         // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
@@ -966,6 +952,7 @@ export class MessageThreadComponent implements OnDestroy {
         tailCap.appendChild(stack);
     });
     this.initialLoading.set(true);
+    this.initialLoadFailed.set(false);
     this.kernelReady = false;
     const boundary = this.convList.unreadEntryBoundary(trd.threadId);
     this.firstUnreadSeq = boundary?.firstUnreadSeq ?? null;
@@ -973,7 +960,9 @@ export class MessageThreadComponent implements OnDestroy {
       this.chatAppearance.openPosition(),
       this.firstUnreadSeq,
     );
-    void this.scroller
+    const source = this.source;
+    const scroller = this.scroller;
+    void scroller
       .init(
         openOptions
           ? {
@@ -985,7 +974,8 @@ export class MessageThreadComponent implements OnDestroy {
             }
           : undefined,
       )
-      .finally(() => {
+      .then(() => {
+        if (this.source !== source || this.scroller !== scroller) return;
         this.initialLoading.set(false);
         this.kernelReady = true;
         // `onScroll` normally runs after the initial batch mounts, but the first paint must not depend on that
@@ -1003,15 +993,23 @@ export class MessageThreadComponent implements OnDestroy {
         // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
         // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
         // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
-        this.source?.finishLocalInit(
+        source.finishLocalInit(
           this.convList.latestSeq(trd.threadId),
           trd.lastMessageSeq,
         );
         // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
         // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
-        void this.scroller
-          ?.backfillOlder?.()
+        void scroller
+          .backfillOlder?.()
           .catch((e) => console.error('[chat] history backfill rejected', e));
+      })
+      .catch((error) => {
+        if (this.source !== source || this.scroller !== scroller) return;
+        this.initialLoading.set(false);
+        this.initialLoadFailed.set(true);
+        this.kernelReady = false;
+        if (isDevMode())
+          console.warn('[chat] initial message load failed', error);
       });
   }
 
@@ -1252,10 +1250,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.selectedMessageItems.delete(memberId);
     } else {
       next.add(memberId);
-      this.selectedMessageItems.set(
-        memberId,
-        albumMemberItem(item, memberId),
-      );
+      this.selectedMessageItems.set(memberId, albumMemberItem(item, memberId));
     }
     this.selectedMessageIds.set(next);
     this.syncMountedSelectionState();
@@ -2010,7 +2005,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private releasePasteItem(item: ThreadPasteItem): void {
-    if (item.source === 'native') this.nativeUploads.discard(item.selection.uploadId);
+    if (item.source === 'native')
+      this.nativeUploads.discard(item.selection.uploadId);
     else if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
   }
 
@@ -2692,6 +2688,13 @@ export class MessageThreadComponent implements OnDestroy {
     this.currentTrdId = null;
     this.initScroller(vp, ct, trd);
     this.currentTrdId = trd.id;
+  }
+
+  retryInitialLoad(): void {
+    if (!this.initialLoadFailed()) return;
+    this.initialLoadFailed.set(false);
+    this.initialLoading.set(true);
+    this.reinit();
   }
 
   /** Whether the kernel is live for the currently-bound thread (init settled AND not since idled). The A/B
