@@ -24,6 +24,7 @@ import { formatApiError } from '@/lib/format-error'
 import { IssueLoginCodeDialog } from './issue-login-code-dialog'
 import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog'
 import { LoginCodesSection } from './login-codes-section'
+import { UserQuotaPanel } from './user-quota-panel'
 
 function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -155,6 +156,10 @@ export function UserDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          {!u.isForeigner && !u.isGroup && userId !== null ? (
+            <UserQuotaPanel userId={userId} canManage={canManage} />
+          ) : null}
 
           <Card>
             <CardHeader>

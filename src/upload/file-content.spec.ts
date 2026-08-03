@@ -8,9 +8,16 @@ import {
 } from './file-content.js';
 
 /** A content blob as the client forwards it (verbatim from POST /upload/file). */
-function ok(over: Partial<{ url: string; name: string; size: number; mimeType: string }> = {}) {
+function ok(
+  over: Partial<{
+    url: string;
+    name: string;
+    size: number;
+    mimeType: string;
+  }> = {},
+) {
   return JSON.stringify({
-    url: '/uploads/shards/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.pdf',
+    url: '/uploads/cas/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     name: 'report.pdf',
     size: 12345,
     mimeType: 'application/pdf',
@@ -42,20 +49,32 @@ describe('resolveFileType', () => {
 
   it('falls back to application/octet-stream when the declared MIME is absent or malformed', () => {
     // The common bug: browsers leave File.type empty for many extensions.
-    expect(resolveFileType('data.docx', '')).toEqual({ ext: 'docx', mime: 'application/octet-stream' });
-    expect(resolveFileType('data.docx', 'not a mime')).toEqual({ ext: 'docx', mime: 'application/octet-stream' });
+    expect(resolveFileType('data.docx', '')).toEqual({
+      ext: 'docx',
+      mime: 'application/octet-stream',
+    });
+    expect(resolveFileType('data.docx', 'not a mime')).toEqual({
+      ext: 'docx',
+      mime: 'application/octet-stream',
+    });
   });
 
   it('accepts ANY extension (open model — no whitelist) and empty extensions', () => {
-    expect(resolveFileType('weird.zzz', 'application/octet-stream')).toEqual({ ext: 'zzz', mime: 'application/octet-stream' });
-    expect(resolveFileType('Makefile', '')).toEqual({ ext: '', mime: 'application/octet-stream' });
+    expect(resolveFileType('weird.zzz', 'application/octet-stream')).toEqual({
+      ext: 'zzz',
+      mime: 'application/octet-stream',
+    });
+    expect(resolveFileType('Makefile', '')).toEqual({
+      ext: '',
+      mime: 'application/octet-stream',
+    });
   });
 });
 
 describe('parseFileContent', () => {
   it('accepts a well-formed FILE content blob', () => {
     expect(parseFileContent(ok())).toEqual({
-      url: '/uploads/shards/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.pdf',
+      url: '/uploads/cas/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       name: 'report.pdf',
       size: 12345,
       mimeType: 'application/pdf',
@@ -77,26 +96,38 @@ describe('parseFileContent', () => {
 
   // Defense against forging a dangerous URL into the rendered download link.
   it('rejects non-upload / external / traversal / javascript URLs', () => {
-    expect(parseFileContent(ok({ url: 'https://evil.example/x.pdf' }))).toBeNull();
+    expect(
+      parseFileContent(ok({ url: 'https://evil.example/x.pdf' })),
+    ).toBeNull();
     expect(parseFileContent(ok({ url: 'javascript:alert(1)' }))).toBeNull();
     expect(parseFileContent(ok({ url: '/uploads/../secret' }))).toBeNull();
     expect(parseFileContent(ok({ url: '/uploads/a/b.pdf' }))).toBeNull(); // extra slash → traversal vector
-    expect(parseFileContent(ok({ url: '/uploads/x.pdf?disposition=inline' }))).toBeNull();
+    expect(
+      parseFileContent(ok({ url: '/uploads/x.pdf?disposition=inline' })),
+    ).toBeNull();
     expect(parseFileContent(ok({ url: '/other/x.pdf' }))).toBeNull();
   });
 
   it('accepts any non-empty mimeType (open model — no whitelist)', () => {
     // The whitelist was removed: any type is admissible at the content layer (serving-side
     // headers carry the security). Only an EMPTY mimeType is rejected.
-    expect(parseFileContent(ok({ mimeType: 'application/x-msdownload' }))).not.toBeNull();
-    expect(parseFileContent(ok({ mimeType: 'application/octet-stream' }))).not.toBeNull();
+    expect(
+      parseFileContent(ok({ mimeType: 'application/x-msdownload' })),
+    ).not.toBeNull();
+    expect(
+      parseFileContent(ok({ mimeType: 'application/octet-stream' })),
+    ).not.toBeNull();
     expect(parseFileContent(ok({ mimeType: 'weird/anything' }))).not.toBeNull();
     expect(parseFileContent(ok({ mimeType: '' }))).toBeNull();
   });
 
   it('rejects a legacy flat (pre-CAS) upload URL — a CAS shard URL is the only accepted shape', () => {
-    expect(parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345.pdf' }))).toBeNull();
-    expect(parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345' }))).toBeNull();
+    expect(
+      parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345.pdf' })),
+    ).toBeNull();
+    expect(
+      parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345' })),
+    ).toBeNull();
   });
 
   it('rejects non-positive, non-finite, or over-capacity sizes', () => {
@@ -119,7 +150,9 @@ describe('parseLinkContent', () => {
   const DIGEST = '0'.repeat(64);
 
   it('accepts a bare-link card { url }', () => {
-    expect(parseLinkContent(JSON.stringify({ url: 'https://example.com' }))).toEqual({
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'https://example.com' })),
+    ).toEqual({
       url: 'https://example.com',
     });
   });
@@ -143,37 +176,99 @@ describe('parseLinkContent', () => {
   });
 
   it('rejects a non-http(s) url (the SSRF/integrity form check)', () => {
-    expect(parseLinkContent(JSON.stringify({ url: 'javascript:alert(1)' }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'ftp://example.com' }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'data:text/html,x' }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: '//example.com' }))).toBeNull(); // scheme-relative
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'javascript:alert(1)' })),
+    ).toBeNull();
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'ftp://example.com' })),
+    ).toBeNull();
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'data:text/html,x' })),
+    ).toBeNull();
+    expect(
+      parseLinkContent(JSON.stringify({ url: '//example.com' })),
+    ).toBeNull(); // scheme-relative
   });
 
   it('rejects a non-digest image (the DB stores a sha256 digest, not a URL or data URI)', () => {
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'https://evil/x.jpg' }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'javascript:alert(1)' }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: '/uploads/../secret' }))).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', image: 'https://evil/x.jpg' }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', image: 'javascript:alert(1)' }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', image: '/uploads/../secret' }),
+      ),
+    ).toBeNull();
     // A CAS shard URL is NOT a digest → rejected (the thumbnail is inlined, not a shard reference).
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: `/uploads/shards/ab/cd/${DIGEST}.webp` }))).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://x.com',
+          image: `/uploads/cas/ab/cd/${DIGEST}.webp`,
+        }),
+      ),
+    ).toBeNull();
     // A base64 data URI is the WIRE form, not the STORED form → rejected at store-time.
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'data:image/webp;base64,AAAA' }))).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://x.com',
+          image: 'data:image/webp;base64,AAAA',
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('rejects over-long display fields', () => {
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(301) }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(501) }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(101) }))).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(301) }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(501) }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(101) }),
+      ),
+    ).toBeNull();
   });
 
   it('accepts boundary-length display fields', () => {
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(300) }))).not.toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(500) }))).not.toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(100) }))).not.toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(300) }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(500) }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(100) }),
+      ),
+    ).not.toBeNull();
   });
 
   it('rejects wrong-typed fields', () => {
     expect(parseLinkContent(JSON.stringify({ url: 5 }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 5 }))).toBeNull();
-    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 5 }))).toBeNull();
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 5 })),
+    ).toBeNull();
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 5 })),
+    ).toBeNull();
   });
 });

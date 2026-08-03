@@ -65,13 +65,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
         : null;
 
     // Tier by severity: 5xx / unknown → error with stack (real faults stay visible); 4xx
-    // (expired token, missing resource, validation) → concise warn with no stack.
+    // → concise warn with no stack. HTTP 2xx BusinessExceptions are ordinary business outcomes,
+    // so they are returned without producing an error/warn log.
     if (httpStatus >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
         message,
         exception instanceof Error ? exception.stack : String(exception),
       );
-    } else {
+    } else if (httpStatus >= HttpStatus.BAD_REQUEST) {
       // Append the underlying error's own message when it carries more than the mapped envelope —
       // notably the database validation detail (column/type that failed), which the generic
       // client-facing `message` deliberately omits so it stays debuggable server-side.

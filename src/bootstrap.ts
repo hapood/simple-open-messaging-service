@@ -11,7 +11,7 @@ import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
-import { mkdirSync } from 'fs';
+import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
@@ -42,7 +42,7 @@ const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
  *  across requests, which the shared hook requires. */
 const SHARD_DIGEST_GATE_RE =
-  /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./;
+  /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
 
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
  *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
@@ -59,15 +59,7 @@ function extractBearer(header: string | undefined): string | undefined {
  *  it can never inline-render in this origin (XSS via the same-origin httpOnly media_token cookie). */
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'flv', 'avi']);
-const AUDIO_EXTS = new Set([
-  'mp3',
-  'ogg',
-  'opus',
-  'wav',
-  'm4a',
-  'flac',
-  'aac',
-]);
+const AUDIO_EXTS = new Set(['mp3', 'ogg', 'opus', 'wav', 'm4a', 'flac', 'aac']);
 
 function resourceExtension(resourcePath: string): string {
   const dot = resourcePath.lastIndexOf('.');
@@ -116,6 +108,13 @@ export async function configureApp(
   await app.register(fastifyMultipart, {
     limits: { fileSize: MULTIPART_LIMIT },
   });
+  // Resumable media chunks are raw binary rather than multipart. Parse exactly one bounded chunk
+  // into a Buffer; the per-route bodyLimit is the advertised chunk size.
+  adapter.getInstance().addContentTypeParser(
+    'application/octet-stream',
+    { parseAs: 'buffer' },
+    (_request, body, done) => done(null, body),
+  );
   // Cookie parsing for the httpOnly media_token cookie that authenticates same-origin /uploads/*
   // requests (native <img>/<a download> can't send the Authorization header). @fastify/cookie is
   // fp-wrapped, so it decorates the root instance and request.cookies is reachable both here and in
@@ -243,9 +242,15 @@ async function registerStaticServing(
   adapter: FastifyAdapter,
 ) {
   const uploadsDir = join(process.cwd(), 'data', 'uploads');
+  const casDir = join(process.cwd(), 'data', 'cas');
+  // Breaking CAS reset: the legacy namespace is intentionally unsupported. Removing it on startup
+  // guarantees old URLs stay invalid and prevents abandoned duplicate-by-extension files from
+  // consuming disk indefinitely. Avatars live outside this directory and are unaffected.
+  rmSync(join(uploadsDir, 'shards'), { recursive: true, force: true });
   // @fastify/static throws at registration if root is missing; ensure it exists (matches the
   // lazy mkdir UploadService.ensureDir already does for the write path).
   mkdirSync(uploadsDir, { recursive: true });
+  mkdirSync(casDir, { recursive: true });
 
   // Auth-gate /uploads/*: native <img src="/uploads/..."> and <a download> requests can't carry
   // the Authorization header, so the session token is also placed in an httpOnly `media_token`
@@ -289,22 +294,35 @@ async function registerStaticServing(
           refreshSessionCookies(reply, fromCookie);
         }
 
-        // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
+        // Per-object authorization — chat media ONLY. A CAS URL embeds only the sha256 digest.
         // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by
         // guessing/leaking the URL. Require an active thread membership for the digest. Avatars
         // (/uploads/avatars/*) match neither the shard shape nor any MediaMessage
         // row → they stay auth-n-only (avatars must render cross-thread).
         const shard = SHARD_DIGEST_GATE_RE.exec(request.url);
         if (shard) {
-          const allowed = await mediaAccess.canReadDigest(
-            principal.userId,
-            shard[1],
-          );
+          const parsed = new URL(request.url, 'http://localhost');
+          const threadValues = parsed.searchParams.getAll('threadId');
+          const seqValues = parsed.searchParams.getAll('seq');
+          const threadId = parseStrictNonNegativeInt(threadValues[0]);
+          const seq = parseStrictNonNegativeInt(seqValues[0]);
+          const allowed =
+            threadValues.length === 1 &&
+            seqValues.length === 1 &&
+            threadId !== null &&
+            threadId > 0 &&
+            seq !== null &&
+            (await mediaAccess.canReadMessageAsset(
+              principal.userId,
+              threadId,
+              seq,
+              shard[1],
+            ));
           if (!allowed) {
-            return reply.code(403).type('application/json').send({
-              statusCode: 403,
-              code: BusinessCode.FORBIDDEN,
-              message: 'forbidden',
+            return reply.code(404).type('application/json').send({
+              statusCode: 404,
+              code: BusinessCode.NOT_FOUND,
+              message: 'not found',
               data: null,
             });
           }
@@ -312,7 +330,22 @@ async function registerStaticServing(
       },
     );
 
-  // Uploaded files are served at /uploads/*. decorateReply:false because we never use
+  // CAS blobs are immutable, extensionless and presentation-neutral. Message metadata tells clients
+  // how to display/save them; this endpoint only transfers authenticated bytes.
+  await app.register(fastifyStatic, {
+    root: casDir,
+    prefix: '/uploads/cas/',
+    decorateReply: false,
+    cacheControl: false,
+    setHeaders: (res: { setHeader: (name: string, value: string) => void }) => {
+      res.setHeader('Cache-Control', 'private, max-age=1209600, immutable');
+      res.setHeader('Vary', 'Cookie');
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+  });
+
+  // Avatar files are served at /uploads/*. decorateReply:false because we never use
   // reply.sendFile (the SPA fallback reads index.html directly), and multiple @fastify/static
   // registrations must not re-decorate the reply.
   // cacheControl:false makes the `send` stream omit its own Cache-Control (otherwise it emits
@@ -350,4 +383,10 @@ async function registerStaticServing(
   // file_server + try_files SPA fallback in the generated Caddyfile (see docker/init.sh). Fastify is
   // API-only here (/api/* routes) plus the auth-gated /uploads registered above. (Previously @fastify/static
   // also mounted the frontend here, registering a not-found handler Fastify rejected as "already set".)
+}
+
+function parseStrictNonNegativeInt(value: string | undefined): number | null {
+  if (value === undefined || !/^(?:0|[1-9][0-9]*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }

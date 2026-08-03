@@ -45,4 +45,5 @@ export interface ForwardWireClosure {
   rootBundleId: string;
   bundles: ForwardWireBundle[];
   assets: ForwardAssetDocument[];
+  accessContext?: { threadId: number; seq: number };
 }

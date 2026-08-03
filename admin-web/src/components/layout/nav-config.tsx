@@ -2,7 +2,6 @@ import {
   Bell,
   CircleUser,
   FileWarning,
-  Gauge,
   Globe,
   HardDrive,
   Hash,
@@ -14,7 +13,7 @@ import {
   Settings,
   ShieldBan,
   Users,
-} from 'lucide-react'
+} from 'lucide-react';
 
 /** The `key` suffix under the `nav.*` i18n namespace. Typed as a finite union so the
  *  `t(\`nav.${key}\`)` template literal resolves to a known key (the typed t() rejects `string`). */
@@ -31,33 +30,31 @@ export type NavKey =
   | 'media'
   | 'settings'
   | 'security'
-  | 'quotas'
-  | 'diagnosticReports'
+  | 'audit';
 
 /** Full i18n key for a group header (under nav.group.*). */
 export type NavGroupKey =
   | 'nav.group.overview'
   | 'nav.group.access'
-  | 'nav.group.federation'
   | 'nav.group.system'
-  | 'nav.group.account'
+  | 'nav.group.account';
 
 export interface NavItem {
-  to: string
-  key: NavKey
-  icon: LucideIcon
+  to: string;
+  key: NavKey;
+  icon: LucideIcon;
   /** Placeholder entry rendered as a disabled, non-navigating item. */
-  disabled?: boolean
+  disabled?: boolean;
   /** Match this item only on exact path, not prefix. Set on section roots that share
    *  a prefix with a deeper item (e.g. /federation vs /federation/self-check). */
-  end?: boolean
+  end?: boolean;
 }
 
 export interface NavGroup {
-  labelKey: NavGroupKey
-  items: NavItem[]
+  labelKey: NavGroupKey;
+  items: NavItem[];
   /** Render in the bottom personal cluster (My Account) rather than the main nav list. */
-  footer?: boolean
+  footer?: boolean;
 }
 
 /** Sidebar structure, grouped by responsibility. Pages that share a URL prefix with a sub-view
@@ -79,12 +76,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/sessions', key: 'sessions', icon: Monitor },
       { to: '/groups', key: 'groups', icon: Hash },
       { to: '/bans', key: 'bans', icon: ShieldBan },
-    ],
-  },
-  {
-    labelKey: 'nav.group.federation',
-    items: [
-      { to: '/quotas', key: 'quotas', icon: Gauge },
+      { to: '/audit', key: 'audit', icon: FileWarning },
     ],
   },
   {
@@ -93,7 +85,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/push', key: 'push', icon: Bell },
       { to: '/media', key: 'media', icon: HardDrive },
       { to: '/logs', key: 'logs', icon: ScrollText },
-      { to: '/diagnostic-reports', key: 'diagnosticReports', icon: FileWarning },
       { to: '/settings', key: 'settings', icon: Settings },
     ],
   },
@@ -102,22 +93,24 @@ export const NAV_GROUPS: NavGroup[] = [
     footer: true,
     items: [{ to: '/security', key: 'security', icon: CircleUser }],
   },
-]
+];
 
 /** Most-specific active nav match for a pathname (longest matching `to` wins). Powers the
  *  sidebar active state and the top-bar breadcrumb. */
-export function matchNav(pathname: string): { item: NavItem; group: NavGroup } | null {
-  let best: { item: NavItem; group: NavGroup } | null = null
+export function matchNav(
+  pathname: string,
+): { item: NavItem; group: NavGroup } | null {
+  let best: { item: NavItem; group: NavGroup } | null = null;
   for (const group of NAV_GROUPS) {
     for (const item of group.items) {
-      if (item.disabled) continue
+      if (item.disabled) continue;
       const match = item.end
         ? pathname === item.to
-        : pathname === item.to || pathname.startsWith(item.to + '/')
+        : pathname === item.to || pathname.startsWith(item.to + '/');
       if (match && (!best || item.to.length > best.item.to.length)) {
-        best = { item, group }
+        best = { item, group };
       }
     }
   }
-  return best
+  return best;
 }

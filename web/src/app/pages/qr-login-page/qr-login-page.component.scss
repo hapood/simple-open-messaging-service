@@ -103,15 +103,28 @@
 }
 
 .qr-image {
-  // Fixed integer-px box (project rule). A neutral light-gray ground makes the generated quiet zone feel
-  // intentional without tinting a functional scanning surface with the product's brand color.
+  // A quiet neutral frame separates the QR from the white auth card, while the inset scanning surface and
+  // its required quiet zone remain pure white.
   position: relative;
   width: 240px;
   height: 240px;
   box-sizing: border-box;
-  --qr-bg: #f5f5f5;
-  background: var(--qr-bg);
+  padding: 8px;
+  --qr-bg: #ffffff;
+  background: #f5f5f5;
   border-radius: var(--app-radius-sm, 8px);
+}
+
+// The white scan surface must stay white in dark mode, but the light-theme frame would otherwise merge
+// into it as one bright tile. Darken only the outer frame and give its perimeter a restrained light edge.
+:host-context([data-theme='dark']) .qr-image {
+  background: color-mix(
+    in srgb,
+    var(--app-border-strong) 72%,
+    var(--app-surface)
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--app-text) 12%, transparent);
 }
 
 .qr-frame.has-progress .qr-image {
@@ -122,6 +135,9 @@
 .qr-canvas {
   width: 100%;
   height: 100%;
+  overflow: hidden;
+  background: var(--qr-bg);
+  border-radius: 4px;
   transition: filter 250ms ease;
 }
 
@@ -133,6 +149,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--qr-bg);
+  border-radius: 4px;
   color: var(--app-text-muted);
 }
 
@@ -152,6 +170,8 @@
   justify-content: center;
   gap: 12px;
   text-align: center;
+  background: var(--qr-bg);
+  border-radius: 4px;
 }
 
 // M3 error-container treatment: the report glyph sits in a soft danger wash (the same --app-danger-soft

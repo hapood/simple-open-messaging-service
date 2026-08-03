@@ -216,12 +216,23 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     id: number,
     bundle: ForwardWireBundle,
   ): ChatMsgData {
+    const context = this.closure()?.accessContext;
+    const snapshotMessage = context
+      ? {
+          ...message,
+          content: bindSnapshotCasUrls(
+            message.content,
+            context.threadId,
+            context.seq,
+          ),
+        }
+      : message;
     const contentType = CONTENT_TYPES.has(
-      message.contentType as ChatMsgData['contentType'],
+      snapshotMessage.contentType as ChatMsgData['contentType'],
     )
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
-    const media = parseMedia(message, id);
+    const media = parseMedia(snapshotMessage, id);
     const creator = stableIdentityId(
       `${message.sender.account}@${message.sender.domain}`,
     );
@@ -236,8 +247,10 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       avatarIdentityId: creator,
       text:
         contentType === 'PURE_TEXT'
-          ? toDisplayText(requireTextMessageContent(message.content).text)
-          : snapshotContent(message),
+          ? toDisplayText(
+              requireTextMessageContent(snapshotMessage.content).text,
+            )
+          : snapshotContent(snapshotMessage),
       time: dayjs(message.sentAt).format('HH:mm'),
       contentType,
       images:
@@ -276,7 +289,9 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       (candidate) => candidate.kind === 'avatar' && candidate.digest === digest,
     );
     if (!asset) return '';
-    return `/uploads/shards/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}.${asset.extension}`;
+    const context = this.closure()?.accessContext;
+    if (!context) return '';
+    return `/uploads/cas/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
   }
 }
 
@@ -345,6 +360,17 @@ function snapshotContent(message: ForwardManifestMessage): string {
   } catch {
     return message.content;
   }
+}
+
+function bindSnapshotCasUrls(
+  content: string,
+  threadId: number,
+  seq: number,
+): string {
+  return content.replace(
+    /\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}(?:\?threadId=[0-9]+&seq=[0-9]+)?/g,
+    (url) => `${url.split('?')[0]}?threadId=${threadId}&seq=${seq}`,
+  );
 }
 
 function stableIdentityId(identity: string): number {

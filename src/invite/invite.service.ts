@@ -173,6 +173,7 @@ export class InviteService {
     note: string,
     allowAutoAccept: boolean,
     originIdOverride?: string,
+    afterInviteCreate?: (tx: DatabaseTransaction) => Promise<void>,
   ): Promise<CreateFriendInviteResult> {
     const trimmed = (note ?? '').slice(0, 255);
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
@@ -223,6 +224,7 @@ export class InviteService {
           .onConflictDoNothing()
           .returning({ id: invite.id });
         if (created) {
+          if (afterInviteCreate) await afterInviteCreate(tx);
           // The friend-request badge is derived (MAX(createdAt) over incoming FRIEND invites) — creating
           // this PENDING row advances it automatically (accept/decline don't: createdAt is immutable); no
           // denormalized badge column to arm here.

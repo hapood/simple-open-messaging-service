@@ -5,6 +5,12 @@ import {
   UseGuards,
   HttpStatus,
   HttpCode,
+  Body,
+  Get,
+  Headers,
+  Param,
+  Put,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import {
@@ -13,13 +19,19 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { RouteConfig } from '@nestjs/platform-fastify';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { extractDigests } from './file-content.js';
-import { QuotaService } from '../quota/quota.service.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
+import { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
+import {
+  RESUMABLE_CHUNK_SIZE,
+  ResumableUploadService,
+} from './resumable-upload.service.js';
 
 /**
  * Image upload: multipart/form-data, field file=<image bytes> + w/h (the dimensions the frontend read
@@ -34,7 +46,7 @@ import { QuotaService } from '../quota/quota.service.js';
  * exactly as before (a plain upload). /upload/avatar never carries the header → never promotes.
  *
  * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope. Validation /
- * quota failures throw BusinessException (after persisting a staged failure, via failUpload); the global
+ * handled failures throw BusinessException (after persisting a staged failure, via failUpload); the global
  * AllExceptionsFilter renders the error body.
  */
 @ApiTags('upload')
@@ -44,25 +56,61 @@ export class UploadController {
     private readonly uploadService: UploadService,
     private readonly messageService: MessageService,
     private readonly fanout: MessageFanoutService,
-    private readonly quota: QuotaService,
+    private readonly userQuota: UserQuotaService,
+    private readonly resumable: ResumableUploadService,
   ) {}
 
-  /** Tick the local aggregate daily quota for a media upload; throws BusinessException(QUOTA_EXCEEDED)
-   *  (after persisting a staged failure) when the budget is exhausted, else returns. Local uploads already
-   *  enforce per-item size via the /upload pipeline, so this is the COUNT cap only (no byte 413). */
-  private async tickLocal(
-    req: FastifyRequest,
-    category: 'images' | 'largeFiles',
-  ): Promise<void> {
-    const q = await this.quota.tryTickLocal(category);
-    if (q.exceeded) {
-      await this.failUpload(
-        req,
-        BusinessCode.QUOTA_EXCEEDED,
-        `daily ${category} quota reached (${q.limit}); resets in ${q.retryAfter}s`,
-        { category, limit: q.limit, retryAfter: q.retryAfter },
-      );
-    }
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('uploads/resumable/init')
+  @ApiOperation({
+    summary: 'Initialize or recover a sequential upload session',
+  })
+  initResumable(
+    @Request() req: FastifyRequest,
+    @Body() dto: InitResumableUploadDto,
+  ) {
+    return this.resumable.init(req.user.userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @Get('uploads/resumable/:uploadId')
+  @ApiOperation({ summary: 'Get the authoritative resumable upload offset' })
+  resumableStatus(
+    @Request() req: FastifyRequest,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+  ) {
+    return this.resumable.status(req.user.userId, uploadId);
+  }
+
+  @ApiBearerAuth()
+  @Put('uploads/resumable/:uploadId')
+  @RouteConfig({ bodyLimit: RESUMABLE_CHUNK_SIZE })
+  @ApiConsumes('application/octet-stream')
+  @ApiOperation({ summary: 'Append one ordered upload chunk' })
+  appendResumable(
+    @Request() req: FastifyRequest,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+    @Headers('content-range') contentRange: string | undefined,
+    @Body() body: Buffer,
+  ) {
+    return this.resumable.append(
+      req.user.userId,
+      uploadId,
+      contentRange,
+      Buffer.isBuffer(body) ? body : Buffer.from(body ?? ''),
+    );
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('uploads/resumable/:uploadId/complete')
+  @ApiOperation({ summary: 'Validate, publish and promote a completed upload' })
+  completeResumable(
+    @Request() req: FastifyRequest,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+  ) {
+    return this.resumable.complete(req.user.userId, uploadId);
   }
 
   @ApiBearerAuth()
@@ -84,7 +132,7 @@ export class UploadController {
         this.imageRejectMessage(img.reason),
       );
     }
-    await this.tickLocal(req, 'images');
+    await this.admitUpload(req, 'images', img.buffer.length);
     // A phone/WebView photo picker can return formats outside the inline-image whitelist (commonly
     // HEIC/HEIF/AVIF). Preserve those bytes through the generic-file pipeline instead of failing the
     // send. The staged IMAGE intent is committed as FILE; the authoritative NEW_MESSAGE echo
@@ -202,7 +250,7 @@ export class UploadController {
         this.fileRejectMessage(f.reason),
       );
     }
-    await this.tickLocal(req, 'largeFiles');
+    await this.admitUpload(req, 'largeFiles', f.buffer.length);
     const data = await this.withStageFailure(req, () =>
       this.uploadService.saveFile(f.mimetype, f.filename, f.buffer),
     );
@@ -237,7 +285,7 @@ export class UploadController {
         this.mediaRejectMessage(v.reason, 'video'),
       );
     }
-    await this.tickLocal(req, 'largeFiles');
+    await this.admitUpload(req, 'largeFiles', v.buffer.length);
     const data = await this.withStageFailure(req, () =>
       this.uploadService.saveMedia(v.ext, v.mime, v.filename, v.buffer),
     );
@@ -266,7 +314,7 @@ export class UploadController {
         this.mediaRejectMessage(a.reason, 'audio'),
       );
     }
-    await this.tickLocal(req, 'largeFiles');
+    await this.admitUpload(req, 'largeFiles', a.buffer.length);
     const data = await this.withStageFailure(req, () =>
       this.uploadService.saveMedia(a.ext, a.mime, a.filename, a.buffer),
     );
@@ -352,6 +400,31 @@ export class UploadController {
     const raw = req.headers['x-client-message-id'];
     const value = Array.isArray(raw) ? raw[0] : raw;
     return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  /** Enforce the account's real-byte cap before CAS persistence. Staged sends consumed their daily
+   * count atomically with PendingMedia creation; legacy/plain uploads have no stage, so admission here
+   * is their formal acceptance point and consumes the count before storage work begins. */
+  private async admitUpload(
+    req: FastifyRequest,
+    category: 'images' | 'largeFiles',
+    bytes: number,
+  ): Promise<void> {
+    try {
+      await this.userQuota.assertWithinByteCap(
+        req.user.userId,
+        category,
+        bytes,
+      );
+      if (!this.clientMessageId(req)) {
+        await this.userQuota.tickStandalone(req.user.userId, category);
+      }
+    } catch (error) {
+      if (error instanceof BusinessException) {
+        return this.failUpload(req, error.bizCode, error.message, error.data);
+      }
+      throw error;
+    }
   }
 
   /**

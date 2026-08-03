@@ -19,10 +19,20 @@ import {
   type ForwardRecordKind,
 } from '../forward-message-card/forward-message-card.component';
 import { ThreadSearchInputComponent } from '../thread-search-input/thread-search-input.component';
+import { TextRowComponent } from '../message-cards/text-row/text-row.component';
+import { MediaRowComponent } from '../message-cards/media-row/media-row.component';
+import { FileRowComponent } from '../message-cards/file-row/file-row.component';
+import { InviteRowComponent } from '../message-cards/invite-row/invite-row.component';
+import { LinkRowComponent } from '../message-cards/link-row/link-row.component';
+import { CallRowComponent } from '../message-cards/call-row/call-row.component';
+import { ForwardRowComponent } from '../message-cards/forward-row/forward-row.component';
+
+export type ForwardMode = 'DIRECT' | 'HISTORY';
 
 export interface ForwardDialogResult {
   readonly threadIds: readonly number[];
   readonly messages: readonly ForwardMessageItem[];
+  readonly mode: ForwardMode;
 }
 
 @Component({
@@ -33,6 +43,13 @@ export interface ForwardDialogResult {
     ThreadSearchInputComponent,
     TranslocoPipe,
     UserAvatarComponent,
+    TextRowComponent,
+    MediaRowComponent,
+    FileRowComponent,
+    InviteRowComponent,
+    LinkRowComponent,
+    CallRowComponent,
+    ForwardRowComponent,
   ],
   templateUrl: './forward-dialog.component.html',
   styleUrl: './forward-dialog.component.scss',
@@ -40,6 +57,7 @@ export interface ForwardDialogResult {
 export class ForwardDialogComponent {
   readonly messages = input.required<readonly ForwardMessageItem[]>();
   readonly recordKind = input<ForwardRecordKind>('chat');
+  readonly mode = input<ForwardMode>('HISTORY');
   readonly searchText = signal('');
   readonly selectedThreadIds = signal<ReadonlySet<number>>(new Set());
   readonly recentThreadIds = signal<readonly number[]>([]);
@@ -70,6 +88,10 @@ export class ForwardDialogComponent {
   readonly avatarType = conversationAvatarType;
   readonly avatarIdentityId = conversationAvatarIdentityId;
   readonly avatarSrc = conversationAvatarSrc;
+  readonly directMessage = computed(() => {
+    const original = this.messages()[0]?.original;
+    return original ? { ...original, isSelf: true, quote: undefined } : null;
+  });
 
   constructor() {
     this.recentThreadIds.set(this.readRecentThreadIds());
@@ -96,6 +118,7 @@ export class ForwardDialogComponent {
     this.route.closeDlg({
       threadIds: [...this.selectedThreadIds()],
       messages: this.messages(),
+      mode: this.mode(),
     } satisfies ForwardDialogResult);
   }
 

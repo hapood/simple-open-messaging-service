@@ -33,6 +33,7 @@ import {
   AdminPushTestDto,
   AdminUserBatchDto,
   AdminCreateUserDto,
+  AdminSetQuotaDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -44,6 +45,7 @@ import { UserManageService } from '../user-manage/user-manage.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
 import { ADMIN_SESSION_COOKIE, clearAdminSessionCookie, setAdminSessionCookie } from './admin-session.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
 
 /**
  * Admin console HTTP adapter. All domain logic lives in services (AdminAuthService, AuthService,
@@ -68,6 +70,7 @@ export class AdminController {
     private readonly sseService: SseService,
     private readonly pushService: PushService,
     private readonly otpLoginService: OtpLoginService,
+    private readonly userQuotaService: UserQuotaService,
   ) {}
 
   @UseGuards(ThrottleGuard)
@@ -315,6 +318,27 @@ export class AdminController {
     const data = await this.userManageService.getUserDetail(Number(id));
     if (!data) throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
     return data;
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/users/:id/quota')
+  @ApiOperation({ summary: "View a local user's personal quota policy and today's usage" })
+  async userQuota(@Param('id') id: string) {
+    return this.userQuotaService.getState(Number(id));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('user.quota.set', { targetType: 'user', targetParam: 'id' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/users/:id/quota/set')
+  @ApiOperation({ summary: "Set a local user's personal quota overrides" })
+  async setUserQuota(
+    @Param('id') id: string,
+    @Body() dto: AdminSetQuotaDto,
+  ): Promise<void> {
+    await this.userQuotaService.setPolicy(Number(id), dto);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

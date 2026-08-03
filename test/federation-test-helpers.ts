@@ -5,7 +5,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import request from 'supertest';
-import { sql } from 'drizzle-orm';
 import type { Database } from '../src/database/database.service.js';
 import {
   admin,
@@ -16,14 +15,6 @@ import {
 import { PasswordHasher } from '../src/auth/password-hasher.service.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 
-/** mimetype → CAS file extension (mirrors UploadService.IMG_EXT for the asset types the tests stage). */
-const IMG_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-};
-
 /** The minimal app surface these helpers need (baseUrl for HTTP, database for direct DB/fixtures). */
 interface AppLike {
   baseUrl: string;
@@ -32,7 +23,7 @@ interface AppLike {
 
 /**
  * Stage a content-addressed chat-media asset on an app's CAS — the test-process equivalent of the old
- * in-process `UploadService.save(mimeType, buf)`. Writes uploads/shards/<aa>/<bb>/<digest>.<ext> (the
+ * in-process `UploadService.save(mimeType, buf)`. Writes data/cas/<aa>/<bb>/<digest> (the
  * exact path resolveMediaFile globs) + the MediaAsset ref-count row (so the dedup-defeat in the
  * multi-chunk/resume tests — deleting the row — behaves identically). Returns the server-relative URL
  * (what a chat IMAGE message embeds) + the size + the digest.
@@ -42,27 +33,27 @@ export async function stageCasAsset(
   mimeType: string,
   buf: Buffer,
 ): Promise<{ url: string; size: number; digest: string }> {
-  const ext = IMG_EXT[mimeType] ?? 'bin';
+  void mimeType;
   const digest = createHash('sha256').update(buf).digest('hex');
-  const rel = `shards/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}.${ext}`;
+  const rel = `${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`;
   // CAS root MUST match the server's UploadService.uploadDir (process.cwd()/data/uploads, see
   // src/upload/upload.service.ts) — /get_file + /uploads/* read shards from here. Writing to
   // process.cwd()/uploads (no data/) leaves the staged file invisible to the server, so federated
   // media localization fetches zero bytes and fails the digest check.
-  const casRoot = join(process.cwd(), 'data', 'uploads');
+  const casRoot = join(process.cwd(), 'data', 'cas');
   const abs = join(casRoot, ...rel.split('/'));
-  await mkdir(join(casRoot, 'shards', digest.slice(0, 2), digest.slice(2, 4)), {
+  await mkdir(join(casRoot, digest.slice(0, 2), digest.slice(2, 4)), {
     recursive: true,
   });
   await writeFile(abs, buf);
   await database
     .insert(mediaAsset)
-    .values({ digest, bytes: BigInt(buf.length), refs: 1 })
+    .values({ digest, bytes: BigInt(buf.length), status: 'READY' })
     .onConflictDoUpdate({
       target: mediaAsset.digest,
-      set: { refs: sql`${mediaAsset.refs} + 1` },
+      set: { bytes: BigInt(buf.length), status: 'READY' },
     });
-  return { url: `/uploads/${rel}`, size: buf.length, digest };
+  return { url: `/uploads/cas/${rel}`, size: buf.length, digest };
 }
 
 /** Upload an avatar via the real HTTP route (multipart) — the test-process equivalent of
@@ -155,14 +146,12 @@ export async function getAdminCookie(
       updatedAt: new Date(),
     })
     .returning({ id: user.id });
-  await app.database
-    .insert(admin)
-    .values({
-      userId: u.id,
-      role: 'SUPER_ADMIN',
-      enabled: true,
-      updatedAt: new Date(),
-    });
+  await app.database.insert(admin).values({
+    userId: u.id,
+    role: 'SUPER_ADMIN',
+    enabled: true,
+    updatedAt: new Date(),
+  });
   const res = await request(app.baseUrl)
     .post('/api/v1/admin/login')
     .send({ account, password: 'Pass1234' });

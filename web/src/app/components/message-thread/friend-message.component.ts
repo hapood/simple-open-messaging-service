@@ -22,15 +22,7 @@ import {
   type CbItem,
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
-import {
-  pickStickyDateLabel,
-  stickyDateRowOpacity,
-  isViewportTransformEnd,
-  STICKY_DATE_COLLISION_BOTTOM_PX,
-  STICKY_DATE_COLLISION_TOP_PX,
-  STICKY_DATE_PICK_FUZZ_PX,
-  unreadDividerOverlapsStickyDate,
-} from '../../lib/sticky-date';
+import { isViewportTransformEnd } from '../../lib/sticky-date';
 import { HttpItemSource } from './http-item-source';
 import { MediaProbeScheduler } from './media-probe-scheduler';
 import {
@@ -72,7 +64,7 @@ import {
 } from '../../lib/chat-input/paste-panel.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { ComposerWidthSourceDirective } from '../../directives/composer-width-source.directive';
-import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
+import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
 import { assetUrl } from '../../services/runtime';
 import { MsgService } from '../../services/message.service';
@@ -212,7 +204,7 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
     PastePanelComponent,
     KbdOffsetDirective,
     ComposerWidthSourceDirective,
-    StickyDateOverlayComponent,
+    ChatboxStickyOverlaysComponent,
     EmptyStateComponent,
     UserAvatarComponent,
     TranslocoModule,
@@ -244,12 +236,13 @@ export class MessageThreadComponent implements OnDestroy {
     viewChild<ElementRef<HTMLDivElement>>('container');
   private readonly contentRef =
     viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly stickyOverlays = viewChild(ChatboxStickyOverlaysComponent);
   private readonly transferStackRef =
     viewChild<ElementRef<HTMLDivElement>>('transferStack');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date
    *  pill. The viewport carries the keyboard-lift `transform`, so its own `getBoundingClientRect().top`
    *  slides under the header while the keyboard is up; the header does not transform, so its bottom is the
-   *  true top of the visible content (see updateStickyDate). */
+   *  true top of the visible content (see updateStickyOverlays). */
   private readonly headerRef = viewChild('msgHeader', {
     read: ElementRef<HTMLElement>,
   });
@@ -324,7 +317,6 @@ export class MessageThreadComponent implements OnDestroy {
     const count = this.newMessageCount();
     return count > 99 ? '99+' : String(count);
   });
-  readonly stickyDate = signal<string | null>(null);
   /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Used only to
    *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
   readonly initialLoading = signal(true);
@@ -1001,7 +993,7 @@ export class MessageThreadComponent implements OnDestroy {
         // `onScroll` normally runs after the initial batch mounts, but the first paint must not depend on that
         // kernel callback: explicitly recompute once init has settled so a top-anchored unread divider suppresses
         // the floating date pill before the pane is handed to the user.
-        this.updateStickyDate();
+        this.updateStickyOverlays();
         if (isDevMode()) {
           console.log('[chat-perf] scroller:ready', {
             threadId: trd.threadId,
@@ -1284,17 +1276,20 @@ export class MessageThreadComponent implements OnDestroy {
     const context = this.messageContextMenu();
     if (!context) return;
     this.closeContextMenu();
-    this.openForwardDialog([context.targetItem]);
+    this.openForwardDialog([context.targetItem], 'DIRECT');
   }
 
   openSelectedForwardDialog(): void {
     const items = [...this.selectedMessageIds()]
       .map((id) => this.selectedMessageItems.get(id))
       .filter((item): item is CbItem<ChatItemData> => item !== undefined);
-    if (items.length) this.openForwardDialog(items);
+    if (items.length) this.openForwardDialog(items, 'HISTORY');
   }
 
-  private openForwardDialog(items: readonly CbItem<ChatItemData>[]): void {
+  private openForwardDialog(
+    items: readonly CbItem<ChatItemData>[],
+    mode: 'DIRECT' | 'HISTORY',
+  ): void {
     const messages = items
       .slice()
       .sort((a, b) => a.data.createdAtMs - b.data.createdAtMs)
@@ -1315,6 +1310,7 @@ export class MessageThreadComponent implements OnDestroy {
       PopupType.FORWARD,
       {
         messages,
+        mode,
         recordKind: source?.type === 'GROUP' ? 'group' : 'chat',
       },
       (result) => {
@@ -1344,6 +1340,7 @@ export class MessageThreadComponent implements OnDestroy {
               this.msgService.sendForward({
                 threadId,
                 sourceMessages,
+                mode: result.mode,
                 clientMessageId: this.newClientMessageId(),
               }),
             );
@@ -1490,7 +1487,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.atBottom.set(atVisibleBottom);
     if (atVisibleBottom) this.newMessageCount.set(0);
     this.mountedMessageCount.set(info.mounted);
-    this.updateStickyDate();
+    this.updateStickyOverlays();
     this.probe.schedule(this.threadId() ?? 0);
     this.updateUnreadBoundaryPosition(info);
     this.stableRead.noteScroll();
@@ -1553,56 +1550,22 @@ export class MessageThreadComponent implements OnDestroy {
     setTimeout(clear, 1600);
   }
 
-  /** Telegram-style sticky date overlay: the text of the last date-separator row at/above the VISIBLE top.
-   *  The visible top is the header's bottom edge (stable — the header does NOT carry the keyboard-lift
-   *  transform), NOT the viewport's `getBoundingClientRect().top` (which slides under the header while the
-   *  keyboard is up, so it would pick the date of a message now hidden behind the header). Falls back to
-   *  the viewport top before the header ref is available (early init). The pick is the pure
-   *  {@link pickStickyDateLabel} helper so the logic is unit-tested. */
-  private updateStickyDate(): void {
+  private updateStickyOverlays(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
     if (!vp || !ct) {
-      this.stickyDate.set(null);
+      this.stickyOverlays()?.clear();
       return;
     }
-    const visibleTop =
-      this.headerRef()?.nativeElement.getBoundingClientRect().bottom ??
-      vp.getBoundingClientRect().top;
-    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
-      (element) => ({
-        element,
-        top: element.getBoundingClientRect().top,
-        label: element.textContent?.trim() ?? null,
-      }),
+    this.stickyOverlays()?.refresh(
+      {
+        viewport: vp,
+        content: ct,
+        header: this.headerRef()?.nativeElement,
+        container: this.containerRef()?.nativeElement ?? vp,
+      },
+      document.documentElement.getAttribute('data-show-self-avatar') === 'true',
     );
-    const unreadDivider = ct.querySelector<HTMLElement>('.cb-unread-divider');
-    if (
-      unreadDividerOverlapsStickyDate(
-        unreadDivider?.getBoundingClientRect() ?? null,
-        visibleTop,
-      )
-    ) {
-      this.stickyDate.set(null);
-      for (const { element } of rows) element.style.opacity = '1';
-      return;
-    }
-    const current = pickStickyDateLabel(
-      rows,
-      visibleTop,
-      STICKY_DATE_PICK_FUZZ_PX,
-    );
-    this.stickyDate.set(current);
-    const fadeLo = visibleTop + STICKY_DATE_COLLISION_TOP_PX;
-    const fadeHi = visibleTop + STICKY_DATE_COLLISION_BOTTOM_PX;
-    for (const { element, top } of rows) {
-      element.style.opacity = stickyDateRowOpacity(
-        top,
-        fadeLo,
-        fadeHi,
-        current !== null,
-      ).toFixed(2);
-    }
   }
 
   /** Recompute the sticky-date pill when the keyboard-lift `transform` settles on the viewport. The
@@ -1612,7 +1575,7 @@ export class MessageThreadComponent implements OnDestroy {
   onViewportTransitionEnd(event: TransitionEvent): void {
     if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement))
       return;
-    this.updateStickyDate();
+    this.updateStickyOverlays();
   }
 
   scrollToLatest(): void {
@@ -1930,7 +1893,9 @@ export class MessageThreadComponent implements OnDestroy {
             meta:
               file.kind === 'video'
                 ? { w: file.w, h: file.h, duration: file.duration }
-                : undefined,
+                : file.kind === 'image'
+                  ? { w: file.w, h: file.h }
+                  : undefined,
             retry,
           })
           .pipe(takeUntil(this.transfers.cancelled(cid))),
@@ -2181,7 +2146,9 @@ export class MessageThreadComponent implements OnDestroy {
     }
     if (
       res.code === BusinessCode.QUOTA_EXCEEDED ||
-      res.code === BusinessCode.FEDERATION_QUOTA_EXCEEDED
+      res.code === BusinessCode.FEDERATION_QUOTA_EXCEEDED ||
+      res.code === BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE ||
+      res.code === BusinessCode.FEDERATION_CAPABILITY_DISABLED
     ) {
       this.toast.warn(translateBizResult(res, this.transloco));
     }
@@ -2283,6 +2250,7 @@ export class MessageThreadComponent implements OnDestroy {
             threadId: tid,
             contentType: 'IMAGE',
             clientMessageId: cid,
+            meta: { w: dims.w, h: dims.h },
             retry,
           })
           .pipe(takeUntil(this.transfers.cancelled(cid))),
@@ -2733,6 +2701,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.mountedMessageCount.set(0);
     this.atBottom.set(true);
     this.newMessageCount.set(0);
+    this.stickyOverlays()?.clear();
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;

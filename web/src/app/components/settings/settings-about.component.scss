@@ -1,46 +1,40 @@
-// Settings → About sub-page styles. Pulls in the shared M3 group/card shell (kept scoped by Angular's
-// view encapsulation) and layers the client-update card the category list doesn't need. All vertical
-// metrics are integer px (project rule); colors are theme tokens only (each has a dark override).
-@use './_settings-shared.scss' as s;
+:host { display: block; }
 
-@include s.settings-groups;
+.about-page { display: flex; flex-direction: column; gap: 16px; max-width: 680px; margin: 0 auto; }
 
-// The web-bundle update card — a status block (progress bar / outcome / prompt) above its action button.
-.update-card {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 12px;
-}
+.product-hero { display: flex; align-items: center; gap: 14px; padding: 6px 4px 10px; }
+.product-mark { width: 54px; height: 54px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 18px; color: #fff; font-size: 25px; font-weight: 750; background: linear-gradient(145deg, var(--app-brand), var(--app-brand-accent)); box-shadow: 0 8px 22px color-mix(in srgb, var(--app-brand) 25%, transparent); }
+.product-hero h2 { margin: 0; color: var(--app-text); font-size: 20px; line-height: 26px; letter-spacing: -0.3px; }
+.product-hero p { margin: 2px 0 0; color: var(--app-text-muted); font-size: 13px; line-height: 19px; }
+.version-chip { margin-left: auto; padding: 4px 9px; border-radius: var(--app-radius-pill); color: var(--app-text-muted); background: var(--app-bg-muted); font-size: 12px; font-variant-numeric: tabular-nums; cursor: default; }
 
-.update-bar {
-  margin-top: 4px;
-}
+.update-card, .details-card { border: 1px solid color-mix(in srgb, var(--app-brand) 14%, var(--app-border)); border-radius: 20px; background: var(--app-surface); }
+.update-card { position: relative; overflow: hidden; padding: 20px; background: linear-gradient(145deg, color-mix(in srgb, var(--app-brand) 8%, var(--app-surface)), var(--app-surface) 62%); }
+.update-heading { display: flex; align-items: flex-start; gap: 13px; }
+.status-orb { width: 38px; height: 38px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 13px; color: var(--app-brand); background: var(--app-brand-soft); font-size: 18px; font-weight: 750; }
+.update-copy { min-width: 0; flex: 1; }
+.update-copy h3, .details-card h3 { margin: 0; color: var(--app-text); font-size: 15px; line-height: 21px; font-weight: 650; }
+.update-copy p { margin: 3px 0 0; color: var(--app-text-muted); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.percent { align-self: center; color: var(--app-brand); font-size: 15px; line-height: 20px; font-variant-numeric: tabular-nums; }
+.download-arrow { display: block; transform: translateY(-1px); }
+.probe-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: -11px 0 color-mix(in srgb, currentColor 35%, transparent), 11px 0 color-mix(in srgb, currentColor 35%, transparent); animation: probe-pulse 1200ms ease-in-out infinite; }
+.is-current .status-orb { color: var(--app-success); background: var(--app-success-soft); }
+.is-error .status-orb { color: var(--app-danger); background: var(--app-danger-soft); }
+.is-error .update-copy p { color: var(--app-danger); }
 
-.update-readout {
-  margin: 0;
-  font-size: 13px;
-  line-height: 18px;
-  font-variant-numeric: tabular-nums;
-  color: var(--app-text-muted);
-}
+.progress-track { height: 8px; margin-top: 18px; overflow: hidden; border-radius: var(--app-radius-pill); background: color-mix(in srgb, var(--app-brand) 14%, var(--app-bg-muted)); }
+.progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--app-brand), var(--app-brand-accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--app-brand) 45%, transparent); transition: width 180ms ease-out; }
+.progress-track.indeterminate span { animation: progress-slide 1200ms ease-in-out infinite; }
+@keyframes progress-slide { from { transform: translateX(-115%); } to { transform: translateX(310%); } }
+@keyframes probe-pulse { 50% { opacity: 0.4; transform: scale(0.8); } }
 
-.update-warn,
-.update-ok,
-.update-error {
-  margin: 0;
-  font-size: 14px;
-  line-height: 20px;
-}
+.update-card button { width: 100%; margin-top: 18px; border-radius: 12px; min-height: 42px; }
+.details-card { padding: 18px 20px 8px; }
+.details-card h3 { margin-bottom: 8px; }
+.details-card dl { margin: 0; }
+.details-card dl > div { min-height: 44px; display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--app-border); }
+.details-card dt { color: var(--app-text-muted); font-size: 13px; }
+.details-card dd { margin: 0 0 0 auto; max-width: 65%; color: var(--app-text); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.details-card .backend-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.update-warn {
-  color: var(--app-warning);
-}
-
-.update-ok {
-  color: var(--app-success);
-}
-
-.update-error {
-  color: var(--app-danger);
-}
+@media (prefers-reduced-motion: reduce) { .progress-track span { transition: none; } .progress-track.indeterminate span, .probe-dot { animation-duration: 2400ms; } }

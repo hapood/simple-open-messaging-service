@@ -1,7 +1,5 @@
 import { afterNextRender, Component, computed, DestroyRef, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
-import { MatListModule } from '@angular/material/list';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { isTauri, listenEvent } from '../../services/runtime';
@@ -27,62 +25,94 @@ interface DownloadProgress {
  */
 @Component({
   selector: 'app-settings-about',
-  imports: [MatButtonModule, MatListModule, MatProgressBarModule, TranslocoPipe],
+  imports: [MatButtonModule, TranslocoPipe],
   template: `
-    <section class="settings-group">
-      <div class="settings-card">
-        <mat-list>
-          <mat-list-item>
-            <span matListItemTitle>{{ 'settings.appVersion' | transloco }}</span>
-            <span matListItemMeta class="meta">{{ shellVersion() || '—' }}</span>
-          </mat-list-item>
-          <mat-list-item>
-            <span matListItemTitle>{{ 'settings.version' | transloco }}</span>
-            <!-- Hidden debug-tools entry: 10 quick taps toggle the log panel's runtime gate (no-op in dev
-                 builds, where it is already on). No visual affordance by design. -->
-            <span matListItemMeta class="meta" (click)="debug.bumpGesture()">{{ appVersion }}</span>
-          </mat-list-item>
-          @if (showBackend) {
-            <mat-list-item>
-              <span matListItemTitle>{{ 'settings.serverVersion' | transloco }}</span>
-              <span matListItemMeta class="meta">{{ serverVersion() || '—' }}</span>
-            </mat-list-item>
-            <mat-list-item>
-              <span matListItemTitle>{{ 'settings.backend' | transloco }}</span>
-              <span matListItemMeta class="meta">{{ backendLabel() || ('settings.notConnected' | transloco) }}</span>
-            </mat-list-item>
-          }
-        </mat-list>
-      </div>
+    <section class="about-page">
+      <header class="product-hero">
+        <div class="product-mark" aria-hidden="true"><span>S</span></div>
+        <div>
+          <h2>SOMS</h2>
+          <p>{{ 'settings.aboutTagline' | transloco }}</p>
+        </div>
+        <span class="version-chip" (click)="debug.bumpGesture()">v{{ appVersion }}</span>
+      </header>
 
       @if (showBackend) {
-        <div class="settings-card update-card">
+        <section
+          class="update-card"
+          aria-live="polite"
+          [class.is-downloading]="downloading()"
+          [class.is-error]="!!updateError()"
+          [class.is-current]="probed() && !webUpdateAvailable() && !incompatible() && !updateError()"
+        >
+          <div class="update-heading">
+            <div class="status-orb" aria-hidden="true">
+              @if (downloading()) { <span class="download-arrow">↓</span> }
+              @else if (updateError() || incompatible()) { <span>!</span> }
+              @else if (webUpdateAvailable()) { <span class="download-arrow">↓</span> }
+              @else if (probed()) { <span>✓</span> }
+              @else { <span class="probe-dot"></span> }
+            </div>
+            <div class="update-copy">
+              <h3>
+                @if (downloading()) { {{ 'settings.updateDownloading' | transloco }} }
+                @else if (updateError()) { {{ 'settings.updateFailedTitle' | transloco }} }
+                @else if (incompatible()) { {{ 'settings.updateRequired' | transloco }} }
+                @else if (webUpdateAvailable()) { {{ 'settings.updateReady' | transloco }} }
+                @else if (probed()) { {{ 'settings.upToDate' | transloco }} }
+                @else { {{ 'settings.updateChecking' | transloco }} }
+              </h3>
+              <p>
+                @if (downloading()) { {{ 'settings.updateDownloadingHint' | transloco }} }
+                @else if (updateError()) { {{ updateError() }} }
+                @else if (incompatible()) { {{ 'settings.appIncompatible' | transloco: { version: serverVersion() } }} }
+                @else if (webUpdateAvailable()) { {{ 'settings.updateAvailable' | transloco: { version: serverWebVersion() } }} }
+                @else if (probed()) { {{ 'settings.upToDateHint' | transloco }} }
+                @else { {{ 'settings.updateCheckingHint' | transloco }} }
+              </p>
+            </div>
+            @if (downloading()) {
+              <strong class="percent">{{ downloadReadout() }}</strong>
+            }
+          </div>
+
           @if (downloading()) {
-            <mat-progress-bar class="update-bar" mode="determinate" [value]="downloadPercent()" />
-            <p class="update-readout">{{ downloadReadout() }}</p>
+            <div
+              class="progress-track"
+              role="progressbar"
+              [attr.aria-label]="'settings.updateDownloading' | transloco"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              [attr.aria-valuenow]="downloadTotal() ? downloadPercent() : null"
+              [class.indeterminate]="!downloadTotal()"
+            >
+              <span [style.width.%]="downloadTotal() ? downloadPercent() : 34"></span>
+            </div>
           } @else if (updateError()) {
-            <p class="update-error" role="alert">
-              {{ 'settings.updateFailed' | transloco: { error: updateError() } }}
-            </p>
-            <button mat-stroked-button type="button" (click)="update()">
+            <button mat-flat-button type="button" (click)="update()">
               {{ 'settings.retry' | transloco }}
             </button>
-          } @else if (incompatible()) {
-            <p class="update-warn">
-              {{ 'settings.appIncompatible' | transloco: { version: serverVersion() } }}
-            </p>
           } @else if (webUpdateAvailable()) {
-            <p class="update-warn">
-              {{ 'settings.updateAvailable' | transloco: { version: serverWebVersion() } }}
-            </p>
             <button mat-flat-button color="primary" type="button" (click)="update()">
               {{ 'settings.updateBtn' | transloco }}
             </button>
-          } @else if (probed()) {
-            <p class="update-ok">{{ 'settings.upToDate' | transloco }}</p>
           }
-        </div>
+        </section>
       }
+
+      <section class="details-card">
+        <h3>{{ 'settings.versionDetails' | transloco }}</h3>
+        <dl>
+          @if (showBackend) {
+            <div><dt>{{ 'settings.appVersion' | transloco }}</dt><dd>{{ shellVersion() || '—' }}</dd></div>
+          }
+          <div><dt>{{ 'settings.webVersion' | transloco }}</dt><dd>{{ appVersion }}</dd></div>
+          @if (showBackend) {
+            <div><dt>{{ 'settings.serverVersion' | transloco }}</dt><dd>{{ serverVersion() || '—' }}</dd></div>
+            <div><dt>{{ 'settings.backend' | transloco }}</dt><dd class="backend-value">{{ backendLabel() || ('settings.notConnected' | transloco) }}</dd></div>
+          }
+        </dl>
+      </section>
     </section>
   `,
   styleUrl: './settings-about.component.scss',
@@ -102,7 +132,7 @@ export class SettingsAboutComponent {
   private readonly status = this.shellUpdate.updateStatus;
   /** Byte-progress state for the inline download bar, fed by the `web-download-progress` Tauri event. */
   private readonly downloadReceived = signal(0);
-  private readonly downloadTotal = signal<number | null>(null);
+  readonly downloadTotal = signal<number | null>(null);
   readonly downloading = signal(false);
   readonly updateError = signal('');
 

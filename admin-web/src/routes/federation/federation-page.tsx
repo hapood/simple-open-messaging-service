@@ -1,13 +1,19 @@
-import { useNavigate } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-import { MoreHorizontal, Search } from 'lucide-react'
-import { useFederationPeers, useBlockFederationPeer, useUnblockFederationPeer } from '@/hooks/use-federation'
-import { useListParams } from '@/hooks/use-list-params'
-import { useIsSuperAdmin } from '@/hooks/use-me'
-import type { FederationTrustLevel } from '@/types/api'
-import { Button, buttonVariants } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
+import { MoreHorizontal, Search } from 'lucide-react';
+import {
+  useFederationPeers,
+  useBlockFederationPeer,
+  useUnblockFederationPeer,
+} from '@/hooks/use-federation';
+import { useListParams } from '@/hooks/use-list-params';
+import { useIsSuperAdmin } from '@/hooks/use-me';
+import { useQuotaNodes } from '@/hooks/use-quotas';
+import type { FederationTrustLevel } from '@/types/api';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -15,63 +21,77 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
+} from '@/components/ui/table';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Pagination } from '@/components/common/pagination'
-import { TableBodyState } from '@/components/common/table-state'
-import { formatApiError } from '@/lib/format-error'
-import { Timestamp } from '@/components/common/timestamp'
-import { PeerStatusBadge } from './peer-status-badge'
+} from '@/components/ui/dropdown-menu';
+import { Pagination } from '@/components/common/pagination';
+import { TableBodyState } from '@/components/common/table-state';
+import { formatApiError } from '@/lib/format-error';
+import { Timestamp } from '@/components/common/timestamp';
+import { PeerStatusBadge } from './peer-status-badge';
+import { quotaRisk } from './peer-quota-panel';
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 20;
 const FILTERS: (FederationTrustLevel | undefined)[] = [
   undefined,
   'trusted',
   'demoted',
   'pending',
   'blocked',
-]
+];
 
 /** The federated-peer lifecycle list. URL-synced (search/page/status shareable + back-safe). A row
  *  opens the routed peer detail (`/federation/:domain`); the ⌄ menu offers a quick Block/Unblock
  *  (super-admin only — block is SUPER_ADMIN-gated on the backend). */
 export function FederationPage() {
-  const { t } = useTranslation()
-  const navigate = useNavigate()
-  const { searchInput, setSearchInput, search, page, setPage, filter, setFilter, skip, take } =
-    useListParams({ pageSize: PAGE_SIZE, filterParam: 'status' })
-  const status = (filter || undefined) as FederationTrustLevel | undefined
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const {
+    searchInput,
+    setSearchInput,
+    search,
+    page,
+    setPage,
+    filter,
+    setFilter,
+    skip,
+    take,
+  } = useListParams({ pageSize: PAGE_SIZE, filterParam: 'status' });
+  const status = (filter || undefined) as FederationTrustLevel | undefined;
 
   const { data, isLoading, isFetching, error } = useFederationPeers({
     skip,
     take,
     search: search || undefined,
     status,
-  })
-  const block = useBlockFederationPeer()
-  const unblock = useUnblockFederationPeer()
-  const isSuper = useIsSuperAdmin()
+  });
+  const block = useBlockFederationPeer();
+  const unblock = useUnblockFederationPeer();
+  const isSuper = useIsSuperAdmin();
+  const { data: quotaNodes } = useQuotaNodes();
+  const quotaByDomain = new Map(
+    (quotaNodes ?? []).map((node) => [node.domain, node]),
+  );
 
   const onToggleBlock = async (domain: string, blocked: boolean) => {
     try {
       if (blocked) {
-        await unblock.mutateAsync(domain)
-        toast.success(t('federation.toast.unblocked'))
+        await unblock.mutateAsync(domain);
+        toast.success(t('federation.toast.unblocked'));
       } else {
-        await block.mutateAsync({ domain })
-        toast.success(t('federation.toast.blocked'))
+        await block.mutateAsync({ domain });
+        toast.success(t('federation.toast.blocked'));
       }
     } catch (e) {
-      toast.error(formatApiError(e))
+      toast.error(formatApiError(e));
     }
-  }
+  };
 
-  const total = data?.total ?? 0
+  const total = data?.total ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -106,9 +126,16 @@ export function FederationPage() {
           <TableHeader>
             <TableRow>
               <TableHead>{t('federation.col.domain')}</TableHead>
-              <TableHead className="w-24">{t('federation.col.status')}</TableHead>
+              <TableHead className="w-24">
+                {t('federation.col.status')}
+              </TableHead>
+              <TableHead className="w-28">
+                {t('federation.col.quota')}
+              </TableHead>
               <TableHead>{t('federation.col.lastSuccess')}</TableHead>
-              <TableHead className="w-20">{t('federation.col.demotions')}</TableHead>
+              <TableHead className="w-20">
+                {t('federation.col.demotions')}
+              </TableHead>
               <TableHead>{t('federation.col.created')}</TableHead>
               <TableHead className="w-10" />
             </TableRow>
@@ -118,18 +145,27 @@ export function FederationPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={6}
+              colSpan={7}
               emptyMessage={t('federation.empty')}
             >
               {data?.list.map((p) => (
                 <TableRow
                   key={p.domain}
                   className="cursor-pointer"
-                  onClick={() => navigate(`/federation/${encodeURIComponent(p.domain)}`)}
+                  onClick={() =>
+                    navigate(`/federation/${encodeURIComponent(p.domain)}`)
+                  }
                 >
-                  <TableCell className="font-mono text-sm">{p.domain}</TableCell>
+                  <TableCell className="font-mono text-sm">
+                    {p.domain}
+                  </TableCell>
                   <TableCell>
                     <PeerStatusBadge level={p.trustLevel} />
+                  </TableCell>
+                  <TableCell>
+                    <QuotaHealth
+                      risk={quotaRisk(quotaByDomain.get(p.domain))}
+                    />
                   </TableCell>
                   <TableCell>
                     <Timestamp value={p.lastSuccessAt} />
@@ -143,21 +179,37 @@ export function FederationPage() {
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger
-                        className={buttonVariants({ variant: 'ghost', size: 'icon' })}
+                        className={buttonVariants({
+                          variant: 'ghost',
+                          size: 'icon',
+                        })}
                         disabled={isFetching}
                       >
                         <MoreHorizontal className="size-4" />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
-                          onClick={() => navigate(`/federation/${encodeURIComponent(p.domain)}`)}
+                          onClick={() =>
+                            navigate(
+                              `/federation/${encodeURIComponent(p.domain)}`,
+                            )
+                          }
                         >
                           {t('federation.action.viewTimeline')}
                         </DropdownMenuItem>
                         {isSuper ? (
                           <DropdownMenuItem
-                            variant={p.trustLevel === 'blocked' ? undefined : 'destructive'}
-                            onClick={() => onToggleBlock(p.domain, p.trustLevel === 'blocked')}
+                            variant={
+                              p.trustLevel === 'blocked'
+                                ? undefined
+                                : 'destructive'
+                            }
+                            onClick={() =>
+                              onToggleBlock(
+                                p.domain,
+                                p.trustLevel === 'blocked',
+                              )
+                            }
                           >
                             {p.trustLevel === 'blocked'
                               ? t('federation.action.unblock')
@@ -176,8 +228,23 @@ export function FederationPage() {
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>{t('federation.total', { count: total })}</span>
-        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
+        <Pagination
+          page={page}
+          total={total}
+          pageSize={PAGE_SIZE}
+          onPageChange={setPage}
+        />
       </div>
     </div>
-  )
+  );
+}
+
+function QuotaHealth({ risk }: { risk: number | undefined }) {
+  const { t } = useTranslation();
+  if (risk === undefined)
+    return <Badge variant="outline">{t('quota.health.unknown')}</Badge>;
+  const label = risk >= 1 ? 'exhausted' : risk >= 0.8 ? 'warning' : 'healthy';
+  const variant =
+    risk >= 1 ? 'destructive' : risk >= 0.8 ? 'outline' : 'secondary';
+  return <Badge variant={variant}>{t(`quota.health.${label}`)}</Badge>;
 }

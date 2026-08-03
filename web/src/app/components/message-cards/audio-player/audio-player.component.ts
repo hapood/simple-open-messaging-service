@@ -28,7 +28,7 @@ import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
 export class AudioPlayerComponent {
   /** Exposed for transfer-state comparisons in the template. */
   readonly MEDIA_STATUS = MEDIA_STATUS;
-  /** Audio source URL — a /uploads/shards/… CAS URL, or a blob: URL for an optimistic in-flight clip. */
+  /** Audio source URL — a /uploads/cas/… CAS URL, or a blob: URL for an optimistic in-flight clip. */
   readonly src = input.required<string>();
   /** Clip duration in seconds (client-probed / recorded). Display + the progress denominator. */
   readonly duration = input(0);

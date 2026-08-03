@@ -25,7 +25,7 @@ describe('AudioPlayerComponent', () => {
     status: MediaStatus = MEDIA_STATUS.READY,
   ): Promise<{ comp: AudioPlayerComponent; audio: HTMLAudioElement; playSpy: jasmine.Spy }> {
     const fixture = TestBed.createComponent(AudioPlayerComponent);
-    fixture.componentRef.setInput('src', '/uploads/shards/aa/bb/shard.mp3');
+    fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/shard.mp3');
     fixture.componentRef.setInput('duration', 5);
     fixture.componentRef.setInput('status', status);
     fixture.detectChanges();
@@ -57,7 +57,7 @@ describe('AudioPlayerComponent', () => {
 
   it('routes a real DOM button click to the hidden audio engine', async () => {
     const fixture = TestBed.createComponent(AudioPlayerComponent);
-    fixture.componentRef.setInput('src', '/uploads/shards/aa/bb/voice.webm');
+    fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/voice.webm');
     fixture.componentRef.setInput('duration', 5);
     fixture.detectChanges();
     await fixture.whenStable();
@@ -132,7 +132,7 @@ describe('AudioPlayerComponent', () => {
 
   it('renders a visible indeterminate progress rail while audio is downloading', async () => {
     const fixture = TestBed.createComponent(AudioPlayerComponent);
-    fixture.componentRef.setInput('src', '/uploads/shards/aa/bb/voice.webm');
+    fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/voice.webm');
     fixture.componentRef.setInput('status', MEDIA_STATUS.DOWNLOADING);
     fixture.detectChanges();
     await fixture.whenStable();

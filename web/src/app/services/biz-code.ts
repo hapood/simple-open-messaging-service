@@ -45,6 +45,8 @@ export const BusinessCode = {
   GROUP_DISSOLVED: 40007,
   FEDERATION_DELIVERY_FAILED: 50008,
   FEDERATION_QUOTA_EXCEEDED: 50011,
+  FEDERATION_PAYLOAD_TOO_LARGE: 50012,
+  FEDERATION_CAPABILITY_DISABLED: 50013,
 } as const;
 
 /**
@@ -89,8 +91,14 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.GROUP_FORBIDDEN]: 'errors.biz.groupForbidden',
   [BusinessCode.GROUP_TARGET_NOT_MEMBER]: 'errors.biz.groupTargetNotMember',
   [BusinessCode.GROUP_DISSOLVED]: 'errors.biz.groupDissolved',
-  [BusinessCode.FEDERATION_DELIVERY_FAILED]: 'errors.biz.federationDeliveryFailed',
-  [BusinessCode.FEDERATION_QUOTA_EXCEEDED]: 'errors.biz.federationQuotaExceeded',
+  [BusinessCode.FEDERATION_DELIVERY_FAILED]:
+    'errors.biz.federationDeliveryFailed',
+  [BusinessCode.FEDERATION_QUOTA_EXCEEDED]:
+    'errors.biz.federationQuotaExceeded',
+  [BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE]:
+    'errors.biz.federationPayloadTooLarge',
+  [BusinessCode.FEDERATION_CAPABILITY_DISABLED]:
+    'errors.biz.federationCapabilityDisabled',
 };
 
 /**
@@ -101,7 +109,10 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
  * fallback is intentional: an unmapped code is still better than a blank, and surfaces the gap so the
  * map can be extended.
  */
-export function translateBizResult<T>(res: StandardResponse<T>, transloco: TranslocoService): string {
+export function translateBizResult<T>(
+  res: StandardResponse<T>,
+  transloco: TranslocoService,
+): string {
   if (res.messageKey) return transloco.translate(res.messageKey);
   const key = BIZ_CODE_KEY[res.code];
   return key ? transloco.translate(key) : res.message;

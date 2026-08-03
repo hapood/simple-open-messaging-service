@@ -1,0 +1,21 @@
+:host {
+  display: contents;
+}
+
+.sa-avatar {
+  position: absolute;
+  // Above the transformed message viewport, below the z-index:2 header so a tail-pushed avatar disappears
+  // cleanly underneath the header rather than painting over it.
+  z-index: 1;
+  width: 40px;
+  height: 40px;
+  pointer-events: none;
+}
+
+.sa-avatar--other {
+  left: var(--app-space-4);
+}
+
+.sa-avatar--self {
+  right: var(--app-space-4);
+}

@@ -1,22 +1,22 @@
-import { useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-import { MoreHorizontal, Plus, Search } from 'lucide-react'
-import { useAdminUsers } from '@/hooks/use-admin-users'
-import { useListParams } from '@/hooks/use-list-params'
-import { useIsAdminPlus } from '@/hooks/use-me'
+import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
+import { KeyRound, MoreHorizontal, Plus, Search } from 'lucide-react';
+import { useAdminUsers } from '@/hooks/use-admin-users';
+import { useListParams } from '@/hooks/use-list-params';
+import { useIsAdminPlus } from '@/hooks/use-me';
 import {
   useBatchUsers,
   useDisableUser,
   useEnableUser,
   useForceLogoutUser,
-} from '@/hooks/use-user-mutations'
-import type { UserBatchAction } from '@/api/users'
-import type { User } from '@/types/api'
-import { Button, buttonVariants } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
+} from '@/hooks/use-user-mutations';
+import type { UserBatchAction } from '@/api/users';
+import type { User } from '@/types/api';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import {
   Table,
   TableBody,
@@ -24,59 +24,60 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
+} from '@/components/ui/table';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Pagination } from '@/components/common/pagination'
-import { TableBodyState } from '@/components/common/table-state'
-import { Timestamp } from '@/components/common/timestamp'
-import { SessionsDialog } from './sessions-dialog'
-import { CreateUserDialog } from './create-user-dialog'
-import { IssueLoginCodeDialog } from './issue-login-code-dialog'
-import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog'
+} from '@/components/ui/dropdown-menu';
+import { Pagination } from '@/components/common/pagination';
+import { TableBodyState } from '@/components/common/table-state';
+import { Timestamp } from '@/components/common/timestamp';
+import { SessionsDialog } from './sessions-dialog';
+import { CreateUserDialog } from './create-user-dialog';
+import { IssueLoginCodeDialog } from './issue-login-code-dialog';
+import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog';
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 20;
 
 export function UsersPage() {
-  const { t } = useTranslation()
-  const canManage = useIsAdminPlus()
-  const [sessionsUser, setSessionsUser] = useState<User | null>(null)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [issueUser, setIssueUser] = useState<User | null>(null)
-  const [genPwdUser, setGenPwdUser] = useState<User | null>(null)
+  const { t } = useTranslation();
+  const canManage = useIsAdminPlus();
+  const [sessionsUser, setSessionsUser] = useState<User | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [issueUser, setIssueUser] = useState<User | null>(null);
+  const [genPwdUser, setGenPwdUser] = useState<User | null>(null);
 
-  const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
-    pageSize: PAGE_SIZE,
-  })
+  const { searchInput, setSearchInput, search, page, setPage, skip, take } =
+    useListParams({
+      pageSize: PAGE_SIZE,
+    });
 
   const { data, isLoading, isFetching, error } = useAdminUsers({
     skip,
     take,
     search: search || undefined,
-  })
+  });
 
-  const disable = useDisableUser()
-  const enable = useEnableUser()
-  const forceLogout = useForceLogoutUser()
-  const batch = useBatchUsers()
+  const disable = useDisableUser();
+  const enable = useEnableUser();
+  const forceLogout = useForceLogoutUser();
+  const batch = useBatchUsers();
 
   useEffect(() => {
-    if (searchParams.get('create') === '1' && canManage) setCreateOpen(true)
-  }, [searchParams, canManage])
+    if (searchParams.get('create') === '1' && canManage) setCreateOpen(true);
+  }, [searchParams, canManage]);
 
   const closeCreate = () => {
-    setCreateOpen(false)
+    setCreateOpen(false);
     if (searchParams.has('create')) {
-      const next = new URLSearchParams(searchParams)
-      next.delete('create')
-      setSearchParams(next, { replace: true })
+      const next = new URLSearchParams(searchParams);
+      next.delete('create');
+      setSearchParams(next, { replace: true });
     }
-  }
+  };
 
   const onAction = async (
     m: { mutateAsync: (id: number) => Promise<void> },
@@ -84,49 +85,50 @@ export function UsersPage() {
     msg: string,
   ) => {
     try {
-      await m.mutateAsync(id)
-      toast.success(msg)
+      await m.mutateAsync(id);
+      toast.success(msg);
     } catch {
       /* Global mutation onError already shows a toast. */
     }
-  }
+  };
 
-  const total = data?.total ?? 0
+  const total = data?.total ?? 0;
 
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   // Clear the selection whenever the view changes (search/page) so we never act on stale ids.
   useEffect(() => {
-    setSelected(new Set())
-  }, [search, page])
+    setSelected(new Set());
+  }, [search, page]);
 
-  const listIds = (data?.list ?? []).map((u) => u.id)
-  const allSelected = listIds.length > 0 && listIds.every((id) => selected.has(id))
+  const listIds = (data?.list ?? []).map((u) => u.id);
+  const allSelected =
+    listIds.length > 0 && listIds.every((id) => selected.has(id));
   const toggle = (id: number) =>
     setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const toggleAll = () =>
     setSelected((prev) => {
-      const next = new Set(prev)
-      if (allSelected) listIds.forEach((id) => next.delete(id))
-      else listIds.forEach((id) => next.add(id))
-      return next
-    })
+      const next = new Set(prev);
+      if (allSelected) listIds.forEach((id) => next.delete(id));
+      else listIds.forEach((id) => next.add(id));
+      return next;
+    });
 
   const onBatch = async (action: UserBatchAction) => {
-    const ids = [...selected]
-    if (ids.length === 0) return
+    const ids = [...selected];
+    if (ids.length === 0) return;
     try {
-      const r = await batch.mutateAsync({ ids, action })
-      toast.success(t('users.toast.batchDone', { count: r.affected }))
-      setSelected(new Set())
+      const r = await batch.mutateAsync({ ids, action });
+      toast.success(t('users.toast.batchDone', { count: r.affected }));
+      setSelected(new Set());
     } catch {
       /* Global mutation onError already shows a toast. */
     }
-  }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -178,7 +180,11 @@ export function UsersPage() {
           >
             {t('users.action.unban')}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSelected(new Set())}
+          >
             {t('common.cancel')}
           </Button>
         </div>
@@ -203,9 +209,12 @@ export function UsersPage() {
               <TableHead>{t('users.col.domain')}</TableHead>
               <TableHead className="w-16">{t('users.col.foreigner')}</TableHead>
               <TableHead className="w-20">{t('users.col.status')}</TableHead>
+              <TableHead className="w-28">{t('users.col.quota')}</TableHead>
               <TableHead className="w-28">{t('users.col.tokenVer')}</TableHead>
               <TableHead>{t('users.col.createdAt')}</TableHead>
-              <TableHead className="w-10" />
+              <TableHead className="w-48 text-right">
+                {t('users.col.actions')}
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -213,7 +222,7 @@ export function UsersPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={9}
+              colSpan={10}
             >
               {data?.list.map((u) => (
                 <TableRow key={u.id}>
@@ -226,68 +235,135 @@ export function UsersPage() {
                       className="size-4"
                     />
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{u.id}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {u.id}
+                  </TableCell>
                   <TableCell className="font-medium">
                     <Link to={`/users/${u.id}`} className="hover:underline">
                       {u.account}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{u.domain ?? '—'}</TableCell>
-                  <TableCell>{u.isForeigner ? t('common.yes') : t('common.no')}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {u.domain ?? '—'}
+                  </TableCell>
+                  <TableCell>
+                    {u.isForeigner ? t('common.yes') : t('common.no')}
+                  </TableCell>
                   <TableCell>
                     {u.isDeleted ? (
-                      <Badge variant="destructive">{t('users.status.banned')}</Badge>
+                      <Badge variant="destructive">
+                        {t('users.status.banned')}
+                      </Badge>
                     ) : (
-                      <Badge variant="secondary">{t('users.status.active')}</Badge>
+                      <Badge variant="secondary">
+                        {t('users.status.active')}
+                      </Badge>
                     )}
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{u.tokenVersion}</TableCell>
+                  <TableCell>
+                    {u.quota ? (
+                      <div className="flex flex-wrap gap-1">
+                        <Badge
+                          variant={
+                            u.quota.status === 'exhausted'
+                              ? 'destructive'
+                              : u.quota.status === 'warning'
+                                ? 'outline'
+                                : 'secondary'
+                          }
+                        >
+                          {t(`quota.status.${u.quota.status}`)}
+                        </Badge>
+                        {u.quota.hasOverrides ? (
+                          <Badge variant="outline">
+                            {t('quota.source.userCustom')}
+                          </Badge>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {t('quota.notApplicable')}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {u.tokenVersion}
+                  </TableCell>
                   <TableCell>
                     <Timestamp value={u.createdAt} />
                   </TableCell>
                   <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        className={buttonVariants({ variant: 'ghost', size: 'icon' })}
-                        disabled={isFetching}
-                      >
-                        <MoreHorizontal className="size-4" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {u.isDeleted ? (
-                          <DropdownMenuItem
-                            onClick={() => onAction(enable, u.id, t('users.toast.unbanned'))}
-                          >
-                            {t('users.action.unban')}
-                          </DropdownMenuItem>
-                        ) : (
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onClick={() => onAction(disable, u.id, t('users.toast.banned'))}
-                          >
-                            {t('users.action.ban')}
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem
-                          onClick={() => onAction(forceLogout, u.id, t('users.toast.forceLoggedOut'))}
+                    <div className="flex items-center justify-end gap-1">
+                      {canManage ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isFetching}
+                          onClick={() => setIssueUser(u)}
                         >
-                          {t('users.action.forceLogout')}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setSessionsUser(u)}>
-                          {t('users.action.viewSessions')}
-                        </DropdownMenuItem>
-                        {canManage ? (
-                          <>
-                            <DropdownMenuItem onClick={() => setIssueUser(u)}>
-                              {t('users.action.issueLoginCode')}
+                          <KeyRound className="size-4" />
+                          {t('users.action.issueLoginCode')}
+                        </Button>
+                      ) : null}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          className={buttonVariants({
+                            variant: 'ghost',
+                            size: 'icon',
+                          })}
+                          disabled={isFetching}
+                        >
+                          <MoreHorizontal className="size-4" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {u.isDeleted ? (
+                            <DropdownMenuItem
+                              onClick={() =>
+                                onAction(
+                                  enable,
+                                  u.id,
+                                  t('users.toast.unbanned'),
+                                )
+                              }
+                            >
+                              {t('users.action.unban')}
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => setGenPwdUser(u)}>
-                              {t('users.action.generateInitialPassword')}
+                          ) : (
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() =>
+                                onAction(disable, u.id, t('users.toast.banned'))
+                              }
+                            >
+                              {t('users.action.ban')}
                             </DropdownMenuItem>
-                          </>
-                        ) : null}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                          )}
+                          <DropdownMenuItem
+                            onClick={() =>
+                              onAction(
+                                forceLogout,
+                                u.id,
+                                t('users.toast.forceLoggedOut'),
+                              )
+                            }
+                          >
+                            {t('users.action.forceLogout')}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setSessionsUser(u)}>
+                            {t('users.action.viewSessions')}
+                          </DropdownMenuItem>
+                          {canManage ? (
+                            <>
+                              <DropdownMenuItem
+                                onClick={() => setGenPwdUser(u)}
+                              >
+                                {t('users.action.generateInitialPassword')}
+                              </DropdownMenuItem>
+                            </>
+                          ) : null}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -298,19 +374,31 @@ export function UsersPage() {
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>{t('users.total', { count: total })}</span>
-        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
+        <Pagination
+          page={page}
+          total={total}
+          pageSize={PAGE_SIZE}
+          onPageChange={setPage}
+        />
       </div>
 
-      <SessionsDialog user={sessionsUser} onClose={() => setSessionsUser(null)} />
+      <SessionsDialog
+        user={sessionsUser}
+        onClose={() => setSessionsUser(null)}
+      />
       <CreateUserDialog open={createOpen} onClose={closeCreate} />
       <IssueLoginCodeDialog
-        user={issueUser ? { id: issueUser.id, account: issueUser.account } : null}
+        user={
+          issueUser ? { id: issueUser.id, account: issueUser.account } : null
+        }
         onClose={() => setIssueUser(null)}
       />
       <GenerateInitialPasswordDialog
-        user={genPwdUser ? { id: genPwdUser.id, account: genPwdUser.account } : null}
+        user={
+          genPwdUser ? { id: genPwdUser.id, account: genPwdUser.account } : null
+        }
         onClose={() => setGenPwdUser(null)}
       />
     </div>
-  )
+  );
 }

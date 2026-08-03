@@ -6,7 +6,7 @@ import {
   HttpHeaders,
   HttpResponse,
 } from '@angular/common/http';
-import { defer, filter, map, tap, type Observable } from 'rxjs';
+import { defer, filter, firstValueFrom, map, tap, type Observable } from 'rxjs';
 import { Message, QueryMessageLogParams, StandardResponse } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
@@ -14,6 +14,16 @@ import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireClosure } from '../components/forward-detail/forward-bundle.model';
 
 export type UploadProgressHandler = (loaded: number, total: number) => void;
+
+interface ResumableUploadState {
+  uploadId: string;
+  clientMessageId: string;
+  totalBytes: number;
+  offset: number;
+  chunkSize: number;
+  status: 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'ABORTED';
+  result?: Record<string, unknown>;
+}
 
 @Injectable({
   providedIn: 'root',
@@ -59,6 +69,7 @@ export class MsgService {
   sendForward(params: {
     threadId: number;
     sourceMessages: ReadonlyArray<{ threadId: number; seq: number }>;
+    mode: 'DIRECT' | 'HISTORY';
     clientMessageId: string;
   }) {
     return this.http.post<StandardResponse<Message>>(
@@ -122,6 +133,15 @@ export class MsgService {
     clientMessageId?: string,
     onProgress?: UploadProgressHandler,
   ): Observable<StandardResponse<{ url: string; w: number; h: number }>> {
+    if (clientMessageId) {
+      return defer(() =>
+        this.resumableUpload<{ url: string; w: number; h: number }>(
+          file,
+          clientMessageId,
+          onProgress,
+        ),
+      );
+    }
     if (this.canStream(file)) {
       return defer(() =>
         this.streamUpload<{ url: string; w: number; h: number }>(
@@ -160,6 +180,16 @@ export class MsgService {
       mimeType: string;
     }>
   > {
+    if (clientMessageId) {
+      return defer(() =>
+        this.resumableUpload<{
+          url: string;
+          name: string;
+          size: number;
+          mimeType: string;
+        }>(file, clientMessageId, onProgress),
+      );
+    }
     if (this.canStream(file)) {
       return defer(() =>
         this.streamUpload<{
@@ -198,6 +228,16 @@ export class MsgService {
       mimeType: string;
     }>
   > {
+    if (clientMessageId) {
+      return defer(() =>
+        this.resumableUpload<{
+          url: string;
+          name: string;
+          size: number;
+          mimeType: string;
+        }>(file, clientMessageId, onProgress),
+      );
+    }
     if (this.canStream(file)) {
       return defer(() =>
         this.streamUpload<{
@@ -237,6 +277,28 @@ export class MsgService {
       promoted: boolean;
     }>
   > {
+    if (clientMessageId) {
+      return defer(async () => {
+        const response = await this.resumableUpload<{
+          url: string;
+          name: string;
+          size: number;
+          mimeType: string;
+        }>(file, clientMessageId, onProgress);
+        return {
+          ...response,
+          data: response.data
+            ? { ...response.data, promoted: true }
+            : undefined,
+        } as StandardResponse<{
+          url: string;
+          name: string;
+          size: number;
+          mimeType: string;
+          promoted: boolean;
+        }>;
+      });
+    }
     if (this.canStream(file)) {
       return defer(() =>
         this.streamUpload<{
@@ -352,6 +414,78 @@ export class MsgService {
         ),
         map((event) => event.body as T),
       );
+  }
+
+  /** Sequential resumable upload. Session state lives on the server; retrying this method first
+   * recovers its authoritative offset, with offset=0 naturally meaning a fresh upload. */
+  private async resumableUpload<T>(
+    file: File,
+    clientMessageId: string,
+    onProgress?: UploadProgressHandler,
+  ): Promise<StandardResponse<T>> {
+    const init = await firstValueFrom(
+      this.http.post<StandardResponse<ResumableUploadState>>(
+        `${apiPrefix()}/uploads/resumable/init`,
+        {
+          clientMessageId,
+          originalName: file.name || 'attachment',
+          mimeType: file.type || 'application/octet-stream',
+          totalBytes: file.size,
+        },
+        { context: new HttpContext().set(REPLAY_SAFE, true) },
+      ),
+    );
+    if (init.code !== 0 || !init.data)
+      throw new Error(init.message || 'upload init failed');
+    let state = await firstValueFrom(
+      this.http.get<StandardResponse<ResumableUploadState>>(
+        `${apiPrefix()}/uploads/resumable/${encodeURIComponent(init.data.uploadId)}`,
+        { context: new HttpContext().set(REPLAY_SAFE, true) },
+      ),
+    );
+    if (state.code !== 0 || !state.data)
+      throw new Error(state.message || 'upload status failed');
+    let current = state.data;
+    onProgress?.(current.offset, file.size);
+    while (current.status === 'UPLOADING' && current.offset < file.size) {
+      const end = Math.min(current.offset + current.chunkSize, file.size);
+      const chunk = file.slice(current.offset, end);
+      const response = await firstValueFrom(
+        this.http.put<StandardResponse<ResumableUploadState>>(
+          `${apiPrefix()}/uploads/resumable/${encodeURIComponent(current.uploadId)}`,
+          chunk,
+          {
+            headers: new HttpHeaders({
+              'Content-Type': 'application/octet-stream',
+              'Content-Range': `bytes ${current.offset}-${end - 1}/${file.size}`,
+            }),
+          },
+        ),
+      );
+      if (response.code !== 0 || !response.data) {
+        throw new Error(response.message || 'upload chunk failed');
+      }
+      current = response.data;
+      onProgress?.(current.offset, file.size);
+    }
+    if (current.status === 'COMPLETED' && current.result) {
+      return { code: 0, message: 'success', data: current.result as T };
+    }
+    const completed = await firstValueFrom(
+      this.http.post<StandardResponse<ResumableUploadState>>(
+        `${apiPrefix()}/uploads/resumable/${encodeURIComponent(current.uploadId)}/complete`,
+        {},
+        { context: new HttpContext().set(REPLAY_SAFE, true) },
+      ),
+    );
+    if (completed.code !== 0 || !completed.data?.result) {
+      throw new Error(completed.message || 'upload complete failed');
+    }
+    return {
+      code: 0,
+      message: completed.message,
+      data: completed.data.result as T,
+    };
   }
 
   /** The header that tells an upload route to promote a staged send after writing the file. */

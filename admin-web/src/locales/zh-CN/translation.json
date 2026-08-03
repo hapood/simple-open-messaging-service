@@ -55,26 +55,52 @@
     "media": "媒体与存储",
     "settings": "设置",
     "security": "我的账户",
-    "quotas": "每日配额",
-    "diagnosticReports": "诊断上报",
+    "audit": "操作审计",
     "logout": "登出",
     "group": {
       "overview": "常用功能",
       "access": "访问与活动",
-      "federation": "联邦",
       "system": "系统",
       "account": "账户"
     }
   },
   "quota": {
     "title": "每日配额",
-    "desc": "按节点的每日额度（本服务器 + 各联邦对端）。UTC 00:00 重置。",
+    "desc": "联邦对端服务器的共享流量额度。UTC 00:00 重置。",
     "empty": "暂无配额节点。",
     "local": "本机",
     "peer": "对端",
     "edit": "编辑",
+    "peerTitle": "流量配额",
+    "peerDesc": "该对端服务器及其所有联邦用户共享以下额度。",
+    "disabled": "已禁用",
+    "noTrafficAccepted": "不接受此类流量",
+    "remaining": "剩余 {{count}}",
+    "itemCaps": "单个媒体大小上限",
+    "megabytes": "{{count}} MB",
+    "resetHint": "每日用量在 UTC 00:00 清零；修改上限不会清除今天已经产生的用量。",
+    "status": {
+      "healthy": "正常",
+      "warning": "接近上限",
+      "exhausted": "已耗尽",
+      "disabled": "能力关闭"
+    },
+    "source": {
+      "default": "服务器默认",
+      "custom": "对端自定义",
+      "userCustom": "已自定义"
+    },
+    "notApplicable": "不适用",
+    "invalid": "请输入大于或等于 0 的有效数值。",
+    "unavailable": "暂时无法获取该对端的配额信息。",
+    "health": {
+      "healthy": "正常",
+      "warning": "接近上限",
+      "exhausted": "已耗尽",
+      "unknown": "未知"
+    },
     "editTitle": "配额上限 — {{domain}}",
-    "editHint": "留空表示使用全局默认值；设置即时生效，每日 UTC 00:00 重置。",
+    "editHint": "留空表示使用服务器默认值；0 表示关闭该能力。修改即时生效，但不会清除今日用量。",
     "placeholder": {
       "default": "默认"
     },
@@ -178,8 +204,10 @@
       "domain": "domain",
       "foreigner": "外宾",
       "status": "状态",
+      "quota": "额度",
       "tokenVer": "tokenVer",
-      "createdAt": "创建时间"
+      "createdAt": "创建时间",
+      "actions": "快捷操作"
     },
     "status": {
       "banned": "已封禁",
@@ -230,6 +258,18 @@
       "push": "无推送设备"
     },
     "push": { "deviceId": "设备 ID" }
+  },
+  "userQuota": {
+    "title": "个人额度",
+    "desc": "仅约束此本地账号；与联邦对端额度相互独立。每日 00:00 UTC 重置。",
+    "noActionsAccepted": "不允许此账号使用该能力",
+    "resetHint": "每日用量在 UTC 00:00 清零；修改上限不会清除该账号今天已经产生的用量。",
+    "source": {
+      "default": "账号默认",
+      "custom": "个人覆盖"
+    },
+    "editTitle": "编辑个人额度",
+    "editHint": "留空表示使用本地账号默认值；0 表示关闭该账号的对应能力。修改即时生效，但不会清除今日用量。"
   },
   "bans": {
     "title": "封禁管理",
@@ -368,6 +408,7 @@
     "col": {
       "domain": "域名",
       "status": "状态",
+      "quota": "额度状态",
       "lastSuccess": "最近成功",
       "demotions": "降级次数",
       "created": "发现时间"
@@ -408,7 +449,8 @@
       "back": "返回联邦",
       "notFound": "节点不存在",
       "tabOverview": "概览",
-      "tabTimeline": "时间线"
+      "tabTimeline": "时间线",
+      "tabQuota": "配额"
     },
     "selfCheck": {
       "title": "S2S 握手自检",
@@ -504,7 +546,11 @@
   "logs": {
     "title": "系统日志",
     "desc": "结构化日志的实时流——stdout、轮转日志文件与本查看器共用同一条管线。新日志实时流入；连接时服务端回放最近记录。向上滚动可暂停自动跟随。",
-    "tabs": { "live": "实时流", "history": "历史检索", "audit": "审计" },
+    "tabs": {
+      "live": "实时流",
+      "history": "历史检索",
+      "diagnostics": "客户端诊断"
+    },
     "allLevels": "全部级别",
     "clear": "清空",
     "jumpLatest": "最新",
@@ -546,6 +592,8 @@
     "confirm": "签发",
     "codeLabel": "一次性登录码（仅显示一次）",
     "note": "请立即交给用户——关闭后将无法再次查看。",
+    "validFor": "有效期 {{count}} 分钟",
+    "expiresAt": "到期时间",
     "copied": "登录码已复制",
     "copyFailed": "复制失败",
     "success": "登录码已签发"
@@ -641,12 +689,44 @@
   },
   "media": {
     "title": "媒体与存储",
-    "desc": "内容寻址媒体概览 + 垃圾回收。GC 回收 refs<=0 的资源；对账遍历 shards 目录（O(文件数)）。",
+    "desc": "内容寻址媒体概览与手动清理。GC 根据普通消息实时判断存活性；对账以有界批次修复磁盘与数据库偏差。",
     "tileDbBytes": "存储量（DB）",
     "tileAssets": "资源数",
+    "assetStatusHint": "READY {{ready}} / PENDING {{pending}}（超时 {{stalePending}}）/ DELETING {{deleting}}（超时 {{staleDeleting}}）/ DELETED {{deleted}}",
     "tileReclaimable": "可回收",
     "tileOnDisk": "磁盘占用",
-    "reclaimableHint": "refs ≤ 0 的资源",
+    "reclaimableHint": "未被有效消息或活跃暂存使用的 READY 资源",
+    "uploadManagementTitle": "上传管理",
+    "uploadManagementDesc": "管理文件传输会话及进入 CAS 后尚未完成入库的资源。",
+    "uploadSessionsTitle": "正在上传",
+    "uploadSessionsEmpty": "没有正在上传的会话",
+    "uploadFile": "文件",
+    "uploadOwner": "用户",
+    "uploadProgress": "进度",
+    "uploadUpdated": "最近活动",
+    "uploadRefresh": "刷新",
+    "uploadAbort": "终止",
+    "uploadAbortConfirm": "确定终止 {{name}} 的上传吗？临时文件会被删除，关联消息会标记失败。",
+    "uploadAborted": "上传会话已终止",
+    "pendingTitle": "待处理 CAS 上传",
+    "pendingDesc": "文件已传输完成，正在完成校验和内容寻址存储。",
+    "pendingSince": "进入 PENDING 时间",
+    "pendingEmpty": "没有待处理上传",
+    "pendingTerminate": "强制终止",
+    "pendingTerminateConfirm": "确定尽力终止这个上传并立即清理当前文件吗？极端竞态产生的孤儿文件将由对账清理。",
+    "taskTitle": "CAS 维护任务",
+    "taskConnected": "实时进度",
+    "taskReconnecting": "正在连接",
+    "taskCancel": "取消任务",
+    "taskCancelling": "正在取消",
+    "taskPhase": "当前阶段",
+    "taskScanned": "已扫描",
+    "taskDeleted": "已删除",
+    "taskCurrentSize": "当前文件大小",
+    "taskNoLogs": "尚未删除文件，也没有错误",
+    "taskCompleted": "CAS 维护任务已完成",
+    "taskCancelled": "CAS 维护任务已取消",
+    "taskFailed": "CAS 维护任务失败",
     "onDiskFiles": "{{files}} 个文件",
     "byExt": "按扩展名",
     "gc": "执行 GC",
@@ -662,8 +742,8 @@
       "forwardBundles": "检测并清理孤立转发 Bundle？"
     },
     "confirmBody": {
-      "gc": "删除 refs<=0 的 MediaAsset 行及其 shard 文件，并清理残留 tmp。",
-      "reconcile": "遍历 uploads/shards，删除任何无 MediaAsset 记录的文件。O(文件数)——请谨慎执行。",
+      "gc": "删除未被未删除普通消息或活跃暂存使用的 READY 文件，并清理残留 tmp。",
+      "reconcile": "遍历 data/cas，删除孤儿文件，并将缺失文件的 READY 记录标记为 DELETED。O(文件数)——请谨慎执行。",
       "avatars": "删除不再被任何用户或群组引用的头像文件。",
       "forwardBundles": "先检测不再能从任何转发消息访问的 Bundle；如有结果，将立即清理并释放其资源引用。仅手动执行。"
     },

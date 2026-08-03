@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { mintUlid } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -16,17 +16,24 @@ import {
   forwardBundleDependency,
   forwardMessage,
   mediaAsset,
+  mediaMessage,
   message,
-  messageThread,
   threadParticipant,
-  user,
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
-import { extractDigestEntries } from '../upload/file-content.js';
+import {
+  extractDigestEntries,
+  extractDigests,
+  parseFileExt,
+} from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
-import { parseTextMessageContent } from '../../shared/text-message-content.js';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../shared/text-message-content.js';
 import { MessageService } from '../message/message.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
+import { MessageVisibilityService } from '../message/message-visibility.service.js';
 
 export const FORWARD_MAX_DEPTH = 3;
 export const FORWARD_MAX_MESSAGES = 100;
@@ -91,6 +98,7 @@ export interface ForwardWireClosure {
   rootBundleId: string;
   bundles: ForwardWireBundle[];
   assets: ForwardAssetDocument[];
+  accessContext?: { threadId: number; seq: number };
 }
 
 export interface PreparedForwardBundle {
@@ -101,6 +109,13 @@ export interface PreparedForwardBundle {
   manifestDigest: string;
   assets: ForwardAssetDocument[];
   createdBy: number;
+  quotaMessageCount: number;
+}
+
+export interface DirectForwardSource {
+  content: string;
+  contentType: ContentType;
+  forwardBundleId?: string;
 }
 
 @Injectable()
@@ -109,7 +124,83 @@ export class ForwardBundleService {
     private readonly database: DatabaseService,
     private readonly messagesService: MessageService,
     private readonly userBlockService: UserBlockService,
+    private readonly messageVisibility: MessageVisibilityService,
   ) {}
+
+  /** Resolve a single source through the normal message visibility boundary and remove reply context. */
+  async prepareDirectMessage(
+    userId: number,
+    source: ForwardSourceMessage,
+  ): Promise<DirectForwardSource> {
+    const visible = await this.messageVisibility.findVisibleByThreadSeq(
+      userId,
+      source.threadId,
+      source.seq,
+    );
+    if (!visible) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_INVALID_BUNDLE,
+        'source message is inaccessible',
+      );
+    }
+
+    const parsedText =
+      visible.contentType === ContentType.PURE_TEXT
+        ? parseTextMessageContent(visible.content)
+        : null;
+    const content = parsedText
+      ? stringifyTextMessageContent({ text: parsedText.text })
+      : visible.content;
+
+    const isAttachedMedia =
+      visible.contentType === ContentType.IMAGE ||
+      visible.contentType === ContentType.FILE ||
+      visible.contentType === ContentType.VIDEO ||
+      visible.contentType === ContentType.AUDIO;
+    if (isAttachedMedia || visible.contentType === ContentType.LINK) {
+      const digests = extractDigests(visible.content);
+      if (isAttachedMedia && digests.length !== 1) {
+        throw new BusinessException(
+          BusinessCode.FORWARD_INVALID_BUNDLE,
+          'source media is invalid',
+        );
+      }
+      if (digests.length > 0) {
+        const bindings = await this.database.db.query.mediaMessage.findMany({
+          where: and(
+            eq(mediaMessage.messageId, visible.id),
+            inArray(mediaMessage.digest, digests),
+          ),
+          columns: { digest: true },
+        });
+        const bound = new Set(bindings.map((binding) => binding.digest));
+        if (digests.some((digest) => !bound.has(digest))) {
+          throw new BusinessException(
+            BusinessCode.FORWARD_INVALID_BUNDLE,
+            'source media is inaccessible',
+          );
+        }
+      }
+    }
+
+    if (visible.contentType !== ContentType.FORWARD) {
+      return { content, contentType: visible.contentType };
+    }
+    const binding = await this.database.db.query.forwardMessage.findFirst({
+      where: eq(forwardMessage.messageId, visible.id),
+    });
+    if (!binding) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_INVALID_BUNDLE,
+        'forward source binding not found',
+      );
+    }
+    return {
+      content,
+      contentType: visible.contentType,
+      forwardBundleId: binding.bundleId,
+    };
+  }
 
   async createFromMessages(
     userId: number,
@@ -293,7 +384,11 @@ export class ForwardBundleService {
           ...(avatar ? { avatarDigest: avatar.digest } : {}),
         },
         contentType: message.contentType,
-        content: message.content,
+        content: localizeForwardMediaContent(
+          message.contentType,
+          message.content,
+          mediaAssets,
+        ),
         sentAt: message.createdAt.getTime(),
         ...(message.forwardMessage
           ? { childBundleId: message.forwardMessage.bundleId }
@@ -336,6 +431,18 @@ export class ForwardBundleService {
       children,
       messages,
     };
+    const descendantBundles = new Map<string, ForwardWireBundle>();
+    for (const childBundleId of children) {
+      const closure = await this.buildClosure(childBundleId);
+      for (const bundle of closure.bundles)
+        descendantBundles.set(bundle.id, bundle);
+    }
+    const quotaMessageCount =
+      messages.length +
+      [...descendantBundles.values()].reduce(
+        (sum, bundle) => sum + bundle.manifest.messages.length,
+        0,
+      );
     const manifestDigest = digestManifest(manifest);
     const assetList = [...assets.values()];
     const content = JSON.stringify({
@@ -355,6 +462,7 @@ export class ForwardBundleService {
       manifestDigest,
       assets: assetList,
       createdBy: userId,
+      quotaMessageCount,
     };
   }
 
@@ -385,12 +493,6 @@ export class ForwardBundleService {
       );
     }
     if (prepared.assets.length > 0) {
-      for (const asset of prepared.assets) {
-        await tx
-          .update(mediaAsset)
-          .set({ refs: sql`${mediaAsset.refs} + 1` })
-          .where(eq(mediaAsset.digest, asset.digest));
-      }
       await tx.insert(forwardBundleAsset).values(
         prepared.assets.map((asset, ordinal) => ({
           bundleId: prepared.bundleId,
@@ -410,30 +512,63 @@ export class ForwardBundleService {
     userId: number,
     rootBundleId: string,
   ): Promise<ForwardWireClosure> {
-    const [visible] = await this.database.db
-      .select({ messageId: forwardMessage.messageId })
+    const ancestors = await this.database.db.execute(sql<{ bundleId: string }>`
+      WITH RECURSIVE ancestors("bundleId") AS (
+        SELECT ${rootBundleId}::varchar
+        UNION
+        SELECT dependency."parentBundleId"
+        FROM ancestors current
+        JOIN "ForwardBundleDependency" dependency
+          ON dependency."childBundleId" = current."bundleId"
+      )
+      SELECT "bundleId" FROM ancestors
+    `);
+    const ancestorIds = (ancestors.rows as Array<{ bundleId: string }>).map(
+      (row) => row.bundleId,
+    );
+    const carriers = await this.database.db
+      .select({ threadId: message.threadId, seq: message.seq })
       .from(forwardMessage)
       .innerJoin(message, eq(message.id, forwardMessage.messageId))
       .innerJoin(
         threadParticipant,
-        eq(threadParticipant.threadId, message.threadId),
+        and(
+          eq(threadParticipant.threadId, message.threadId),
+          eq(threadParticipant.userId, userId),
+          isNull(threadParticipant.leftAt),
+        ),
       )
       .where(
         and(
-          eq(forwardMessage.bundleId, rootBundleId),
-          eq(threadParticipant.userId, userId),
-          isNull(threadParticipant.leftAt),
+          inArray(forwardMessage.bundleId, ancestorIds),
           eq(message.isDeleted, false),
+          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, -1)`,
         ),
-      )
-      .limit(1);
-    if (!visible) {
+      );
+    let carrier: { threadId: number; seq: number } | null = null;
+    for (const candidate of carriers) {
+      if (
+        await this.messageVisibility.findVisibleByThreadSeq(
+          userId,
+          candidate.threadId,
+          candidate.seq,
+        )
+      ) {
+        carrier = candidate;
+        break;
+      }
+    }
+    if (!carrier) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'forward bundle not found',
       );
     }
-    return this.buildClosure(rootBundleId);
+    const closure = await this.buildClosure(rootBundleId);
+    return {
+      ...closure,
+      accessContext: carrier,
+    };
   }
 
   async buildClosure(rootBundleId: string): Promise<ForwardWireClosure> {
@@ -584,6 +719,35 @@ export class ForwardBundleService {
         ) {
           throw this.invalidWire('invalid forward message descriptor');
         }
+        const mediaKind = forwardMediaKind(message.contentType);
+        if (mediaKind) {
+          let mediaContent: unknown;
+          try {
+            mediaContent = JSON.parse(message.content);
+          } catch {
+            throw this.invalidWire('invalid forward media content');
+          }
+          if (
+            typeof mediaContent !== 'object' ||
+            mediaContent === null ||
+            Array.isArray(mediaContent) ||
+            typeof (mediaContent as Record<string, unknown>)['url'] !== 'string'
+          ) {
+            throw this.invalidWire('invalid forward media content');
+          }
+          const digests = extractDigests(message.content);
+          if (
+            digests.length !== 1 ||
+            !bundle.assets.some(
+              (asset) =>
+                asset.kind === mediaKind && asset.digest === digests[0],
+            )
+          ) {
+            throw this.invalidWire(
+              'forward media content is not bound to a bundle asset',
+            );
+          }
+        }
       }
       const messageIds = new Set(
         bundle.manifest.messages.flatMap((message) =>
@@ -684,6 +848,11 @@ export class ForwardBundleService {
           children: wire.manifest.children.map((child) => idMap.get(child)!),
           messages: wire.manifest.messages.map((message) => ({
             ...message,
+            content: localizeForwardMediaContent(
+              message.contentType,
+              message.content,
+              wire.assets,
+            ),
             ...(message.childBundleId
               ? { childBundleId: idMap.get(message.childBundleId)! }
               : {}),
@@ -713,14 +882,6 @@ export class ForwardBundleService {
           );
         }
         if (wire.assets.length > 0) {
-          for (const asset of wire.assets) {
-            // Existing local bytes gain one logical reference per bundle asset row. Missing assets are
-            // localized after commit; saveCasFromStream creates their first ref there.
-            await tx
-              .update(mediaAsset)
-              .set({ refs: sql`${mediaAsset.refs} + 1` })
-              .where(eq(mediaAsset.digest, asset.digest));
-          }
           await tx.insert(forwardBundleAsset).values(
             wire.assets.map((asset, ordinal) => ({
               bundleId: localId,
@@ -758,7 +919,7 @@ export class ForwardBundleService {
                 ? 'link'
                 : null;
     if (!kind) return [];
-    let meta: { name?: string; mimeType?: string } = {};
+    let meta: { name?: string; mimeType?: string; size?: number } = {};
     try {
       meta = JSON.parse(content) as typeof meta;
     } catch {
@@ -766,20 +927,15 @@ export class ForwardBundleService {
     }
     const result: ForwardAssetDocument[] = [];
     for (const { digest, ext } of extractDigestEntries(content)) {
+      const presentationExt = parseFileExt(meta.name ?? '') || ext || 'bin';
       const row = await this.database.db.query.mediaAsset.findFirst({
         where: eq(mediaAsset.digest, digest),
       });
-      if (!row || row.refs <= 0) {
-        throw new BusinessException(
-          BusinessCode.FORWARD_INVALID_BUNDLE,
-          'source attachment is unavailable',
-        );
-      }
       result.push({
         digest,
         kind,
-        extension: ext,
-        bytes: Number(row.bytes),
+        extension: presentationExt,
+        bytes: Math.max(1, meta.size ?? Number(row?.bytes ?? 1n)),
         ...(meta.name ? { filename: meta.name } : {}),
         ...(meta.mimeType ? { mime: meta.mimeType } : {}),
       });
@@ -804,20 +960,37 @@ export class ForwardBundleService {
       const target = join(
         process.cwd(),
         'data',
-        'uploads',
-        'shards',
+        'cas',
         digest.slice(0, 2),
         digest.slice(2, 4),
-        `${digest}.${extension}`,
+        digest,
       );
       await mkdir(dirname(target), { recursive: true });
-      const temporary = `${target}.${process.pid}.${mintUlid()}.tmp`;
-      await writeFile(temporary, buffer);
-      await rename(temporary, target);
       await this.database.db
         .insert(mediaAsset)
-        .values({ digest, bytes: BigInt(buffer.length), refs: 0 })
+        .values({
+          digest,
+          bytes: BigInt(buffer.length),
+          status: 'PENDING',
+        })
         .onConflictDoNothing({ target: mediaAsset.digest });
+      const temporary = `${target}.${process.pid}.${mintUlid()}.tmp`;
+      let renamed = false;
+      try {
+        await writeFile(temporary, buffer);
+        await rename(temporary, target);
+        renamed = true;
+      } finally {
+        if (!renamed) await unlink(temporary).catch(() => {});
+      }
+      await this.database.db
+        .update(mediaAsset)
+        .set({
+          status: 'READY',
+          bytes: BigInt(buffer.length),
+          stateChangedAt: sql`CURRENT_TIMESTAMP`,
+        })
+        .where(eq(mediaAsset.digest, digest));
       return {
         digest,
         kind: 'avatar',
@@ -933,4 +1106,52 @@ function truncateGraphemes(value: string, max: number): string {
         .slice(0, Math.max(0, max - 1))
         .map((item) => item.segment)
         .join('')}…`;
+}
+
+function forwardMediaKind(
+  contentType: string,
+): ForwardAssetDocument['kind'] | null {
+  return contentType === ContentType.IMAGE
+    ? 'image'
+    : contentType === ContentType.FILE
+      ? 'file'
+      : contentType === ContentType.VIDEO
+        ? 'video'
+        : contentType === ContentType.AUDIO
+          ? 'audio'
+          : null;
+}
+
+/**
+ * A localized bundle never retains the source server's media URL. The digest is the wire identity;
+ * rebuild the complete server-relative CAS path from the validated bundle asset.
+ */
+export function localizeForwardMediaContent(
+  contentType: string,
+  content: string,
+  assets: ForwardAssetDocument[],
+): string {
+  const kind = forwardMediaKind(contentType);
+  if (!kind) return content;
+  const digests = extractDigests(content);
+  const asset =
+    digests.length === 1
+      ? assets.find(
+          (candidate) =>
+            candidate.kind === kind && candidate.digest === digests[0],
+        )
+      : undefined;
+  if (!asset) return content;
+  try {
+    const value = JSON.parse(content) as unknown;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return content;
+    }
+    return JSON.stringify({
+      ...(value as Record<string, unknown>),
+      url: `/uploads/cas/${asset.digest.slice(0, 2)}/${asset.digest.slice(2, 4)}/${asset.digest}`,
+    });
+  } catch {
+    return content;
+  }
 }

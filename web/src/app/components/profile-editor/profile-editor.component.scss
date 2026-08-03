@@ -1,4 +1,4 @@
-@use "../../assets/utils.scss" as *;
+@use '../../assets/utils.scss' as *;
 
 :host {
   display: flex;
@@ -33,8 +33,12 @@
 
   // Equal 1fr side tracks keep the title centered even when the back and action
   // buttons differ in width (flex `space-between` skews it off-center).
-  > :first-child { justify-self: start; }
-  > :last-child { justify-self: end; }
+  > :first-child {
+    justify-self: start;
+  }
+  > :last-child {
+    justify-self: end;
+  }
 
   .title {
     font-size: 16px;
@@ -115,8 +119,13 @@
   justify-content: center;
   cursor: pointer;
 
-  &:hover { filter: brightness(0.95); }
-  &:disabled { cursor: progress; opacity: 0.8; }
+  &:hover {
+    filter: brightness(0.95);
+  }
+  &:disabled {
+    cursor: progress;
+    opacity: 0.8;
+  }
 }
 
 // Spinner shown while the avatar is uploading
@@ -128,7 +137,11 @@
   border-radius: 50%;
   animation: ua-spin 0.7s linear infinite;
 }
-@keyframes ua-spin { to { transform: rotate(360deg); } }
+@keyframes ua-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .field {
   display: block;
@@ -154,7 +167,9 @@
   font-family: inherit;
   outline: none;
 
-  &:focus { border-color: var(--app-brand); }
+  &:focus {
+    border-color: var(--app-brand);
+  }
 }
 
 .text {
@@ -195,7 +210,7 @@
   margin-bottom: 6px;
 }
 .field-readonly .label-row .label {
-  margin-bottom: 0;            // the row owns the bottom spacing, not the label
+  margin-bottom: 0; // the row owns the bottom spacing, not the label
   color: var(--app-text-faint);
 }
 
@@ -217,6 +232,117 @@
   color: var(--app-text-faint);
 }
 
+.quota-card {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0 18px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  background: var(--app-surface);
+  overflow: hidden;
+}
+
+.quota-loading {
+  padding: 14px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.quota-warning {
+  border-color: #d99b22;
+}
+.quota-exhausted {
+  border-color: var(--app-danger);
+}
+
+.quota-summary {
+  @include styless-button;
+  width: 100%;
+  padding: 13px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  color: var(--app-text);
+
+  &:hover {
+    background: var(--app-hover);
+  }
+  strong,
+  small {
+    display: block;
+  }
+  strong {
+    font-size: 14px;
+  }
+  small {
+    margin-top: 3px;
+    color: var(--app-text-muted);
+    font-size: 12px;
+  }
+}
+
+.quota-warning .quota-summary small {
+  color: #a66d00;
+}
+.quota-exhausted .quota-summary small {
+  color: var(--app-danger);
+}
+.quota-toggle {
+  color: var(--app-text-muted);
+  font-size: 20px;
+}
+
+.quota-details {
+  padding: 2px 14px 14px;
+  border-top: 1px solid var(--app-border);
+
+  p {
+    margin: 12px 0 0;
+    color: var(--app-text-faint);
+    font-size: 12px;
+  }
+}
+
+.quota-row {
+  margin-top: 12px;
+}
+.quota-row-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.quota-track {
+  height: 5px;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-hover);
+  overflow: hidden;
+
+  span {
+    display: block;
+    height: 100%;
+    background: var(--app-brand);
+    border-radius: inherit;
+  }
+}
+.quota-warning .quota-track span {
+  background: #d99b22;
+}
+.quota-exhausted .quota-track span {
+  background: var(--app-danger);
+}
+.quota-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 14px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
 // Account footer: "Manage sessions" + "Logout" share one row as a balanced pair of Material outlined
 // buttons. Both are real mat-stroked-buttons (proper state layer / ripple / theming); logout wears
 // color="warn" so the destructive action reads distinctly.
@@ -226,7 +352,9 @@
   display: flex;
   gap: 8px;
 
-  button { flex: 1 1 0; }
+  button {
+    flex: 1 1 0;
+  }
 }
 
 // Spacing + baseline alignment for the logout icon inside the mat-stroked-button.

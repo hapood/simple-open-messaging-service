@@ -19,14 +19,7 @@ import {
   CbConfig,
   CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
-import {
-  pickStickyDateLabel,
-  stickyDateRowOpacity,
-  isViewportTransformEnd,
-  STICKY_DATE_COLLISION_BOTTOM_PX,
-  STICKY_DATE_COLLISION_TOP_PX,
-  STICKY_DATE_PICK_FUZZ_PX,
-} from '../../lib/sticky-date';
+import { isViewportTransformEnd } from '../../lib/sticky-date';
 import { LayoutService } from '../../services/layout.service';
 import { ThemeService } from '../../services/theme.service';
 import {
@@ -63,7 +56,7 @@ import {
   ChatSendIntent,
 } from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
-import { StickyDateOverlayComponent } from '../../components/message-cards/sticky-date-overlay/sticky-date-overlay.component';
+import { ChatboxStickyOverlaysComponent } from '../../components/message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
 
 // Kernel tuning defaults (kept in sync with DEFAULTS in chat-box-scroller.ts / anchor.ts). mountPx was removed (dead param of the array kernel).
@@ -98,7 +91,7 @@ const CB_DEFAULTS: Required<CbConfig> = {
     UserAvatarComponent,
     ChatInputComponent,
     KbdOffsetDirective,
-    StickyDateOverlayComponent,
+    ChatboxStickyOverlaysComponent,
     ConnectionBannerComponent,
     UpdateBannerComponent,
     IndicatorSlotComponent,
@@ -134,6 +127,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef =
     viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly stickyOverlays = viewChild(ChatboxStickyOverlaysComponent);
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date pill
    *  (the viewport's own top slides under the header while the keyboard-lift transform is active). */
@@ -200,8 +194,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** Config-edit modal open flag + draft (applied only on confirm, so editing one field doesn't rebuild mid-stream). */
   readonly configModalOpen = signal(false);
   readonly configDraft = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
-  /** Telegram-style sticky date: the date label for the top of the viewport (updated live on scroll; null = no overlay shown). */
-  readonly stickyDate = signal<string | null>(null);
   /** App-wide light/dark controller — the SAME ThemeService production uses (it writes <html data-theme>).
    *  No local theme signal or matchMedia: the playground's theme behavior is identical to the rest of the app. */
   readonly theme = inject(ThemeService);
@@ -429,7 +421,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.loading.set(true);
     try {
       await scroller.init();
-      this.updateStickyDate();
+      this.updateStickyOverlays();
     } finally {
       this.loading.set(false);
     }
@@ -519,7 +511,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
         this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
     }
     this.atBottom.set(info.atBottom);
-    this.updateStickyDate();
+    this.updateStickyOverlays();
     if (!isDevMode()) return;
     const now = performance.now();
     if (now - this.lastEmit < 100) return; // throttle: avoid refreshing signals on every scroll event (100ms is enough)
@@ -534,60 +526,23 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     );
   }
 
-  /**
-   * Telegram-style sticky date: the text of the last date-separator row at or above the viewport top.
-   * The overlay is independent of content and unaffected by virtual-scroll recycling — a date row near the viewport
-   * top always falls within the mounted window. Date rows are now rendered by the real DateRowComponent (the .msg-date
-   * class is preserved), so querySelectorAll still finds them.
-   */
-  private updateStickyDate() {
+  private updateStickyOverlays(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
     if (!vp || !ct) {
-      this.stickyDate.set(null);
+      this.stickyOverlays()?.clear();
       return;
     }
-    // The visible top is the header's bottom edge (stable — the header does NOT carry the keyboard-lift
-    // transform), NOT the viewport's getBoundingClientRect().top (which slides under the header while the
-    // keyboard is up, so a vTop-relative threshold/fade would anchor to a hidden message). Falls back to
-    // the viewport top before the header ref is available (early init).
-    const visibleTop =
-      this.headerRef()?.nativeElement.getBoundingClientRect().bottom ??
-      vp.getBoundingClientRect().top;
-    // Fade band (px, from the visible top) tracks the floating sticky pill — its SCSS `top` is
-    // calc(var(--sd-top) + 6px), so it sits ~6px below this visible top. The inline date pill fades out
-    // exactly as it passes behind the float: lo = fully transparent, hi = fade start. The overlay's +6px gap
-    // is baked into both offsets; move them together or a gap opens between the two pills.
-    const fadeLo = visibleTop + STICKY_DATE_COLLISION_TOP_PX;
-    const fadeHi = visibleTop + STICKY_DATE_COLLISION_BOTTOM_PX;
-    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
-      (d) => ({
-        d,
-        top: d.getBoundingClientRect().top,
-        label: d.textContent?.trim() ?? null,
-      }),
+    this.stickyOverlays()?.refresh(
+      {
+        viewport: vp,
+        content: ct,
+        header: this.headerRef()?.nativeElement,
+        container: vp.parentElement ?? vp,
+      },
+      document.documentElement.getAttribute('data-show-self-avatar') ===
+        'true',
     );
-    let current = pickStickyDateLabel(
-      rows,
-      visibleTop,
-      STICKY_DATE_PICK_FUZZ_PX,
-    );
-    // When the top ghost loading spinner (.cb-ghost-loading, centered) is visible it overlaps the centered date overlay →
-    // hide the overlay while the spinner sits at the visible top (its bottom crosses it); it restores
-    // naturally once the spinner is gone (the inline date row is still there).
-    const ghost = ct.querySelector('.cb-ghost-loading');
-    if (ghost && ghost.getBoundingClientRect().bottom > visibleTop)
-      current = null;
-    this.stickyDate.set(current);
-    const hasFloat = current !== null;
-    for (const { d, top } of rows) {
-      d.style.opacity = stickyDateRowOpacity(
-        top,
-        fadeLo,
-        fadeHi,
-        hasFloat,
-      ).toFixed(2);
-    }
   }
 
   /** Recompute the sticky-date pill when the keyboard-lift `transform` settles on the viewport. The
@@ -597,7 +552,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   onViewportTransitionEnd(event: TransitionEvent): void {
     if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement))
       return;
-    this.updateStickyDate();
+    this.updateStickyOverlays();
   }
 
   // --- Controls ---
@@ -618,7 +573,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.viewportAbove.set(0);
     this.viewportBelow.set(0);
     this.atBottom.set(true);
-    this.stickyDate.set(null);
+    this.stickyOverlays()?.clear();
   }
 
   /**

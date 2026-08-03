@@ -171,7 +171,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
       message({
         seq: 1,
         contentType: 'IMAGE',
-        image: '/uploads/shards/aa/bb/photo.jpg',
+        image: '/uploads/cas/aa/bb/photo.jpg',
         imageSize: 2048,
         imageShape: 'thumbnail',
       }),

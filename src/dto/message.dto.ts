@@ -86,7 +86,13 @@ export class ForwardSourceMessageDto {
   seq!: number;
 }
 
-/** Create an immutable bundle from visible source messages and send its FORWARD card. */
+export const ForwardMode = {
+  DIRECT: 'DIRECT',
+  HISTORY: 'HISTORY',
+} as const;
+export type ForwardMode = (typeof ForwardMode)[keyof typeof ForwardMode];
+
+/** Re-send one visible message directly, or snapshot a selection into a FORWARD card. */
 export class SendForwardDto {
   @ApiProperty({ example: 12, description: 'Destination conversation id' })
   @Type(() => Number)
@@ -100,6 +106,14 @@ export class SendForwardDto {
   @ValidateNested({ each: true })
   @Type(() => ForwardSourceMessageDto)
   sourceMessages!: ForwardSourceMessageDto[];
+
+  @ApiProperty({
+    enum: Object.values(ForwardMode),
+    description:
+      'DIRECT re-sends exactly one message as the caller; HISTORY creates a chat-record bundle.',
+  })
+  @IsIn(Object.values(ForwardMode))
+  mode!: ForwardMode;
 
   @ApiProperty({ description: 'Client send-idempotency UUID' })
   @IsUUID()

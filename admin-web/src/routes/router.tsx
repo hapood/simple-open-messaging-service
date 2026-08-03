@@ -1,14 +1,14 @@
-import { Navigate, Outlet, createBrowserRouter } from 'react-router-dom'
-import { AuthProvider } from '@/auth/auth-context'
-import { ProtectedRoute } from '@/components/route/protected-route'
-import { LoginPage } from '@/routes/login/login-page'
-import { NotFoundPage } from '@/routes/not-found-page'
-import { RouteErrorPage } from '@/routes/route-error-page'
-import { UsersLayout } from '@/routes/users/users-layout'
-import { SessionsLayout } from '@/routes/sessions/sessions-layout'
-import { FederationLayout } from '@/routes/federation/federation-layout'
-import { PushLayout } from '@/routes/push/push-layout'
-import { LogsLayout } from '@/routes/logs/logs-layout'
+import { Navigate, Outlet, createBrowserRouter } from 'react-router-dom';
+import { AuthProvider } from '@/auth/auth-context';
+import { ProtectedRoute } from '@/components/route/protected-route';
+import { LoginPage } from '@/routes/login/login-page';
+import { NotFoundPage } from '@/routes/not-found-page';
+import { RouteErrorPage } from '@/routes/route-error-page';
+import { UsersLayout } from '@/routes/users/users-layout';
+import { SessionsLayout } from '@/routes/sessions/sessions-layout';
+import { FederationLayout } from '@/routes/federation/federation-layout';
+import { PushLayout } from '@/routes/push/push-layout';
+import { LogsLayout } from '@/routes/logs/logs-layout';
 
 /**
  * Each non-entry page is a react-router v7 `lazy` route: the page module is a separate chunk fetched
@@ -27,8 +27,6 @@ import { LogsLayout } from '@/routes/logs/logs-layout'
  * ranks static segments ahead of dynamic ones, so /users/operators and /federation/self-check resolve
  * to their hub children rather than to the :id / :domain siblings.
  *
- * Legacy top-level paths that folded into tabs (/admins, /admin-sessions, /reuse, /audit) are kept as
- * <Navigate> redirects so existing bookmarks and links land on the right tab.
  */
 
 /** Root layout: AuthProvider must sit inside RouterProvider so login/logout can use useNavigate. */
@@ -37,117 +35,211 @@ function RootLayout() {
     <AuthProvider>
       <Outlet />
     </AuthProvider>
-  )
+  );
 }
 
-export const router = createBrowserRouter([
+export const router = createBrowserRouter(
+  [
+    {
+      element: <RootLayout />,
+      errorElement: <RouteErrorPage />,
+      children: [
+        { path: '/login', element: <LoginPage /> },
+        {
+          element: <ProtectedRoute />,
+          children: [
+            { path: '/', element: <Navigate to="/dashboard" replace /> },
+            {
+              path: '/dashboard',
+              lazy: () =>
+                import('@/routes/dashboard/dashboard-page').then((m) => ({
+                  Component: m.DashboardPage,
+                })),
+            },
+            {
+              path: '/users',
+              element: <UsersLayout />,
+              children: [
+                {
+                  index: true,
+                  lazy: () =>
+                    import('@/routes/users/users-page').then((m) => ({
+                      Component: m.UsersPage,
+                    })),
+                },
+                {
+                  path: 'operators',
+                  lazy: () =>
+                    import('@/routes/admins/admins-page').then((m) => ({
+                      Component: m.AdminsPage,
+                    })),
+                },
+              ],
+            },
+            {
+              path: '/users/:id',
+              lazy: () =>
+                import('@/routes/users/user-detail-page').then((m) => ({
+                  Component: m.UserDetailPage,
+                })),
+            },
+            {
+              path: '/groups',
+              lazy: () =>
+                import('@/routes/groups/groups-page').then((m) => ({
+                  Component: m.GroupsPage,
+                })),
+            },
+            {
+              path: '/sessions',
+              element: <SessionsLayout />,
+              children: [
+                {
+                  index: true,
+                  lazy: () =>
+                    import('@/routes/sessions/sessions-page').then((m) => ({
+                      Component: m.SessionsPage,
+                    })),
+                },
+                {
+                  path: 'admins',
+                  lazy: () =>
+                    import('@/routes/admin-sessions/admin-sessions-page').then(
+                      (m) => ({ Component: m.AdminSessionsPage }),
+                    ),
+                },
+                {
+                  path: 'reuse',
+                  lazy: () =>
+                    import('@/routes/reuse/reuse-alerts-page').then((m) => ({
+                      Component: m.ReuseAlertsPage,
+                    })),
+                },
+              ],
+            },
+            {
+              path: '/connections',
+              lazy: () =>
+                import('@/routes/connections/connections-page').then((m) => ({
+                  Component: m.ConnectionsPage,
+                })),
+            },
+            {
+              path: '/bans',
+              lazy: () =>
+                import('@/routes/bans/bans-page').then((m) => ({
+                  Component: m.BansPage,
+                })),
+            },
+            {
+              path: '/federation',
+              element: <FederationLayout />,
+              children: [
+                {
+                  index: true,
+                  lazy: () =>
+                    import('@/routes/federation/federation-page').then((m) => ({
+                      Component: m.FederationPage,
+                    })),
+                },
+                {
+                  path: 'self-check',
+                  lazy: () =>
+                    import('@/routes/federation/self-check-page').then((m) => ({
+                      Component: m.SelfCheckPage,
+                    })),
+                },
+              ],
+            },
+            {
+              path: '/federation/:domain',
+              lazy: () =>
+                import('@/routes/federation/peer-detail-page').then((m) => ({
+                  Component: m.PeerDetailPage,
+                })),
+            },
+            {
+              path: '/push',
+              element: <PushLayout />,
+              children: [
+                {
+                  index: true,
+                  lazy: () =>
+                    import('@/routes/push/push-page').then((m) => ({
+                      Component: m.PushPage,
+                    })),
+                },
+                {
+                  path: 'config',
+                  lazy: () =>
+                    import('@/routes/push/transport-config-panel').then(
+                      (m) => ({ Component: m.TransportConfigPanel }),
+                    ),
+                },
+              ],
+            },
+            {
+              path: '/media',
+              lazy: () =>
+                import('@/routes/media/media-page').then((m) => ({
+                  Component: m.MediaPage,
+                })),
+            },
+            {
+              path: '/logs',
+              element: <LogsLayout />,
+              children: [
+                {
+                  index: true,
+                  lazy: () =>
+                    import('@/routes/logs/logs-live-page').then((m) => ({
+                      Component: m.LogsLivePage,
+                    })),
+                },
+                {
+                  path: 'history',
+                  lazy: () =>
+                    import('@/routes/logs/history-panel').then((m) => ({
+                      Component: m.HistoryPanel,
+                    })),
+                },
+                {
+                  path: 'diagnostics',
+                  lazy: () =>
+                    import(
+                      '@/routes/diagnostic-reports/diagnostic-reports-page'
+                    ).then((m) => ({ Component: m.DiagnosticReportsPage })),
+                },
+              ],
+            },
+            {
+              path: '/audit',
+              lazy: () =>
+                import('@/routes/audit/audit-page').then((m) => ({
+                  Component: m.AuditPage,
+                })),
+            },
+            {
+              path: '/settings',
+              lazy: () =>
+                import('@/routes/settings/settings-page').then((m) => ({
+                  Component: m.SettingsPage,
+                })),
+            },
+            {
+              path: '/security',
+              lazy: () =>
+                import('@/routes/security/security-page').then((m) => ({
+                  Component: m.SecurityPage,
+                })),
+            },
+          ],
+        },
+        { path: '*', element: <NotFoundPage /> },
+      ],
+    },
+  ],
   {
-    element: <RootLayout />,
-    errorElement: <RouteErrorPage />,
-    children: [
-      { path: '/login', element: <LoginPage /> },
-      {
-        element: <ProtectedRoute />,
-        children: [
-          { path: '/', element: <Navigate to="/dashboard" replace /> },
-          {
-            path: '/dashboard',
-            lazy: () => import('@/routes/dashboard/dashboard-page').then((m) => ({ Component: m.DashboardPage })),
-          },
-          {
-            path: '/users',
-            element: <UsersLayout />,
-            children: [
-              { index: true, lazy: () => import('@/routes/users/users-page').then((m) => ({ Component: m.UsersPage })) },
-              { path: 'operators', lazy: () => import('@/routes/admins/admins-page').then((m) => ({ Component: m.AdminsPage })) },
-            ],
-          },
-          {
-            path: '/users/:id',
-            lazy: () => import('@/routes/users/user-detail-page').then((m) => ({ Component: m.UserDetailPage })),
-          },
-          {
-            path: '/groups',
-            lazy: () => import('@/routes/groups/groups-page').then((m) => ({ Component: m.GroupsPage })),
-          },
-          {
-            path: '/sessions',
-            element: <SessionsLayout />,
-            children: [
-              { index: true, lazy: () => import('@/routes/sessions/sessions-page').then((m) => ({ Component: m.SessionsPage })) },
-              { path: 'admins', lazy: () => import('@/routes/admin-sessions/admin-sessions-page').then((m) => ({ Component: m.AdminSessionsPage })) },
-              { path: 'reuse', lazy: () => import('@/routes/reuse/reuse-alerts-page').then((m) => ({ Component: m.ReuseAlertsPage })) },
-            ],
-          },
-          {
-            path: '/connections',
-            lazy: () => import('@/routes/connections/connections-page').then((m) => ({ Component: m.ConnectionsPage })),
-          },
-          {
-            path: '/bans',
-            lazy: () => import('@/routes/bans/bans-page').then((m) => ({ Component: m.BansPage })),
-          },
-          {
-            path: '/federation',
-            element: <FederationLayout />,
-            children: [
-              { index: true, lazy: () => import('@/routes/federation/federation-page').then((m) => ({ Component: m.FederationPage })) },
-              { path: 'self-check', lazy: () => import('@/routes/federation/self-check-page').then((m) => ({ Component: m.SelfCheckPage })) },
-            ],
-          },
-          {
-            path: '/federation/:domain',
-            lazy: () => import('@/routes/federation/peer-detail-page').then((m) => ({ Component: m.PeerDetailPage })),
-          },
-          {
-            path: '/push',
-            element: <PushLayout />,
-            children: [
-              { index: true, lazy: () => import('@/routes/push/push-page').then((m) => ({ Component: m.PushPage })) },
-              { path: 'config', lazy: () => import('@/routes/push/transport-config-panel').then((m) => ({ Component: m.TransportConfigPanel })) },
-            ],
-          },
-          {
-            path: '/media',
-            lazy: () => import('@/routes/media/media-page').then((m) => ({ Component: m.MediaPage })),
-          },
-          {
-            path: '/logs',
-            element: <LogsLayout />,
-            children: [
-              { index: true, lazy: () => import('@/routes/logs/logs-live-page').then((m) => ({ Component: m.LogsLivePage })) },
-              { path: 'history', lazy: () => import('@/routes/logs/history-panel').then((m) => ({ Component: m.HistoryPanel })) },
-              { path: 'audit', lazy: () => import('@/routes/audit/audit-page').then((m) => ({ Component: m.AuditPage })) },
-            ],
-          },
-          { path: '/admins', element: <Navigate to="/users/operators" replace /> },
-          { path: '/admin-sessions', element: <Navigate to="/sessions/admins" replace /> },
-          { path: '/reuse', element: <Navigate to="/sessions/reuse" replace /> },
-          { path: '/audit', element: <Navigate to="/logs/audit" replace /> },
-          {
-            path: '/quotas',
-            lazy: () => import('@/routes/quotas/quotas-page').then((m) => ({ Component: m.QuotasPage })),
-          },
-          {
-            path: '/diagnostic-reports',
-            lazy: () =>
-              import('@/routes/diagnostic-reports/diagnostic-reports-page').then((m) => ({
-                Component: m.DiagnosticReportsPage,
-              })),
-          },
-          {
-            path: '/settings',
-            lazy: () => import('@/routes/settings/settings-page').then((m) => ({ Component: m.SettingsPage })),
-          },
-          {
-            path: '/security',
-            lazy: () => import('@/routes/security/security-page').then((m) => ({ Component: m.SecurityPage })),
-          },
-        ],
-      },
-      { path: '*', element: <NotFoundPage /> },
-    ],
+    basename: import.meta.env.BASE_URL,
   },
-], {
-  basename: import.meta.env.BASE_URL,
-})
+);

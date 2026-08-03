@@ -86,6 +86,17 @@
   background: var(--app-bg);
 }
 
+.forward-dialog__direct-preview {
+  width: min(100%, 420px);
+  overflow: hidden;
+
+  // Reuse the real message renderer, but the preview owns its surrounding spacing.
+  :is(app-msg-text-row, app-msg-media-row, app-msg-file-row, app-msg-invite-row,
+      app-msg-link-row, app-msg-call-row, app-msg-forward-row) {
+    display: block;
+  }
+}
+
 .forward-dialog__directory {
   display: flex;
   flex: 1 1 auto;

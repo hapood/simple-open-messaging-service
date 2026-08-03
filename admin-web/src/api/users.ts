@@ -1,5 +1,5 @@
 import { request } from '@/api/client'
-import type { IssuedLoginCode, LoginCodeView, Session, UserDetail, UserListResult } from '@/types/api'
+import type { IssuedLoginCode, LoginCodeView, QuotaOverrides, Session, UserDetail, UserListResult, UserQuotaState } from '@/types/api'
 
 export function listUsers(params: {
   skip?: number
@@ -11,6 +11,14 @@ export function listUsers(params: {
 
 export function getUserDetail(id: number): Promise<UserDetail> {
   return request<UserDetail>(`/admin/users/${id}/detail`)
+}
+
+export function getUserQuota(id: number): Promise<UserQuotaState> {
+  return request<UserQuotaState>(`/admin/users/${id}/quota`)
+}
+
+export function setUserQuota(id: number, overrides: QuotaOverrides): Promise<void> {
+  return request<void>(`/admin/users/${id}/quota/set`, overrides)
 }
 
 export function disableUser(id: number): Promise<void> {

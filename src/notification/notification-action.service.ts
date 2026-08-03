@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { QuotaService } from '../quota/quota.service.js';
 import { ContentType } from '../database/enums.js';
 import type { ReportActionDto } from '../dto/notification.dto.js';
 import { stringifyTextMessageContent } from '../../shared/text-message-content.js';
@@ -30,7 +29,6 @@ export class NotificationActionService {
     private readonly participantService: ThreadParticipantService,
     private readonly messageService: MessageService,
     private readonly fanout: MessageFanoutService,
-    private readonly quota: QuotaService,
   ) {}
 
   async handleAction(userId: number, dto: ReportActionDto): Promise<void> {
@@ -54,9 +52,8 @@ export class NotificationActionService {
     }
   }
 
-  /** Send a PURE_TEXT reply through the unified send pipeline (seq allocation + fan-out + federation hint),
-   *  consuming one 'messages' quota unit — identical to `POST /send-message`. Membership-gated + quota-
-   *  gated; a quota exhaustion is a silent no-op (the user retries in-app, where the quota error surfaces). */
+  /** Send a PURE_TEXT reply through the unified send pipeline (seq allocation + fan-out + federation hint).
+   *  Membership-gated; personal-account quota will be applied here with the other local send paths. */
   private async reply(
     userId: number,
     threadId: number,
@@ -64,8 +61,6 @@ export class NotificationActionService {
   ): Promise<void> {
     const p = await this.participantService.findParticipant(userId, threadId);
     if (!p || p.leftAt !== null) return; // not an active member — refuse silently
-    const q = await this.quota.tryTickLocal('messages');
-    if (q.exceeded) return; // over the daily quota — surface in-app, not from the shade
     const data = await this.messageService.writeMsgToThread(
       userId,
       threadId,

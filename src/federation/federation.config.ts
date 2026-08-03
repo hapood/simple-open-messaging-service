@@ -51,9 +51,8 @@ export function loadFederationConfig(): FederationConfig {
 }
 
 /**
- * Unified daily-quota configuration (local SOMS_DOMAIN node + each federated peer). These are the
- * global defaults; a per-node override (FederatedPeer columns for a peer, SystemSetting 'quota:local'
- * for the local node) takes precedence when set (null override → use the default here). Thresholds
+ * Federated-peer daily-quota configuration. These are the global defaults; a per-peer override on
+ * FederatedPeer takes precedence when set (null override → use the default here). Thresholds
  * Loaded separately from FederationConfig to keep the
  * transport config focused. See src/quota/quota.service.ts.
  */
@@ -77,14 +76,20 @@ export interface QuotaConfig {
 
 export function loadQuotaConfig(): QuotaConfig {
   return {
-    dailyRequestLimit: Number(process.env.SOMS_QUOTA_DAILY_REQUEST_LIMIT ?? 100),
+    dailyRequestLimit: Number(
+      process.env.SOMS_QUOTA_DAILY_REQUEST_LIMIT ?? 100,
+    ),
     dailyMsgLimit: Number(process.env.SOMS_QUOTA_DAILY_MSG_LIMIT ?? 5000),
     dailyImageLimit: Number(process.env.SOMS_QUOTA_DAILY_IMAGE_LIMIT ?? 500),
     dailyLargeFileLimit: Number(
       process.env.SOMS_QUOTA_DAILY_LARGE_FILE_LIMIT ?? 50,
     ),
-    dailySignalLimit: Number(process.env.SOMS_QUOTA_DAILY_SIGNAL_LIMIT ?? 50_000),
-    maxImageBytes: Number(process.env.SOMS_QUOTA_MAX_IMAGE_BYTES ?? 50 * 1024 * 1024),
+    dailySignalLimit: Number(
+      process.env.SOMS_QUOTA_DAILY_SIGNAL_LIMIT ?? 50_000,
+    ),
+    maxImageBytes: Number(
+      process.env.SOMS_QUOTA_MAX_IMAGE_BYTES ?? 50 * 1024 * 1024,
+    ),
     maxLargeFileBytes: Number(
       process.env.SOMS_QUOTA_MAX_LARGE_FILE_BYTES ?? 500 * 1024 * 1024,
     ),

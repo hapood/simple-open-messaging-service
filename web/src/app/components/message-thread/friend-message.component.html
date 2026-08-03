@@ -119,7 +119,7 @@
     <!-- The floating date pill always tracks the topmost visible message. Search now lives inside the
          header (no added height), so it never collides with the pill and the pill stays visible during
          search — preserving date context while jumping between matches. -->
-    <app-sticky-date-overlay [label]="stickyDate()" />
+    <app-chatbox-sticky-overlays #stickyOverlays />
 
     <div class="msg-latest-layer">
       @if (unreadBoundaryAbove()) {

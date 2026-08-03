@@ -707,7 +707,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(mediaAsset.digest, digest),
         });
         expect(asset).toBeDefined();
-        expect(asset!.refs).toBeGreaterThan(0);
+        expect(asset!.status).toBe('READY');
         const mm = await appB.database.query.mediaMessage.findFirst({
           where: eq(mediaMessage.digest, digest),
         });
@@ -721,8 +721,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const abs = nodePath.join(
       process.cwd(),
       'data',
-      'uploads',
-      'shards',
+      'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
       nodePath.basename(url),
@@ -747,7 +746,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(mediaAsset.digest, digest),
         });
         expect(asset).toBeDefined();
-        expect(asset!.refs).toBeGreaterThan(0);
+        expect(asset!.status).toBe('READY');
         const mm = await appB.database.query.mediaMessage.findFirst({
           where: eq(mediaMessage.digest, digest),
         });
@@ -764,8 +763,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const abs = nodePath.join(
       process.cwd(),
       'data',
-      'uploads',
-      'shards',
+      'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
       nodePath.basename(url),
@@ -791,7 +789,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(mediaAsset.digest, digest),
         });
         expect(asset).toBeDefined();
-        expect(asset!.refs).toBeGreaterThan(0);
+        expect(asset!.status).toBe('READY');
       },
       { timeout: 8000 },
     );
@@ -812,8 +810,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const abs = nodePath.join(
       process.cwd(),
       'data',
-      'uploads',
-      'shards',
+      'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
       nodePath.basename(url),

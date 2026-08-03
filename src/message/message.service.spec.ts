@@ -41,7 +41,7 @@ function mk(
 const DIG = 'a'.repeat(64); // 64 lowercase hex (sha256) — matches extractDigests' CAS regex
 const D2 = 'b'.repeat(64);
 const url = (d: string): string =>
-  `/uploads/shards/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}.jpg`;
+  `/uploads/cas/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
 
 describe('MessageService.attachMediaStatus', () => {
   it('returns [] for empty input', async () => {
@@ -112,13 +112,13 @@ describe('MessageService.attachMediaStatus', () => {
     expect('id' in out).toBe(false);
   });
 
-  it('every digest has an authz row + asset refs>0 → ready', async () => {
+  it('every digest has an authz row + READY asset → ready', async () => {
     const prisma = {
       mediaMessage: {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, refs: 1 }]),
+        findMany: vi.fn().mockResolvedValue([{ digest: DIG, status: 'READY' }]),
       },
     };
     const svc = new MessageService(
@@ -154,13 +154,13 @@ describe('MessageService.attachMediaStatus', () => {
     expect(out[0].mediaStatus).toBe('failed');
   });
 
-  it('a digest whose asset has refs=0 → failed (bytes gone / GC)', async () => {
+  it('a READY asset does not depend on a cached reference count', async () => {
     const prisma = {
       mediaMessage: {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, refs: 0 }]),
+        findMany: vi.fn().mockResolvedValue([{ digest: DIG, status: 'READY' }]),
       },
     };
     const svc = new MessageService(
@@ -168,6 +168,24 @@ describe('MessageService.attachMediaStatus', () => {
         message: prisma.message?.findMany,
         mediaMessage: prisma.mediaMessage.findMany,
         mediaAsset: prisma.mediaAsset.findMany,
+      }) as never,
+      {} as never,
+    );
+    const out = await svc.attachMediaStatus([
+      mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
+    ]);
+    expect(out[0].mediaStatus).toBe('ready');
+  });
+
+  it('a PENDING asset is not exposed as ready', async () => {
+    const svc = new MessageService(
+      databaseMock({
+        mediaMessage: vi
+          .fn()
+          .mockResolvedValue([{ messageId: 1n, digest: DIG }]),
+        mediaAsset: vi
+          .fn()
+          .mockResolvedValue([{ digest: DIG, status: 'PENDING' }]),
       }) as never,
       {} as never,
     );
@@ -183,7 +201,7 @@ describe('MessageService.attachMediaStatus', () => {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, refs: 1 }]),
+        findMany: vi.fn().mockResolvedValue([{ digest: DIG, status: 'READY' }]),
       },
     };
     const svc = new MessageService(
@@ -305,7 +323,7 @@ describe('MessageService.queryMessages quote previews', () => {
         seq: 4,
         contentType: 'IMAGE',
         content: JSON.stringify({
-          url: '/uploads/shards/aa/bb/asset.jpg',
+          url: '/uploads/cas/aa/bb/asset.jpg',
           size: 2048,
         }),
       }),
@@ -323,7 +341,7 @@ describe('MessageService.queryMessages quote previews', () => {
       author: 'Alice',
       body: '[Photo]',
       contentType: 'IMAGE',
-      image: '/uploads/shards/aa/bb/asset.jpg',
+      image: '/uploads/cas/aa/bb/asset.jpg',
       imageSize: 2048,
       imageShape: 'thumbnail',
     });

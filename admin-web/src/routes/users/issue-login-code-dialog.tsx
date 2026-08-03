@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Loader2 } from 'lucide-react'
+import { Clock3, Loader2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CopyButton } from '@/components/common/copy-button'
+import { Timestamp } from '@/components/common/timestamp'
 import { formatApiError } from '@/lib/format-error'
 import { useIssueLoginCode } from '@/hooks/use-user-mutations'
 import type { IssuedLoginCode } from '@/types/api'
@@ -38,6 +39,9 @@ export function IssueLoginCodeDialog({
   }, [user])
 
   const open = user !== null
+  const validityMinutes = issued
+    ? Math.max(1, Math.ceil((issued.expiresAt - issued.issuedAt) / 60_000))
+    : null
   const onIssue = async () => {
     if (!user) return
     setSubmitting(true)
@@ -71,6 +75,15 @@ export function IssueLoginCodeDialog({
                   copyFailedKey="issueLoginCode.copyFailed"
                 />
               </div>
+            </div>
+            <div className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
+              <Clock3 className="size-4 shrink-0 text-muted-foreground" />
+              <span>
+                {t('issueLoginCode.validFor', { count: validityMinutes })}
+                {' · '}
+                {t('issueLoginCode.expiresAt')}{' '}
+                <Timestamp value={issued.expiresAt} className="font-medium" />
+              </span>
             </div>
           </div>
         ) : (

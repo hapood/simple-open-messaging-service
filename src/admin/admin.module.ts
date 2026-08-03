@@ -49,7 +49,7 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
     GatewayModule,
     // PushService (exported by PushModule) powers admin/push device-token management + test pushes.
     PushModule,
-    // UploadService (exported by UploadModule) lets MediaAssetGcService resolve shards/ paths (refs<=0 → GC).
+    // UploadService lets MediaAssetGcService resolve CAS and avatar paths for manual cleanup.
     UploadModule,
     // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     KvStoreModule,
@@ -58,7 +58,21 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
     // LogViewerService (exported by LoggerModule) backs LogViewerController (admin log tail + history).
     LoggerModule,
   ],
-  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController, TwoFactorController, WebAuthnController, AdminDiagnosticsController, LogViewerController],
+  controllers: [
+    AdminController,
+    AdminSettingsController,
+    AdminFederationController,
+    AdminQuotaController,
+    MediaAssetGcController,
+    DashboardController,
+    AuditController,
+    AdminManageController,
+    GroupManageController,
+    TwoFactorController,
+    WebAuthnController,
+    AdminDiagnosticsController,
+    LogViewerController,
+  ],
   providers: [
     AdminAuthService,
     TwoFactorService,

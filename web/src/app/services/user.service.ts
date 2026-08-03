@@ -9,6 +9,7 @@ import {
   InviteDetail,
   StandardResponse,
   ThreadReadDelta,
+  PersonalQuotaState,
 } from './model';
 import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
@@ -346,6 +347,13 @@ export class UserService {
   getMyProfile() {
     return this.http.post<StandardResponse<User>>(
       `${apiPrefix()}/user/my-profile`,
+      {},
+    );
+  }
+
+  getMyQuota() {
+    return this.http.post<StandardResponse<PersonalQuotaState>>(
+      `${apiPrefix()}/user/my-quota`,
       {},
     );
   }

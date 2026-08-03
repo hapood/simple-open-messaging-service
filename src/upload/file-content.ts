@@ -31,7 +31,7 @@ export const MAX_FILE_NAME_LEN = 100;
 
 /** A FILE message's stored content (JSON-stringified in Message.content). */
 export interface FileContent {
-  /** Server-relative CAS shard URL of the stored file (`/uploads/shards/<2hex>/<2hex>/<sha256>.<ext>`). */
+  /** Server-relative CAS URL (`/uploads/cas/<2hex>/<2hex>/<sha256>`). */
   url: string;
   /** Sanitized original filename for display. */
   name: string;
@@ -110,24 +110,29 @@ export function parseFileExt(filename: string): string {
 
 const MIME_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 
-/** Matches a content-addressed upload URL: /uploads/shards/<2-hex>/<2-hex>/<64-hex-sha256>.<ext>.
- *  The shape UploadService.saveCas() emits. The digest is exactly 64 lowercase hex chars (sha256);
- *  the ext matches parseFileExt's [A-Za-z0-9]{1,16} shape. */
+/** Matches the pure content-addressed URL emitted by UploadService. Filename, MIME and message type
+ * are presentation metadata and deliberately never participate in CAS identity. */
 const CAS_UPLOAD_URL_RE =
-  /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.[A-Za-z0-9]{1,16}$/;
+  /^\/uploads\/cas\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
 
 /** Whether a url is an accepted server-served upload path — a CAS shard URL. Rejects traversal
  *  ('..'), query/fragment, and any shape saveCas() would never emit. Shared by parseFileContent and
  *  the VIDEO/AUDIO content validators. */
 export function isUploadUrl(url: string): boolean {
   if (url.includes('..')) return false;
-  return CAS_UPLOAD_URL_RE.test(url);
+  const match = CAS_UPLOAD_URL_RE.exec(url);
+  return Boolean(
+    match &&
+      match[1] === match[3].slice(0, 2) &&
+      match[2] === match[3].slice(2, 4),
+  );
 }
 
 /** Global capture of the digest inside a CAS shard URL. Used by extractDigests to pull every sha256
  *  referenced by a message's content string (IMAGE/FILE/VIDEO/AUDIO) so MediaMessage authz rows can be
  *  written at send time. */
-const SHARD_DIGEST_RE = /\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./g;
+const SHARD_DIGEST_RE =
+  /\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?![0-9a-f])/g;
 
 /** Extract every distinct CAS digest referenced by a message's raw content string. Scans the whole
  *  JSON (works for single-image `{url,...}`, FILE/VIDEO/AUDIO shapes, and future album arrays alike)
@@ -139,18 +144,12 @@ export function extractDigests(content: string): string[] {
   return [...out];
 }
 
-/** Same scan as extractDigests, but also captures the on-disk extension — the RECEIVER uses this to
- *  fetch + localize each media asset via /get_file (the ext names the local CAS file so it serves
- *  same-origin with the right mime via @fastify/static). De-duplicated by digest (a digest has one ext). */
-const SHARD_DIGEST_EXT_RE =
-  /\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.([A-Za-z0-9]{1,16})/g;
+/** Compatibility shape used by federation callers. `ext` is presentation metadata only and is no
+ * longer recovered from or written into the CAS URL/path. */
 export function extractDigestEntries(
   content: string,
 ): Array<{ digest: string; ext: string }> {
-  if (!content) return [];
-  const map = new Map<string, string>();
-  for (const m of content.matchAll(SHARD_DIGEST_EXT_RE)) map.set(m[1], m[2]);
-  return [...map.entries()].map(([digest, ext]) => ({ digest, ext }));
+  return extractDigests(content).map((digest) => ({ digest, ext: '' }));
 }
 
 /**
@@ -167,9 +166,10 @@ export function resolveFileType(
 ): { ext: string; mime: string } {
   return {
     ext: parseFileExt(filename),
-    mime: typeof declaredMime === 'string' && MIME_RE.test(declaredMime)
-      ? declaredMime
-      : 'application/octet-stream',
+    mime:
+      typeof declaredMime === 'string' && MIME_RE.test(declaredMime)
+        ? declaredMime
+        : 'application/octet-stream',
   };
 }
 
@@ -247,7 +247,8 @@ export function parseVideoContent(content: string): VideoContent | null {
   if (wv === null || hv === null || dv === null) return null;
   if (!isUploadUrl(url)) return null;
   if (mimeType.length === 0) return null;
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_VIDEO_BYTES) return null;
+  if (!Number.isFinite(size) || size <= 0 || size > MAX_VIDEO_BYTES)
+    return null;
   if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
   return { url, name, size, mimeType, w: wv, h: hv, duration: dv };
 }
@@ -263,7 +264,10 @@ export function parseAudioContent(content: string): AudioContent | null {
     return null;
   }
   if (typeof obj !== 'object' || obj === null) return null;
-  const { url, name, size, mimeType, duration } = obj as Record<string, unknown>;
+  const { url, name, size, mimeType, duration } = obj as Record<
+    string,
+    unknown
+  >;
   if (
     typeof url !== 'string' ||
     typeof name !== 'string' ||
@@ -276,7 +280,8 @@ export function parseAudioContent(content: string): AudioContent | null {
   if (dv === null) return null;
   if (!isUploadUrl(url)) return null;
   if (mimeType.length === 0) return null;
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_AUDIO_BYTES) return null;
+  if (!Number.isFinite(size) || size <= 0 || size > MAX_AUDIO_BYTES)
+    return null;
   if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
   return { url, name, size, mimeType, duration: dv };
 }
@@ -297,7 +302,10 @@ export function parseLinkContent(content: string): LinkContent | null {
     return null;
   }
   if (typeof obj !== 'object' || obj === null) return null;
-  const { url, title, description, siteName, image } = obj as Record<string, unknown>;
+  const { url, title, description, siteName, image } = obj as Record<
+    string,
+    unknown
+  >;
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
   if (title !== undefined && typeof title !== 'string') return null;
   if (description !== undefined && typeof description !== 'string') return null;
@@ -305,7 +313,11 @@ export function parseLinkContent(content: string): LinkContent | null {
   if (title && title.length > MAX_LINK_TITLE_LEN) return null;
   if (description && description.length > MAX_LINK_DESC_LEN) return null;
   if (siteName && siteName.length > MAX_LINK_SITE_NAME_LEN) return null;
-  if (image !== undefined && (typeof image !== 'string' || !DIGEST_RE.test(image))) return null;
+  if (
+    image !== undefined &&
+    (typeof image !== 'string' || !DIGEST_RE.test(image))
+  )
+    return null;
   return {
     url,
     title: title || undefined,

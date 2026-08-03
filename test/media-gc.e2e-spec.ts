@@ -20,18 +20,19 @@ import {
   user,
 } from '../src/database/schema';
 import { UploadService } from '../src/upload/upload.service';
+import { MediaAssetService } from '../src/upload/media-asset.service';
 import { MediaAssetGcService } from '../src/admin/media-asset-gc.service';
 import { makePng } from './federation-harness';
 
 /**
- * Phase 5 garbage collection: verify refs<=0 rows are reaped (DB row + shard file) and refs>0 rows
- * are left untouched. Exercises the real CAS write path (saveFile → saveCas + upsertAndRef), then
- * simulates the future message-delete path by forcing refs to 0.
+ * Manual CAS cleanup derives liveness from non-deleted ordinary messages and active staging.
+ * PENDING assets are never age-reaped and remain available for explicit administrator review.
  */
-describe('Media asset garbage collection (Phase 5)', () => {
+describe('Media asset garbage collection', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let upload: UploadService;
+  let assets: MediaAssetService;
   let gc: MediaAssetGcService;
 
   beforeAll(async () => {
@@ -44,6 +45,7 @@ describe('Media asset garbage collection (Phase 5)', () => {
     await app.listen(0);
     database = app.get(DatabaseService);
     upload = app.get(UploadService);
+    assets = app.get(MediaAssetService);
     gc = app.get(MediaAssetGcService);
     await database.db.execute(
       sql`TRUNCATE TABLE "MediaAsset" RESTART IDENTITY`,
@@ -64,36 +66,42 @@ describe('Media asset garbage collection (Phase 5)', () => {
       Buffer.from(content),
     );
     const digest = url
-      .slice('/uploads/shards/'.length)
+      .slice('/uploads/cas/'.length)
       .split('/')
       .pop()!
       .replace(/\.bin$/, '');
-    const absPath = join(upload.uploadDir, url.slice('/uploads/'.length));
+    const absPath = join(upload.casDir, url.slice('/uploads/cas/'.length));
     return { digest, absPath };
   }
 
-  it('reaps a refs=0 asset — row deleted AND shard file unlinked', async () => {
+  it('reaps a READY asset unused by messages or staging', async () => {
     const { digest, absPath } = await seedAsset('gc-orphan');
     expect(existsSync(absPath)).toBe(true); // file landed on disk
-    // Simulate the future message-delete path: refs → 0 (no real delete endpoint exists yet).
-    await database.db
-      .update(mediaAsset)
-      .set({ refs: 0 })
-      .where(eq(mediaAsset.digest, digest));
-
     const result = await gc.gcOrphanedAssets();
 
     expect(result.reapedRows).toBeGreaterThanOrEqual(1);
     expect(existsSync(absPath)).toBe(false); // shard file gone
-    expect(
-      await database.db.query.mediaAsset.findFirst({
-        where: eq(mediaAsset.digest, digest),
-      }),
-    ).toBeUndefined(); // row gone
+    const tombstone = await database.db.query.mediaAsset.findFirst({
+      where: eq(mediaAsset.digest, digest),
+    });
+    expect(tombstone?.status).toBe('DELETED');
   });
 
-  it('keeps a refs>0 asset — row AND file untouched', async () => {
-    const { digest, absPath } = await seedAsset('gc-live'); // refs=1 from upsertAndRef
+  it('keeps an asset protected by active staging', async () => {
+    const { digest, absPath } = await seedAsset('gc-live');
+    const { threadId, userId } = await seedThreadAndUser();
+    const [stage] = await database.db
+      .insert(pendingMedia)
+      .values({
+        threadId,
+        creatorId: userId,
+        contentType: 'FILE',
+        content: '{}',
+        digest,
+        clientMessageId: randomUUID(),
+        updatedAt: new Date(),
+      })
+      .returning();
     expect(existsSync(absPath)).toBe(true);
 
     const result = await gc.gcOrphanedAssets();
@@ -104,13 +112,157 @@ describe('Media asset garbage collection (Phase 5)', () => {
       where: eq(mediaAsset.digest, digest),
     });
     expect(row).not.toBeNull();
-    expect(row?.refs).toBe(1);
+    expect(row?.status).toBe('READY');
     // Cleanup so repeated runs / forks stay deterministic (the file is live, so GC won't take it).
     await database.db
       .delete(mediaAsset)
       .where(eq(mediaAsset.digest, digest))
       .catch(() => {});
     await unlink(absPath).catch(() => {});
+    await database.db.delete(pendingMedia).where(eq(pendingMedia.id, stage.id));
+    await database.db
+      .delete(messageThread)
+      .where(eq(messageThread.id, threadId))
+      .catch(() => {});
+    await database.db
+      .delete(user)
+      .where(eq(user.id, userId))
+      .catch(() => {});
+  });
+
+  it('revives a DELETED tombstone when the same bytes are uploaded again', async () => {
+    const content = 'gc-reupload';
+    const first = await seedAsset(content);
+    await gc.gcOrphanedAssets();
+    expect(existsSync(first.absPath)).toBe(false);
+
+    const second = await seedAsset(content);
+    expect(second.digest).toBe(first.digest);
+    expect(existsSync(second.absPath)).toBe(true);
+    expect(
+      await database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, first.digest),
+      }),
+    ).toMatchObject({ status: 'READY' });
+  });
+
+  it('skips both fresh and stale PENDING assets for administrator review', async () => {
+    const freshDigest = 'a'.repeat(64);
+    const staleDigest = 'b'.repeat(64);
+    await database.db.insert(mediaAsset).values([
+      {
+        digest: freshDigest,
+        bytes: 1n,
+        status: 'PENDING',
+      },
+      {
+        digest: staleDigest,
+        bytes: 1n,
+        status: 'PENDING',
+        createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+        stateChangedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      },
+    ]);
+
+    await gc.gcOrphanedAssets();
+
+    expect(
+      await database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, freshDigest),
+      }),
+    ).toBeDefined();
+    expect(
+      await database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, staleDigest),
+      }),
+    ).toMatchObject({ status: 'PENDING' });
+    await database.db
+      .delete(mediaAsset)
+      .where(eq(mediaAsset.digest, freshDigest));
+  });
+
+  it('renews an old PENDING lease without modifying an existing READY asset', async () => {
+    const pendingDigest = 'c'.repeat(64);
+    const readyDigest = 'd'.repeat(64);
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await database.db.insert(mediaAsset).values([
+      {
+        digest: pendingDigest,
+        bytes: 1n,
+        status: 'PENDING',
+        createdAt: old,
+      },
+      {
+        digest: readyDigest,
+        bytes: 7n,
+        status: 'READY',
+        createdAt: old,
+      },
+    ]);
+
+    await assets.reserve(pendingDigest, 2n);
+    await assets.reserve(readyDigest, 9n);
+
+    const pending = await database.db.query.mediaAsset.findFirst({
+      where: eq(mediaAsset.digest, pendingDigest),
+    });
+    const ready = await database.db.query.mediaAsset.findFirst({
+      where: eq(mediaAsset.digest, readyDigest),
+    });
+    expect(pending?.createdAt.getTime()).toBeGreaterThan(old.getTime());
+    expect(pending?.bytes).toBe(2n);
+    expect(ready?.createdAt).toEqual(old);
+    expect(ready?.bytes).toBe(7n);
+
+    await database.db
+      .delete(mediaAsset)
+      .where(eq(mediaAsset.digest, pendingDigest));
+    await database.db
+      .delete(mediaAsset)
+      .where(eq(mediaAsset.digest, readyDigest));
+  });
+
+  it('fails completion when the PENDING reservation is missing', async () => {
+    await expect(assets.markReady('e'.repeat(64), 1n)).rejects.toThrow(
+      'reservation is missing',
+    );
+  });
+
+  it('lists PENDING assets and allows an administrator to force terminate one', async () => {
+    const digest = 'f'.repeat(64);
+    await assets.reserve(digest, 123n);
+    await expect(gc.listPendingAssets()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ digest, bytes: '123' }),
+      ]),
+    );
+
+    await expect(gc.forceTerminatePending(digest)).resolves.toMatchObject({
+      terminated: true,
+      busy: false,
+    });
+    expect(
+      await database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, digest),
+      }),
+    ).toMatchObject({ status: 'DELETED' });
+  });
+
+  it('serializes maintenance tasks in memory and cooperatively cancels a running task', async () => {
+    const task = gc.startTask('reconcile');
+    expect(() => gc.startTask('gc')).toThrow('already running');
+
+    expect(gc.cancelTask(task.id).status).toBe('cancelling');
+    for (let i = 0; i < 100; i++) {
+      const current = gc.getTask(task.id);
+      if (['cancelled', 'completed', 'failed'].includes(current.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(gc.getTask(task.id)).toMatchObject({
+      id: task.id,
+      kind: 'reconcile',
+      status: 'cancelled',
+    });
   });
 
   it('detects and manually removes an unreachable forward bundle', async () => {
@@ -222,7 +374,7 @@ describe('Media asset garbage collection (Phase 5)', () => {
     return { threadId: thread.id, userId: createdUser.id };
   }
 
-  it('gcStalePending reaps an abandoned staged send (file + asset + stage) when no message committed', async () => {
+  it('gcStalePending removes staging but leaves space reclamation to manual GC', async () => {
     const { digest, absPath } = await seedAsset('stale-pending'); // file on disk + MediaAsset refs=1
     expect(existsSync(absPath)).toBe(true);
     const { threadId, userId } = await seedThreadAndUser();
@@ -248,12 +400,12 @@ describe('Media asset garbage collection (Phase 5)', () => {
     const result = await gc.gcStalePending(60 * 60 * 1000);
 
     expect(result.sweptRows).toBeGreaterThanOrEqual(1);
-    expect(existsSync(absPath)).toBe(false); // orphan file reaped
+    expect(existsSync(absPath)).toBe(true);
     expect(
       await database.db.query.mediaAsset.findFirst({
         where: eq(mediaAsset.digest, digest),
       }),
-    ).toBeUndefined(); // asset row gone
+    ).toMatchObject({ status: 'READY' });
     expect(
       await database.db.query.pendingMedia.findFirst({
         where: eq(pendingMedia.id, stage.id),

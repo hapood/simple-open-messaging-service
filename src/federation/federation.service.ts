@@ -58,6 +58,7 @@ import { InviteService } from '../invite/invite.service.js';
 import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { derivePreview, MessageService } from '../message/message.service.js';
+import { MessageVisibilityService } from '../message/message-visibility.service.js';
 import {
   FederationBufferService,
   type NewMsgMapEntry,
@@ -66,8 +67,9 @@ import {
   extractDigestEntries,
   extractDigests,
 } from '../upload/file-content.js';
+import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
-import { readdir, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   parseTextMessageContent,
@@ -84,11 +86,13 @@ import {
 export class S2sResponseError extends Error {
   readonly status: number;
   readonly code?: number;
-  constructor(message: string, status: number, code?: number) {
+  readonly data?: unknown;
+  constructor(message: string, status: number, code?: number, data?: unknown) {
     super(message);
     this.name = 'S2sResponseError';
     this.status = status;
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -282,6 +286,7 @@ export class FederationService implements OnModuleDestroy {
     private readonly quota: QuotaService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
+    private readonly messageVisibility: MessageVisibilityService,
     // Inbound S2S call frames are bridged to CallsService via emitAsync('call.frame.inbound') rather
     // than a direct injection — FederationService must NOT inject CallsService (that would cycle: the
     // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
@@ -753,6 +758,7 @@ export class FederationService implements OnModuleDestroy {
       `S2S POST to ${peerDomain} rejected: HTTP ${status}`,
       status,
       typeof errBody?.code === 'number' ? errBody.code : undefined,
+      errBody?.data,
     );
   }
 
@@ -800,6 +806,7 @@ export class FederationService implements OnModuleDestroy {
         `S2S GET ${path} from ${peerDomain} rejected: HTTP ${status}`,
         status,
         typeof body?.code === 'number' ? body.code : undefined,
+        body?.data,
       );
     }
     await this.markContactSuccess(peerDomain);
@@ -2872,28 +2879,30 @@ export class FederationService implements OnModuleDestroy {
   private async resolveCasFile(
     digest: string,
   ): Promise<{ absPath: string; bytes: number }> {
-    // Resolve data/uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
-    const shardDir = join(
+    const asset = await this.database.db.query.mediaAsset.findFirst({
+      where: and(
+        eq(tables.mediaAsset.digest, digest),
+        eq(tables.mediaAsset.status, 'READY'),
+      ),
+      columns: { bytes: true },
+    });
+    if (!asset) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
+    }
+    const absPath = join(
       process.cwd(),
       'data',
-      'uploads',
-      'shards',
+      'cas',
       digest.slice(0, 2),
       digest.slice(2, 4),
+      digest,
     );
-    let names: string[];
     try {
-      names = await readdir(shardDir);
+      const s = await stat(absPath);
+      return { absPath, bytes: s.size };
     } catch {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
     }
-    const name = names.find((f) => f.startsWith(`${digest}.`));
-    if (!name) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
-    }
-    const absPath = join(shardDir, name);
-    const s = await stat(absPath);
-    return { absPath, bytes: s.size };
   }
 
   /** Shared authz prelude for every outbound S2S read (GET /messages pull + GET /get_file): proves
@@ -3508,6 +3517,7 @@ export class FederationService implements OnModuleDestroy {
           .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
           .where(eq(tables.messageThread.id, threadId))
           .returning({ curSeq: tables.messageThread.curSeq });
+        storedContent = contextualizeCasUrls(storedContent, threadId, seq);
         if (incomingText?.quote && m.quoteTarget) {
           const localQuoteSeq = await this.resolveLocalQuoteSeq(
             tx,
@@ -3542,7 +3552,17 @@ export class FederationService implements OnModuleDestroy {
         // Quota: tick the peer's daily message budget ON THE SAME tx. Over-limit throws inside the tx →
         // rolls back the seq increment + this message too (no seq gap, no count burn); caught below as a
         // skip. `fetchedFromDomain` is always a peer (we pull FROM peers, never ourselves).
-        await this.quota.tick(fetchedFromDomain, 'messages', tx);
+        await this.quota.tick(
+          fetchedFromDomain,
+          'messages',
+          tx,
+          forwardClosure
+            ? forwardClosure.bundles.reduce(
+                (sum, bundle) => sum + bundle.manifest.messages.length,
+                0,
+              )
+            : 1,
+        );
         return msg;
       })
       .catch((e: unknown) => {
@@ -3665,22 +3685,16 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<void> {
     // Derive from the validated per-bundle manifests; the top-level `assets` array is only a wire
     // convenience summary and is never an independent authorization/download authority.
-    const referenceCounts = new Map<string, number>();
-    for (const bundle of closure.bundles) {
-      for (const asset of bundle.assets) {
-        referenceCounts.set(
-          asset.digest,
-          (referenceCounts.get(asset.digest) ?? 0) + 1,
-        );
-      }
-    }
     for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
       try {
         const have = await this.database.db.query.mediaAsset.findFirst({
-          where: eq(tables.mediaAsset.digest, asset.digest),
-          columns: { refs: true },
+          where: and(
+            eq(tables.mediaAsset.digest, asset.digest),
+            eq(tables.mediaAsset.status, 'READY'),
+          ),
+          columns: { digest: true },
         });
-        if (have && have.refs > 0) continue;
+        if (have) continue;
         const category: 'images' | 'largeFiles' =
           asset.kind === 'avatar' ||
           asset.kind === 'image' ||
@@ -3689,24 +3703,19 @@ export class FederationService implements OnModuleDestroy {
             : 'largeFiles';
         await this.upload.saveCasFromStream(
           asset.extension,
-          this.fetchMediaChunks(
-            peerDomain,
-            asset.digest,
-            '',
-            '',
-            '',
-            category,
-            remoteRootBundleId,
-          ),
+          (offset) =>
+            this.fetchMediaChunks(
+              peerDomain,
+              asset.digest,
+              '',
+              '',
+              '',
+              category,
+              remoteRootBundleId,
+              offset,
+            ),
           asset.digest,
         );
-        const remainingRefs = (referenceCounts.get(asset.digest) ?? 1) - 1;
-        if (remainingRefs > 0) {
-          await this.database.db
-            .update(tables.mediaAsset)
-            .set({ refs: sql`${tables.mediaAsset.refs} + ${remainingRefs}` })
-            .where(eq(tables.mediaAsset.digest, asset.digest));
-        }
       } catch {
         // Bundle JSON remains usable and the client can retry asset localization later.
       }
@@ -3727,7 +3736,7 @@ export class FederationService implements OnModuleDestroy {
    * Receiver-side media localize (§3.3 / §4.5): for each CAS digest referenced by a pulled message,
    * fetch the bytes from the peer's /get_file and store them through the SAME CAS pipeline as a local
    * upload (sha256 → shard path → MediaAsset ref++), then write the MediaMessage authz row so the local
-   * /uploads/shards/* gate admits the recipient. The content URL is already server-relative, so once the
+   * /uploads/cas/* gate admits the recipient. The content URL is already server-relative, so once the
    * file is local it serves same-origin with no rewrite. Integrity-checked (the re-hash must match the
    * advertised digest). Best-effort per file; a failure leaves the message with the peer's cross-origin
    * URL (inert) for a later retry.
@@ -3756,24 +3765,30 @@ export class FederationService implements OnModuleDestroy {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
         // the authz row exists and skip the network fetch.
         const have = await this.database.db.query.mediaAsset.findFirst({
-          where: eq(tables.mediaAsset.digest, digest),
-          columns: { refs: true },
+          where: and(
+            eq(tables.mediaAsset.digest, digest),
+            eq(tables.mediaAsset.status, 'READY'),
+          ),
+          columns: { digest: true },
         });
-        if (!(have && have.refs > 0)) {
+        if (!have) {
           // Stream the asset from the peer in resumable Range chunks → local CAS (no whole-file
           // buffer, no whole-transfer timeout). saveCasFromStream verifies the digest === advertised
           // and throws on mismatch (corrupt/tampered/truncated) — caught below, leaving the message
           // inert for a later retry.
           await this.upload.saveCasFromStream(
             ext,
-            this.fetchMediaChunks(
-              peerDomain,
-              digest,
-              fromAccount,
-              fromDomain,
-              toAccount,
-              category,
-            ),
+            (offset) =>
+              this.fetchMediaChunks(
+                peerDomain,
+                digest,
+                fromAccount,
+                fromDomain,
+                toAccount,
+                category,
+                undefined,
+                offset,
+              ),
             digest,
           );
         }
@@ -3805,7 +3820,7 @@ export class FederationService implements OnModuleDestroy {
   }
 
   /** Whether every CAS digest referenced by `content` is fully local: each digest has a MediaMessage
-   *  authz row for THIS message (same-origin fetch admitted) AND a MediaAsset with refs>0 (bytes on
+   *  authz row for THIS message (same-origin fetch admitted) AND a READY MediaAsset (bytes on
    *  disk). A non-media message (no digest) is trivially ready. Drives the localize
    *  outcome report + the MEDIA_STATUS signal, and is reused by the manual relocalize endpoint. */
   private async isMessageMediaReady(
@@ -3823,10 +3838,13 @@ export class FederationService implements OnModuleDestroy {
     });
     if (rows.length !== digests.length) return false; // a digest has no authz row yet
     const assets = await this.database.db.query.mediaAsset.findMany({
-      where: inArray(tables.mediaAsset.digest, digests),
-      columns: { digest: true, refs: true },
+      where: and(
+        inArray(tables.mediaAsset.digest, digests),
+        eq(tables.mediaAsset.status, 'READY'),
+      ),
+      columns: { digest: true },
     });
-    return assets.length === digests.length && assets.every((a) => a.refs > 0);
+    return assets.length === digests.length;
   }
 
   /**
@@ -3839,22 +3857,23 @@ export class FederationService implements OnModuleDestroy {
    * missing message/creator → NOT_FOUND.
    */
   async localizeMediaForMessage(
+    userId: number,
     threadId: number,
     seq: number,
   ): Promise<'ready' | 'failed'> {
-    // Fetch WITH id (localizeMedia + isMessageMediaReady need the internal BigInt id); the id never
-    // leaves this method — only a status string is returned.
-    const msg = await this.database.db.query.message.findFirst({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.seq, seq),
-      ),
-    });
+    const msg = await this.messageVisibility.findVisibleByThreadSeq(
+      userId,
+      threadId,
+      seq,
+    );
     if (!msg) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         `no such message in thread [${threadId}]`,
       );
+    }
+    if (msg.contentType === ContentType.FORWARD) {
+      return this.relocalizeForwardMessage(msg);
     }
     if (!this.isMediaContentType(msg.contentType)) return 'ready';
     const creator = await this.database.db.query.user.findFirst({
@@ -3883,6 +3902,66 @@ export class FederationService implements OnModuleDestroy {
     return (await this.isMessageMediaReady(msg.id, msg.content))
       ? 'ready'
       : 'failed';
+  }
+
+  private async relocalizeForwardMessage(
+    msg: Message,
+  ): Promise<'ready' | 'failed'> {
+    const binding = await this.database.db.query.forwardMessage.findFirst({
+      where: eq(tables.forwardMessage.messageId, msg.id),
+      columns: { bundleId: true },
+    });
+    if (!binding) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'forward bundle binding not found',
+      );
+    }
+    const root = await this.database.db.query.forwardBundle.findFirst({
+      where: eq(tables.forwardBundle.id, binding.bundleId),
+      columns: { sourceDomain: true, sourceBundleId: true },
+    });
+    if (!root) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'bundle not found');
+    }
+    const closure = await this.forwardBundles.buildClosure(binding.bundleId);
+    if (root.sourceDomain && root.sourceBundleId) {
+      // JSONB import is already committed. A retry creates a fresh best-effort download run from the
+      // immutable bundle metadata; it is deliberately not coupled to the import transaction.
+      await this.localizeForwardAssets(
+        closure,
+        root.sourceDomain,
+        root.sourceBundleId,
+      );
+    }
+    const digests = [
+      ...new Set(
+        this.forwardBundles
+          .assetsFromClosure(closure)
+          .map((asset) => asset.digest),
+      ),
+    ];
+    const ready =
+      digests.length === 0 ||
+      (
+        await this.database.db.query.mediaAsset.findMany({
+          where: and(
+            inArray(tables.mediaAsset.digest, digests),
+            eq(tables.mediaAsset.status, 'READY'),
+          ),
+          columns: { digest: true },
+        })
+      ).length === digests.length;
+    const recipients = await this.localActiveMemberIds(msg.threadId);
+    for (const uid of recipients) {
+      this.sse.onMediaStatus(uid, {
+        threadId: msg.threadId,
+        seq: msg.seq,
+        status: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
+        v: Date.now(),
+      });
+    }
+    return ready ? 'ready' : 'failed';
   }
 
   /**
@@ -3952,6 +4031,7 @@ export class FederationService implements OnModuleDestroy {
     toAccount: string,
     category: 'images' | 'largeFiles',
     forwardBundleId?: string,
+    startOffset = 0,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
@@ -3959,7 +4039,7 @@ export class FederationService implements OnModuleDestroy {
       ? `/api/v1/s2s/get_file?digest=${digest}&bundleId=${encodeURIComponent(forwardBundleId)}`
       : `/api/v1/s2s/get_file?digest=${digest}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}`;
     const url = new URL(`${base}${path}`);
-    let offset = 0;
+    let offset = startOffset;
     let total: number | null = null;
     let markedAlive = false;
     let quotaChecked = false;
@@ -4088,11 +4168,24 @@ export class FederationService implements OnModuleDestroy {
           `S2S get_file 206 without parseable Content-Range: ${cr}`,
         );
       }
+      const returnedStart = Number(m[1]);
+      const returnedEnd = Number(m[2]);
+      const returnedTotal = Number(m[3]);
+      if (
+        returnedStart !== start ||
+        returnedEnd < returnedStart ||
+        returnedEnd > end ||
+        returnedEnd >= returnedTotal
+      ) {
+        throw new Error(
+          `S2S get_file returned unexpected Content-Range: ${cr} for bytes=${start}-${end}`,
+        );
+      }
       return {
         res,
-        start: Number(m[1]),
-        end: Number(m[2]),
-        total: Number(m[3]),
+        start: returnedStart,
+        end: returnedEnd,
+        total: returnedTotal,
         fallback200: false,
       };
     }

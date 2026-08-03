@@ -7,6 +7,7 @@ import {
   digestManifest,
   FORWARD_MAX_WIRE_JSON_BYTES,
   ForwardBundleService,
+  localizeForwardMediaContent,
   type ForwardManifest,
   type ForwardWireClosure,
 } from './forward-bundle.service.js';
@@ -87,6 +88,65 @@ function databaseFake(childDepth: number, tx?: unknown) {
         message: {
           findFirst: vi.fn().mockResolvedValue(sourceQueryRow(childDepth)),
         },
+        mediaAsset: {
+          findFirst: vi.fn().mockResolvedValue({
+            digest: 'a'.repeat(64),
+            bytes: 10n,
+            status: 'READY',
+            createdAt: new Date(),
+          }),
+        },
+        mediaMessage: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+        forwardBundle: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: '01childbundle00000000000000',
+            depth: childDepth,
+            manifestDigest: 'a'.repeat(64),
+            manifest: {
+              schemaVersion: 1,
+              bundleId: '01childbundle00000000000000',
+              depth: childDepth,
+              children: [],
+              messages: [
+                {
+                  sender: { displayName: 'A', account: 'a', domain: 'local' },
+                  contentType: 'PURE_TEXT',
+                  content: JSON.stringify({ text: 'nested' }),
+                  sentAt: 1,
+                },
+              ],
+            },
+            forwardBundleDependencies_parentBundleId: [],
+          }),
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: '01childbundle00000000000000',
+              depth: childDepth,
+              manifestDigest: 'a'.repeat(64),
+              manifest: {
+                schemaVersion: 1,
+                bundleId: '01childbundle00000000000000',
+                depth: childDepth,
+                children: [],
+                messages: [
+                  {
+                    sender: {
+                      displayName: 'A',
+                      account: 'a',
+                      domain: 'local',
+                    },
+                    contentType: 'PURE_TEXT',
+                    content: JSON.stringify({ text: 'nested' }),
+                    sentAt: 1,
+                  },
+                ],
+              },
+              forwardBundleAssets: [],
+            },
+          ]),
+        },
       },
       transaction: vi.fn(async (work: (client: unknown) => Promise<void>) =>
         work(tx),
@@ -132,10 +192,113 @@ function forwardService(database: unknown) {
     database as never,
     messageServiceFake as never,
     userBlockServiceFake as never,
+    {
+      findVisibleByThreadSeq: vi.fn().mockResolvedValue(null),
+    } as never,
   );
 }
 
 describe('ForwardBundleService', () => {
+  it('directly forwards text as the caller without retaining its quote', async () => {
+    const database = databaseFake(0);
+    const service = new ForwardBundleService(
+      database as never,
+      messageServiceFake as never,
+      userBlockServiceFake as never,
+      {
+        findVisibleByThreadSeq: vi.fn().mockResolvedValue({
+          id: 7n,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: 'reply', quote: { seq: 3 } }),
+        }),
+      } as never,
+    );
+
+    await expect(
+      service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
+    ).resolves.toEqual({
+      content: JSON.stringify({ text: 'reply' }),
+      contentType: ContentType.PURE_TEXT,
+    });
+  });
+
+  it('rejects direct media forwarding when its CAS digest is not bound to the visible source', async () => {
+    const digest = 'a'.repeat(64);
+    const database = databaseFake(0);
+    const service = new ForwardBundleService(
+      database as never,
+      messageServiceFake as never,
+      userBlockServiceFake as never,
+      {
+        findVisibleByThreadSeq: vi.fn().mockResolvedValue({
+          id: 7n,
+          contentType: ContentType.IMAGE,
+          content: JSON.stringify({
+            url: `/uploads/cas/aa/aa/${digest}?threadId=4&seq=7`,
+            w: 10,
+            h: 10,
+          }),
+        }),
+      } as never,
+    );
+
+    await expect(
+      service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
+    ).rejects.toMatchObject<Partial<BusinessException>>({
+      bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
+    });
+  });
+
+  it('rebuilds a federated absolute media URL as a local CAS path', () => {
+    const digest = 'a'.repeat(64);
+    const content = localizeForwardMediaContent(
+      ContentType.IMAGE,
+      JSON.stringify({
+        url: `https://evil.test/uploads/cas/aa/aa/${digest}`,
+        w: 1,
+        h: 1,
+      }),
+      [
+        {
+          digest,
+          kind: 'image',
+          extension: 'webp',
+          bytes: 10,
+        },
+      ],
+    );
+
+    expect(JSON.parse(content)).toMatchObject({
+      url: `/uploads/cas/aa/aa/${digest}`,
+      w: 1,
+      h: 1,
+    });
+  });
+
+  it('snapshots attachment metadata without requiring the CAS blob to exist', async () => {
+    const digest = 'a'.repeat(64);
+    const database = databaseFake(0) as ReturnType<typeof databaseFake>;
+    database.db.query.mediaAsset.findFirst.mockResolvedValueOnce({
+      digest,
+      bytes: 10n,
+      status: 'PENDING',
+      createdAt: new Date(),
+    });
+    const service = forwardService(database);
+
+    await expect(
+      service['assetsFromContent'](
+        ContentType.FILE,
+        JSON.stringify({
+          url: `/uploads/cas/aa/aa/${digest}`,
+          name: 'quarterly-report-with-a-long-name.pdf',
+          size: 10,
+          mimeType: 'application/pdf',
+        }),
+      ),
+    ).resolves.toMatchObject([{ digest, bytes: 10 }]);
+  });
+
   it('assigns every message an ordered id and links the reply to its selected target', async () => {
     const target = textQueryRow(
       4,

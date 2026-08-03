@@ -1,7 +1,23 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsArray,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { type AuthenticationResponseJSON, type RegistrationResponseJSON } from '@simplewebauthn/server';
+import {
+  type AuthenticationResponseJSON,
+  type RegistrationResponseJSON,
+} from '@simplewebauthn/server';
 import { AdminRole } from '../database/enums.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 import { IsDisplayName } from '../common/validators.js';
@@ -22,18 +38,27 @@ export class AdminLoginDto {
 /** Admin 2FA login verify input. Exactly one of `code` (6-digit TOTP) or `backupCode` must be present —
  *  `challengeToken` is the value POST admin/login returned in its twoFactorRequired response. */
 export class AdminLoginVerifyDto {
-  @ApiProperty({ description: 'Challenge token from POST admin/login (twoFactorRequired response)' })
+  @ApiProperty({
+    description:
+      'Challenge token from POST admin/login (twoFactorRequired response)',
+  })
   @IsString()
   @IsNotEmpty()
   challengeToken!: string;
 
-  @ApiPropertyOptional({ example: '123456', description: '6-digit TOTP from the authenticator app' })
+  @ApiPropertyOptional({
+    example: '123456',
+    description: '6-digit TOTP from the authenticator app',
+  })
   @IsOptional()
   @IsString()
   @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
   code?: string;
 
-  @ApiPropertyOptional({ example: 'ABCD-EFGH', description: 'A single-use backup (recovery) code' })
+  @ApiPropertyOptional({
+    example: 'ABCD-EFGH',
+    description: 'A single-use backup (recovery) code',
+  })
   @IsOptional()
   @IsString()
   backupCode?: string;
@@ -46,7 +71,10 @@ export class TwoFactorSetupVerifyDto {
   @IsNotEmpty()
   pendingToken!: string;
 
-  @ApiProperty({ example: '123456', description: '6-digit TOTP shown by the authenticator after scanning' })
+  @ApiProperty({
+    example: '123456',
+    description: '6-digit TOTP shown by the authenticator after scanning',
+  })
   @IsString()
   @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
   code!: string;
@@ -65,7 +93,10 @@ export class TwoFactorDisableDto {
   @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
   code?: string;
 
-  @ApiPropertyOptional({ example: 'ABCD-EFGH', description: 'A single-use backup code' })
+  @ApiPropertyOptional({
+    example: 'ABCD-EFGH',
+    description: 'A single-use backup code',
+  })
   @IsOptional()
   @IsString()
   backupCode?: string;
@@ -79,7 +110,10 @@ export class TwoFactorRegenerateDto {
   @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
   code?: string;
 
-  @ApiPropertyOptional({ example: 'ABCD-EFGH', description: 'A single-use backup code' })
+  @ApiPropertyOptional({
+    example: 'ABCD-EFGH',
+    description: 'A single-use backup code',
+  })
   @IsOptional()
   @IsString()
   backupCode?: string;
@@ -87,19 +121,31 @@ export class TwoFactorRegenerateDto {
 
 /** User list input (pagination + search). */
 export class AdminListUsersDto {
-  @ApiProperty({ required: false, example: 0, description: 'Number of records to skip (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Number of records to skip (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   skip?: number;
 
-  @ApiProperty({ required: false, example: 20, description: 'Number of records to take (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Number of records to take (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   take?: number;
 
-  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search by account/display name (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'alice',
+    description: 'Fuzzy search by account/display name (optional)',
+  })
   @IsOptional()
   @IsString()
   search?: string;
@@ -112,15 +158,20 @@ export class AdminListUsersDto {
 export class AdminCreateUserDto {
   @ApiProperty({
     example: 'alice',
-    description: 'Login unique name: 3-31 chars, letters + digits + dots, start with a letter, case-insensitive',
+    description:
+      'Login unique name: 3-31 chars, letters + digits + dots, start with a letter, case-insensitive',
   })
   @Transform(({ value }) => normalizeAccount(value))
   @Matches(USER_ACCOUNT_RE, {
-    message: 'account must be 3-31 chars: letters + digits + dots, start with a letter',
+    message:
+      'account must be 3-31 chars: letters + digits + dots, start with a letter',
   })
   account!: string;
 
-  @ApiProperty({ example: 'Alice', description: 'Display name (1-30 chars; unicode/emoji allowed)' })
+  @ApiProperty({
+    example: 'Alice',
+    description: 'Display name (1-30 chars; unicode/emoji allowed)',
+  })
   @IsDisplayName()
   @IsNotEmpty()
   name!: string;
@@ -140,12 +191,20 @@ export class AdminCreateUserDto {
 
 /** Unban input (IP and/or account; at least one must be provided). */
 export class AdminUnbanDto {
-  @ApiProperty({ required: false, example: '1.2.3.4', description: 'Banned IP (optional)' })
+  @ApiProperty({
+    required: false,
+    example: '1.2.3.4',
+    description: 'Banned IP (optional)',
+  })
   @IsString()
   @IsOptional()
   ip?: string;
 
-  @ApiProperty({ required: false, example: 'alice', description: 'Banned account account (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'alice',
+    description: 'Banned account account (optional)',
+  })
   @IsString()
   @IsOptional()
   account?: string;
@@ -153,19 +212,31 @@ export class AdminUnbanDto {
 
 /** Push-token list input (pagination + search over account/token/deviceId). */
 export class AdminListPushTokensDto {
-  @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Records to skip (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   skip?: number;
 
-  @ApiProperty({ required: false, example: 20, description: 'Records to take (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Records to take (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   take?: number;
 
-  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search account/token/deviceId (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'alice',
+    description: 'Fuzzy search account/token/deviceId (optional)',
+  })
   @IsOptional()
   @IsString()
   search?: string;
@@ -183,7 +254,11 @@ export class AdminPushTestDto {
   @IsNotEmpty()
   title!: string;
 
-  @ApiProperty({ required: false, example: 'sent from admin console', description: 'Notification body (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'sent from admin console',
+    description: 'Notification body (optional)',
+  })
   @IsOptional()
   @IsString()
   body?: string;
@@ -191,25 +266,41 @@ export class AdminPushTestDto {
 
 /** System-wide active session list input (pagination + filter by userId/ip). */
 export class AdminListSessionsDto {
-  @ApiProperty({ required: false, example: 0, description: 'Number of records to skip (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Number of records to skip (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   skip?: number;
 
-  @ApiProperty({ required: false, example: 20, description: 'Number of records to take (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Number of records to take (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   take?: number;
 
-  @ApiProperty({ required: false, example: 1, description: 'Filter by user id (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 1,
+    description: 'Filter by user id (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   userId?: number;
 
-  @ApiProperty({ required: false, example: '1.2.3.4', description: 'Filter by IP (optional)' })
+  @ApiProperty({
+    required: false,
+    example: '1.2.3.4',
+    description: 'Filter by IP (optional)',
+  })
   @IsOptional()
   @IsString()
   ip?: string;
@@ -218,19 +309,31 @@ export class AdminListSessionsDto {
 /** Pagination + filter for the federated-peer lifecycle list. `status` filters by trustLevel
  *  (pending | trusted | demoted | blocked); `search` is a fuzzy domain match. */
 export class AdminListFederationPeersDto {
-  @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Records to skip (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   skip?: number;
 
-  @ApiProperty({ required: false, example: 20, description: 'Records to take (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Records to take (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   take?: number;
 
-  @ApiProperty({ required: false, example: 'bbb', description: 'Fuzzy search by peer domain (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'bbb',
+    description: 'Fuzzy search by peer domain (optional)',
+  })
   @IsOptional()
   @IsString()
   search?: string;
@@ -238,7 +341,8 @@ export class AdminListFederationPeersDto {
   @ApiProperty({
     required: false,
     example: 'trusted',
-    description: 'Filter by trust level: pending | trusted | demoted | blocked (optional)',
+    description:
+      'Filter by trust level: pending | trusted | demoted | blocked (optional)',
   })
   @IsOptional()
   @IsString()
@@ -247,7 +351,11 @@ export class AdminListFederationPeersDto {
 
 /** A peer's lifecycle event timeline query (how many recent events to return). */
 export class AdminFederationPeerEventsDto {
-  @ApiProperty({ required: false, example: 100, description: 'Max events to return (optional, default 100)' })
+  @ApiProperty({
+    required: false,
+    example: 100,
+    description: 'Max events to return (optional, default 100)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
@@ -256,47 +364,74 @@ export class AdminFederationPeerEventsDto {
 
 /** Optional note attached to an admin block (recorded on the `blocked` lifecycle event). */
 export class AdminFederationBlockDto {
-  @ApiProperty({ required: false, example: 'spam source', description: 'Optional block note (≤255)' })
+  @ApiProperty({
+    required: false,
+    example: 'spam source',
+    description: 'Optional block note (≤255)',
+  })
   @IsOptional()
   @IsString()
   note?: string;
 }
 
-/** Per-node daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
- *  field means "use the global default". Applies to the local node (domain == SOMS_DOMAIN, stored in
- *  SystemSetting 'quota:local') or a federated peer (stored on FederatedPeer). See QuotaService.setLimits. */
+/** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
+ *  field means "use the global default". Stored on FederatedPeer. See QuotaService.setLimits. */
 export class AdminSetQuotaDto {
-  @ApiProperty({ required: false, example: 5000, description: 'Messages/day (null = default)' })
+  @ApiProperty({
+    required: false,
+    example: 5000,
+    description: 'Messages/day (null = default)',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
   dailyMsgLimit?: number | null;
 
-  @ApiProperty({ required: false, example: 500, description: 'Image media items/day (null = default)' })
+  @ApiProperty({
+    required: false,
+    example: 500,
+    description: 'Image media items/day (null = default)',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
   dailyImageLimit?: number | null;
 
-  @ApiProperty({ required: false, example: 50, description: 'Video/large-file media items/day (null = default)' })
+  @ApiProperty({
+    required: false,
+    example: 50,
+    description: 'Video/large-file media items/day (null = default)',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
   dailyLargeFileLimit?: number | null;
 
-  @ApiProperty({ required: false, example: 100, description: 'Inbound friend ops/day — anti-spam (null = default)' })
+  @ApiProperty({
+    required: false,
+    example: 100,
+    description: 'Inbound friend ops/day — anti-spam (null = default)',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
   dailyRequestLimit?: number | null;
 
-  @ApiProperty({ required: false, example: 52428800, description: 'Single-image byte cap (null = default)' })
+  @ApiProperty({
+    required: false,
+    example: 52428800,
+    description: 'Single-image byte cap (null = default)',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
   maxImageBytes?: number | null;
 
-  @ApiProperty({ required: false, example: 524288000, description: 'Single-large-file byte cap (null = default)' })
+  @ApiProperty({
+    required: false,
+    example: 524288000,
+    description: 'Single-large-file byte cap (null = default)',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
@@ -310,7 +445,8 @@ export class AdminFederationSelfCheckDto {
   @ApiProperty({
     required: false,
     example: 'ntp.aliyun.com',
-    description: 'NTP server used to measure clock skew (optional, default ntp.aliyun.com)',
+    description:
+      'NTP server used to measure clock skew (optional, default ntp.aliyun.com)',
   })
   @IsOptional()
   @IsString()
@@ -344,7 +480,9 @@ export class AdminAuditQueryDto {
   @Max(200)
   take?: number;
 
-  @ApiPropertyOptional({ description: 'Substring over action (e.g. user., federation., session.)' })
+  @ApiPropertyOptional({
+    description: 'Substring over action (e.g. user., federation., session.)',
+  })
   @IsOptional()
   @IsString()
   action?: string;
@@ -378,7 +516,9 @@ export class AdminManageListDto {
   @Max(200)
   take?: number;
 
-  @ApiPropertyOptional({ description: 'Fuzzy search by linked user account (optional)' })
+  @ApiPropertyOptional({
+    description: 'Fuzzy search by linked user account (optional)',
+  })
   @IsOptional()
   @IsString()
   search?: string;
@@ -406,7 +546,11 @@ export class AdminSetRoleDto {
 /** Apply one action to many users at once. Each affected user is processed through the same path as
  *  the single-user endpoint (so disable still force-logs-out, etc.). */
 export class AdminUserBatchDto {
-  @ApiProperty({ type: [Number], example: [3, 7], description: 'User ids to act on' })
+  @ApiProperty({
+    type: [Number],
+    example: [3, 7],
+    description: 'User ids to act on',
+  })
   @IsArray()
   @IsInt({ each: true })
   ids!: number[];
@@ -444,12 +588,18 @@ export class AdminGroupsListDto {
 /** Begin passkey enrollment: the current password (re-auth) + an optional label. The re-auth closes the
  *  "stolen ≤15m access token enrolls an attacker passkey" gap without logging out every device. */
 export class WebAuthnRegBeginDto {
-  @ApiProperty({ example: 'P@ssw0rd', description: 'Current password (re-auth required to enroll a passkey)' })
+  @ApiProperty({
+    example: 'P@ssw0rd',
+    description: 'Current password (re-auth required to enroll a passkey)',
+  })
   @IsString()
   @IsNotEmpty()
   password!: string;
 
-  @ApiPropertyOptional({ example: 'MacBook Touch ID', description: 'Optional label for this passkey (≤64)' })
+  @ApiPropertyOptional({
+    example: 'MacBook Touch ID',
+    description: 'Optional label for this passkey (≤64)',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(64)
@@ -458,19 +608,27 @@ export class WebAuthnRegBeginDto {
 
 /** Confirm enrollment: the pending token + the browser's PublicKeyCredential creation response. */
 export class WebAuthnRegFinishDto {
-  @ApiProperty({ description: 'Pending token from POST admin/webauthn/registration/begin' })
+  @ApiProperty({
+    description: 'Pending token from POST admin/webauthn/registration/begin',
+  })
   @IsString()
   @IsNotEmpty()
   pendingToken!: string;
 
-  @ApiProperty({ description: 'RegistrationResponseJSON returned by startRegistration (browser)' })
+  @ApiProperty({
+    description:
+      'RegistrationResponseJSON returned by startRegistration (browser)',
+  })
   @IsObject()
   registrationResponse!: RegistrationResponseJSON;
 }
 
 /** Begin a passkey login: the challenge token from POST admin/login (the twoFactorRequired response). */
 export class WebAuthnLoginBeginDto {
-  @ApiProperty({ description: 'Challenge token from POST admin/login (twoFactorRequired response)' })
+  @ApiProperty({
+    description:
+      'Challenge token from POST admin/login (twoFactorRequired response)',
+  })
   @IsString()
   @IsNotEmpty()
   challengeToken!: string;
@@ -483,12 +641,17 @@ export class WebAuthnLoginFinishDto {
   @IsNotEmpty()
   challengeToken!: string;
 
-  @ApiProperty({ description: 'Pending token from POST admin/webauthn/login/begin' })
+  @ApiProperty({
+    description: 'Pending token from POST admin/webauthn/login/begin',
+  })
   @IsString()
   @IsNotEmpty()
   pendingToken!: string;
 
-  @ApiProperty({ description: 'AuthenticationResponseJSON returned by startAuthentication (browser)' })
+  @ApiProperty({
+    description:
+      'AuthenticationResponseJSON returned by startAuthentication (browser)',
+  })
   @IsObject()
   assertionResponse!: AuthenticationResponseJSON;
 }

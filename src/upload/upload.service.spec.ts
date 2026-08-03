@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { UploadService } from './upload.service.js';
 
 /**
@@ -105,5 +109,95 @@ describe('UploadService.consumeChatImage — unsupported-format fallback', () =>
       fakeReq(Buffer.alloc(0), 'empty.heic', 'image/heic'),
     );
     expect(r).toEqual({ kind: 'rejected', reason: 'no-file' });
+  });
+});
+
+describe('UploadService.saveCasFromStream — persistent resume', () => {
+  let root: string | undefined;
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  it('retains a completed prefix after transport failure and resumes at its offset', async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
+    const mediaAsset = {
+      reserve: vi.fn().mockResolvedValue(undefined),
+      markReady: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new UploadService(mediaAsset as never);
+    Object.defineProperty(service, 'casDir', { value: root });
+    const body = Buffer.from('persistent resumable CAS body');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const firstOffsets: number[] = [];
+
+    await expect(
+      service.saveCasFromStream(
+        'bin',
+        (offset) => {
+          firstOffsets.push(offset);
+          return (async function* () {
+            yield body.subarray(0, 10);
+            throw new Error('network dropped');
+          })();
+        },
+        digest,
+      ),
+    ).rejects.toThrow('network dropped');
+
+    const resumedOffsets: number[] = [];
+    const saved = await service.saveCasFromStream(
+      'bin',
+      (offset) => {
+        resumedOffsets.push(offset);
+        return (async function* () {
+          yield body.subarray(offset);
+        })();
+      },
+      digest,
+    );
+    expect(firstOffsets).toEqual([0]);
+    expect(resumedOffsets).toEqual([10]);
+    expect(
+      await readFile(
+        join(root, digest.slice(0, 2), digest.slice(2, 4), digest),
+      ),
+    ).toEqual(body);
+    expect(saved.digest).toBe(digest);
+    expect(mediaAsset.markReady).toHaveBeenCalledWith(
+      digest,
+      BigInt(body.length),
+    );
+  });
+
+  it('deletes untrusted partial state when the final digest mismatches', async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
+    const mediaAsset = {
+      reserve: vi.fn().mockResolvedValue(undefined),
+      markReady: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new UploadService(mediaAsset as never);
+    Object.defineProperty(service, 'casDir', { value: root });
+    const expected = createHash('sha256').update('expected').digest('hex');
+    await expect(
+      service.saveCasFromStream(
+        'bin',
+        () =>
+          (async function* () {
+            yield Buffer.from('corrupt');
+          })(),
+        expected,
+      ),
+    ).rejects.toThrow('CAS digest mismatch');
+    const base = join(
+      root,
+      expected.slice(0, 2),
+      expected.slice(2, 4),
+      expected,
+    );
+    await expect(readFile(`${base}.part`)).rejects.toThrow();
+    await expect(readFile(`${base}.resume.json`)).rejects.toThrow();
   });
 });

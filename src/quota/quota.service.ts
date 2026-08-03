@@ -4,13 +4,8 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
+import { federatedPeer, quotaDailyUsage } from '../database/schema.js';
 import {
-  federatedPeer,
-  quotaDailyUsage,
-  systemSetting,
-} from '../database/schema.js';
-import {
-  loadFederationConfig,
   loadQuotaConfig,
   type QuotaConfig,
 } from '../federation/federation.config.js';
@@ -18,10 +13,9 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 
 /**
- * Unified daily-quota enforcement for BOTH the local server (one aggregate bucket keyed by SOMS_DOMAIN
- * — all local users share it) and each federated peer (one bucket per peer domain). A "node" is just a
- * domain; the local node is the server's own SOMS_DOMAIN, peer nodes are their domains. One counter
- * table (QuotaDailyUsage, keyed domain+UTC-date+category) covers both.
+ * Daily-quota enforcement for federated peer servers. A peer's domain is the trust and accounting
+ * boundary: all users from that server share its counters. Local accounts use a separate userId-based
+ * quota model and never consume these domain buckets.
  *
  * Four categories, enforced at the point where the data crosses our boundary:
  *  - `requests` — inbound friend ops (federation S2S POST) + outbound friend requests (local). Anti-spam.
@@ -33,48 +27,18 @@ import { BusinessCode } from '../common/business-code.js';
  * increment is `INSERT … ON CONFLICT DO UPDATE … RETURNING count`; thrown inside a transaction so an
  * over-limit increment rolls back → exact count (not the doc's ±1 slop) on the federation path.
  *
- * Error split: the tick does NOT throw a UI-specific error — it returns the outcome, and the CALLER
- * renders it. Federation callers throw `BusinessException(FEDERATION_QUOTA_EXCEEDED, …, 429)` /
- * `(FEDERATION_PAYLOAD_TOO_LARGE, …, 413)` (429/413 never demote the peer). Local callers `return`
- * an ApiResult `{ code: QUOTA_EXCEEDED, data: {category, limit, retryAfter} }` at HTTP 200.
+ * Federation callers throw `BusinessException(FEDERATION_QUOTA_EXCEEDED, …, 429)` or
+ * `FEDERATION_PAYLOAD_TOO_LARGE` (413); these capacity responses never demote the peer.
  */
 @Injectable()
 export class QuotaService {
   private readonly cfg: QuotaConfig = loadQuotaConfig();
-  /** This server's own domain — the local node's key. */
-  private readonly ownDomain: string = loadFederationConfig().domain;
-
-  /** SystemSetting KV key holding the LOCAL node's override JSON (peers use FederatedPeer columns). */
-  static readonly LOCAL_KEY = 'quota:local';
-
   constructor(private readonly database: DatabaseService) {}
-
-  /** Whether `domain` is this server (the local aggregate node). */
-  isLocal(domain: string): boolean {
-    return domain === this.ownDomain;
-  }
-
-  /** This server's own domain (the local node). */
-  get domain(): string {
-    return this.ownDomain;
-  }
 
   // ── limit / cap resolution ───────────────────────────────────────────────
 
   /** Per-node override set (null/absent = use the global default for that field). */
   async getOverrides(domain: string): Promise<QuotaOverrides> {
-    if (this.isLocal(domain)) {
-      const row = await this.database.db.query.systemSetting.findFirst({
-        where: eq(systemSetting.key, QuotaService.LOCAL_KEY),
-      });
-      if (!row) return {};
-      try {
-        const parsed = JSON.parse(row.value) as Partial<QuotaOverrides>;
-        return normalizeOverrides(parsed);
-      } catch {
-        return {};
-      }
-    }
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, domain),
       columns: {
@@ -127,6 +91,7 @@ export class QuotaService {
   async peek(domain: string, category: QuotaCategory): Promise<void> {
     const overrides = await this.getOverrides(domain);
     const limit = this.effectiveLimit(overrides, category);
+    this.assertCapabilityEnabled(category, limit);
     const row = await this.database.db.query.quotaDailyUsage.findFirst({
       where: and(
         eq(quotaDailyUsage.domain, domain),
@@ -157,9 +122,14 @@ export class QuotaService {
     domain: string,
     category: QuotaCategory,
     tx?: DatabaseTransaction | LegacyRawTransaction,
+    amount = 1,
   ): Promise<void> {
+    if (!Number.isSafeInteger(amount) || amount < 1) {
+      throw new Error('quota amount must be a positive safe integer');
+    }
     const overrides = await this.getOverrides(domain);
     const limit = this.effectiveLimit(overrides, category);
+    this.assertCapabilityEnabled(category, limit);
     const today = this.utcToday();
     const run = async (
       runner: DatabaseTransaction | LegacyRawTransaction,
@@ -169,18 +139,19 @@ export class QuotaService {
           ? (
               await runner.execute<{ count: number }>(sql`
                 INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
-                VALUES (${domain}, ${today}, ${category}, 1)
+                VALUES (${domain}, ${today}, ${category}, ${amount})
                 ON CONFLICT ("domain", "date", "category")
-                DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1
+                DO UPDATE SET "count" = "QuotaDailyUsage"."count" + ${amount}
                 RETURNING "count"`)
             ).rows
           : await runner.$queryRawUnsafe<{ count: number }[]>(
-              'INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count") VALUES ($1, $2, $3, 1) ON CONFLICT ("domain", "date", "category") DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1 RETURNING "count"',
+              'INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count") VALUES ($1, $2, $3, $4) ON CONFLICT ("domain", "date", "category") DO UPDATE SET "count" = "QuotaDailyUsage"."count" + $4 RETURNING "count"',
               domain,
               today,
               category,
+              amount,
             );
-      const count = rows[0]?.count ?? 1;
+      const count = rows[0]?.count ?? amount;
       if (count > limit) {
         const retryAfter = this.retryAfterSeconds();
         throw new BusinessException(
@@ -196,43 +167,6 @@ export class QuotaService {
   }
 
   /**
-   * LOCAL path variant: ticks the local aggregate bucket and RETURNS the outcome (does not throw) so the
-   * caller can render `200 + QUOTA_EXCEEDED` with a structured `{category, limit, retryAfter}` body.
-   *
-   * Exact (not ±1): the increment runs in a transaction and, if the post-increment count exceeds the
-   * limit, a sentinel aborts the tx so the over-limit increment rolls back (the bucket stays AT the
-   * limit in storage; `exceeded` still reports the attempt). Mirrors the federation tick's exactness.
-   */
-  async tryTickLocal(category: QuotaCategory): Promise<QuotaTickOutcome> {
-    const overrides = await this.getOverrides(this.ownDomain);
-    const limit = this.effectiveLimit(overrides, category);
-    const today = this.utcToday();
-    const rollback = Symbol('quota-rollback');
-    let outcome!: QuotaTickOutcome;
-    try {
-      await this.database.db.transaction(async (tx) => {
-        const result = await tx.execute<{ count: number }>(sql`
-          INSERT INTO "QuotaDailyUsage" ("domain", "date", "category", "count")
-          VALUES (${this.ownDomain}, ${today}, ${category}, 1)
-          ON CONFLICT ("domain", "date", "category")
-          DO UPDATE SET "count" = "QuotaDailyUsage"."count" + 1
-          RETURNING "count"`);
-        const count = result.rows[0]?.count ?? 1;
-        outcome = {
-          count,
-          limit,
-          retryAfter: this.retryAfterSeconds(),
-          exceeded: count > limit,
-        };
-        if (outcome.exceeded) throw rollback; // abort → increment rolls back; only the sentinel is swallowed
-      });
-    } catch (e) {
-      if (e !== rollback) throw e; // a real DB error propagates
-    }
-    return outcome;
-  }
-
-  /**
    * Federation media byte-cap: throw FEDERATION_PAYLOAD_TOO_LARGE (413) if `bytes` exceeds the single-item
    * cap for the category. Call BEFORE streaming/storing so nothing is written. No-op for count-only
    * categories (messages/requests). The over-limit item is permanently refused (no retry).
@@ -245,6 +179,7 @@ export class QuotaService {
     if (category !== 'images' && category !== 'largeFiles') return;
     const overrides = await this.getOverrides(domain);
     const cap = this.effectiveCap(overrides, category);
+    this.assertCapabilityEnabled(category, cap);
     if (bytes > cap) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
@@ -253,6 +188,19 @@ export class QuotaService {
         { category, limit: cap, received: bytes },
       );
     }
+  }
+
+  private assertCapabilityEnabled(
+    category: QuotaCategory,
+    effectiveLimit: number,
+  ): void {
+    if (effectiveLimit !== 0) return;
+    throw new BusinessException(
+      BusinessCode.FEDERATION_CAPABILITY_DISABLED,
+      `federation capability disabled: ${category}`,
+      HttpStatus.FORBIDDEN,
+      { category },
+    );
   }
 
   // ── time helpers ─────────────────────────────────────────────────────────
@@ -341,9 +289,7 @@ export class QuotaService {
     return this.buildUsage(counts, overrides);
   }
 
-  /** All quota nodes (the local node first, then every federated peer) with overrides + today's usage.
-   *  Three queries total regardless of peer count (peers, a batched usage fetch, the local KV override) —
-   *  no N+1 per peer. */
+  /** All federated peer quota nodes with overrides + today's usage. */
   async listNodes(): Promise<QuotaNode[]> {
     const peers = await this.database.db.query.federatedPeer.findMany({
       orderBy: asc(federatedPeer.domain),
@@ -358,19 +304,8 @@ export class QuotaService {
         maxLargeFileBytes: true,
       },
     });
-    const domains = [this.ownDomain, ...peers.map((p) => p.domain)];
+    const domains = peers.map((p) => p.domain);
     const counts = await this.countsToday(domains);
-    const localOverrides = await this.getOverrides(this.ownDomain);
-    const local: QuotaNode = {
-      domain: this.ownDomain,
-      isLocal: true,
-      trustLevel: null,
-      overrides: localOverrides,
-      usage: this.buildUsage(
-        counts.get(this.ownDomain) ?? zeroCounts(),
-        localOverrides,
-      ),
-    };
     const peerNodes: QuotaNode[] = peers.map((p) => {
       const overrides: QuotaOverrides = {
         dailyMsgLimit: p.dailyMsgLimit,
@@ -382,33 +317,22 @@ export class QuotaService {
       };
       return {
         domain: p.domain,
-        isLocal: false,
         trustLevel: p.trustLevel,
         overrides,
+        effectiveCaps: {
+          images: this.effectiveCap(overrides, 'images'),
+          largeFiles: this.effectiveCap(overrides, 'largeFiles'),
+        },
         usage: this.buildUsage(counts.get(p.domain) ?? zeroCounts(), overrides),
       };
     });
-    return [local, ...peerNodes];
+    return peerNodes;
   }
 
   /** Set a node's override fields. Local → SystemSetting KV; peer → FederatedPeer columns (P2025 if the
    *  peer is unknown → the controller surfaces NOT_FOUND). A null/absent field means "use the default". */
   async setLimits(domain: string, overrides: QuotaOverrides): Promise<void> {
     const normalized = normalizeOverrides(overrides);
-    if (this.isLocal(domain)) {
-      await this.database.db
-        .insert(systemSetting)
-        .values({
-          key: QuotaService.LOCAL_KEY,
-          value: JSON.stringify(normalized),
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: systemSetting.key,
-          set: { value: JSON.stringify(normalized), updatedAt: new Date() },
-        });
-      return;
-    }
     const rows = await this.database.db
       .update(federatedPeer)
       .set({
@@ -449,20 +373,12 @@ export interface QuotaOverrides {
   maxLargeFileBytes?: number | null;
 }
 
-/** Outcome of a local {@link QuotaService.tryTickLocal} — the caller renders the 200+code response. */
-export interface QuotaTickOutcome {
-  count: number;
-  limit: number;
-  retryAfter: number;
-  exceeded: boolean;
-}
-
-/** One row of the admin Quotas page. */
+/** One federated peer's quota state for the admin peer-detail surface. */
 export interface QuotaNode {
   domain: string;
-  isLocal: boolean;
-  trustLevel: string | null;
+  trustLevel: string;
   overrides: QuotaOverrides;
+  effectiveCaps: Record<'images' | 'largeFiles', number>;
   usage: Record<QuotaCategory, { count: number; limit: number }> | undefined;
 }
 

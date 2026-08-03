@@ -38,8 +38,9 @@ receiver-local data; §9) — a local delete stays local. A
 **60 s reconnect sweep** plus a dedicated **signed ping** re-handshake demoted peers and **never get
 permanently stuck on a cert/key rotation** (every tick re-fetches `.well-known` fresh; we never pin).
 Media rides the same trust/friendship chain via a digest-keyed `get_file` (content-addressed → dedup
-+ integrity + idempotent retry), with **no capability token** — the 3-check authorization chain is
-sufficient because sha256 digests are unguessable.
+
+- integrity + idempotent retry), with **no capability token** — the 3-check authorization chain is
+  sufficient because sha256 digests are unguessable.
 
 **Why not outbox-push (the rejected alternative).** An outbox + retry worker is the "durable channel"
 ActivityPub/Matrix reach for, but it is the single biggest complexity amplifier (a persistent queue,
@@ -47,9 +48,9 @@ single-worker-per-`(thread,domain)` ordering, a dead-letter store, retry/backoff
 trades a little latency (peer flushes/pulls/opens the thread) for the elimination of all of that: the
 message table already exists on both sides, idempotent dedup already exists (`S2SFriendOpSeen` + the new
 `originSeq` unique index), and a peer that's down simply isn't flushed until the 60 s sweep brings it
-back. The cost — a message is not *guaranteed* delivered until the peer next flushes/opens/polls — is
+back. The cost — a message is not _guaranteed_ delivered until the peer next flushes/opens/polls — is
 acceptable for a human-timescale, low-stakes 1:1 channel, and is exactly the email model SOMS already
-mirrors. Reliable *transactional* delivery (if ever needed for a paid/hosted tier) revives the outbox
+mirrors. Reliable _transactional_ delivery (if ever needed for a paid/hosted tier) revives the outbox
 **on top of** this design, not instead of it.
 
 ---
@@ -79,7 +80,7 @@ of a fact already in the message table. The `MAX` is one indexed query (the `[th
 originSeq]` index serves both the pull `WHERE originSeq > $after` and the `MAX`). This is the
 "derive state from data" pattern — it cannot drift.
 
-**Why `originSeq` and not the sender's `Message.id`.** `Message.id` is per-*server* auto-increment.
+**Why `originSeq` and not the sender's `Message.id`.** `Message.id` is per-_server_ auto-increment.
 When `alice@aaa` sends, `aaa` assigns its local `id`; when `bbb` pulls and stores alice's message,
 `bbb` assigns its OWN new `id` for its copy. The receiver therefore cannot use the sender's `id` as a
 stable cursor — `originSeq` is the sender-side value that crosses the wire unchanged and is stored
@@ -87,6 +88,7 @@ identically on both sides. Within each server, local read-ordering continues to 
 (unchanged) — `originSeq` is solely the federation cursor.
 
 **Allocation (sender side).** Inside the existing `writeMsgToThread` transaction:
+
 ```ts
 const last = await tx.message.aggregate({
   where: { threadId, creator: userId },
@@ -95,6 +97,7 @@ const last = await tx.message.aggregate({
 const nextSeq = (last._max.originSeq ?? -1) + 1; // 0-indexed: empty (thread, sender) → first send = seq 0
 const msg = await tx.message.create({ data: { /* ...existing... */, originSeq: nextSeq } });
 ```
+
 `originSeq` is **0-indexed** (first message in a (thread, sender) = seq 0; `-1` = empty / before seq 0),
 int32 (≤ 2³¹−1 ≪ 2⁵³ → JSON number, never a string). The forward cursor is `afterSeq` (`seq > afterSeq`,
 default `-1` = from seq 0); the backward twin `/messages/before` uses `beforeSeq` (`seq < beforeSeq`,
@@ -121,9 +124,11 @@ restart (§4.4 — pull-on-open is the restart floor).
 
 **Outbound — `domainNewMsgMap` (the structure the user named).** One entry per `(fromUser → toUser)`
 conversation that has new messages the peer doesn't yet know about:
+
 ```
 Map<peerDomain, Map<"<fromUser>→<toUser>", { latestSeq: number, generatedAt: number }>>
 ```
+
 - **Latest-seq-wins:** a new message in an existing conversation overwrites `latestSeq` (the peer
   pulls by cursor, so only the highest seq matters). The map is therefore bounded by **active
   conversation count**, not message count — it cannot grow unbounded during a long outage.
@@ -138,9 +143,11 @@ Map<peerDomain, Map<"<fromUser>→<toUser>", { latestSeq: number, generatedAt: n
   conversation count so it never grows).
 
 **Inbound — `pendingPulls` (the receiver's work queue).** Conversations WE need to pull from a peer:
+
 ```
 Map<"<fromUser>@<peerDomain>→<toLocalUser>", latestSeq: number>
 ```
+
 Populated by **(a)** receiving a `new-msg-map` push, or **(b)** pulling the peer's outbound map
 (§4.3, one-directional fallback). **Drained** by a successful message-pull (`cursor ≥ latestSeq` →
 remove). Duplicates across push/pull are absorbed by the `originSeq` unique index (idempotent) — the
@@ -155,13 +162,13 @@ check (`from.domain === signer.domain` for bodies that carry `from`) is skipped 
 `req.body`); for GETs the requester **is** the signing server, so `signer.domain` is the requester
 identity directly. Every body that carries `origin` validates `origin === signer.domain` (§3.1).
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/api/v1/s2s/new-msg-map` | push a batch of OUR outbound hint entries to the peer |
-| `GET`  | `/api/v1/s2s/new-msg-map?take=&cursor=` | pull the PEER's outbound hint entries (one-directional fallback) |
-| `GET`  | `/api/v1/s2s/messages?from=&to=&after=&take=` | pull the **sender's** messages after a cursor (authoritative) |
-| `GET`  | `/api/v1/s2s/get_file?digest=&from=&to=` | stream a chat-media asset by sha256 digest |
-| `GET`  | `/api/v1/s2s/ping` | signed liveness probe (reconnect sweep + quiet-peer `lastSuccessAt`) |
+| Method | Path                                          | Purpose                                                              |
+| ------ | --------------------------------------------- | -------------------------------------------------------------------- |
+| `POST` | `/api/v1/s2s/new-msg-map`                     | push a batch of OUR outbound hint entries to the peer                |
+| `GET`  | `/api/v1/s2s/new-msg-map?take=&cursor=`       | pull the PEER's outbound hint entries (one-directional fallback)     |
+| `GET`  | `/api/v1/s2s/messages?from=&to=&after=&take=` | pull the **sender's** messages after a cursor (authoritative)        |
+| `GET`  | `/api/v1/s2s/get_file?digest=&from=&to=`      | stream a chat-media asset by sha256 digest                           |
+| `GET`  | `/api/v1/s2s/ping`                            | signed liveness probe (reconnect sweep + quiet-peer `lastSuccessAt`) |
 
 > Friend ops keep their own dedicated endpoints (`POST /api/v1/s2s/friend-request` / `friend-approve`),
 > unchanged from Step 1. Message delivery uses the two `new-msg-map` routes above — not the friend-op
@@ -176,6 +183,7 @@ Replaces the per-message `message.notify`. N messages to one peer in a debounce 
 carrying the dirty entries; a transient outage → entries **buffer in memory** and flush on reconnect.
 
 **Push (ours → peer):**
+
 ```json
 POST /api/v1/s2s/new-msg-map
 {
@@ -189,6 +197,7 @@ POST /api/v1/s2s/new-msg-map
 }
 → 200 { "ok": true }
 ```
+
 - `origin` (REQUIRED) — our domain, **binding-checked `=== signer.domain`** (missing/mismatch →
   `401`). It is carried explicitly (not just implied by the signature) so a malformed/spoofed body is
   rejected outright; the signer domain remains the authoritative fallback.
@@ -200,6 +209,7 @@ POST /api/v1/s2s/new-msg-map
   (the 60 s sweep retries — §4.3).
 
 **Pull (peer's map → ours, one-directional fallback):**
+
 ```http
 GET /api/v1/s2s/new-msg-map?take=1000&cursor=<opaque>
 → 200 {
@@ -208,6 +218,7 @@ GET /api/v1/s2s/new-msg-map?take=1000&cursor=<opaque>
   "hasMore": true
 }
 ```
+
 - The peer serves entries where the recipient is one of OUR users (its outbound map for our domain).
 - **Non-destructive peek** — the peer does NOT delete on pull (it deletes only on its own successful
   push-ack). Idempotency + latest-seq-wins makes a stale re-peek harmless and bounded.
@@ -222,6 +233,7 @@ the `/messages` endpoint.
 ### 3.2 `GET /api/v1/s2s/messages` (the authoritative pull)
 
 The receiver pulls the **sender's side only** — never its own authored messages. Query:
+
 - `fromAccount=<account>` — the author, a **local** user on the serving (author's) server. Always the
   peer/source side — never "me".
 - `toAccount=<account>` — the requester's user (a foreign stub here); together with `fromAccount`
@@ -233,17 +245,19 @@ The receiver pulls the **sender's side only** — never its own authored message
 - `take=<N>` — batch size, default `50`, capped (the quota hook, §6).
 
 The serving server:
+
 1. `S2sSignatureGuard` (signed + trusted; `toDomain === signer` — the requester is the signing server).
 2. Resolve `fromAccount` → local user; `toAccount` → foreign stub of the signer domain;
    **`Friendship.status === 'APPROVED'`** (Gate 2).
 3. `thread = Friendship.threadId` for that pair.
 4. `findMany({ where: { threadId: thread, creator: fromAccount.id, originSeq: { gt: afterSeq } },
-   orderBy: { originSeq: 'asc' }, take: take + 1 })` → drop the `+1`th as `hasMore`.
+orderBy: { originSeq: 'asc' }, take: take + 1 })` → drop the `+1`th as `hasMore`.
 5. `latestSeq = MAX(originSeq)` for `(threadId, creator=fromAccount.id)` (the author's high-water mark
    within this thread — informational; the receiver advances its own cursor from the messages it
    STORES, not from `latestSeq`).
 
 Response:
+
 ```json
 {
   "messages": [
@@ -251,10 +265,18 @@ Response:
       "originSeq": 12301,
       "contentType": "PURE_TEXT",
       "content": "hi",
-      "clientMessageId": "urn:uuid:...",   // sender's local idempotency key (debugging only; receiver does NOT store it)
-      "ts": 1719500000000,                 // sender's createdAt, ms — the receiver stores this as createdAt (stable across pull/pull)
-      "media": [                            // present iff contentType is IMAGE/VIDEO/FILE/AUDIO
-        { "digest": "<sha64hex>", "ext": "jpg", "bytes": 204811, "mime": "image/jpeg", "w": 1080, "h": 1920 }
+      "clientMessageId": "urn:uuid:...", // sender's local idempotency key (debugging only; receiver does NOT store it)
+      "ts": 1719500000000, // sender's createdAt, ms — the receiver stores this as createdAt (stable across pull/pull)
+      "media": [
+        // present iff contentType is IMAGE/VIDEO/FILE/AUDIO
+        {
+          "digest": "<sha64hex>",
+          "ext": "jpg",
+          "bytes": 204811,
+          "mime": "image/jpeg",
+          "w": 1080,
+          "h": 1920
+        }
       ]
     }
   ],
@@ -262,11 +284,12 @@ Response:
   "hasMore": false
 }
 ```
-**Media URLs.** The sender's `Message.content` embeds the sender's `/uploads/shards/...` URLs
+
+**Media URLs.** The sender's `Message.content` embeds the sender's `/uploads/cas/...` URLs
 (cross-origin, useless to the receiver). The pull response therefore surfaces media as structured
 `{digest, ext, mime, ...}` (parsed via the existing `extractDigests(content)`), NOT as URLs. The
 receiver fetches each digest via `get_file` (§3.3), stores it locally, and **rewrites** the stored
-`content` to the same-origin `/uploads/shards/...` URL before insert. A media entry with a known
+`content` to the same-origin `/uploads/cas/...` URL before insert. A media entry with a known
 digest already in the receiver's CAS (`MediaAsset` hit) skips the `get_file` round trip entirely
 (content-addressed dedup).
 
@@ -281,26 +304,28 @@ planned; a local delete by either side stays local (never a remote-driven mutati
 GET /api/v1/s2s/get_file?digest=<sha64hex>&from=alice&to=bob
 Signature-Input: ... (signed by the requester server, keyId = <requester-domain>/key-N)
 ```
+
 The serving server (the file's **owner**) runs the three checks, then streams:
+
 1. **Signed + trusted** — `S2sSignatureGuard` (`trustLevel === 'trusted'`, valid signature,
    `toDomain === signer`).
 2. **Valid friendship** — `fromAccount` is a local user, `toAccount` is a foreign stub of the signer
    domain, and their `Friendship.status === 'APPROVED'`.
 3. **File exists in that thread** — `MediaMessage WHERE digest = $D AND threadId = <that
-   friendship's thread>` exists (one indexed probe on `@@index([digest])`). This reuses the exact
-   per-object index the local `/uploads/shards/*` gate uses; it answers "is this digest referenced by
+friendship's thread>` exists (one indexed probe on `@@index([digest])`). This reuses the exact
+   per-object index the local `/uploads/cas/*` gate uses; it answers "is this digest referenced by
    a message in the thread this friendship backs?"
 
-If all three pass → stream the CAS file (`uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>`)
-with `Content-Type` mapped from the extension (the receiver's same-origin serve path already does
-this). `Content-Length` from `MediaAsset.bytes`. `Range`/resume = optional (Step 2.1). **No capability
+If all three pass → stream the extensionless CAS blob (`data/cas/<digest[0:2]>/<digest[2:4]>/<digest>`).
+Filename, message type and MIME remain message/S2S presentation metadata and do not affect identity.
+`Content-Length` comes from `MediaAsset.bytes`. `Range`/resume = optional (Step 2.1). **No capability
 token** — the digest is unguessable (256-bit), the 3-check chain proves membership, and the signature
 proves the requester is the peer server.
 
-**Receiver stores via the existing CAS interface** (no new media code): `UploadService.saveCas(ext,
-buf)` (exposed as a public method — currently private) computes the same sha256 → same shard path →
+**Receiver stores via the existing CAS interface** (no new media code): the upload service computes
+the same sha256 → same extensionless blob path →
 `MediaAssetService.upsertAndRef(digest, bytes)` (refcount++ on the dedup hit), then a `MediaMessage`
-row `{ messageId, threadId, digest }` is created so the local `/uploads/shards/*` gate authorizes the
+row `{ messageId, threadId, digest }` is created so the local `/uploads/cas/*` gate authorizes the
 local user for free. The stored `Message.content` is rewritten to the same-origin URL. Byte-identical
 on disk → served same-origin identically to a locally-uploaded file.
 
@@ -310,10 +335,12 @@ on disk → served same-origin identically to a locally-uploaded file.
 GET /api/v1/s2s/ping
 → 200 { "domain": "aaa.com", "ts": 1719500000000 }
 ```
+
 A dedicated, cheap, **authenticated** heartbeat (not the handshake). A successful signed ping proves
 in one round trip: the peer is reachable, TLS is valid, AND the mutual signing keys still verify —
 strictly more than TCP reachability, much lighter than the init handshake (which establishes **trust**,
 a different job). Used by:
+
 - **The reconnect sweep (§4.3)** — ping first (cheap); only on success proceed to re-handshake (if
   still demoted) + flush/pull. Keeps the 60 s tick cheap when the peer is just briefly down.
 - **A slow quiet-peer liveness tick** (optional) — a trusted peer with no recent traffic still gets
@@ -437,13 +464,13 @@ silently); only a genuinely-broken peer enters the sweep, and the sweep always h
 ### 4.5 Media (end-to-end)
 
 ```
-send: alice's image upload → saveCas → MediaAsset(refs++) → MediaMessage{message,thread,digest}
-      → content embeds /uploads/shards/<digest>.jpg (sender-origin)
+send: alice's image upload → saveCas → MediaAsset(READY) → MediaMessage{message,thread,digest}
+      → content embeds /uploads/cas/<dd>/<dd>/<digest> (sender-origin)
 pull: bbb receives the message with media:{digest,ext,...}
       → GET /get_file?digest=&from=alice&to=bob (3-check, stream)
       → saveCas (same sha256 → same shard path, byte-identical) → MediaAsset.upsertAndRef
       → MediaMessage{message:bobsCopy, thread:bobsThread, digest}   // local gate now authorizes bob
-      → rewrite bobsCopy.content to same-origin /uploads/shards/<digest>.jpg
+      → rewrite bobsCopy.content to same-origin /uploads/cas/<dd>/<dd>/<digest>
       → bob's client renders it through the EXISTING /uploads/* media-token gate (no new client path)
 ```
 
@@ -505,17 +532,17 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 
 ## 7. Security summary
 
-| Threat | Control |
-| --- | --- |
-| Untrusted / un-signed peer | `S2sSignatureGuard` on all five routes (`trustLevel === 'trusted'` + RFC 9421 sig) |
-| Trusted-but-compromised peer forging "from any of its users → any of yours" | Gate 2: the `from`/`to` Friendship MUST be `APPROVED` on the serving server (the membership invariant from `federation-protocol.md` §5 Gate 2) |
-| Peer harvesting arbitrary media | Check 3: digest MUST be referenced by a `MediaMessage` in the friendship's thread |
-| Spoofed/malformed `origin` / `from` | `origin === signer.domain` binding check (§3.1); GETs identify the requester by `signer.domain` directly |
-| Replay | `(origin, id)` dedup on friend-op; `originSeq` unique index idempotently dedups pulled messages AND push/pull duplicates; GETs are inherently idempotent |
-| Media token leakage | No token — digest is unguessable + 3-check authz per request |
-| Cross-origin media fetch (CSP) | Receiver localizes bytes into its own CAS, serves same-origin `/uploads/shards/*` |
-| Sudden peer key rotation / outage | `withTrustedPeer` → `markDemoted` → 60 s reconnect sweep → self-healing re-handshake (§4.3) |
-| Permanent disconnect from cert-rotation boundary | Every sweep tick re-fetches `.well-known` fresh; never pins keys → worst case ~60 s extra downtime (§4.3) |
+| Threat                                                                      | Control                                                                                                                                                  |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Untrusted / un-signed peer                                                  | `S2sSignatureGuard` on all five routes (`trustLevel === 'trusted'` + RFC 9421 sig)                                                                       |
+| Trusted-but-compromised peer forging "from any of its users → any of yours" | Gate 2: the `from`/`to` Friendship MUST be `APPROVED` on the serving server (the membership invariant from `federation-protocol.md` §5 Gate 2)           |
+| Peer harvesting arbitrary media                                             | Check 3: digest MUST be referenced by a `MediaMessage` in the friendship's thread                                                                        |
+| Spoofed/malformed `origin` / `from`                                         | `origin === signer.domain` binding check (§3.1); GETs identify the requester by `signer.domain` directly                                                 |
+| Replay                                                                      | `(origin, id)` dedup on friend-op; `originSeq` unique index idempotently dedups pulled messages AND push/pull duplicates; GETs are inherently idempotent |
+| Media token leakage                                                         | No token — digest is unguessable + 3-check authz per request                                                                                             |
+| Cross-origin media fetch (CSP)                                              | Receiver localizes bytes into its own CAS, serves same-origin `/uploads/cas/*`                                                                           |
+| Sudden peer key rotation / outage                                           | `withTrustedPeer` → `markDemoted` → 60 s reconnect sweep → self-healing re-handshake (§4.3)                                                              |
+| Permanent disconnect from cert-rotation boundary                            | Every sweep tick re-fetches `.well-known` fresh; never pins keys → worst case ~60 s extra downtime (§4.3)                                                |
 
 ---
 
@@ -526,8 +553,8 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 > `(threadId, creator, originSeq)` race), `FederationBufferService` (`domainNewMsgMap` + debounced
 > ~500 ms flush + half-eviction at the 10 k cap), `POST/GET /new-msg-map`, `GET /messages` +
 > `serveOutboundMessages`, the inbound drainer (single-flight, progress-gated re-trigger), `GET
-> /get_file` + receiver media-localize (`saveCasFromPeer` + sha256 integrity + `MediaMessage`), `GET
-> /ping`, `withTrustedPeer` + the 60 s reconnect sweep (§4.3), and pull-on-thread-open + slow poll
+/get_file` + receiver media-localize (`saveCasFromPeer` + sha256 integrity + `MediaMessage`), `GET
+/ping`, `withTrustedPeer` + the 60 s reconnect sweep (§4.3), and pull-on-thread-open + slow poll
 > (§4.4). Item 12 (e2e) covers the 8 Step 2 message/media scenarios (a–h) alongside the 12 Step 1 /
 > profile tests — no regressions. A lost push now self-heals via sweep + pull-on-open + slow poll.
 > Bug fixed during e2e: `drainPendingPulls` spun on a persistently failing pull (now progress-gated).
@@ -599,7 +626,7 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
   just a UI affordance + a bulk quota).
 - **Restart-resilient hints** — the in-memory map is volatile; pull-on-open (§4.4) is the floor. If a
   future tier needs the hints themselves to survive restart, persist a tiny `lastPushedSeq per
-  (domain, fromUser, toUser)` and reseed on boot — optional, v0.2.
+(domain, fromUser, toUser)` and reseed on boot — optional, v0.2.
 - **Reliable transactional delivery (outbox)** — only if a future tier needs delivery guarantees
   beyond "caught up on next flush/open/poll"; would layer ON TOP of this design (the outbox would
   retry the map push, not replace the pull).

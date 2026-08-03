@@ -266,7 +266,7 @@ See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap
 ### POST `/upload` — Upload (chat media / avatar)
 
 - **Body**: `multipart/form-data`, field `file`; for chat media, plus `w`/`h` form fields. Allowed: jpg/png/gif/webp (magic-number validated). Size limit per type (video up to ~100 MB; `@fastify/multipart` 100 MB part cap).
-- **Behavior**: writes the bytes through the **content-addressed CAS pipeline** — `MediaAsset` (sha256 `digest` + refcount) at `uploads/shards/<dd>/<dd>/<digest>.<ext>`; avatars go through `sharp` multi-size webp instead. The returned URL embeds the digest; access is gated by `MediaAccessService` (per-object authorization via `MediaMessage` joined to `ThreadParticipant`).
+- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`; filename, MIME and message type remain message metadata. Avatars use the separate `sharp` multi-size webp pipeline. The returned `/uploads/cas/<dd>/<dd>/<digest>` URL is gated by `MediaAccessService` and only READY assets are readable.
 - **Response `data`**: `{ url, w, h }` (chat) or `{ avatar }` (avatar).
 - **Media serving**: `/uploads/*` is served by `@fastify/static` with a root `preHandler` that honors the httpOnly `media_token` cookie **or** a `Bearer` header (resolved by `BearerAuthService`), plus per-object CAS-shard authorization. (Avatars are public.)
 

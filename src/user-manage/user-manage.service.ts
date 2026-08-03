@@ -12,12 +12,14 @@ import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { randomInt } from 'node:crypto';
+import { UserQuotaService } from '../quota/user-quota.service.js';
 @Injectable()
 export class UserManageService implements OnModuleInit {
   constructor(
     private database: DatabaseService,
     private auth: AuthService,
     private userService: UserService,
+    private userQuotaService: UserQuotaService,
   ) {}
 
   async onModuleInit() {}
@@ -108,7 +110,17 @@ export class UserManageService implements OnModuleInit {
         .where(where)
         .then(([row]) => row.value),
     ]);
-    return { list, total };
+    const localIds = list
+      .filter((item) => !item.isForeigner)
+      .map((item) => item.id);
+    const quotaByUser = await this.userQuotaService.getSummaries(localIds);
+    return {
+      list: list.map((item) => ({
+        ...item,
+        quota: item.isForeigner ? null : (quotaByUser.get(item.id) ?? null),
+      })),
+      total,
+    };
   }
 
   /** Soft-delete + revoke every session token (invalidateAllSessions revokes all SessionToken rows + emits FORCE_LOGOUT). */

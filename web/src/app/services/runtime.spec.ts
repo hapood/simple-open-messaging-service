@@ -78,41 +78,41 @@ describe('assetUrl', () => {
 
   it('uses the Android HTTP custom-protocol mapping', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
-    expect(assetUrl('/uploads/shards/a.png')).toBe(
-      'http://media.localhost/uploads/shards/a.png',
+    expect(assetUrl('/uploads/cas/a.png')).toBe(
+      'http://media.localhost/uploads/cas/a.png',
     );
   });
 
   it('uses the Windows HTTP custom-protocol mapping', () => {
     setRuntime(true, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
-    expect(assetUrl('/uploads/shards/a.png')).toBe(
-      'http://media.localhost/uploads/shards/a.png',
+    expect(assetUrl('/uploads/cas/a.png')).toBe(
+      'http://media.localhost/uploads/cas/a.png',
     );
   });
 
   it('keeps the native scheme on other Tauri platforms', () => {
     setRuntime(true, 'Mozilla/5.0 (X11; Linux x86_64)');
-    expect(assetUrl('/uploads/shards/a.png')).toBe(
-      'media://localhost/uploads/shards/a.png',
+    expect(assetUrl('/uploads/cas/a.png')).toBe(
+      'media://localhost/uploads/cas/a.png',
     );
   });
 
   it('keeps relative paths unchanged in the browser', () => {
     setRuntime(false, 'Mozilla/5.0 (Linux; Android 15)');
-    expect(assetUrl('/uploads/shards/a.png')).toBe('/uploads/shards/a.png');
+    expect(assetUrl('/uploads/cas/a.png')).toBe('/uploads/cas/a.png');
   });
 
   it('maps a native chat image onto the thumbnail protocol path', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
-    expect(chatThumbnailUrl('/uploads/shards/aa/bb/photo.jpg')).toBe(
-      'http://media.localhost/chat-thumbnails/uploads/shards/aa/bb/photo.jpg',
+    expect(chatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
+      'http://media.localhost/chat-thumbnails/uploads/cas/aa/bb/photo.jpg',
     );
   });
 
   it('keeps browser and optimistic image URLs unchanged', () => {
     setRuntime(false, 'Mozilla/5.0 (Linux; Android 15)');
-    expect(chatThumbnailUrl('/uploads/shards/aa/bb/photo.jpg')).toBe(
-      '/uploads/shards/aa/bb/photo.jpg',
+    expect(chatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
+      '/uploads/cas/aa/bb/photo.jpg',
     );
     expect(chatThumbnailUrl('blob:test')).toBe('blob:test');
   });
@@ -120,7 +120,7 @@ describe('assetUrl', () => {
   it('extracts only a canonical CAS digest and builds the Android local-thumbnail URL', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     const digest = 'ab'.repeat(32);
-    const path = `/uploads/shards/ab/cd/${digest}.mp4`;
+    const path = `/uploads/cas/ab/cd/${digest}`;
     expect(videoCasDigest(path)).toBe(digest);
     expect(nativeVideoThumbnailUrl(path, 2)).toBe(
       `http://media.localhost/video-thumbnails${path}?v=2`,

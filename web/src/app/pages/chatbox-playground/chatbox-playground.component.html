@@ -107,7 +107,7 @@
     <!-- Telegram-style sticky date overlay: inside .pg-stage but outside .pg-viewport (sibling) —
          not in the scroll container, so it neither scrolls with the document flow nor participates in
          virtual-scroll recycling; the component updates its text from the scroll position in real time. -->
-    <app-sticky-date-overlay [label]="stickyDate()" />
+    <app-chatbox-sticky-overlays #stickyOverlays />
     <!-- The connection preview uses the same positioned slot as production; the playground overrides the
          slot to absolute within .pg-stage so it tracks the chat column. The update preview is a headless
          controller for the same global Material snackbar used in production. -->

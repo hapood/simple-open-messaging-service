@@ -31,7 +31,6 @@ import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
-import { QuotaService } from '../quota/quota.service.js';
 import {
   SendMessageDto,
   SendMediaDto,
@@ -47,6 +46,7 @@ import {
   SetAliasDto,
   SearchMessagesDto,
   SendForwardDto,
+  ForwardMode,
 } from '../dto/message.dto.js';
 import {
   serializeAudienceMention,
@@ -55,6 +55,7 @@ import {
 } from '../common/message-entity.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -69,11 +70,11 @@ export class MessageController {
     private readonly participantService: ThreadParticipantService,
     private readonly userBlockService: UserBlockService,
     private readonly fanout: MessageFanoutService,
-    private readonly quota: QuotaService,
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
     private readonly threadRevisionService: ThreadRevisionService,
+    private readonly userQuota: UserQuotaService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -159,23 +160,6 @@ export class MessageController {
         );
       }
     }
-    // Daily quota (local aggregate budget — one bucket shared by all local users). A TEXT send consumes
-    // one 'messages' unit; media contentTypes (IMAGE/FILE/VIDEO/AUDIO) are counted at their /upload*
-    // step (images / largeFiles), not here, so a media message is never double-counted.
-    if (
-      contentType === ContentType.PURE_TEXT ||
-      contentType === ContentType.LINK
-    ) {
-      const q = await this.quota.tryTickLocal('messages');
-      if (q.exceeded) {
-        throw new BusinessException(
-          BusinessCode.QUOTA_EXCEEDED,
-          `daily message quota reached (${q.limit}); resets in ${q.retryAfter}s`,
-          HttpStatus.OK,
-          { category: 'messages', limit: q.limit, retryAfter: q.retryAfter },
-        );
-      }
-    }
     const quoteVisibility: {
       clearedThroughSeq?: number | null;
       hideCreatorIds?: number[];
@@ -194,7 +178,7 @@ export class MessageController {
       contentType,
       dto.clientMessageId,
       undefined,
-      undefined,
+      (tx) => this.userQuota.tick(req.user.userId, 'messages', tx),
       quoteVisibility,
     );
     // Fire-and-forget: the response confirms PERSISTENCE (the row is committed above); recipient
@@ -212,7 +196,7 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('send-forward')
   @ApiOperation({
-    summary: 'Snapshot visible messages into a bundle and send a FORWARD card',
+    summary: 'Directly re-send one message or send a chat-record bundle',
   })
   @ApiResultResponse(MessageResponseDto)
   async sendForward(
@@ -246,14 +230,28 @@ export class MessageController {
       dto.clientMessageId,
     );
     if (prior) return prior;
-    const q = await this.quota.tryTickLocal('messages');
-    if (q.exceeded) {
-      throw new BusinessException(
-        BusinessCode.QUOTA_EXCEEDED,
-        `daily message quota reached (${q.limit}); resets in ${q.retryAfter}s`,
-        HttpStatus.OK,
-        { category: 'messages', limit: q.limit, retryAfter: q.retryAfter },
+    if (dto.mode === ForwardMode.DIRECT) {
+      if (dto.sourceMessages.length !== 1) {
+        throw new BusinessException(
+          BusinessCode.FORWARD_INVALID_BUNDLE,
+          'direct forward requires exactly one source message',
+        );
+      }
+      const direct = await this.forwardBundles.prepareDirectMessage(
+        req.user.userId,
+        dto.sourceMessages[0],
       );
+      const data = await this.messageService.writeMsgToThread(
+        req.user.userId,
+        dto.threadId,
+        direct.content,
+        direct.contentType,
+        dto.clientMessageId,
+        direct.forwardBundleId,
+        (tx) => this.userQuota.tick(req.user.userId, 'messages', tx),
+      );
+      void this.fanout.dispatch(data);
+      return data;
     }
     const bundle = await this.forwardBundles.prepareFromMessages(
       req.user.userId,
@@ -266,7 +264,15 @@ export class MessageController {
       ContentType.FORWARD,
       dto.clientMessageId,
       bundle.bundleId,
-      (tx) => this.forwardBundles.persistPrepared(tx, bundle),
+      async (tx) => {
+        await this.userQuota.tick(
+          req.user.userId,
+          'messages',
+          tx,
+          bundle.quotaMessageCount,
+        );
+        await this.forwardBundles.persistPrepared(tx, bundle);
+      },
     );
     void this.fanout.dispatch(data);
     return data;
@@ -406,6 +412,12 @@ export class MessageController {
       dto.clientMessageId,
       meta,
       dto.retry === true,
+      (tx) =>
+        this.userQuota.tick(
+          req.user.userId,
+          dto.contentType === ContentType.IMAGE ? 'images' : 'largeFiles',
+          tx,
+        ),
     );
     return { clientMessageId: dto.clientMessageId };
   }
@@ -771,10 +783,10 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: RelocalizeMediaDto,
   ) {
-    // ThreadAccessGuard resolved membership + scoped threadId; localizeMediaForMessage re-validates
-    // (threadId, seq) exists and re-runs the idempotent localize path. localizeMedia pushes the terminal
-    // MEDIA_STATUS itself, so this returns the outcome for the caller's optimistic flip.
+    // The user supplies only the carrier message. Its server-authored MediaMessage/ForwardMessage
+    // bindings determine every remote digest fetched; arbitrary CAS URLs/digests are never accepted.
     const status = await this.federation.localizeMediaForMessage(
+      req.user.userId,
       req.threadAccess.threadId,
       dto.seq,
     );

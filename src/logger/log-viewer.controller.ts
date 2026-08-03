@@ -1,6 +1,15 @@
 import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
-import { Body, Controller, Get, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
@@ -39,11 +48,19 @@ export class LogViewerController {
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply,
     @Query('level') level?: string,
+    @Query('scope') scope?: string,
+    @Query('taskId') taskId?: string,
   ): void {
     reply.hijack(); // take over the raw response before any reply.raw write
     // Forward the request Origin: hijack bypasses @fastify/cors, so the reflected CORS header must be
     // written on the raw stream or cross-origin admin-web (:5180) can never read the log tail.
-    this.viewer.attach(reply.raw, this.normalizeLevel(level), req.headers.origin);
+    this.viewer.attach(
+      reply.raw,
+      this.normalizeLevel(level),
+      req.headers.origin,
+      scope || undefined,
+      taskId || undefined,
+    );
   }
 
   /**

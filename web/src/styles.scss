@@ -4,6 +4,11 @@
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
 @use './app/lib/chat-box/cb-skeleton'; // shared chat shimmer skeleton (.cb-skeleton) — used by MessageThread + playground
 
+// Shared sticky-avatar handoff: retain the natural head's 40px layout slot while the viewport-level copy paints.
+.cb-sticky-avatar-source .msg-has-avatar .msg-avatar {
+  visibility: hidden;
+}
+
 // The unread boundary decorates the first real unread message; it is deliberately not a virtual source
 // item, so message cursors, sender grouping, albums, and previous-message avatar decisions stay untouched.
 .cb-unread-entry {

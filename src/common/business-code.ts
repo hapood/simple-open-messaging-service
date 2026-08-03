@@ -109,6 +109,9 @@ export enum BusinessCode {
   FEDERATION_PAYLOAD_TOO_LARGE = 50012, // an inbound federated media item exceeds the single-item byte cap → HTTP 413
   // (permanent for that item; the body carries {category, limit, received}). Refused
   // at ingest before any disk write. NEVER demotes the peer.
+  FEDERATION_CAPABILITY_DISABLED = 50013, // the peer administrator set this category's effective limit/cap to 0.
+  // This is a stable policy refusal (HTTP 403), not a depleted daily budget: retrying after midnight
+  // cannot help. The body carries {category}; NEVER demotes the peer.
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)

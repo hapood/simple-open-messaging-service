@@ -6,13 +6,16 @@ import {
   readFile,
   rename,
   mkdir,
-  createWriteStream,
+  createReadStream,
   unlink,
+  stat,
+  copyFile,
+  appendFile,
+  truncate,
 } from 'fs';
 import { basename, dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { promisify } from 'util';
-import { finished } from 'stream/promises';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
 import {
@@ -26,12 +29,17 @@ import {
 import { MediaAssetService } from './media-asset.service.js';
 import { detectMedia } from './media-sig.js';
 import { AVATAR_SIZES, AVATAR_MAX } from './avatar-path.js';
+import { KeyedMutex } from '../common/keyed-mutex.js';
 
 const writeFileAsync = promisify(writeFile);
 const readFileAsync = promisify(readFile);
 const renameAsync = promisify(rename);
 const mkdirAsync = promisify(mkdir);
 const unlinkAsync = promisify(unlink);
+const statAsync = promisify(stat);
+const copyFileAsync = promisify(copyFile);
+const appendFileAsync = promisify(appendFile);
+const truncateAsync = promisify(truncate);
 
 /** Allowed image mimetype → on-disk extension (whitelist + landing-ext mapping). */
 const IMG_EXT: Record<string, string> = {
@@ -138,6 +146,8 @@ export type ConsumedMedia =
 @Injectable()
 export class UploadService {
   readonly uploadDir = join(process.cwd(), 'data', 'uploads');
+  readonly casDir = join(process.cwd(), 'data', 'cas');
+  private readonly casIngestLocks = new KeyedMutex();
 
   constructor(private readonly mediaAsset: MediaAssetService) {}
 
@@ -426,29 +436,23 @@ export class UploadService {
   }
 
   /**
-   * Content-addressed save: sha256 → uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>.
+   * Content-addressed save: sha256 → data/cas/<digest[0:2]>/<digest[2:4]>/<digest>.
    *
-   * Atomic publish via a tmp file + rename on the same filesystem: two concurrent writers of the
+   * The digest is reserved as PENDING before atomic publish via a tmp file + rename on the same
+   * filesystem. Two concurrent writers of the
    * same digest produce byte-identical files, the second rename overwrites the first, and there is
-   * no TOCTOU window (no existsSync pre-check). The MediaAsset ref bump is the CALLER's job — file
-   * write first, then ref, so a DB failure leaves a reclaimable orphan (refs = 0 → GC), never a
-   * dangling reference to a missing file. `ext` is the trusted on-disk extension (the caller decides
+   * no TOCTOU window (no existsSync pre-check). After publication the asset becomes READY and its
+   * reference is incremented. `ext` is the trusted on-disk extension (the caller decides
    * the source: magic-byte-derived for images/video/audio, sanitized client-name-derived for files).
    */
-  /** The content-addressed shard path (relative + absolute) for a digest + ext:
-   *  uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>. Shared by saveCas (buffer) and
+  /** The extensionless content-addressed path for a digest. Shared by saveCas (buffer) and
    *  saveCasFromStream (streaming) so both land byte-identical files at the identical location. */
-  private casShardPath(
-    digest: string,
-    ext: string,
-  ): { abs: string; rel: string } {
-    const rel = join(
-      'shards',
-      digest.slice(0, 2),
-      digest.slice(2, 4),
-      `${digest}.${ext}`,
-    );
-    return { abs: join(this.uploadDir, rel), rel };
+  private casShardPath(digest: string): { abs: string; url: string } {
+    const shard = join(digest.slice(0, 2), digest.slice(2, 4), digest);
+    return {
+      abs: join(this.casDir, shard),
+      url: `/uploads/cas/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
+    };
   }
 
   private async saveCas(
@@ -456,14 +460,101 @@ export class UploadService {
     buf: Buffer,
   ): Promise<{ url: string; digest: string; ext: string; size: number }> {
     const digest = createHash('sha256').update(buf).digest('hex');
-    const { abs, rel } = this.casShardPath(digest, ext);
+    const { abs, url } = this.casShardPath(digest);
+    await this.mediaAsset.reserve(digest, BigInt(buf.length));
     await mkdirAsync(dirname(abs), { recursive: true });
     // Atomic publish: write a unique tmp path, then rename (same filesystem → atomic). Identical
     // concurrent uploads overwrite each other harmlessly (byte-identical content).
     const tmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-    await writeFileAsync(tmp, buf);
-    await renameAsync(tmp, abs);
-    return { url: `/uploads/${rel}`, digest, ext, size: buf.length };
+    let renamed = false;
+    try {
+      await writeFileAsync(tmp, buf);
+      await renameAsync(tmp, abs);
+      renamed = true;
+      await this.mediaAsset.markReady(digest, BigInt(buf.length));
+    } finally {
+      if (!renamed) await unlinkAsync(tmp).catch(() => {});
+    }
+    return { url, digest, ext, size: buf.length };
+  }
+
+  /** Publish a completed resumable-upload temporary file without materializing it in memory. */
+  async publishResumable(
+    tmpPath: string,
+    contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO',
+    originalName: string,
+    declaredMime: string,
+  ): Promise<{
+    digest: string;
+    payload: Record<string, unknown>;
+    contentTypeOverride?: 'FILE';
+  }> {
+    const info = await statAsync(tmpPath);
+    const hash = createHash('sha256');
+    const headerChunks: Buffer[] = [];
+    let headerBytes = 0;
+    for await (const chunk of createReadStream(tmpPath)) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      hash.update(buffer);
+      if (headerBytes < 4096) {
+        const part = buffer.subarray(0, 4096 - headerBytes);
+        headerChunks.push(part);
+        headerBytes += part.length;
+      }
+    }
+    const header = Buffer.concat(headerChunks);
+    const detected = detectMedia(header);
+    let ext = parseFileExt(originalName) || 'bin';
+    let mime = declaredMime || 'application/octet-stream';
+    let contentTypeOverride: 'FILE' | undefined;
+    if (contentType === 'IMAGE') {
+      if (detected?.family === 'image') {
+        ext = detected.ext;
+      } else {
+        ext = 'bin';
+        contentTypeOverride = 'FILE';
+      }
+    } else if (contentType === 'VIDEO' || contentType === 'AUDIO') {
+      const family = contentType.toLowerCase();
+      const sharedAsAudio =
+        family === 'audio' &&
+        detected?.family === 'video' &&
+        (detected.ext === 'webm' || detected.ext === 'mp4');
+      if (!detected || (detected.family !== family && !sharedAsAudio)) {
+        throw new Error(`invalid ${family}`);
+      }
+      ext = detected.ext;
+      mime = `${family}/${detected.ext}`;
+    }
+    const digest = hash.digest('hex');
+    const { abs, url } = this.casShardPath(digest);
+    await this.mediaAsset.reserve(digest, BigInt(info.size));
+    await mkdirAsync(dirname(abs), { recursive: true });
+    // Keep the resumable source until UploadSession has durably recorded the result. Publishing through
+    // a unique CAS-side temp preserves atomic rename while making a DB failure safely retryable.
+    const publishTmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    let renamed = false;
+    try {
+      await copyFileAsync(tmpPath, publishTmp);
+      await renameAsync(publishTmp, abs);
+      renamed = true;
+      await this.mediaAsset.markReady(digest, BigInt(info.size));
+    } finally {
+      if (!renamed) await unlinkAsync(publishTmp).catch(() => {});
+    }
+    const name = this.sanitizeName(
+      originalName,
+      contentType === 'FILE' ? ext : '',
+    );
+    const payload =
+      contentType === 'IMAGE' && !contentTypeOverride
+        ? { url, size: info.size }
+        : { url, name, size: info.size, mimeType: mime };
+    return {
+      digest,
+      payload,
+      ...(contentTypeOverride ? { contentTypeOverride } : {}),
+    };
   }
 
   /**
@@ -477,8 +568,7 @@ export class UploadService {
     buf: Buffer,
   ): Promise<{ url: string; size: number }> {
     const ext = IMG_EXT[mimetype];
-    const { url, digest, size } = await this.saveCas(ext, buf);
-    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+    const { url, size } = await this.saveCas(ext, buf);
     return { url, size };
   }
 
@@ -504,8 +594,7 @@ export class UploadService {
     // serving decides inline-vs-attachment from the trusted CAS extension, so .bin guarantees that
     // corrupt/forged image bytes are downloaded rather than fed to an inline image decoder.
     const casExt = forceAttachment ? 'bin' : ext || 'bin';
-    const { url, digest, size } = await this.saveCas(casExt, buf);
-    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+    const { url, size } = await this.saveCas(casExt, buf);
     return {
       url,
       name: this.sanitizeName(originalName, ext),
@@ -518,7 +607,7 @@ export class UploadService {
    * Persist a video/audio asset through the SAME CAS pipeline as images/files (sha256 dedup + ref
    * count). The on-disk ext is the magic-byte-derived `ext` (trusted); the display name preserves the
    * client's original extension (sanitizeName with ext='' keeps the original as-is), so a .mov
-   * uploaded and detected as mp4 shows as "clip.mov" to the user while the shard file is <digest>.mp4.
+   * uploaded and detected as mp4 still shows as "clip.mov" while the CAS blob remains extensionless.
    * Returns the shape stored verbatim in a VIDEO/AUDIO message's content.
    */
   async saveMedia(
@@ -527,8 +616,7 @@ export class UploadService {
     originalName: string,
     buf: Buffer,
   ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
-    const { url, digest, size } = await this.saveCas(ext, buf);
-    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+    const { url, size } = await this.saveCas(ext, buf);
     return {
       url,
       name: this.sanitizeName(originalName, ''),
@@ -541,7 +629,7 @@ export class UploadService {
    * Persist a media asset fetched from a federated peer — receiver-side media localize (Step 2 §3.3 /
    * §4.5). Same CAS pipeline as a local upload (sha256 → shard path → MediaAsset ref++), so a
    * peer-sourced file is byte-identical on disk to a locally-uploaded one and serves same-origin via
-   * /uploads/shards/* with no new serving code. The caller passes the on-disk `ext` (from the peer's
+   * /uploads/cas/* with no new serving code. The caller passes the on-disk `ext` (from the peer's
    * content URL) + the fetched bytes; the returned `digest` lets the caller VERIFY integrity (it must
    * equal the digest the peer advertised — a mismatch means corrupt/tampered bytes → drop the file).
    * Idempotent: a re-fetch of the same digest overwrites the byte-identical file + re-bumps the ref.
@@ -551,7 +639,6 @@ export class UploadService {
     buf: Buffer,
   ): Promise<{ url: string; digest: string; size: number }> {
     const { url, digest, size } = await this.saveCas(ext, buf);
-    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
     return { url, digest, size };
   }
 
@@ -566,53 +653,110 @@ export class UploadService {
    * saveCasFromPeer — byte-identical on disk to a local upload, served same-origin. Idempotent: a
    * re-fetch of the same digest overwrites the byte-identical file + re-bumps the ref.
    *
-   * Failure handling: a digest mismatch OR any stream error deletes the tmp file and throws —
-   * localizeMedia catches that and leaves the message inert for a later retry. The tmp file is ALWAYS
-   * cleaned up (try/finally), whether we renamed it away or not (no orphan leak on any path).
+   * A transport failure retains the stable `.part` plus atomically-written offset sidecar, so a later
+   * task or process restart resumes from the verified contiguous prefix. A final digest mismatch removes
+   * both because no prefix can still be trusted. Per-digest FIFO locking prevents concurrent writers;
+   * only a whole-file SHA-256 match is atomically renamed into the public CAS path.
    */
   async saveCasFromStream(
     ext: string,
-    chunks: AsyncIterable<Buffer>,
+    chunksFromOffset: (offset: number) => AsyncIterable<Buffer>,
     expectedDigest: string,
   ): Promise<{ url: string; digest: string; size: number }> {
-    const { abs, rel } = this.casShardPath(expectedDigest, ext);
-    await mkdirAsync(dirname(abs), { recursive: true });
-    const tmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-    const hash = createHash('sha256');
-    let size = 0;
-    let renamed = false;
-    const writeStream = createWriteStream(tmp);
-    try {
-      for await (const buf of chunks) {
-        hash.update(buf);
-        size += buf.length;
-        // Respect backpressure: if the write buffer is full, wait for 'drain' before the next write
-        // so a fast producer (the network) can't outrun a slow disk and balloon memory.
-        if (!writeStream.write(buf)) {
-          await new Promise<void>((resolve, reject) => {
-            writeStream.once('drain', resolve);
-            writeStream.once('error', reject);
-          });
+    if (!/^[0-9a-f]{64}$/.test(expectedDigest))
+      throw new Error('invalid CAS digest');
+    return this.casIngestLocks.runExclusive(expectedDigest, async () => {
+      const { abs, url } = this.casShardPath(expectedDigest);
+      await this.mediaAsset.reserve(expectedDigest, 0n);
+      await mkdirAsync(dirname(abs), { recursive: true });
+      if (existsSync(abs)) {
+        const size = (await statAsync(abs)).size;
+        await this.mediaAsset.markReady(expectedDigest, BigInt(size));
+        return { url, digest: expectedDigest, size };
+      }
+
+      const part = `${abs}.part`;
+      const resume = `${abs}.resume.json`;
+      const resumeTmp = `${resume}.tmp`;
+      let offset = 0;
+      try {
+        const meta = JSON.parse(await readFileAsync(resume, 'utf8')) as {
+          version?: number;
+          digest?: string;
+          offset?: number;
+        };
+        const partSize = (await statAsync(part)).size;
+        if (
+          meta.version !== 1 ||
+          meta.digest !== expectedDigest ||
+          !Number.isSafeInteger(meta.offset) ||
+          meta.offset! < 0 ||
+          partSize < meta.offset!
+        ) {
+          throw new Error('invalid resume state');
         }
+        offset = meta.offset!;
+        if (partSize !== offset) await truncateAsync(part, offset);
+      } catch {
+        await unlinkAsync(part).catch(() => {});
+        await unlinkAsync(resume).catch(() => {});
+        offset = 0;
       }
-      writeStream.end();
-      await finished(writeStream);
-      const digest = hash.digest('hex');
-      if (digest !== expectedDigest) {
-        // Corrupt/tampered/truncated peer bytes — drop the file, leave no asset. The caller leaves the
-        // message inert for a retry rather than rendering garbage.
-        throw new Error(
-          `CAS digest mismatch (expected ${expectedDigest}, got ${digest}) — corrupt/tampered/truncated peer bytes`,
+
+      const persistOffset = async () => {
+        await writeFileAsync(
+          resumeTmp,
+          JSON.stringify({ version: 1, digest: expectedDigest, offset }),
         );
+        await renameAsync(resumeTmp, resume);
+      };
+      if (offset === 0) await persistOffset();
+
+      try {
+        // A crash can happen after the last offset checkpoint but before verification/rename. Avoid an
+        // unsatisfiable Range request at EOF: recognize and publish an already-complete valid part.
+        if (offset > 0) {
+          const resumedHash = createHash('sha256');
+          for await (const piece of createReadStream(part))
+            resumedHash.update(piece);
+          if (resumedHash.digest('hex') === expectedDigest) {
+            await renameAsync(part, abs);
+            await unlinkAsync(resume).catch(() => {});
+            await this.mediaAsset.markReady(expectedDigest, BigInt(offset));
+            return { url, digest: expectedDigest, size: offset };
+          }
+        }
+
+        for await (const buf of chunksFromOffset(offset)) {
+          if (buf.length === 0) continue;
+          await appendFileAsync(part, buf);
+          offset += buf.length;
+          await persistOffset();
+        }
+
+        const hash = createHash('sha256');
+        for await (const piece of createReadStream(part)) hash.update(piece);
+        const digest = hash.digest('hex');
+        if (digest !== expectedDigest) {
+          await unlinkAsync(part).catch(() => {});
+          await unlinkAsync(resume).catch(() => {});
+          throw new Error(
+            `CAS digest mismatch (expected ${expectedDigest}, got ${digest})`,
+          );
+        }
+        await renameAsync(part, abs);
+        await unlinkAsync(resume).catch(() => {});
+        await this.mediaAsset.markReady(digest, BigInt(offset));
+        return { url, digest, size: offset };
+      } catch (error) {
+        // Transport failures deliberately retain the verified prefix + sidecar for a later retry.
+        // Integrity failures above remove both because no persisted range can be trusted.
+        await this.mediaAsset.markFailed(expectedDigest);
+        throw error;
+      } finally {
+        await unlinkAsync(resumeTmp).catch(() => {});
       }
-      await renameAsync(tmp, abs);
-      renamed = true;
-      await this.mediaAsset.upsertAndRef(digest, BigInt(size));
-      return { url: `/uploads/${rel}`, digest, size };
-    } finally {
-      writeStream.destroy();
-      if (!renamed) await unlinkAsync(tmp).catch(() => {});
-    }
+    });
   }
 
   /**
@@ -644,7 +788,7 @@ export class UploadService {
    * defuses decompression bombs; multi-size saves bandwidth by position.
    *
    * Avatars live in their own namespace `uploads/avatars/<base>-<size>.webp`, deliberately OUTSIDE
-   * `uploads/shards/` so the per-object media-authz gate (which authorizes by thread membership)
+   * `uploads/cas/` so the per-object media-authz gate (which authorizes by thread membership)
    * never applies to them — avatars must render cross-thread (member lists, search, federation
    * profiles). Returns the largest size's URL as the representative; the frontend derives the other
    * sizes by substituting the `-<size>` suffix.

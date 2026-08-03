@@ -2,7 +2,11 @@ import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { optionalIntEnv } from '../common/env.js';
-import { LogStreamStore, atOrAbove, type LogRecord } from './log-stream-store.js';
+import {
+  LogStreamStore,
+  atOrAbove,
+  type LogRecord,
+} from './log-stream-store.js';
 import { listLogFiles } from './log-rotator.js';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 import type { AdminLogHistoryDto } from './log-viewer.dto.js';
@@ -11,6 +15,17 @@ interface LogClient {
   res: ServerResponse;
   ping: NodeJS.Timeout;
   minLevel?: string;
+  scope?: string;
+  taskId?: string;
+}
+
+export function matchesLogFilters(
+  rec: LogRecord,
+  filters: { scope?: string; taskId?: string },
+): boolean {
+  if (filters.scope && rec.scope !== filters.scope) return false;
+  if (filters.taskId && rec.taskId !== filters.taskId) return false;
+  return true;
 }
 
 /**
@@ -29,17 +44,25 @@ export class LogViewerService implements OnModuleDestroy {
 
   constructor(@Inject(LogStreamStore) private readonly store: LogStreamStore) {}
 
-  attach(res: ServerResponse, minLevel?: string, origin?: string): void {
+  attach(
+    res: ServerResponse,
+    minLevel?: string,
+    origin?: string,
+    scope?: string,
+    taskId?: string,
+  ): void {
     const ping = initSseResponse(res, origin);
 
     // Replay the ring buffer first (newest-last → chronological render order in the viewer).
     for (const rec of this.store.snapshot(minLevel)) {
+      if (!matchesLogFilters(rec, { scope, taskId })) continue;
       res.write(formatSseFrame('log', rec));
     }
 
-    const client: LogClient = { res, ping, minLevel };
+    const client: LogClient = { res, ping, minLevel, scope, taskId };
     const unsub = this.store.subscribe((rec) => {
       if (minLevel && !atOrAbove(rec.level, minLevel)) return;
+      if (!matchesLogFilters(rec, { scope, taskId })) return;
       try {
         res.write(formatSseFrame('log', rec));
       } catch {
@@ -114,8 +137,11 @@ export class LogViewerService implements OnModuleDestroy {
   /** AND of the active filters: inclusive level, ms-epoch time range, case-insensitive substring. */
   private matches(rec: LogRecord, dto: AdminLogHistoryDto): boolean {
     if (dto.level && !atOrAbove(rec.level, dto.level)) return false;
+    if (dto.scope && rec.scope !== dto.scope) return false;
+    if (dto.taskId && rec.taskId !== dto.taskId) return false;
     if (dto.from !== undefined || dto.to !== undefined) {
-      const t = typeof rec.time === 'number' ? rec.time : Date.parse(String(rec.time));
+      const t =
+        typeof rec.time === 'number' ? rec.time : Date.parse(String(rec.time));
       if (Number.isNaN(t)) return false;
       if (dto.from !== undefined && t < dto.from) return false;
       if (dto.to !== undefined && t > dto.to) return false;

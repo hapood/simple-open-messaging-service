@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FastifyRequest } from 'fastify';
 import { MessageController } from './message.controller.js';
 import type { QueryMessagesDto } from '../dto/message.dto.js';
+import { ContentType } from '../database/enums.js';
 
 function setup(rows: Array<{ seq: number }> = []) {
   const queryMessages = vi.fn().mockResolvedValue(rows);
@@ -61,7 +62,10 @@ describe('MessageController.queryMessages truncation', () => {
   );
 
   it('passes an exclusive asc cutoff and reports reached only when the bounded page is exhausted', async () => {
-    const { controller, queryMessages, req } = setup([{ seq: 11 }, { seq: 12 }]);
+    const { controller, queryMessages, req } = setup([
+      { seq: 11 },
+      { seq: 12 },
+    ]);
     const result = await controller.queryMessages(
       req,
       dto({ truncate: true, truncateSeq: 15 }),
@@ -107,4 +111,54 @@ describe('MessageController.queryMessages truncation', () => {
       threadId_seq: { threadId: 42, seq: 0 },
     });
   });
+});
+
+describe('MessageController.sendMedia quota category', () => {
+  it.each([
+    [ContentType.IMAGE, 'images'],
+    [ContentType.FILE, 'largeFiles'],
+    [ContentType.VIDEO, 'largeFiles'],
+    [ContentType.AUDIO, 'largeFiles'],
+  ] as const)(
+    'maps %s to %s when the stage is created',
+    async (contentType, category) => {
+      const stageMedia = vi
+        .fn()
+        .mockImplementation(async (...args: unknown[]) => {
+          const beforeStageCreate = args[6] as (tx: object) => Promise<void>;
+          await beforeStageCreate({});
+        });
+      const tick = vi.fn().mockResolvedValue(undefined);
+      const controller = new MessageController(
+        { stageMedia } as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {
+          assertP2PWritable: vi.fn().mockResolvedValue(undefined),
+        } as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        { tick } as never,
+      );
+      const req = {
+        user: { userId: 7 },
+        threadAccess: {
+          threadType: 'P2P',
+          membershipActive: true,
+          groupDissolved: false,
+        },
+      } as unknown as FastifyRequest;
+
+      await controller.sendMedia(req, {
+        threadId: 42,
+        contentType,
+        clientMessageId: '00000000-0000-4000-8000-000000000001',
+      });
+
+      expect(tick).toHaveBeenCalledWith(7, category, {});
+    },
+  );
 });

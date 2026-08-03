@@ -20,9 +20,8 @@ import { BusinessException } from '../common/business.exception.js';
 import { QuotaService } from '../quota/quota.service.js';
 
 /**
- * Admin Quotas endpoints — the operator surface for the unified daily-quota system (see
- * src/quota/quota.service.ts). Lists every quota NODE (the local server's
- * own SOMS_DOMAIN plus each federated peer) with today's usage + per-category limits, and sets a node's
+ * Admin quota endpoints for federated peer servers (see src/quota/quota.service.ts). Lists each peer
+ * domain with today's usage + per-category limits, and sets a peer's
  * per-category overrides (null = use the global default). Reads are any admin; writes are SUPER_ADMIN
  * only — mirroring AdminFederationController's block/unblock gate.
  *
@@ -42,8 +41,7 @@ export class AdminQuotaController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/quota/nodes')
   @ApiOperation({
-    summary:
-      'List all quota nodes (local + each federated peer) with today usage + limits',
+    summary: 'List federated peers with today quota usage + limits',
   })
   async listNodes() {
     return this.quota.listNodes();
@@ -59,7 +57,7 @@ export class AdminQuotaController {
   @Post('admin/quota/nodes/:domain')
   @ApiOperation({
     summary:
-      "Set a quota node's per-category daily limits (a null field = use the default)",
+      "Set a federated peer's per-category daily limits (null = default)",
   })
   async setLimits(
     @Param('domain') domain: string,

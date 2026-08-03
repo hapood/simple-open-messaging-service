@@ -3256,6 +3256,8 @@ export interface components {
        */
       threadId: number;
       sourceMessages: components['schemas']['ForwardSourceMessageDto'][];
+      /** @description DIRECT re-sends exactly one message as the caller; HISTORY creates a chat-record bundle. */
+      mode: 'DIRECT' | 'HISTORY';
       /** @description Client send-idempotency UUID */
       clientMessageId: string;
     };

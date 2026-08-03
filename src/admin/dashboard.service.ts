@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, gt, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, lte, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   adminActionLog,
@@ -15,7 +15,7 @@ import { AuditTargetLabelService } from './audit-target-label.service.js';
  *  - online: the in-memory SSE connection snapshot (live downlinks, aggregated per user).
  *  - activeSessions: active user session tokens (unrevoked, not past their sliding deadline).
  *  - federation: peer counts grouped by trustLevel.
- *  - media: total content bytes + asset count from MediaAsset (CAS, deduped) + reclaimable (refs<=0).
+ *  - media: total content bytes + asset count from MediaAsset + manually reclaimable reachability.
  *    Uses the table aggregate, not a filesystem walk — reflects managed media and is O(1)-ish.
  *  - recentActions: the last 10 AdminActionLog rows (written by AdminAuditInterceptor).
  *
@@ -58,14 +58,29 @@ export class DashboardService {
         .select({
           bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
           assetCount: count(),
+          ready: sql<number>`count(*) filter (where ${mediaAsset.status} = 'READY')::int`,
+          pending: sql<number>`count(*) filter (where ${mediaAsset.status} = 'PENDING')::int`,
         })
         .from(mediaAsset)
         .then(([row]) => row),
       this.database.db
-        .select({ value: count() })
-        .from(mediaAsset)
-        .where(lte(mediaAsset.refs, 0))
-        .then(([row]) => row.value),
+        .execute<{ value: number }>(
+          sql`
+        SELECT count(*)::int AS value FROM "MediaAsset" asset
+        WHERE asset.status = 'READY'
+          AND NOT EXISTS (
+            SELECT 1 FROM "MediaMessage" mm
+            JOIN "Message" message ON message.id = mm."messageId"
+            WHERE mm.digest = asset.digest AND message."isDeleted" = false
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "PendingMedia" pending
+            WHERE pending.digest = asset.digest
+              AND pending.status IN ('pending', 'failed')
+          )
+      `,
+        )
+        .then((result) => result.rows[0]?.value ?? 0),
       this.database.db
         .select({
           id: adminActionLog.id,
@@ -108,6 +123,8 @@ export class DashboardService {
       media: {
         bytes: BigInt(mediaAgg.bytes),
         assetCount: mediaAgg.assetCount,
+        ready: mediaAgg.ready,
+        pending: mediaAgg.pending,
         reclaimable,
       },
       recentActions,

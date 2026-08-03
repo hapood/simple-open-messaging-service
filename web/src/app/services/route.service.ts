@@ -112,6 +112,7 @@ export interface PopupInput {
   [PopupType.FORWARD]: {
     messages: readonly ForwardMessageItem[];
     recordKind: ForwardRecordKind;
+    mode: 'DIRECT' | 'HISTORY';
   };
   [PopupType.FORWARD_DETAIL]: { bundleId: string };
 }

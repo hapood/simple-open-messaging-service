@@ -1182,14 +1182,28 @@ async fn get_or_fetch_inner(
         .map(str::to_string);
     let total = response.content_length().unwrap_or(0);
 
-    let part_path = data_path.with_extension("part");
-    let mut file = tokio::fs::File::create(&part_path)
+    // Write the initial full response into the authoritative sparse-cache path and checkpoint its
+    // contiguous prefix. A cancelled/failed image download can then reuse the same missing-range
+    // filler used by playback instead of throwing away all received bytes.
+    let mut file = tokio::fs::File::create(&data_path)
         .await
-        .map_err(|e| format!("create cache part: {e}"))?;
+        .map_err(|e| format!("create media cache: {e}"))?;
+    let mut partial_meta = CacheMeta {
+        content_type: content_type.clone(),
+        size: total,
+        complete: false,
+        ranges: Vec::new(),
+        validator: validator.clone(),
+        blocks: Vec::new(),
+    };
+    if total > 0 {
+        write_meta(&meta_path, &partial_meta).await?;
+    }
     let mut bytes = Vec::new();
     let mut digest = Sha256::new();
     let mut received = 0u64;
     let mut last_reported = 0u64;
+    let mut last_checkpoint = 0u64;
     let mut stream = response.bytes_stream();
     loop {
         let next = if let Some(observer) = observer {
@@ -1197,7 +1211,13 @@ async fn get_or_fetch_inner(
                 value = stream.next() => value,
                 _ = observer.cancel.cancelled() => {
                     drop(file);
-                    let _ = tokio::fs::remove_file(&part_path).await;
+                    if total > 0 {
+                        partial_meta.ranges = (received > 0)
+                            .then_some(CachedRange { start: 0, end: received })
+                            .into_iter()
+                            .collect();
+                        let _ = write_meta(&meta_path, &partial_meta).await;
+                    }
                     return Err("media download cancelled".into());
                 },
             }
@@ -1205,12 +1225,35 @@ async fn get_or_fetch_inner(
             stream.next().await
         };
         let Some(chunk) = next else { break };
-        let chunk = chunk.map_err(|e| format!("read media body: {e}"))?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                if total > 0 {
+                    partial_meta.ranges = (received > 0)
+                        .then_some(CachedRange {
+                            start: 0,
+                            end: received,
+                        })
+                        .into_iter()
+                        .collect();
+                    let _ = write_meta(&meta_path, &partial_meta).await;
+                }
+                return Err(format!("read media body: {error}"));
+            }
+        };
         digest.update(&chunk);
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("write media cache: {e}"))?;
         received = received.saturating_add(chunk.len() as u64);
+        if total > 0 && received.saturating_sub(last_checkpoint) >= CACHE_BLOCK_SIZE {
+            partial_meta.ranges = vec![CachedRange {
+                start: 0,
+                end: received,
+            }];
+            write_meta(&meta_path, &partial_meta).await?;
+            last_checkpoint = received;
+        }
         if load_bytes {
             bytes.extend_from_slice(&chunk);
         }
@@ -1230,14 +1273,25 @@ async fn get_or_fetch_inner(
         .await
         .map_err(|e| format!("flush media cache: {e}"))?;
     drop(file);
+    if total > 0 && received != total {
+        partial_meta.ranges = (received > 0)
+            .then_some(CachedRange {
+                start: 0,
+                end: received,
+            })
+            .into_iter()
+            .collect();
+        write_meta(&meta_path, &partial_meta).await?;
+        return Err(format!(
+            "media body length mismatch: expected {total}, got {received}"
+        ));
+    }
     let actual_digest = format!("{:x}", digest.finalize());
     if expected_digest(path).is_some_and(|expected| actual_digest != expected) {
-        let _ = tokio::fs::remove_file(&part_path).await;
+        let _ = tokio::fs::remove_file(&data_path).await;
+        let _ = tokio::fs::remove_file(&meta_path).await;
         return Err("media SHA-256 did not match its content-addressed URL".into());
     }
-    tokio::fs::rename(&part_path, &data_path)
-        .await
-        .map_err(|e| format!("commit media cache: {e}"))?;
 
     let size = tokio::fs::metadata(&data_path)
         .await

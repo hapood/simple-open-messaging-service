@@ -1,85 +1,232 @@
 @if (avatarDraft(); as file) {
-  <app-avatar-editor class="embedded-avatar-editor" [file]="file" [embedded]="true"
-    (canceled)="cancelAvatarEdit()" (completed)="finishAvatarEdit($event)" />
+  <app-avatar-editor
+    class="embedded-avatar-editor"
+    [file]="file"
+    [embedded]="true"
+    (canceled)="cancelAvatarEdit()"
+    (completed)="finishAvatarEdit($event)"
+  />
 } @else {
-<div class="profile-editor" [class.safe-area-header]="respectTopSafeArea()">
-  <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
-      <app-icon [type]="AppIconType.BACK" [style]="{ width: '24px', height: '24px' }"></app-icon>
-    </button>
-    <span class="title">{{ 'profile.editTitle' | transloco }}</span>
-    <button mat-button color="primary" class="save-btn" (click)="save()" [disabled]="!canSave() && !justSaved()">
-      @if (justSaved()) {
-        <app-icon [type]="AppIconType.CHECK" [style]="{ width: '18px', height: '18px' }" />
-        <span>{{ 'common.saved' | transloco }}</span>
-      } @else {
-        {{ 'common.save' | transloco }}
-      }
-    </button>
-  </div>
+  <div class="profile-editor" [class.safe-area-header]="respectTopSafeArea()">
+    <div class="msg-header">
+      <button
+        class="icon-btn"
+        (click)="goBack()"
+        [attr.aria-label]="'common.back' | transloco"
+      >
+        <app-icon
+          [type]="AppIconType.BACK"
+          [style]="{ width: '24px', height: '24px' }"
+        ></app-icon>
+      </button>
+      <span class="title">{{ 'profile.editTitle' | transloco }}</span>
+      <button
+        mat-button
+        color="primary"
+        class="save-btn"
+        (click)="save()"
+        [disabled]="!canSave() && !justSaved()"
+      >
+        @if (justSaved()) {
+          <app-icon
+            [type]="AppIconType.CHECK"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+          <span>{{ 'common.saved' | transloco }}</span>
+        } @else {
+          {{ 'common.save' | transloco }}
+        }
+      </button>
+    </div>
 
-  <div class="body">
-    <div class="avatar-wrap">
-      <div class="avatar">
-        <app-user-avatar [type]="UserAvatarType.SELF" [loading]="!sessionProfile()"
-          [name]="name() || sessionProfile()?.account" [identityId]="sessionProfile()?.id" [src]="sessionProfile()?.avatar" />
-        <button class="avatar-edit" type="button" (click)="fileInput.click()"
-          [disabled]="uploading()" [attr.aria-label]="'profile.changeAvatarAria' | transloco">
-          @if (uploading()) {
-            <span class="spin"></span>
-          } @else {
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
+    <div class="body">
+      <div class="avatar-wrap">
+        <div class="avatar">
+          <app-user-avatar
+            [type]="UserAvatarType.SELF"
+            [loading]="!sessionProfile()"
+            [name]="name() || sessionProfile()?.account"
+            [identityId]="sessionProfile()?.id"
+            [src]="sessionProfile()?.avatar"
+          />
+          <button
+            class="avatar-edit"
+            type="button"
+            (click)="fileInput.click()"
+            [disabled]="uploading()"
+            [attr.aria-label]="'profile.changeAvatarAria' | transloco"
+          >
+            @if (uploading()) {
+              <span class="spin"></span>
+            } @else {
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
+                />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+            }
+          </button>
+        </div>
+        <input
+          #fileInput
+          type="file"
+          accept="image/*"
+          hidden
+          (change)="onAvatarPicked($event)"
+        />
+      </div>
+
+      <label class="field">
+        <span class="label">{{ 'profile.name' | transloco }}</span>
+        <input
+          class="text"
+          [ngModel]="name()"
+          (ngModelChange)="name.set($event)"
+          maxlength="30"
+          [placeholder]="'profile.namePlaceholder' | transloco"
+        />
+        @if (nameHint()) {
+          <span class="hint">{{ nameHint() }}</span>
+        }
+      </label>
+
+      <!-- Read-only identity field: the login handle (account) is immutable. Rendered as a disabled
+         Material-style text field so it reads as a locked sibling of the editable Name/Bio inputs. -->
+      <div class="field field-readonly">
+        <div class="label-row">
+          <span class="label">{{ 'profile.account' | transloco }}</span>
+          <span class="readonly-hint">{{
+            'profile.accountReadonly' | transloco
+          }}</span>
+        </div>
+        <div class="readonly-text">{{ sessionProfile()?.account }}</div>
+      </div>
+
+      <label class="field">
+        <span class="label">{{ 'profile.bio' | transloco }}</span>
+        <textarea
+          class="textarea"
+          rows="3"
+          [ngModel]="bio()"
+          (ngModelChange)="bio.set($event)"
+          maxlength="120"
+          [placeholder]="'profile.bioPlaceholder' | transloco"
+        ></textarea>
+        <span class="counter">{{ bio().length }}/120</span>
+      </label>
+
+      @if (quotaLoading()) {
+        <div class="quota-card quota-loading">
+          {{ 'profile.quota.loading' | transloco }}
+        </div>
+      } @else if (quota(); as state) {
+        <section
+          class="quota-card"
+          [class.quota-warning]="quotaStatus() === 'warning'"
+          [class.quota-exhausted]="quotaStatus() === 'exhausted'"
+        >
+          <button
+            type="button"
+            class="quota-summary"
+            (click)="quotaExpanded.set(!quotaExpanded())"
+            [attr.aria-expanded]="quotaExpanded()"
+          >
+            <span>
+              <strong>{{ 'profile.quota.title' | transloco }}</strong>
+              <small>{{
+                'profile.quota.status.' + quotaStatus() | transloco
+              }}</small>
+            </span>
+            <span class="quota-toggle">{{ quotaExpanded() ? '−' : '+' }}</span>
+          </button>
+          @if (quotaExpanded()) {
+            <div class="quota-details">
+              @for (category of quotaCategories; track category) {
+                <div class="quota-row">
+                  <div class="quota-row-label">
+                    <span>{{
+                      'profile.quota.category.' + category | transloco
+                    }}</span>
+                    @if (state.usage[category].limit === 0) {
+                      <span>{{ 'profile.quota.disabled' | transloco }}</span>
+                    } @else {
+                      <span
+                        >{{ state.usage[category].count }} /
+                        {{ state.usage[category].limit }}</span
+                      >
+                    }
+                  </div>
+                  <div class="quota-track">
+                    <span [style.width.%]="quotaPercent(category)"></span>
+                  </div>
+                </div>
+              }
+              <div class="quota-caps">
+                <span>{{
+                  'profile.quota.imageCap'
+                    | transloco: { size: formatBytes(state.caps.imageBytes) }
+                }}</span>
+                <span>{{
+                  'profile.quota.fileCap'
+                    | transloco
+                      : { size: formatBytes(state.caps.largeFileBytes) }
+                }}</span>
+              </div>
+              <p>
+                {{
+                  'profile.quota.reset'
+                    | transloco: { time: formatResetAt(state.resetAt) }
+                }}
+              </p>
+            </div>
           }
+        </section>
+      }
+
+      <div class="account-actions">
+        <button
+          mat-stroked-button
+          (click)="onManageSessions()"
+          [attr.aria-label]="'profile.manageSessions' | transloco"
+        >
+          {{ 'profile.manageSessions' | transloco }}
+        </button>
+        <button
+          mat-stroked-button
+          color="warn"
+          class="logout-btn"
+          (click)="onLogout()"
+          [attr.aria-label]="'nav.logout' | transloco"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <path d="M16 17l5-5-5-5" />
+            <path d="M21 12H9" />
+          </svg>
+          <span>{{ 'nav.logout' | transloco }}</span>
         </button>
       </div>
-      <input #fileInput type="file" accept="image/*" hidden (change)="onAvatarPicked($event)" />
-    </div>
-
-    <label class="field">
-      <span class="label">{{ 'profile.name' | transloco }}</span>
-      <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)"
-        maxlength="30" [placeholder]="'profile.namePlaceholder' | transloco" />
-      @if (nameHint()) {
-        <span class="hint">{{ nameHint() }}</span>
-      }
-    </label>
-
-    <!-- Read-only identity field: the login handle (account) is immutable. Rendered as a disabled
-         Material-style text field so it reads as a locked sibling of the editable Name/Bio inputs. -->
-    <div class="field field-readonly">
-      <div class="label-row">
-        <span class="label">{{ 'profile.account' | transloco }}</span>
-        <span class="readonly-hint">{{ 'profile.accountReadonly' | transloco }}</span>
-      </div>
-      <div class="readonly-text">{{ sessionProfile()?.account }}</div>
-    </div>
-
-    <label class="field">
-      <span class="label">{{ 'profile.bio' | transloco }}</span>
-      <textarea class="textarea" rows="3" [ngModel]="bio()" (ngModelChange)="bio.set($event)"
-        maxlength="120" [placeholder]="'profile.bioPlaceholder' | transloco"></textarea>
-      <span class="counter">{{ bio().length }}/120</span>
-    </label>
-
-    <div class="account-actions">
-      <button mat-stroked-button (click)="onManageSessions()" [attr.aria-label]="'profile.manageSessions' | transloco">
-        {{ 'profile.manageSessions' | transloco }}
-      </button>
-      <button mat-stroked-button color="warn" class="logout-btn" (click)="onLogout()"
-        [attr.aria-label]="'nav.logout' | transloco">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-          <path d="M16 17l5-5-5-5" />
-          <path d="M21 12H9" />
-        </svg>
-        <span>{{ 'nav.logout' | transloco }}</span>
-      </button>
     </div>
   </div>
-</div>
 }

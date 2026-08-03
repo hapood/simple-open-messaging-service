@@ -50,20 +50,20 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 
 ### User — Identity (humans + group-identity rows)
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `id` | Int (PK) | |
-| `account` | VarChar(31) | user = `letters+dot`; group = `!`+ULID; case-insensitive on write |
-| `hashPwd` | VarChar(127)? | argon2 hash; **null = OTP/QR-only account** (no password) |
-| `mustChangePassword` | Boolean | true = admin-generated INITIAL password the user must rotate (one-time bootstrap) |
-| `name` / `avatar` / `bio` | String | display name / avatar path / bio — **folded in** from the former `UserExtra` |
-| `isForeigner` | Boolean | cross-domain (federated) user |
-| `isGroup` | Boolean | true iff a `!`-sigil group-identity row (mirrors account grammar) |
-| `domain` | VarChar(63) | `"local"` for users on THIS server; `<peer-domain>` for a federated stub |
-| `friendReqAckRev` | DateTime | friend-request read cursor; badge = `friendReqRev > friendReqAckRev` |
-| `profileRev` / `remoteProfileRev` | Int / Int? | profile revision (origin-authoritative) / mirror's last-localized revision |
-| `threadRevision` | Int | per-user thread-list revision (the delta cursor) |
-| `createdAt` / `updatedAt` / `isDeleted` | | |
+| Field                                   | Type          | Description                                                                       |
+| --------------------------------------- | ------------- | --------------------------------------------------------------------------------- |
+| `id`                                    | Int (PK)      |                                                                                   |
+| `account`                               | VarChar(31)   | user = `letters+dot`; group = `!`+ULID; case-insensitive on write                 |
+| `hashPwd`                               | VarChar(127)? | argon2 hash; **null = OTP/QR-only account** (no password)                         |
+| `mustChangePassword`                    | Boolean       | true = admin-generated INITIAL password the user must rotate (one-time bootstrap) |
+| `name` / `avatar` / `bio`               | String        | display name / avatar path / bio — **folded in** from the former `UserExtra`      |
+| `isForeigner`                           | Boolean       | cross-domain (federated) user                                                     |
+| `isGroup`                               | Boolean       | true iff a `!`-sigil group-identity row (mirrors account grammar)                 |
+| `domain`                                | VarChar(63)   | `"local"` for users on THIS server; `<peer-domain>` for a federated stub          |
+| `friendReqAckRev`                       | DateTime      | friend-request read cursor; badge = `friendReqRev > friendReqAckRev`              |
+| `profileRev` / `remoteProfileRev`       | Int / Int?    | profile revision (origin-authoritative) / mirror's last-localized revision        |
+| `threadRevision`                        | Int           | per-user thread-list revision (the delta cursor)                                  |
+| `createdAt` / `updatedAt` / `isDeleted` |               |                                                                                   |
 
 Composite unique: `@@unique([account, domain])` — account name unique within a domain (allows a foreign stub to share a local account name). One account namespace covers users **and** admins (an admin is a linked `User` row).
 
@@ -71,28 +71,28 @@ Composite unique: `@@unique([account, domain])` — account name unique within a
 
 Opaque `randomBytes(32)`, sha256-hashed at rest; plaintext returned once at login. Replaces the legacy access+refresh JWT pair.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `tokenHash` | VarChar(127), unique | sha256 hash (never plaintext) |
-| `client` | VarChar(16) | `app` \| `web` \| `desktop` (device icon/label) |
-| `device` / `userAgent` / `ip` / `lastSeenIp` | | device label / raw UA / sign-in IP / last-seen IP |
-| `trusted` | Boolean | true → `expiresAt` NULL (permanent, revocation-only — token in OS secure storage); false → sliding 14-day |
-| `expiresAt` | DateTime? | null = never (trusted); set = sliding 14-day deadline (untrusted) |
-| `lastSeenAt` | DateTime | sliding-window activity tracker |
-| `persistent` | Boolean | web/desktop cookie persistence (14d sliding vs session) |
-| `revokedAt` / `revokeReason` | | soft revoke; reason ∈ logout/device_revoke/all_devices/password_change/admin_disable/admin_purge |
+| Field                                        | Type                 | Description                                                                                               |
+| -------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `tokenHash`                                  | VarChar(127), unique | sha256 hash (never plaintext)                                                                             |
+| `client`                                     | VarChar(16)          | `app` \| `web` \| `desktop` (device icon/label)                                                           |
+| `device` / `userAgent` / `ip` / `lastSeenIp` |                      | device label / raw UA / sign-in IP / last-seen IP                                                         |
+| `trusted`                                    | Boolean              | true → `expiresAt` NULL (permanent, revocation-only — token in OS secure storage); false → sliding 14-day |
+| `expiresAt`                                  | DateTime?            | null = never (trusted); set = sliding 14-day deadline (untrusted)                                         |
+| `lastSeenAt`                                 | DateTime             | sliding-window activity tracker                                                                           |
+| `persistent`                                 | Boolean              | web/desktop cookie persistence (14d sliding vs session)                                                   |
+| `revokedAt` / `revokeReason`                 |                      | soft revoke; reason ∈ logout/device_revoke/all_devices/password_change/admin_disable/admin_purge          |
 
 Index: `@@index([userId])`.
 
 ### LoginCode — admin-issued OTP (Android app-session login)
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `codeHash` | VarChar(127) | argon2 hash of the 6-digit code; plaintext never stored |
-| `issuedBy` / `issuedAt` / `expiresAt` | | admin issuer / issue / +10 min expiry |
-| `consumedAt` / `consumedIp` / `consumedDevice` | | single-use guard (`consumedAt: null` precondition via updateMany) |
-| `producedSessionId` | Int? | the `SessionToken.id` it created (audit link; intentionally NOT a FK) |
-| `revokedAt` | | admin-revoked (only an unused code) |
+| Field                                          | Type         | Description                                                           |
+| ---------------------------------------------- | ------------ | --------------------------------------------------------------------- |
+| `codeHash`                                     | VarChar(127) | argon2 hash of the 6-digit code; plaintext never stored               |
+| `issuedBy` / `issuedAt` / `expiresAt`          |              | admin issuer / issue / +10 min expiry                                 |
+| `consumedAt` / `consumedIp` / `consumedDevice` |              | single-use guard (`consumedAt: null` precondition via updateMany)     |
+| `producedSessionId`                            | Int?         | the `SessionToken.id` it created (audit link; intentionally NOT a FK) |
+| `revokedAt`                                    |              | admin-revoked (only an unused code)                                   |
 
 ### PushToken — push registration
 
@@ -100,43 +100,43 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 
 ### MessageThread — Conversation
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `id` | Int (PK) | |
-| `type` | MessageThreadType | `P2P` \| `GROUP` |
-| `curSeq` | Int | last-allocated `Message.seq` (-1 = none); atomic counter backing seq allocation |
-| `pullUntil` | Int | federation pull cursor (REMOTE thread seq pulled up to); seeded by invite `sinceSeq` |
-| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` | | denormalized "last message" cache for the conversation list (hot read) |
-| `groupUserId` | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P |
-| `createdAt` / `updatedAt` | | |
+| Field                                                     | Type                   | Description                                                                          |
+| --------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------ |
+| `id`                                                      | Int (PK)               |                                                                                      |
+| `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                     |
+| `curSeq`                                                  | Int                    | last-allocated `Message.seq` (-1 = none); atomic counter backing seq allocation      |
+| `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); seeded by invite `sinceSeq` |
+| `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)               |
+| `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                              |
+| `createdAt` / `updatedAt`                                 |                        |                                                                                      |
 
 ### ThreadParticipant — Membership (the single source of truth)
 
 One row per (user, thread); P2P and GROUP share this table (`role` null for P2P). Replaces the former `UserMessageThread` + `GroupMember`.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `lastReadSeq` | Int? | read watermark; unread = `count(Message where seq > lastReadSeq)` |
-| `role` | GroupRole? | OWNER/ADMIN/MEMBER (GROUP only); null for P2P |
-| `muted` / `pinned` / `pinnedAt` | | mute / pin / pin-order |
-| `clearedSeq` | Int? | per-user "clear history" sequence watermark |
-| `alias` | VarChar(64)? | per-user nickname for this thread |
-| `leftAt` | DateTime? | soft-leave / hidden (null = active) |
-| `joinedAt` / `createdAt` / `updatedAt` | | |
+| Field                                  | Type         | Description                                                       |
+| -------------------------------------- | ------------ | ----------------------------------------------------------------- |
+| `lastReadSeq`                          | Int?         | read watermark; unread = `count(Message where seq > lastReadSeq)` |
+| `role`                                 | GroupRole?   | OWNER/ADMIN/MEMBER (GROUP only); null for P2P                     |
+| `muted` / `pinned` / `pinnedAt`        |              | mute / pin / pin-order                                            |
+| `clearedSeq`                           | Int?         | per-user "clear history" sequence watermark                       |
+| `alias`                                | VarChar(64)? | per-user nickname for this thread                                 |
+| `leftAt`                               | DateTime?    | soft-leave / hidden (null = active)                               |
+| `joinedAt` / `createdAt` / `updatedAt` |              |                                                                   |
 
 Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId, pinned]` (pinned-first list).
 
 ### Invite — Friend-add + Group-invite (unified)
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `kind` | InviteKind | `FRIEND` \| `GROUP` |
-| `fromUserId` / `toUserId` | Int | inviter / decision-maker |
-| `threadId` | Int? | GROUP: target group; FRIEND: null (P2P thread minted on accept) |
-| `note` | VarChar(255) | invite message |
-| `status` | InviteStatus | `PENDING → ACCEPTED \| REJECTED \| REVOKED \| EXPIRED` |
-| `expiresAt` | DateTime | 7d; validated at accept time (background sweep deferred) |
-| `origin` / `originId` | VarChar | minting server domain / id — `(origin, originId)` delivery dedup |
+| Field                     | Type         | Description                                                      |
+| ------------------------- | ------------ | ---------------------------------------------------------------- |
+| `kind`                    | InviteKind   | `FRIEND` \| `GROUP`                                              |
+| `fromUserId` / `toUserId` | Int          | inviter / decision-maker                                         |
+| `threadId`                | Int?         | GROUP: target group; FRIEND: null (P2P thread minted on accept)  |
+| `note`                    | VarChar(255) | invite message                                                   |
+| `status`                  | InviteStatus | `PENDING → ACCEPTED \| REJECTED \| REVOKED \| EXPIRED`           |
+| `expiresAt`               | DateTime     | 7d; validated at accept time (background sweep deferred)         |
+| `origin` / `originId`     | VarChar      | minting server domain / id — `(origin, originId)` delivery dedup |
 
 Rows are never hard-deleted (kept as history). The database has a unique constraint on
 `(origin, originId)`; unique-conflict handling deduplicates FRIEND on `(from, to)` and GROUP on
@@ -146,11 +146,11 @@ Rows are never hard-deleted (kept as history). The database has a unique constra
 
 Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds owner + roster revision.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `groupUserId` | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread |
-| `ownerId` | Int | denormalized owner (fast lookup) |
-| `rosterRev` / `remoteRosterRev` | Int / Int? | origin roster revision (authoritative) / mirror's last-pulled revision |
+| Field                           | Type                  | Description                                                            |
+| ------------------------------- | --------------------- | ---------------------------------------------------------------------- |
+| `groupUserId`                   | Int (unique, FK→User) | the `!`-User identity row; 1:1 with the GROUP thread                   |
+| `ownerId`                       | Int                   | denormalized owner (fast lookup)                                       |
+| `rosterRev` / `remoteRosterRev` | Int / Int?            | origin roster revision (authoritative) / mirror's last-pulled revision |
 
 ### ThreadRevision — Thread-list operation log
 
@@ -162,24 +162,24 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 
 ### Message — Message
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `id` | **BigInt** (PK) | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`) |
-| `seq` | Int | per-thread monotonic seq (0-indexed), allocated atomically from `curSeq`; the EXTERNAL ordering key + frontend identity |
-| `contentType` | ContentType | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL` |
-| `content` | String | text / JSON / CAS-url meta (per type) |
-| `clientMessageId` | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct) |
-| `originSeq` | Int? | the ORIGINATING server's per-thread seq — the cross-server value; federation dedup key + pull cursor |
-| `originServerTime` | DateTime? | sender-server allocation time (audit only; never displayed) |
-| `threadId` / `creator` | | FKs |
-| `createdAt` / `updatedAt` / `isDeleted` | | |
+| Field                                   | Type                 | Description                                                                                                             |
+| --------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                     |
+| `seq`                                   | Int                  | per-thread monotonic seq (0-indexed), allocated atomically from `curSeq`; the EXTERNAL ordering key + frontend identity |
+| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL`                                                |
+| `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                   |
+| `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                           |
+| `originSeq`                             | Int?                 | the ORIGINATING server's per-thread seq — the cross-server value; federation dedup key + pull cursor                    |
+| `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                             |
+| `threadId` / `creator`                  |                      | FKs                                                                                                                     |
+| `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                         |
 
 Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([threadId, creator, originSeq])` (sender seq-allocation race + receiver pull dedup).
 
 ### MediaAsset / MediaMessage / PendingMedia — Media
 
-- **MediaAsset** — content-addressed asset: `digest` = sha256 hex (the on-disk filename stem under `uploads/shards/<dd>/<dd>/<digest>.<ext>`), `bytes`, `refs` refcount (GC reclaims file + row at 0). Avatars are NOT tracked here (they keep the sharp pipeline).
-- **MediaMessage** — per-object authz index (1:1 with a media-bearing Message): `(messageId, threadId, digest)`. The `/uploads/shards/*` gate answers "may this user read this digest?" with one indexed EXISTS joined to ThreadParticipant.
+- **MediaAsset** — content-addressed asset: `digest` = sha256 of the raw bytes, stored once at `data/cas/<dd>/<dd>/<digest>` with no filename or extension. It stores `bytes` and `PENDING | READY | DELETING | DELETED`; GC retains `DELETED` tombstones. Liveness is derived from non-deleted ordinary messages and active staging, never a cached refcount; forward bundles deliberately do not keep blobs alive.
+- **MediaMessage** — per-object authz index (1:1 with a media-bearing Message): `(messageId, threadId, digest)`. The `/uploads/cas/*` gate answers "may this user read this READY digest?" with one indexed EXISTS joined to ThreadParticipant.
 - **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `originSeq` dedup. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC.
 
 ### Admin / AdminSession / AdminActionLog / 2FA / WebAuthn
@@ -232,5 +232,5 @@ enum AdminRole { SUPER_ADMIN  ADMIN  VIEWER }
 3. **Invites are unified**: friend-add and group-invite are one `Invite` table (`FRIEND`/`GROUP`); the legacy JWT-token-in-message group invite is retired. Rows are never hard-deleted.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
 5. **Thread-list versioning**: `ThreadRevision` is a per-user ADD/DELETE log keyed by `User.threadRevision`; clients delta-replay rather than re-fetch the whole list.
-6. **Soft-delete only**: DB rows are never purged (`isDeleted`/`revokedAt`/`leftAt`); only media-CAS blobs are hard-deleted (at `MediaAsset.refs ≤ 0`).
+6. **Soft-delete only**: DB rows are never purged (`isDeleted`/`revokedAt`/`leftAt`); only media-CAS blobs are hard-deleted by an explicit manual cleanup after live-message/staging reachability is checked.
 7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).

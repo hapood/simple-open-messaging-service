@@ -51,6 +51,7 @@ use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
 use tauri::{
     Assets, Emitter, Manager, Runtime, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder,
 };
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
 
 // Desktop SSE supervisor (the Rust-owned /events stream) uses these. Gated so the mobile build (which
@@ -1461,7 +1462,7 @@ async fn upload_stream_path_core(
 async fn upload_stream_open_file_core(
     app: tauri::AppHandle,
     proxy: ProxyState,
-    file: tokio::fs::File,
+    mut file: tokio::fs::File,
     endpoint: String,
     filename: String,
     mime: String,
@@ -1474,6 +1475,9 @@ async fn upload_stream_open_file_core(
         "/upload" | "/upload/file" | "/upload/video" | "/upload/audio" | "/upload/avatar"
     ) {
         return Err("unsupported upload endpoint".to_string());
+    }
+    if let Some(cid) = client_message_id.as_ref() {
+        return upload_resumable_open_file(app, proxy, &mut file, filename, mime, size, cid).await;
     }
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let url = format!("{}/api/v1{}", origin, endpoint);
@@ -1569,6 +1573,141 @@ async fn upload_stream_open_file_core(
     }
     // Return the raw envelope ({code,message,data}); the frontend reads it as StandardResponse<T>.
     serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
+}
+
+/// Native counterpart of the browser's sequential resumable protocol. The server owns the
+/// authoritative offset; every retry re-initializes idempotently and resumes from that offset.
+async fn upload_resumable_open_file(
+    app: tauri::AppHandle,
+    proxy: ProxyState,
+    file: &mut tokio::fs::File,
+    filename: String,
+    mime: String,
+    size: u64,
+    client_message_id: &str,
+) -> Result<serde_json::Value, String> {
+    const FALLBACK_CHUNK: usize = 4 * 1024 * 1024;
+    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let client = proxy.api_client(&origin);
+    let token = proxy.token.lock().ok().and_then(|g| g.clone());
+    let auth = |request: reqwest::RequestBuilder| {
+        if let Some(value) = token.as_ref() {
+            request.header("authorization", format!("Bearer {value}"))
+        } else {
+            request
+        }
+    };
+    let init_url = format!("{origin}/api/v1/uploads/resumable/init");
+    let init = auth(client.post(init_url).json(&serde_json::json!({
+        "clientMessageId": client_message_id,
+        "originalName": filename,
+        "mimeType": if mime.is_empty() { "application/octet-stream" } else { &mime },
+        "totalBytes": size,
+    })))
+    .send()
+    .await
+    .map_err(|e| format!("upload init: {e}"))?;
+    let init_value = init
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("upload init parse: {e}"))?;
+    if init_value.get("code").and_then(|v| v.as_i64()) != Some(0) {
+        return Ok(init_value);
+    }
+    let upload_id = init_value
+        .pointer("/data/uploadId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "upload init omitted uploadId".to_string())?
+        .to_string();
+    let status_url = format!("{origin}/api/v1/uploads/resumable/{upload_id}");
+    let status = auth(client.get(&status_url))
+        .send()
+        .await
+        .map_err(|e| format!("upload status: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("upload status parse: {e}"))?;
+    if status.get("code").and_then(|v| v.as_i64()) != Some(0) {
+        return Ok(status);
+    }
+    let mut offset = status
+        .pointer("/data/offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let chunk_size = status
+        .pointer("/data/chunkSize")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(FALLBACK_CHUNK);
+    file.seek(std::io::SeekFrom::Start(offset))
+        .await
+        .map_err(|e| format!("seek upload source: {e}"))?;
+    let cancel = CancellationToken::new();
+    proxy
+        .upload_cancels
+        .lock()
+        .expect("upload_cancels lock")
+        .insert(client_message_id.to_string(), cancel.clone());
+    let transfer = async {
+        while offset < size {
+            let wanted =
+                usize::try_from((size - offset).min(chunk_size as u64)).unwrap_or(chunk_size);
+            let mut chunk = vec![0_u8; wanted];
+            file.read_exact(&mut chunk)
+                .await
+                .map_err(|e| format!("read upload source: {e}"))?;
+            let end = offset + wanted as u64 - 1;
+            let response = auth(
+                client
+                    .put(&status_url)
+                    .header("content-type", "application/octet-stream")
+                    .header("content-range", format!("bytes {offset}-{end}/{size}"))
+                    .body(chunk),
+            )
+            .send()
+            .await
+            .map_err(|e| format!("upload chunk: {e}"))?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("upload chunk parse: {e}"))?;
+            if response.get("code").and_then(|v| v.as_i64()) != Some(0) {
+                return Ok(response);
+            }
+            offset = response
+                .pointer("/data/offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(end + 1);
+            let _ = app.emit(
+                "upload-progress",
+                serde_json::json!({
+                    "clientMessageId": client_message_id,
+                    "loaded": offset,
+                    "total": size,
+                }),
+            );
+        }
+        auth(
+            client
+                .post(format!("{status_url}/complete"))
+                .json(&serde_json::json!({})),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("upload complete: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("upload complete parse: {e}"))
+    };
+    let result = tokio::select! {
+        value = transfer => value,
+        _ = cancel.cancelled() => Err("upload cancelled".to_string()),
+    };
+    proxy
+        .upload_cancels
+        .lock()
+        .expect("upload_cancels lock")
+        .remove(client_message_id);
+    result
 }
 
 /// Android's source adapter transfers ownership of a readable descriptor (system-picker content URI or

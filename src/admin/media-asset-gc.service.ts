@@ -1,8 +1,15 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import type { ServerResponse } from 'http';
 import { join } from 'path';
 import { readdir, stat, unlink } from 'fs';
 import { promisify } from 'util';
-import { and, count, eq, inArray, lt, lte, ne, or, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, lt, ne, or, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type Database,
@@ -13,12 +20,12 @@ import {
   forwardBundleAsset,
   forwardBundleDependency,
   mediaAsset,
-  mediaMessage,
   pendingMedia,
   user,
 } from '../database/schema.js';
 import { UploadService } from '../upload/upload.service.js';
 import { parseAvatarBase } from '../upload/avatar-path.js';
+import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 
 const readdirAsync = promisify(readdir);
 const statAsync = promisify(stat);
@@ -29,9 +36,48 @@ const unlinkAsync = promisify(unlink);
  *  only sweeps sends that never finished across a long window. */
 const STALE_PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
 const STALE_FAILED_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days for multi-device recovery
+const STALE_ASSET_PENDING_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours for interrupted CAS writes
+const PROGRESS_THROTTLE_MS = 300;
+
+export type MediaGcTaskKind = 'gc' | 'reconcile';
+export type MediaGcTaskStatus =
+  | 'running'
+  | 'cancelling'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
+
+export interface MediaGcProgress {
+  id: string;
+  kind: MediaGcTaskKind;
+  status: MediaGcTaskStatus;
+  phase: string;
+  directory: string | null;
+  file: string | null;
+  fileSize: string | null;
+  scannedFiles: number;
+  scannedBytes: string;
+  deletedFiles: number;
+  deletedBytes: string;
+  startedAt: string;
+  finishedAt: string | null;
+  result?: GcResult | ReconcileResult;
+  error?: string;
+}
+
+interface ProgressClient {
+  res: ServerResponse;
+  ping: NodeJS.Timeout;
+}
+
+interface TaskContext {
+  task: MediaGcProgress;
+  cancelled: () => boolean;
+  update: (patch: Partial<MediaGcProgress>, immediate?: boolean) => void;
+}
 
 export interface GcResult {
-  /** MediaAsset rows deleted (refs <= 0). */
+  /** MediaAsset rows transitioned to retained DELETED tombstones. */
   reapedRows: number;
   /** Shard files actually unlinked (may be < reapedRows if a file was already missing). */
   reapedFiles: number;
@@ -49,31 +95,263 @@ export interface ForwardBundleGcResult {
   orphanBytes: string;
 }
 
+export interface ReconcileResult {
+  deletedOrphanFiles: number;
+  deletedTombstoneFiles: number;
+  markedMissingReadyDeleted: number;
+  skippedPending: number;
+  skippedDeleting: number;
+}
+
 /**
- * Garbage collection for content-addressed media (Phase 5). The `refs` count on MediaAsset is the
- * authoritative liveness signal: every upload bumps it, a future message-delete path will decrement
- * it, and `refs <= 0` means nothing references the file anymore.
+ * Manual garbage collection for content-addressed media. READY liveness is derived directly from
+ * non-deleted ordinary messages and active PendingMedia; forward bundles deliberately do not retain
+ * blobs. PENDING assets are never age-reaped and require explicit administrator termination.
  *
  * Two tiers:
- *  - {@link gcOrphanedAssets} (primary, cheap, indexed): delete rows WHERE refs <= 0 + their shard
- *    file + sweep stale tmp files. This is the daily-cron / manual-trigger path.
- *  - {@link reconcileShards} (corrective, O(files)): walk uploads/shards/ and delete any file whose
- *    digest has no MediaAsset row. Corrects refs drift the cheap scan can't see (e.g. a bug that
- *    deleted a row without unlinking, or vice versa). Run monthly, not on the hot path.
+ *  - {@link gcOrphanedAssets}: manually delete unreachable READY blobs and resume DELETING rows.
+ *  - {@link reconcileShards}: bounded-batch disk/database consistency repair; PENDING is skipped.
  *
- * GC scans ONLY uploads/shards/. Avatars are never
+ * GC scans ONLY uploads/cas/. Avatars are never
  * touched — they have no MediaAsset row; avatar overwrite-delete is owned by UploadService.deleteByUrl.
- * `clearHistory` (per-user clearedSeq watermark) does NOT decrement refs (confirmed it never touches
- * Message rows or files), so clearing a conversation never reclaims its media.
+ * `clearHistory` only changes a per-user watermark and therefore never affects media liveness.
  */
 @Injectable()
 export class MediaAssetGcService {
   private readonly logger = new Logger(MediaAssetGcService.name);
+  private gcRunning = false;
+  private currentTask: MediaGcProgress | null = null;
+  private readonly progressClients = new Map<string, Set<ProgressClient>>();
+  private lastProgressEmitAt = 0;
 
   constructor(
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
   ) {}
+
+  startTask(kind: MediaGcTaskKind): MediaGcProgress {
+    if (this.gcRunning) {
+      throw new ConflictException(
+        'a media maintenance task is already running',
+      );
+    }
+    const task: MediaGcProgress = {
+      id: randomUUID(),
+      kind,
+      status: 'running',
+      phase: 'starting',
+      directory: null,
+      file: null,
+      fileSize: null,
+      scannedFiles: 0,
+      scannedBytes: '0',
+      deletedFiles: 0,
+      deletedBytes: '0',
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+    this.currentTask = task;
+    this.gcRunning = true;
+    void this.executeTask(task);
+    return structuredClone(task);
+  }
+
+  getTask(id: string): MediaGcProgress {
+    if (!this.currentTask || this.currentTask.id !== id) {
+      throw new NotFoundException('media maintenance task not found');
+    }
+    return structuredClone(this.currentTask);
+  }
+
+  getCurrentTask(): MediaGcProgress | null {
+    return this.currentTask ? structuredClone(this.currentTask) : null;
+  }
+
+  cancelTask(id: string): MediaGcProgress {
+    const task = this.getMutableTask(id);
+    if (task.status === 'running') {
+      task.status = 'cancelling';
+      task.phase = 'cancelling';
+      this.emitProgress(task, true);
+    }
+    return structuredClone(task);
+  }
+
+  attachProgress(id: string, res: ServerResponse, origin?: string): void {
+    const task = this.getMutableTask(id);
+    const ping = initSseResponse(res, origin);
+    if (['completed', 'cancelled', 'failed'].includes(task.status)) {
+      res.write(formatSseFrame(this.progressEvent(task), task));
+      clearInterval(ping);
+      res.end();
+      return;
+    }
+    const client = { res, ping };
+    const clients = this.progressClients.get(id) ?? new Set<ProgressClient>();
+    clients.add(client);
+    this.progressClients.set(id, clients);
+    res.write(formatSseFrame(this.progressEvent(task), task));
+    res.on('close', () => {
+      clearInterval(ping);
+      clients.delete(client);
+      if (clients.size === 0) this.progressClients.delete(id);
+    });
+  }
+
+  private getMutableTask(id: string): MediaGcProgress {
+    if (!this.currentTask || this.currentTask.id !== id) {
+      throw new NotFoundException('media maintenance task not found');
+    }
+    return this.currentTask;
+  }
+
+  private async executeTask(task: MediaGcProgress): Promise<void> {
+    const context: TaskContext = {
+      task,
+      cancelled: () => task.status === 'cancelling',
+      update: (patch, immediate = false) => {
+        Object.assign(task, patch);
+        this.emitProgress(task, immediate);
+      },
+    };
+    try {
+      task.result =
+        task.kind === 'gc'
+          ? await this.gcOrphanedAssetsCore(context)
+          : await this.reconcileShardsCore(context);
+      task.status = context.cancelled() ? 'cancelled' : 'completed';
+      task.phase = task.status;
+    } catch (error) {
+      task.status = 'failed';
+      task.phase = 'failed';
+      task.error = error instanceof Error ? error.message : String(error);
+      this.taskLog(
+        'error',
+        task,
+        'task-failed',
+        'media maintenance task failed',
+        undefined,
+        undefined,
+        error,
+      );
+    } finally {
+      task.finishedAt = new Date().toISOString();
+      this.gcRunning = false;
+      this.emitProgress(task, true);
+      this.closeProgressClientsLater(task.id);
+    }
+  }
+
+  private emitProgress(task: MediaGcProgress, immediate = false): void {
+    const now = Date.now();
+    if (!immediate && now - this.lastProgressEmitAt < PROGRESS_THROTTLE_MS)
+      return;
+    this.lastProgressEmitAt = now;
+    const frame = formatSseFrame(this.progressEvent(task), task);
+    for (const client of this.progressClients.get(task.id) ?? []) {
+      try {
+        client.res.write(frame);
+      } catch {
+        // The response close handler removes the client.
+      }
+    }
+  }
+
+  private progressEvent(task: MediaGcProgress): string {
+    return ['completed', 'cancelled', 'failed'].includes(task.status)
+      ? task.status
+      : 'progress';
+  }
+
+  private closeProgressClientsLater(id: string): void {
+    setTimeout(() => {
+      for (const client of this.progressClients.get(id) ?? []) {
+        clearInterval(client.ping);
+        client.res.end();
+      }
+      this.progressClients.delete(id);
+    }, 100);
+  }
+
+  private taskLog(
+    level: 'log' | 'error',
+    task: MediaGcProgress,
+    action: string,
+    message: string,
+    digest?: string,
+    bytes?: bigint,
+    error?: unknown,
+  ): void {
+    const record = {
+      scope: 'media-gc',
+      taskId: task.id,
+      taskKind: task.kind,
+      action,
+      ...(digest ? { digest } : {}),
+      ...(bytes !== undefined ? { bytes: String(bytes) } : {}),
+      ...(error ? { err: error } : {}),
+      msg: message,
+    };
+    if (level === 'error') this.logger.error(record);
+    else this.logger.log(record);
+  }
+
+  private async runExclusive<T>(work: () => Promise<T>): Promise<T> {
+    if (this.gcRunning) {
+      throw new ConflictException(
+        'a media maintenance task is already running',
+      );
+    }
+    this.gcRunning = true;
+    try {
+      return await work();
+    } finally {
+      this.gcRunning = false;
+    }
+  }
+
+  async listPendingAssets() {
+    const result = await this.database.db.execute<{
+      digest: string;
+      bytes: string;
+      stateChangedAt: Date;
+      pendingMediaCount: number;
+    }>(sql`
+      SELECT asset.digest, asset.bytes::text AS bytes,
+             asset."stateChangedAt",
+             count(pending.id)::int AS "pendingMediaCount"
+      FROM "MediaAsset" asset
+      LEFT JOIN "PendingMedia" pending ON pending.digest = asset.digest
+      WHERE asset.status = 'PENDING'
+      GROUP BY asset.digest, asset.bytes, asset."stateChangedAt"
+      ORDER BY asset."stateChangedAt" ASC
+    `);
+    return result.rows;
+  }
+
+  async forceTerminatePending(digest: string) {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('invalid CAS digest');
+    return this.database.db.transaction(async (tx) => {
+      const [claimed] = await tx
+        .update(mediaAsset)
+        .set({ status: 'DELETING', stateChangedAt: sql`CURRENT_TIMESTAMP` })
+        .where(
+          and(eq(mediaAsset.digest, digest), eq(mediaAsset.status, 'PENDING')),
+        )
+        .returning({ digest: mediaAsset.digest });
+      if (!claimed) return { terminated: false, busy: false };
+      await tx.delete(pendingMedia).where(eq(pendingMedia.digest, digest));
+      const deletedBlob = await this.reapDigest(digest);
+      const deletedTmp = await this.sweepDigestTmp(digest);
+      await tx
+        .update(mediaAsset)
+        .set({ status: 'DELETED', stateChangedAt: sql`CURRENT_TIMESTAMP` })
+        .where(
+          and(eq(mediaAsset.digest, digest), eq(mediaAsset.status, 'DELETING')),
+        );
+      return { terminated: true, busy: false, deletedBlob, deletedTmp };
+    });
+  }
 
   /** Find immutable bundles that are not reachable from any visible ForwardMessage root. This is
    * intentionally admin-triggered only: bundle retention must never depend on a background timer. */
@@ -112,23 +390,6 @@ export class MediaAssetGcService {
         })
         .from(forwardBundle)
         .where(inArray(forwardBundle.id, ids));
-      const assets = await tx
-        .select({ digest: forwardBundleAsset.digest })
-        .from(forwardBundleAsset)
-        .where(inArray(forwardBundleAsset.bundleId, ids));
-      const refsByDigest = new Map<string, number>();
-      for (const asset of assets) {
-        refsByDigest.set(
-          asset.digest,
-          (refsByDigest.get(asset.digest) ?? 0) + 1,
-        );
-      }
-      for (const [digest, count] of refsByDigest) {
-        await tx
-          .update(mediaAsset)
-          .set({ refs: sql`${mediaAsset.refs} - ${count}` })
-          .where(eq(mediaAsset.digest, digest));
-      }
       await tx
         .delete(forwardBundleDependency)
         .where(
@@ -171,38 +432,129 @@ export class MediaAssetGcService {
     return rows.rows.map((row) => row.id);
   }
 
-  /** Primary GC: reap MediaAsset rows with refs <= 0 + their shard file, sweep stale tmp, and reap
-   *  stale PendingMedia staging rows (abandoned pending sends and expired failed recovery records) along
-   *  with any orphan file they point at. */
+  /** Primary GC: reap unreachable READY assets and resume DELETING assets, then sweep stale tmp.
+   * PENDING assets are never candidates. */
   async gcOrphanedAssets(): Promise<GcResult> {
-    const orphans = await this.database.db
-      .select({ digest: mediaAsset.digest })
-      .from(mediaAsset)
-      .where(lte(mediaAsset.refs, 0));
-    let reapedFiles = 0;
-    for (const { digest } of orphans) {
-      if (await this.reapDigest(digest)) reapedFiles++;
-      await this.database.db
-        .delete(mediaAsset)
-        .where(eq(mediaAsset.digest, digest))
-        .catch(() => {
-          // row already gone (concurrent GC) — nothing to do.
-        });
-    }
-    const sweptTmp = await this.sweepTmp();
-    const pending = await this.gcStalePending(
-      STALE_PENDING_TTL_MS,
-      STALE_FAILED_TTL_MS,
-    );
-    const result: GcResult = {
-      reapedRows: orphans.length,
-      reapedFiles,
-      sweptTmp,
-      sweptPending: pending.sweptRows,
-      reapedPendingFiles: pending.reapedFiles,
-    };
+    return this.runExclusive(() => this.gcOrphanedAssetsCore());
+  }
+
+  private async gcOrphanedAssetsCore(context?: TaskContext): Promise<GcResult> {
+    const result = await this.database.db.transaction(async (tx) => {
+      let reapedRows = 0;
+      let reapedFiles = 0;
+      let deletedBytes = 0n;
+      context?.update({ phase: 'finding-candidates' }, true);
+      for (;;) {
+        if (context?.cancelled()) break;
+        const candidates = await tx.execute<{
+          digest: string;
+          bytes: string;
+        }>(sql`
+        SELECT asset.digest, asset.bytes::text AS bytes
+        FROM "MediaAsset" asset
+        WHERE asset.status = 'DELETING'
+           OR (
+             asset.status = 'READY'
+             AND NOT EXISTS (
+               SELECT 1 FROM "MediaMessage" mm
+               JOIN "Message" message ON message.id = mm."messageId"
+               WHERE mm.digest = asset.digest AND message."isDeleted" = false
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM "PendingMedia" pending
+               WHERE pending.digest = asset.digest
+                 AND pending.status IN ('pending', 'failed')
+             )
+           )
+        ORDER BY asset.digest
+        LIMIT 500
+      `);
+        if (candidates.rows.length === 0) break;
+        for (const { digest, bytes } of candidates.rows) {
+          if (context?.cancelled()) break;
+          const blobBytes = BigInt(bytes);
+          context?.update({
+            phase: 'deleting-assets',
+            directory: `${digest.slice(0, 2)}/${digest.slice(2, 4)}`,
+            file: digest,
+            fileSize: bytes,
+            scannedFiles: (context.task.scannedFiles ?? 0) + 1,
+            scannedBytes: String(BigInt(context.task.scannedBytes) + blobBytes),
+          });
+          const claimed = await tx.execute<{ digest: string }>(sql`
+          UPDATE "MediaAsset" asset
+          SET status = 'DELETING', "stateChangedAt" = CURRENT_TIMESTAMP
+          WHERE asset.digest = ${digest}
+            AND (
+              asset.status = 'DELETING'
+              OR (
+                asset.status = 'READY'
+                AND NOT EXISTS (
+                  SELECT 1 FROM "MediaMessage" mm
+                  JOIN "Message" message ON message.id = mm."messageId"
+                  WHERE mm.digest = asset.digest AND message."isDeleted" = false
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM "PendingMedia" pending
+                  WHERE pending.digest = asset.digest
+                    AND pending.status IN ('pending', 'failed')
+                )
+              )
+            )
+          RETURNING digest
+        `);
+          if (!claimed.rows[0]) continue;
+          if (await this.reapDigest(digest, context, blobBytes)) {
+            reapedFiles++;
+            deletedBytes += blobBytes;
+            if (context) {
+              context.update(
+                {
+                  deletedFiles: reapedFiles,
+                  deletedBytes: String(deletedBytes),
+                },
+                true,
+              );
+              this.taskLog(
+                'log',
+                context.task,
+                'delete-unreachable',
+                'deleted unreachable CAS blob',
+                digest,
+                blobBytes,
+              );
+            }
+          }
+          await tx
+            .update(mediaAsset)
+            .set({
+              status: 'DELETED',
+              stateChangedAt: sql`CURRENT_TIMESTAMP`,
+            })
+            .where(
+              and(
+                eq(mediaAsset.digest, digest),
+                eq(mediaAsset.status, 'DELETING'),
+              ),
+            );
+          reapedRows++;
+        }
+      }
+      context?.update(
+        { phase: 'sweeping-temporary-files', file: null, fileSize: null },
+        true,
+      );
+      const sweptTmp = context?.cancelled() ? 0 : await this.sweepTmp();
+      return {
+        reapedRows,
+        reapedFiles,
+        sweptTmp,
+        sweptPending: 0,
+        reapedPendingFiles: 0,
+      };
+    });
     this.logger.log(
-      `gcOrphanedAssets: reaped ${result.reapedRows} row(s), ${reapedFiles} file(s), swept ${sweptTmp} tmp, ${pending.sweptRows} stale stage(s) (${pending.reapedFiles} file(s)).`,
+      `gcOrphanedAssets: reaped ${result.reapedRows} row(s), ${result.reapedFiles} file(s), swept ${result.sweptTmp} tmp.`,
     );
     return result;
   }
@@ -222,112 +574,326 @@ export class MediaAssetGcService {
     ttlMs: number,
     failedTtlMs = STALE_FAILED_TTL_MS,
   ): Promise<{ sweptRows: number; reapedFiles: number }> {
-    const cutoff = new Date(Date.now() - ttlMs);
-    const failedCutoff = new Date(Date.now() - failedTtlMs);
-    const stale = await this.database.db
-      .select({ id: pendingMedia.id, digest: pendingMedia.digest })
-      .from(pendingMedia)
-      .where(
-        or(
-          and(
-            eq(pendingMedia.status, 'pending'),
-            lt(pendingMedia.createdAt, cutoff),
-          ),
-          and(
-            eq(pendingMedia.status, 'failed'),
-            lt(pendingMedia.createdAt, failedCutoff),
-          ),
-        ),
-      );
-    let reapedFiles = 0;
-    for (const { id, digest } of stale) {
-      if (digest) {
-        // Reap the file only if NO committed message references this digest — a MediaMessage row means
-        // the file is live (some other send/localize committed and is using it).
-        const inUse = await this.database.db.query.mediaMessage.findFirst({
-          where: eq(mediaMessage.digest, digest),
-          columns: { messageId: true },
-        });
-        if (!inUse) {
-          if (await this.reapDigest(digest)) reapedFiles++;
-          await this.database.db
-            .delete(mediaAsset)
-            .where(eq(mediaAsset.digest, digest))
-            .catch(() => {
-              // row already gone — nothing to do.
-            });
+    return this.runExclusive(() =>
+      this.database.db.transaction(async (tx) => {
+        const cutoff = new Date(Date.now() - ttlMs);
+        const failedCutoff = new Date(Date.now() - failedTtlMs);
+        const stale = await tx
+          .select({ id: pendingMedia.id, digest: pendingMedia.digest })
+          .from(pendingMedia)
+          .where(
+            and(
+              or(
+                and(
+                  eq(pendingMedia.status, 'pending'),
+                  lt(pendingMedia.createdAt, cutoff),
+                ),
+                and(
+                  eq(pendingMedia.status, 'failed'),
+                  lt(pendingMedia.createdAt, failedCutoff),
+                ),
+              ),
+              sql`NOT EXISTS (
+                SELECT 1 FROM "UploadSession" session
+                 WHERE session."clientMessageId" = ${pendingMedia.clientMessageId}
+                   AND session.status IN ('UPLOADING', 'COMPLETING')
+              )`,
+            ),
+          );
+        for (const { id } of stale) {
+          await tx.delete(pendingMedia).where(eq(pendingMedia.id, id));
         }
-      }
-      await this.database.db
-        .delete(pendingMedia)
-        .where(eq(pendingMedia.id, id))
-        .catch(() => {
-          // row already gone (concurrent sweep) — nothing to do.
-        });
-    }
-    this.logger.log(
-      `gcStalePending: swept ${stale.length} stale stage(s), reaped ${reapedFiles} orphan file(s).`,
+        this.logger.log(
+          `gcStalePending: swept ${stale.length} stale stage(s); blobs remain for manual space GC.`,
+        );
+        return { sweptRows: stale.length, reapedFiles: 0 };
+      }),
     );
-    return { sweptRows: stale.length, reapedFiles };
   }
 
-  /** Walk uploads/shards/ and delete any file whose digest has no MediaAsset row. Corrects refs drift.
+  /** Walk uploads/cas/ and delete any file whose digest has no MediaAsset row. Corrects disk/table drift.
    *  O(files) — run sparingly (monthly). Skips *.tmp (those are swept by gcOrphanedAssets). */
-  async reconcileShards(): Promise<number> {
-    const shardsDir = join(this.upload.uploadDir, 'shards');
-    const referenced = new Set(
-      (
-        await this.database.db
-          .select({ digest: mediaAsset.digest })
+  async reconcileShards(): Promise<ReconcileResult> {
+    return this.runExclusive(() => this.reconcileShardsCore());
+  }
+
+  private async reconcileShardsCore(
+    context?: TaskContext,
+  ): Promise<ReconcileResult> {
+    return this.database.db.transaction(async (tx) => {
+      const result = {
+        deletedOrphanFiles: 0,
+        deletedTombstoneFiles: 0,
+        markedMissingReadyDeleted: 0,
+        skippedPending: 0,
+        skippedDeleting: 0,
+      };
+      let scannedBytes = 0n;
+      let deletedBytes = 0n;
+      context?.update({ phase: 'scanning-disk' }, true);
+      const processBatch = async (
+        files: Array<{ digest: string; path: string; bytes: bigint }>,
+      ) => {
+        if (files.length === 0) return;
+        const rows = await tx
+          .select({ digest: mediaAsset.digest, status: mediaAsset.status })
           .from(mediaAsset)
-      ).map((r) => r.digest),
-    );
-    let reaped = 0;
-    try {
-      for (const a of await readdirAsync(shardsDir, { withFileTypes: true })) {
-        if (!a.isDirectory()) continue;
-        const aDir = join(shardsDir, a.name);
-        for (const b of await readdirAsync(aDir, { withFileTypes: true })) {
-          if (!b.isDirectory()) continue;
-          const bDir = join(aDir, b.name);
-          for (const name of await readdirAsync(bDir)) {
-            if (name.endsWith('.tmp') || name.includes('.tmp.')) continue;
-            const dot = name.lastIndexOf('.');
-            const digest = dot > 0 ? name.slice(0, dot) : name;
-            if (!referenced.has(digest)) {
-              await unlinkAsync(join(bDir, name)).catch(() => {});
-              reaped++;
+          .where(
+            inArray(
+              mediaAsset.digest,
+              files.map((file) => file.digest),
+            ),
+          );
+        const statuses = new Map(rows.map((row) => [row.digest, row.status]));
+        for (const file of files) {
+          if (context?.cancelled()) return;
+          scannedBytes += file.bytes;
+          context?.update({
+            phase: 'scanning-disk',
+            directory: `${file.digest.slice(0, 2)}/${file.digest.slice(2, 4)}`,
+            file: file.digest,
+            fileSize: String(file.bytes),
+            scannedFiles: context.task.scannedFiles + 1,
+            scannedBytes: String(scannedBytes),
+          });
+          const status = statuses.get(file.digest);
+          if (status === 'PENDING') {
+            result.skippedPending++;
+            continue;
+          }
+          if (status === 'DELETING') {
+            result.skippedDeleting++;
+            continue;
+          }
+          if (status === 'DELETED') {
+            const deleted = await this.unlinkReconcileFile(
+              file,
+              context,
+              'delete-tombstone-residue',
+            );
+            if (deleted) {
+              result.deletedTombstoneFiles++;
+              deletedBytes += file.bytes;
+            }
+            if (context && deleted) {
+              context.update(
+                {
+                  deletedFiles:
+                    result.deletedOrphanFiles + result.deletedTombstoneFiles,
+                  deletedBytes: String(deletedBytes),
+                },
+                true,
+              );
+              this.taskLog(
+                'log',
+                context.task,
+                'delete-tombstone-residue',
+                'deleted residual CAS tombstone blob',
+                file.digest,
+                file.bytes,
+              );
+            }
+            continue;
+          }
+          if (status === 'READY') continue;
+          const [claimed] = await tx
+            .insert(mediaAsset)
+            .values({
+              digest: file.digest,
+              bytes: file.bytes,
+              status: 'DELETING',
+            })
+            .onConflictDoNothing({ target: mediaAsset.digest })
+            .returning({ digest: mediaAsset.digest });
+          if (!claimed) continue;
+          const deleted = await this.unlinkReconcileFile(
+            file,
+            context,
+            'delete-orphan',
+          );
+          await tx
+            .update(mediaAsset)
+            .set({ status: 'DELETED', stateChangedAt: sql`CURRENT_TIMESTAMP` })
+            .where(
+              and(
+                eq(mediaAsset.digest, file.digest),
+                eq(mediaAsset.status, 'DELETING'),
+              ),
+            );
+          if (deleted) {
+            result.deletedOrphanFiles++;
+            deletedBytes += file.bytes;
+          }
+          if (context && deleted) {
+            context.update(
+              {
+                deletedFiles:
+                  result.deletedOrphanFiles + result.deletedTombstoneFiles,
+                deletedBytes: String(deletedBytes),
+              },
+              true,
+            );
+            this.taskLog(
+              'log',
+              context.task,
+              'delete-orphan',
+              'deleted orphan CAS blob',
+              file.digest,
+              file.bytes,
+            );
+          }
+        }
+      };
+      let batch: Array<{ digest: string; path: string; bytes: bigint }> = [];
+      try {
+        for (const a of await readdirAsync(this.upload.casDir, {
+          withFileTypes: true,
+        })) {
+          if (context?.cancelled()) break;
+          if (!a.isDirectory()) continue;
+          const aDir = join(this.upload.casDir, a.name);
+          for (const b of await readdirAsync(aDir, { withFileTypes: true })) {
+            if (context?.cancelled()) break;
+            if (!b.isDirectory()) continue;
+            const bDir = join(aDir, b.name);
+            for (const digest of await readdirAsync(bDir)) {
+              if (context?.cancelled()) break;
+              if (!/^[0-9a-f]{64}$/.test(digest)) continue;
+              const path = join(bDir, digest);
+              const fileStat = await statAsync(path).catch(() => null);
+              if (!fileStat) continue;
+              batch.push({ digest, path, bytes: BigInt(fileStat.size) });
+              if (batch.length >= 500) {
+                await processBatch(batch);
+                batch = [];
+              }
             }
           }
         }
+      } catch (error) {
+        if (context && !this.isMissingFileError(error)) {
+          this.taskLog(
+            'error',
+            context.task,
+            'scan-cas-directory',
+            'failed to scan CAS directory',
+            undefined,
+            undefined,
+            error,
+          );
+        }
+        // CAS directory missing — READY rows are corrected in the paged reverse pass below.
       }
-    } catch {
-      // shards dir missing — nothing to reconcile.
-    }
-    this.logger.log(`reconcileShards: reaped ${reaped} unreferenced file(s).`);
-    return reaped;
+      await processBatch(batch);
+      if (context?.cancelled()) return result;
+      context?.update(
+        {
+          phase: 'checking-ready-rows',
+          directory: null,
+          file: null,
+          fileSize: null,
+        },
+        true,
+      );
+      let cursor = '';
+      for (;;) {
+        if (context?.cancelled()) break;
+        const page = await tx.execute<{ digest: string }>(sql`
+          SELECT digest FROM "MediaAsset"
+          WHERE status = 'READY' AND digest > ${cursor}
+          ORDER BY digest LIMIT 500
+        `);
+        if (page.rows.length === 0) break;
+        for (const row of page.rows) {
+          if (context?.cancelled()) break;
+          context?.update({
+            phase: 'checking-ready-rows',
+            directory: `${row.digest.slice(0, 2)}/${row.digest.slice(2, 4)}`,
+            file: row.digest,
+            fileSize: null,
+            scannedFiles: context.task.scannedFiles + 1,
+          });
+          const path = join(
+            this.upload.casDir,
+            row.digest.slice(0, 2),
+            row.digest.slice(2, 4),
+            row.digest,
+          );
+          const exists = await statAsync(path)
+            .then(() => true)
+            .catch(() => false);
+          if (!exists) {
+            await tx
+              .update(mediaAsset)
+              .set({
+                status: 'DELETED',
+                stateChangedAt: sql`CURRENT_TIMESTAMP`,
+              })
+              .where(
+                and(
+                  eq(mediaAsset.digest, row.digest),
+                  eq(mediaAsset.status, 'READY'),
+                ),
+              );
+            result.markedMissingReadyDeleted++;
+            if (context) {
+              this.taskLog(
+                'log',
+                context.task,
+                'mark-missing-ready-deleted',
+                'marked missing READY CAS blob as DELETED',
+                row.digest,
+              );
+            }
+          }
+        }
+        cursor = page.rows.at(-1)!.digest;
+      }
+      this.logger.log(`reconcileShards: ${JSON.stringify(result)}.`);
+      return result;
+    });
   }
 
   /** Storage overview for the media page. `db` is the authoritative content size from MediaAsset
-   *  (deduped by digest); `onDisk` walks uploads/shards/ to break bytes down by extension and surface
+   *  (deduped by digest); `onDisk` walks uploads/cas/ to break bytes down by extension and surface
    *  drift vs the table. O(files) — fine for a manually triggered admin read. */
   async stats() {
+    const staleStateCutoff = new Date(Date.now() - STALE_ASSET_PENDING_TTL_MS);
     const [agg, reclaimable] = await Promise.all([
       this.database.db
         .select({
           bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
           assetCount: count(),
+          ready: sql<number>`count(*) filter (where ${mediaAsset.status} = 'READY')::int`,
+          pending: sql<number>`count(*) filter (where ${mediaAsset.status} = 'PENDING')::int`,
+          deleting: sql<number>`count(*) filter (where ${mediaAsset.status} = 'DELETING')::int`,
+          deleted: sql<number>`count(*) filter (where ${mediaAsset.status} = 'DELETED')::int`,
+          stalePending: sql<number>`count(*) filter (where ${mediaAsset.status} = 'PENDING' and ${mediaAsset.stateChangedAt} < ${staleStateCutoff})::int`,
+          staleDeleting: sql<number>`count(*) filter (where ${mediaAsset.status} = 'DELETING' and ${mediaAsset.stateChangedAt} < ${staleStateCutoff})::int`,
         })
         .from(mediaAsset)
         .then(([row]) => row),
       this.database.db
-        .select({ value: count() })
-        .from(mediaAsset)
-        .where(lte(mediaAsset.refs, 0))
-        .then(([row]) => row.value),
+        .execute<{ value: number }>(
+          sql`
+        SELECT count(*)::int AS value FROM "MediaAsset" asset
+        WHERE asset.status = 'READY'
+          AND NOT EXISTS (
+            SELECT 1 FROM "MediaMessage" mm
+            JOIN "Message" message ON message.id = mm."messageId"
+            WHERE mm.digest = asset.digest AND message."isDeleted" = false
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "PendingMedia" pending
+            WHERE pending.digest = asset.digest
+              AND pending.status IN ('pending', 'failed')
+          )
+      `,
+        )
+        .then((result) => result.rows[0]?.value ?? 0),
     ]);
 
-    const shardsDir = join(this.upload.uploadDir, 'shards');
+    const shardsDir = this.upload.casDir;
     const byExt = new Map<string, { files: number; bytes: bigint }>();
     let shardFiles = 0;
     let shardBytes = 0n;
@@ -341,8 +907,7 @@ export class MediaAssetGcService {
           for (const name of await readdirAsync(bDir)) {
             const s = await statAsync(join(bDir, name)).catch(() => null);
             if (!s) continue;
-            const dot = name.lastIndexOf('.');
-            const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '(none)';
+            const ext = '(cas)';
             const bucket = byExt.get(ext) ?? { files: 0, bytes: 0n };
             bucket.files++;
             bucket.bytes += BigInt(s.size);
@@ -360,6 +925,12 @@ export class MediaAssetGcService {
       db: {
         bytes: BigInt(agg.bytes),
         assetCount: agg.assetCount,
+        ready: agg.ready,
+        pending: agg.pending,
+        deleting: agg.deleting,
+        deleted: agg.deleted,
+        stalePending: agg.stalePending,
+        staleDeleting: agg.staleDeleting,
         reclaimable,
       },
       onDisk: {
@@ -379,8 +950,8 @@ export class MediaAssetGcService {
    *  - superseded-on-replace (avatar changes no longer delete the old files — see UploadService),
    *  - deleted-user avatars (no User row references them).
    * The multi-size family ([32,64,128,256,512]) is handled by keying on `<base>`: all 5 sizes of a
-   * live base are kept, all 5 of a dead base are swept together. NEVER touches uploads/shards/ (that
-   * is gcOrphanedAssets' domain via MediaAsset.refs).
+   * live base are kept, all 5 of a dead base are swept together. NEVER touches uploads/cas/ (that
+   * is gcOrphanedAssets' domain).
    */
   async gcOrphanedAvatars(): Promise<{ sweptFiles: number }> {
     // Live `<base>` set from the two avatar columns. parseAvatarBase strips the size + path, so all 5
@@ -429,33 +1000,69 @@ export class MediaAssetGcService {
     return swept;
   }
 
-  /** Delete the shard file(s) for a digest. The on-disk ext is NOT stored on MediaAsset, so glob
-   *  `<digest>.*` inside its 2-level bucket. Returns true if any file was removed. */
-  private async reapDigest(digest: string): Promise<boolean> {
-    const dir = join(
-      this.upload.uploadDir,
-      'shards',
+  /** Delete the single extensionless blob for a digest. */
+  private async reapDigest(
+    digest: string,
+    context?: TaskContext,
+    bytes?: bigint,
+  ): Promise<boolean> {
+    const path = join(
+      this.upload.casDir,
       digest.slice(0, 2),
       digest.slice(2, 4),
+      digest,
     );
-    let removed = false;
     try {
-      for (const name of await readdirAsync(dir)) {
-        if (name.startsWith(`${digest}.`)) {
-          await unlinkAsync(join(dir, name)).catch(() => {});
-          removed = true;
-        }
+      await unlinkAsync(path);
+      return true;
+    } catch (error) {
+      if (context && !this.isMissingFileError(error)) {
+        this.taskLog(
+          'error',
+          context.task,
+          'delete-unreachable',
+          'failed to delete CAS blob',
+          digest,
+          bytes,
+          error,
+        );
       }
-    } catch {
-      // bucket dir missing — file already gone.
+      return false;
     }
-    return removed;
+  }
+
+  private async unlinkReconcileFile(
+    file: { digest: string; path: string; bytes: bigint },
+    context: TaskContext | undefined,
+    action: string,
+  ): Promise<boolean> {
+    try {
+      await unlinkAsync(file.path);
+      return true;
+    } catch (error) {
+      if (context && !this.isMissingFileError(error)) {
+        this.taskLog(
+          'error',
+          context.task,
+          action,
+          'failed to delete CAS blob',
+          file.digest,
+          file.bytes,
+          error,
+        );
+      }
+      return false;
+    }
+  }
+
+  private isMissingFileError(error: unknown): boolean {
+    return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
   }
 
   /** Recursively remove stale `*.tmp` / `*.tmp.*` files under shards/ (left by a crash between
    *  saveCas's tmp write and its atomic rename). */
   private async sweepTmp(): Promise<number> {
-    const shardsDir = join(this.upload.uploadDir, 'shards');
+    const shardsDir = this.upload.casDir;
     let swept = 0;
     const sweep = async (dir: string): Promise<void> => {
       try {
@@ -476,6 +1083,26 @@ export class MediaAssetGcService {
       }
     };
     await sweep(shardsDir);
+    return swept;
+  }
+
+  private async sweepDigestTmp(digest: string): Promise<number> {
+    const dir = join(
+      this.upload.casDir,
+      digest.slice(0, 2),
+      digest.slice(2, 4),
+    );
+    let swept = 0;
+    try {
+      for (const name of await readdirAsync(dir)) {
+        if (name.startsWith(`${digest}.`) && name.endsWith('.tmp')) {
+          await unlinkAsync(join(dir, name)).catch(() => {});
+          swept++;
+        }
+      }
+    } catch {
+      // Bucket missing.
+    }
     return swept;
   }
 }

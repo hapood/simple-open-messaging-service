@@ -34,6 +34,7 @@ import {
 } from '../database/schema.js';
 import { isUniqueViolation } from '../database/database-error.js';
 import { extractDigests } from '../upload/file-content.js';
+import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
 import { parseCallContent, callPreviewLabel } from '../calls/call-content.js';
@@ -300,13 +301,14 @@ export class MessageService implements OnModuleInit {
             'quoted message not found',
           );
         }
-        const storedContent =
+        let storedContent =
           textContent && quoteTarget
             ? stringifyTextMessageContent({
                 text: textContent.text,
                 quote: { seq: quoteTarget.seq },
               })
             : content;
+        storedContent = contextualizeCasUrls(storedContent, threadId, seq);
         const [msg] = await tx
           .insert(message)
           .values({
@@ -348,7 +350,7 @@ export class MessageService implements OnModuleInit {
               eq(threadParticipant.threadId, threadId),
             ),
           );
-        // Per-object media authz: record the CAS digest this message references so the /uploads/shards/*
+        // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
         // one media (MediaMessage is 1:1). PURE_TEXT/
         // INVITE reference no media.
@@ -356,7 +358,8 @@ export class MessageService implements OnModuleInit {
           type === ContentType.IMAGE ||
           type === ContentType.FILE ||
           type === ContentType.VIDEO ||
-          type === ContentType.AUDIO
+          type === ContentType.AUDIO ||
+          type === ContentType.LINK
         ) {
           const digest = extractDigests(content)[0];
           if (digest) {
@@ -404,6 +407,7 @@ export class MessageService implements OnModuleInit {
     clientMessageId: string,
     meta: Record<string, unknown>,
     retry = false,
+    beforeStageCreate?: (tx: DatabaseTransaction) => Promise<void>,
   ): Promise<{ clientMessageId: string }> {
     const committed = await this.database.db.query.message.findFirst({
       where: eq(message.clientMessageId, clientMessageId),
@@ -422,15 +426,37 @@ export class MessageService implements OnModuleInit {
       where: eq(pendingMedia.clientMessageId, clientMessageId),
     });
     if (!existing) {
-      await this.database.db.insert(pendingMedia).values({
-        threadId,
-        creatorId: userId,
-        contentType,
-        content: JSON.stringify(meta ?? {}),
-        clientMessageId,
-        updatedAt: new Date(),
-      });
-      return { clientMessageId };
+      try {
+        await this.database.db.transaction(async (tx) => {
+          if (beforeStageCreate) await beforeStageCreate(tx);
+          await tx.insert(pendingMedia).values({
+            threadId,
+            creatorId: userId,
+            contentType,
+            content: JSON.stringify(meta ?? {}),
+            clientMessageId,
+            updatedAt: new Date(),
+          });
+        });
+        return { clientMessageId };
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        const winner = await this.database.db.query.pendingMedia.findFirst({
+          where: eq(pendingMedia.clientMessageId, clientMessageId),
+        });
+        if (
+          !winner ||
+          winner.creatorId !== userId ||
+          winner.threadId !== threadId ||
+          winner.contentType !== contentType
+        ) {
+          throw new BusinessException(
+            BusinessCode.VALIDATION_FAILED,
+            'invalid clientMessageId',
+          );
+        }
+        return { clientMessageId };
+      }
     }
     if (
       existing.creatorId !== userId ||
@@ -567,7 +593,7 @@ export class MessageService implements OnModuleInit {
     // A server-side format fallback can promote an IMAGE intent as FILE. Image/video/audio display
     // metadata is meaningful only while the staged and final types match; never leak w/h/duration
     // into a generic FILE content object.
-    const content = JSON.stringify({
+    const unboundContent = JSON.stringify({
       ...uploadPayload,
       ...(finalContentType === stage.contentType ? meta : {}),
     });
@@ -610,6 +636,11 @@ export class MessageService implements OnModuleInit {
           .set({ curSeq: sql`${messageThread.curSeq} + 1` })
           .where(eq(messageThread.id, stage.threadId))
           .returning({ curSeq: messageThread.curSeq });
+        const content = contextualizeCasUrls(
+          unboundContent,
+          stage.threadId,
+          seq,
+        );
         const [msg] = await tx
           .insert(message)
           .values({
@@ -865,7 +896,7 @@ export class MessageService implements OnModuleInit {
 
   /** Attach a `mediaStatus` ('ready' | 'failed') + `sv` (status version = seq) to each message by
    *  checking, in bulk, whether every CAS digest in its content has a MediaMessage authz row for THIS
-   *  message AND a MediaAsset with refs>0 (bytes on disk). Non-media messages (no digest)
+   *  message AND a READY MediaAsset. Non-media messages (no digest)
    *  are trivially 'ready'. Two batch queries serve a whole page — no per-row N+1. Strips the internal
    *  id (it never reaches a client). Drives the query-messages response and the media-status probe. */
   async attachMediaStatus<T extends Message>(
@@ -894,17 +925,17 @@ export class MessageService implements OnModuleInit {
         columns: { messageId: true, digest: true },
       }),
       allDigests.size === 0
-        ? Promise.resolve([] as { digest: string; refs: number }[])
+        ? Promise.resolve([] as { digest: string; status: string }[])
         : this.database.db.query.mediaAsset.findMany({
             where: inArray(mediaAsset.digest, [...allDigests]),
-            columns: { digest: true, refs: true },
+            columns: { digest: true, status: true },
           }),
     ]);
     // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset has
-    // refs>0 on disk. messageId is BigInt; String(1n) === "1" so the composite key is collision-free.
+    // READY in the asset table. messageId is BigInt; String(1n) === "1" so the key is collision-free.
     const auth = new Set(authRows.map((r) => `${r.messageId}:${r.digest}`));
     const present = new Set(
-      assetRows.filter((a) => a.refs > 0).map((a) => a.digest),
+      assetRows.filter((a) => a.status === 'READY').map((a) => a.digest),
     );
     // LINK thumbnails: the DB stores only the image digest; inline it as base64 for the wire (the
     // frontend renders the card from the data URI). One read per LINK row; non-LINK is untouched.

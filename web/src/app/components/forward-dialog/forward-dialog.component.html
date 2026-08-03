@@ -15,11 +15,27 @@
   </header>
 
   <div class="forward-dialog__preview">
-    <app-forward-message-card
-      [messages]="messages()"
-      [recordKind]="recordKind()"
-      [compact]="true"
-    ></app-forward-message-card>
+    @if (mode() === 'HISTORY') {
+      <app-forward-message-card
+        [messages]="messages()"
+        [recordKind]="recordKind()"
+        [compact]="true"
+      ></app-forward-message-card>
+    } @else if (directMessage(); as message) {
+      <div class="forward-dialog__direct-preview">
+        @switch (message.contentType) {
+          @case ('IMAGE') { <app-msg-media-row [data]="message" /> }
+          @case ('VIDEO') { <app-msg-media-row [data]="message" /> }
+          @case ('AUDIO') { <app-msg-media-row [data]="message" /> }
+          @case ('FILE') { <app-msg-file-row [data]="message" /> }
+          @case ('INVITE') { <app-msg-invite-row [data]="message" /> }
+          @case ('LINK') { <app-msg-link-row [data]="message" /> }
+          @case ('CALL') { <app-msg-call-row [data]="message" /> }
+          @case ('FORWARD') { <app-msg-forward-row [data]="message" /> }
+          @default { <app-msg-text-row [data]="message" /> }
+        }
+      </div>
+    }
   </div>
 
   @if (recentConversations().length > 0 && !searchText()) {

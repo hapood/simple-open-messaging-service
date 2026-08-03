@@ -15,7 +15,7 @@ import { registerAndLogin } from './federation-test-helpers';
  * LINK message send contract (single instance). The client sends only the URL; the server rebuilds the
  * card via LinkPreviewService (mocked here to avoid real outbound OG fetches), validates the assembled
  * JSON with parseLinkContent, and — because the card's og:image is a CAS shard URL — writeMsgToThread's
- * extractDigests writes a MediaMessage authz row so /uploads/shards/* admits thread readers. Pins three
+ * extractDigests writes a MediaMessage authz row so /uploads/cas/* admits thread readers. Pins three
  * load-bearing behaviors at once: server-authoritative content rebuild, the stored-content form check,
  * and the auto authz row (the federated receiver's localizeMedia relies on that same digest).
  */

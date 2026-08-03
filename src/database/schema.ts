@@ -16,6 +16,7 @@ import {
   primaryKey,
   date,
   pgEnum,
+  uuid,
   customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -62,6 +63,19 @@ export const inviteStatus = pgEnum('InviteStatus', [
 ]);
 export const messageThreadType = pgEnum('MessageThreadType', ['P2P', 'GROUP']);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
+export const mediaAssetStatus = pgEnum('MediaAssetStatus', [
+  'PENDING',
+  'READY',
+  'FAILED',
+  'DELETING',
+  'DELETED',
+]);
+export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
+  'UPLOADING',
+  'COMPLETING',
+  'COMPLETED',
+  'ABORTED',
+]);
 export const threadRevisionDirection = pgEnum('ThreadRevisionDirection', [
   'ADD',
   'DELETE',
@@ -401,15 +415,19 @@ export const mediaAsset = pgTable(
     digest: varchar({ length: 64 }).primaryKey().notNull(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     bytes: bigint({ mode: 'bigint' }).notNull(),
-    refs: integer().default(0).notNull(),
+    status: mediaAssetStatus().default('READY').notNull(),
     createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    stateChangedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
-    index('MediaAsset_refs_idx').using(
+    index('MediaAsset_status_createdAt_idx').using(
       'btree',
-      table.refs.asc().nullsLast().op('int4_ops'),
+      table.status.asc().nullsLast().op('enum_ops'),
+      table.stateChangedAt.asc().nullsLast().op('timestamp_ops'),
     ),
   ],
 );
@@ -797,6 +815,54 @@ export const pendingMedia = pgTable(
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
       name: 'PendingMedia_threadId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+  ],
+);
+
+export const uploadSession = pgTable(
+  'UploadSession',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    uploadId: uuid().defaultRandom().notNull(),
+    clientMessageId: varchar({ length: 36 }).notNull(),
+    creatorId: integer().notNull(),
+    contentType: contentType().notNull(),
+    originalName: varchar({ length: 100 }).notNull(),
+    mimeType: varchar({ length: 255 }).notNull(),
+    totalBytes: bigint({ mode: 'bigint' }).notNull(),
+    receivedBytes: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    status: uploadSessionStatus().default('UPLOADING').notNull(),
+    tmpKey: uuid().defaultRandom().notNull(),
+    digest: varchar({ length: 64 }),
+    result: jsonb(),
+    errorReason: varchar({ length: 255 }),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    completedAt: timestamp({ precision: 3, mode: 'date' }),
+    abortedAt: timestamp({ precision: 3, mode: 'date' }),
+  },
+  (table) => [
+    uniqueIndex('UploadSession_uploadId_key').on(table.uploadId),
+    uniqueIndex('UploadSession_clientMessageId_key').on(table.clientMessageId),
+    index('UploadSession_creatorId_status_idx').on(
+      table.creatorId,
+      table.status,
+    ),
+    index('UploadSession_status_updatedAt_idx').on(
+      table.status,
+      table.updatedAt,
+    ),
+    index('UploadSession_digest_idx').on(table.digest),
+    foreignKey({
+      columns: [table.creatorId],
+      foreignColumns: [user.id],
+      name: 'UploadSession_creatorId_fkey',
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
@@ -1220,6 +1286,54 @@ export const quotaDailyUsage = pgTable(
     primaryKey({
       columns: [table.domain, table.date, table.category],
       name: 'QuotaDailyUsage_pkey',
+    }),
+  ],
+);
+
+export const userQuotaPolicy = pgTable(
+  'UserQuotaPolicy',
+  {
+    userId: integer().primaryKey().notNull(),
+    dailyMsgLimit: integer(),
+    dailyImageLimit: integer(),
+    dailyLargeFileLimit: integer(),
+    dailyRequestLimit: integer(),
+    maxImageBytes: integer(),
+    maxLargeFileBytes: integer(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'UserQuotaPolicy_userId_fkey',
+    }).onDelete('cascade'),
+  ],
+);
+
+export const userQuotaDailyUsage = pgTable(
+  'UserQuotaDailyUsage',
+  {
+    userId: integer().notNull(),
+    date: date({ mode: 'date' }).notNull(),
+    category: varchar({ length: 15 }).notNull(),
+    count: integer().default(0).notNull(),
+  },
+  (table) => [
+    index('UserQuotaDailyUsage_date_idx').using(
+      'btree',
+      table.date.asc().nullsLast().op('date_ops'),
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'UserQuotaDailyUsage_userId_fkey',
+    }).onDelete('cascade'),
+    primaryKey({
+      columns: [table.userId, table.date, table.category],
+      name: 'UserQuotaDailyUsage_pkey',
     }),
   ],
 );

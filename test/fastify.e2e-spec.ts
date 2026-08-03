@@ -72,7 +72,7 @@ async function authorizeDigest(
   database: Database,
   userId: number,
   digest: string,
-): Promise<void> {
+): Promise<{ threadId: number; seq: number }> {
   const now = new Date();
   const [thread] = await database
     .insert(messageThread)
@@ -104,6 +104,7 @@ async function authorizeDigest(
   await database
     .insert(mediaMessage)
     .values({ messageId: msg.id, threadId: thread.id, digest });
+  return { threadId: thread.id, seq };
 }
 
 describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
@@ -169,9 +170,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .field('h', '1');
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
-    // CAS path: /uploads/shards/<2-hex>/<2-hex>/<64-hex-sha256>.<ext>
+    // CAS path contains only the sha256 identity; presentation metadata stays in the message.
     expect(res.body.data.url).toMatch(
-      /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.png$/,
+      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
     expect(res.body.data.w).toBe(1);
     expect(res.body.data.h).toBe(1);
@@ -182,41 +183,43 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // The per-object gate further requires a MediaMessage row tying this digest to a thread the caller
     // is in; authorize it (a real send would write that row in writeMsgToThread).
     const digest = res.body.data.url
-      .slice('/uploads/shards/'.length)
+      .slice('/uploads/cas/'.length)
       .split('/')
       .pop()!
       .replace(/\.png$/, '');
-    await authorizeDigest(database.db, userAId, digest);
+    const context = await authorizeDigest(database.db, userAId, digest);
     const file = await request(app.getHttpServer())
-      .get(res.body.data.url)
+      .get(
+        `${res.body.data.url}?threadId=${context.threadId}&seq=${context.seq}`,
+      )
       .set('Authorization', `Bearer ${token}`);
     expect(file.status).toBe(200);
-    expect(file.headers['content-type']).toContain('image/png');
+    expect(file.headers['content-type']).toContain('application/octet-stream');
   });
 
-  it('dedupes identical image bytes to the same CAS path', async () => {
+  it('dedupes concurrent identical uploads and atomically counts both references', async () => {
     // Two uploads of byte-identical content (different client filenames) must land on the same
     // sha256-keyed path — that is the whole point of content-addressed storage.
-    const first = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('file', PNG_1X1, 'a.png')
-      .field('w', '1')
-      .field('h', '1');
-    const second = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('file', PNG_1X1, 'b.png')
-      .field('w', '1')
-      .field('h', '1');
+    const [first, second] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/upload')
+        .set('Authorization', `Bearer ${token}`)
+        .attach('file', PNG_1X1, 'a.png')
+        .field('w', '1')
+        .field('h', '1'),
+      request(app.getHttpServer())
+        .post('/api/v1/upload')
+        .set('Authorization', `Bearer ${token}`)
+        .attach('file', PNG_1X1, 'b.png')
+        .field('w', '1')
+        .field('h', '1'),
+    ]);
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(second.body.data.url).toBe(first.body.data.url);
     expect(second.body.data.size).toBe(first.body.data.size);
-    // refs reflects every upload of this digest (this test's two + the earlier upload test's one),
-    // so assert a lower bound of 2 — the increment path is exercised.
     const digest = first.body.data.url
-      .slice('/uploads/shards/'.length)
+      .slice('/uploads/cas/'.length)
       .split('/')
       .pop()!
       .replace(/\.png$/, '');
@@ -225,7 +228,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .from(mediaAsset)
       .where(eq(mediaAsset.digest, digest))
       .limit(1);
-    expect(asset?.refs).toBeGreaterThanOrEqual(2);
+    expect(asset?.status).toBe('READY');
   });
 
   it('promotes a staged IMAGE send on upload and persists size in Message.content', async () => {
@@ -265,7 +268,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .limit(1);
     expect(msg).toBeDefined();
     const content = JSON.parse(msg!.content);
-    expect(content.url).toBe(up.body.data.url);
+    expect(content.url).toBe(
+      `${up.body.data.url}?threadId=${thread.id}&seq=${msg!.seq}`,
+    );
     expect(content.w).toBe(2);
     expect(content.h).toBe(2);
     // The regression: size was omitted from the promote payload, so the persisted content lacked it.
@@ -303,7 +308,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.data.mimeType).toBe('image/heic');
     expect(up.body.data.size).toBe(heic.length);
     expect(up.body.data.url).toMatch(
-      /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.bin$/,
+      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
 
     const [msg] = await database.db
@@ -312,13 +317,18 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .where(eq(message.clientMessageId, cid))
       .limit(1);
     expect(msg?.contentType).toBe('FILE');
-    expect(JSON.parse(msg!.content)).toEqual(up.body.data);
+    expect(JSON.parse(msg!.content)).toMatchObject({
+      ...up.body.data,
+      url: expect.stringContaining(`?threadId=${thread.id}&seq=${msg!.seq}`),
+    });
 
     const download = await request(app.getHttpServer())
-      .get(up.body.data.url)
+      .get(JSON.parse(msg!.content).url)
       .set('Authorization', `Bearer ${token}`);
     expect(download.status).toBe(200);
-    expect(download.headers['content-disposition']).toBe('attachment');
+    // The CAS response is presentation-neutral; the FILE message name is applied by the frontend's
+    // download API rather than being encoded in the shared blob response.
+    expect(download.headers['content-disposition']).toBeUndefined();
     expect(download.headers['x-content-type-options']).toBe('nosniff');
   });
 
@@ -354,7 +364,10 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .where(eq(message.clientMessageId, cid))
       .limit(1);
     expect(msg?.contentType).toBe('FILE');
-    expect(JSON.parse(msg!.content)).toEqual(up.body.data);
+    expect(JSON.parse(msg!.content)).toMatchObject({
+      ...up.body.data,
+      url: expect.stringContaining(`?threadId=${thread.id}&seq=${msg!.seq}`),
+    });
   });
 
   it('accepts a video upload (magic-byte container check) and serves it inline', async () => {
@@ -365,20 +378,22 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     expect(res.body.data.url).toMatch(
-      /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.mp4$/,
+      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
     expect(res.body.data.mimeType).toBe('video/mp4');
     expect(res.body.data.size).toBe(MP4_MIN.length);
     // Video is served INLINE (no Content-Disposition: attachment) so <video src> can stream-play.
     // Authorize the digest for the uploader so the per-object gate permits the GET (see image test).
     const digest = res.body.data.url
-      .slice('/uploads/shards/'.length)
+      .slice('/uploads/cas/'.length)
       .split('/')
       .pop()!
       .replace(/\.mp4$/, '');
-    await authorizeDigest(database.db, userAId, digest);
+    const context = await authorizeDigest(database.db, userAId, digest);
     const file = await request(app.getHttpServer())
-      .get(res.body.data.url)
+      .get(
+        `${res.body.data.url}?threadId=${context.threadId}&seq=${context.seq}`,
+      )
       .set('Authorization', `Bearer ${token}`);
     expect(file.status).toBe(200);
     expect(file.headers['content-disposition']).toBeUndefined();
@@ -400,11 +415,13 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .attach('file', OGG_MIN, 'voice.ogg');
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
-    expect(res.body.data.url).toMatch(/\.ogg$/);
+    expect(res.body.data.url).toMatch(
+      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
+    );
     expect(res.body.data.mimeType).toBe('audio/ogg');
   });
 
-  it('authorizes /uploads/shards/ by thread membership (member 200, non-member 403)', async () => {
+  it('authorizes /uploads/cas/ by thread membership (member 200, non-member 403)', async () => {
     // A uploads an image → a CAS shard url embedding the digest.
     const up = await request(app.getHttpServer())
       .post('/api/v1/upload')
@@ -415,7 +432,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.code).toBe(0);
     const url: string = up.body.data.url;
     const digest = url
-      .slice('/uploads/shards/'.length)
+      .slice('/uploads/cas/'.length)
       .split('/')
       .pop()!
       .replace(/\.\w+$/, '');
@@ -425,11 +442,12 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     const preA = await request(app.getHttpServer())
       .get(url)
       .set('Authorization', `Bearer ${token}`);
-    expect(preA.status).toBe(403);
+    expect(preA.status).toBe(404);
 
     // Direct IMAGE sends are intentionally rejected; seed the same Message + MediaMessage linkage
     // produced by the staged upload promotion path. User B remains outside that thread.
-    await authorizeDigest(database.db, userAId, digest);
+    const context = await authorizeDigest(database.db, userAId, digest);
+    const contextualUrl = `${url}?threadId=${context.threadId}&seq=${context.seq}`;
 
     // The MediaMessage row now links digest → this thread.
     const [mm] = await database.db
@@ -442,13 +460,13 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
 
     // A (active member) may now read it; B (non-member) is still forbidden.
     const aGet = await request(app.getHttpServer())
-      .get(url)
+      .get(contextualUrl)
       .set('Authorization', `Bearer ${token}`);
     expect(aGet.status).toBe(200);
     const bGet = await request(app.getHttpServer())
-      .get(url)
+      .get(contextualUrl)
       .set('Authorization', `Bearer ${token2}`);
-    expect(bGet.status).toBe(403);
+    expect(bGet.status).toBe(404);
   });
 
   it('serves avatars at /uploads/avatars/ to ANY authed user (auth-n only, gate-exempt)', async () => {
@@ -473,7 +491,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(bGet.status).toBe(200);
   });
 
-  it('rejects a forged Group.avatar pointing at /uploads/shards/ or an external URL', async () => {
+  it('rejects a forged Group.avatar pointing at /uploads/cas/ or an external URL', async () => {
     // The @IsValidAvatarPath DTO guard guarantees no group avatar can ever sit under the gated shards/
     // path (which would 401 under thread-membership authz) or reference an external URL the server
     // does not control. ValidationPipe → HTTP 200 + VALIDATION_FAILED (code 10000).
@@ -483,7 +501,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .send({
         name: 'forged',
         avatar:
-          '/uploads/shards/aa/bb/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.png',
+          '/uploads/cas/aa/bb/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       });
     expect(forgedShard.body.code).toBe(BusinessCode.VALIDATION_FAILED);
 

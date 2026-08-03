@@ -105,6 +105,18 @@ export type Invite = S['InviteDto'];
 /** Live invite state returned by /invite/detail (group-invite dialog). */
 export type InviteDetail = S['InviteDetailDto'];
 
+export type PersonalQuotaCategory =
+  | 'messages'
+  | 'images'
+  | 'largeFiles'
+  | 'requests';
+
+export interface PersonalQuotaState {
+  usage: Record<PersonalQuotaCategory, { count: number; limit: number }>;
+  caps: { imageBytes: number; largeFileBytes: number };
+  resetAt: string;
+}
+
 export type QueryMessageLogParams = S['QueryMessagesDto'];
 export type MessageThreadType = S['ConversationItemDto']['type'];
 

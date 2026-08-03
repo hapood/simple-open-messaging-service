@@ -52,6 +52,7 @@ import {
   FederationService,
   type S2SProfile,
 } from '../federation/federation.service.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
 
 /**
  * One entry of the hydrated thread-list delta (`POST /user/query-thread/delta`). ADD entries carry the fully
@@ -67,6 +68,13 @@ type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
   thread: typeof messageThread.$inferSelect;
 };
 
+function nextUtcMidnight(): Date {
+  const now = new Date();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+  );
+}
+
 @ApiTags('user')
 @Controller()
 export class UserController {
@@ -81,6 +89,7 @@ export class UserController {
     private readonly userBlockService: UserBlockService,
     private readonly federationService: FederationService,
     private readonly threadRevisionService: ThreadRevisionService,
+    private readonly userQuotaService: UserQuotaService,
   ) {}
 
   @ApiBearerAuth()
@@ -92,6 +101,22 @@ export class UserController {
     // findSelfProfile omits hashPwd. The friend-request badge is no longer a self-profile field — it is
     // derived client-side from the HELLO/push-carried `friendReqRev` vs friendReqAckRev (server-state).
     return this.userService.findSelfProfile(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/my-quota')
+  @ApiOperation({
+    summary:
+      "View the current local account's effective quota and today's usage",
+  })
+  async getMyQuota(@Request() req: FastifyRequest) {
+    const state = await this.userQuotaService.getState(req.user.userId);
+    return {
+      usage: state.usage,
+      caps: state.caps,
+      resetAt: nextUtcMidnight().toISOString(),
+    };
   }
 
   @ApiBearerAuth()

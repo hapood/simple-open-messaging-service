@@ -893,7 +893,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       ...row(101, 1),
       contentType: 'AUDIO',
       content: JSON.stringify({
-        url: '/uploads/shards/aa/bb/voice.webm',
+        url: '/uploads/cas/aa/bb/voice.webm',
         name: 'voice.webm',
         size: 1234,
         mimeType: 'audio/webm',
@@ -915,7 +915,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(items[0].data.images?.[0]).toEqual(
       jasmine.objectContaining({
         kind: 'audio',
-        src: '/uploads/shards/aa/bb/voice.webm',
+        src: '/uploads/cas/aa/bb/voice.webm',
         duration: 7.5,
         msgId: 101,
       }),

@@ -1,57 +1,72 @@
 import { Injectable } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import { ContentType } from '../database/enums.js';
 import { DatabaseService } from '../database/database.service.js';
+import { forwardMessage, mediaMessage } from '../database/schema.js';
+import { MessageVisibilityService } from '../message/message-visibility.service.js';
 
-/**
- * Per-object media authorization. Answers the single question the /uploads/shards/* gate needs:
- * "may this user read this digest?" — true iff the user is an active participant (leftAt IS NULL) of
- * at least one thread whose messages reference the digest.
- *
- * Backed by one indexed query over MediaMessage JOIN ThreadParticipant (the digest index selects ~1
- * row; sha256 is near-unique). Covers P2P (2 participants) and GROUP (N) uniformly via the shared
- * ThreadParticipant table. Type-agnostic by design — membership is leftAt IS NULL regardless of role.
- *
- * Avatars (/uploads/avatars/*) never reach this service: the gate calls it only for
- * /uploads/shards/ paths. Avatars stay auth-n-only (they must render cross-thread in
- * lists/search/federation).
- */
+/** Object-level authorization for the single contextual CAS URL shape. */
 @Injectable()
 export class MediaAccessService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly visibility: MessageVisibilityService,
+  ) {}
 
-  /** True iff `userId` is an active member of a thread that contains a message referencing `digest`. */
-  async canReadDigest(userId: number, digest: string): Promise<boolean> {
+  async canReadMessageAsset(
+    userId: number,
+    threadId: number,
+    seq: number,
+    digest: string,
+  ): Promise<boolean> {
+    const visible = await this.visibility.findVisibleByThreadSeq(
+      userId,
+      threadId,
+      seq,
+    );
+    if (!visible) return false;
+
+    if (
+      visible.contentType === ContentType.IMAGE ||
+      visible.contentType === ContentType.FILE ||
+      visible.contentType === ContentType.VIDEO ||
+      visible.contentType === ContentType.AUDIO ||
+      visible.contentType === ContentType.LINK
+    ) {
+      const direct = await this.database.db.query.mediaMessage.findFirst({
+        where: and(
+          eq(mediaMessage.messageId, visible.id),
+          eq(mediaMessage.digest, digest),
+        ),
+        columns: { messageId: true },
+      });
+      return Boolean(direct);
+    }
+    if (visible.contentType !== ContentType.FORWARD) return false;
+
+    const root = await this.database.db.query.forwardMessage.findFirst({
+      where: eq(forwardMessage.messageId, visible.id),
+      columns: { bundleId: true },
+    });
+    if (!root) return false;
     const result = await this.database.db.execute(sql<{ allowed: boolean }>`
-      WITH RECURSIVE visible_bundle("bundleId", depth) AS (
-        SELECT fba."bundleId", 0
-        FROM "ForwardBundleAsset" fba
-        WHERE fba.digest = ${digest}
-        UNION ALL
-        SELECT dependency."parentBundleId", visible_bundle.depth + 1
-        FROM visible_bundle
+      WITH RECURSIVE bundle_closure("bundleId") AS (
+        SELECT ${root.bundleId}::varchar
+        UNION
+        SELECT dependency."childBundleId"
+        FROM bundle_closure closure
         JOIN "ForwardBundleDependency" dependency
-          ON dependency."childBundleId" = visible_bundle."bundleId"
-        WHERE visible_bundle.depth < 2
+          ON dependency."parentBundleId" = closure."bundleId"
       )
       SELECT EXISTS (
         SELECT 1
-        FROM "MediaMessage" media
-        JOIN "ThreadParticipant" participant
-          ON participant."threadId" = media."threadId"
-         AND participant."userId" = ${userId}
-         AND participant."leftAt" IS NULL
-        WHERE media.digest = ${digest}
-        UNION ALL
-        SELECT 1
-        FROM visible_bundle bundle
-        JOIN "ForwardMessage" forwarded
-          ON forwarded."bundleId" = bundle."bundleId"
-        JOIN "Message" message ON message.id = forwarded."messageId"
-        JOIN "ThreadParticipant" participant
-          ON participant."threadId" = message."threadId"
-         AND participant."userId" = ${userId}
-         AND participant."leftAt" IS NULL
-        WHERE message."isDeleted" = false
+        FROM bundle_closure closure
+        JOIN "ForwardBundleAsset" asset
+          ON asset."bundleId" = closure."bundleId"
+        JOIN "MediaAsset" media
+          ON media.digest = asset.digest
+         AND media.status = 'READY'
+        WHERE asset.digest = ${digest}
       ) AS allowed
     `);
     return Boolean(result.rows[0]?.allowed);

@@ -55,26 +55,52 @@
     "media": "Media & Storage",
     "settings": "Settings",
     "security": "My Account",
-    "quotas": "Daily Quotas",
-    "diagnosticReports": "Diagnostic Reports",
+    "audit": "Audit Trail",
     "logout": "Log Out",
     "group": {
       "overview": "Common tasks",
       "access": "Access & Activity",
-      "federation": "Federation",
       "system": "System",
       "account": "Account"
     }
   },
   "quota": {
     "title": "Daily Quotas",
-    "desc": "Per-node daily budgets (the local server + each federated peer). Resets at 00:00 UTC.",
+    "desc": "Shared traffic budgets for federated peer servers. Resets at 00:00 UTC.",
     "empty": "No quota nodes.",
     "local": "Local",
     "peer": "Peer",
     "edit": "Edit",
+    "peerTitle": "Traffic quotas",
+    "peerDesc": "This peer server and all of its federated users share these budgets.",
+    "disabled": "Disabled",
+    "noTrafficAccepted": "No traffic of this type is accepted",
+    "remaining": "{{count}} remaining",
+    "itemCaps": "Per-item media size limits",
+    "megabytes": "{{count}} MB",
+    "resetHint": "Daily usage resets at 00:00 UTC; changing a limit does not clear usage already recorded today.",
+    "status": {
+      "healthy": "Healthy",
+      "warning": "Near limit",
+      "exhausted": "Exhausted",
+      "disabled": "Capability off"
+    },
+    "source": {
+      "default": "Server default",
+      "custom": "Peer override",
+      "userCustom": "Customized"
+    },
+    "notApplicable": "Not applicable",
+    "invalid": "Enter a valid number greater than or equal to 0.",
+    "unavailable": "Quota information for this peer is currently unavailable.",
+    "health": {
+      "healthy": "Healthy",
+      "warning": "Near limit",
+      "exhausted": "Exhausted",
+      "unknown": "Unknown"
+    },
     "editTitle": "Quota limits — {{domain}}",
-    "editHint": "Leave a field empty to use the global default; values apply from now and reset daily at 00:00 UTC.",
+    "editHint": "Leave blank to use the server default; 0 disables that capability. Changes apply immediately without clearing today's usage.",
     "placeholder": {
       "default": "default"
     },
@@ -178,8 +204,10 @@
       "domain": "domain",
       "foreigner": "Foreign",
       "status": "Status",
+      "quota": "Quota",
       "tokenVer": "tokenVer",
-      "createdAt": "Created"
+      "createdAt": "Created",
+      "actions": "Quick actions"
     },
     "status": {
       "banned": "Banned",
@@ -230,6 +258,18 @@
       "push": "No push devices"
     },
     "push": { "deviceId": "Device ID" }
+  },
+  "userQuota": {
+    "title": "Personal quota",
+    "desc": "Applies only to this local account and is independent of federated-peer quotas. Resets daily at 00:00 UTC.",
+    "noActionsAccepted": "This account cannot use this capability",
+    "resetHint": "Daily usage resets at 00:00 UTC; changing a limit does not clear usage already recorded for this account today.",
+    "source": {
+      "default": "Account default",
+      "custom": "Personal override"
+    },
+    "editTitle": "Edit personal quota",
+    "editHint": "Leave blank to use the local-account default; 0 disables that capability for this account. Changes apply immediately without clearing today's usage."
   },
   "bans": {
     "title": "Ban Management",
@@ -412,7 +452,8 @@
       "back": "Back to federation",
       "notFound": "Peer not found",
       "tabOverview": "Overview",
-      "tabTimeline": "Timeline"
+      "tabTimeline": "Timeline",
+      "tabQuota": "Quotas"
     },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",
@@ -508,7 +549,11 @@
   "logs": {
     "title": "System Logs",
     "desc": "Live tail of the structured log stream — stdout, the rotating log file, and this viewer share one pipeline. New lines stream in real time; the server replays the most recent records on connect. Scroll up to pause auto-follow.",
-    "tabs": { "live": "Live tail", "history": "History", "audit": "Audit" },
+    "tabs": {
+      "live": "Live tail",
+      "history": "History",
+      "diagnostics": "Client diagnostics"
+    },
     "allLevels": "All levels",
     "clear": "Clear",
     "jumpLatest": "Latest",
@@ -550,6 +595,8 @@
     "confirm": "Issue",
     "codeLabel": "One-time login code (shown once)",
     "note": "Hand it to the user now — it cannot be viewed again after closing.",
+    "validFor": "Valid for {{count}} minutes",
+    "expiresAt": "Expires at",
     "copied": "Code copied",
     "copyFailed": "Copy failed",
     "success": "Login code issued"
@@ -645,12 +692,44 @@
   },
   "media": {
     "title": "Media & Storage",
-    "desc": "Content-addressed media overview + garbage collection. GC reclaims refs<=0; reconcile walks the shards dir (O(files)).",
+    "desc": "Content-addressed media overview and manual cleanup. GC derives liveness from ordinary messages; reconcile repairs disk/database drift in bounded batches.",
     "tileDbBytes": "Stored (DB)",
     "tileAssets": "Assets",
+    "assetStatusHint": "READY {{ready}} / PENDING {{pending}} (stale {{stalePending}}) / DELETING {{deleting}} (stale {{staleDeleting}}) / DELETED {{deleted}}",
     "tileReclaimable": "Reclaimable",
     "tileOnDisk": "On disk",
-    "reclaimableHint": "assets with refs ≤ 0",
+    "reclaimableHint": "READY assets unused by live messages or active staging",
+    "uploadManagementTitle": "Upload management",
+    "uploadManagementDesc": "Manage active file transfers and resources awaiting CAS finalization.",
+    "uploadSessionsTitle": "Active uploads",
+    "uploadSessionsEmpty": "No active upload sessions",
+    "uploadFile": "File",
+    "uploadOwner": "User",
+    "uploadProgress": "Progress",
+    "uploadUpdated": "Last activity",
+    "uploadRefresh": "Refresh",
+    "uploadAbort": "Abort",
+    "uploadAbortConfirm": "Abort the upload of {{name}}? Its temporary file will be deleted and the staged message will be marked failed.",
+    "uploadAborted": "Upload session aborted",
+    "pendingTitle": "Pending CAS uploads",
+    "pendingDesc": "Transfers are complete and awaiting validation and content-addressed storage finalization.",
+    "pendingSince": "Pending since",
+    "pendingEmpty": "No pending uploads",
+    "pendingTerminate": "Force terminate",
+    "pendingTerminateConfirm": "Best-effort terminate this upload and immediately clean its current files?",
+    "taskTitle": "CAS maintenance task",
+    "taskConnected": "Live progress",
+    "taskReconnecting": "Connecting",
+    "taskCancel": "Cancel task",
+    "taskCancelling": "Cancelling",
+    "taskPhase": "Current phase",
+    "taskScanned": "Scanned",
+    "taskDeleted": "Deleted",
+    "taskCurrentSize": "Current file size",
+    "taskNoLogs": "No files deleted and no errors yet",
+    "taskCompleted": "CAS maintenance task completed",
+    "taskCancelled": "CAS maintenance task cancelled",
+    "taskFailed": "CAS maintenance task failed",
     "onDiskFiles": "{{files}} files",
     "byExt": "By extension",
     "gc": "Run GC",
@@ -666,8 +745,8 @@
       "forwardBundles": "Inspect and clean orphan forward bundles?"
     },
     "confirmBody": {
-      "gc": "Deletes MediaAsset rows with refs<=0 and their shard files, then sweeps stale tmp.",
-      "reconcile": "Walks uploads/shards and deletes any file with no MediaAsset row. O(files) — run sparingly.",
+      "gc": "Deletes READY blobs unused by non-deleted ordinary messages or active staging, then sweeps stale tmp.",
+      "reconcile": "Walks data/cas, removes orphan blobs, and marks missing READY blobs as DELETED. O(files) — run sparingly.",
       "avatars": "Deletes avatar files no longer referenced by any user or group.",
       "forwardBundles": "Inspects bundles unreachable from every forward message, then removes any found and releases their asset references. Manual only."
     },

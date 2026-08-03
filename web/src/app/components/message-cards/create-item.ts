@@ -163,6 +163,16 @@ export function createMsgCbElement(
       nextItem.ids?.length ? nextItem.ids : [nextItem.id]
     ).join(',');
     host.classList.toggle('cb-message--album', (nextItem.ids?.length ?? 0) > 1);
+    if (nextItem.data.type === 'msg') {
+      const message = nextItem.data;
+      host.dataset['messageCreator'] = String(message.creator);
+      host.dataset['messageSide'] = message.isSelf ? 'self' : 'other';
+      host.dataset['messageAvatarName'] = message.name;
+      host.dataset['messageAvatarSrc'] = message.avatar ?? '';
+      host.dataset['messageAvatarIdentity'] = String(
+        message.avatarIdentityId ?? '',
+      );
+    }
   };
   const update = (
     nextItem: CbItem<ChatItemData>,

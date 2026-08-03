@@ -200,7 +200,7 @@
     shape change + `remoteAvatarDigest` column + migration + receiver fetch path) was overkill on a cold,
     small, already-gated, trusted-peer-only path. Best practice here IS the minimal cap. (Orphan GC is
     already built: `gcOrphanedAvatars` live-set scan, covering both local-upload + federation-relocalize
-    orphans — NOT refcount; that's chat-media's `MediaAsset.refs`.)
+    orphans — CAS blob liveness is derived from ordinary messages and active staging.)
   - File: `src/upload/upload.service.ts` (`MAX_AVATAR_WIRE_B64_LEN` constant + the pre-decode guard in
     `saveAvatarFromWire`). e2e 23/23 green (the avatar-localization tests pass — real avatars are ~55 KB).
 - **D1** — origin-hub group messaging: O(N member-servers) round-trips per message, all through the
