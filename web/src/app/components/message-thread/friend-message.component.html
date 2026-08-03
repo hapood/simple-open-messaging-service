@@ -45,14 +45,16 @@
         >
           <span>{{ 'chat.selection.quote' | transloco }}</span>
         </button>
-        <button
-          type="button"
-          role="menuitem"
-          (click)="openContextForwardDialog()"
-          [attr.title]="'chat.selection.forward' | transloco"
-        >
-          <span>{{ 'chat.selection.forward' | transloco }}</span>
-        </button>
+        @if (canDirectForward(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            (click)="openContextForwardDialog()"
+            [attr.title]="'chat.selection.forward' | transloco"
+          >
+            <span>{{ 'chat.selection.forward' | transloco }}</span>
+          </button>
+        }
         <button
           type="button"
           role="menuitem"

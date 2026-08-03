@@ -186,6 +186,15 @@ export const router = createBrowserRouter(
                 })),
             },
             {
+              path: '/link-cards',
+              lazy: () =>
+                import('@/routes/link-cards/link-card-rules-page').then(
+                  (m) => ({
+                    Component: m.LinkCardRulesPage,
+                  }),
+                ),
+            },
+            {
               path: '/logs',
               element: <LogsLayout />,
               children: [

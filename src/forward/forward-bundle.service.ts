@@ -144,6 +144,22 @@ export class ForwardBundleService {
       );
     }
 
+    const directTypes: ReadonlySet<ContentType> = new Set([
+      ContentType.PURE_TEXT,
+      ContentType.IMAGE,
+      ContentType.VIDEO,
+      ContentType.AUDIO,
+      ContentType.FILE,
+      ContentType.LINK,
+      ContentType.FORWARD,
+    ]);
+    if (!directTypes.has(visible.contentType)) {
+      throw new BusinessException(
+        BusinessCode.FORWARD_INVALID_BUNDLE,
+        'message type cannot be forwarded directly',
+      );
+    }
+
     const parsedText =
       visible.contentType === ContentType.PURE_TEXT
         ? parseTextMessageContent(visible.content)

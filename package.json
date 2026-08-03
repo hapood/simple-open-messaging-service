@@ -7,7 +7,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && npm run build:migrations",
+    "build:migrations": "tsc -p tsconfig.migrations.json",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
@@ -27,7 +28,10 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",
     "db:baseline": "tsx scripts/migrate-db.ts baseline",
-    "db:status": "tsx scripts/migrate-db.ts status"
+    "db:status": "tsx scripts/migrate-db.ts status",
+    "db:migrate:prod": "node dist/scripts/migrate-db.js migrate",
+    "db:baseline:prod": "node dist/scripts/migrate-db.js baseline",
+    "db:status:prod": "node dist/scripts/migrate-db.js status"
   },
   "dependencies": {
     "@fastify/compress": "^9.0.0",

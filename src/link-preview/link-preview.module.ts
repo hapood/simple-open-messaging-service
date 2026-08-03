@@ -3,6 +3,9 @@ import { SafeFetchService } from './safe-fetch.service.js';
 import { OpenGraphService } from './open-graph.service.js';
 import { LinkPreviewService } from './link-preview.service.js';
 import { LinkPreviewController } from './link-preview.controller.js';
+import { UploadModule } from '../upload/upload.module.js';
+import { LinkCardRuleController } from './link-card-rule.controller.js';
+import { LinkCardRuleService } from './link-card-rule.service.js';
 
 /**
  * Web link card (OpenGraph preview) feature. The SSRF-safe fetch + OG parser + thumbnail inline
@@ -12,8 +15,14 @@ import { LinkPreviewController } from './link-preview.controller.js';
  * send server-side.
  */
 @Module({
-  controllers: [LinkPreviewController],
-  providers: [SafeFetchService, OpenGraphService, LinkPreviewService],
-  exports: [LinkPreviewService],
+  imports: [UploadModule],
+  controllers: [LinkPreviewController, LinkCardRuleController],
+  providers: [
+    SafeFetchService,
+    OpenGraphService,
+    LinkPreviewService,
+    LinkCardRuleService,
+  ],
+  exports: [LinkPreviewService, LinkCardRuleService],
 })
 export class LinkPreviewModule {}

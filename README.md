@@ -153,7 +153,7 @@ npm run dev --prefix admin-web
 
 | Location | Setting | Description |
 | --- | --- | --- |
-| `.env` → `DATABASE_URL` | PostgreSQL connection string | Read by the Drizzle/pg database layer, required |
+| `.env` → `DATABASE_URL` or `PGHOST`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` | PostgreSQL connection | URL form remains supported; Docker deployment uses the standard `PG*` variables |
 | `.env` → `SOMS_DOMAIN` | Public domain of this service (federation identity) | Required (`@user@<domain>`, host of `/.well-known/soms`) |
 | `.env` → `ADMIN_BOOTSTRAP_PASSWORD` | Password used to create the first `admin` account when no administrator exists |
 | `.env` → `SOMS_TLS_MODE` | Public origin mode: `standard`, `custom`, or `disabled` |
@@ -275,17 +275,17 @@ docker build --target runtime -t soms:slim .
 
 ```bash
 cp -r deploy/public/ /opt/soms/ && cd /opt/soms   # or deploy/nas/ for an intranet/NAS box
-cp soms.conf.example soms.conf                     # then edit soms.conf (profile-specific fields)
+cp .env.example .env                               # then edit .env (profile-specific fields)
 docker compose up -d
 ```
 
-Required in `soms.conf` (compose fails fast if missing): `SOMS_DOMAIN` — your public domain / federation identity (`@user@<SOMS_DOMAIN>`). `POSTGRES_PASSWORD` ships a working default (postgres is internal-only — not published); set it to override. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (a token with **Zone:DNS:Edit** on the `SOMS_DOMAIN` zone) — see [DNS provider](#dns-provider-certificate-signing) below for other providers. `ADMIN_BOOTSTRAP_PASSWORD` is optional — see the bootstrap-admin note below.
+The deployment directory contains only `docker-compose.yml` and the operator-managed `.env`. Required values include `SOMS_DOMAIN`, `PGPASSWORD`, and `ADMIN_BOOTSTRAP_PASSWORD`; Compose injects the standard PostgreSQL `PG*` variables directly into the app and migration runner. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (Zone:DNS:Edit on the `SOMS_DOMAIN` zone).
 
-Published ports depend on the profile: **NAS** publishes only `7667` (HTTPS; `7667/udp` for HTTP/3); **public** also publishes `80` (HTTP→HTTPS redirect) and `443` (with `443/udp` for HTTP/3), keeping `7667` for federation S2S. Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
+Published ports depend on the profile and can be changed in `.env`: NAS uses `SOMS_PORT`; public uses `SOMS_HTTP_PORT`, `SOMS_HTTPS_PORT`, and `SOMS_FEDERATION_PORT`. Container ports remain 80/443/7667. Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
 
 - **First-run certs**: Caddy issues the Let's Encrypt certificate(s) via **DNS-01** on startup (no ports 80/443 needed) — one for `SOMS_DOMAIN` and, if `SOMS_LAN_DOMAIN` is set, one for it too (both via the same provider/zone; the LAN domain **must share** `SOMS_DOMAIN`'s registrable domain). This takes ~10–60s; until then HTTPS returns a TLS error. Watch `docker compose logs -f app` for `certificate obtained successfully`. Issued certs persist in the `app-data` volume (under `/app/data/caddy`) across restarts, so they are not re-issued.
 - **LAN domain & client fallback** (optional, `SOMS_LAN_DOMAIN`): native clients (desktop/Android) accept either domain in server settings — the other is auto-filled from `/shell/compat` and confirmed via a modal, then the client races `GET /api/v1/health` on both and uses whichever is reachable (auto-fallback as you move between LAN and WAN; same backend ⇒ one session works on both). Browser/PWA clients can use the LAN domain manually. **DNS-rebinding note:** if the LAN domain's public A record points directly at a private IP, some resolvers (pi-hole, dnsmasq `stop-dns-rebind`, OpenWrt) may drop it — use split-horizon DNS or allowlist the domain (not observed on most home/ISP resolvers).
-- **Persistent state** lives under one volume (`app-data` → `/app/data`): S2S + JWT keys, app logs (`data/logs/soms.log`, own rotation), Caddy state (`data/caddy`), and uploads (`data/uploads`). Postgres keeps its own dedicated `pgdata` volume (it requires exclusive ownership of its data dir).
+- **Persistent state** lives under one volume (`app-data` → `/app/data`): S2S + JWT keys, app logs, Caddy state, and uploads. Postgres keeps its own dedicated `postgres-data` volume. Named volumes remove host-UID initialization and make the stack start through standard Compose alone.
 - **Bootstrap admin** is self-seeded by the app on startup: on every boot it creates `account=admin` from `ADMIN_BOOTSTRAP_PASSWORD` if no admin exists yet (a no-op once one does) — no separate seed container, no manual `docker compose run`. If `ADMIN_BOOTSTRAP_PASSWORD` is left empty, the app still boots but logs a WARN and the `/admin` console has no login until you set it and restart. Log in to `/admin` with `admin` + the password.
 - **HTTP/2**: clients negotiate h2 (and h3 over UDP) with Caddy on `7667`. The origin leg to node is HTTP/1.1 (a loopback hop inside the container).
 
@@ -293,8 +293,8 @@ Published ports depend on the profile: **NAS** publishes only `7667` (HTTPS; `76
 
 The bundled Caddy ships **76 buildable** DNS-01 providers from `github.com/caddy-dns` — Cloudflare + all the China providers (**AliDNS** `alidns`, **Tencent** `tencentcloud` + `edgeone`, plus `huaweicloud`, `volcengine`, `westcn`) and the other major ones. So switching DNS providers is a **config change, not a rebuild**. (The other caddy-dns modules are excluded at build: archived, no resolvable version, or stuck on the pre-1.0 `libdns` API — notably `dnspod` is unmaintained, so Tencent users use `tencentcloud`/`edgeone`.)
 
-- **Cloudflare (default)**: just set `CLOUDFLARE_API_TOKEN` in `soms.conf` — the `init` service generates the Caddyfile from it.
-- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `soms.conf` to that provider's `dns ...` line (quoted — it contains spaces) plus its credential vars; `{KEY}` refs are transcribed into the generated Caddyfile. Examples are in `deploy/public/soms.conf.example` (and `deploy/nas/soms.conf.example`). Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
+- **Cloudflare (default)**: set `CLOUDFLARE_API_TOKEN` in `.env`; the app entrypoint renders its internal Caddyfile.
+- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `.env` to that provider's `dns ...` line plus its credential variables; `{KEY}` references are transcribed into the generated Caddyfile. Examples are in each profile's `.env.example`. Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
 
 ### Bring your own reverse proxy (slim image)
 

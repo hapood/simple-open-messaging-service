@@ -38,6 +38,8 @@ import { DiagnosticsModule } from '../diagnostics/diagnostics.module.js';
 import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.controller.js';
 import { LoggerModule } from '../logger/logger.module.js';
 import { LogViewerController } from '../logger/log-viewer.controller.js';
+import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
+import { LinkCardRuleAdminController } from './link-card-rule-admin.controller.js';
 
 @Module({
   imports: [
@@ -57,6 +59,7 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
     DiagnosticsModule,
     // LogViewerService (exported by LoggerModule) backs LogViewerController (admin log tail + history).
     LoggerModule,
+    LinkPreviewModule,
   ],
   controllers: [
     AdminController,
@@ -72,6 +75,7 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
     WebAuthnController,
     AdminDiagnosticsController,
     LogViewerController,
+    LinkCardRuleAdminController,
   ],
   providers: [
     AdminAuthService,

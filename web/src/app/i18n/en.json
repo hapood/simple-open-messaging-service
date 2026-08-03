@@ -382,6 +382,11 @@
     "previewLabel": "[Chat history]",
     "nestedLevel": "Level {{level}}"
   },
+  "linkCard": {
+    "open": "Open link",
+    "original": "Original text",
+    "copy": "Copy all"
+  },
   "chat": {
     "messageNotFound": "Message not found",
     "clearSearch": "Clear search",

@@ -3,7 +3,10 @@ import { appConfig } from './app/app.config';
 import { AppComponent } from './app/app.component';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
 import { installConsoleBuffer } from './app/services/log-buffer';
-import { applySafeInsets, installActiveOriginBridge } from './app/services/runtime';
+import {
+  applySafeInsets,
+  installActiveOriginBridge,
+} from './app/services/runtime';
 
 /**
  * Install window-level listeners that surface errors no local handler caught into the webview console —
@@ -27,7 +30,11 @@ function installGlobalErrorReporting(): void {
     const reason = event.reason;
     // HTTP failures are owned by httpTraceInterceptor (logged with method + url + status); skip the
     // duplicate. An HttpErrorResponse carries `.name === 'HttpErrorResponse'`.
-    if (reason && typeof reason === 'object' && (reason as { name?: string }).name === 'HttpErrorResponse') {
+    if (
+      reason &&
+      typeof reason === 'object' &&
+      (reason as { name?: string }).name === 'HttpErrorResponse'
+    ) {
       return;
     }
     console.error('[unhandled] promise rejection:', reason);
@@ -63,8 +70,11 @@ installKeyboardInsetBridge();
 // Kotlin-authoritative; Rust follows). No-op in the browser/desktop build.
 installActiveOriginBridge();
 
-// The native launch overlay is already visible at this point. Session restoration is an APP_INITIALIZER,
-// so label that otherwise quiet wait before Angular constructs AppComponent. No-op outside Android.
+// The native launch overlay is already visible at this point. Session restoration followed by link-card
+// rule preloading is one ordered APP_INITIALIZER, so label that otherwise quiet wait before Angular
+// constructs AppComponent. No-op outside Android.
 window.SomsShell?.setSplashStage?.('session');
 
-bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err));
+bootstrapApplication(AppComponent, appConfig).catch((err) =>
+  console.error(err),
+);

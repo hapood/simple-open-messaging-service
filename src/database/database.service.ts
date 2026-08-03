@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { optionalIntEnv, requireEnv } from '../common/env.js';
+import { optionalIntEnv } from '../common/env.js';
 import * as relations from './relations.js';
 import * as schema from './schema.js';
 
@@ -23,8 +23,19 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   readonly db: Database;
 
   constructor() {
+    const connectionString = process.env.DATABASE_URL?.trim();
+    if (!connectionString) {
+      const missing = ['PGHOST', 'PGDATABASE', 'PGUSER', 'PGPASSWORD'].filter(
+        (name) => !process.env[name]?.trim(),
+      );
+      if (missing.length > 0) {
+        throw new Error(
+          `DATABASE_URL or standard PostgreSQL variables are required (missing: ${missing.join(', ')})`,
+        );
+      }
+    }
     this.pool = new Pool({
-      connectionString: requireEnv('DATABASE_URL'),
+      ...(connectionString ? { connectionString } : {}),
       max: optionalIntEnv('DATABASE_POOL_MAX', 10),
     });
     this.db = drizzle({

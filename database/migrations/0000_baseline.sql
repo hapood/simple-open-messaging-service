@@ -1,5 +1,9 @@
 
--- Source: 0_init/migration.sql
+-- ============================================================================
+-- Squashed from 0000_baseline.sql
+-- ============================================================================
+
+
 
 -- CreateSchema
 
@@ -1305,3 +1309,218 @@ ALTER TABLE "ForwardBundle"
 -- Source: 20260731223000_group_dissolved_state/migration.sql
 
 ALTER TABLE "Group" ADD COLUMN "dissolvedAt" TIMESTAMP(3);
+
+-- ============================================================================
+-- Squashed from 0001_thread_clear_seq.sql
+-- ============================================================================
+
+ALTER TABLE "ThreadParticipant" ADD COLUMN "clearedSeq" INTEGER;
+
+UPDATE "ThreadParticipant" AS participant
+SET "clearedSeq" = COALESCE(
+  (
+    SELECT MAX(message.seq)
+    FROM "Message" AS message
+    WHERE message."threadId" = participant."threadId"
+      AND message."createdAt" <= participant."clearedAt"
+  ),
+  -1
+)
+WHERE participant."clearedAt" IS NOT NULL;
+
+ALTER TABLE "ThreadParticipant" DROP COLUMN "clearedAt";
+
+ALTER TABLE "ThreadParticipant"
+  ADD CONSTRAINT "ThreadParticipant_cleared_seq_check"
+  CHECK ("clearedSeq" IS NULL OR "clearedSeq" >= -1);
+
+-- ============================================================================
+-- Squashed from 0002_read_revision.sql
+-- ============================================================================
+
+ALTER TABLE "User"
+ADD COLUMN "readRevision" INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE "ThreadParticipant"
+ADD COLUMN "readRevision" INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX "ThreadParticipant_userId_readRevision_idx"
+ON "ThreadParticipant" ("userId", "readRevision");
+
+-- ============================================================================
+-- Squashed from 0003_user_preference.sql
+-- ============================================================================
+
+CREATE TABLE "UserPreference" (
+  "userId" INTEGER NOT NULL,
+  "key" VARCHAR(100) NOT NULL,
+  "value" JSONB NOT NULL,
+  "revision" INTEGER NOT NULL DEFAULT 0,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "UserPreference_pkey" PRIMARY KEY ("userId", "key"),
+  CONSTRAINT "UserPreference_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id")
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "UserPreference_value_not_json_null_check"
+    CHECK ("value" <> 'null'::jsonb),
+  CONSTRAINT "UserPreference_revision_check"
+    CHECK ("revision" >= 0)
+);
+
+ALTER TABLE "SessionToken"
+  ADD COLUMN "autoTerminateDays" INTEGER NOT NULL DEFAULT 30,
+  ADD CONSTRAINT "SessionToken_auto_terminate_days_check"
+    CHECK ("autoTerminateDays" IN (7, 30, 90, 180, 365));
+
+DELETE FROM "SessionToken";
+
+ALTER TABLE "SessionToken"
+  ALTER COLUMN "expiresAt" SET NOT NULL,
+  DROP COLUMN "persistent",
+  DROP COLUMN "trusted";
+
+-- ============================================================================
+-- Squashed from 0004_media_asset_status.sql
+-- ============================================================================
+
+DELETE FROM "ForwardBundleAsset";
+DELETE FROM "MediaMessage";
+DELETE FROM "PendingMedia" WHERE digest IS NOT NULL;
+DELETE FROM "MediaAsset";
+
+CREATE TYPE "MediaAssetStatus" AS ENUM ('PENDING', 'READY', 'DELETING', 'DELETED');
+
+ALTER TABLE "MediaAsset"
+  ADD COLUMN "status" "MediaAssetStatus" NOT NULL DEFAULT 'READY',
+  ADD COLUMN "stateChangedAt" timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+DROP INDEX "MediaAsset_refs_idx";
+ALTER TABLE "MediaAsset" DROP COLUMN "refs";
+
+CREATE INDEX "MediaAsset_status_createdAt_idx"
+  ON "MediaAsset" USING btree ("status", "stateChangedAt");
+
+-- ============================================================================
+-- Squashed from 0005_remove_local_server_quota.sql
+-- ============================================================================
+
+-- Local accounts are no longer aggregated into the server-domain quota bucket. Federated peers remain
+-- domain-scoped; local accounts receive a separate userId-scoped quota model in a subsequent migration.
+DELETE FROM "SystemSetting" WHERE "key" = 'quota:local';
+
+-- ============================================================================
+-- Squashed from 0006_user_quota.sql
+-- ============================================================================
+
+CREATE TABLE "UserQuotaPolicy" (
+  "userId" integer PRIMARY KEY NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "dailyMsgLimit" integer,
+  "dailyImageLimit" integer,
+  "dailyLargeFileLimit" integer,
+  "dailyRequestLimit" integer,
+  "maxImageBytes" integer,
+  "maxLargeFileBytes" integer,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "UserQuotaPolicy_nonnegative_check" CHECK (
+    ("dailyMsgLimit" IS NULL OR "dailyMsgLimit" >= 0) AND
+    ("dailyImageLimit" IS NULL OR "dailyImageLimit" >= 0) AND
+    ("dailyLargeFileLimit" IS NULL OR "dailyLargeFileLimit" >= 0) AND
+    ("dailyRequestLimit" IS NULL OR "dailyRequestLimit" >= 0) AND
+    ("maxImageBytes" IS NULL OR "maxImageBytes" >= 0) AND
+    ("maxLargeFileBytes" IS NULL OR "maxLargeFileBytes" >= 0)
+  )
+);
+
+CREATE TABLE "UserQuotaDailyUsage" (
+  "userId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "date" date NOT NULL,
+  "category" varchar(15) NOT NULL,
+  "count" integer DEFAULT 0 NOT NULL,
+  CONSTRAINT "UserQuotaDailyUsage_pkey" PRIMARY KEY("userId", "date", "category"),
+  CONSTRAINT "UserQuotaDailyUsage_count_check" CHECK ("count" >= 0),
+  CONSTRAINT "UserQuotaDailyUsage_category_check" CHECK (
+    "category" IN ('messages', 'images', 'largeFiles', 'requests')
+  )
+);
+
+CREATE INDEX "UserQuotaDailyUsage_date_idx" ON "UserQuotaDailyUsage" USING btree ("date");
+
+-- ============================================================================
+-- Squashed from 0007_media_asset_failed.sql
+-- ============================================================================
+
+ALTER TYPE "MediaAssetStatus" ADD VALUE IF NOT EXISTS 'FAILED';
+
+-- ============================================================================
+-- Squashed from 0008_resumable_upload.sql
+-- ============================================================================
+
+CREATE TYPE "UploadSessionStatus" AS ENUM (
+  'UPLOADING',
+  'COMPLETING',
+  'COMPLETED',
+  'ABORTED'
+);
+
+CREATE TABLE "UploadSession" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "uploadId" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "clientMessageId" VARCHAR(36) NOT NULL,
+  "creatorId" INTEGER NOT NULL,
+  "contentType" "ContentType" NOT NULL,
+  "originalName" VARCHAR(100) NOT NULL,
+  "mimeType" VARCHAR(255) NOT NULL,
+  "totalBytes" BIGINT NOT NULL,
+  "receivedBytes" BIGINT NOT NULL DEFAULT 0,
+  "status" "UploadSessionStatus" NOT NULL DEFAULT 'UPLOADING',
+  "tmpKey" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "digest" VARCHAR(64),
+  "result" JSONB,
+  "errorReason" VARCHAR(255),
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "completedAt" TIMESTAMP(3),
+  "abortedAt" TIMESTAMP(3),
+  CONSTRAINT "UploadSession_creatorId_fkey" FOREIGN KEY ("creatorId")
+    REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT "UploadSession_totalBytes_check" CHECK ("totalBytes" > 0),
+  CONSTRAINT "UploadSession_receivedBytes_check"
+    CHECK ("receivedBytes" >= 0 AND "receivedBytes" <= "totalBytes")
+);
+
+CREATE UNIQUE INDEX "UploadSession_uploadId_key" ON "UploadSession"("uploadId");
+CREATE UNIQUE INDEX "UploadSession_clientMessageId_key" ON "UploadSession"("clientMessageId");
+CREATE INDEX "UploadSession_creatorId_status_idx" ON "UploadSession"("creatorId", "status");
+CREATE INDEX "UploadSession_status_updatedAt_idx" ON "UploadSession"("status", "updatedAt");
+CREATE INDEX "UploadSession_digest_idx" ON "UploadSession"("digest") WHERE "digest" IS NOT NULL;
+
+-- ============================================================================
+-- Squashed from 0009_link_card_rules.sql
+-- ============================================================================
+
+CREATE TABLE "LinkCardRule" (
+  "id" SERIAL PRIMARY KEY,
+  "matchUrl" VARCHAR(2048) NOT NULL,
+  "hostname" VARCHAR(255) NOT NULL,
+  "displayName" VARCHAR(100) NOT NULL,
+  "includeSubdomains" BOOLEAN NOT NULL DEFAULT TRUE,
+  "enabled" BOOLEAN NOT NULL DEFAULT TRUE,
+  "priority" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX "LinkCardRule_hostname_key" ON "LinkCardRule"("hostname");
+CREATE INDEX "LinkCardRule_enabled_priority_idx" ON "LinkCardRule"("enabled", "priority" DESC);
+
+CREATE TABLE "LinkFavicon" (
+  "ruleId" INTEGER PRIMARY KEY,
+  "sourceUrl" VARCHAR(2048) NOT NULL,
+  "digest" VARCHAR(64) NOT NULL,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "LinkFavicon_ruleId_fkey" FOREIGN KEY ("ruleId") REFERENCES "LinkCardRule"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "LinkFavicon_digest_fkey" FOREIGN KEY ("digest") REFERENCES "MediaAsset"("digest") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
+CREATE INDEX "LinkFavicon_digest_idx" ON "LinkFavicon"("digest");

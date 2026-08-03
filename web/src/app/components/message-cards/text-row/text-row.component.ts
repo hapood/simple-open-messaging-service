@@ -1,4 +1,12 @@
-import { Component, computed, inject, input, output } from '@angular/core';
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -8,6 +16,9 @@ import {
 } from '../../user-avatar/user-avatar.component';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
+import { LinkCardService } from '../../../services/link-card.service';
+import { PopupType, RouteService } from '../../../services/route.service';
+import { openExternalUrl } from '../../../services/runtime';
 
 /**
  * Plain-text message row (WhatsApp style: avatar + name + bubble + tail + bottom-right timestamp).
@@ -29,6 +40,8 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
 export class TextRowComponent {
   private readonly downloads = inject(ImageDownloadService);
   private readonly mediaThreshold = inject(MediaSizeThresholdService);
+  private readonly linkCards = inject(LinkCardService);
+  private readonly route = inject(RouteService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
   /** Group head (shows avatar + other party's name) / mid-group. */
@@ -59,6 +72,55 @@ export class TextRowComponent {
   readonly retry = output<number>();
   readonly cancel = output<number>();
   readonly quoteJump = output<number>();
+  readonly linkCard = computed(() =>
+    this.data().contentType === 'PURE_TEXT'
+      ? this.linkCards.matchFirst(this.data().text)
+      : null,
+  );
+  readonly faviconUrl = signal<string | null>(null);
+  readonly faviconLoading = signal(false);
+  readonly linkTextParts = computed(() => {
+    const card = this.linkCard();
+    const text = this.data().text;
+    if (!card) return null;
+    return {
+      before: text.slice(0, card.start),
+      url: text.slice(card.start, card.end),
+      after: text.slice(card.end),
+    };
+  });
+
+  constructor() {
+    effect((onCleanup) => {
+      const card = this.linkCard();
+      this.faviconUrl.set(null);
+      this.faviconLoading.set(!!card);
+      if (!card) return;
+      let current = true;
+      void this.linkCards.faviconUrl(card.rule.id).then((url) => {
+        if (!current) return;
+        this.faviconUrl.set(url);
+        this.faviconLoading.set(false);
+      });
+      onCleanup(() => {
+        current = false;
+      });
+    });
+  }
+
+  showOriginal(): void {
+    const card = this.linkCard();
+    if (card)
+      this.route.popupDlg(PopupType.LINK_ORIGINAL, {
+        text: this.data().text,
+        url: card.url,
+      });
+  }
+
+  async openLink(): Promise<void> {
+    const card = this.linkCard();
+    if (card) await openExternalUrl(card.url);
+  }
 
   replyImageSrc(quote: NonNullable<ChatMsgData['quote']>): string {
     return this.downloads.thumbnailUrl({

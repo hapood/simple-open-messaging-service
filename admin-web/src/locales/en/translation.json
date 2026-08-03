@@ -53,6 +53,7 @@
     "federation": "Federation",
     "logs": "Logs",
     "media": "Media & Storage",
+    "linkCards": "Link Cards",
     "settings": "Settings",
     "security": "My Account",
     "audit": "Audit Trail",
@@ -63,6 +64,24 @@
       "system": "System",
       "account": "Account"
     }
+  },
+  "linkCards": {
+    "title": "Link Card Rules",
+    "desc": "Clients render a card only for the first URL matching an enabled hostname allowlist rule.",
+    "add": "Add rule",
+    "edit": "Edit rule",
+    "name": "Display name",
+    "url": "Match URL",
+    "priority": "Priority",
+    "status": "Status",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "includeSubdomains": "Include subdomains",
+    "formDesc": "The hostname is derived from the URL. Changing the URL invalidates its favicon cache.",
+    "empty": "No link card rules",
+    "saved": "Rule saved",
+    "deleted": "Rule deleted",
+    "confirmDelete": "Delete {{name}}?"
   },
   "quota": {
     "title": "Daily Quotas",

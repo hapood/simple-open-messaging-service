@@ -234,14 +234,26 @@ async function status(
 }
 
 async function main(): Promise<void> {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL is required');
+  const connectionString = process.env.DATABASE_URL?.trim();
+  if (!connectionString) {
+    const missing = ['PGHOST', 'PGDATABASE', 'PGUSER', 'PGPASSWORD'].filter(
+      (name) => !process.env[name]?.trim(),
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `DATABASE_URL or standard PostgreSQL variables are required (missing: ${missing.join(', ')})`,
+      );
+    }
+  }
   const command = process.argv[2] ?? 'migrate';
   if (!['migrate', 'baseline', 'status'].includes(command)) {
     throw new Error(`unknown command: ${command}`);
   }
 
-  const pool = new Pool({ connectionString: url, max: 1 });
+  const pool = new Pool({
+    ...(connectionString ? { connectionString } : {}),
+    max: 1,
+  });
   const client = await pool.connect();
   try {
     await client.query('SELECT pg_advisory_lock(hashtext($1))', [LOCK_NAME]);

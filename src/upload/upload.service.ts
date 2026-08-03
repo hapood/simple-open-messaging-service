@@ -572,6 +572,20 @@ export class UploadService {
     return { url, size };
   }
 
+  /** Store a server-generated WebP in the shared CAS and expose its digest to non-message owners. */
+  async saveGeneratedWebp(
+    buf: Buffer,
+  ): Promise<{ url: string; digest: string; size: number }> {
+    const saved = await this.saveCas('webp', buf);
+    return { url: saved.url, digest: saved.digest, size: saved.size };
+  }
+
+  /** Resolve immutable CAS bytes for an authenticated semantic serving endpoint. */
+  casPath(digest: string): string | null {
+    if (!/^[0-9a-f]{64}$/.test(digest)) return null;
+    return this.casShardPath(digest).abs;
+  }
+
   /**
    * Generic file save — content-addressed + deduped via the shared CAS pipeline (sha256 → shard path
    * → MediaAsset ref++). The on-disk ext is sanitized from the client's original filename by

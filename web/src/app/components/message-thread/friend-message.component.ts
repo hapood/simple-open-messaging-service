@@ -1079,11 +1079,14 @@ export class MessageThreadComponent implements OnDestroy {
     memberId?: number,
   ): void {
     if (intent === 'open-menu') {
-      const menuHeight =
-        MESSAGE_CONTEXT_MENU_ITEM_COUNT * MESSAGE_CONTEXT_MENU_ITEM_HEIGHT +
-        MESSAGE_CONTEXT_MENU_CHROME_HEIGHT;
       const contextItem =
         memberId === undefined ? item : albumMemberItem(item, memberId);
+      const menuItemCount = this.canDirectForward(contextItem.data)
+        ? MESSAGE_CONTEXT_MENU_ITEM_COUNT
+        : MESSAGE_CONTEXT_MENU_ITEM_COUNT - 1;
+      const menuHeight =
+        menuItemCount * MESSAGE_CONTEXT_MENU_ITEM_HEIGHT +
+        MESSAGE_CONTEXT_MENU_CHROME_HEIGHT;
       const visualViewport = window.visualViewport;
       const messageViewport =
         this.viewportRef()?.nativeElement.getBoundingClientRect();
@@ -1274,9 +1277,21 @@ export class MessageThreadComponent implements OnDestroy {
 
   openContextForwardDialog(): void {
     const context = this.messageContextMenu();
-    if (!context) return;
+    if (!context || !this.canDirectForward(context.targetItem.data)) return;
     this.closeContextMenu();
     this.openForwardDialog([context.targetItem], 'DIRECT');
+  }
+
+  canDirectForward(message: ChatMsgData): boolean {
+    return (
+      message.contentType === 'PURE_TEXT' ||
+      message.contentType === 'IMAGE' ||
+      message.contentType === 'VIDEO' ||
+      message.contentType === 'AUDIO' ||
+      message.contentType === 'FILE' ||
+      message.contentType === 'LINK' ||
+      message.contentType === 'FORWARD'
+    );
   }
 
   openSelectedForwardDialog(): void {

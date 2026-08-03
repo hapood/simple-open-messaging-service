@@ -29,6 +29,7 @@ import {
 } from './nav-state.service';
 import { LayoutService } from './layout.service';
 import { ForwardDetailComponent } from '../components/forward-detail/forward-detail.component';
+import { LinkOriginalDialogComponent } from '../components/link-original-dialog/link-original-dialog.component';
 
 export enum RoutePage {
   HOME,
@@ -57,6 +58,7 @@ export enum PopupType {
   UPLOAD_DETAIL,
   FORWARD,
   FORWARD_DETAIL,
+  LINK_ORIGINAL,
 }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
@@ -70,6 +72,7 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.UPLOAD_DETAIL]: UploadDetailDialogComponent,
   [PopupType.FORWARD]: ForwardDialogComponent,
   [PopupType.FORWARD_DETAIL]: ForwardDetailComponent,
+  [PopupType.LINK_ORIGINAL]: LinkOriginalDialogComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
@@ -83,6 +86,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.UPLOAD_DETAIL]: 'page',
   [PopupType.FORWARD]: 'page',
   [PopupType.FORWARD_DETAIL]: 'viewer',
+  [PopupType.LINK_ORIGINAL]: 'modal',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -115,6 +119,7 @@ export interface PopupInput {
     mode: 'DIRECT' | 'HISTORY';
   };
   [PopupType.FORWARD_DETAIL]: { bundleId: string };
+  [PopupType.LINK_ORIGINAL]: { text: string; url: string };
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -140,6 +145,7 @@ export interface PopupResult {
   [PopupType.UPLOAD_DETAIL]: undefined;
   [PopupType.FORWARD]: ForwardDialogResult | undefined;
   [PopupType.FORWARD_DETAIL]: undefined;
+  [PopupType.LINK_ORIGINAL]: undefined;
 }
 
 export interface DlgInfo {

@@ -11,6 +11,7 @@ import {
   Radio,
   ScrollText,
   Settings,
+  Link2,
   ShieldBan,
   Users,
 } from 'lucide-react';
@@ -30,7 +31,8 @@ export type NavKey =
   | 'media'
   | 'settings'
   | 'security'
-  | 'audit';
+  | 'audit'
+  | 'linkCards';
 
 /** Full i18n key for a group header (under nav.group.*). */
 export type NavGroupKey =
@@ -84,6 +86,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/push', key: 'push', icon: Bell },
       { to: '/media', key: 'media', icon: HardDrive },
+      { to: '/link-cards', key: 'linkCards', icon: Link2 },
       { to: '/logs', key: 'logs', icon: ScrollText },
       { to: '/settings', key: 'settings', icon: Settings },
     ],

@@ -382,6 +382,11 @@
     "previewLabel": "[聊天记录]",
     "nestedLevel": "第 {{level}} 层"
   },
+  "linkCard": {
+    "open": "打开链接",
+    "original": "查看原文",
+    "copy": "复制全文"
+  },
   "chat": {
     "messageNotFound": "消息不存在",
     "clearSearch": "清除搜索",

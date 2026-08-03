@@ -222,6 +222,30 @@ describe('ForwardBundleService', () => {
     });
   });
 
+  it.each([ContentType.INVITE, ContentType.CALL])(
+    'rejects direct forwarding of system message type %s',
+    async (contentType) => {
+      const service = new ForwardBundleService(
+        databaseFake(0) as never,
+        messageServiceFake as never,
+        userBlockServiceFake as never,
+        {
+          findVisibleByThreadSeq: vi.fn().mockResolvedValue({
+            id: 7n,
+            contentType,
+            content: '{}',
+          }),
+        } as never,
+      );
+
+      await expect(
+        service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
+      ).rejects.toMatchObject<Partial<BusinessException>>({
+        bizCode: BusinessCode.FORWARD_INVALID_BUNDLE,
+      });
+    },
+  );
+
   it('rejects direct media forwarding when its CAS digest is not bound to the visible source', async () => {
     const digest = 'a'.repeat(64);
     const database = databaseFake(0);

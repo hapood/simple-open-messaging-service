@@ -135,7 +135,10 @@
         }
       }
       <p class="msg-bubble-text">
-        @if (data().textSegments?.length) {
+        @if (linkTextParts(); as parts) {
+          {{ parts.before }}<span class="msg-preview-url">{{ parts.url }}</span
+          >{{ parts.after }}
+        } @else if (data().textSegments?.length) {
           @for (segment of data().textSegments; track $index) {
             @if (segment.kind === 'mention') {
               <span
@@ -156,6 +159,32 @@
           data().time
         }}</span>
       </p>
+      @if (linkCard(); as card) {
+        <div class="msg-link-card">
+          <button type="button" class="msg-link-main" (click)="showOriginal()">
+            <span class="msg-link-icon">
+              @if (faviconLoading()) {
+                <span class="msg-link-spinner" aria-hidden="true"></span>
+              } @else if (faviconUrl()) {
+                <img
+                  [src]="faviconUrl()"
+                  alt=""
+                  (error)="faviconUrl.set(null)"
+                />
+              } @else {
+                <span class="msg-link-fallback" aria-hidden="true">↗</span>
+              }
+            </span>
+            <span class="msg-link-copy">
+              <strong>{{ card.rule.displayName }}</strong>
+              <span>{{ card.url }}</span>
+            </span>
+          </button>
+          <button type="button" class="msg-link-open" (click)="openLink()">
+            {{ 'linkCard.open' | transloco }}
+          </button>
+        </div>
+      }
       @if (statusTick()) {
         @if (!isFailed()) {
           <span

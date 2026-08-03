@@ -101,6 +101,98 @@
   box-shadow: inset 0 0 0 1px #fda4af;
 }
 
+.msg-preview-url {
+  color: var(--app-brand);
+  overflow-wrap: anywhere;
+}
+
+.msg-link-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+  padding: 9px;
+  border-radius: var(--app-radius-md);
+  background: var(--bubble-subtle);
+}
+
+.msg-link-main {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.msg-link-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: var(--app-surface);
+  overflow: hidden;
+}
+.msg-link-icon img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+.msg-link-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--app-border);
+  border-top-color: var(--app-brand);
+  border-radius: 50%;
+  animation: link-spin 0.8s linear infinite;
+}
+.msg-link-fallback {
+  color: var(--app-text-muted);
+  font-size: 20px;
+}
+.msg-link-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.msg-link-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+}
+.msg-link-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--app-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+.msg-link-open {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 17px;
+  background: var(--app-brand);
+  color: white;
+  cursor: pointer;
+  white-space: nowrap;
+}
+@keyframes link-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 :host(.cb-mention-me-pulse) .msg-bubble {
   animation: mention-me-visible 1400ms ease-out;
 }

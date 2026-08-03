@@ -89,4 +89,22 @@ describe('DatabaseService.connectWithRetry', () => {
     ).rejects.toThrow('down');
     expect(connect).toHaveBeenCalledOnce();
   });
+
+  it('accepts standard PostgreSQL variables when DATABASE_URL is absent', () => {
+    delete process.env.DATABASE_URL;
+    process.env.PGHOST = 'postgres';
+    process.env.PGDATABASE = 'soms';
+    process.env.PGUSER = 'timescale';
+    process.env.PGPASSWORD = 'password with @:/?# characters';
+    try {
+      expect(new DatabaseService().pool).toBeDefined();
+    } finally {
+      process.env.DATABASE_URL =
+        'postgresql://dummy:dummy@localhost:5432/dummy';
+      delete process.env.PGHOST;
+      delete process.env.PGDATABASE;
+      delete process.env.PGUSER;
+      delete process.env.PGPASSWORD;
+    }
+  });
 });

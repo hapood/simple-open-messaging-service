@@ -1,17 +1,39 @@
-import { APP_INITIALIZER, ApplicationConfig, CSP_NONCE, ErrorHandler, isDevMode, provideZonelessChangeDetection } from '@angular/core';
+import {
+  APP_INITIALIZER,
+  ApplicationConfig,
+  CSP_NONCE,
+  ErrorHandler,
+  isDevMode,
+  provideZonelessChangeDetection,
+} from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { provideHttpClient, withFetch, withInterceptorsFromDi, withInterceptors, HTTP_INTERCEPTORS, HttpBackend } from '@angular/common/http';
+import {
+  provideHttpClient,
+  withFetch,
+  withInterceptorsFromDi,
+  withInterceptors,
+  HTTP_INTERCEPTORS,
+  HttpBackend,
+} from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { MAT_SNACK_BAR_DEFAULT_OPTIONS } from '@angular/material/snack-bar';
-import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import {
+  provideTransloco,
+  provideTranslocoTranspiler,
+} from '@jsverse/transloco';
 import { provideServiceWorker } from '@angular/service-worker';
 import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
 import { AuthInterceptor } from './auth.interceptor';
 import { httpTraceInterceptor } from './http-trace.interceptor';
-import { httpResilienceInterceptor, HTTP_RETRY_CONFIG, DEFAULT_HTTP_RETRY_CONFIG } from './http-resilience.interceptor';
+import {
+  httpResilienceInterceptor,
+  HTTP_RETRY_CONFIG,
+  DEFAULT_HTTP_RETRY_CONFIG,
+} from './http-resilience.interceptor';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { GlobalErrorHandler } from './global-error.handler';
 import { AuthService } from './services/auth.service';
+import { LinkCardService } from './services/link-card.service';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
@@ -32,7 +54,9 @@ import { TauriHttpBackend } from './tauri-http.backend';
  */
 function readCspNonce(): string | null {
   if (typeof document === 'undefined') return null;
-  const el = document.querySelector('style[nonce], script[nonce]') as ({ nonce: string } & Element) | null;
+  const el = document.querySelector('style[nonce], script[nonce]') as
+    | ({ nonce: string } & Element)
+    | null;
   return el?.nonce || null;
 }
 
@@ -45,14 +69,18 @@ export const appConfig: ApplicationConfig = {
     {
       provide: APP_INITIALIZER,
       multi: true,
-      deps: [AuthService],
-      useFactory: (auth: AuthService) => () => auth.restoreSession(),
+      deps: [AuthService, LinkCardService],
+      useFactory:
+        (auth: AuthService, linkCards: LinkCardService) => async () => {
+          await auth.restoreSession();
+          await linkCards.loadRules();
+        },
     },
     provideZonelessChangeDetection(),
     {
       provide: HTTP_INTERCEPTORS,
       useClass: AuthInterceptor,
-      multi: true
+      multi: true,
     },
     // Global sink for uncaught Angular errors (the `[angular]` family) — logs with a greppable prefix,
     // disjoint from `[http]` (the httpTraceInterceptor) and `[unhandled]` (the main.ts window listeners).
@@ -79,7 +107,11 @@ export const appConfig: ApplicationConfig = {
       // network → error, 4xx → warn; the cancel/abort trace stays dev-only inside the file). Runs INNER
       // to AuthInterceptor, so it logs first then rethrows and the 401 re-login side-effect still fires.
       // See http-trace.interceptor.ts.
-      withInterceptors([correlationIdInterceptor, httpTraceInterceptor, httpResilienceInterceptor]),
+      withInterceptors([
+        correlationIdInterceptor,
+        httpTraceInterceptor,
+        httpResilienceInterceptor,
+      ]),
     ),
     { provide: HttpBackend, useClass: TauriHttpBackend },
     // 429 burst rate-limit backoff-retry + 5xx/network degraded-notice (see http-resilience.interceptor.ts).
@@ -129,6 +161,8 @@ export const appConfig: ApplicationConfig = {
     // "unsupported MIME type application/json"). Disabled under Tauri: the shell serves assets from a
     // local non-HTTP origin (no network to cache, no deploy hash rotation) and would otherwise
     // intercept /api + /uploads navigation. See services/runtime.ts.
-    provideServiceWorker('ngsw-worker.js', { enabled: !isDevMode() && !isTauri() }),
+    provideServiceWorker('ngsw-worker.js', {
+      enabled: !isDevMode() && !isTauri(),
+    }),
   ],
 };

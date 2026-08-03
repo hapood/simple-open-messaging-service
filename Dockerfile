@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json tsconfig.build.json nest-cli.json ./
+COPY tsconfig.migrations.json ./
+COPY scripts/migrate-db.ts ./scripts/migrate-db.ts
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 COPY src ./src
@@ -74,14 +76,14 @@ ENV NODE_ENV=production APP_VERSION=${APP_VERSION}
 # ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-# Secrets (DATABASE_URL, JWT_*, etc.) are injected at run time via the init service, never baked in.
+# Secrets and runtime configuration are injected by Compose through env_file, never baked in.
 # --chown=node:node so the non-root runtime user owns every file (node:*-slim ships uid-1000 `node`).
 COPY --chown=node:node package.json ./
 COPY --chown=node:node --from=server-build /build/node_modules ./node_modules
 COPY --chown=node:node --from=server-build /build/dist ./dist
-# Pure SQL migrations + checksum/lock runner used by the one-shot compose migrate service.
+# Pure SQL migrations + compiled checksum/lock runner used by the one-shot compose migrate service.
 COPY --chown=node:node --from=server-build /build/database ./database
-COPY --chown=node:node --from=server-build /build/scripts/migrate-db.ts ./scripts/migrate-db.ts
+COPY --chown=node:node config ./config
 # Angular's application builder emits client files under dist/web/browser/ (SSR-ready layout); copy its
 # contents flat into public/web so index.html sits at public/web/index.html for Caddy file_server.
 COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web
@@ -102,9 +104,9 @@ RUN chmod +x /app/entrypoint.sh /app/supervisor.sh /app/init.sh \
     # and `caddy adapt` it (caddy is in soms-base). Single source of truth — no separate baked Caddyfile.
     # The token only needs to be NON-EMPTY to satisfy the `dns cloudflare` parse (adapt does not run
     # Provision(), unlike `caddy validate`); a real one is supplied at runtime.
-    && mkdir -p /tmp/gate && printf 'SOMS_DOMAIN=validate.local\nSOMS_TLS_MODE=standard\nCLOUDFLARE_API_TOKEN=dummy\nPOSTGRES_PASSWORD=gatepw\nADMIN_BOOTSTRAP_PASSWORD=gateadmin\nDATABASE_POOL_MAX=10\n' > /tmp/gate/soms.conf \
-    && SOMS_CONFIG=/tmp/gate/soms.conf SOMS_RUN_DIR=/tmp/gate/run APPDATA_DIR=/tmp/gate/data PGDATA_DIR=/tmp/gate/pg \
-       /app/init.sh >/dev/null \
+    && SOMS_DOMAIN=validate.local SOMS_TLS_MODE=standard CLOUDFLARE_API_TOKEN=dummy \
+       PGPASSWORD=gatepw ADMIN_BOOTSTRAP_PASSWORD=gateadmin DATABASE_POOL_MAX=10 \
+       SOMS_RUN_DIR=/tmp/gate/run /app/init.sh >/dev/null \
     && caddy adapt --config /tmp/gate/run/Caddyfile --adapter caddyfile >/dev/null
 USER node
 # Public liveness probe via Node's global fetch (no curl/wget install). /api/v1/health is
@@ -114,8 +116,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 # Only 7667 is published (Caddy edge: HTTPS web UI + API + SSE + federation S2S; +udp for HTTP/3).
 EXPOSE 7667/tcp
 EXPOSE 7667/udp
-# ENTRYPOINT sources the init-generated /soms/run/app.env, then execs the command — so the `migrate`
-# one-shot (`npm run db:migrate`) and any `docker compose run app …` escape hatch still receive
-# DATABASE_URL/SOMS_DOMAIN. Default CMD is the node+Caddy supervisor; override CMD to run something else.
+# ENTRYPOINT renders Caddy's internal configuration for the default supervisor command, then execs it.
+# One-shot commands such as migrations receive their environment directly from Compose.
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/app/supervisor.sh"]
