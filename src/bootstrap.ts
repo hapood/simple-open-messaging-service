@@ -23,7 +23,6 @@ import {
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { BusinessCode } from './common/business-code.js';
-import { LinkCardRuleService } from './link-preview/link-card-rule.service.js';
 
 // Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
 // POST /upload/video can admit video; images stay bounded at UploadService.MAX_IMAGE_BYTES, files at
@@ -330,36 +329,6 @@ async function registerStaticServing(
             });
           }
         }
-      },
-    );
-
-  // Favicon bytes use the same authenticated media surface as other client media. Register after
-  // the /uploads preHandler so Tauri's media:// proxy Bearer session (or browser cookie) is required.
-  const linkCardRules = app.get(LinkCardRuleService);
-  adapter
-    .getInstance()
-    .get(
-      '/uploads/link-favicons/:digest.webp',
-      async (
-        request: FastifyRequest<{ Params: { digest: string } }>,
-        reply: FastifyReply,
-      ) => {
-        const { digest } = request.params;
-        if (!/^[0-9a-f]{64}$/.test(digest)) return reply.code(404).send();
-        let body: Buffer;
-        try {
-          body = await linkCardRules.content(digest);
-        } catch {
-          return reply.code(404).send();
-        }
-        return reply
-          .header('Content-Type', 'image/webp')
-          .header('Content-Disposition', 'inline')
-          .header('X-Content-Type-Options', 'nosniff')
-          .header('Cache-Control', 'private, max-age=604800, immutable')
-          .header('Vary', 'Cookie, Authorization')
-          .header('ETag', `"${digest}"`)
-          .send(body);
       },
     );
 

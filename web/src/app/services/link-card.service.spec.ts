@@ -33,10 +33,7 @@ describe('LinkCardService', () => {
     service.rules.set([
       {
         id: 7,
-        matchUrl: 'https://douyin.com',
         hostname: 'douyin.com',
-        displayName: 'Douyin',
-        includeSubdomains: true,
       },
     ]);
     const match = service.matchFirst(
@@ -50,25 +47,9 @@ describe('LinkCardService', () => {
     service.rules.set([
       {
         id: 7,
-        matchUrl: 'https://douyin.com',
         hostname: 'douyin.com',
-        displayName: 'Douyin',
-        includeSubdomains: true,
       },
     ]);
     expect(service.matchFirst('https://douyin.com.evil.example/a')).toBeNull();
-  });
-
-  it('shares one favicon request and caches the returned CAS URL', async () => {
-    const first = service.faviconUrl(7);
-    const second = service.faviconUrl(7);
-    http.expectOne('/api/v1/link-card-rules/7/favicon').flush({
-      code: 0,
-      message: 'ok',
-      data: { url: '/uploads/link-favicons/abc.webp' },
-    });
-    await expectAsync(first).toBeResolvedTo('/uploads/link-favicons/abc.webp');
-    await expectAsync(second).toBeResolvedTo('/uploads/link-favicons/abc.webp');
-    expect(await service.faviconUrl(7)).toBe('/uploads/link-favicons/abc.webp');
   });
 });

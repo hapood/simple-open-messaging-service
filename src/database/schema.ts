@@ -443,12 +443,8 @@ export const linkCardRule = pgTable(
   'LinkCardRule',
   {
     id: serial().primaryKey().notNull(),
-    matchUrl: varchar({ length: 2048 }).notNull(),
     hostname: varchar({ length: 255 }).notNull(),
-    displayName: varchar({ length: 100 }).notNull(),
-    includeSubdomains: boolean().default(true).notNull(),
-    enabled: boolean().default(true).notNull(),
-    priority: integer().default(0).notNull(),
+    note: varchar({ length: 100 }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -461,44 +457,6 @@ export const linkCardRule = pgTable(
       'btree',
       table.hostname.asc(),
     ),
-    index('LinkCardRule_enabled_priority_idx').using(
-      'btree',
-      table.enabled.asc(),
-      table.priority.desc(),
-    ),
-  ],
-);
-
-/** One discovered favicon source per rule; digest references the converted WebP stored in shared CAS. */
-export const linkFavicon = pgTable(
-  'LinkFavicon',
-  {
-    ruleId: integer().primaryKey().notNull(),
-    sourceUrl: varchar({ length: 2048 }).notNull(),
-    digest: varchar({ length: 64 }).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    index('LinkFavicon_digest_idx').using('btree', table.digest.asc()),
-    foreignKey({
-      columns: [table.ruleId],
-      foreignColumns: [linkCardRule.id],
-      name: 'LinkFavicon_ruleId_fkey',
-    })
-      .onDelete('cascade')
-      .onUpdate('cascade'),
-    foreignKey({
-      columns: [table.digest],
-      foreignColumns: [mediaAsset.digest],
-      name: 'LinkFavicon_digest_fkey',
-    })
-      .onDelete('restrict')
-      .onUpdate('cascade'),
   ],
 );
 

@@ -15,8 +15,8 @@ import { LinkCardRuleService } from './link-card-rule.service.js';
  * send server-side.
  */
 @Module({
-  // LinkCardRuleService uses UploadService; forwardRef pairs with UploadModule's deferred MessageModule
-  // import to break Upload -> Message -> LinkPreview -> Upload under native ESM initialization.
+  // LinkPreviewService stores fetched card assets in CAS. forwardRef pairs with UploadModule's deferred
+  // MessageModule import to break Upload -> Message -> LinkPreview -> Upload under native ESM initialization.
   imports: [forwardRef(() => UploadModule)],
   controllers: [LinkPreviewController, LinkCardRuleController],
   providers: [

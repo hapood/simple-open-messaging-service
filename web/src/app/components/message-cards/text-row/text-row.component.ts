@@ -1,11 +1,9 @@
 import {
   Component,
   computed,
-  effect,
   inject,
   input,
   output,
-  signal,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
@@ -77,8 +75,6 @@ export class TextRowComponent {
       ? this.linkCards.matchFirst(this.data().text)
       : null,
   );
-  readonly faviconUrl = signal<string | null>(null);
-  readonly faviconLoading = signal(false);
   readonly linkTextParts = computed(() => {
     const card = this.linkCard();
     const text = this.data().text;
@@ -89,24 +85,6 @@ export class TextRowComponent {
       after: text.slice(card.end),
     };
   });
-
-  constructor() {
-    effect((onCleanup) => {
-      const card = this.linkCard();
-      this.faviconUrl.set(null);
-      this.faviconLoading.set(!!card);
-      if (!card) return;
-      let current = true;
-      void this.linkCards.faviconUrl(card.rule.id).then((url) => {
-        if (!current) return;
-        this.faviconUrl.set(url);
-        this.faviconLoading.set(false);
-      });
-      onCleanup(() => {
-        current = false;
-      });
-    });
-  }
 
   showOriginal(): void {
     const card = this.linkCard();

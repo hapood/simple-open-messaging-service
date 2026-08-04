@@ -2,21 +2,16 @@ import { request } from '@/api/client';
 
 export interface LinkCardRule {
   id: number;
-  matchUrl: string;
   hostname: string;
-  displayName: string;
-  includeSubdomains: boolean;
-  enabled: boolean;
-  priority: number;
-  faviconUrl: string | null;
+  note: string | null;
   createdAt: number;
   updatedAt: number;
 }
 
-export type LinkCardRuleInput = Pick<
-  LinkCardRule,
-  'matchUrl' | 'displayName' | 'includeSubdomains' | 'enabled' | 'priority'
->;
+export interface LinkCardRuleInput {
+  hostname: string;
+  note?: string;
+}
 
 export function listLinkCardRules(): Promise<LinkCardRule[]> {
   return request<LinkCardRule[]>('/admin/link-card-rules');

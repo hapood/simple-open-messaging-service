@@ -465,10 +465,6 @@ export class MediaAssetGcService {
                WHERE pending.digest = asset.digest
                  AND pending.status IN ('pending', 'failed')
              )
-             AND NOT EXISTS (
-               SELECT 1 FROM "LinkFavicon" favicon
-               WHERE favicon.digest = asset.digest
-             )
            )
         ORDER BY asset.digest
         LIMIT 500
@@ -502,10 +498,6 @@ export class MediaAssetGcService {
                   SELECT 1 FROM "PendingMedia" pending
                   WHERE pending.digest = asset.digest
                     AND pending.status IN ('pending', 'failed')
-                )
-                AND NOT EXISTS (
-                  SELECT 1 FROM "LinkFavicon" favicon
-                  WHERE favicon.digest = asset.digest
                 )
               )
             )
@@ -895,10 +887,6 @@ export class MediaAssetGcService {
             SELECT 1 FROM "PendingMedia" pending
             WHERE pending.digest = asset.digest
               AND pending.status IN ('pending', 'failed')
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "LinkFavicon" favicon
-            WHERE favicon.digest = asset.digest
           )
       `,
         )

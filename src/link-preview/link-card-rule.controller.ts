@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LinkCardRuleService } from './link-card-rule.service.js';
 
@@ -16,9 +16,4 @@ export class LinkCardRuleController {
     return this.rules.list();
   }
 
-  @Get('link-card-rules/:id/favicon')
-  @ApiOperation({ summary: 'Resolve and cache one rule favicon in CAS' })
-  async favicon(@Param('id', ParseIntPipe) id: number) {
-    return { url: await this.rules.faviconUrl(id) };
-  }
 }
