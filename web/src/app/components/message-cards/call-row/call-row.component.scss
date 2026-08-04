@@ -4,9 +4,16 @@
   width: 220px;
   max-width: 100%;
   min-height: 54px;
-  padding: 7px 42px 7px 8px;
-  gap: 9px;
+  padding: 0;
+  display: block;
   overflow: hidden;
+}
+
+.msg-call-body {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
 }
 
 .msg-call-icon {
@@ -54,12 +61,7 @@
 }
 
 .msg-call-meta {
-  display: flex;
-  align-items: center;
   overflow: hidden;
-  color: var(--bubble-muted);
-  font-size: 11px;
-  line-height: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -75,4 +77,10 @@
 
 .msg-call-duration {
   font-variant-numeric: tabular-nums;
+}
+
+.msg-call-time {
+  flex: 0 0 auto;
+  color: var(--chat-card-text);
+  opacity: 0.6;
 }

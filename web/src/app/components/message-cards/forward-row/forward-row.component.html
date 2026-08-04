@@ -27,27 +27,37 @@
     }
     <button
       type="button"
-      class="msg-bubble msg-{{ side() }} msg-{{ pos() }} forward-card"
+      class="msg-bubble msg-card msg-{{ side() }} msg-{{ pos() }} forward-card"
       [class.msg-sending]="isSending()"
       [disabled]="!card()"
     >
       @if (card(); as forward) {
-        <div class="forward-title">{{ 'forward.chatHistory' | transloco }}</div>
-        <div class="forward-lines">
-          @for (line of forward.summaryLines; track $index) {
-            <div class="forward-line">{{ line }}</div>
-          }
+        <div class="forward-body">
+          <div class="forward-title">
+            {{ 'forward.chatHistory' | transloco }}
+          </div>
+          <div class="forward-lines">
+            @for (line of forward.summaryLines; track $index) {
+              <div class="forward-line">{{ line }}</div>
+            }
+          </div>
         </div>
-        <div class="forward-meta">
+        <div class="forward-meta msg-card-meta msg-{{ side() }}">
           <span>{{
             'forward.messageCount' | transloco: { count: forward.messageCount }
           }}</span>
           <span>{{ data().time }}</span>
         </div>
       } @else {
-        <div class="forward-title">{{ 'forward.chatHistory' | transloco }}</div>
-        <div class="forward-line">{{ 'forward.unavailable' | transloco }}</div>
-        <div class="forward-meta">
+        <div class="forward-body">
+          <div class="forward-title">
+            {{ 'forward.chatHistory' | transloco }}
+          </div>
+          <div class="forward-line">
+            {{ 'forward.unavailable' | transloco }}
+          </div>
+        </div>
+        <div class="forward-meta msg-card-meta msg-{{ side() }}">
           <span></span><span>{{ data().time }}</span>
         </div>
       }

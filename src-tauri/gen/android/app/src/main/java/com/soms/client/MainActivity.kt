@@ -1085,6 +1085,7 @@ class MainActivity : TauriActivity() {
         launchOverlay = null
         launchStatus = null
         finishNativeVoiceRecording(cancel = true)
+        nativeComposer.destroy()
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
         SomsBridge.webView = null

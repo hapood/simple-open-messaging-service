@@ -9,6 +9,7 @@ app-chat-input {
 
 // Full-width surface; the actual controls below are capped and centered independently.
 .ci-input-bar {
+  --ci-controls-max-width: 800px;
   position: relative; // anchor for .ci-emoji-panel (bottom:100%); the backdrop is now a sibling, not a child
   z-index: 4; // lift the bar (+ its panel, a stacking-context child) above the sibling .ci-backdrop (z-index:3)
   min-height: 63px;
@@ -25,7 +26,9 @@ app-chat-input {
   // No-op on desktop (--kbd-lift: 0). translateY(0px) is non-`none`, so it is a permanent
   // stacking context / containing block for fixed descendants — which is exactly why the .ci-backdrop was
   // re-parented out of the form.
-  transform: translateY(calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px))));
+  transform: translateY(
+    calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px)))
+  );
   transition: transform var(--kbd-duration, 60ms) ease-out;
   // Bottom padding carries ONLY the static gesture-/navigation-bar inset (closed keyboard): the bar's own
   // Composer background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal
@@ -45,6 +48,13 @@ app-chat-input {
   gap: 8px;
 }
 
+.ci-input-bar--compact {
+  .ci-input {
+    min-height: 36px;
+    max-height: 36px;
+  }
+}
+
 // Full-screen transparent backdrop: closes the emoji panel on any outside click. z-index below the panel (4).
 .ci-backdrop {
   position: fixed;
@@ -58,9 +68,11 @@ app-chat-input {
 // replacement controlled through SomsShell. Every height-contributing value is integer px.
 .ci-emoji-panel {
   position: absolute;
-  left: max(12px, calc((100% - 800px) / 2));
+  // Match the panel's lower-right corner to the emoji key's right edge. From the controls rail this skips
+  // the 48px send key, the 8px flex gap and the input capsule's 4px right padding; the 12px branch is the
+  // bar's inline padding when the rail fills a narrow composer.
+  right: max(72px, calc((100% - var(--ci-controls-max-width)) / 2 + 60px));
   bottom: 100%;
-  margin-bottom: 4px;
   width: min(360px, calc(100% - 24px));
   height: 320px; // fixed panel height (tabs + scrollable grid)
   box-sizing: border-box;
@@ -192,51 +204,118 @@ app-chat-input {
   }
 }
 
-// Live link-card preview — floats above the capsule (position:absolute bottom:100%, like the emoji
-// panel) while the draft is a single bare URL. WeChat/WhatsApp-style; integer-px heights.
-.ci-link-preview {
-  position: absolute;
-  left: max(12px, calc((100% - 800px) / 2));
-  right: max(12px, calc((100% - 800px) / 2));
-  bottom: 100%;
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-sm, 6px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  cursor: default;
-}
-.ci-link-preview-img {
+.ci-action-capsule {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 40px;
   width: 40px;
   height: 40px;
-  flex: 0 0 auto;
-  border-radius: 4px;
-  object-fit: cover;
+  overflow: visible;
+
+  &::before {
+    content: '';
+    position: absolute;
+    z-index: 0;
+    right: 0;
+    bottom: 0;
+    width: 40px;
+    height: 40px;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    border-radius: 20px;
+    background: transparent;
+    box-shadow: none;
+    transition:
+      height 520ms var(--app-ease-standard),
+      background 520ms var(--app-ease-standard),
+      border-color 520ms var(--app-ease-standard),
+      box-shadow 520ms var(--app-ease-standard);
+  }
+
+  &--linked {
+    &::before {
+      height: 80px;
+      border-color: var(--app-border);
+      background: var(--im-composer-input-bg);
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+    }
+  }
 }
-.ci-link-preview-text {
-  flex: 1 1 auto;
-  min-width: 0;
+
+.ci-action-capsule--linked .ci-attach {
+  width: 40px;
+  height: 40px;
+  border-top: 0;
+  border-radius: 0 0 20px 20px;
+  background: transparent;
+  box-shadow: none;
 }
-.ci-link-preview-title {
-  font-size: 13px;
-  line-height: 16px;
-  font-weight: 600;
-  color: var(--app-text);
-  white-space: nowrap;
+
+.ci-link-action {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  bottom: 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 20px 20px 0 0;
+  background: transparent;
+  color: var(--app-brand);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px) scale(0.84);
+  transition:
+    opacity 420ms var(--app-ease-standard),
+    transform 420ms var(--app-ease-standard);
+
+  &--visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  &--pending .ci-link-action-core {
+    animation: ci-link-core-breathe 1.45s ease-in-out infinite;
+  }
+
+  &--failed {
+    color: var(--app-danger, #c94242);
+    background: color-mix(in srgb, currentColor 9%, transparent);
+  }
+}
+
+.ci-link-action-core {
+  position: relative;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
   overflow: hidden;
-  text-overflow: ellipsis;
+
+  img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+  }
 }
-.ci-link-preview-site {
-  font-size: 11px;
-  line-height: 14px;
-  color: var(--app-text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+@keyframes ci-link-core-breathe {
+  0%,
+  100% {
+    opacity: 0.52;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 }
 
 // Native-aligned row: standalone attachment, input capsule (editor + emoji), round action.
@@ -310,9 +389,14 @@ app-chat-input {
     color: var(--app-text);
   }
   &.ci-attach--active {
-    background: color-mix(in srgb, var(--app-brand) 16%, var(--im-composer-input-bg));
+    background: color-mix(
+      in srgb,
+      var(--app-brand) 16%,
+      var(--im-composer-input-bg)
+    );
     color: var(--app-brand);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-brand) 28%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--app-brand) 28%, transparent);
   }
   &:active {
     transform: scale(0.94);
@@ -419,6 +503,20 @@ app-chat-input {
   .ci-attach-drawer-shell {
     transition: none;
   }
+  .ci-action-capsule,
+  .ci-link-action {
+    transition: none;
+    animation: none;
+  }
+  .ci-action-capsule::before {
+    transition: none;
+  }
+  .ci-link-action-core {
+    animation: none !important;
+  }
+  .ci-input {
+    transition: none;
+  }
 }
 
 // Grow with the editor from one line to five. Once the editor reaches its five-line cap, ProseMirror owns
@@ -431,6 +529,9 @@ app-chat-input {
   box-sizing: border-box;
   padding: 7px 6px;
   overflow: hidden;
+  transition:
+    min-height 380ms var(--app-ease-standard),
+    max-height 380ms var(--app-ease-standard);
 }
 
 // Native parity: the action key keeps the brand surface for both mic and send states.

@@ -30,6 +30,12 @@ export interface ChatMember {
   avatarUrl?: string;
 }
 
+export interface ComposerLinkMarker {
+  href: string;
+  start: number;
+  end: number;
+}
+
 /**
  * Chat composer built on Tiptap (ProseMirror): atomic @mention chips, simple inline formatting
  * (bold/italic/code via StarterKit), and a configurable Enter convention.
@@ -71,6 +77,8 @@ export class ChatEditorComponent {
 
   /** Fires on every keystroke with the current inline-HTML content (the value to store/send). */
   readonly html = output<string>();
+  /** Structured links already recognized by Tiptap. Consumers must not parse the full draft again. */
+  readonly linkMarkers = output<readonly ComposerLinkMarker[]>();
   /** Fires on Enter (desktop, non-empty) — the parent sends the last html it received, then clear()s. */
   readonly send = output<void>();
   /** Fires only when a paste contains real clipboard files. Returning true from ProseMirror's paste
@@ -114,7 +122,12 @@ export class ChatEditorComponent {
           onSend: () => this.onEnterSend(),
           enterToSend: () => this.inputDevice.enterToSend(),
         }),
-        StarterKit.configure({ heading: false }),
+        StarterKit.configure({
+          heading: false,
+          // Composer links are paint-only. Autolink may decorate the changed text, but a tap/click must
+          // remain an ordinary editor interaction and must never navigate away from the draft.
+          link: { openOnClick: false },
+        }),
         Placeholder.configure({
           placeholder: () =>
             this.placeholder() ||
@@ -150,6 +163,7 @@ export class ChatEditorComponent {
     editor.on('update', () => {
       this.isEmpty.set(editor.isEmpty);
       this.html.emit(this.toInlineHtml(editor.getHTML()));
+      this.linkMarkers.emit(this.getLinkMarkers());
     });
     editor.on('focus', () => this.focusChange.emit(true));
     editor.on('blur', () => this.focusChange.emit(false));
@@ -199,10 +213,35 @@ export class ChatEditorComponent {
     this.editor?.commands.clearContent(true);
   }
 
+  /** Restore trusted, account-local composer HTML from IndexedDB. */
+  setHtml(content: string): void {
+    this.editor?.commands.setContent(content ? `<p>${content}</p>` : '<p></p>');
+  }
+
   /** Plain-text view of the editor content (block nodes separated by `\n`; mention atoms render as their
    *  label). Used by plain-text send mode — the composer UX is rich, but the stored/sent payload is text. */
   getText(): string {
     return this.editor?.getText() ?? '';
+  }
+
+  /** Read existing link marks without rerunning URL recognition over the draft text. */
+  getLinkMarkers(): ComposerLinkMarker[] {
+    const editor = this.editor;
+    if (!editor) return [];
+    const markers: ComposerLinkMarker[] = [];
+    editor.state.doc.descendants((node, pos) => {
+      if (!node.isText || !node.text) return;
+      const link = node.marks.find((mark) => mark.type.name === 'link');
+      const href = link?.attrs['href'];
+      if (typeof href !== 'string' || !href) return;
+      const previous = markers.at(-1);
+      if (previous?.href === href && previous.end === pos) {
+        previous.end = pos + node.nodeSize;
+      } else {
+        markers.push({ href, start: pos, end: pos + node.nodeSize });
+      }
+    });
+    return markers;
   }
 
   /**
@@ -229,10 +268,12 @@ export class ChatEditorComponent {
    * files uses this instead of replacing the draft or becoming a separate paste-panel field. */
   appendText(content: string, focus = true): void {
     if (!content || !this.editor) return;
-    const inlineContent = content.split(/\r?\n/).flatMap((line, index) => [
-      ...(index ? [{ type: 'hardBreak' }] : []),
-      ...(line ? [{ type: 'text', text: line }] : []),
-    ]);
+    const inlineContent = content
+      .split(/\r?\n/)
+      .flatMap((line, index) => [
+        ...(index ? [{ type: 'hardBreak' }] : []),
+        ...(line ? [{ type: 'text', text: line }] : []),
+      ]);
     if (this.editor.getText()) inlineContent.unshift({ type: 'hardBreak' });
     const chain = this.editor.chain();
     if (focus) chain.focus();

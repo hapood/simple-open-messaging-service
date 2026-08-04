@@ -385,9 +385,17 @@
   "linkCard": {
     "open": "打开链接",
     "original": "查看原文",
-    "copy": "复制全文"
+    "copy": "复制全文",
+    "generateTitle": "发送链接卡片",
+    "generating": "正在生成卡片…",
+    "generateFailed": "卡片生成失败",
+    "generateFailedHint": "暂时无法读取这个网页",
+    "retry": "重试",
+    "sendText": "发送文字",
+    "send": "发送"
   },
   "chat": {
+    "linkCardAction": "生成链接卡片",
     "messageNotFound": "消息不存在",
     "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
@@ -557,6 +565,7 @@
     "notAvailable": "暂不可用"
   },
   "threadList": {
+    "draftPreview": "草稿：{{text}}",
     "couldNotLoad": "无法加载聊天",
     "retry": "重试",
     "noMatchTitle": "没有匹配的聊天",

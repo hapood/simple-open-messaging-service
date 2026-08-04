@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import type { LookupFunction } from 'node:net';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 
 /** undici fetch's Response type (its module does not export a named `Response` re-export reliably
@@ -35,9 +36,18 @@ export class SafeFetchService {
   async fetchHtml(
     rawUrl: string,
   ): Promise<{ body: string; finalUrl: string } | null> {
-    const r = await this.safeGet(rawUrl, 'text/html,application/xhtml+xml', MAX_HTML_BYTES);
+    const r = await this.safeGet(
+      rawUrl,
+      'text/html,application/xhtml+xml',
+      MAX_HTML_BYTES,
+    );
     if (!r) return null;
-    if (!r.contentType.startsWith('text/html')) return null;
+    if (!r.contentType.startsWith('text/html')) {
+      this.logger.warn(
+        `link-preview html rejected host=${safeHostname(r.finalUrl)} contentType=${r.contentType || 'missing'}`,
+      );
+      return null;
+    }
     return { body: r.body.toString('utf8'), finalUrl: r.finalUrl };
   }
 
@@ -60,7 +70,10 @@ export class SafeFetchService {
     let url: URL;
     try {
       url = this.validateUrlShape(rawUrl);
-    } catch {
+    } catch (error) {
+      this.logger.warn(
+        `link-preview URL rejected host=${safeHostname(rawUrl)} reason=${errorMessage(error)}`,
+      );
       return null;
     }
     try {
@@ -75,7 +88,10 @@ export class SafeFetchService {
         return { body: r.body, finalUrl: url.href, contentType: r.contentType };
       }
       return null; // too many redirects
-    } catch {
+    } catch (error) {
+      this.logger.warn(
+        `link-preview fetch rejected host=${url.hostname} reason=${errorMessage(error)}`,
+      );
       return null;
     }
   }
@@ -105,25 +121,38 @@ export class SafeFetchService {
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
       } catch (e) {
-        this.logger.debug(`fetch error ${url.href}: ${(e as Error).message}`);
+        this.logger.warn(
+          `link-preview connect failed host=${url.hostname} reason=${errorMessage(e)}`,
+        );
         return null;
       }
       // 3xx: drain + follow the Location as a freshly re-validated target.
       if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get('location');
         await this.drain(res);
-        if (!loc) return null;
+        if (!loc) {
+          this.logger.warn(
+            `link-preview redirect rejected host=${url.hostname} reason=missing-location`,
+          );
+          return null;
+        }
         try {
           return {
             kind: 'redirect',
             url: this.validateUrlShape(new URL(loc, url.href).href),
           };
-        } catch {
+        } catch (error) {
+          this.logger.warn(
+            `link-preview redirect rejected host=${url.hostname} reason=${errorMessage(error)}`,
+          );
           return null;
         }
       }
       if (res.status < 200 || res.status >= 300) {
         await this.drain(res);
+        this.logger.warn(
+          `link-preview HTTP rejected host=${url.hostname} status=${res.status}`,
+        );
         return null;
       }
       const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
@@ -175,14 +204,41 @@ export class SafeFetchService {
   /** Build an undici Agent whose connect pins to one of the pre-validated IPs. The validator resolved
    *  the host once; connect never re-resolves, so DNS rebinding (public at validate time, private at
    *  connect time) is impossible. */
-  private pinnedDispatcher(ips: Array<{ address: string; family: number }>): Dispatcher {
-    const first = ips[0];
+  private pinnedDispatcher(
+    ips: Array<{ address: string; family: number }>,
+  ): Dispatcher {
     return new Agent({
       connect: {
         timeout: CONNECT_TIMEOUT_MS,
-        lookup: (_host, _opts, cb) => cb(null, first.address, first.family),
+        lookup: this.pinnedLookup(ips),
       },
     });
+  }
+
+  /** Node may request either one address or every address (`options.all`). Undici enables the latter
+   *  for dual-stack connection selection; returning the single-address callback shape in that case makes
+   *  Node interpret the string as an address record and eventually connect to `undefined`. */
+  private pinnedLookup(
+    ips: Array<{ address: string; family: number }>,
+  ): LookupFunction {
+    return (_host, options, callback) => {
+      if (options.all) {
+        callback(null, ips);
+        return;
+      }
+
+      const selected =
+        options.family === 4 || options.family === 6
+          ? ips.find((entry) => entry.family === options.family)
+          : ips[0];
+      if (!selected) {
+        const error = new Error('no validated address for requested family');
+        (error as NodeJS.ErrnoException).code = 'ENOTFOUND';
+        callback(error as NodeJS.ErrnoException, '', 0);
+        return;
+      }
+      callback(null, selected.address, selected.family);
+    };
   }
 
   /** Resolve the hostname and reject if ANY resolved address is non-public (it takes only one private
@@ -280,3 +336,24 @@ const EXTRA_BLOCKED_IPV4: Array<[ipaddr.IPv4, number]> = [
   ipaddr.parseCIDR('100.64.0.0/10') as [ipaddr.IPv4, number], // CGNAT
   ipaddr.parseCIDR('0.0.0.0/8') as [ipaddr.IPv4, number], // "this network"
 ];
+
+function safeHostname(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname || 'invalid';
+  } catch {
+    return 'invalid';
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return 'unknown';
+
+  const details: string[] = [error.message];
+  let cause = error.cause;
+  while (cause instanceof Error && details.length < 4) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    details.push(code ? `${cause.message} (${code})` : cause.message);
+    cause = cause.cause;
+  }
+  return details.join(': ');
+}

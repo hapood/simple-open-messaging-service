@@ -18,10 +18,10 @@
   // title carry the invite identity; the bottom meta bar carries the valid/expired status + time.
   padding: 0;
   display: block;
-  position: relative;        // positioning context for the watermark
-  overflow: hidden;          // clip the watermark that bleeds past the edges
+  position: relative; // positioning context for the watermark
+  overflow: hidden; // clip the watermark that bleeds past the edges
   background: var(--bubble-bg) !important;
-  box-shadow: none;        // flat card — drop the bubble elevation shadow (from _row-base .msg-bubble) so no dark seam lands on the flush meta bar
+  box-shadow: none; // flat card — drop the bubble elevation shadow (from _row-base .msg-bubble) so no dark seam lands on the flush meta bar
   // Square the bottom corners so the flush meta bar below meets the card without a seam. Include the side
   // class to outrank row-base's grouped `.msg-bubble.msg-{side}.msg-body` selector: a consecutive second
   // invite is `msg-body`, and otherwise its sender-side 6px bottom corner survives into the meta bar.
@@ -32,7 +32,9 @@
 // No tail on the invite — it is a card, not a tailed bubble, and self/other share one solid surface.
 // Removing the tail ::before (from row-base's .msg-head) also keeps the overflow:hidden above side-effect-free.
 .msg-bubble.invite.msg-head::before {
-  background: var(--invite-bg); // kept for specifity parity with row-base; display:none neutralizes it
+  background: var(
+    --invite-bg
+  ); // kept for specifity parity with row-base; display:none neutralizes it
   display: none;
 }
 
@@ -42,15 +44,15 @@
   font: inherit;
   color: inherit;
   cursor: pointer;
-  width: 240px;              // FIXED card width — an invite is a stable card, NOT a content-sized bubble. A long
-                             // group name used to stretch the column; a short one shrank it. Absolute width +
-                             // max-width:100% is the cycle-free self-contained-width pattern (see _row-base.scss
-                             // §2: max-width does not participate in content-size computation, so there is no
-                             // cycle); max-width lets it shrink on very narrow viewports without overflowing msg-col.
+  width: 240px; // FIXED card width — an invite is a stable card, NOT a content-sized bubble. A long
+  // group name used to stretch the column; a short one shrank it. Absolute width +
+  // max-width:100% is the cycle-free self-contained-width pattern (see _row-base.scss
+  // §2: max-width does not participate in content-size computation, so there is no
+  // cycle); max-width lets it shrink on very narrow viewports without overflowing msg-col.
   max-width: 100%;
-  border-radius: inherit;    // match the bubble's rounded corners
+  border-radius: inherit; // match the bubble's rounded corners
   outline: none;
-  text-align: left;          // reset the UA button text-align:center → every text line in the card is left-aligned
+  text-align: left; // reset the UA button text-align:center → every text line in the card is left-aligned
 }
 .invite-tappable:focus-visible {
   outline: 2px solid var(--bubble-accent);
@@ -70,17 +72,17 @@
 // auth-brand / home-shell).
 .invite-watermark {
   position: absolute;
-  right: -20px;              // hug the right edge, spilling 20px past it (clipped to nothing outside)
-  top: -15px;                // anchor upper-right: heads peek past the top edge, bodies stay visible inside the card
+  right: -20px; // hug the right edge, spilling 20px past it (clipped to nothing outside)
+  top: -15px; // anchor upper-right: heads peek past the top edge, bodies stay visible inside the card
   width: 180px;
   height: 180px;
   background: url('/group-watermark.svg') no-repeat top right / contain;
-  opacity: 0.7;              // light theme: white glyph on the light brand-tinted surface needs a solid tint to register
+  opacity: 0.7; // light theme: white glyph on the light brand-tinted surface needs a solid tint to register
   pointer-events: none;
   z-index: 0;
 }
 :host-context([data-theme='dark']) .invite-watermark {
-  opacity: 0.28;             // dark theme: white glyph is high-contrast on dark → a moderate tint is enough
+  opacity: 0.28; // dark theme: white glyph is high-contrast on dark → a moderate tint is enough
 }
 
 // Content layer — lifted above the watermark so all text reads cleanly.
@@ -113,7 +115,7 @@
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
-  border-radius: 20%;  // match the inner squircle; clip the image to the same shape
+  border-radius: 20%; // match the inner squircle; clip the image to the same shape
   overflow: hidden;
 }
 .invite-name {
@@ -122,8 +124,8 @@
   font-weight: 600;
   color: var(--bubble-text);
   flex: 1 1 auto;
-  min-width: 0;              // allow shrink so an over-long name truncates inside the fixed-width card
-  white-space: nowrap;       // truncate an over-long group name with an ellipsis (the detail dialog wraps it)
+  min-width: 0; // allow shrink so an over-long name truncates inside the fixed-width card
+  white-space: nowrap; // truncate an over-long group name with an ellipsis (the detail dialog wraps it)
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -132,20 +134,9 @@
 // media meta bar so every card type shares one info-strip style; the status dot keeps its brand/muted
 // color to signal validity at a glance.
 .invite-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 2px 8px;
-  min-height: 18px;
-  margin-top: 0;          // flush against the card's bottom edge — the meta bar is the card's footer strip (no gap)
-  width: 240px;           // match the invite-tappable card width → aligned with the card above
+  margin-top: 0; // flush against the card's bottom edge — the meta bar is the card's footer strip (no gap)
+  width: 240px; // match the invite-tappable card width → aligned with the card above
   max-width: 100%;
-  box-sizing: border-box;
-  background: rgba(127, 127, 127, 0.16);
-  color: var(--bubble-text);
-  font-size: 11px;
-  line-height: 14px;
   border-radius: 0 0 16px 16px;
 }
 .invite-meta-time {
@@ -162,7 +153,7 @@
   gap: 5px;
   font-size: 11px;
   line-height: 14px; // integer px — matches the meta-bar time font
-  color: inherit;    // same color as the meta-bar text; only the dot carries state
+  color: inherit; // same color as the meta-bar text; only the dot carries state
   opacity: 0.6;
 }
 .invite-status-dot {

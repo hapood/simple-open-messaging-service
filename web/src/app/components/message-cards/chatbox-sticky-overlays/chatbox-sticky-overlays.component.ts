@@ -67,9 +67,7 @@ export class ChatboxStickyOverlaysComponent {
       .forEach((element) => (element.style.opacity = '1'));
     this.content
       ?.querySelectorAll<HTMLElement>('.cb-sticky-avatar-source')
-      .forEach((element) =>
-        element.classList.remove('cb-sticky-avatar-source'),
-      );
+      .forEach((avatar) => avatar.classList.remove('cb-sticky-avatar-source'));
     this.content = undefined;
   }
 

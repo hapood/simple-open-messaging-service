@@ -136,6 +136,10 @@
       white-space: nowrap;
     }
 
+    .thread-msg::first-letter {
+      text-transform: none;
+    }
+
     .thread-blocked {
       flex: 1 1 auto;
       min-width: 0;
@@ -183,8 +187,14 @@
 }
 
 @keyframes unread-badge-breathe {
-  from { opacity: 0.45; transform: scale(0.94); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0.45;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .thread-item.muted .unread-badge {
@@ -207,12 +217,22 @@
 // ENTER easing; the class is added on the next rAF and removed on animationend. transform here does
 // not affect any kernel-measured height (the thread list is not virtualized).
 @keyframes tl-flip-move {
-  from { transform: translateY(var(--tl-flip-dy, 0px)); }
-  to { transform: none; }
+  from {
+    transform: translateY(var(--tl-flip-dy, 0px));
+  }
+  to {
+    transform: none;
+  }
 }
 @keyframes tl-flip-enter {
-  from { opacity: 0; transform: translateY(-10px); }
-  to { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .thread-item.tl-flip-move {
   animation: tl-flip-move 300ms cubic-bezier(0.32, 0.72, 0, 1);

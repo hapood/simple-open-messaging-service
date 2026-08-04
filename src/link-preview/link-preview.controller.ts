@@ -1,7 +1,10 @@
 import {
   Controller,
+  Get,
+  Param,
   Post,
   Body,
+  Request,
   UseGuards,
   HttpStatus,
   HttpCode,
@@ -12,13 +15,21 @@ import {
   ApiProperty,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
+import type { FastifyRequest } from 'fastify';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse } from '../common/api-result.js';
-import type { LinkContent } from '../upload/file-content.js';
 import { LinkPreviewService } from './link-preview.service.js';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 
-/** Request body for POST /link-preview: a single URL the composer wants rendered as a card. */
+/** Request body for starting or retrying an in-memory link-card generation. */
 class LinkPreviewDto {
   @ApiProperty({
     example: 'https://github.com/nestjs/nest',
@@ -37,21 +48,27 @@ class LinkPreviewDto {
   @IsString()
   @MaxLength(5000)
   text?: string;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Existing owned generation offered to the server for reuse during a user-triggered retry',
+  })
+  @IsOptional()
+  @IsUUID()
+  generationId?: string;
 }
 
-/** Swagger model for a resolved link card (the runtime payload is the LinkContent shape). */
-class LinkCardDto {
-  @ApiProperty() url!: string;
-  @ApiProperty() title!: string;
-  @ApiProperty() description!: string;
-  @ApiProperty({ required: false }) image?: string;
-  @ApiProperty({ required: false }) favicon?: string;
+class LinkCardGenerationStartDto {
+  @ApiProperty() generationId!: string;
+  @ApiProperty({ enum: ['pending', 'succeeded', 'failed'] })
+  status!: 'pending' | 'succeeded' | 'failed';
+  @ApiProperty() expiresAt!: number;
 }
 
 /**
- * Composer live-preview endpoint. Resolves a URL into a link card (server-authoritative OG fetch +
- * og:image localization) so the sender sees the card before sending. The same LinkPreviewService is
- * reused by the LINK send path, so the cache built here makes the subsequent send instant.
+ * Starts and polls short-lived in-memory link-card generations. Starting returns immediately; the
+ * client renders a resource-free skeleton until polling reports success or failure.
  *
  * Heavily rate-limited: every call is an outbound fetch, so this is an amplification surface. A page
  * fetch failure rejects generation; missing optional metadata or artwork still produces a valid card.
@@ -65,12 +82,37 @@ export class LinkPreviewController {
   @Throttle(20, 60) // 20 previews/min/user — outbound-fetch amplification ceiling
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('link-preview')
+  @Post('link-preview/generations')
   @ApiOperation({
     summary: 'Resolve a URL into a link card (OpenGraph preview)',
   })
-  @ApiResultResponse(LinkCardDto)
-  async preview(@Body() dto: LinkPreviewDto): Promise<LinkContent> {
-    return this.linkPreview.buildCardContent(dto.url, dto.text ?? '');
+  @ApiResultResponse(LinkCardGenerationStartDto)
+  preview(@Request() req: FastifyRequest, @Body() dto: LinkPreviewDto) {
+    return this.linkPreview.startGeneration(
+      req.user.userId,
+      dto.url,
+      dto.text ?? '',
+      dto.generationId,
+    );
+  }
+
+  @ApiBearerAuth()
+  @Get('link-preview/generations/:generationId')
+  @ApiOperation({ summary: 'Read an in-memory link-card generation result' })
+  generation(
+    @Request() req: FastifyRequest,
+    @Param('generationId') generationId: string,
+  ) {
+    const generation = this.linkPreview.getGeneration(
+      req.user.userId,
+      generationId,
+    );
+    if (!generation) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'generation not found',
+      );
+    }
+    return generation;
   }
 }

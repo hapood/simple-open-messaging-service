@@ -22,6 +22,7 @@ import {
 } from './auth/media-token.js';
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
+import { LinkPreviewService } from './link-preview/link-preview.service.js';
 import { BusinessCode } from './common/business-code.js';
 
 // Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
@@ -262,6 +263,7 @@ async function registerStaticServing(
   // hooks into the @fastify/static child context that owns the /uploads/ route.
   const bearerAuth = app.get(BearerAuthService);
   const mediaAccess = app.get(MediaAccessService);
+  const linkPreview = app.get(LinkPreviewService);
   adapter
     .getInstance()
     .addHook(
@@ -306,9 +308,10 @@ async function registerStaticServing(
           const parsed = new URL(request.url, 'http://localhost');
           const threadValues = parsed.searchParams.getAll('threadId');
           const seqValues = parsed.searchParams.getAll('seq');
+          const generationValues = parsed.searchParams.getAll('generationId');
           const threadId = parseStrictNonNegativeInt(threadValues[0]);
           const seq = parseStrictNonNegativeInt(seqValues[0]);
-          const allowed =
+          const messageAllowed =
             threadValues.length === 1 &&
             seqValues.length === 1 &&
             threadId !== null &&
@@ -320,6 +323,16 @@ async function registerStaticServing(
               seq,
               shard[1],
             ));
+          const generationAllowed =
+            generationValues.length === 1 &&
+            threadValues.length === 0 &&
+            seqValues.length === 0 &&
+            linkPreview.canReadGenerationAsset(
+              principal.userId,
+              generationValues[0],
+              shard[1],
+            );
+          const allowed = messageAllowed || generationAllowed;
           if (!allowed) {
             return reply.code(404).type('application/json').send({
               statusCode: 404,

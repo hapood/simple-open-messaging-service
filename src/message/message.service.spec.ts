@@ -347,6 +347,44 @@ describe('MessageService.queryMessages quote previews', () => {
     });
   });
 
+  it('uses a link card title and thumbnail in a reply preview', async () => {
+    const reply = mk({
+      id: 9n,
+      seq: 12,
+      contentType: 'PURE_TEXT',
+      content: replyContent,
+    });
+    const target = {
+      ...mk({
+        id: 4n,
+        seq: 4,
+        contentType: 'LINK',
+        content: JSON.stringify({
+          url: 'https://example.com/article',
+          title: '',
+          description: 'Example article description',
+          image: 'data:image/webp;base64,preview',
+        }),
+      }),
+      user: { name: 'Alice' },
+    };
+    const svc = new MessageService(
+      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
+    );
+
+    const [out] = await svc.attachQuotePreviews([reply]);
+
+    expect(JSON.parse(out.content).quote).toEqual({
+      seq: 4,
+      author: 'Alice',
+      body: 'Example article description',
+      contentType: 'LINK',
+      image: 'data:image/webp;base64,preview',
+      imageShape: 'thumbnail',
+    });
+  });
+
   it('uses the group identity and avatar for an invite reply visual', async () => {
     const reply = mk({
       id: 9n,

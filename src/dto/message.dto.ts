@@ -44,10 +44,8 @@ export class SendMessageDto {
   //  - INVITE: a system message carrying a server-SIGNED invite token, created exclusively by
   //    group/invite. Letting a client set it would let them forge invite cards / malformed payloads
   //    in any thread they belong to.
-  // LINK is client-authorable too: the client sends only the URL as `content`, and
-  // MessageController.sendMessage rebuilds the card server-side via LinkPreviewService (SSRF-safe OG
-  // fetch + og:image localization) then re-validates the assembled JSON with parseLinkContent — so a
-  // client cannot forge the card metadata or a non-upload image URL.
+  // LINK is client-authorable too: `content` carries an owned, completed generationId. The server
+  // consumes the in-memory result, so clients cannot forge card metadata or CAS asset references.
   @ApiProperty({
     enum: ['PURE_TEXT', 'LINK'],
     required: false,

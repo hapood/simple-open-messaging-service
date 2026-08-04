@@ -33,6 +33,7 @@ import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
 import { playFlipList, snapshotFlipRects } from '../../lib/flip-list';
+import { ComposerDraftService } from '../../services/composer-draft.service';
 
 /**
  * Conversation list view. A thin view over the shared ConversationListService (the client-side source
@@ -64,6 +65,7 @@ export class ThreadListComponent implements OnInit {
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
   private readonly host = inject(ElementRef);
+  readonly composerDrafts = inject(ComposerDraftService);
   /** Last-known row rects — the "before" snapshot the next top-insert FLIPs against. Refreshed on
    *  every render that doesn't itself animate, so a later insert measures against current positions. */
   private prevRects = new Map<string, DOMRect>();
@@ -144,6 +146,11 @@ export class ThreadListComponent implements OnInit {
 
   previewText(t: ConversationItem): string {
     this.language.lang();
+    const draft = this.composerDrafts.get(t.threadId);
+    if (draft)
+      return this.transloco.translate('threadList.draftPreview', {
+        text: draft.plainText.replace(/\s+/g, ' ').trim(),
+      });
     const raw = t.lastMessagePreview;
     const marker = raw
       ? Object.keys(ThreadListComponent.PREVIEW_MARKERS).find(
@@ -171,6 +178,10 @@ export class ThreadListComponent implements OnInit {
     this.language.lang();
     return formatListTime(ms, this.transloco);
   };
+
+  previewTime(t: ConversationItem): number | null | undefined {
+    return this.composerDrafts.get(t.threadId)?.updatedAt ?? t.lastMessageAt;
+  }
 
   // Conversation→avatar derivation lives in the shared conversation-avatar util (single source of truth,
   // shared with the empty-thread hero). These delegate to it so the logic is not duplicated across surfaces.

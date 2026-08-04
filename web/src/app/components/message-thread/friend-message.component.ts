@@ -64,6 +64,8 @@ import {
 } from '../../lib/chat-input/paste-panel.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { ComposerWidthSourceDirective } from '../../directives/composer-width-source.directive';
+import { ComposerDraftService } from '../../services/composer-draft.service';
+import { LinkCardGenerationService } from '../../services/link-card-generation.service';
 import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
 import { assetUrl } from '../../services/runtime';
@@ -122,6 +124,7 @@ import {
   type FileCategory,
 } from '../message-cards/file-meta.util';
 import { PopupType, RouteService } from '../../services/route.service';
+import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import { GroupService } from '../../services/group.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import { GroupEventService } from '../../services/group-event.service';
@@ -205,6 +208,7 @@ const MESSAGE_CONTEXT_MENU_INSET = 8;
     KbdOffsetDirective,
     ComposerWidthSourceDirective,
     ChatboxStickyOverlaysComponent,
+    ChatboxPopupComponent,
     EmptyStateComponent,
     UserAvatarComponent,
     TranslocoModule,
@@ -261,6 +265,16 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly nativeUploads = inject(NativeUploadService);
   private readonly attachmentUploads = inject(AttachmentUploadQueueService);
   private readonly route = inject(RouteService);
+  readonly chatboxDialogOpen = computed(() => {
+    const threadId = this.threadId();
+    return this.route
+      .dlgList()
+      .some(
+        (dialog) =>
+          dialog.presentation === 'chatbox' &&
+          dialog.scopeThreadId === threadId,
+      );
+  });
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly debugTools = inject(DebugToolsService);
   private readonly transloco = inject(TranslocoService);
@@ -271,9 +285,15 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly groupEvents = inject(GroupEventService);
   private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
+  private readonly composerDrafts = inject(ComposerDraftService);
+  private readonly linkGenerations = inject(LinkCardGenerationService);
   readonly mentionMembers = signal<ChatMember[]>([]);
   private nativeComposerContextId: number | null = null;
   private nativeComposerThreadId: number | null = null;
+  private nativeLinkUrl: string | null = null;
+  private nativeLinkGenerationId: string | null = null;
+  private nativeLinkGenerationStarting = false;
+  private nativeLinkGenerationRevision = 0;
   private nativeComposerBoundsObserver?: ResizeObserver;
   private nativeComposerBoundsFrame = 0;
   private nativeComposerBoundsDirty = false;
@@ -383,7 +403,11 @@ export class MessageThreadComponent implements OnDestroy {
   readonly nativeComposerOccluded = computed(
     () =>
       this.nav.aside().length > 0 ||
-      this.nav.paneStack().length > 0 ||
+      this.nav
+        .paneStack()
+        .some(
+          (pane) => pane.kind !== 'dialog' || pane.presentation !== 'chatbox',
+        ) ||
       this.pasteOpen(),
   );
   readonly uploadingTransfers = computed(() => {
@@ -614,6 +638,23 @@ export class MessageThreadComponent implements OnDestroy {
         return;
       }
       this.hideNativeComposer();
+      const savedDraft = this.composerDrafts.get(threadId);
+      this.nativeLinkGenerationRevision++;
+      this.nativeLinkGenerationStarting = false;
+      this.nativeComposerDraft.set(savedDraft?.plainText ?? '');
+      this.nativeLinkUrl = savedDraft?.linkUrl ?? null;
+      this.nativeLinkGenerationId = savedDraft?.generationId ?? null;
+      if (
+        savedDraft?.generationId &&
+        savedDraft.generationExpiresAt &&
+        savedDraft.generationExpiresAt > Date.now()
+      ) {
+        this.linkGenerations.resume({
+          generationId: savedDraft.generationId,
+          status: 'pending',
+          expiresAt: savedDraft.generationExpiresAt,
+        });
+      }
       const contextId = ++nativeComposerContextSequence;
       this.nativeComposerContextId = contextId;
       this.nativeComposerThreadId = threadId;
@@ -723,6 +764,9 @@ export class MessageThreadComponent implements OnDestroy {
 
   private handleNativeComposerEvent(event: NativeComposerEvent): void {
     switch (event.kind) {
+      case 'interaction':
+        if (this.chatboxDialogOpen()) this.route.closeDlg();
+        return;
       case 'sendText': {
         const text = event.text.trim();
         const accepted = text.length > 0;
@@ -734,14 +778,13 @@ export class MessageThreadComponent implements OnDestroy {
             end: mention.end - leadingTrim,
           }));
           const stored = serializeNativeComposerText(text, mentions);
-          this.onSendIntent(
-            mentions.length === 0 && /^https?:\/\/\S+$/i.test(text)
-              ? { kind: 'link', url: text }
-              : { kind: 'text', text: stored },
-          );
+          this.onSendIntent({ kind: 'text', text: stored });
         }
         this.nativeComposer.acknowledge(event.actionId, accepted);
-        if (accepted) this.nativeComposerDraft.set('');
+        if (accepted) {
+          this.nativeComposerDraft.set('');
+          this.clearNativeLinkGeneration();
+        }
         return;
       }
       case 'queryMentions': {
@@ -786,10 +829,60 @@ export class MessageThreadComponent implements OnDestroy {
       case 'draft':
         this.nativeComposerDraft.set(event.text);
         return;
+      case 'linkMarkers':
+        this.nativeComposerDraft.set(event.text);
+        this.consumeNativeLinkMarker(event.links[0]?.href ?? null, event.text);
+        return;
+      case 'destroy':
+        this.nativeComposerDraft.set(event.text);
+        this.saveNativeComposerDraft();
+        return;
       case 'geometry':
       case 'recording':
         return;
     }
+  }
+
+  private consumeNativeLinkMarker(url: string | null, text: string): void {
+    if (
+      url === this.nativeLinkUrl &&
+      (!url || this.nativeLinkGenerationStarting || this.nativeLinkGenerationId)
+    )
+      return;
+    const revision = ++this.nativeLinkGenerationRevision;
+    if (this.nativeLinkGenerationId)
+      this.linkGenerations.forget(this.nativeLinkGenerationId);
+    this.nativeLinkUrl = url;
+    this.nativeLinkGenerationId = null;
+    this.nativeLinkGenerationStarting = Boolean(url);
+    if (!url) return;
+    void this.linkGenerations
+      .begin(url, text)
+      .then((generation) => {
+        if (
+          revision !== this.nativeLinkGenerationRevision ||
+          url !== this.nativeLinkUrl
+        ) {
+          this.linkGenerations.forget(generation.generationId);
+          return;
+        }
+        this.nativeLinkGenerationId = generation.generationId;
+        this.nativeLinkGenerationStarting = false;
+      })
+      .catch(() => {
+        // Marker recognition is intentionally independent of validity; the backend may reject the URL.
+        if (revision === this.nativeLinkGenerationRevision)
+          this.nativeLinkGenerationStarting = false;
+      });
+  }
+
+  private clearNativeLinkGeneration(): void {
+    this.nativeLinkGenerationRevision++;
+    if (this.nativeLinkGenerationId)
+      this.linkGenerations.forget(this.nativeLinkGenerationId);
+    this.nativeLinkUrl = null;
+    this.nativeLinkGenerationId = null;
+    this.nativeLinkGenerationStarting = false;
   }
 
   private async resolveNativeMentionMedia(
@@ -1648,7 +1741,7 @@ export class MessageThreadComponent implements OnDestroy {
         void this.sendNativeAttachments(intent.files);
         return;
       case 'link':
-        this.sendLink(intent.url);
+        this.sendLink(intent.generationId, intent.content);
         return;
       case 'paste':
         this.appendWebPaste(intent.files, intent.text);
@@ -1683,22 +1776,23 @@ export class MessageThreadComponent implements OnDestroy {
     this.dispatchHttpSendText(item);
   }
 
-  /** Send a bare URL as a LINK card. The optimistic item carries a bare `{ url }` card (rendered at
-   *  once); the server rebuilds it with OG metadata + a localized og:image, and the NEW_MESSAGE echo
-   *  (matched by clientMessageId) reconciles the bare card → rich card. The wire `content` is the bare
-   *  URL — the server is authoritative for the card body. */
-  private sendLink(url: string): void {
+  /** Send the exact reviewed generation. The completed preview is used for the optimistic card while the
+   * server consumes the owned generationId and persists its authoritative copy. */
+  private sendLink(
+    generationId: string,
+    content: import('../../services/link-card-generation.service').LinkCardContent,
+  ): void {
     if (!this.threadId()) return;
     const cid = this.newClientMessageId();
     const item = this.makeOptimisticItem(
       cid,
-      JSON.stringify({ url }),
+      JSON.stringify(content),
       'LINK',
       null,
       null,
     );
     this.dispatchPending(item);
-    this.dispatchHttpSendLink(item, url);
+    this.dispatchHttpSendLink(item, generationId);
   }
 
   /** Register the complete selection synchronously, then probe media metadata in parallel. Decoding a
@@ -2120,16 +2214,18 @@ export class MessageThreadComponent implements OnDestroy {
       .catch(() => void this.failPending(item));
   }
 
-  /** LINK send: the wire content is the bare URL (the server builds the card). Same reconcile contract
-   *  as text — 200 → spinner→check; the SSE echo swaps the bare optimistic card for the server-built one. */
-  private dispatchHttpSendLink(item: CbItem<ChatItemData>, url: string): void {
+  /** LINK send: the wire content is the completed in-memory generation id. */
+  private dispatchHttpSendLink(
+    item: CbItem<ChatItemData>,
+    generationId: string,
+  ): void {
     const cid = item.clientMessageId!;
     const tid = this.threadId() ?? 0;
     if (!tid) return;
     firstValueFrom(
       this.msgService.sendMessage({
         threadId: tid,
-        content: url,
+        content: generationId,
         contentType: 'LINK',
         clientMessageId: cid,
       }),
@@ -2731,8 +2827,29 @@ export class MessageThreadComponent implements OnDestroy {
    *  so the pane is COLD — a subsequent re-selection of this thread drives {@link reset} to re-initialize
    *  via {@link reinit}; idempotent. */
   teardownKernel(): void {
+    this.chatInput()?.saveDraft();
     this.teardown();
     this.currentTrdId = null;
+  }
+
+  /** Android sends this only when its native composer is genuinely destroyed. Temporary hide operations
+   *  (dialogs, selection mode, attachment surfaces) deliberately do not publish the draft. */
+  private saveNativeComposerDraft(): void {
+    const threadId = this.threadId();
+    if (!threadId) return;
+    const text = this.nativeComposerDraft();
+    this.composerDrafts.save({
+      threadId,
+      html: escapeComposerText(text),
+      plainText: text,
+      linkUrl: this.nativeLinkUrl ?? undefined,
+      generationId: this.nativeLinkGenerationId ?? undefined,
+      generationExpiresAt: this.nativeLinkGenerationId
+        ? this.linkGenerations.snapshot(this.nativeLinkGenerationId)?.expiresAt
+        : undefined,
+      generationTriggered: Boolean(this.nativeLinkGenerationId),
+      updatedAt: Date.now(),
+    });
   }
 
   /** Force an in-place re-init for the current bound thread (teardown + rebuild), emitting `ready` when the
@@ -2839,6 +2956,16 @@ async function readImageDims(f: File): Promise<{ w: number; h: number }> {
   } catch {
     return { w: 400, h: 300 };
   }
+}
+
+function escapeComposerText(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+    .replaceAll('\n', '<br>');
 }
 
 /** Let Angular commit and the browser paint pending transfer state before any media decoder sees the file. */

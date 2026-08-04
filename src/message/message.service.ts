@@ -124,10 +124,21 @@ export function derivePreview(type: ContentType, content: string): string {
         .trim()
         .slice(0, PREVIEW_TEXT_MAX);
     case ContentType.LINK: {
-      // The card title (or URL) — never the raw JSON. Degrades to a slice on a malformed payload.
+      // Prefer the card's readable metadata before its URL. Some providers (notably Douyin) put the
+      // useful caption in description while leaving title empty.
       try {
-        const c = JSON.parse(content) as { title?: string; url?: string };
-        const t = c.title && c.title.trim() ? c.title : (c.url ?? content);
+        const c = JSON.parse(content) as {
+          title?: string;
+          description?: string;
+          url?: string;
+        };
+        const t =
+          (c.title && c.title.trim() ? c.title : undefined) ??
+          (c.description && c.description.trim()
+            ? c.description
+            : undefined) ??
+          c.url ??
+          content;
         return t.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
       } catch {
         return content.slice(0, PREVIEW_TEXT_MAX);

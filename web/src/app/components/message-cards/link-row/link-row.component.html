@@ -54,34 +54,35 @@
     <div class="link-shell" [class.msg-sending]="isSending()">
       <button
         type="button"
-        class="msg-bubble msg-{{ side() }} msg-{{ pos() }} link link-tappable"
+        class="msg-bubble msg-card msg-{{ side() }} msg-{{
+          pos()
+        }} link link-tappable"
         (click)="openUrl()"
       >
         <div class="link-body">
-          <div class="link-text">
-            <div class="link-title">{{ link().title || host() }}</div>
-            @if (link().description) {
-              <div class="link-desc">{{ link().description }}</div>
-            }
-            <div class="link-site">
-              @if (faviconSrc()) {
-                <img class="link-favicon" [src]="faviconSrc()" alt="" />
-              }
-              <span class="link-site-name">{{
-                link().siteName || host()
-              }}</span>
-            </div>
-          </div>
-          @if (imageSrc() && !imgFailed()) {
-            <div class="link-image">
+          <div class="link-image">
+            @if (imageSrc() && !imgFailed()) {
               <img
                 [src]="imageSrc()"
                 alt=""
                 loading="lazy"
                 (error)="onImgError()"
               />
-            </div>
-          }
+            } @else {
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+                />
+                <path
+                  d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+                />
+              </svg>
+            }
+          </div>
+          <div class="link-text">
+            <div class="link-title">{{ link().title || host() }}</div>
+            <div class="link-desc">{{ link().description }}</div>
+          </div>
         </div>
       </button>
       @if (statusTick()) {
@@ -93,8 +94,22 @@
         }
       }
     </div>
-    <div class="link-meta">
-      <span class="link-host">{{ host() }}</span>
+    <div class="link-meta msg-card-meta msg-{{ side() }}">
+      <span class="link-host">
+        @if (faviconSrc()) {
+          <img class="link-favicon" [src]="faviconSrc()" alt="" />
+        } @else {
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+            />
+            <path
+              d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+            />
+          </svg>
+        }
+        <span>{{ host() }}</span>
+      </span>
       <span class="link-meta-time">{{ data().time }}</span>
     </div>
   </div>

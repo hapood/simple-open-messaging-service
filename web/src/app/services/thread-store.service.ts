@@ -67,9 +67,8 @@ export class ThreadRepository {
   private readonly _error = signal('');
   readonly error = this._error.asReadonly();
 
-  /** The thread currently being viewed — drives the active-row highlight AND the "don't badge the open
-   *  thread" rule in {@link onNewMessage}. Set by the UI layer ({@link setOpenThread} on open/close);
-   *  in-memory only (not persisted, not a list field). */
+  /** The thread currently being viewed — drives the active-row highlight. Set by the UI layer
+   *  ({@link setOpenThread} on open/close); in-memory only (not persisted, not a list field). */
   private readonly _openThreadId = signal<number | undefined>(undefined);
   readonly openThreadId = this._openThreadId.asReadonly();
 
@@ -109,6 +108,8 @@ export class ThreadRepository {
     seq: number;
   }>();
   readonly threadSeq$ = this._threadSeq.asObservable();
+  private readonly _missedSummaryApplied = new Subject<void>();
+  readonly missedSummaryApplied$ = this._missedSummaryApplied.asObservable();
 
   latestSeq(threadId: number): number | undefined {
     return this.lastSeenSeq.get(threadId);
@@ -297,8 +298,8 @@ export class ThreadRepository {
    *  landed during the IDB read, or a prior paint). The network refresh is HELLO-driven ({@link onHello});
    *  load() owns only the instant cache paint. The `force` flag is a no-op — a reconnect re-pushes HELLO.
    */
-  load(_opts?: { force?: boolean }) {
-    void this.paintFromCache();
+  load(_opts?: { force?: boolean }): Promise<void> {
+    return this.paintFromCache();
   }
 
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
@@ -515,10 +516,11 @@ export class ThreadRepository {
     return true;
   }
 
-  /** Merge the missed-summary's authoritative per-thread read state into closed list items. The summary is
+  /** Merge the missed-summary's authoritative per-thread read state into list items. The summary is
    *  the freshest server state (it runs on
    *  every SSE signal), so this keeps each item's `lastReadSeq` + `unreadCount` current without a full snapshot
-   *  refresh. The open item stays frozen until its exit-time commit response arrives. */
+   *  refresh. Open and read-commit-pending rows are merged too: the server watermark guard in
+   *  {@link applyReadState} prevents an older commit response from regressing a newer summary. */
   private mergeSummaryReadState(items: MissedThreadItem[]): void {
     if (items.length === 0) return;
     const serverLrs = new Map<number, number | null>();
@@ -543,12 +545,6 @@ export class ThreadRepository {
     let changed = false;
     const updated = this._items().map((it) => {
       if (!serverLrs.has(it.threadId)) return it;
-      // The open conversation is committed on close; do not repaint its list badge while reading.
-      if (
-        it.threadId === this._openThreadId() ||
-        this._readCommitPending().has(it.threadId)
-      )
-        return it;
       const next = {
         ...it,
         lastReadSeq: serverLrs.get(it.threadId)!,
@@ -1058,6 +1054,7 @@ export class ThreadRepository {
         this._missedCursor.set(from);
         this.saveMissedCursor(from);
       }
+      this._missedSummaryApplied.next();
     } catch {
       /* best-effort — the next HELLO/NEW_MESSAGE retries */
     } finally {
@@ -1289,6 +1286,32 @@ export function rawPreview(contentType: string, content: string): string {
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 200);
+    case 'LINK': {
+      // Keep the local-first/cache-hydrated preview identical to the server's derivePreview: a link
+      // card is represented by its title, falling back to its URL, never by its stored JSON envelope.
+      try {
+        const value = JSON.parse(content) as {
+          title?: unknown;
+          description?: unknown;
+          url?: unknown;
+        };
+        const title =
+          typeof value.title === 'string' && value.title.trim()
+            ? value.title
+            : undefined;
+        const description =
+          typeof value.description === 'string' && value.description.trim()
+            ? value.description
+            : undefined;
+        const preview =
+          title ??
+          description ??
+          (typeof value.url === 'string' ? value.url : content);
+        return preview.replace(/\s+/g, ' ').trim().slice(0, 200);
+      } catch {
+        return content.slice(0, 200);
+      }
+    }
     case 'IMAGE':
       return '[Photo]';
     case 'INVITE':

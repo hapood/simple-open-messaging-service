@@ -1,6 +1,10 @@
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
-import { provideTransloco, provideTranslocoTranspiler, TranslocoService } from '@jsverse/transloco';
+import {
+  provideTransloco,
+  provideTranslocoTranspiler,
+  TranslocoService,
+} from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../i18n/csp-safe-icu.transpiler';
 import { ThreadListComponent } from './thread-list.component';
 import { UserService } from '../../services/user.service';
@@ -47,7 +51,10 @@ describe('ThreadListComponent', () => {
         provideHttpClient(),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: 'Simplified Chinese' }],
+            availableLangs: [
+              { id: 'en', label: 'English' },
+              { id: 'zh-CN', label: 'Simplified Chinese' },
+            ],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
@@ -59,13 +66,16 @@ describe('ThreadListComponent', () => {
         {
           provide: ConversationListService,
           useValue: {
-            items, status,
+            items,
+            status,
             error: signal(''),
             openThreadId: signal(undefined),
             readCommitPending: signal<ReadonlySet<number>>(new Set()),
             topInserted: signal(null),
             load: loadSpy,
-            clearTopInserted: () => { /* no-op — the FLIP effect calls this on a rAF; irrelevant here */ },
+            clearTopInserted: () => {
+              /* no-op — the FLIP effect calls this on a rAF; irrelevant here */
+            },
           },
         },
         { provide: UserService, useValue: { sessionProfile: () => undefined } },
@@ -77,15 +87,34 @@ describe('ThreadListComponent', () => {
   });
 
   /** Minimal P2P ConversationItem — only displayThreadName (→ peer nickname) is exercised by the filters. */
-  function p2p(threadId: number, peerId: number, name = `User ${peerId}`): ConversationItem {
+  function p2p(
+    threadId: number,
+    peerId: number,
+    name = `User ${peerId}`,
+  ): ConversationItem {
     return {
-      threadId, id: threadId, type: 'P2P',
+      threadId,
+      id: threadId,
+      type: 'P2P',
+      conversationState: 'ACTIVE',
+      lastReadSeq: null,
+      role: null,
       unreadCount: 0,
+      mentionUnread: [],
       muted: false,
       pinned: false,
+      pinnedAt: null,
+      clearedSeq: null,
       lastMessageAt: null,
+      lastMessageSeq: null,
       lastMessagePreview: null,
-      peerUser: { id: peerId, account: `u${peerId}`, name } as ConversationItem['peerUser'],
+      lastMessageSenderId: null,
+      peerUser: {
+        id: peerId,
+        account: `u${peerId}`,
+        name,
+      } as ConversationItem['peerUser'],
+      group: undefined as unknown as ConversationItem['group'],
     } as ConversationItem;
   }
 
@@ -99,9 +128,12 @@ describe('ThreadListComponent', () => {
     await fixture.whenStable();
 
     const host = fixture.nativeElement as HTMLElement;
-    expect(host.querySelector('.thread-list')?.getAttribute('aria-busy')).toBe('true');
-    expect(host.querySelector('[role="status"]')?.textContent?.trim())
-      .toBe(TestBed.inject(TranslocoService).translate('common.loading'));
+    expect(host.querySelector('.thread-list')?.getAttribute('aria-busy')).toBe(
+      'true',
+    );
+    expect(host.querySelector('[role="status"]')?.textContent?.trim()).toBe(
+      TestBed.inject(TranslocoService).translate('common.loading'),
+    );
     expect(host.querySelector('.tl-skeleton')).toBeNull();
   });
 
@@ -144,7 +176,9 @@ describe('ThreadListComponent', () => {
 
   it('openFriendRequests opens the friend-requests popup', () => {
     comp.openFriendRequests();
-    expect(popupSpy).toHaveBeenCalledWith(PopupType.FRIEND_REQUESTS, { initialTab: 'add' });
+    expect(popupSpy).toHaveBeenCalledWith(PopupType.FRIEND_REQUESTS, {
+      initialTab: 'add',
+    });
   });
 
   it('renders each conversation as a native button with current and accessible state', async () => {
@@ -167,16 +201,25 @@ describe('ThreadListComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    const row = fixture.nativeElement.querySelector('.thread-item') as HTMLButtonElement;
-    const blockedLabel = TestBed.inject(TranslocoService).translate('threadList.blocked');
+    const row = fixture.nativeElement.querySelector(
+      '.thread-item',
+    ) as HTMLButtonElement;
+    const blockedLabel =
+      TestBed.inject(TranslocoService).translate('threadList.blocked');
     expect(row.tagName).toBe('BUTTON');
     expect(row.type).toBe('button');
-    expect(row.getAttribute('aria-label')).toContain('A very long conversation name');
+    expect(row.getAttribute('aria-label')).toContain(
+      'A very long conversation name',
+    );
     expect(row.getAttribute('aria-label')).toContain('remote.example');
     expect(row.getAttribute('aria-label')).toContain(blockedLabel);
     expect(row.getAttribute('aria-label')).toContain('999+');
-    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('999+');
-    expect(row.querySelector('.thread-blocked')?.textContent?.trim()).toContain(blockedLabel);
+    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe(
+      '999+',
+    );
+    expect(row.querySelector('.thread-blocked')?.textContent?.trim()).toContain(
+      blockedLabel,
+    );
     expect(row.querySelector('.thread-msg')).toBeNull();
     const rows = row.querySelectorAll('.thread-row');
     expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveSize(1);
@@ -192,7 +235,9 @@ describe('ThreadListComponent', () => {
     const selected: ConversationItem[] = [];
     comp.onSelect.subscribe((item) => selected.push(item));
 
-    (fixture.nativeElement.querySelector('.thread-item') as HTMLButtonElement).click();
+    (
+      fixture.nativeElement.querySelector('.thread-item') as HTMLButtonElement
+    ).click();
 
     expect(selected).toEqual([thread]);
   });
@@ -209,8 +254,12 @@ describe('ThreadListComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    const row = fixture.nativeElement.querySelector('.thread-item') as HTMLElement;
-    expect(row.querySelector('.mention-unread-badge')?.textContent?.trim()).toBe('@');
+    const row = fixture.nativeElement.querySelector(
+      '.thread-item',
+    ) as HTMLElement;
+    expect(
+      row.querySelector('.mention-unread-badge')?.textContent?.trim(),
+    ).toBe('@');
     expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('2');
     expect(row.getAttribute('aria-label')).toContain(
       TestBed.inject(TranslocoService).translate('threadList.mentionedYou'),

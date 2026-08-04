@@ -52,4 +52,12 @@ describe('LinkCardService', () => {
     ]);
     expect(service.matchFirst('https://douyin.com.evil.example/a')).toBeNull();
   });
+
+  it('extracts the first URL even when it is outside the automatic allowlist', () => {
+    expect(
+      service.firstUrl(
+        'look https://outside.example/a, then https://youtube.com',
+      ),
+    ).toBe('https://outside.example/a');
+  });
 });

@@ -32,8 +32,7 @@ export class LinkCardService {
       if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') continue;
       const host = parsed.hostname.toLowerCase();
       const rule = this.rules().find(
-        (item) =>
-          host === item.hostname || host.endsWith(`.${item.hostname}`),
+        (item) => host === item.hostname || host.endsWith(`.${item.hostname}`),
       );
       if (rule)
         return {
@@ -44,6 +43,10 @@ export class LinkCardService {
         };
     }
     return null;
+  }
+
+  firstUrl(text: string): string | null {
+    return urlCandidates(text).next().value?.url ?? null;
   }
 
   /** App bootstrap waits for this after session restoration, so message rows never render against an

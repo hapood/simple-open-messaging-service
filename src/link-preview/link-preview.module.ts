@@ -8,11 +8,9 @@ import { LinkCardRuleController } from './link-card-rule.controller.js';
 import { LinkCardRuleService } from './link-card-rule.service.js';
 
 /**
- * Web link card (OpenGraph preview) feature. The SSRF-safe fetch + OG parser + thumbnail inline
- * (base64 data URI) live here — self-contained (no UploadModule: the thumbnail is inlined into the
- * content, not stored in CAS). QuotaService is @Global so no import is needed. LinkPreviewService is
- * exported so MessageController (registered directly on AppModule) can inject it to enrich a LINK
- * send server-side.
+ * Web link card (OpenGraph preview) feature. The SSRF-safe fetch + OG parser create short-lived
+ * in-memory generations whose optional artwork is stored in the shared CAS. LinkPreviewService is
+ * exported for LINK send consumption and temporary preview-asset authorization.
  */
 @Module({
   // LinkPreviewService stores fetched card assets in CAS. forwardRef pairs with UploadModule's deferred

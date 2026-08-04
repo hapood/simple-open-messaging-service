@@ -44,30 +44,30 @@ The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves o
 
 The application root module [src/app.module.ts](../../src/app.module.ts) imports `EventEmitterModule.forRoot()` plus 23 in-project modules, and directly registers 13 controllers. Modules marked `@Global()` (7) are shared app-wide.
 
-| Module | Key Files | Responsibilities |
-| --- | --- | --- |
-| **AuthModule** | [src/auth/](../../src/auth/) | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
-| **UserModule** | [src/user/](../../src/user/) | `UserService` — profile, register, friend/block helpers, peer-trust status, federated profile sync |
-| **GatewayModule** | [src/gateway/](../../src/gateway/) | SSE downlink (`EventsController` + `SseService`): connection registry, `: ping` heartbeat, `HELLO` handshake, `NEW_MESSAGE`/`NOTIFY`/`THREAD_META` push, `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for the HELLO |
-| **MessageModule** | [src/message/](../../src/message/) | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out |
-| **GroupModule** | [src/group/](../../src/group/) | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update |
-| **ThreadParticipantModule** | [src/thread-participant/](../../src/thread-participant/) | `ThreadParticipantService` (raw thread-roster mutator) + `ThreadAccessGuard` (membership guard reused by message/group routes) |
-| **InviteModule** | [src/invite/](../../src/invite/) | `InviteService` — friend/group invite DB state (`Invite` table, `FRIEND`/`GROUP` kinds) + friend-request badge; delegates roster writes to ThreadParticipantService |
-| **UserBlockModule** | [src/user-block/](../../src/user-block/) | `UserBlockService` — block/unblock state consumed by message fan-out + user queries |
-| **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/) | bumps the per-user thread-set revision on any roster mutation (the thread-list delta cursor) |
-| **UploadModule** | [src/upload/](../../src/upload/) | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS + refcount), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp) |
-| **PushModule** | [src/push/](../../src/push/) | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection |
-| **FederationModule** (`@Global`) | [src/federation/](../../src/federation/) | Server-to-server (SOMS protocol): ed25519 keypair, RFC 9421 signatures, discovery, s2s verify, `FederationService` (message/media/roster pull + push), `WellKnownController`, `S2sController`, `S2sInitController` |
-| **QuotaModule** (`@Global`) | [src/quota/](../../src/quota/) | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters |
-| **CallsModule** | [src/calls/](../../src/calls/) | `CallsService` — 1:1 audio/video call state machine (initiate/accept/ringing/connected/decline/cancel/end/signal) + inbound S2S frame bridge; server is signaling coordinator only (never media) |
-| **LinkPreviewModule** | [src/link-preview/](../../src/link-preview/) | SSRF-safe OG fetch (`SafeFetchService`) + `LinkPreviewService` (OpenGraph parse + base64 thumbnail) for `ContentType.LINK` cards |
-| **ShellModule** | [src/shell/](../../src/shell/) | `ShellService` — serves the web-shell manifest/bundle for the desktop Tauri wrapper (`/api/v1/shell/*`, incl. FCM runtime config via `compat`) |
-| **DiagnosticsModule** | [src/diagnostics/](../../src/diagnostics/) | `DiagnosticsService` + `DiagnosticsGcService` — client support-bundle list/download/GC |
-| **AdminModule** | [src/admin/](../../src/admin/) | Admin console: 13 controllers, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, manage, GC, federation/quota admin; `AdminAuditInterceptor` (`APP_INTERCEPTOR`) |
-| **LoggerModule** | [src/logger/](../../src/logger/) | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService` |
-| **KvStoreModule** (`@Global`) | [src/kv-store/](../../src/kv-store/) | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters |
-| **SettingsModule** (`@Global`) | [src/settings/](../../src/settings/) | `SettingsService` — runtime settings facade (VAPID, Firebase config, login mode, …) |
-| **DatabaseModule** (`@Global`) | [src/database/database.service.ts](../../src/database/database.service.ts) | Single shared Drizzle / `node-postgres` pool; `@Global` so every module injects the same instance |
+| Module                               | Key Files                                                                  | Responsibilities                                                                                                                                                                                                                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AuthModule**                       | [src/auth/](../../src/auth/)                                               | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
+| **UserModule**                       | [src/user/](../../src/user/)                                               | `UserService` — profile, register, friend/block helpers, peer-trust status, federated profile sync                                                                                                                                                                        |
+| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, `: ping` heartbeat, `HELLO` handshake, `NEW_MESSAGE`/`NOTIFY`/`THREAD_META` push, `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for the HELLO                                      |
+| **MessageModule**                    | [src/message/](../../src/message/)                                         | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out                                                                                                               |
+| **GroupModule**                      | [src/group/](../../src/group/)                                             | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
+| **ThreadParticipantModule**          | [src/thread-participant/](../../src/thread-participant/)                   | `ThreadParticipantService` (raw thread-roster mutator) + `ThreadAccessGuard` (membership guard reused by message/group routes)                                                                                                                                            |
+| **InviteModule**                     | [src/invite/](../../src/invite/)                                           | `InviteService` — friend/group invite DB state (`Invite` table, `FRIEND`/`GROUP` kinds) + friend-request badge; delegates roster writes to ThreadParticipantService                                                                                                       |
+| **UserBlockModule**                  | [src/user-block/](../../src/user-block/)                                   | `UserBlockService` — block/unblock state consumed by message fan-out + user queries                                                                                                                                                                                       |
+| **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/)                         | bumps the per-user thread-set revision on any roster mutation (the thread-list delta cursor)                                                                                                                                                                              |
+| **UploadModule**                     | [src/upload/](../../src/upload/)                                           | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS + refcount), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp)                                                                                     |
+| **PushModule**                       | [src/push/](../../src/push/)                                               | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection                                                                                                                                                                            |
+| **FederationModule** (`@Global`)     | [src/federation/](../../src/federation/)                                   | Server-to-server (SOMS protocol): ed25519 keypair, RFC 9421 signatures, discovery, s2s verify, `FederationService` (message/media/roster pull + push), `WellKnownController`, `S2sController`, `S2sInitController`                                                        |
+| **QuotaModule** (`@Global`)          | [src/quota/](../../src/quota/)                                             | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters                                                                                                                                                                   |
+| **CallsModule**                      | [src/calls/](../../src/calls/)                                             | `CallsService` — 1:1 audio/video call state machine (initiate/accept/ringing/connected/decline/cancel/end/signal) + inbound S2S frame bridge; server is signaling coordinator only (never media)                                                                          |
+| **LinkPreviewModule**                | [src/link-preview/](../../src/link-preview/)                               | SSRF-safe OG fetch (`SafeFetchService`) + short-lived generation ownership and OpenGraph/CAS asset processing for `ContentType.LINK` cards                                                                                                                                |
+| **ShellModule**                      | [src/shell/](../../src/shell/)                                             | `ShellService` — serves the web-shell manifest/bundle for the desktop Tauri wrapper (`/api/v1/shell/*`, incl. FCM runtime config via `compat`)                                                                                                                            |
+| **DiagnosticsModule**                | [src/diagnostics/](../../src/diagnostics/)                                 | `DiagnosticsService` + `DiagnosticsGcService` — client support-bundle list/download/GC                                                                                                                                                                                    |
+| **AdminModule**                      | [src/admin/](../../src/admin/)                                             | Admin console: 13 controllers, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, manage, GC, federation/quota admin; `AdminAuditInterceptor` (`APP_INTERCEPTOR`)                                                |
+| **LoggerModule**                     | [src/logger/](../../src/logger/)                                           | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService`                                                                                                                                                                               |
+| **KvStoreModule** (`@Global`)        | [src/kv-store/](../../src/kv-store/)                                       | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters                                                                                                                                                          |
+| **SettingsModule** (`@Global`)       | [src/settings/](../../src/settings/)                                       | `SettingsService` — runtime settings facade (VAPID, Firebase config, login mode, …)                                                                                                                                                                                       |
+| **DatabaseModule** (`@Global`)       | [src/database/database.service.ts](../../src/database/database.service.ts) | Single shared Drizzle / `node-postgres` pool; `@Global` so every module injects the same instance                                                                                                                                                                         |
 
 > SOMS is **single-instance by design** — the in-process maps in `SseService`, `ThrottleGuard`, `BruteForceService`, `KvStoreService` are intentional (not a gap); there is no Redis layer, and multi-instance horizontal scaling is a non-goal.
 
@@ -82,21 +82,21 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 
 All sit under `/api/v1` (set in `bootstrap.ts`). Most use `@Controller()` with the full path on each method.
 
-| Controller | File | Route prefix / key routes |
-| --- | --- | --- |
-| AuthController | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts) | `auth/login` (password), `auth/logout`, `auth/logout-all`, `auth/change-password`, `auth/set-password`, `auth/sessions`, `auth/revoke-session` |
-| AuthOtpController | [src/controller/auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts) | `auth/otp/login` |
-| AuthQrController | [src/controller/auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts) | `auth/qr/{create,poll,scan,confirm}` |
-| UserController | [src/controller/user.controller.ts](../../src/controller/user.controller.ts) | `user/{register,my-profile,update-avatar,update-profile,query-thread/delta,delete-friend,block,query,peer-trust-status,resolve,search,sync-peer-profile,thread-info}` |
-| MessageController | [src/controller/message.controller.ts](../../src/controller/message.controller.ts) | `send-message`, `send-media`, `query-messages`, `thread/{by-user-id,mark-read,set-muted,set-pinned,clear-history,set-alias}`, `search-messages`, `media-status` |
-| GroupController | [src/controller/group.controller.ts](../../src/controller/group.controller.ts) | `group/{create,invite,sync-meta,info,members,leave,kick,transfer,set-role,update}` |
-| InviteController | [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) | `invite/{friend,accept,reject,revoke,incoming,outgoing,detail,mark-read}` |
-| DeviceController | [src/controller/device.controller.ts](../../src/controller/device.controller.ts) | `devices/register` (POST), `devices/register/:token` (DELETE) |
-| NotificationController | [src/controller/notification.controller.ts](../../src/controller/notification.controller.ts) | `notifications/{vapid-key,missed-summary,missed,action}` |
-| CallsController | [src/controller/calls.controller.ts](../../src/controller/calls.controller.ts) | `calls/{initiate,accept,ringing,connected,decline,cancel,end,signal,ice-servers,:callSid/signaling}` |
-| ShellController | [src/shell/shell.controller.ts](../../src/shell/shell.controller.ts) | `shell/{compat,web-manifest,web-bundle}` |
-| HealthController / ConfigController | [src/controller/health.controller.ts](../../src/controller/health.controller.ts) · [src/controller/config.controller.ts](../../src/controller/config.controller.ts) | `health` / `config` (both `@Public`, GET) |
-| EventsController | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) | `GET /events` (SSE stream) |
+| Controller                          | File                                                                                                                                                                | Route prefix / key routes                                                                                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AuthController                      | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts)                                                                                        | `auth/login` (password), `auth/logout`, `auth/logout-all`, `auth/change-password`, `auth/set-password`, `auth/sessions`, `auth/revoke-session`                        |
+| AuthOtpController                   | [src/controller/auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts)                                                                                | `auth/otp/login`                                                                                                                                                      |
+| AuthQrController                    | [src/controller/auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts)                                                                                  | `auth/qr/{create,poll,scan,confirm}`                                                                                                                                  |
+| UserController                      | [src/controller/user.controller.ts](../../src/controller/user.controller.ts)                                                                                        | `user/{register,my-profile,update-avatar,update-profile,query-thread/delta,delete-friend,block,query,peer-trust-status,resolve,search,sync-peer-profile,thread-info}` |
+| MessageController                   | [src/controller/message.controller.ts](../../src/controller/message.controller.ts)                                                                                  | `send-message`, `send-media`, `query-messages`, `thread/{by-user-id,mark-read,set-muted,set-pinned,clear-history,set-alias}`, `search-messages`, `media-status`       |
+| GroupController                     | [src/controller/group.controller.ts](../../src/controller/group.controller.ts)                                                                                      | `group/{create,invite,sync-meta,info,members,leave,kick,transfer,set-role,update}`                                                                                    |
+| InviteController                    | [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts)                                                                                    | `invite/{friend,accept,reject,revoke,incoming,outgoing,detail,mark-read}`                                                                                             |
+| DeviceController                    | [src/controller/device.controller.ts](../../src/controller/device.controller.ts)                                                                                    | `devices/register` (POST), `devices/register/:token` (DELETE)                                                                                                         |
+| NotificationController              | [src/controller/notification.controller.ts](../../src/controller/notification.controller.ts)                                                                        | `notifications/{vapid-key,missed-summary,missed,action}`                                                                                                              |
+| CallsController                     | [src/controller/calls.controller.ts](../../src/controller/calls.controller.ts)                                                                                      | `calls/{initiate,accept,ringing,connected,decline,cancel,end,signal,ice-servers,:callSid/signaling}`                                                                  |
+| ShellController                     | [src/shell/shell.controller.ts](../../src/shell/shell.controller.ts)                                                                                                | `shell/{compat,web-manifest,web-bundle}`                                                                                                                              |
+| HealthController / ConfigController | [src/controller/health.controller.ts](../../src/controller/health.controller.ts) · [src/controller/config.controller.ts](../../src/controller/config.controller.ts) | `health` / `config` (both `@Public`, GET)                                                                                                                             |
+| EventsController                    | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts)                                                                                          | `GET /events` (SSE stream)                                                                                                                                            |
 
 Admin routes (`admin/*`) and federation routes (`s2s/*`, `.well-known/soms`) are registered inside their own modules; see [api.md](../api/api.md) and [federation-s2s-api.md](../api/federation-s2s-api.md).
 
@@ -131,7 +131,7 @@ All HTTP endpoints return the `ApiResult` envelope ([src/common/api-result.ts](.
 
 ```ts
 interface ApiResult<T = any> {
-  code: number;      // 0 = success; non-0 = business error code (segmented by domain)
+  code: number; // 0 = success; non-0 = business error code (segmented by domain)
   message: string;
   data?: T;
   hasMore?: boolean; // populated by paginated endpoints
@@ -148,13 +148,13 @@ Business results always return HTTP 200 + `code`; only unauthenticated (401) / n
 
 SOMS uses **one opaque, per-device session credential** (`SessionToken`) — there is **no access/refresh JWT pair** for users. The plaintext token is returned once at login, stored as a sha256 hash in the `SessionToken` table, and presented by the client on every authenticated request.
 
-| Aspect | Detail |
-| --- | --- |
-| Token | opaque `randomBytes(32)`; sha256-hashed at rest; plaintext shown once |
-| Transport | browser/desktop: **httpOnly cookie** (auto-attached same-origin, JS-unreadable); native (`app`): **`Authorization: Bearer`** header |
-| Lifetime | **TRUSTED** device (token in OS secure storage — native app by default, or desktop opting into OS keyring): `expiresAt = NULL` (revocation-only). **UNTRUSTED** (browser, or desktop not opting in): sliding 14-day deadline, extended on use via `lastSeenAt` |
-| Revocation | a DB row flip (`revokedAt` + `revokeReason`); logout / logout-all / password-change / admin-disable / admin-purge |
-| Validation | `BearerAuthService` resolves the token; the global `SessionAuthGuard` authenticates every route unless `@Public()` |
+| Aspect     | Detail                                                                                                                                                                                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Token      | opaque `randomBytes(32)`; sha256-hashed at rest; plaintext shown once                                                                                                                                                                                          |
+| Transport  | browser/desktop: **httpOnly cookie** (auto-attached same-origin, JS-unreadable); native (`app`): **`Authorization: Bearer`** header                                                                                                                            |
+| Lifetime   | **TRUSTED** device (token in OS secure storage — native app by default, or desktop opting into OS keyring): `expiresAt = NULL` (revocation-only). **UNTRUSTED** (browser, or desktop not opting in): sliding 14-day deadline, extended on use via `lastSeenAt` |
+| Revocation | a DB row flip (`revokedAt` + `revokeReason`); logout / logout-all / password-change / admin-disable / admin-purge                                                                                                                                              |
+| Validation | `BearerAuthService` resolves the token; the global `SessionAuthGuard` authenticates every route unless `@Public()`                                                                                                                                             |
 
 Admin auth is physically separate (its own `adminSecret`, opaque `AdminSession` rows in the `AdminSession` table) but shares the account namespace — an admin is a linked profile on a `User` row.
 
@@ -198,13 +198,13 @@ id: <msgId>          # NEW_MESSAGE only
 data: <json>
 ```
 
-| Event | Trigger | `data` | Client handling |
-| --- | --- | --- | --- |
-| `HELLO` | connect | cursors (message/threadRevision/profileRev/friendReqRev/activeCall) | delta-replay thread list; re-derive active call |
-| `NEW_MESSAGE` | a message is sent to the user | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
-| `NOTIFY` | friend request / system notice | notification descriptor | update badge |
-| `THREAD_META` | thread mute/pin/clear/revision change | `{ threadId, ... }` | update conversation list |
-| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason | disconnect + force re-login |
+| Event          | Trigger                                   | `data`                                                                      | Client handling                                 |
+| -------------- | ----------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------- |
+| `HELLO`        | connect                                   | cursors (message/threadRevision/profileRev/friendReqRev/activeCall)         | delta-replay thread list; re-derive active call |
+| `NEW_MESSAGE`  | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render         |
+| `NOTIFY`       | friend request / system notice            | notification descriptor                                                     | update badge                                    |
+| `THREAD_META`  | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                        |
+| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login                     |
 
 ### Reconnection Recovery
 
@@ -250,6 +250,7 @@ Two consistency boundaries are deliberate:
 - A crash or OS kill before normal chat close may lose the in-memory local HWM; restart uses server state.
 - Read state is not broadcast by a dedicated SSE. Other devices converge on their next existing unread pull,
   reconnect, or restart rather than clearing immediately.
+
 3. `MessageFanoutService` pushes `NEW_MESSAGE` to all participants via SSE (full body) + fires push for offline recipients.
 4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
 
@@ -263,7 +264,7 @@ Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`Feder
 
 ## Known Issues and Improvements
 
-> Items found during code review that affect integration and deployment. Several early items record the P0/P1 hardening of the *original* dual-JWT auth model, which has since been **entirely replaced by the single SessionToken model** above — read those as historical milestones, not the current design.
+> Items found during code review that affect integration and deployment. Several early items record the P0/P1 hardening of the _original_ dual-JWT auth model, which has since been **entirely replaced by the single SessionToken model** above — read those as historical milestones, not the current design.
 
 1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): secrets externalized; auto-generated at first startup under `./data/` when unset. (The subsequent SessionToken rewrite removed the access/refresh secrets entirely for users.)
 2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): persisted as a sha256 hash, revocable, rotating. (Later superseded: the dual access/refresh pair was replaced by the single opaque `SessionToken`.)

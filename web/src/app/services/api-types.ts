@@ -1482,7 +1482,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/link-preview': {
+  '/api/v1/link-preview/generations': {
     parameters: {
       query?: never;
       header?: never;
@@ -1493,6 +1493,23 @@ export interface paths {
     put?: never;
     /** Resolve a URL into a link card (OpenGraph preview) */
     post: operations['LinkPreviewController_preview'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/link-preview/generations/{generationId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read an in-memory link-card generation result */
+    get: operations['LinkPreviewController_generation'];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -4261,19 +4278,22 @@ export interface components {
       /** @description Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted. */
       payload: string;
     };
-    LinkCardDto: {
-      url: string;
-      title?: string;
-      description?: string;
-      siteName?: string;
-      image?: string;
-    };
     LinkPreviewDto: {
       /**
        * @description The page URL to preview
        * @example https://github.com/nestjs/nest
        */
       url: string;
+      /** @description Original text used only as a description fallback */
+      text?: string;
+      /** @description Existing owned generation offered to the server for reuse during a user-triggered retry */
+      generationId?: string;
+    };
+    LinkCardGenerationStartDto: {
+      generationId: string;
+      /** @enum {string} */
+      status: 'pending' | 'succeeded' | 'failed';
+      expiresAt: number;
     };
     AdminLoginDto: {
       /**
@@ -6528,9 +6548,28 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['ApiResult'] & {
-            data?: components['schemas']['LinkCardDto'];
+            data?: components['schemas']['LinkCardGenerationStartDto'];
           };
         };
+      };
+    };
+  };
+  LinkPreviewController_generation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        generationId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };

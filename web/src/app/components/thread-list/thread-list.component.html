@@ -1,79 +1,135 @@
 <div class="thread-list" [attr.aria-busy]="status() === LoadStatus.LOADING">
   @switch (status()) {
     @case (LoadStatus.LOADING) {
-      <span class="thread-loading-status" role="status">{{ 'common.loading' | transloco }}</span>
+      <span class="thread-loading-status" role="status">{{
+        'common.loading' | transloco
+      }}</span>
     }
     @case (LoadStatus.ERROR) {
-      <app-empty-state tone="error" [title]="errorMsg()" [subtitle]="'threadList.couldNotLoad' | transloco"
-        [ctaLabel]="'threadList.retry' | transloco" (ctaClick)="genThreadList()" />
+      <app-empty-state
+        tone="error"
+        [title]="errorMsg()"
+        [subtitle]="'threadList.couldNotLoad' | transloco"
+        [ctaLabel]="'threadList.retry' | transloco"
+        (ctaClick)="genThreadList()"
+      />
     }
     @case (LoadStatus.READY) {
       @if (filteredThreadList().length === 0) {
         @if (isSearchEmpty()) {
-          <app-empty-state [title]="'threadList.noMatchTitle' | transloco"
-            [subtitle]="'threadList.noMatchSub' | transloco" />
+          <app-empty-state
+            [title]="'threadList.noMatchTitle' | transloco"
+            [subtitle]="'threadList.noMatchSub' | transloco"
+          />
         } @else {
-          <app-empty-state [title]="'threadList.emptyTitle' | transloco"
+          <app-empty-state
+            [title]="'threadList.emptyTitle' | transloco"
             [subtitle]="'threadList.emptySub' | transloco"
-            [ctaLabel]="'threadList.addFriend' | transloco" (ctaClick)="openFriendRequests()">
+            [ctaLabel]="'threadList.addFriend' | transloco"
+            (ctaClick)="openFriendRequests()"
+          >
             <!-- Unified brand mark (web/public/logo.svg) — the same single source the favicon / PWA /
                  Tauri icons and <app-brand-logo> are generated from. Rendered as a bare <img> (mirroring
                  brand-logo's internal .bl-mark) rather than <app-brand-logo> because this empty-state
                  icon slot sizes its own content and must not inherit brand-logo's 16px mark→wordmark gap. -->
-            <img src="/logo.svg" width="40" height="40" alt="" aria-hidden="true" />
+            <img
+              src="/logo.svg"
+              width="40"
+              height="40"
+              alt=""
+              aria-hidden="true"
+            />
           </app-empty-state>
         }
       } @else {
         @for (thread of filteredThreadList(); track thread.id) {
-          <button type="button" class="thread-item"
+          <button
+            type="button"
+            class="thread-item"
             [attr.data-flip-key]="thread.threadId"
             [class.active]="thread.threadId === openThreadId()"
             [class.unread]="thread.unreadCount > 0"
             [class.unread-syncing]="readCommitPending().has(thread.threadId)"
             [class.muted]="thread.muted"
-            [attr.aria-current]="thread.threadId === openThreadId() ? 'true' : null"
+            [attr.aria-current]="
+              thread.threadId === openThreadId() ? 'true' : null
+            "
             [attr.aria-label]="accessibleLabel(thread)"
-            (click)="onUsrTrdClick(thread)">
+            (click)="onUsrTrdClick(thread)"
+          >
             <span class="thread-avatar">
-              <app-user-avatar [type]="avatarType(thread)" [name]="displayName(thread)"
-                [identityId]="avatarIdentityId(thread)" [colorIdentityId]="avatarColorIdentityId(thread)"
-                [src]="avatarSrc(thread)"></app-user-avatar>
+              <app-user-avatar
+                [type]="avatarType(thread)"
+                [name]="displayName(thread)"
+                [identityId]="avatarIdentityId(thread)"
+                [colorIdentityId]="avatarColorIdentityId(thread)"
+                [src]="avatarSrc(thread)"
+              ></app-user-avatar>
             </span>
             <span class="thread-info">
               <span class="thread-row">
                 <span class="thread-name">{{ displayName(thread) }}</span>
                 @if (federatedDomain(thread); as domain) {
-                  <app-federated-badge [domain]="domain" [compact]="true"></app-federated-badge>
+                  <app-federated-badge
+                    [domain]="domain"
+                    [compact]="true"
+                  ></app-federated-badge>
                 }
                 @if (thread.pinned) {
-                  <span class="thread-status-icon" [title]="'threadList.pinned' | transloco" aria-hidden="true">
-                    <app-icon [type]="AppIconType.PIN" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                  <span
+                    class="thread-status-icon"
+                    [title]="'threadList.pinned' | transloco"
+                    aria-hidden="true"
+                  >
+                    <app-icon
+                      [type]="AppIconType.PIN"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
                   </span>
                 }
-                <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
+                <span class="thread-time">{{
+                  fmtTime(previewTime(thread))
+                }}</span>
               </span>
               <span class="thread-row">
                 @if (thread.blocked) {
                   <span class="thread-blocked">
-                    <app-icon [type]="AppIconType.BLOCK" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                    <app-icon
+                      [type]="AppIconType.BLOCK"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
                     <span>{{ 'threadList.blocked' | transloco }}</span>
                   </span>
                 } @else {
                   <span class="thread-msg">{{ previewText(thread) }}</span>
                 }
                 @if (thread.muted) {
-                  <span class="thread-status-icon" [title]="'threadList.muted' | transloco" aria-hidden="true">
-                    <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                  <span
+                    class="thread-status-icon"
+                    [title]="'threadList.muted' | transloco"
+                    aria-hidden="true"
+                  >
+                    <app-icon
+                      [type]="AppIconType.MUTE"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
                   </span>
                 }
-                @if (thread.unreadCount > 0 && thread.mentionUnread.length > 0) {
-                  <span class="mention-unread-badge"
+                @if (
+                  thread.unreadCount > 0 && thread.mentionUnread.length > 0
+                ) {
+                  <span
+                    class="mention-unread-badge"
                     [title]="'threadList.mentionedYou' | transloco"
-                    aria-hidden="true">@</span>
+                    aria-hidden="true"
+                    >&#64;</span
+                  >
                 }
                 @if (thread.unreadCount > 0) {
                   <span class="unread-badge" aria-hidden="true">
-                    {{ thread.unreadCount >= 1000 ? '999+' : thread.unreadCount }}
+                    {{
+                      thread.unreadCount >= 1000 ? '999+' : thread.unreadCount
+                    }}
                   </span>
                 }
               </span>

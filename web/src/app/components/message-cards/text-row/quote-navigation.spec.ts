@@ -16,6 +16,8 @@ import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
+import { LinkCardService } from '../../../services/link-card.service';
+import { RouteService } from '../../../services/route.service';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 
@@ -62,6 +64,14 @@ describe('TextRowComponent — forwarded quote navigation', () => {
         {
           provide: MediaSizeThresholdService,
           useValue: { threshold: signal(1024) },
+        },
+        {
+          provide: LinkCardService,
+          useValue: { matchFirst: () => null },
+        },
+        {
+          provide: RouteService,
+          useValue: { popupDlg: () => undefined },
         },
       ],
     });

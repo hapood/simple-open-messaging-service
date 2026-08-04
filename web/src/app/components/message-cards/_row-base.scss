@@ -49,7 +49,9 @@
   isolation: isolate;
   padding: 6px var(--app-space-4) 0;
   box-sizing: border-box;
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
   &.msg-self {
     justify-content: flex-end;
   }
@@ -125,10 +127,16 @@
       stroke-linejoin: round;
     }
     &.msg-action--retry {
-      border-color: color-mix(in srgb, var(--app-danger) 42%, var(--app-border));
+      border-color: color-mix(
+        in srgb,
+        var(--app-danger) 42%,
+        var(--app-border)
+      );
       color: var(--app-danger);
     }
-    &:hover { background: var(--app-hover); }
+    &:hover {
+      background: var(--app-hover);
+    }
     &:focus-visible {
       outline: 2px solid var(--app-focus-ring);
       outline-offset: 1px;
@@ -228,25 +236,63 @@
   }
   background: var(--bubble-bg);
   color: var(--bubble-text);
-  &.msg-other.msg-head { border-top-left-radius: 6px; }
+  &.msg-other.msg-head {
+    border-top-left-radius: 6px;
+  }
   &.msg-other.msg-body {
     border-top-left-radius: 6px;
     border-bottom-left-radius: 6px;
   }
-  &.msg-self.msg-head { border-top-right-radius: 6px; }
+  &.msg-self.msg-head {
+    border-top-right-radius: 6px;
+  }
   &.msg-self.msg-body {
     border-top-right-radius: 6px;
     border-bottom-right-radius: 6px;
   }
 }
 
+// Structured message cards are type-owned surfaces: their body stays identical for both sides.
+// Sender ownership is expressed only by the footer meta bar below. Plain text bubbles deliberately
+// do not opt into this class and keep the outgoing/incoming bubble colors above.
+.msg-bubble.msg-card {
+  --bubble-bg: var(--chat-card-bg);
+  --bubble-text: var(--chat-card-text);
+  --bubble-muted: var(--app-text-muted);
+  --bubble-subtle: var(--app-hover);
+  --bubble-accent: var(--app-brand);
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
+}
+
+.msg-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  box-sizing: border-box;
+  min-height: 18px;
+  padding: 2px 8px;
+  color: var(--chat-card-text);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.msg-card-meta.msg-self {
+  background: var(--chat-card-meta-outgoing);
+}
+
+.msg-card-meta.msg-other {
+  background: var(--chat-card-meta-incoming);
+}
+
 .msg-bubble-text {
   margin: 0;
   font-size: 14.2px;
   line-height: 20px; // INTEGER px (was unitless 1.4 = 19.88px/line). A length line-height makes every line box EXACTLY
-                     // 20px regardless of font-size/wrap-point, so a wrapped bubble's height = padding + N×20 = a whole
-                     // number for any line count N → the kernel's Σ offsetHeight equals content.scrollHeight exactly
-                     // (no sub-pixel drift). See the integer-height contract in the header comment above.
+  // 20px regardless of font-size/wrap-point, so a wrapped bubble's height = padding + N×20 = a whole
+  // number for any line count N → the kernel's Σ offsetHeight equals content.scrollHeight exactly
+  // (no sub-pixel drift). See the integer-height contract in the header comment above.
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -272,7 +318,7 @@
 .msg-time-shadow {
   display: inline-block;
   margin-left: 8px;
-  font-size: 11px;   // must match .msg-time's font-size → identical width
+  font-size: 11px; // must match .msg-time's font-size → identical width
   white-space: nowrap;
   visibility: hidden;
 }
@@ -285,14 +331,14 @@
 //  - arc: a 3/4 circle with round caps (dasharray on a full circle) — the classic progress spinner.
 //  - retry: a clockwise circular arrow with an arrowhead.
 $msg-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='butt' stroke-linejoin='miter' stroke-miterlimit='3'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
-$msg-arc:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-dasharray='42 56'/%3E%3C/svg%3E");
+$msg-arc: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-dasharray='42 56'/%3E%3C/svg%3E");
 $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpath d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10'/%3E%3C/svg%3E");
 
 // Delivery receipt tick — at the bubble's TOP-RIGHT corner (its original placement; only the icon artwork was upgraded
 // to SVG — the position was never meant to change). The icon is a centered ::before painted via mask + currentColor;
 // the confirmed-spinner overlay and the failed hit-area extender use ::after.
 .msg-status {
-  position: absolute;  // top-right corner of the bubble (also the positioning anchor for the ::after overlays)
+  position: absolute; // top-right corner of the bubble (also the positioning anchor for the ::after overlays)
   right: 6px;
   top: 4px;
   display: inline-flex;
@@ -362,17 +408,17 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
 // static check above and never animates. opacity-only never affects offsetHeight.
 :host(.cb-confirmed) {
   .msg-status--sent::before {
-    animation: msg-sent-check 1.2s ease-out forwards;        // 0→1 over D1 (check appears), 1→0 over D2 (check→transparent)
+    animation: msg-sent-check 1.2s ease-out forwards; // 0→1 over D1 (check appears), 1→0 over D2 (check→transparent)
   }
   .msg-status--sent::after {
     content: '';
     position: absolute;
     inset: 0;
     margin: auto;
-    width: 13px;                                            // matches --sending arc box → seamless spinner handoff at reveal
+    width: 13px; // matches --sending arc box → seamless spinner handoff at reveal
     height: 13px;
     background-color: currentColor;
-    mask-image: $msg-arc;                                    // same arc as --sending → seamless spinner handoff at reveal
+    mask-image: $msg-arc; // same arc as --sending → seamless spinner handoff at reveal
     mask-position: center;
     mask-size: contain;
     mask-repeat: no-repeat;
@@ -380,27 +426,41 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
     -webkit-mask-position: center;
     -webkit-mask-size: contain;
     -webkit-mask-repeat: no-repeat;
-    animation: msg-sent-spinner 0.4s ease-out forwards,      // arc fades out over D1 (spinner → check)
-               msg-status-spin 0.8s linear infinite;         // keeps spinning through the crossfade
+    animation:
+      msg-sent-spinner 0.4s ease-out forwards,
+      // arc fades out over D1 (spinner → check)
+      msg-status-spin 0.8s linear infinite; // keeps spinning through the crossfade
   }
 }
 
 @keyframes msg-status-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 // Check lifecycle: fade in over D1 (0.4s ≈ 33% of 1.2s), then fade out to transparent over D2. The fade-out begins at
 // D1 — i.e. only after the spinner→check crossfade — per the "delayed after spinner-to-check duration" requirement.
 @keyframes msg-sent-check {
-  from { opacity: 0; }
-  33%  { opacity: 1; }
-  to   { opacity: 0; }
+  from {
+    opacity: 0;
+  }
+  33% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 // Spinner ring fade-out: 1 → 0 over D1 (the spinner → check crossfade window).
 @keyframes msg-sent-spinner {
-  from { opacity: 1; }
-  to   { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 // Subtle dim while a self message is still in flight (status === 'sending'); clears on confirm. The whole bubble dims

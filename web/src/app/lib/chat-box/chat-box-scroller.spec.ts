@@ -3054,7 +3054,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
     expect(cap.classList.contains('cb-tail-cap--loading')).toBe(false);
     expect(cap.offsetHeight).toBe(0); // MEASURED: CSS owns the dimension, the kernel reads offsetHeight
-    expect(sumChildrenHeight(content)).toBe(100 * 100 + 14); // cap height folded into the content total
+    expect(sumChildrenHeight(content)).toBe(100 * 100); // zero-height gap is still folded into the content total
   });
 
   it('tail cap: async aggregate growth follows bottom through the shared anchor logic', async () => {

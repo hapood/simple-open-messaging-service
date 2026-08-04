@@ -403,6 +403,22 @@ class NativeComposerController(
     private var threadId = 0L
     private var sequence = 0L
     private var visible = false
+    private val emitLinkMarkers = Runnable {
+        if (!visible) return@Runnable
+        val links = JSONArray()
+        input.urlMarkers().forEach { marker ->
+            links.put(JSONObject().apply {
+                put("href", marker.href)
+                put("start", marker.start)
+                put("end", marker.end)
+            })
+        }
+        emit(JSONObject().apply {
+            put("kind", "linkMarkers")
+            put("text", input.text?.toString().orEmpty())
+            put("links", links)
+        })
+    }
     private var keyboardSurface = KeyboardSurface.CLOSED
     private var imeBottomPx = 0
     /** Authoritative endpoint from onApplyWindowInsets. Animation progress updates imeBottomPx instead,
@@ -426,6 +442,10 @@ class NativeComposerController(
     private var voiceCancelArmed = false
 
     init {
+        input.onUrlMarkersChanged = {
+            input.removeCallbacks(emitLinkMarkers)
+            input.postDelayed(emitLinkMarkers, LINK_MARKER_DEBOUNCE_MS)
+        }
         applyTheme(darkTheme)
         attachmentHorizontalScroll.addView(
             attachmentItems,
@@ -582,6 +602,7 @@ class NativeComposerController(
         input.setOnClickListener {
             closeAttachmentDrawer()
             if (keyboardSurface == KeyboardSurface.EMOJI) switchToSystemKeyboard()
+            emit(JSONObject().apply { put("kind", "interaction") })
         }
         keyboard.setOnClickListener {
             closeAttachmentDrawer()
@@ -820,6 +841,7 @@ class NativeComposerController(
 
     fun hide(requestContextId: Long) {
         if (requestContextId != contextId) return
+        input.removeCallbacks(emitLinkMarkers)
         mentionPopup.dismiss()
         closeAttachmentDrawer(immediate = true)
         dismissKeyboard()
@@ -841,6 +863,20 @@ class NativeComposerController(
             })
             .start()
         emitGeometry()
+    }
+
+    /** Final lifecycle notification. Unlike [hide], this is called only when the Activity-owned composer
+     * is genuinely being destroyed, so transient overlays never publish a draft to the thread list. */
+    fun destroy() {
+        if (!visible) return
+        emit(JSONObject().apply {
+            put("kind", "destroy")
+            put("text", input.text?.toString().orEmpty())
+        })
+        mentionPopup.dismiss()
+        closeAttachmentDrawer(immediate = true)
+        root.animate().cancel()
+        visible = false
     }
 
     fun updateInsets(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
@@ -1436,6 +1472,9 @@ class NativeComposerController(
         onSurface = if (dark) Color.rgb(239, 242, 244) else Color.rgb(38, 44, 47)
         secondary = if (dark) Color.rgb(181, 188, 192) else Color.rgb(84, 94, 99)
         hintColor = if (dark) Color.rgb(151, 158, 163) else Color.rgb(121, 130, 135)
+        // Match the web --app-link role. Native URL spans are paint-only, so every URL uses the same
+        // accessible color regardless of browser visit history.
+        input.enableUrlColor(if (dark) LINK_DARK else LINK_LIGHT)
         input.setTextColor(onSurface)
         input.setHintTextColor(hintColor)
         inputSurface.background = outlinedSurface(12)
@@ -1610,8 +1649,11 @@ class NativeComposerController(
         private const val PRE_R_INSETS_COMMIT_DELAY_MS = 80L
         private const val SHOW_DURATION_MS = 140L
         private const val HIDE_DURATION_MS = 90L
+        private const val LINK_MARKER_DEBOUNCE_MS = 500L
         private const val ATTACHMENT_DRAWER_DURATION_MS = 140L
         private val PRIMARY = Color.rgb(49, 119, 213)
+        private val LINK_LIGHT = Color.rgb(21, 101, 192)
+        private val LINK_DARK = Color.rgb(100, 181, 246)
         private val RECORDING = Color.rgb(198, 52, 52)
         private val EMOJI = listOf(
             "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🙂",

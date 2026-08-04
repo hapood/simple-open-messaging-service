@@ -36,7 +36,7 @@ export type PaneKind = 'dialog' | 'gallery' | 'file-detail' | 'invite-detail';
 
 /** Rendering policy for a dialog pane. The root popup owns layout, motion, backdrop, focus, and safe-area
  * behavior for each policy, so individual dialog components only render their content. */
-export type DialogPresentation = 'page' | 'modal' | 'viewer';
+export type DialogPresentation = 'page' | 'modal' | 'viewer' | 'chatbox';
 export type DialogDesktopSize = 'standard' | 'wide';
 
 /**
@@ -56,6 +56,8 @@ export interface PaneEntry {
   readonly presentation?: DialogPresentation;
   /** Dialog-only desktop card width. Compact layout is controlled solely by `presentation`. */
   readonly desktopSize?: DialogDesktopSize;
+  /** Conversation-local dialogs are rendered inside the matching message thread instead of RootPopup. */
+  readonly scopeThreadId?: number;
   /** This dialog owns the mobile Settings drill-down stack. While it is topmost, back peels a category
    * before closing the dialog itself; dialogs pushed above it still close first as usual. */
   readonly settingsDrilldown?: boolean;

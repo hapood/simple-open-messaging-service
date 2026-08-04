@@ -89,6 +89,7 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: SendMessageDto,
   ) {
+    let generationId: string | undefined;
     if (
       req.threadAccess.threadType === 'P2P' &&
       !req.threadAccess.friendshipActive
@@ -111,6 +112,25 @@ export class MessageController {
       await this.federation.assertGroupWritable(dto.threadId);
     } else {
       await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+    }
+    // A successful LINK send deletes its short-lived generation immediately. Resolve an HTTP retry by
+    // clientMessageId before looking up that generation, so a lost 200 response remains idempotent.
+    if (dto.clientMessageId) {
+      const prior = await this.messageService.findByClientMessageId(
+        dto.clientMessageId,
+      );
+      if (prior) {
+        if (
+          prior.creator !== req.user.userId ||
+          prior.threadId !== dto.threadId
+        ) {
+          throw new BusinessException(
+            BusinessCode.VALIDATION_FAILED,
+            'invalid clientMessageId',
+          );
+        }
+        return prior;
+      }
     }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
     if (contentType === ContentType.PURE_TEXT) {
@@ -146,13 +166,21 @@ export class MessageController {
     } else if (!dto.content?.trim()) {
       throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
     }
-    // LINK: the client sends only the URL. The card is rebuilt server-side (SSRF-safe OG fetch +
-    // og:image localization into CAS) so the metadata is server-authoritative and unforgable, then
-    // the assembled JSON is form-validated by parseLinkContent (http(s) url; image must be a CAS shard).
+    // LINK content is an owned, completed in-memory generationId. Persist exactly the card the user
+    // reviewed; never accept client-authored metadata or fetch the page again during send.
     if (contentType === ContentType.LINK) {
-      dto.content = JSON.stringify(
-        await this.linkPreview.buildCardContent(dto.content),
+      generationId = dto.content;
+      const content = this.linkPreview.consumeGeneration(
+        req.user.userId,
+        generationId,
       );
+      if (!content) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'link card generation is not ready',
+        );
+      }
+      dto.content = JSON.stringify(content);
       if (!parseLinkContent(dto.content)) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
@@ -181,6 +209,9 @@ export class MessageController {
       (tx) => this.userQuota.tick(req.user.userId, 'messages', tx),
       quoteVisibility,
     );
+    if (generationId) {
+      this.linkPreview.finishGeneration(req.user.userId, generationId);
+    }
     // Fire-and-forget: the response confirms PERSISTENCE (the row is committed above); recipient
     // fan-out (SSE + push + notif + federation hint) runs off the request critical path. The client
     // reconciles by seq/id, so an SSE frame landing after the 200 is harmless. The staged-media promote

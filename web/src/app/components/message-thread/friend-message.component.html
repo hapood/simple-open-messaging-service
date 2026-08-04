@@ -475,6 +475,8 @@
           [class.msg-composer--selection-hidden]="selectionMode()"
           [attr.aria-hidden]="selectionMode()"
           [members]="mentionMembers()"
+          [threadId]="threadId()"
+          [compact]="chatboxDialogOpen()"
           (send)="onSendIntent($event)"
         >
           @if (composingQuote(); as quote) {
@@ -513,6 +515,8 @@
         </app-chat-input>
       }
     }
+
+    <app-chatbox-popup [threadId]="threadId()" />
 
     @if (pasteOpen()) {
       <app-paste-panel

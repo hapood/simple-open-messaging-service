@@ -38,6 +38,15 @@ app-chat-editor {
 .cb-editor .ProseMirror p {
   margin: 0;
 }
+
+// Do not let the browser's default blue/purple link palette leak into the composer. Both states use the
+// theme's high-contrast inline-link role because visit history should not change draft legibility.
+.cb-editor .ProseMirror a {
+  color: var(--app-link, #1565c0);
+}
+.cb-editor .ProseMirror a:visited {
+  color: var(--app-link-visited, var(--app-link, #1565c0));
+}
 // Placeholder (v3 Placeholder tags the first <p> with .is-editor-empty + data-placeholder).
 .cb-editor .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);

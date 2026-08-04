@@ -540,8 +540,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
         header: this.headerRef()?.nativeElement,
         container: vp.parentElement ?? vp,
       },
-      document.documentElement.getAttribute('data-show-self-avatar') ===
-        'true',
+      document.documentElement.getAttribute('data-show-self-avatar') === 'true',
     );
   }
 
@@ -711,6 +710,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
         return;
       case 'audio':
         this.sendVoiceMock(intent.blob, intent.duration);
+        return;
+      case 'link':
+        void this.sendText(intent.content.url);
+        return;
+      case 'native-files':
+      case 'paste':
         return;
     }
   }

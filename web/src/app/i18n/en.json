@@ -385,9 +385,17 @@
   "linkCard": {
     "open": "Open link",
     "original": "Original text",
-    "copy": "Copy all"
+    "copy": "Copy all",
+    "generateTitle": "Send link card",
+    "generating": "Generating card…",
+    "generateFailed": "Card generation failed",
+    "generateFailedHint": "This page could not be read",
+    "retry": "Retry",
+    "sendText": "Send text",
+    "send": "Send"
   },
   "chat": {
+    "linkCardAction": "Create link card",
     "messageNotFound": "Message not found",
     "clearSearch": "Clear search",
     "emptyTagline": "Select a chat to start your conversation",
@@ -557,6 +565,7 @@
     "notAvailable": "Not available yet"
   },
   "threadList": {
+    "draftPreview": "Draft: {{text}}",
     "couldNotLoad": "Couldn't load chats",
     "retry": "Retry",
     "noMatchTitle": "No matching chats",

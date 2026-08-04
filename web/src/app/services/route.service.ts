@@ -30,6 +30,11 @@ import {
 import { LayoutService } from './layout.service';
 import { ForwardDetailComponent } from '../components/forward-detail/forward-detail.component';
 import { LinkOriginalDialogComponent } from '../components/link-original-dialog/link-original-dialog.component';
+import {
+  LinkCardGenerationDialogComponent,
+  type LinkCardGenerationDialogResult,
+  type LinkCardGenerationMode,
+} from '../components/link-card-generation-dialog/link-card-generation-dialog.component';
 
 export enum RoutePage {
   HOME,
@@ -59,6 +64,7 @@ export enum PopupType {
   FORWARD,
   FORWARD_DETAIL,
   LINK_ORIGINAL,
+  LINK_CARD_GENERATION,
 }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
@@ -73,6 +79,7 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FORWARD]: ForwardDialogComponent,
   [PopupType.FORWARD_DETAIL]: ForwardDetailComponent,
   [PopupType.LINK_ORIGINAL]: LinkOriginalDialogComponent,
+  [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
@@ -87,6 +94,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FORWARD]: 'page',
   [PopupType.FORWARD_DETAIL]: 'viewer',
   [PopupType.LINK_ORIGINAL]: 'modal',
+  [PopupType.LINK_CARD_GENERATION]: 'chatbox',
 };
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -120,6 +128,11 @@ export interface PopupInput {
   };
   [PopupType.FORWARD_DETAIL]: { bundleId: string };
   [PopupType.LINK_ORIGINAL]: { text: string; url: string };
+  [PopupType.LINK_CARD_GENERATION]: {
+    generationId: string;
+    mode: LinkCardGenerationMode;
+    originalText: string;
+  };
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -146,6 +159,7 @@ export interface PopupResult {
   [PopupType.FORWARD]: ForwardDialogResult | undefined;
   [PopupType.FORWARD_DETAIL]: undefined;
   [PopupType.LINK_ORIGINAL]: undefined;
+  [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogResult | undefined;
 }
 
 export interface DlgInfo {
@@ -154,6 +168,11 @@ export interface DlgInfo {
   inputs?: Record<string, unknown>;
   presentation: DialogPresentation;
   desktopSize: DialogDesktopSize;
+  scopeThreadId?: number;
+}
+
+export interface PopupOptions {
+  scopeThreadId?: number;
 }
 
 /**
@@ -184,6 +203,7 @@ export class RouteService {
       inputs: p.inputs,
       presentation: p.presentation ?? 'page',
       desktopSize: p.desktopSize ?? 'standard',
+      scopeThreadId: p.scopeThreadId,
     })),
   );
 
@@ -256,6 +276,7 @@ export class RouteService {
     popupType: K,
     inputs?: PopupInput[K],
     onResult?: (result: PopupResult[K]) => void,
+    options?: PopupOptions,
   ): DlgRef {
     const id = this.nav.pushPane({
       kind: 'dialog',
@@ -264,6 +285,7 @@ export class RouteService {
       onResult: onResult as ((result: unknown) => void) | undefined,
       presentation: presentationDict[popupType],
       desktopSize: 'standard',
+      scopeThreadId: options?.scopeThreadId,
     });
     return { id };
   }

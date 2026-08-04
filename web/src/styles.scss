@@ -5,7 +5,8 @@
 @use './app/lib/chat-box/cb-skeleton'; // shared chat shimmer skeleton (.cb-skeleton) — used by MessageThread + playground
 
 // Shared sticky-avatar handoff: retain the natural head's 40px layout slot while the viewport-level copy paints.
-.cb-sticky-avatar-source .msg-has-avatar .msg-avatar {
+// The marker lives on that exact avatar so a later group from the same sender remains visible.
+.msg-avatar.cb-sticky-avatar-source {
   visibility: hidden;
 }
 

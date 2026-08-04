@@ -209,7 +209,7 @@
       </div>
 
       @if (!isAudioOnly()) {
-        <div class="msg-media-meta">
+        <div class="msg-media-meta msg-card-meta msg-{{ side() }}">
           <span class="msg-media-meta-count">
             @if (metaBar().images > 1) {
               <span>{{

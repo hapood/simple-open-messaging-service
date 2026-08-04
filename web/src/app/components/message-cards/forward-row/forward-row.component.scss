@@ -3,7 +3,8 @@
 .forward-card {
   width: 280px;
   display: block;
-  padding: 10px 12px 8px;
+  padding: 0;
+  overflow: hidden;
   transition: opacity 0.2s ease-out;
   border: 0;
   // This card is a real <button>. Desktop Chromium/WebKit can retain the native
@@ -17,6 +18,10 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.forward-body {
+  padding: 10px 12px 8px;
 }
 
 .forward-card:disabled {
@@ -60,14 +65,5 @@
 }
 
 .forward-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-  margin-top: 8px;
-  padding-top: 6px;
-  color: var(--bubble-muted);
-  font-size: 11px;
-  line-height: 14px;
+  width: 100%;
 }

@@ -38,6 +38,11 @@ $app-gray-900: #111827;
   --app-on-brand: #ffffff;
   --app-on-brand-soft: #0d4770;
   --app-focus-ring: #0b74c5;
+  // Inline links need stronger text contrast than filled brand controls. Composer links deliberately keep
+  // visited URLs on the same color: browser history is not a useful editing state and default purple is
+  // low-contrast on the dark input surface.
+  --app-link: #1565c0;
+  --app-link-visited: var(--app-link);
 
   // Text (replaces the many "near-blacks": #000000 / #111827 / #1f2329 / #2b2f3a / #374151)
   --app-text: #{$app-gray-900}; // primary text
@@ -185,7 +190,8 @@ $app-gray-900: #111827;
   --soms-composer-height: 0px;
   --soms-keyboard-height: 0px;
   --soms-bottom-occupation: calc(
-    var(--soms-composer-height) + var(--soms-keyboard-height) + var(--soms-safe-bottom)
+    var(--soms-composer-height) + var(--soms-keyboard-height) +
+      var(--soms-safe-bottom)
   );
   // Browser chat content is already translated above the IME, so its scroll-tail reserve excludes the
   // keyboard. NativeComposerService overrides this with the full occupation because native owns the lift.
@@ -274,6 +280,10 @@ $app-gray-900: #111827;
   --chat-date-bg: var(--im-date-pill-bg);
   --chat-date-text: var(--im-date-pill-text);
   --chat-media-meta-bg: rgba(0, 0, 0, 0.45);
+  --chat-card-bg: var(--im-bubble-other);
+  --chat-card-text: var(--im-bubble-text);
+  --chat-card-meta-outgoing: var(--im-bubble-self);
+  --chat-card-meta-incoming: var(--im-meta-bg);
   --chat-message-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
 }
 
@@ -344,6 +354,8 @@ $app-gray-900: #111827;
   --app-on-brand: #071a28;
   --app-on-brand-soft: #b9e1fb;
   --app-focus-ring: #90caf9;
+  --app-link: #64b5f6;
+  --app-link-visited: var(--app-link);
   --app-danger: #ef4444; // brighter red for legibility on dark
   --app-danger-soft: rgba(
     239,

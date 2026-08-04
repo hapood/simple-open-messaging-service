@@ -32,6 +32,12 @@ export type NativeComposerEvent =
       version: 1;
       contextId: number;
       sequence: number;
+      kind: 'interaction';
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
       kind: 'geometry';
       composerHeightPx?: number;
       keyboardHeightPx?: number;
@@ -46,6 +52,22 @@ export type NativeComposerEvent =
       text: string;
       selectionStart: number;
       selectionEnd: number;
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
+      kind: 'linkMarkers';
+      text: string;
+      links: NativeComposerLinkMarker[];
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
+      /** The native composer is actually being destroyed, not temporarily hidden by an overlay. */
+      kind: 'destroy';
+      text: string;
     }
   | {
       version: 1;
@@ -111,6 +133,12 @@ export interface NativeComposerMention {
   kind: 'user' | 'all';
   id: string;
   label: string;
+}
+
+export interface NativeComposerLinkMarker {
+  href: string;
+  start: number;
+  end: number;
 }
 
 export interface NativeMentionCandidate {

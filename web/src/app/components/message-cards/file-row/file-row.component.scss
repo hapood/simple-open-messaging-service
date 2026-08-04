@@ -6,7 +6,9 @@
 .msg-bubble.msg-file {
   width: 280px;
   max-width: 100%;
-  padding: 8px 10px;
+  padding: 0;
+  display: block;
+  overflow: hidden;
 }
 
 // Click target: icon + meta + download glyph in a row. Clicking opens the file-detail overlay (the row emits openFile);
@@ -22,10 +24,14 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
+  padding: 8px 10px;
   cursor: pointer;
   border-radius: 10px;
   outline: none;
-  &:focus-visible { outline: 2px solid var(--bubble-accent); outline-offset: 2px; }
+  &:focus-visible {
+    outline: 2px solid var(--bubble-accent);
+    outline-offset: 2px;
+  }
 }
 
 // Type icon: a rounded square + category-color tint. Keep the artwork and extension in normal flow so
@@ -55,13 +61,27 @@
   letter-spacing: 0.3px;
 }
 // Category tint (pdf red / doc blue / sheet green / slides orange / archive purple / text gray / file blue-gray).
-.msg-file-ico--pdf { --msg-file-c: #e53935; }
-.msg-file-ico--doc { --msg-file-c: #2b6cb0; }
-.msg-file-ico--sheet { --msg-file-c: #2e7d32; }
-.msg-file-ico--slides { --msg-file-c: #ef6c00; }
-.msg-file-ico--archive { --msg-file-c: #7b1fa2; }
-.msg-file-ico--text { --msg-file-c: #546e7a; }
-.msg-file-ico--unknown { --msg-file-c: #6b7280; }
+.msg-file-ico--pdf {
+  --msg-file-c: #e53935;
+}
+.msg-file-ico--doc {
+  --msg-file-c: #2b6cb0;
+}
+.msg-file-ico--sheet {
+  --msg-file-c: #2e7d32;
+}
+.msg-file-ico--slides {
+  --msg-file-c: #ef6c00;
+}
+.msg-file-ico--archive {
+  --msg-file-c: #7b1fa2;
+}
+.msg-file-ico--text {
+  --msg-file-c: #546e7a;
+}
+.msg-file-ico--unknown {
+  --msg-file-c: #6b7280;
+}
 
 // Meta column: filename (single-line ellipsis) + size (de-emphasized).
 .msg-file-meta {
@@ -83,6 +103,15 @@
   opacity: 0.6;
 }
 
+.msg-file-footer {
+  width: 100%;
+}
+
+.msg-file-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
 // Download glyph (de-emphasized; darkens on hover — the whole row is click-to-download, this is auxiliary cue).
 // When the federated media is not yet local, the glyph slot swaps to a spinner (downloading) or a
 // cloud_off icon (failed) — HEIGHT-NEUTRAL: the slot is fixed, the swap never changes the row height.
@@ -94,9 +123,17 @@
   width: 20px;
   height: 20px;
   opacity: 0.4;
-  .mat-icon { font-size: 20px; width: 20px; height: 20px; line-height: 20px; }
+  .mat-icon {
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+  }
 }
-.msg-file-dl-failed { color: var(--app-danger, #ff5252); opacity: 0.95; }
+.msg-file-dl-failed {
+  color: var(--app-danger, #ff5252);
+  opacity: 0.95;
+}
 .msg-file-row:hover .msg-file-dl {
   opacity: 0.8;
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { LookupFunction } from 'node:net';
 import { SafeFetchService } from './safe-fetch.service.js';
 
 /**
@@ -13,7 +14,9 @@ describe('SafeFetchService SSRF guards', () => {
     (svc as unknown as { isPublicIp: (a: string) => boolean }).isPublicIp(addr);
   const validate = (url: string): boolean => {
     try {
-      (svc as unknown as { validateUrlShape: (u: string) => URL }).validateUrlShape(url);
+      (
+        svc as unknown as { validateUrlShape: (u: string) => URL }
+      ).validateUrlShape(url);
       return true;
     } catch {
       return false;
@@ -70,6 +73,44 @@ describe('SafeFetchService SSRF guards', () => {
       expect(validate('https://user:pass@example.com')).toBe(false);
       expect(validate('https://')).toBe(false);
       expect(validate('https://' + 'a'.repeat(2100) + '.com')).toBe(false);
+    });
+  });
+
+  describe('pinnedLookup', () => {
+    const lookup = (
+      svc as unknown as {
+        pinnedLookup: (
+          ips: Array<{ address: string; family: number }>,
+        ) => LookupFunction;
+      }
+    ).pinnedLookup([
+      { address: '203.0.113.10', family: 4 },
+      { address: '2001:db8::10', family: 6 },
+    ]);
+
+    it('returns address records when Node requests all addresses', async () => {
+      const result = await new Promise<unknown>((resolve, reject) => {
+        lookup('example.com', { all: true }, (error, addresses) => {
+          if (error) reject(error);
+          else resolve(addresses);
+        });
+      });
+
+      expect(result).toEqual([
+        { address: '203.0.113.10', family: 4 },
+        { address: '2001:db8::10', family: 6 },
+      ]);
+    });
+
+    it('returns the requested family in single-address mode', async () => {
+      const result = await new Promise((resolve, reject) => {
+        lookup('example.com', { family: 6 }, (error, address, family) => {
+          if (error) reject(error);
+          else resolve({ address, family });
+        });
+      });
+
+      expect(result).toEqual({ address: '2001:db8::10', family: 6 });
     });
   });
 });

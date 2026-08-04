@@ -90,14 +90,24 @@ export function resolveStickyAvatar(
     measured,
     visibleTop + STICKY_AVATAR_TOP_GAP_PX,
   );
-  hosts.forEach((host) => host.classList.remove('cb-sticky-avatar-source'));
+  content
+    .querySelectorAll<HTMLElement>('.cb-sticky-avatar-source')
+    .forEach((avatar) => avatar.classList.remove('cb-sticky-avatar-source'));
   if (!placement || (placement.side === 'self' && !showSelfAvatar)) return null;
 
   const host = hosts[placement.rowIndex];
   if (!host) return null;
+  // Hide only the natural avatar that handed off to the viewport overlay. Marking message hosts (or the
+  // whole sender group) makes the selector reach unrelated natural avatars when rows are wrapped/reused.
+  // In particular, A -> B -> A must keep A's lower, ordinary group-head avatar visible while the upper A
+  // avatar remains sticky.
   hosts
     .slice(placement.groupStartIndex, placement.groupEndIndex + 1)
-    .forEach((candidate) => candidate.classList.add('cb-sticky-avatar-source'));
+    .map((candidate) =>
+      candidate.querySelector<HTMLElement>('.msg-has-avatar .msg-avatar'),
+    )
+    .find((avatar): avatar is HTMLElement => avatar !== null)
+    ?.classList.add('cb-sticky-avatar-source');
   const identity = Number(host.dataset['messageAvatarIdentity']);
   return {
     name: host.dataset['messageAvatarName'] ?? '',

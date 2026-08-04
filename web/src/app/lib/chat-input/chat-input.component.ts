@@ -5,6 +5,7 @@ import {
   ElementRef,
   HostListener,
   computed,
+  effect,
   inject,
   input,
   OnDestroy,
@@ -16,12 +17,15 @@ import { TranslocoModule } from '@jsverse/transloco';
 import {
   ChatEditorComponent,
   type ChatMember,
+  type ComposerLinkMarker,
 } from '../../components/chat-editor/chat-editor.component';
-import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import {
+  IconComponent,
+  AppIconType,
+} from '../../components/icon/icon.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
 import { firstValueFrom } from 'rxjs';
-import { MsgService } from '../../services/message.service';
 import { InputDeviceService } from '../../services/input-device.service';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
 import {
@@ -33,6 +37,13 @@ import {
   nextVoiceCancelState,
 } from './voice-recording-state';
 import { PreferenceStore } from '../../services/preference-store.service';
+import {
+  LinkCardGenerationService,
+  type LinkCardContent,
+} from '../../services/link-card-generation.service';
+import { PopupType, RouteService } from '../../services/route.service';
+import { ComposerDraftService } from '../../services/composer-draft.service';
+import { assetUrl } from '../../services/runtime';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -45,7 +56,7 @@ export type ChatSendIntent =
   | { kind: 'image'; files: readonly File[] }
   | { kind: 'file'; files: readonly File[] }
   | { kind: 'native-files'; files: readonly NativeUploadSelection[] }
-  | { kind: 'link'; url: string }
+  | { kind: 'link'; generationId: string; content: LinkCardContent }
   | { kind: 'paste'; text: string; files: readonly File[] }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
 
@@ -59,25 +70,6 @@ interface EmojiTab {
 
 const RECENTS_KEY = 'soms.chat.emojiRecents';
 const RECENTS_MAX = 32;
-
-/** A single bare http(s) URL with no surrounding whitespace — the trigger for sending a link card rather
- *  than plain text. The server's LinkPreviewService builds the OG preview; the composer only classifies
- *  the intent (it never fetches). Anything else — prose, a URL mixed with text, multiple URLs — stays
- *  plain text so partial input is never surprising-converted into a card. */
-const BARE_URL_RE = /^https?:\/\/\S+$/i;
-function isBareUrl(text: string): boolean {
-  return BARE_URL_RE.test(text);
-}
-
-/** A live link-card preview (server-built OG card) shown above the input bar while the draft is a
- *  single bare URL. `image` is a base64 data URI (inlined on the wire). */
-interface LinkCardPreview {
-  url: string;
-  title?: string;
-  description?: string;
-  siteName?: string;
-  image?: string;
-}
 
 /** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
  *  Chrome / Android WebView / Tauri webview2 / webkit2gtk → audio/webm (opus); Safari / iOS / macOS
@@ -145,6 +137,10 @@ export class ChatInputComponent implements OnDestroy {
    *  the editor; updates do NOT recreate the editor. */
   readonly members = input<ChatMember[]>([]);
   readonly placeholder = input('');
+  /** Browser composer drafts are partitioned by conversation. Omit in the playground. */
+  readonly threadId = input<number>();
+  /** Chatbox-dialog mode: keep the draft visible in a deliberately small, single-line composer. */
+  readonly compact = input(false);
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);
   /** Structured send intent — the host switches on `kind`. */
@@ -157,11 +153,13 @@ export class ChatInputComponent implements OnDestroy {
     viewChild<ElementRef<HTMLInputElement>>('attachInput');
   private readonly fileInput =
     viewChild<ElementRef<HTMLInputElement>>('fileInput');
-  private readonly msgService = inject(MsgService);
   private readonly inputDevice = inject(InputDeviceService);
   readonly desktopRecordingControls = this.inputDevice.hasPhysicalKeyboard;
   private readonly keyboardInset = inject(KeyboardInsetService);
   private readonly preferences = inject(PreferenceStore);
+  private readonly generations = inject(LinkCardGenerationService);
+  private readonly route = inject(RouteService);
+  private readonly composerDrafts = inject(ComposerDraftService);
   private recentsWriteRevision = 0;
 
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
@@ -169,13 +167,34 @@ export class ChatInputComponent implements OnDestroy {
   readonly draftHtml = signal('');
   /** Browser/desktop emoji remains a simple floating popup. Android uses its native composer instead. */
   readonly emojiOpen = signal(false);
-  /** Live link-card preview when the draft is a single bare URL (WeChat/WhatsApp-style; built
-   *  server-side). Null when the draft isn't a bare URL or the fetch hasn't landed yet. The send path
-   *  reuses the server's cache so the sent card builds instantly. */
-  readonly previewCard = signal<LinkCardPreview | null>(null);
-  /** Monotonic token: a slow earlier URL's response must not overwrite a newer edit's preview. */
-  private previewSeq = 0;
-  private previewTimer?: ReturnType<typeof setTimeout>;
+  readonly detectedLink = signal<string | null>(null);
+  readonly generationId = signal<string | null>(null);
+  readonly generationStarting = signal(false);
+  readonly generationStartFailed = signal(false);
+  readonly linkGeneration = computed(() => {
+    const id = this.generationId();
+    return id ? this.generations.snapshot(id) : undefined;
+  });
+  readonly linkState = computed<'idle' | 'pending' | 'succeeded' | 'failed'>(
+    () => {
+      if (this.generationStarting()) return 'pending';
+      if (this.generationStartFailed()) return 'failed';
+      return this.linkGeneration()?.status ?? 'idle';
+    },
+  );
+  readonly linkFavicon = computed(() =>
+    assetUrl(
+      this.linkGeneration()?.favicon ?? this.linkGeneration()?.content?.favicon,
+    ),
+  );
+  private linkTimer?: ReturnType<typeof setTimeout>;
+  private pendingLinkUrl: string | null = null;
+  /** Link-card generation can become user-triggered while the draft is still local to the open composer.
+   *  Keep that bit locally as well; publishing it through ComposerDraftService would make the thread-list
+   *  draft preview update while the user is typing. */
+  private generationTriggered = false;
+  private restoredThreadId?: number;
+  private openWhenStarted = false;
 
   /** Recently-used emojis (persisted across sessions via localStorage). */
   readonly recents = signal<string[]>([]);
@@ -201,6 +220,34 @@ export class ChatInputComponent implements OnDestroy {
 
   constructor() {
     void this.restoreRecents();
+    effect(() => {
+      const threadId = this.threadId();
+      const editor = this.editor();
+      this.composerDrafts.drafts();
+      if (!threadId || !editor || this.restoredThreadId === threadId) return;
+      this.restoredThreadId = threadId;
+      const draft = this.composerDrafts.get(threadId);
+      if (!draft) return;
+      this.generationTriggered = Boolean(draft.generationTriggered);
+      editor.setHtml(draft.html);
+      this.draftHtml.set(draft.html);
+      this.pendingLinkUrl = draft.linkUrl ?? null;
+      this.detectedLink.set(this.pendingLinkUrl);
+      if (
+        draft.generationId &&
+        draft.generationExpiresAt &&
+        draft.generationExpiresAt > Date.now()
+      ) {
+        this.generationId.set(draft.generationId);
+        this.generations.resume({
+          generationId: draft.generationId,
+          status: 'pending',
+          expiresAt: draft.generationExpiresAt,
+        });
+      } else if (draft.linkUrl && draft.generationTriggered) {
+        this.scheduleGeneration(draft.plainText, draft.linkUrl, true);
+      }
+    });
   }
   /** Delegated click on the prerendered grids wrapper: read the glyph from the clicked button's `data-emoji`
    *  and insert it. One handler for every category's buttons — far cheaper than a `(click)` binding + directive
@@ -216,7 +263,12 @@ export class ChatInputComponent implements OnDestroy {
   // Editor content changed: track draft (send-button state); excess lines scroll inside the fixed editor.
   onHtml(h: string): void {
     this.draftHtml.set(h);
-    this.scheduleLinkPreview();
+  }
+
+  /** Tiptap has already recognized these URLs; only debounce consumption of its structured marks. */
+  onLinkMarkers(markers: readonly ComposerLinkMarker[]): void {
+    this.pendingLinkUrl = markers[0]?.href ?? null;
+    this.scheduleLinkDetection();
   }
 
   /** A clipboard payload containing files belongs in the roomy review panel, not in the compact editor.
@@ -239,32 +291,167 @@ export class ChatInputComponent implements OnDestroy {
     this.editor()?.appendText(text);
   }
 
-  /** Debounce: 400ms after the draft stops changing, if it is a single bare URL, ask the server to
-   *  build the card and show it above the bar; any non-URL draft clears the preview. The user sees the
-   *  card BEFORE they send (WeChat/WhatsApp flow). */
-  private scheduleLinkPreview(): void {
-    clearTimeout(this.previewTimer);
-    this.previewTimer = setTimeout(() => void this.fetchPreview(), 400);
+  private scheduleLinkDetection(): void {
+    clearTimeout(this.linkTimer);
+    this.linkTimer = setTimeout(() => this.detectAndMaybeGenerate(), 500);
   }
 
-  private async fetchPreview(): Promise<void> {
+  private detectAndMaybeGenerate(): void {
     const editor = this.editor();
-    const text = editor ? editor.getText().trim() : '';
-    if (!isBareUrl(text)) {
-      this.previewCard.set(null);
+    const text = editor?.getText() ?? '';
+    const url = this.pendingLinkUrl;
+    if (url !== this.detectedLink()) this.resetGeneration();
+    this.detectedLink.set(url);
+    if (url) this.scheduleGeneration(text, url, false);
+  }
+
+  private scheduleGeneration(
+    text: string,
+    url: string,
+    triggered: boolean,
+  ): void {
+    if (this.generationId() || this.generationStarting()) return;
+    void this.startGeneration(text, url, triggered);
+  }
+
+  private async startGeneration(
+    text: string,
+    url: string,
+    triggered: boolean,
+    requestedGenerationId?: string,
+  ): Promise<void> {
+    this.generationStarting.set(true);
+    this.generationStartFailed.set(false);
+    if (triggered) this.generationTriggered = true;
+    try {
+      const state = await this.generations.begin(
+        url,
+        text,
+        requestedGenerationId,
+      );
+      if (url !== this.detectedLink()) {
+        this.generations.forget(state.generationId);
+        return;
+      }
+      if (
+        requestedGenerationId &&
+        requestedGenerationId !== state.generationId
+      ) {
+        this.generations.forget(requestedGenerationId);
+      }
+      this.generationId.set(state.generationId);
+      this.generationTriggered = true;
+      if (this.openWhenStarted) this.openGenerationDialog();
+    } catch {
+      // A start failure uses the same retryable failed affordance as a generation failure.
+      this.generationStartFailed.set(true);
+    } finally {
+      this.generationStarting.set(false);
+      this.openWhenStarted = false;
+    }
+  }
+
+  onLinkClick(): void {
+    const url = this.detectedLink();
+    if (!url) return;
+    if (!this.generationId()) {
+      this.openWhenStarted = true;
+      if (!this.generationStarting())
+        void this.startGeneration(this.editor()?.getText() ?? '', url, true);
       return;
     }
-    const seq = ++this.previewSeq;
-    try {
-      const res = (await firstValueFrom(this.msgService.previewLink(text))) as {
-        code: number;
-        data?: LinkCardPreview;
-      };
-      if (seq !== this.previewSeq) return; // superseded by a newer edit — drop the stale response
-      if (res.code === 0 && res.data) this.previewCard.set(res.data);
-    } catch {
-      // network error → leave the preview as-is; never block composing
+    if (this.linkState() === 'failed') {
+      const generationId = this.generationId();
+      this.openWhenStarted = true;
+      void this.startGeneration(
+        this.editor()?.getText() ?? '',
+        url,
+        true,
+        generationId ?? undefined,
+      );
+      return;
     }
+    this.openGenerationDialog();
+  }
+
+  onComposerInteraction(event: PointerEvent): void {
+    if (!this.compact()) return;
+    const target = event.target as Element | null;
+    if (target?.closest('.ci-input')) this.route.closeDlg();
+  }
+
+  private openGenerationDialog(): void {
+    const generationId = this.generationId();
+    if (!generationId) return;
+    this.route.popupDlg(
+      PopupType.LINK_CARD_GENERATION,
+      {
+        generationId,
+        mode: 'composer',
+        originalText: this.editor()?.getText() ?? '',
+      },
+      (result) => {
+        if (result?.kind === 'retry') {
+          const url = this.detectedLink();
+          if (!url) return;
+          this.openWhenStarted = true;
+          void this.startGeneration(
+            this.editor()?.getText() ?? '',
+            url,
+            true,
+            generationId,
+          );
+          return;
+        }
+        if (result?.kind !== 'link') return;
+        this.clearDraft();
+        this.send.emit({
+          kind: 'link',
+          generationId: result.generationId,
+          content: result.content,
+        });
+      },
+      { scopeThreadId: this.threadId() },
+    );
+  }
+
+  /** Commit the open composer's local state when its chat is being left. Keeping this explicit is
+   *  important on desktop, where the A/B chat panes remain mounted after a switch. */
+  saveDraft(): void {
+    const threadId = this.threadId();
+    const editor = this.editor();
+    if (!threadId || !editor) return;
+    const generation = this.linkGeneration();
+    this.composerDrafts.save({
+      threadId,
+      html: this.draftHtml(),
+      plainText: editor.getText(),
+      linkUrl: this.detectedLink() ?? undefined,
+      generationId: this.generationId() ?? undefined,
+      generationExpiresAt: generation?.expiresAt,
+      generationTriggered:
+        this.generationTriggered || Boolean(this.generationId()),
+      updatedAt: Date.now(),
+    });
+  }
+
+  private resetGeneration(): void {
+    const id = this.generationId();
+    if (id) this.generations.forget(id);
+    this.generationId.set(null);
+    this.generationStarting.set(false);
+    this.generationStartFailed.set(false);
+  }
+
+  private clearDraft(): void {
+    const threadId = this.threadId();
+    this.editor()?.clear();
+    this.draftHtml.set('');
+    this.pendingLinkUrl = null;
+    this.detectedLink.set(null);
+    this.generationTriggered = false;
+    this.resetGeneration();
+    if (threadId) this.composerDrafts.clear(threadId);
   }
 
   /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
@@ -370,15 +557,15 @@ export class ChatInputComponent implements OnDestroy {
     const storageText = editor.getStorageText().trim();
     editor.clear();
     this.draftHtml.set('');
-    this.previewCard.set(null);
-    clearTimeout(this.previewTimer);
+    this.pendingLinkUrl = null;
+    this.detectedLink.set(null);
+    this.resetGeneration();
+    clearTimeout(this.linkTimer);
+    const threadId = this.threadId();
+    if (threadId) this.composerDrafts.clear(threadId);
     this.closeEmoji();
     this.closeAttach();
-    this.send.emit(
-      isBareUrl(displayText)
-        ? { kind: 'link', url: displayText }
-        : { kind: 'text', text: storageText },
-    );
+    this.send.emit({ kind: 'text', text: storageText });
   }
 
   onAttachClick(): void {
@@ -707,6 +894,9 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    // Component teardown is the final fallback for route/webview destruction. Normal chat switches call
+    // saveDraft() from MessageThreadComponent.teardownKernel() because desktop panes stay mounted.
+    this.saveDraft();
     this.destroyed = true;
     this.recordSession++; // invalidate any in-flight beginRecording (permission prompt resolved post-teardown)
     // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
@@ -714,7 +904,9 @@ export class ChatInputComponent implements OnDestroy {
     clearTimeout(this.capTimer);
     clearInterval(this.tickTimer);
     clearTimeout(this.errorTimer);
-    clearTimeout(this.previewTimer);
+    clearTimeout(this.linkTimer);
+    const generationId = this.generationId();
+    if (generationId) this.generations.pause(generationId);
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */
@@ -733,8 +925,11 @@ export class ChatInputComponent implements OnDestroy {
     const stored = await this.preferences.get<unknown>('device', RECENTS_KEY);
     if (revision !== this.recentsWriteRevision) return;
     if (!Array.isArray(stored)) return;
-    const values = stored.filter((value): value is string => typeof value === 'string');
+    const values = stored.filter(
+      (value): value is string => typeof value === 'string',
+    );
     this.recents.set(values.slice(0, RECENTS_MAX));
-    if (values.length > 0 && !this.activeCategory()) this.activeCategory.set('recent');
+    if (values.length > 0 && !this.activeCategory())
+      this.activeCategory.set('recent');
   }
 }

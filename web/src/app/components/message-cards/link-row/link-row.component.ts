@@ -6,29 +6,25 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
-import { assetUrl, isTauri, openExternalUrl } from '../../../services/runtime';
+import { assetUrl, openExternalUrl } from '../../../services/runtime';
 
 /** The LINK card payload stored as JSON in Message.content (built authoritatively server-side). */
 interface LinkCard {
   url: string;
-  title?: string;
-  description?: string;
-  siteName?: string;
-  /** Base64 data URI of the downscaled og:image thumbnail (inlined on the wire; the DB stores only its
-   *  digest); absent when the page had none. */
+  title: string;
+  description: string;
   image?: string;
+  favicon?: string;
 }
 
 /**
  * LINK message row — a tappable web-page preview card: optional og:image thumbnail strip, the page
- * title, a description, and the site name (+ favicon on web). Tapping opens the page in the system
+ * title, a description, and the page host (+ favicon). Tapping opens the page in the system
  * browser (Tauri) / a new tab (web).
  *
- * `data.text` is the raw JSON written server-side by LinkPreviewService. Shape: `{ url, title?,
- * description?, siteName?, image? }`. The card renders entirely from this stored metadata — no fetch
- * on open. The og:image, when present, is a base64 data URI inlined on the wire (the server reads the file at serialize time); it
- * renders under both web and Tauri's `img-src data:`. The favicon is an external https URL, shown
- * on web only (hidden under Tauri).
+ * `data.text` is the raw JSON written server-side by LinkPreviewService. Shape:
+ * `{ url, title, description, image?, favicon? }`. The card renders entirely from this stored
+ * metadata — no page fetch on open. Optional artwork is served through the authenticated local CAS.
  *
  * The page host is always surfaced (meta bar) as a credibility cue so a reader can spot a misleading
  * title. All text renders via `{{ }}` interpolation — auto-escaped, so a hostile page title/description
@@ -53,7 +49,9 @@ export class LinkRowComponent {
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
-  readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
+  readonly statusTick = computed(
+    () => this.data().isSelf && !!this.data().status,
+  );
   readonly isSending = computed(
     () => this.data().isSelf && this.data().status === 'sending',
   );
@@ -72,32 +70,22 @@ export class LinkRowComponent {
     try {
       return JSON.parse(this.data().text) as LinkCard;
     } catch {
-      // A malformed/legacy payload — treat the raw text as a bare URL.
-      return { url: this.data().text };
+      return { url: this.data().text, title: '', description: '' };
     }
   });
-  /** The og:image as it arrives on the wire — a base64 data URI. assetUrl passes `data:` through
-   *  unchanged (it is same-origin under both web and Tauri's `img-src data:`). */
+  /** Resolve the stored same-origin CAS path for the current runtime. */
   readonly imageSrc = computed(() => assetUrl(this.link().image));
-  /** External https favicon — render it only on the web; Tauri's img-src CSP blocks cross-origin https. */
-  readonly faviconSrc = computed(() => {
-    if (isTauri()) return '';
-    try {
-      return `https://www.google.com/s2/favicons?domain=${new URL(this.link().url).hostname}&sz=32`;
-    } catch {
-      return '';
-    }
-  });
+  readonly faviconSrc = computed(() => assetUrl(this.link().favicon));
   /** The page host — the credibility cue shown in the meta bar so a reader can spot a phishing card. */
   readonly host = computed(() => {
     try {
-      return new URL(this.link().url).hostname;
+      return new URL(this.link().url).hostname.replace(/^www\./i, '');
     } catch {
       return this.link().url;
     }
   });
 
-  /** Set when the thumbnail <img> fails to load/decode (a corrupt or missing data URI) so the card
+  /** Set when the thumbnail <img> fails to load/decode (a corrupt or missing CAS asset) so the card
    *  reflows to text-only instead of showing a broken-image glyph. */
   readonly imgFailed = signal(false);
 

@@ -18,6 +18,12 @@
   }
 }
 
+.msg-bubble.msg-media {
+  --bubble-bg: var(--chat-card-bg);
+  --bubble-text: var(--chat-card-text);
+  --bubble-muted: var(--app-text-muted);
+}
+
 .msg-media-grid {
   position: relative;
   width: 100%;
@@ -56,11 +62,7 @@
 
 // Audio is a real message bubble, not a media placeholder. Match text-message ownership colors instead
 // of inheriting the generic gray image/video loading canvas.
-.msg-media.msg-self .msg-media-cell--audio {
-  background: var(--bubble-bg);
-}
-
-.msg-media.msg-other .msg-media-cell--audio {
+.msg-media .msg-media-cell--audio {
   background: var(--bubble-bg);
 }
 
@@ -219,26 +221,7 @@ app-audio-player {
 // Narrow + on its own opaque surface background — a compact info strip
 // under the media, in the spirit of Telegram/WeChat's tight media captions. Integer-px line-heights.
 .msg-media-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 2px 8px;
-  min-height: 18px;
-  // Opaque so chat wallpaper cannot show through and make the strip look detached from the media edge.
-  background: var(--app-surface, #fff);
-  color: var(--bubble-text);
-  font-size: 11px;
-  line-height: 14px;
-}
-
-// Keep sender identity in the footer strip while the album gutters remain neutral.
-.msg-media.msg-self .msg-media-meta {
-  background: var(--bubble-bg);
-}
-
-.msg-media.msg-other .msg-media-meta {
-  background: var(--bubble-bg);
+  // Shared msg-card-meta owns sender color and typography.
 }
 
 .msg-media-meta-count {

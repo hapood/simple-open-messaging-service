@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
-import { Subject, of } from 'rxjs';
+import { Subject, firstValueFrom, of } from 'rxjs';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { rawPreview, ThreadRepository } from './thread-store.service';
@@ -158,6 +158,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     webdb = TestBed.inject(WebdbService);
     putProfileSpy = TestBed.inject(ProfileRepository).putProfile as jasmine.Spy;
     await webdb.openForUser('1');
+    TestBed.flushEffects();
   });
 
   afterEach(async () => {
@@ -216,8 +217,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     const tx = db.transaction('threads', 'readwrite');
     for (const it of items) await tx.store.put(it);
     await tx.done;
-    repo.load();
-    await flush(20);
+    await repo.load();
   }
 
   /** Populate via a HELLO-driven delta replay (seeds cursor 0, replays (0,rev] with hydrated ADD ops). For
@@ -912,7 +912,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   });
 
   it('the missed-summary pull applies the authoritative per-thread unreadCount', async () => {
-    // A closed row applies the server-authoritative summary as-is.
     const fetchSpy = (
       TestBed.inject(MissedSyncService) as unknown as {
         fetchMissedSummary: jasmine.Spy;
@@ -944,6 +943,67 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     const item = repo.items().find((t) => t.threadId === 1)!;
     expect(item.unreadCount).toBe(7); // authoritative server value applied
+  });
+
+  it('the missed-summary pull refreshes preview and read state for the open thread', async () => {
+    const fetchSpy = (
+      TestBed.inject(MissedSyncService) as unknown as {
+        fetchMissedSummary: jasmine.Spy;
+      }
+    ).fetchMissedSummary;
+    fetchSpy.and.resolveTo({
+      items: [
+        {
+          threadId: 1,
+          type: 'P2P',
+          displayName: 'A',
+          unreadCount: 0,
+          mentionUnread: [],
+          muted: false,
+          lastReadSeq: 12,
+          senderAvatarUrl: '',
+          senderUserId: 1,
+          latestMessage: {
+            threadId: 1,
+            seq: 12,
+            contentType: 'PURE_TEXT',
+            content: JSON.stringify({ text: 'sent from the open thread' }),
+            creator: 1,
+            createdAt: 1000,
+            mediaStatus: 'ready',
+            sv: 0,
+          },
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+    await populate([
+      p2p(1, 11, {
+        lastReadSeq: 10,
+        unreadCount: 2,
+        lastMessagePreview: 'old preview',
+      }),
+    ]);
+    repo.setOpenThread(1);
+
+    const applied = firstValueFrom(repo.missedSummaryApplied$);
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      data: { threadId: 1, seq: 12, ts: 1000 },
+    });
+    await applied;
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(repo.items()[0]).toEqual(
+      jasmine.objectContaining({
+        lastMessagePreview: 'sent from the open thread',
+        lastMessageSenderId: 1,
+        lastReadSeq: 12,
+        unreadCount: 0,
+        mentionUnread: [],
+      }),
+    );
   });
 
   // ── per-thread dismiss-HWM (the away-notification per-thread grouping state) ─────────────────
@@ -999,6 +1059,41 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 });
 
 describe('rawPreview', () => {
+  it('renders a link card title instead of leaking its JSON envelope', () => {
+    expect(
+      rawPreview(
+        'LINK',
+        JSON.stringify({
+          url: 'https://example.com/article',
+          title: '  An example\narticle  ',
+          description: 'Description',
+        }),
+      ),
+    ).toBe('An example article');
+  });
+
+  it('falls back to the link URL when the card has no title', () => {
+    expect(
+      rawPreview(
+        'LINK',
+        JSON.stringify({ url: 'https://example.com/article', title: '  ' }),
+      ),
+    ).toBe('https://example.com/article');
+  });
+
+  it('uses a link description before the URL when the provider has no title', () => {
+    expect(
+      rawPreview(
+        'LINK',
+        JSON.stringify({
+          url: 'https://v.douyin.com/example',
+          title: '',
+          description: '  Douyin video\ncaption  ',
+        }),
+      ),
+    ).toBe('Douyin video caption');
+  });
+
   it('renders semantic mentions as readable labels instead of leaking the storage URI', () => {
     expect(
       rawPreview(

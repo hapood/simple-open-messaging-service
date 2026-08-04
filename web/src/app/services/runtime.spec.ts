@@ -19,23 +19,33 @@ import {
  */
 describe('canonicalOrigin', () => {
   it('strips a single trailing slash (the regression this guards)', () => {
-    expect(canonicalOrigin('https://soms.example.com:7667/')).toBe('https://soms.example.com:7667');
+    expect(canonicalOrigin('https://soms.example.com:7667/')).toBe(
+      'https://soms.example.com:7667',
+    );
   });
 
   it('strips multiple trailing slashes', () => {
-    expect(canonicalOrigin('https://soms.example.com:7667///')).toBe('https://soms.example.com:7667');
+    expect(canonicalOrigin('https://soms.example.com:7667///')).toBe(
+      'https://soms.example.com:7667',
+    );
   });
 
   it('leaves a slash-free origin unchanged', () => {
-    expect(canonicalOrigin('https://soms.example.com:7667')).toBe('https://soms.example.com:7667');
+    expect(canonicalOrigin('https://soms.example.com:7667')).toBe(
+      'https://soms.example.com:7667',
+    );
   });
 
   it('trims surrounding whitespace', () => {
-    expect(canonicalOrigin('  https://soms.example.com:7667/  ')).toBe('https://soms.example.com:7667');
+    expect(canonicalOrigin('  https://soms.example.com:7667/  ')).toBe(
+      'https://soms.example.com:7667',
+    );
   });
 
   it('only strips the tail — an embedded path is otherwise preserved', () => {
-    expect(canonicalOrigin('https://host/sub/path/')).toBe('https://host/sub/path');
+    expect(canonicalOrigin('https://host/sub/path/')).toBe(
+      'https://host/sub/path',
+    );
   });
 
   it('empty stays empty (unconfigured origin)', () => {
@@ -120,7 +130,7 @@ describe('assetUrl', () => {
   it('extracts only a canonical CAS digest and builds the Android local-thumbnail URL', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     const digest = 'ab'.repeat(32);
-    const path = `/uploads/cas/ab/cd/${digest}`;
+    const path = `/uploads/shards/ab/cd/${digest}.mp4`;
     expect(videoCasDigest(path)).toBe(digest);
     expect(nativeVideoThumbnailUrl(path, 2)).toBe(
       `http://media.localhost/video-thumbnails${path}?v=2`,

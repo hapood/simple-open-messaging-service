@@ -4,14 +4,22 @@ import {
   EnvironmentInjector,
   input,
   provideZonelessChangeDetection,
+  signal,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import {
+  provideTransloco,
+  provideTranslocoTranspiler,
+} from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
+import { LinkCardService } from '../../../services/link-card.service';
+import { ImageDownloadService } from '../../../services/image-download.service';
+import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
+import { RouteService } from '../../../services/route.service';
 
 /**
  * Guards the `data-show-self-avatar` chat-appearance preference: the CSS that hides the avatar when the
@@ -66,6 +74,22 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
           loader: InlineTranslocoLoader,
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
+        {
+          provide: LinkCardService,
+          useValue: { matchFirst: () => null },
+        },
+        {
+          provide: ImageDownloadService,
+          useValue: { thumbnailUrl: ({ src }: { src: string }) => src },
+        },
+        {
+          provide: MediaSizeThresholdService,
+          useValue: { threshold: signal(1024) },
+        },
+        {
+          provide: RouteService,
+          useValue: { popupDlg: () => undefined },
+        },
       ],
     });
     TestBed.overrideComponent(TextRowComponent, {
@@ -80,12 +104,20 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
 
   /** Mount a group-head message row attached to the document (so `:host-context(<html>)` can match),
    *  set the preference attribute, and return the `.msg-avatar` slot's resolved `display`. */
-  function avatarDisplayFor(data: ChatMsgData, pref: 'true' | 'false' | 'unset'): string {
-    HTML.setAttribute('data-show-self-avatar', pref === 'unset' ? 'false' : pref);
+  function avatarDisplayFor(
+    data: ChatMsgData,
+    pref: 'true' | 'false' | 'unset',
+  ): string {
+    HTML.setAttribute(
+      'data-show-self-avatar',
+      pref === 'unset' ? 'false' : pref,
+    );
     if (pref === 'unset') HTML.removeAttribute('data-show-self-avatar');
 
     const envInjector = TestBed.inject(EnvironmentInjector);
-    const ref = createComponent(TextRowComponent, { environmentInjector: envInjector });
+    const ref = createComponent(TextRowComponent, {
+      environmentInjector: envInjector,
+    });
     const host = ref.location.nativeElement as HTMLElement;
     document.body.appendChild(host);
     try {
