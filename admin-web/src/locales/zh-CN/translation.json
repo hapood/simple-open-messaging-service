@@ -6,6 +6,9 @@
     "yes": "是",
     "no": "否",
     "cancel": "取消",
+    "edit": "编辑",
+    "delete": "删除",
+    "save": "保存",
     "search": "搜索",
     "previous": "上一页",
     "next": "下一页",
@@ -52,6 +55,7 @@
     "push": "推送管理",
     "federation": "联邦",
     "logs": "日志",
+    "rateLimits": "限流监控",
     "media": "媒体与存储",
     "linkCards": "链接卡片",
     "settings": "设置",
@@ -485,6 +489,26 @@
       "noSrv": "无 SRV，用 apex",
       "runAt": "运行时间",
       "totalDuration": "总耗时",
+      "primaryIssue": "首要问题",
+      "blocked": "受上游阻断",
+      "blockedCount": "另有 {{count}} 项检查因该问题未执行。",
+      "error": {
+        "HPE_INVALID_CONSTANT": "HTTP 协议解析失败：响应与协商的协议不一致"
+      },
+      "check": {
+        "config": "本地配置",
+        "key-file": "密钥文件权限",
+        "key-age": "密钥创建时间",
+        "dns-srv": "SRV 记录 _soms._tcp",
+        "dns-a": "A 记录（IPv4）",
+        "dns-aaaa": "AAAA 记录（IPv6）",
+        "tls-public": "TLS 证书（逐 IP）",
+        "tls-loopback": "本地进程回环",
+        "well-known": ".well-known/soms（逐 IP）",
+        "key-consistency": "已发布密钥一致性",
+        "sign-loopback": "签名回环",
+        "clock-skew": "时钟偏移"
+      },
       "status": {
         "ok": "通过",
         "warn": "警告",
@@ -962,6 +986,27 @@
     "regen": {
       "title": "重新生成备用代码",
       "desc": "请用有效验证码确认。旧的备用代码将立即失效。"
+    }
+  },
+  "rateLimits": {
+    "title": "认证限流监控",
+    "desc": "只读展示最近 24 小时的聚合指标与保守调参建议；服务重启会清空页面历史。",
+    "evaluated": "请求数",
+    "wouldBlock": "模拟拦截",
+    "blocked": "实际拦截",
+    "hitRatio": "命中率",
+    "recentTrend": "最近 12 个统计周期的命中次数",
+    "dimension": "维度",
+    "rate": "补充速率",
+    "burst": "突发容量",
+    "advice": {
+      "disabled": "策略已禁用；请启用 shadow 观察或 enforce 强制执行。",
+      "insufficient-sample": "样本不足 1,000 次，请勿仅凭当前数据调参或切换模式。",
+      "stale": "30 分钟内没有请求，请检查真实流量、监控接线或服务是否刚重启。",
+      "high-would-block": "模拟拦截比例较高；请检查共享 NAT 与客户端重试，优先评估提高突发容量。",
+      "high-block-rate": "实际拦截比例较高；调参前请先区分攻击流量和正常用户误伤。",
+      "long-retry": "重试时间达到 30 秒；突发容量或令牌补充速率可能过低。",
+      "review-ready": "样本量充足且模拟拦截率较低，可以进入人工上线审核。"
     }
   },
   "errors": {

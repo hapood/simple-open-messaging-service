@@ -24,8 +24,8 @@ import ipaddr from 'ipaddr.js';
  * 5. Hard limits — connect + overall timeouts, a streaming body-size cap (aborts mid-download rather
  *    than buffering an attacker's terabyte stream), and content-type enforcement.
  *
- * Every public method returns null on any failure (never throws) so the caller can degrade to a
- * bare-link card instead of failing the message send.
+ * Every public method returns null on any failure (never throws); the caller decides whether that
+ * means generation failure (page HTML) or an omitted optional asset (image/favicon).
  */
 @Injectable()
 export class SafeFetchService {

@@ -65,3 +65,12 @@ export class RegisterDeviceDto {
   @MaxLength(127)
   deviceId?: string;
 }
+
+/** Start a one-off Android FCM delivery probe for the current device. */
+export class CreateFcmProbeDto {
+  @ApiProperty({ description: 'Current Android FCM registration token.' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(512)
+  token!: string;
+}

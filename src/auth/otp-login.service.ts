@@ -15,8 +15,8 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { normalizeAccount } from '../common/account.js';
 
-/** Account-dimension brute-force ceiling on the 6-digit code (the IP dimension is handled by the route's
- *  @Throttle). A sliding window of failures per account; past the threshold the account's OTP is locked,
+/** Account-dimension brute-force ceiling on the 6-digit code (the IP dimension is handled by the OTP
+ *  rate-limit policy). A sliding window of failures per account; past the threshold the account's OTP is locked,
  *  bounding distributed guessing — codes are short-lived (admin-configured, default ~10 min) and rotate each
  *  issue, so even a botnet can't exhaust the 10^6 space against one account. Mirrors LocalStrategy's
  *  account-dimension intent (same victim-lockout tradeoff: an attacker can annoy-lock a real account for up
@@ -31,7 +31,7 @@ const OTP_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }];
 const VERIFY_CANDIDATE_LIMIT = 8;
 
 /** A 6-digit numeric string (000000–999999) — short enough for an admin to hand to a user and for the user
- *  to type on a phone; the 10^6 space resists guessing under the endpoint's @Throttle. */
+ *  to type on a phone; the 10^6 space resists guessing under the endpoint's rate-limit policy. */
 function generateCode(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, '0');
 }
@@ -83,7 +83,7 @@ export class OtpLoginService {
    *  RATE_LIMITED + the ban deadline immediately — consistency with the password path, which surfaces the ban
    *  on the triggering attempt (the old code waited one extra attempt). Collapsing every failure code to
    *  RATE_LIMITED once banned also avoids distinguishing expired/consumed/invalid under a lock. The
-   *  account-dimension throttle (the IP dimension is the route @Throttle) lives in the shared
+   *  account-dimension throttle (the IP dimension is the OTP rate-limit policy) lives in the shared
    *  {@link BruteForceService}, so OTP locks are admin-visible/unbannable alongside password bans. Counted
    *  ONLY for real accounts (see the not-found/group/disabled guard in {@link verifyAndLogin}). */
   private failOtp(account: string, code: BusinessCode, message: string): never {
@@ -118,6 +118,10 @@ export class OtpLoginService {
         userId,
         codeHash: await argon2.hash(code),
         issuedBy: adminId,
+        // Keep both ends of the validity window on the same clock. Relying on the
+        // database CURRENT_TIMESTAMP here while computing expiresAt in Node can
+        // skew the displayed duration when their timezone settings differ.
+        issuedAt: now,
         expiresAt,
       })
       .returning()
@@ -154,7 +158,7 @@ export class OtpLoginService {
     },
   ): Promise<{ token: string; mustChangePassword: boolean }> {
     const acct = normalizeAccount(account);
-    // Account-dimension brute-force lock (the IP dimension is the route @Throttle). A locked account is
+    // Account-dimension brute-force lock (the IP dimension is the OTP rate-limit policy). A locked account is
     // rejected before any code lookup — RATE_LIMITED surfaces it so a legitimate user knows to wait / get a
     // new code, and an attacker already knows they're hammering. Bounds distributed guessing against one
     // account (the 6-digit space can't be exhausted once ≤5 guesses/window are allowed).

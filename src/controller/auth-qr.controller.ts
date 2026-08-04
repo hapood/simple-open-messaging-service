@@ -12,17 +12,18 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { QrLoginService } from '../auth/qr-login.service.js';
 import { setSessionCookies } from '../auth/media-token.js';
 import { Public } from '../common/public.decorator.js';
 import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard.js';
+import { UseRateLimitPolicy } from '../rate-limit/rate-limit.decorator.js';
+import { AUTH_RATE_LIMIT_POLICIES } from '../rate-limit/auth-policy.registry.js';
 
 /**
  * QR-scan login (any client → session confirmed by an already-logged-in phone). create/poll are
  * `@Public()` (the QR-displaying client isn't authenticated yet); scan/confirm are authenticated (the
- * scanning phone is already logged in). `@Throttle` ceilings protect each step (they bypass
- * LocalStrategy's ban).
+ * scanning phone is already logged in). Dedicated rate-limit policies protect every step.
  *
  * The issued session `client` is retained as informational device metadata only.
  *
@@ -31,12 +32,12 @@ import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
  */
 @ApiTags('auth')
 @Controller()
-@UseGuards(ThrottleGuard)
 export class AuthQrController {
   constructor(private readonly qrLogin: QrLoginService) {}
 
   @Public()
-  @Throttle(20, 60)
+  @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrCreate)
+  @UseGuards(RateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/create')
   @ApiOperation({
@@ -47,7 +48,8 @@ export class AuthQrController {
   }
 
   @Public()
-  @Throttle(60, 60) // ~1.5s poll cadence over the QR's 3-min lifetime
+  @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrPoll)
+  @UseGuards(RateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/poll')
   @ApiOperation({
@@ -71,7 +73,8 @@ export class AuthQrController {
       : { status: r.status };
   }
 
-  @Throttle(20, 60)
+  @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrScan)
+  @UseGuards(RateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/scan')
   @ApiOperation({
@@ -87,7 +90,8 @@ export class AuthQrController {
     );
   }
 
-  @Throttle(20, 60)
+  @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrConfirm)
+  @UseGuards(RateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/confirm')
   @ApiOperation({ summary: 'Phone confirms a scanned QR token' })

@@ -34,9 +34,10 @@ import android.widget.Chronometer
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridView
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
-import android.widget.PopupMenu
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.ImageView
 import android.util.Base64
@@ -325,6 +326,35 @@ class NativeComposerController(
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(8) })
     }
+    private val attachmentIcons = mutableListOf<ImageView>()
+    private val attachmentLabels = mutableListOf<TextView>()
+    private val attachmentItems = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(4), dp(2), dp(4), dp(2))
+    }
+    private val attachmentHorizontalScroll = HorizontalScrollView(activity).apply {
+        isHorizontalScrollBarEnabled = true
+        isFillViewport = true
+        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+    }
+    private val attachmentVerticalScroll = ScrollView(activity).apply {
+        isVerticalScrollBarEnabled = true
+        isFillViewport = true
+        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        visibility = View.GONE
+    }
+    private val attachmentDrawer = FrameLayout(activity).apply {
+        visibility = View.GONE
+        clipToOutline = true
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+            }
+        }
+    }
+    private var attachmentDrawerOpen = false
+    private var attachmentDrawerVertical = false
     private val emojiGrid = GridView(activity).apply {
         numColumns = GridView.AUTO_FIT
         columnWidth = dp(44)
@@ -397,6 +427,41 @@ class NativeComposerController(
 
     init {
         applyTheme(darkTheme)
+        attachmentHorizontalScroll.addView(
+            attachmentItems,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        attachmentDrawer.addView(
+            attachmentHorizontalScroll,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        attachmentDrawer.addView(
+            attachmentVerticalScroll,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        attachmentItems.addView(
+            attachmentOption(
+                R.drawable.ic_composer_gallery,
+                activity.getString(R.string.composer_gallery),
+            ) { selectAttachment("gallery") },
+            LinearLayout.LayoutParams(dp(72), ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        attachmentItems.addView(
+            attachmentOption(
+                R.drawable.ic_composer_file,
+                activity.getString(R.string.composer_file),
+            ) { selectAttachment("file") },
+            LinearLayout.LayoutParams(dp(72), ViewGroup.LayoutParams.MATCH_PARENT),
+        )
         attachSlot.addView(
             attach,
             FrameLayout.LayoutParams(dp(36), dp(36)).apply {
@@ -460,8 +525,26 @@ class NativeComposerController(
                 leftMargin = dp(8)
             },
         )
+        val rowHost = FrameLayout(activity).apply {
+            clipChildren = false
+            addView(
+                row,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM,
+                ),
+            )
+            addView(
+                attachmentDrawer,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ).apply { leftMargin = dp(48) },
+            )
+        }
         root.addView(
-            row,
+            rowHost,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -497,9 +580,11 @@ class NativeComposerController(
             }
         })
         input.setOnClickListener {
+            closeAttachmentDrawer()
             if (keyboardSurface == KeyboardSurface.EMOJI) switchToSystemKeyboard()
         }
         keyboard.setOnClickListener {
+            closeAttachmentDrawer()
             if (
                 keyboardSurface == KeyboardSurface.EMOJI ||
                 keyboardSurface == KeyboardSurface.TO_SYSTEM
@@ -509,12 +594,13 @@ class NativeComposerController(
                 showEmojiKeyboard()
             }
         }
-        attachSlot.setOnClickListener { showAttachmentMenu() }
+        attachSlot.setOnClickListener { toggleAttachmentDrawer() }
         quoteClose.setOnClickListener {
             setQuote(null)
             emit(JSONObject().apply { put("kind", "cancelQuote") })
         }
         action.setOnClickListener {
+            closeAttachmentDrawer()
             if (input.text.toString().trim().isNotEmpty()) emitSend()
         }
         action.setOnLongClickListener {
@@ -571,6 +657,7 @@ class NativeComposerController(
         }
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             constrainComposerWidth()
+            updateAttachmentDrawerAxis()
             emitGeometry()
         }
     }
@@ -586,6 +673,7 @@ class NativeComposerController(
         lastEmittedComposerHeightCss = null
         lastEmittedKeyboardHeightCss = null
         pendingSend = null
+        closeAttachmentDrawer(immediate = true)
         mentionsEnabled = context.optBoolean("mentionsEnabled", false)
         mentionQueryStart = -1
         mentionPopup.dismiss()
@@ -733,6 +821,7 @@ class NativeComposerController(
     fun hide(requestContextId: Long) {
         if (requestContextId != contextId) return
         mentionPopup.dismiss()
+        closeAttachmentDrawer(immediate = true)
         dismissKeyboard()
         visible = false
         val hidingContext = contextId
@@ -842,13 +931,30 @@ class NativeComposerController(
     }
 
     fun handleBack(): Boolean {
+        if (visible && attachmentDrawerOpen) {
+            closeAttachmentDrawer()
+            return true
+        }
         if (!visible || !keyboardIsOpen()) return false
         dismissKeyboard()
         return true
     }
 
     fun handleOutsideTouch(event: MotionEvent) {
-        if (!visible || event.actionMasked != MotionEvent.ACTION_DOWN || !keyboardIsOpen()) return
+        if (!visible || event.actionMasked != MotionEvent.ACTION_DOWN) return
+        if (attachmentDrawerOpen) {
+            val attachBounds = Rect()
+            val drawerBounds = Rect()
+            attachSlot.getGlobalVisibleRect(attachBounds)
+            attachmentDrawer.getGlobalVisibleRect(drawerBounds)
+            if (
+                !attachBounds.contains(event.rawX.toInt(), event.rawY.toInt()) &&
+                !drawerBounds.contains(event.rawX.toInt(), event.rawY.toInt())
+            ) {
+                closeAttachmentDrawer()
+            }
+        }
+        if (!keyboardIsOpen()) return
         val bounds = Rect()
         root.getGlobalVisibleRect(bounds)
         if (!bounds.contains(event.rawX.toInt(), event.rawY.toInt())) dismissKeyboard()
@@ -1142,18 +1248,93 @@ class NativeComposerController(
         mentionAdapter.notifyDataSetChanged()
     }
 
-    private fun showAttachmentMenu() {
-        PopupMenu(activity, attachSlot).apply {
-            menu.add(activity.getString(R.string.composer_gallery)).setOnMenuItemClickListener {
-                emitAttachment("gallery")
-                true
-            }
-            menu.add(activity.getString(R.string.composer_file)).setOnMenuItemClickListener {
-                emitAttachment("file")
-                true
-            }
-            show()
+    private fun toggleAttachmentDrawer() {
+        if (attachmentDrawerOpen) closeAttachmentDrawer() else openAttachmentDrawer()
+    }
+
+    private fun openAttachmentDrawer() {
+        if (!visible || attachmentDrawerOpen) return
+        attachmentDrawerOpen = true
+        mentionPopup.dismiss()
+        if (keyboardSurface == KeyboardSurface.EMOJI) dismissKeyboard()
+        updateAttachmentButtonState()
+        updateAttachmentDrawerAxis()
+        attachmentDrawer.animate().cancel()
+        attachmentDrawer.visibility = View.VISIBLE
+        attachmentDrawer.alpha = 0f
+        attachmentDrawer.translationX = -dp(8).toFloat()
+        attachmentDrawer.animate()
+            .alpha(1f)
+            .translationX(0f)
+            .setDuration(ATTACHMENT_DRAWER_DURATION_MS)
+            .setInterpolator(enterInterpolator)
+            .setListener(null)
+            .start()
+    }
+
+    private fun closeAttachmentDrawer(immediate: Boolean = false) {
+        if (!attachmentDrawerOpen && attachmentDrawer.visibility == View.GONE) return
+        attachmentDrawerOpen = false
+        updateAttachmentButtonState()
+        attachmentDrawer.animate().cancel()
+        if (immediate) {
+            attachmentDrawer.alpha = 0f
+            attachmentDrawer.translationX = -dp(8).toFloat()
+            attachmentDrawer.visibility = View.GONE
+            return
         }
+        attachmentDrawer.animate()
+            .alpha(0f)
+            .translationX(-dp(8).toFloat())
+            .setDuration(ATTACHMENT_DRAWER_DURATION_MS)
+            .setInterpolator(enterInterpolator)
+            .setListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    attachmentDrawer.animate().setListener(null)
+                    if (!attachmentDrawerOpen) attachmentDrawer.visibility = View.GONE
+                }
+            })
+            .start()
+    }
+
+    private fun updateAttachmentDrawerAxis() {
+        if (row.height == 0) return
+        val vertical = row.height >= dp(73)
+        if (vertical == attachmentDrawerVertical) return
+        attachmentDrawerVertical = vertical
+        (attachmentItems.parent as? ViewGroup)?.removeView(attachmentItems)
+        if (vertical) {
+            attachmentItems.orientation = LinearLayout.VERTICAL
+            attachmentItems.layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+            for (index in 0 until attachmentItems.childCount) {
+                attachmentItems.getChildAt(index).layoutParams =
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64))
+            }
+            attachmentVerticalScroll.addView(attachmentItems)
+            attachmentHorizontalScroll.visibility = View.GONE
+            attachmentVerticalScroll.visibility = View.VISIBLE
+        } else {
+            attachmentItems.orientation = LinearLayout.HORIZONTAL
+            attachmentItems.layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            for (index in 0 until attachmentItems.childCount) {
+                attachmentItems.getChildAt(index).layoutParams =
+                    LinearLayout.LayoutParams(dp(72), ViewGroup.LayoutParams.MATCH_PARENT)
+            }
+            attachmentHorizontalScroll.addView(attachmentItems)
+            attachmentVerticalScroll.visibility = View.GONE
+            attachmentHorizontalScroll.visibility = View.VISIBLE
+        }
+    }
+
+    private fun selectAttachment(source: String) {
+        closeAttachmentDrawer()
+        emitAttachment(source)
     }
 
     private fun emitAttachment(source: String) {
@@ -1240,11 +1421,12 @@ class NativeComposerController(
         if (root.width == 0) return
         val available = (root.width - root.paddingLeft - root.paddingRight).coerceAtLeast(0)
         val target = minOf(available, dp(MAX_COMPOSER_WIDTH_DP))
-        val params = row.layoutParams as LinearLayout.LayoutParams
+        val rowHost = row.parent as? View ?: return
+        val params = rowHost.layoutParams as LinearLayout.LayoutParams
         if (params.width == target) return
         params.width = target
         params.gravity = Gravity.CENTER_HORIZONTAL
-        row.layoutParams = params
+        rowHost.layoutParams = params
     }
 
     private fun applyTheme(dark: Boolean) {
@@ -1257,8 +1439,13 @@ class NativeComposerController(
         input.setTextColor(onSurface)
         input.setHintTextColor(hintColor)
         inputSurface.background = outlinedSurface(12)
-        attach.background = surfaceRipple(18)
-        attach.setColorFilter(secondary)
+        attachmentDrawer.background = rounded(
+            if (dark) Color.rgb(31, 34, 37) else Color.rgb(247, 248, 249),
+            12,
+        )
+        updateAttachmentButtonState()
+        attachmentIcons.forEach { it.setColorFilter(PRIMARY) }
+        attachmentLabels.forEach { it.setTextColor(onSurface) }
         keyboard.setColorFilter(secondary)
         emojiGrid.background = rounded(surface, 14)
         recordingStatus.background = rounded(surface, 10)
@@ -1313,6 +1500,57 @@ class NativeComposerController(
                     0f,
                 ).setDuration(120),
             )
+        }
+    }
+
+    private fun attachmentOption(icon: Int, label: String, action: () -> Unit) =
+        LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(6), dp(3), dp(6), dp(3))
+            isClickable = true
+            isFocusable = true
+            background = transparentRipple(10)
+            contentDescription = label
+            val image = ImageView(activity).apply {
+                setImageResource(icon)
+                setColorFilter(PRIMARY)
+                setPadding(dp(5), dp(3), dp(5), dp(3))
+                background = rounded(Color.TRANSPARENT, 16)
+            }
+            val text = TextView(activity).apply {
+                this.text = label
+                textSize = 11f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(onSurface)
+            }
+            attachmentIcons += image
+            attachmentLabels += text
+            addView(image, LinearLayout.LayoutParams(dp(32), dp(28)))
+            addView(text, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(14),
+            ))
+            setOnClickListener { action() }
+        }
+
+    private fun updateAttachmentButtonState() {
+        if (attachmentDrawerOpen) {
+            val tonal = if (darkTheme) Color.rgb(42, 62, 88) else Color.rgb(222, 234, 251)
+            attach.background = RippleDrawable(
+                ColorStateList.valueOf(if (darkTheme) 0x33FFFFFF else 0x16000000),
+                rounded(tonal, 18),
+                rounded(Color.WHITE, 18),
+            )
+            attach.setColorFilter(PRIMARY)
+            attach.elevation = dp(1).toFloat()
+        } else {
+            attach.background = surfaceRipple(18)
+            attach.setColorFilter(secondary)
+            attach.applySoftShadow(18, 2.5f)
         }
     }
 
@@ -1372,6 +1610,7 @@ class NativeComposerController(
         private const val PRE_R_INSETS_COMMIT_DELAY_MS = 80L
         private const val SHOW_DURATION_MS = 140L
         private const val HIDE_DURATION_MS = 90L
+        private const val ATTACHMENT_DRAWER_DURATION_MS = 140L
         private val PRIMARY = Color.rgb(49, 119, 213)
         private val RECORDING = Color.rgb(198, 52, 52)
         private val EMOJI = listOf(

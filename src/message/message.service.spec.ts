@@ -15,7 +15,7 @@ function databaseMock(queries: {
     db: {
       query: {
         message: { findMany: queries.message ?? vi.fn() },
-        mediaMessage: { findMany: queries.mediaMessage ?? vi.fn() },
+        messageAsset: { findMany: queries.mediaMessage ?? vi.fn() },
         mediaAsset: { findMany: queries.mediaAsset ?? vi.fn() },
       },
       execute: queries.execute ?? vi.fn(),
@@ -41,7 +41,7 @@ function mk(
 const DIG = 'a'.repeat(64); // 64 lowercase hex (sha256) — matches extractDigests' CAS regex
 const D2 = 'b'.repeat(64);
 const url = (d: string): string =>
-  `/uploads/cas/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
+  `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
 
 describe('MessageService.attachMediaStatus', () => {
   it('returns [] for empty input', async () => {

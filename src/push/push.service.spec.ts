@@ -94,4 +94,54 @@ describe('PushService — identity-only payloads', () => {
     });
     expect(typeof data.ts).toBe('string');
   });
+
+  it('runs a current-device FCM probe through accepted → device_received', async () => {
+    pushToken.findFirst.mockResolvedValue({
+      id: 9,
+      userId: 5,
+      token: 'android-token',
+      platform: 'ANDROID',
+    });
+    const send = vi.fn().mockResolvedValue('projects/p/messages/1');
+    (svc as unknown as { messaging: { send: typeof send } }).messaging = {
+      send,
+    };
+
+    const created = await svc.createFcmProbe(5, 'android-token');
+    expect(created.stage).toBe('fcm_accepted');
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: 'android-token',
+        data: expect.objectContaining({
+          type: 'FCM_HEALTH_PROBE',
+          probeId: created.probeId,
+        }),
+      }),
+    );
+
+    const acknowledged = svc.acknowledgeFcmProbe(5, created.probeId);
+    expect(acknowledged.stage).toBe('device_received');
+    expect(acknowledged.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(svc.getFcmProbe(5, created.probeId)).toEqual(acknowledged);
+  });
+
+  it('enforces the 30-second probe cooldown per user and token', async () => {
+    pushToken.findFirst.mockResolvedValue({
+      id: 9,
+      userId: 5,
+      token: 'android-token',
+      platform: 'ANDROID',
+    });
+    const send = vi.fn().mockResolvedValue('projects/p/messages/1');
+    (svc as unknown as { messaging: { send: typeof send } }).messaging = {
+      send,
+    };
+
+    await svc.createFcmProbe(5, 'android-token');
+    await expect(svc.createFcmProbe(5, 'android-token')).rejects.toMatchObject({
+      status: 429,
+      data: { retryAfter: 30 },
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 });

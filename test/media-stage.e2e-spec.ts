@@ -8,7 +8,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
-  mediaMessage,
+  messageAsset,
   message,
   messageThread,
   invite,
@@ -112,7 +112,7 @@ describe('Local media send staging (PendingMedia)', () => {
   /** A fake but shape-valid CAS payload: a 64-hex digest whose shard path extractDigests recognizes. */
   const digest = 'a'.repeat(64);
   const uploadPayload = {
-    url: `/uploads/cas/aa/aa/${digest}`,
+    url: `/uploads/msg-assets/aa/aa/${digest}`,
     name: 'stage.bin',
     size: 7,
     mimeType: 'application/octet-stream',
@@ -333,8 +333,8 @@ describe('Local media send staging (PendingMedia)', () => {
     expect(msg).toBeDefined();
     const [mediaMsg] = await database.db
       .select()
-      .from(mediaMessage)
-      .where(eq(mediaMessage.threadId, threadId))
+      .from(messageAsset)
+      .where(eq(messageAsset.threadId, threadId))
       .limit(1);
     expect(mediaMsg).toBeDefined();
     expect(mediaMsg!.digest).toBe(digest);

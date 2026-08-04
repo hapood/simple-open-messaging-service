@@ -372,37 +372,43 @@ export const messageThread = pgTable(
   ],
 );
 
-export const mediaMessage = pgTable(
-  'MediaMessage',
+export const messageAsset = pgTable(
+  'MessageAsset',
   {
-    // You can use { mode: "bigint" } if numbers are exceeding js number limitations
-    messageId: bigint({ mode: 'bigint' }).primaryKey().notNull(),
+    messageId: bigint({ mode: 'bigint' }).notNull(),
     threadId: integer().notNull(),
     digest: varchar({ length: 64 }).notNull(),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
   },
   (table) => [
-    index('MediaMessage_digest_idx').using(
+    primaryKey({
+      columns: [table.messageId, table.digest],
+      name: 'MessageAsset_pkey',
+    }),
+    index('MessageAsset_digest_idx').using(
       'btree',
       table.digest.asc().nullsLast().op('text_ops'),
     ),
-    index('MediaMessage_threadId_idx').using(
+    index('MessageAsset_threadId_idx').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
     ),
     foreignKey({
       columns: [table.messageId],
       foreignColumns: [message.id],
-      name: 'MediaMessage_messageId_fkey',
+      name: 'MessageAsset_messageId_fkey',
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
-      name: 'MediaMessage_threadId_fkey',
+      name: 'MessageAsset_threadId_fkey',
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
@@ -1055,9 +1061,7 @@ export const loginCode = pgTable(
     userId: integer().notNull(),
     codeHash: varchar({ length: 127 }).notNull(),
     issuedBy: integer().notNull(),
-    issuedAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+    issuedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
     expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
     consumedAt: timestamp({ precision: 3, mode: 'date' }),
     consumedIp: varchar({ length: 64 }),

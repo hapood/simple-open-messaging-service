@@ -5,7 +5,7 @@
  * (allowed-origins). Mirrors the bash site-emission scheme in docker/init.sh.
  *
  *   standard → https://<domain>        (Caddy on 443, port implicit)
- *   custom   → https://<domain>:7667   (Caddy TLS on the single 7667 port — the NAS/intranet profile)
+ *   single-port → https://<domain>:7667 (Caddy TLS on the single 7667 port — the NAS/intranet profile)
  *   disabled → http://<domain>:7667    (plain HTTP — NOT a secure context unless localhost)
  *
  * `tlsMode` defaults to the process env so most callers omit it; WebAuthn passes its already-read value.
@@ -17,7 +17,7 @@ export function deriveOrigin(
   switch (tlsMode) {
     case 'disabled':
       return `http://${domain}:7667`;
-    case 'custom':
+    case 'single-port':
       return `https://${domain}:7667`;
     case 'standard':
     default:

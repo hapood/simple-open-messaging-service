@@ -456,7 +456,7 @@ export class MediaAssetGcService {
            OR (
              asset.status = 'READY'
              AND NOT EXISTS (
-               SELECT 1 FROM "MediaMessage" mm
+               SELECT 1 FROM "MessageAsset" mm
                JOIN "Message" message ON message.id = mm."messageId"
                WHERE mm.digest = asset.digest AND message."isDeleted" = false
              )
@@ -494,7 +494,7 @@ export class MediaAssetGcService {
               OR (
                 asset.status = 'READY'
                 AND NOT EXISTS (
-                  SELECT 1 FROM "MediaMessage" mm
+                  SELECT 1 FROM "MessageAsset" mm
                   JOIN "Message" message ON message.id = mm."messageId"
                   WHERE mm.digest = asset.digest AND message."isDeleted" = false
                 )
@@ -887,7 +887,7 @@ export class MediaAssetGcService {
         SELECT count(*)::int AS value FROM "MediaAsset" asset
         WHERE asset.status = 'READY'
           AND NOT EXISTS (
-            SELECT 1 FROM "MediaMessage" mm
+            SELECT 1 FROM "MessageAsset" mm
             JOIN "Message" message ON message.id = mm."messageId"
             WHERE mm.digest = asset.digest AND message."isDeleted" = false
           )

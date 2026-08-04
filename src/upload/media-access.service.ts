@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { ContentType } from '../database/enums.js';
 import { DatabaseService } from '../database/database.service.js';
-import { forwardMessage, mediaMessage } from '../database/schema.js';
+import { forwardMessage, messageAsset } from '../database/schema.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
 
 /** Object-level authorization for the single contextual CAS URL shape. */
@@ -33,10 +33,10 @@ export class MediaAccessService {
       visible.contentType === ContentType.AUDIO ||
       visible.contentType === ContentType.LINK
     ) {
-      const direct = await this.database.db.query.mediaMessage.findFirst({
+      const direct = await this.database.db.query.messageAsset.findFirst({
         where: and(
-          eq(mediaMessage.messageId, visible.id),
-          eq(mediaMessage.digest, digest),
+          eq(messageAsset.messageId, visible.id),
+          eq(messageAsset.digest, digest),
         ),
         columns: { messageId: true },
       });

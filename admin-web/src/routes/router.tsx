@@ -222,6 +222,13 @@ export const router = createBrowserRouter(
               ],
             },
             {
+              path: '/rate-limits',
+              lazy: () =>
+                import('@/routes/rate-limits/rate-limits-page').then((m) => ({
+                  Component: m.RateLimitsPage,
+                })),
+            },
+            {
               path: '/audit',
               lazy: () =>
                 import('@/routes/audit/audit-page').then((m) => ({

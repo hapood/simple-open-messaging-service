@@ -10,7 +10,11 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-timescale} -d ${PGDATABASE:-soms}"]
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${PGUSER:-timescale} -d ${PGDATABASE:-soms}',
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -22,11 +26,14 @@ services:
     environment:
       PGHOST: postgres
       PGPORT: 5432
+      PGDATABASE: ${PGDATABASE:-soms}
+      PGUSER: ${PGUSER:-timescale}
+      PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in .env}
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["node", "dist/scripts/migrate-db.js", "migrate"]
-    restart: "no"
+    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']
+    restart: 'no'
 
   app:
     image: soms:latest
@@ -34,6 +41,11 @@ services:
     environment:
       PGHOST: postgres
       PGPORT: 5432
+      PGDATABASE: ${PGDATABASE:-soms}
+      PGUSER: ${PGUSER:-timescale}
+      PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in .env}
+      # Caddy and the API share this container; make that proxy boundary explicit.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.0/8,::1/128}
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,7 +54,9 @@ services:
     init: true
     stop_grace_period: 15s
     volumes:
-      - app-data:/app/data
+      # Keep all SOMS-generated state and the two operator-provided Firebase files in
+      # <deployment-directory>/data so the deployment can be backed up as one directory.
+      - ./data:/app/data
     ports:
       - target: 7667
         published: ${SOMS_PORT:-7667}
@@ -53,5 +67,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  app-data:
   postgres-data:

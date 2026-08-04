@@ -153,6 +153,14 @@ export class QrLoginService {
         'sign-in code must be scanned first',
       );
     }
+    // The account that confirms must be the same account that scanned. Otherwise a second logged-in
+    // device that obtained the token could replace the intended scanner and mint its own desktop session.
+    if (state.scannedBy !== scannerUserId) {
+      throw new BusinessException(
+        BusinessCode.QR_INVALID,
+        'sign-in code must be confirmed by the scanner',
+      );
+    }
     await this.write(qrToken, {
       ...state,
       status: 'confirmed',

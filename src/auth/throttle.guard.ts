@@ -9,6 +9,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
+import { ClientIdentityService } from '../rate-limit/client-identity.service.js';
 
 export const THROTTLE_KEY = 'throttle';
 
@@ -27,6 +28,7 @@ export class ThrottleGuard implements CanActivate {
   constructor(
     private readonly kvStore: KvStoreService,
     private readonly reflector: Reflector,
+    private readonly clientIdentity: ClientIdentityService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -35,13 +37,9 @@ export class ThrottleGuard implements CanActivate {
       ctx.getHandler(),
     );
     if (!cfg) return true; // endpoints not annotated with @Throttle are not rate-limited
-    // FastifyRequest exposes `.ip` (resolves the real client IP via the adapter's trustProxy) but
-    // has no Express `.path` — derive the path from `.url`. Use ONLY `.ip` for client identity:
-    // `req.raw.socket.remoteAddress` is the raw TCP peer, which behind the Caddy reverse proxy is
-    // always 127.0.0.1 and would collapse every client into one rate-limit bucket, so it is
-    // intentionally NOT used as a fallback.
+    // Resolve through the same explicit CIDR trust boundary used by Fastify and the policy engine.
     const req = ctx.switchToHttp().getRequest<FastifyRequest>();
-    const ip = req.ip ?? 'unknown';
+    const ip = this.clientIdentity.fromRequest(req)?.address ?? 'unknown';
     const path = req.url?.split('?')[0] ?? 'unknown';
     const n = await this.kvStore.incrWithExpire(`rl:${path}:${ip}`, cfg.ttlSec);
     if (n > cfg.limit) {

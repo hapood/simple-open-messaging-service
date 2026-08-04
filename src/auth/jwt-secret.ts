@@ -28,7 +28,7 @@ const generatedPaths: string[] = [];
  * (src/federation/keypair.service.ts). Shared by the admin JWT signing secret and the 2FA at-rest
  * encryption key (src/admin/two-factor.secret.ts).
  *
- * @param envName  the override env var, e.g. JWT_ADMIN_SECRET / SOMS_2FA_KEY.
+ * @param envName  the override env var, e.g. SOMS_PASSWORD_PEPPER.
  * @param filename the on-disk filename under ./data, e.g. 'jwt-admin.key'.
  */
 export function resolvePersistentSecret(
@@ -55,9 +55,20 @@ export function resolvePersistentSecret(
   return generated;
 }
 
-/** Resolve a long-lived JWT signing secret (HMAC key). See {@link resolvePersistentSecret}. */
-export function resolveJwtSecret(envName: string, filename: string): string {
-  return resolvePersistentSecret(envName, filename);
+/** Resolve an auto-managed secret from disk, generating it if absent. */
+export function resolveFileSecret(filename: string): string {
+  const path = resolve(SECRET_DIR, filename);
+
+  if (existsSync(path)) {
+    const existing = readFileSync(path, 'utf8').trim();
+    if (existing) return existing;
+  }
+
+  const generated = randomBytes(32).toString('hex');
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, generated, { mode: 0o600 });
+  generatedPaths.push(path);
+  return generated;
 }
 
 /**
@@ -74,6 +85,6 @@ export function reportGeneratedSecrets(): void {
       'Persist ./data across restarts — losing these files logs out every user/admin on the next boot ' +
       '(JWT secret) and/or forces admins to re-enroll 2FA (2FA key); same requirement as ' +
       'soms-s2s-key.json. To manage them explicitly (multi-instance, rotation, external secret store), ' +
-      'set the matching env var instead (e.g. JWT_ADMIN_SECRET / SOMS_2FA_KEY).',
+      'set the matching env var for operator-managed secrets where supported.',
   );
 }

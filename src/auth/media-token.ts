@@ -7,7 +7,7 @@ import type { FastifyReply } from 'fastify';
  *  login, cleared on logout. (Name kept as `media_token` for historical continuity.) */
 export const MEDIA_TOKEN_COOKIE = 'media_token';
 
-/** Cookie options for the session token cookie. `secure: 'auto'` honors X-Forwarded-Proto (trustProxy:1),
+/** Cookie options for the session token cookie. `secure: 'auto'` honors X-Forwarded-Proto from configured trusted proxies,
  *  so it is set over TLS in prod and dropped correctly in plain-HTTP dev. httpOnly keeps it
  *  JS-unreadable (XSS-safe); sameSite:'strict' blocks cross-site sending while same-origin <img>/<a>
  *  still attach it automatically. The one-year cookie is only a credential carrier; the authoritative

@@ -14,9 +14,8 @@
 #   GOPROXY=https://goproxy.cn,direct ./scripts/build-base.sh
 #
 # --pull is on by default (base-image security updates). Set PULL=0 for an air-gapped rebuild against
-# already-pulled bases. --network=host: the build proxy is the host's loopback (clash on 127.0.0.1:7890,
-# set in ~/.docker/config.json "proxies"); build containers have their own loopback, so they must share
-# the host net to reach it.
+# already-pulled bases. --network=host lets a build container reach a system proxy bound to the host
+# loopback; the proxy address itself comes only from the invoking environment or Docker client config.
 set -e
 export DOCKER_BUILDKIT=1
 

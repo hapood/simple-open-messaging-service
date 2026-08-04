@@ -35,12 +35,20 @@ function installFakeFcm(initial: {
     getFcmStatus: () => fcm,
     getPollingEnabled: () => initial.pollingEnabled ?? true,
     getForegroundServiceEnabled: () => initial.fgsEnabled ?? true,
-    requestNotificationPermission: () => { reqN++; },
-    openNotificationSettings: () => { openN++; },
+    requestNotificationPermission: () => {
+      reqN++;
+    },
+    openNotificationSettings: () => {
+      openN++;
+    },
   };
   return {
-    setNotif: (s) => { notif = s; },
-    setFcm: (s) => { fcm = s; },
+    setNotif: (s) => {
+      notif = s;
+    },
+    setFcm: (s) => {
+      fcm = s;
+    },
     requestNotifs: () => reqN,
     openSettings: () => openN,
   };
@@ -79,7 +87,9 @@ describe('BackgroundSyncService', () => {
     });
 
     it('refreshNotifStatus re-reads after the native state changes', () => {
-      const fake = installFakeFcm({ notifStatus: '{"enabled":false,"canRequest":true}' });
+      const fake = installFakeFcm({
+        notifStatus: '{"enabled":false,"canRequest":true}',
+      });
       const s = new BackgroundSyncService();
       expect(s.notifStatus().enabled).toBe(false);
       fake.setNotif('{"enabled":true,"canRequest":false}');
@@ -90,20 +100,41 @@ describe('BackgroundSyncService', () => {
 
   describe('fcmStatus (FCM availability)', () => {
     it('seeds from valid JSON', () => {
-      installFakeFcm({ fcmStatus: '{"hasToken":true,"lastCheck":12345}' });
+      installFakeFcm({
+        fcmStatus:
+          '{"hasToken":true,"lastCheck":12345,"playServicesAvailable":true,"playServicesStatus":"SUCCESS","tokenError":null}',
+      });
       const s = new BackgroundSyncService();
-      expect(s.fcmStatus()).toEqual({ hasToken: true, lastCheck: 12345 });
+      expect(s.fcmStatus()).toEqual({
+        hasToken: true,
+        lastCheck: 12345,
+        playServicesAvailable: true,
+        playServicesStatus: 'SUCCESS',
+        tokenError: null,
+      });
     });
 
     it('defaults to {hasToken:false, lastCheck:0} on malformed JSON', () => {
       installFakeFcm({ fcmStatus: '<<<' });
       const s = new BackgroundSyncService();
-      expect(s.fcmStatus()).toEqual({ hasToken: false, lastCheck: 0 });
+      expect(s.fcmStatus()).toEqual({
+        hasToken: false,
+        lastCheck: 0,
+        playServicesAvailable: false,
+        playServicesStatus: 'UNKNOWN',
+        tokenError: null,
+      });
     });
 
     it('defaults when the bridge is absent', () => {
       const s = new BackgroundSyncService();
-      expect(s.fcmStatus()).toEqual({ hasToken: false, lastCheck: 0 });
+      expect(s.fcmStatus()).toEqual({
+        hasToken: false,
+        lastCheck: 0,
+        playServicesAvailable: false,
+        playServicesStatus: 'UNKNOWN',
+        tokenError: null,
+      });
     });
   });
 
@@ -123,7 +154,9 @@ describe('BackgroundSyncService', () => {
 
   describe('action channels', () => {
     it('requestPermission invokes the native requestNotificationPermission', () => {
-      const fake = installFakeFcm({ notifStatus: '{"enabled":false,"canRequest":true}' });
+      const fake = installFakeFcm({
+        notifStatus: '{"enabled":false,"canRequest":true}',
+      });
       const s = new BackgroundSyncService();
       s.requestPermission();
       expect(fake.requestNotifs()).toBe(1);

@@ -5,7 +5,7 @@ describe('OpenGraphService.parse', () => {
   const og = new OpenGraphService();
   const base = 'https://example.com/page';
 
-  it('extracts og:title / og:description / og:site_name / og:image', () => {
+  it('extracts title, description and image while ignoring legacy siteName', () => {
     const html = `<head>
       <meta property="og:title" content="Hello">
       <meta property="og:description" content="World">
@@ -15,19 +15,26 @@ describe('OpenGraphService.parse', () => {
     expect(og.parse(html, base)).toEqual({
       title: 'Hello',
       description: 'World',
-      siteName: 'Example',
       image: 'https://example.com/img.jpg',
+      favicon: 'https://example.com/favicon.ico',
     });
   });
 
   it('falls back to twitter:* then the <title> tag', () => {
-    expect(og.parse(`<meta name="twitter:title" content="Tw"><title>Tag</title>`, base).title).toBe('Tw');
+    expect(
+      og.parse(
+        `<meta name="twitter:title" content="Tw"><title>Tag</title>`,
+        base,
+      ).title,
+    ).toBe('Tw');
     expect(og.parse(`<title>The Tag</title>`, base).title).toBe('The Tag');
   });
 
   it('resolves a relative og:image against the base URL', () => {
     const html = `<meta property="og:image" content="/static/cover.jpg">`;
-    expect(og.parse(html, base).image).toBe('https://example.com/static/cover.jpg');
+    expect(og.parse(html, base).image).toBe(
+      'https://example.com/static/cover.jpg',
+    );
   });
 
   it('caps over-long fields to the stored limit', () => {
@@ -35,8 +42,20 @@ describe('OpenGraphService.parse', () => {
     expect(og.parse(html, base).title?.length).toBe(300);
   });
 
-  it('returns no fields when the page provides none', () => {
-    expect(og.parse('<html></html>', base)).toEqual({});
+  it('falls back to the conventional origin favicon', () => {
+    expect(og.parse('<html></html>', base)).toEqual({
+      title: undefined,
+      description: undefined,
+      image: undefined,
+      favicon: 'https://example.com/favicon.ico',
+    });
+  });
+
+  it('extracts and resolves an explicit favicon', () => {
+    const html = `<link rel="shortcut icon" href="/assets/icon.png">`;
+    expect(og.parse(html, base).favicon).toBe(
+      'https://example.com/assets/icon.png',
+    );
   });
 
   it('decodes HTML entities in values', () => {

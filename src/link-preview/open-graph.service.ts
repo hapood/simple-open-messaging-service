@@ -3,13 +3,13 @@ import { Injectable } from '@nestjs/common';
 /**
  * Parsed OpenGraph metadata for a page. `image` is an absolute URL resolved against the page's final
  * URL (after redirects); the caller localizes it into CAS. Fields are absent when the page provided
- * none — the caller degrades to a bare-link card.
+ * none. The caller supplies required empty strings or a user-text description fallback.
  */
 export interface OpenGraphMeta {
   title?: string;
   description?: string;
-  siteName?: string;
   image?: string;
+  favicon?: string;
 }
 
 /**
@@ -40,7 +40,6 @@ export class OpenGraphService {
       'twitter:description',
       'description',
     ]);
-    const siteName = metas.get('og:site_name');
     const imageRaw = pick([
       'og:image',
       'og:image:url',
@@ -56,12 +55,31 @@ export class OpenGraphService {
         image = undefined;
       }
     }
+    const faviconRaw = this.extractFavicon(html) ?? '/favicon.ico';
+    let favicon: string | undefined;
+    try {
+      favicon = new URL(faviconRaw, baseUrl).href;
+    } catch {
+      favicon = undefined;
+    }
     return {
       title: this.cap(this.clean(title), MAX_TITLE),
       description: this.cap(this.clean(description), MAX_DESC),
-      siteName: this.cap(this.clean(siteName), MAX_SITE_NAME),
       image,
+      favicon,
     };
+  }
+
+  /** Prefer an explicit page icon; fall back to the conventional origin /favicon.ico in parse(). */
+  private extractFavicon(html: string): string | undefined {
+    for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
+      const tag = m[0];
+      const rel = this.readAttr(tag, 'rel')?.toLowerCase().split(/\s+/) ?? [];
+      if (!rel.includes('icon')) continue;
+      const href = this.readAttr(tag, 'href');
+      if (href) return this.decodeEntities(href);
+    }
+    return undefined;
   }
 
   /** Build a lowercased property/name → content map from every `<meta>` tag. First occurrence wins. */
@@ -114,9 +132,7 @@ export class OpenGraphService {
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
-      .replace(/&#x([0-9a-f]+);/gi, (_, h) =>
-        safeCodePoint(parseInt(h, 16)),
-      )
+      .replace(/&#x([0-9a-f]+);/gi, (_, h) => safeCodePoint(parseInt(h, 16)))
       .replace(/&#(\d+);/g, (_, d) => safeCodePoint(parseInt(d, 10)));
   }
 }
@@ -133,4 +149,3 @@ function safeCodePoint(cp: number): string {
 
 const MAX_TITLE = 300;
 const MAX_DESC = 500;
-const MAX_SITE_NAME = 100;

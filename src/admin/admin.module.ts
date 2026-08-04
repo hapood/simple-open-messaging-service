@@ -40,6 +40,7 @@ import { LoggerModule } from '../logger/logger.module.js';
 import { LogViewerController } from '../logger/log-viewer.controller.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { LinkCardRuleAdminController } from './link-card-rule-admin.controller.js';
+import { RateLimitMonitoringController } from './rate-limit-monitoring.controller.js';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { LinkCardRuleAdminController } from './link-card-rule-admin.controller.j
     AdminDiagnosticsController,
     LogViewerController,
     LinkCardRuleAdminController,
+    RateLimitMonitoringController,
   ],
   providers: [
     AdminAuthService,

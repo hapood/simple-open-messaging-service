@@ -104,6 +104,25 @@ describe('QrLoginService', () => {
       });
     });
 
+    it('only the account that scanned may confirm, and a rejected attempt does not consume the flow', async () => {
+      const { qrToken } = await svc.create('web');
+      await svc.scan(qrToken, 42);
+      await expect(svc.confirm(qrToken, 7)).rejects.toMatchObject({
+        bizCode: BusinessCode.QR_INVALID,
+      });
+
+      await svc.confirm(qrToken, 42);
+      const claimed = await svc.poll(qrToken, {});
+      expect(claimed.status).toBe('confirmed');
+      expect(sessionTokens.issue).toHaveBeenCalledWith(
+        42,
+        'web',
+        expect.any(Object),
+      );
+      expect((await svc.poll(qrToken, {})).status).toBe('expired');
+      expect(sessionTokens.issue).toHaveBeenCalledTimes(1);
+    });
+
     it('scan on an unknown token → QR_EXPIRED', async () => {
       await expect(svc.scan('nonexistent', 42)).rejects.toMatchObject({
         bizCode: BusinessCode.QR_EXPIRED,

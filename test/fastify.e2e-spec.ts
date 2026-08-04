@@ -14,7 +14,7 @@ import {
 } from '../src/database/database.service';
 import {
   mediaAsset,
-  mediaMessage,
+  messageAsset,
   message,
   messageThread,
   threadParticipant,
@@ -102,7 +102,7 @@ async function authorizeDigest(
     })
     .returning({ id: message.id });
   await database
-    .insert(mediaMessage)
+    .insert(messageAsset)
     .values({ messageId: msg.id, threadId: thread.id, digest });
   return { threadId: thread.id, seq };
 }
@@ -183,7 +183,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // The per-object gate further requires a MediaMessage row tying this digest to a thread the caller
     // is in; authorize it (a real send would write that row in writeMsgToThread).
     const digest = res.body.data.url
-      .slice('/uploads/cas/'.length)
+      .slice('/uploads/msg-assets/'.length)
       .split('/')
       .pop()!
       .replace(/\.png$/, '');
@@ -219,7 +219,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(second.body.data.url).toBe(first.body.data.url);
     expect(second.body.data.size).toBe(first.body.data.size);
     const digest = first.body.data.url
-      .slice('/uploads/cas/'.length)
+      .slice('/uploads/msg-assets/'.length)
       .split('/')
       .pop()!
       .replace(/\.png$/, '');
@@ -385,7 +385,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // Video is served INLINE (no Content-Disposition: attachment) so <video src> can stream-play.
     // Authorize the digest for the uploader so the per-object gate permits the GET (see image test).
     const digest = res.body.data.url
-      .slice('/uploads/cas/'.length)
+      .slice('/uploads/msg-assets/'.length)
       .split('/')
       .pop()!
       .replace(/\.mp4$/, '');
@@ -432,7 +432,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.code).toBe(0);
     const url: string = up.body.data.url;
     const digest = url
-      .slice('/uploads/cas/'.length)
+      .slice('/uploads/msg-assets/'.length)
       .split('/')
       .pop()!
       .replace(/\.\w+$/, '');
@@ -452,8 +452,8 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     // The MediaMessage row now links digest → this thread.
     const [mm] = await database.db
       .select()
-      .from(mediaMessage)
-      .where(eq(mediaMessage.digest, digest))
+      .from(messageAsset)
+      .where(eq(messageAsset.digest, digest))
       .limit(1);
     expect(mm).toBeDefined();
     expect(mm?.threadId).toBeGreaterThan(0);

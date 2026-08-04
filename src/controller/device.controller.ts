@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Delete,
+  Get,
   Body,
   Param,
   Request,
@@ -12,7 +13,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { RegisterDeviceDto } from '../dto/device.dto.js';
+import { CreateFcmProbeDto, RegisterDeviceDto } from '../dto/device.dto.js';
 import { PushService } from '../push/push.service.js';
 
 /**
@@ -35,7 +36,9 @@ export class DeviceController {
   @Throttle(10, 60) // token rotation is rare: 10 registers/min per user is ample headroom
   @HttpCode(HttpStatus.OK)
   @Post('devices/register')
-  @ApiOperation({ summary: 'Register/refresh an FCM push token for the logged-in user' })
+  @ApiOperation({
+    summary: 'Register/refresh an FCM push token for the logged-in user',
+  })
   async register(
     @Request() req: FastifyRequest,
     @Body() dto: RegisterDeviceDto,
@@ -46,7 +49,45 @@ export class DeviceController {
   @HttpCode(HttpStatus.OK)
   @Delete('devices/register/:token')
   @ApiOperation({ summary: 'Unregister an FCM push token (called on logout)' })
-  async unregister(@Request() req: FastifyRequest, @Param('token') token: string): Promise<void> {
+  async unregister(
+    @Request() req: FastifyRequest,
+    @Param('token') token: string,
+  ): Promise<void> {
     await this.pushService.unregisterToken(req.user.userId, token);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('devices/fcm-probes')
+  @ApiOperation({
+    summary:
+      'Start an end-to-end FCM delivery probe for the current Android device',
+  })
+  async createFcmProbe(
+    @Request() req: FastifyRequest,
+    @Body() dto: CreateFcmProbeDto,
+  ) {
+    return this.pushService.createFcmProbe(req.user.userId, dto.token);
+  }
+
+  @Get('devices/fcm-probes/:probeId')
+  @ApiOperation({ summary: 'Read a one-off FCM delivery probe status' })
+  getFcmProbe(
+    @Request() req: FastifyRequest,
+    @Param('probeId') probeId: string,
+  ) {
+    return this.pushService.getFcmProbe(req.user.userId, probeId);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('devices/fcm-probes/:probeId/ack')
+  @ApiOperation({
+    summary:
+      'Acknowledge that the Android device received an FCM delivery probe',
+  })
+  acknowledgeFcmProbe(
+    @Request() req: FastifyRequest,
+    @Param('probeId') probeId: string,
+  ) {
+    return this.pushService.acknowledgeFcmProbe(req.user.userId, probeId);
   }
 }

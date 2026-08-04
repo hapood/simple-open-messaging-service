@@ -29,7 +29,9 @@ function loadWebAuthnConfig() {
   // Prod: the registered deployment domain. Explicit override always wins (multi-subdomain / custom port).
   // rpId MUST be a bare registrable domain — strip any accidental `:port` (e.g. SOMS_DOMAIN="host:7667"),
   // which would be an invalid RP ID the browser would never match.
-  const rawRpId = process.env.SOMS_WEBAUTHN_RP_ID?.trim() || (isProd ? requireEnv('SOMS_DOMAIN') : 'localhost');
+  const rawRpId =
+    process.env.SOMS_WEBAUTHN_RP_ID?.trim() ||
+    (isProd ? requireEnv('SOMS_DOMAIN') : 'localhost');
   const rpId = rawRpId.split(':')[0];
 
   const allowedOrigins = overrideOrigins
@@ -39,12 +41,17 @@ function loadWebAuthnConfig() {
         .filter(Boolean)
     : isProd
       ? [
-          deriveOrigin(requireEnv('SOMS_DOMAIN'), tlsMode),
+          deriveOrigin(
+            process.env.SOMS_WEB_DOMAIN?.trim() || requireEnv('SOMS_DOMAIN'),
+            tlsMode,
+          ),
           // When a LAN domain is configured, admins may reach the console over it (same backend, same
           // secure context). Both domains share SOMS_DOMAIN's apex (enforced by docker/init.sh), so the
           // default rpId (= SOMS_DOMAIN) authorizes it only if SOMS_DOMAIN IS that apex; otherwise set
           // SOMS_WEBAUTHN_RP_ID to the shared apex.
-          ...(process.env.SOMS_LAN_DOMAIN ? [deriveOrigin(process.env.SOMS_LAN_DOMAIN, tlsMode)] : []),
+          ...(process.env.SOMS_LAN_DOMAIN
+            ? [deriveOrigin(process.env.SOMS_LAN_DOMAIN, tlsMode)]
+            : []),
         ]
       : ['http://localhost:5180']; // the Vite dev browser origin (localhost is a secure context)
 

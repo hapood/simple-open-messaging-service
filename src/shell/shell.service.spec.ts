@@ -18,13 +18,22 @@ import type { SettingsService } from '../settings/settings.service.js';
 describe('ShellService.compat', () => {
   // SettingsService is @Global in the app; pass a stub whose getFirebaseConfig() returns null so the folded
   // firebaseConfig is {configured:false} without dragging in the real service + its Prisma dep.
-  const svc = new ShellService({ getFirebaseConfig: () => null } as unknown as SettingsService);
+  const svc = new ShellService({
+    getFirebaseConfig: () => null,
+  } as unknown as SettingsService);
   // SERVER_VERSION is read from <cwd>/package.json at module load; compare against the same source so
   // the test tracks the real version rather than hard-coding a literal that drifts on the next bump.
-  const pkgVersion = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')).version;
+  const pkgVersion = JSON.parse(
+    readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
+  ).version;
 
   // Snapshot + restore the env-touching keys so each case is hermetic regardless of the host's .env.
-  const envKeys = ['SOMS_DOMAIN', 'SOMS_LAN_DOMAIN', 'SOMS_TLS_MODE'];
+  const envKeys = [
+    'SOMS_DOMAIN',
+    'SOMS_WEB_DOMAIN',
+    'SOMS_LAN_DOMAIN',
+    'SOMS_TLS_MODE',
+  ];
   const saved: Record<string, string | undefined> = {};
   beforeEach(() => envKeys.forEach((k) => (saved[k] = process.env[k])));
   afterEach(() =>
@@ -57,9 +66,9 @@ describe('ShellService.compat', () => {
     expect(r).not.toHaveProperty('minShellVersion');
   });
 
-  it('derives primaryOrigin from SOMS_DOMAIN + SOMS_TLS_MODE (custom → https :7667)', () => {
+  it('derives primaryOrigin from SOMS_DOMAIN + SOMS_TLS_MODE (single-port → https :7667)', () => {
     process.env.SOMS_DOMAIN = 'soms.example.com';
-    process.env.SOMS_TLS_MODE = 'custom';
+    process.env.SOMS_TLS_MODE = 'single-port';
     delete process.env.SOMS_LAN_DOMAIN;
     const r = svc.compat();
     expect(r.primaryOrigin).toBe('https://soms.example.com:7667');
@@ -73,10 +82,17 @@ describe('ShellService.compat', () => {
     expect(svc.compat().primaryOrigin).toBe('https://soms.example.com');
   });
 
+  it('uses SOMS_WEB_DOMAIN for primaryOrigin without changing the identity domain', () => {
+    process.env.SOMS_DOMAIN = 'example.com';
+    process.env.SOMS_WEB_DOMAIN = 'soms.example.com';
+    process.env.SOMS_TLS_MODE = 'single-port';
+    expect(svc.compat().primaryOrigin).toBe('https://soms.example.com:7667');
+  });
+
   it('includes lanOrigin only when SOMS_LAN_DOMAIN is set (same backend, derived origin)', () => {
     process.env.SOMS_DOMAIN = 'soms.example.com';
     process.env.SOMS_LAN_DOMAIN = 'soms-lan.example.com';
-    process.env.SOMS_TLS_MODE = 'custom';
+    process.env.SOMS_TLS_MODE = 'single-port';
     const r = svc.compat();
     expect(r.primaryOrigin).toBe('https://soms.example.com:7667');
     expect(r.lanOrigin).toBe('https://soms-lan.example.com:7667');

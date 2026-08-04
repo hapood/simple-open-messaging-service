@@ -8,9 +8,19 @@ import { statSync, readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import {
+  connect as http2Connect,
+  constants as http2Constants,
+} from 'node:http2';
 import { KeypairService } from '../federation/keypair.service.js';
-import { SignatureService, type SignedRequest } from '../federation/signature.service.js';
-import { loadFederationConfig, type FederationConfig } from '../federation/federation.config.js';
+import {
+  SignatureService,
+  type SignedRequest,
+} from '../federation/signature.service.js';
+import {
+  loadFederationConfig,
+  type FederationConfig,
+} from '../federation/federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 
@@ -73,93 +83,137 @@ export class FederationSelfCheckService {
     const config = loadFederationConfig();
     const domain = config.domain;
     const resolver = this.makeResolver(opts.dnsResolver);
-    const ntpServer = (opts.ntpServer ?? FederationSelfCheckService.DEFAULT_NTP).trim() || FederationSelfCheckService.DEFAULT_NTP;
+    const ntpServer =
+      (opts.ntpServer ?? FederationSelfCheckService.DEFAULT_NTP).trim() ||
+      FederationSelfCheckService.DEFAULT_NTP;
 
     // --- A. local configuration ---
     const checks: SelfCheckCheck[] = [];
     checks.push(
-      await this.runOne({ key: 'config', group: 'config', title: 'Local configuration' }, () =>
-        this.checkConfig(config),
+      await this.runOne(
+        { key: 'config', group: 'config', title: 'Local configuration' },
+        () => this.checkConfig(config),
       ),
     );
     checks.push(
-      await this.runOne({ key: 'key-file', group: 'config', title: 'Key file permissions' }, () =>
-        this.checkKeyFile(config),
+      await this.runOne(
+        { key: 'key-file', group: 'config', title: 'Key file permissions' },
+        () => this.checkKeyFile(config),
       ),
     );
     checks.push(
-      await this.runOne({ key: 'key-age', group: 'config', title: 'Keypair age' }, () =>
-        this.checkKeyAge(),
+      await this.runOne(
+        { key: 'key-age', group: 'config', title: 'Keypair age' },
+        () => this.checkKeyAge(),
       ),
     );
 
     // --- B. DNS resolution (shared target for everything below) ---
     const target = await this.resolveTarget(resolver, domain, config);
     checks.push(
-      await this.runOne({ key: 'dns-srv', group: 'dns', title: 'SRV record _soms._tcp' }, () =>
-        this.checkDnsSrv(domain, target),
+      await this.runOne(
+        { key: 'dns-srv', group: 'dns', title: 'SRV record _soms._tcp' },
+        () => this.checkDnsSrv(domain, target),
       ),
     );
     const v4 = await this.safeResolve(resolver, domain, target, 4);
     const v6 = await this.safeResolve(resolver, domain, target, 6);
     checks.push(
-      await this.runOne({ key: 'dns-a', group: 'dns', title: 'A records (IPv4)' }, () =>
-        this.checkDnsA(v4),
+      await this.runOne(
+        { key: 'dns-a', group: 'dns', title: 'A records (IPv4)' },
+        () => this.checkDnsA(v4),
       ),
     );
     checks.push(
-      await this.runOne({ key: 'dns-aaaa', group: 'dns', title: 'AAAA records (IPv6)' }, () =>
-        this.checkDnsAaaa(v6),
+      await this.runOne(
+        { key: 'dns-aaaa', group: 'dns', title: 'AAAA records (IPv6)' },
+        () => this.checkDnsAaaa(v6),
       ),
     );
-    const ips = [...v4.map((ip) => ({ ip, family: 4 as const })), ...v6.map((ip) => ({ ip, family: 6 as const }))];
+    const ips = [
+      ...v4.map((ip) => ({ ip, family: 4 as const })),
+      ...v6.map((ip) => ({ ip, family: 6 as const })),
+    ];
 
     // --- C. TLS (per IP) ---
     const tlsProbes: IpTlsProbe[] = config.allowInsecureHttp
       ? []
-      : await Promise.all(ips.map((a) => this.probeTls(a.ip, a.family, target.host, target.port, config)));
+      : await Promise.all(
+          ips.map((a) =>
+            this.probeTls(a.ip, a.family, target.host, target.port, config),
+          ),
+        );
     checks.push(
-      await this.runOne({ key: 'tls-public', group: 'tls', title: 'TLS certificate (per IP)' }, () =>
-        this.checkTlsPublic(ips, tlsProbes, target, config),
+      await this.runOne(
+        { key: 'tls-public', group: 'tls', title: 'TLS certificate (per IP)' },
+        () => this.checkTlsPublic(ips, tlsProbes, target, config),
       ),
     );
     const publicReachableAny = tlsProbes.some((p) => p.reachable);
     const hasLocalTls = Boolean(process.env.TLS_CERT && process.env.TLS_KEY);
     const needsLoopback =
-      config.allowInsecureHttp || !hasLocalTls || (!publicReachableAny && ips.length > 0);
+      config.allowInsecureHttp ||
+      !hasLocalTls ||
+      (!publicReachableAny && ips.length > 0);
     checks.push(
-      await this.runOne({ key: 'tls-loopback', group: 'tls', title: 'Local process loopback' }, () =>
-        needsLoopback ? this.checkTlsLoopback(config) : this.skip('Public TLS verified; loopback probe not needed'),
+      await this.runOne(
+        { key: 'tls-loopback', group: 'tls', title: 'Local process loopback' },
+        () =>
+          needsLoopback
+            ? this.checkTlsLoopback()
+            : this.skip('Public TLS verified; loopback probe not needed'),
       ),
     );
 
     // --- D. .well-known (per IP) ---
     const wkProbes: IpWellKnownProbe[] = await Promise.all(
-      ips.map((a) => this.probeWellKnown(a.ip, a.family, target.host, target.port, target.scheme, config)),
+      ips.map((a) =>
+        this.probeWellKnown(
+          a.ip,
+          a.family,
+          target.host,
+          target.port,
+          target.scheme,
+          config,
+          tlsProbes.find((p) => p.ip === a.ip)?.cert?.alpn ?? null,
+        ),
+      ),
     );
     checks.push(
-      await this.runOne({ key: 'well-known', group: 'well-known', title: '.well-known/soms (per IP)' }, () =>
-        this.checkWellKnown(ips, wkProbes),
+      await this.runOne(
+        {
+          key: 'well-known',
+          group: 'well-known',
+          title: '.well-known/soms (per IP)',
+        },
+        () => this.checkWellKnown(ips, wkProbes),
       ),
     );
 
     // --- E. crypto consistency (uses the first IP that returned a valid doc) ---
     const doc = wkProbes.find((p) => p.doc && p.keysValid)?.doc ?? null;
     checks.push(
-      await this.runOne({ key: 'key-consistency', group: 'crypto', title: 'Published key consistency' }, () =>
-        this.checkKeyConsistency(domain, doc),
+      await this.runOne(
+        {
+          key: 'key-consistency',
+          group: 'crypto',
+          title: 'Published key consistency',
+        },
+        () => this.checkKeyConsistency(domain, doc),
       ),
     );
     checks.push(
-      await this.runOne({ key: 'sign-loopback', group: 'crypto', title: 'Signature loopback' }, () =>
-        this.checkSignLoopback(doc, target.authority),
+      await this.runOne(
+        { key: 'sign-loopback', group: 'crypto', title: 'Signature loopback' },
+        () => this.checkSignLoopback(doc, target.authority),
       ),
     );
 
     // --- F. clock ---
     checks.push(
-      await this.runOne({ key: 'clock-skew', group: 'clock', title: 'Clock skew (NTP)' }, () =>
-        this.checkClockSkew(ntpServer),
+      await this.runOne(
+        { key: 'clock-skew', group: 'clock', title: 'Clock skew (NTP)' },
+        () => this.checkClockSkew(ntpServer),
       ),
     );
 
@@ -169,7 +223,12 @@ export class FederationSelfCheckService {
       runAt: startedAt,
       durationMs: Date.now() - startedAt,
       summary,
-      target: { host: target.host, port: target.port, scheme: target.scheme, hasSrv: target.hasSrv },
+      target: {
+        host: target.host,
+        port: target.port,
+        scheme: target.scheme,
+        hasSrv: target.hasSrv,
+      },
       resolver: opts.dnsResolver ?? 'system',
       ntpServer,
       checks,
@@ -193,9 +252,14 @@ export class FederationSelfCheckService {
       keyOk = false;
       issues.push(`keypair unusable: ${(e as Error).message}`);
     }
-    const prodInsecure = config.allowInsecureHttp && process.env.NODE_ENV === 'production';
-    if (prodInsecure) issues.push('CRITICAL: allowInsecureHttp is ON in production (protocol is HTTPS-only)');
-    else if (config.allowInsecureHttp) issues.push('allowInsecureHttp is ON (dev-only)');
+    const prodInsecure =
+      config.allowInsecureHttp && process.env.NODE_ENV === 'production';
+    if (prodInsecure)
+      issues.push(
+        'CRITICAL: allowInsecureHttp is ON in production (protocol is HTTPS-only)',
+      );
+    else if (config.allowInsecureHttp)
+      issues.push('allowInsecureHttp is ON (dev-only)');
 
     let status: SelfCheckStatus = keyOk ? 'ok' : 'fail';
     if (prodInsecure) status = 'fail';
@@ -233,9 +297,17 @@ export class FederationSelfCheckService {
       }
       // also confirm it parses (a corrupted restore would crash the server on boot anyway)
       JSON.parse(readFileSync(path, 'utf8'));
-      return { status: 'ok', detail: `key file mode ${octal(st.mode)} (0600)`, evidence: { path, mode: octal(st.mode) } };
+      return {
+        status: 'ok',
+        detail: `key file mode ${octal(st.mode)} (0600)`,
+        evidence: { path, mode: octal(st.mode) },
+      };
     } catch (e) {
-      return { status: 'fail', detail: `cannot stat/read key file: ${(e as Error).message}`, evidence: { path: config.keyPath } };
+      return {
+        status: 'fail',
+        detail: `cannot stat/read key file: ${(e as Error).message}`,
+        evidence: { path: config.keyPath },
+      };
     }
   }
 
@@ -246,40 +318,77 @@ export class FederationSelfCheckService {
       if (ageDays < FederationSelfCheckService.KEY_AGE_WARN_DAYS) {
         return {
           status: 'warn',
-          detail: `keypair regenerated ${ageDays}d ago — all peers must re-approve unless the documented 5-step rotation was followed`,
+          detail: `keypair created ${ageDays}d ago — confirm this is a new deployment or a documented rotation`,
           evidence: { createdAt: this.keypair.getCreatedAt(), ageDays },
         };
       }
-      return { status: 'ok', detail: `keypair age ${ageDays}d`, evidence: { createdAt: this.keypair.getCreatedAt(), ageDays } };
+      return {
+        status: 'ok',
+        detail: `keypair age ${ageDays}d`,
+        evidence: { createdAt: this.keypair.getCreatedAt(), ageDays },
+      };
     } catch (e) {
-      return { status: 'skip', detail: `could not read keypair createdAt: ${(e as Error).message}` };
+      return {
+        status: 'skip',
+        detail: `could not read keypair createdAt: ${(e as Error).message}`,
+      };
     }
   }
 
-  private async checkDnsSrv(domain: string, target: ResolvedTarget): Promise<CheckBody> {
+  private async checkDnsSrv(
+    domain: string,
+    target: ResolvedTarget,
+  ): Promise<CheckBody> {
     if (!target.hasSrv) {
       return {
         status: 'warn',
         detail: `no _soms._tcp.${domain} SRV record — peers fall back to https://${domain}:443 (set SRV if not on :443)`,
-        evidence: { domain, record: null, resolvedHost: target.host, resolvedPort: target.port },
+        evidence: {
+          domain,
+          record: null,
+          resolvedHost: target.host,
+          resolvedPort: target.port,
+        },
       };
     }
     return {
       status: 'ok',
       detail: `SRV → ${target.host}:${target.port}`,
-      evidence: { domain, record: target.srvRecord, resolvedHost: target.host, resolvedPort: target.port },
+      evidence: {
+        domain,
+        record: target.srvRecord,
+        resolvedHost: target.host,
+        resolvedPort: target.port,
+      },
     };
   }
 
   private async checkDnsA(v4: string[]): Promise<CheckBody> {
-    if (v4.length === 0) return { status: 'fail', detail: 'no A records resolved', evidence: { addresses: [] } };
-    return { status: 'ok', detail: `${v4.length} A record(s): ${v4.join(', ')}`, evidence: { addresses: v4 } };
+    if (v4.length === 0)
+      return {
+        status: 'fail',
+        detail: 'no A records resolved',
+        evidence: { addresses: [] },
+      };
+    return {
+      status: 'ok',
+      detail: `${v4.length} A record(s): ${v4.join(', ')}`,
+      evidence: { addresses: v4 },
+    };
   }
 
   private async checkDnsAaaa(v6: string[]): Promise<CheckBody> {
     if (v6.length === 0)
-      return { status: 'skip', detail: 'no AAAA records (IPv6 not published)', evidence: { addresses: [] } };
-    return { status: 'ok', detail: `${v6.length} AAAA record(s): ${v6.join(', ')}`, evidence: { addresses: v6 } };
+      return {
+        status: 'skip',
+        detail: 'no AAAA records (IPv6 not published)',
+        evidence: { addresses: [] },
+      };
+    return {
+      status: 'ok',
+      detail: `${v6.length} AAAA record(s): ${v6.join(', ')}`,
+      evidence: { addresses: v6 },
+    };
   }
 
   private async checkTlsPublic(
@@ -291,12 +400,17 @@ export class FederationSelfCheckService {
     if (config.allowInsecureHttp) {
       return {
         status: 'skip',
-        detail: 'allowInsecureHttp is ON — peers resolve http:// and do not validate a TLS cert',
+        detail:
+          'allowInsecureHttp is ON — peers resolve http:// and do not validate a TLS cert',
         evidence: { host: target.host, scheme: target.scheme },
       };
     }
     if (ips.length === 0) {
-      return { status: 'fail', detail: 'no IPs resolved to probe', evidence: { host: target.host, ips: [] } };
+      return {
+        status: 'fail',
+        detail: 'no IPs resolved to probe',
+        evidence: { host: target.host, ips: [] },
+      };
     }
     const status = this.worst(probes.map((p) => p.status));
     const okCount = probes.filter((p) => p.status === 'ok').length;
@@ -304,10 +418,19 @@ export class FederationSelfCheckService {
       okCount === probes.length
         ? `all ${probes.length} IP(s) present a valid, matching cert`
         : `${okCount}/${probes.length} IP(s) ok — see per-IP detail`;
-    return { status, detail, evidence: { host: target.host, sni: target.host, port: target.port, ips: probes } };
+    return {
+      status,
+      detail,
+      evidence: {
+        host: target.host,
+        sni: target.host,
+        port: target.port,
+        ips: probes,
+      },
+    };
   }
 
-  private async checkTlsLoopback(config: FederationConfig): Promise<CheckBody> {
+  private async checkTlsLoopback(): Promise<CheckBody> {
     const port = Number(process.env.PORT ?? 3000);
     const hasLocalTls = Boolean(process.env.TLS_CERT && process.env.TLS_KEY);
     const reachable = await this.tcpProbe('127.0.0.1', port);
@@ -331,7 +454,12 @@ export class FederationSelfCheckService {
     ips: { ip: string; family: 4 | 6 }[],
     probes: IpWellKnownProbe[],
   ): Promise<CheckBody> {
-    if (ips.length === 0) return { status: 'fail', detail: 'no IPs resolved to probe', evidence: { ips: [] } };
+    if (ips.length === 0)
+      return {
+        status: 'fail',
+        detail: 'no IPs resolved to probe',
+        evidence: { ips: [] },
+      };
     const status = this.worst(probes.map((p) => p.status));
     const okCount = probes.filter((p) => p.status === 'ok').length;
     const sample = probes.find((p) => p.doc);
@@ -360,8 +488,10 @@ export class FederationSelfCheckService {
     const keyId = this.safeKeyId();
     if (!doc) {
       return {
-        status: 'fail',
-        detail: '.well-known/soms unreachable on every IP — cannot compare published vs local key',
+        status: 'skip',
+        detail:
+          '.well-known/soms unavailable — published key comparison was not run',
+        blockedBy: 'well-known',
         evidence: { localPubB64: localPub, localPubSha256: localSha, keyId },
       };
     }
@@ -370,12 +500,19 @@ export class FederationSelfCheckService {
     const keyMatch = published.includes(localPub);
     const domainMatch = keyIdDomain === domain;
     const issues: string[] = [];
-    if (!keyMatch) issues.push('published key set does NOT include the local in-use public key (rotation drift?)');
-    if (!domainMatch) issues.push(`keyId domain "${keyIdDomain}" != SOMS_DOMAIN "${domain}"`);
+    if (!keyMatch)
+      issues.push(
+        'published key set does NOT include the local in-use public key (rotation drift?)',
+      );
+    if (!domainMatch)
+      issues.push(`keyId domain "${keyIdDomain}" != SOMS_DOMAIN "${domain}"`);
     const status: SelfCheckStatus = keyMatch && domainMatch ? 'ok' : 'fail';
     return {
       status,
-      detail: issues.length === 0 ? 'local key is published; keyId domain matches SOMS_DOMAIN' : issues.join('; '),
+      detail:
+        issues.length === 0
+          ? 'local key is published; keyId domain matches SOMS_DOMAIN'
+          : issues.join('; '),
       evidence: {
         localPubB64: localPub,
         localPubSha256: localSha,
@@ -391,14 +528,26 @@ export class FederationSelfCheckService {
     };
   }
 
-  private async checkSignLoopback(doc: WellKnownDoc | null, authority: string): Promise<CheckBody> {
+  private async checkSignLoopback(
+    doc: WellKnownDoc | null,
+    authority: string,
+  ): Promise<CheckBody> {
     if (!doc || doc.keys.length === 0) {
-      return { status: 'skip', detail: 'no published key available — skip signature loopback', evidence: { authority } };
+      return {
+        status: 'skip',
+        detail: '.well-known/soms unavailable — signature loopback was not run',
+        blockedBy: 'well-known',
+        evidence: { authority },
+      };
     }
     const ed = doc.keys[0].ed25519;
     const pub = Uint8Array.from(Buffer.from(ed, 'base64'));
     if (pub.length !== 32) {
-      return { status: 'fail', detail: `published key is not 32 bytes (${pub.length})`, evidence: { authority } };
+      return {
+        status: 'fail',
+        detail: `published key is not 32 bytes (${pub.length})`,
+        evidence: { authority },
+      };
     }
     const req: SignedRequest = {
       method: 'POST',
@@ -413,7 +562,11 @@ export class FederationSelfCheckService {
       detail: ok
         ? `RFC 9421 sign→verify loop passes (authority=${authority})`
         : 'sign→verify loop FAILED — keypair/signature implementation broken',
-      evidence: { authority, verified: ok, keyId: headers['signature-input'].match(/keyid="([^"]+)"/)?.[1] ?? null },
+      evidence: {
+        authority,
+        verified: ok,
+        keyId: headers['signature-input'].match(/keyid="([^"]+)"/)?.[1] ?? null,
+      },
     };
   }
 
@@ -431,7 +584,11 @@ export class FederationSelfCheckService {
           status === 'ok'
             ? `clock offset ${sign}${offsetSec.toFixed(1)}s (within ±${FederationSelfCheckService.CLOCK_WARN_SEC}s)`
             : `clock offset ${sign}${offsetSec.toFixed(1)}s — RFC 9421 Date header will be rejected by peers`,
-        evidence: { ntpServer, offsetSec: Number(offsetSec.toFixed(2)), roundTripMs },
+        evidence: {
+          ntpServer,
+          offsetSec: Number(offsetSec.toFixed(2)),
+          roundTripMs,
+        },
       };
     } catch (e) {
       return {
@@ -470,7 +627,14 @@ export class FederationSelfCheckService {
           const peer = sock.getPeerCertificate(true) as PeerCert | undefined;
           if (!peer || !peer.raw) {
             sock.destroy();
-            done({ ip, family, reachable: true, status: 'fail', detail: 'handshake ok but no certificate presented', errorClass: 'cert' });
+            done({
+              ip,
+              family,
+              reachable: true,
+              status: 'fail',
+              detail: 'handshake ok but no certificate presented',
+              errorClass: 'cert',
+            });
             return;
           }
           const cert = this.parseCert(peer.raw, host, sock.alpnProtocol);
@@ -481,10 +645,14 @@ export class FederationSelfCheckService {
           if (!cert.sanMatched) {
             status = 'fail';
             detail = `cert SAN does NOT cover ${host}`;
-          } else if (cert.daysToExpiry < FederationSelfCheckService.CERT_FAIL_DAYS) {
+          } else if (
+            cert.daysToExpiry < FederationSelfCheckService.CERT_FAIL_DAYS
+          ) {
             status = 'fail';
             detail = `cert EXPIRES in ${cert.daysToExpiry}d (< ${FederationSelfCheckService.CERT_FAIL_DAYS})`;
-          } else if (cert.daysToExpiry < FederationSelfCheckService.CERT_WARN_DAYS) {
+          } else if (
+            cert.daysToExpiry < FederationSelfCheckService.CERT_WARN_DAYS
+          ) {
             status = 'warn';
             detail = `cert expires in ${cert.daysToExpiry}d (< ${FederationSelfCheckService.CERT_WARN_DAYS})`;
           }
@@ -496,7 +664,8 @@ export class FederationSelfCheckService {
             detail,
             cert,
             chain,
-            chainComplete: chain.length > 0 ? !!chain[chain.length - 1].selfSigned : false,
+            chainComplete:
+              chain.length > 0 ? !!chain[chain.length - 1].selfSigned : false,
           });
         },
       );
@@ -525,7 +694,11 @@ export class FederationSelfCheckService {
     port: number,
     scheme: 'https' | 'http',
     config: FederationConfig,
+    negotiatedAlpn: string | null,
   ): Promise<IpWellKnownProbe> {
+    if (scheme === 'https' && negotiatedAlpn === 'h2') {
+      return this.probeWellKnownHttp2(ip, family, host, port, config);
+    }
     return new Promise((resolve) => {
       const isTls = scheme === 'https';
       const baseOpts = {
@@ -536,7 +709,8 @@ export class FederationSelfCheckService {
         timeout: config.callTimeoutSec * 1000,
         headers: { host, accept: 'application/json' }, // … but send Host: <public hostname>
       };
-      const onRes = (res: IncomingMessage) => this.consumeWellKnownResponse(res, ip, family, resolve);
+      const onRes = (res: IncomingMessage) =>
+        this.consumeWellKnownResponse(res, ip, family, resolve);
       // Separate branches (not a ternary over the request fn) so each options object is checked against
       // its own request signature — the TLS branch carries servername/rejectUnauthorized/ALPNProtocols.
       const req = isTls
@@ -547,7 +721,9 @@ export class FederationSelfCheckService {
               ...baseOpts,
               servername: host,
               rejectUnauthorized: true,
-              ALPNProtocols: ['h2', 'http/1.1'],
+              // node:https is an HTTP/1.1 client. Advertising h2 here lets the server select a
+              // protocol this parser cannot consume (HPE_INVALID_CONSTANT).
+              ALPNProtocols: ['http/1.1'],
             } as never,
             onRes,
           )
@@ -563,6 +739,99 @@ export class FederationSelfCheckService {
           detail: `${code ?? err.message}`,
           errorClass: this.classifyErr(code),
           code: code ?? undefined,
+          phase: 'http',
+          httpVersion: '1.1',
+        });
+      });
+      req.end();
+    });
+  }
+
+  /** HTTP/2 branch selected from the TLS probe's ALPN result. It retains per-IP dialing while SNI and
+   *  :authority use the public hostname, matching what a real peer observes. */
+  private probeWellKnownHttp2(
+    ip: string,
+    family: 4 | 6,
+    host: string,
+    port: number,
+    config: FederationConfig,
+  ): Promise<IpWellKnownProbe> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (probe: IpWellKnownProbe) => {
+        if (settled) return;
+        settled = true;
+        client.close();
+        resolve(probe);
+      };
+      const authority = `https://${host}:${port}`;
+      const client = http2Connect(authority, {
+        createConnection: () =>
+          tlsConnect({
+            host: ip,
+            port,
+            servername: host,
+            rejectUnauthorized: true,
+            ALPNProtocols: ['h2'],
+          }),
+      });
+      client.setTimeout(config.callTimeoutSec * 1000, () =>
+        client.destroy(new Error('timeout')),
+      );
+      client.once('error', (err) => {
+        const code = (err as NodeJS.ErrnoException).code;
+        done({
+          ip,
+          family,
+          reachable: false,
+          status: 'fail',
+          detail: `${code ?? err.message}`,
+          errorClass: this.classifyErr(code),
+          code: code ?? undefined,
+          phase: 'http',
+          httpVersion: '2',
+        });
+      });
+      const req = client.request({
+        [http2Constants.HTTP2_HEADER_METHOD]: 'GET',
+        [http2Constants.HTTP2_HEADER_PATH]: '/.well-known/soms',
+        [http2Constants.HTTP2_HEADER_AUTHORITY]: host,
+        accept: 'application/json',
+      });
+      const chunks: Buffer[] = [];
+      let status = 0;
+      let contentType = '';
+      req.on('response', (headers) => {
+        status = Number(headers[http2Constants.HTTP2_HEADER_STATUS] ?? 0);
+        contentType = String(
+          headers[http2Constants.HTTP2_HEADER_CONTENT_TYPE] ?? '',
+        );
+      });
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () =>
+        done(
+          this.parseWellKnownResponse(
+            ip,
+            family,
+            status,
+            contentType,
+            Buffer.concat(chunks).toString('utf8'),
+            '2',
+          ),
+        ),
+      );
+      req.once('error', (err) => {
+        const code = (err as NodeJS.ErrnoException).code;
+        done({
+          ip,
+          family,
+          reachable: false,
+          status: 'fail',
+          detail: `${code ?? err.message}`,
+          errorClass: 'http',
+          code,
+          phase: 'http',
+          httpVersion: '2',
         });
       });
       req.end();
@@ -583,42 +852,76 @@ export class FederationSelfCheckService {
       const status = res.statusCode ?? 0;
       const ct = res.headers['content-type'];
       const contentType = typeof ct === 'string' ? ct : '';
-      const probe: IpWellKnownProbe = { ip, family, reachable: true, status: 'ok', detail: '', httpStatus: status, contentType };
-      if (status !== 200) {
-        probe.status = 'fail';
-        probe.errorClass = 'http';
-        probe.detail = `HTTP ${status}`;
-        return resolve(probe);
-      }
-      let doc: WellKnownDoc;
-      try {
-        doc = JSON.parse(body) as WellKnownDoc;
-      } catch (e) {
-        probe.status = 'fail';
-        probe.errorClass = 'parse';
-        probe.detail = `malformed JSON: ${(e as Error).message}`;
-        return resolve(probe);
-      }
-      probe.doc = doc;
-      probe.software = doc.software ?? null;
-      probe.keyCount = Array.isArray(doc.keys) ? doc.keys.length : 0;
-      const keysValid =
-        Array.isArray(doc.keys) &&
-        doc.keys.every(
-          (k) => typeof k?.keyId === 'string' && typeof k?.ed25519 === 'string' && Buffer.from(k.ed25519, 'base64').length === 32,
-        );
-      probe.keysValid = keysValid;
-      if (!doc.software || !doc.software.startsWith('soms/')) {
-        probe.status = 'warn';
-        probe.detail = `software="${doc.software ?? ''}" — expected a soms/ server (wrong target?)`;
-      } else if (!keysValid) {
-        probe.status = 'warn';
-        probe.detail = 'keys missing or not valid 32-byte ed25519';
-      } else {
-        probe.detail = `software=${doc.software}; ${probe.keyCount} key(s)`;
-      }
-      resolve(probe);
+      resolve(
+        this.parseWellKnownResponse(
+          ip,
+          family,
+          status,
+          contentType,
+          body,
+          res.httpVersion,
+        ),
+      );
     });
+  }
+
+  private parseWellKnownResponse(
+    ip: string,
+    family: 4 | 6,
+    status: number,
+    contentType: string,
+    body: string,
+    httpVersion: string,
+  ): IpWellKnownProbe {
+    const probe: IpWellKnownProbe = {
+      ip,
+      family,
+      reachable: true,
+      status: 'ok',
+      detail: '',
+      httpStatus: status,
+      contentType,
+      phase: 'response',
+      httpVersion,
+    };
+    if (status !== 200) {
+      probe.status = 'fail';
+      probe.errorClass = 'http';
+      probe.detail = `HTTP ${status}`;
+      return probe;
+    }
+    let doc: WellKnownDoc;
+    try {
+      doc = JSON.parse(body) as WellKnownDoc;
+    } catch (e) {
+      probe.status = 'fail';
+      probe.errorClass = 'parse';
+      probe.detail = `malformed JSON: ${(e as Error).message}`;
+      probe.phase = 'parse';
+      return probe;
+    }
+    probe.doc = doc;
+    probe.software = doc.software ?? null;
+    probe.keyCount = Array.isArray(doc.keys) ? doc.keys.length : 0;
+    const keysValid =
+      Array.isArray(doc.keys) &&
+      doc.keys.every(
+        (k) =>
+          typeof k?.keyId === 'string' &&
+          typeof k?.ed25519 === 'string' &&
+          Buffer.from(k.ed25519, 'base64').length === 32,
+      );
+    probe.keysValid = keysValid;
+    if (!doc.software || !doc.software.startsWith('soms/')) {
+      probe.status = 'warn';
+      probe.detail = `software="${doc.software ?? ''}" — expected a soms/ server (wrong target?)`;
+    } else if (!keysValid) {
+      probe.status = 'warn';
+      probe.detail = 'keys missing or not valid 32-byte ed25519';
+    } else {
+      probe.detail = `software=${doc.software}; ${probe.keyCount} key(s)`;
+    }
+    return probe;
   }
 
   /** Plain TCP connect to prove the local process is listening (loopback probe). */
@@ -642,7 +945,9 @@ export class FederationSelfCheckService {
   }
 
   /** Minimal NTPv4 client (RFC 5905): one 48-byte UDP datagram, read the transmit timestamp (offset 40). */
-  private queryNtp(server: string): Promise<{ offsetSec: number; roundTripMs: number }> {
+  private queryNtp(
+    server: string,
+  ): Promise<{ offsetSec: number; roundTripMs: number }> {
     return new Promise((resolve, reject) => {
       const t1 = Date.now();
       const sock = createSocket('udp4');
@@ -650,7 +955,11 @@ export class FederationSelfCheckService {
       packet[0] = 0x1b; // LI=0 · VN=3 · Mode=3 (client)
       const timer = setTimeout(() => {
         sock.close();
-        reject(new Error(`timeout after ${FederationSelfCheckService.NTP_TIMEOUT_MS}ms`));
+        reject(
+          new Error(
+            `timeout after ${FederationSelfCheckService.NTP_TIMEOUT_MS}ms`,
+          ),
+        );
       }, FederationSelfCheckService.NTP_TIMEOUT_MS);
       sock.on('error', (err) => {
         clearTimeout(timer);
@@ -662,19 +971,28 @@ export class FederationSelfCheckService {
         const t4 = Date.now();
         const seconds = msg.readUInt32BE(40);
         const fraction = msg.readUInt32BE(44);
-        const serverMs = (seconds - FederationSelfCheckService.NTP_EPOCH_OFFSET) * 1000 + (fraction / 0x100000000) * 1000;
+        const serverMs =
+          (seconds - FederationSelfCheckService.NTP_EPOCH_OFFSET) * 1000 +
+          (fraction / 0x100000000) * 1000;
         sock.close();
         // offset = server time − midpoint of the local round-trip window
         const offsetMs = serverMs - (t1 + t4) / 2;
         resolve({ offsetSec: offsetMs / 1000, roundTripMs: t4 - t1 });
       });
-      sock.send(packet, 0, 48, FederationSelfCheckService.NTP_PORT, server, (err) => {
-        if (err) {
-          clearTimeout(timer);
-          sock.close();
-          reject(err);
-        }
-      });
+      sock.send(
+        packet,
+        0,
+        48,
+        FederationSelfCheckService.NTP_PORT,
+        server,
+        (err) => {
+          if (err) {
+            clearTimeout(timer);
+            sock.close();
+            reject(err);
+          }
+        },
+      );
     });
   }
 
@@ -686,7 +1004,9 @@ export class FederationSelfCheckService {
       try {
         r.setServers([dnsResolver]);
       } catch (e) {
-        this.logger.warn(`invalid dnsResolver "${dnsResolver}": ${(e as Error).message}; using system resolver`);
+        this.logger.warn(
+          `invalid dnsResolver "${dnsResolver}": ${(e as Error).message}; using system resolver`,
+        );
       }
     }
     return r;
@@ -698,7 +1018,9 @@ export class FederationSelfCheckService {
     domain: string,
     config: FederationConfig,
   ): Promise<ResolvedTarget> {
-    const scheme: 'https' | 'http' = config.allowInsecureHttp ? 'http' : 'https';
+    const scheme: 'https' | 'http' = config.allowInsecureHttp
+      ? 'http'
+      : 'https';
     const defaultPort = scheme === 'https' ? 443 : 80;
     let host = domain;
     let port: number | undefined;
@@ -732,7 +1054,9 @@ export class FederationSelfCheckService {
     try {
       // Resolve the SRV target host (or apex domain). For an apex deploy the host == domain.
       const host = target.hasSrv ? target.host : domain;
-      return family === 4 ? await resolver.resolve4(host) : await resolver.resolve6(host);
+      return family === 4
+        ? await resolver.resolve4(host)
+        : await resolver.resolve6(host);
     } catch {
       return [];
     }
@@ -740,7 +1064,11 @@ export class FederationSelfCheckService {
 
   // ─────────────────────────── cert parsing ───────────────────────────
 
-  private parseCert(raw: Buffer, host: string, alpn: string | false | null | undefined): CertInfo {
+  private parseCert(
+    raw: Buffer,
+    host: string,
+    alpn: string | false | null | undefined,
+  ): CertInfo {
     const x = new X509Certificate(raw);
     let sanMatched = true;
     try {
@@ -749,7 +1077,9 @@ export class FederationSelfCheckService {
       sanMatched = false;
     }
     const validToDate = new Date(x.validTo);
-    const daysToExpiry = Math.floor((validToDate.getTime() - Date.now()) / 86_400_000);
+    const daysToExpiry = Math.floor(
+      (validToDate.getTime() - Date.now()) / 86_400_000,
+    );
     return {
       subject: x.subject,
       issuer: x.issuer,
@@ -780,12 +1110,21 @@ export class FederationSelfCheckService {
       const fp = cur.fingerprint256 ?? cur.fingerprint ?? '';
       if (!fp || seen.has(fp)) break;
       seen.add(fp);
-      const subjectStr = typeof cur.subject === 'string' ? cur.subject : this.dnToString(cur.subject);
-      const issuerStr = typeof cur.issuer === 'string' ? cur.issuer : this.dnToString(cur.issuer);
+      const subjectStr =
+        typeof cur.subject === 'string'
+          ? cur.subject
+          : this.dnToString(cur.subject);
+      const issuerStr =
+        typeof cur.issuer === 'string'
+          ? cur.issuer
+          : this.dnToString(cur.issuer);
       chain.push({
         subject: subjectStr,
         issuer: issuerStr,
-        subjectCN: typeof cur.subject === 'string' ? this.extractCN(cur.subject) : cur.subject?.CN ?? null,
+        subjectCN:
+          typeof cur.subject === 'string'
+            ? this.extractCN(cur.subject)
+            : (cur.subject?.CN ?? null),
         validTo: cur.valid_to ?? null,
         selfSigned: subjectStr === issuerStr,
         isCA: !!cur.isCA,
@@ -796,12 +1135,22 @@ export class FederationSelfCheckService {
     return chain;
   }
 
-  private describeKey(pub: KeyObject): { algorithm: string | null; bits: number | null; curve: string | null } {
+  private describeKey(pub: KeyObject): {
+    algorithm: string | null;
+    bits: number | null;
+    curve: string | null;
+  } {
     const details = (pub.asymmetricKeyDetails ?? {}) as Record<string, unknown>;
     return {
       algorithm: pub.asymmetricKeyType ?? null,
-      bits: typeof details.modulusLength === 'number' ? details.modulusLength : null,
-      curve: typeof details.namedCurve === 'string' ? (details.namedCurve as string) : null,
+      bits:
+        typeof details.modulusLength === 'number'
+          ? details.modulusLength
+          : null,
+      curve:
+        typeof details.namedCurve === 'string'
+          ? (details.namedCurve as string)
+          : null,
     };
   }
 
@@ -819,11 +1168,14 @@ export class FederationSelfCheckService {
 
   // ─────────────────────────── small utils ───────────────────────────
 
-  private classifyErr(code: string | undefined): 'reachability' | 'cert' | 'timeout' {
+  private classifyErr(
+    code: string | undefined,
+  ): 'reachability' | 'cert' | 'timeout' {
     if (!code) return 'reachability';
     if (REACH_CODES.has(code)) return 'reachability';
     if (CERT_CODES.has(code)) return 'cert';
-    if (code === 'CERT_HAS_EXPIRED' || code.includes('TIMEOUT')) return code === 'CERT_HAS_EXPIRED' ? 'cert' : 'timeout';
+    if (code === 'CERT_HAS_EXPIRED' || code.includes('TIMEOUT'))
+      return code === 'CERT_HAS_EXPIRED' ? 'cert' : 'timeout';
     return 'reachability';
   }
 
@@ -861,18 +1213,33 @@ export class FederationSelfCheckService {
     try {
       body = await fn();
     } catch (e) {
-      body = { status: 'fail', detail: `unexpected error: ${(e as Error).message}`, evidence: { error: String((e as Error).message) } };
+      body = {
+        status: 'fail',
+        detail: `unexpected error: ${(e as Error).message}`,
+        evidence: { error: String((e as Error).message) },
+      };
     }
     return { ...meta, ...body, durationMs: Date.now() - t0 };
   }
 }
 
 const REACH_CODES = new Set([
-  'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
 ]);
 const CERT_CODES = new Set([
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_GET_ISSUER_CERT', 'ERR_TLS_CERT_ALTNAME',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_NOT_YET_VALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'ERR_TLS_CERT_ALTNAME',
 ]);
 
 function octal(mode: number): string {
@@ -890,12 +1257,19 @@ export interface RunOptions {
 }
 
 export type SelfCheckStatus = 'ok' | 'warn' | 'fail' | 'skip';
-export type SelfCheckGroup = 'config' | 'dns' | 'tls' | 'well-known' | 'crypto' | 'clock';
+export type SelfCheckGroup =
+  | 'config'
+  | 'dns'
+  | 'tls'
+  | 'well-known'
+  | 'crypto'
+  | 'clock';
 
 interface CheckBody {
   status: SelfCheckStatus;
   detail: string;
   evidence?: Record<string, unknown>;
+  blockedBy?: string;
 }
 
 export interface SelfCheckCheck extends CheckBody {
@@ -917,7 +1291,12 @@ export interface SelfCheckReport {
   runAt: number; // ms epoch
   durationMs: number;
   summary: SelfCheckSummary;
-  target: { host: string; port: number; scheme: 'https' | 'http'; hasSrv: boolean };
+  target: {
+    host: string;
+    port: number;
+    scheme: 'https' | 'http';
+    hasSrv: boolean;
+  };
   resolver: string;
   ntpServer: string;
   checks: SelfCheckCheck[];
@@ -948,7 +1327,11 @@ interface CertInfo {
   validTo: string;
   daysToExpiry: number;
   signatureAlgorithm: string | null;
-  publicKey: { algorithm: string | null; bits: number | null; curve: string | null };
+  publicKey: {
+    algorithm: string | null;
+    bits: number | null;
+    curve: string | null;
+  };
   fingerprintSha1: string;
   fingerprintSha256: string;
   ca: boolean;
@@ -993,6 +1376,8 @@ interface IpWellKnownProbe {
   doc?: WellKnownDoc;
   errorClass?: 'reachability' | 'cert' | 'timeout' | 'http' | 'parse';
   code?: string;
+  phase?: 'connect' | 'tls' | 'http' | 'response' | 'parse';
+  httpVersion?: string;
 }
 
 /** Shape of tls.TLSSocket.getPeerCertificate(true) — a legacy object with a circular issuerCertificate link. */

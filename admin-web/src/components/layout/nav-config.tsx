@@ -13,6 +13,7 @@ import {
   Settings,
   Link2,
   ShieldBan,
+  Gauge,
   Users,
 } from 'lucide-react';
 
@@ -32,7 +33,8 @@ export type NavKey =
   | 'settings'
   | 'security'
   | 'audit'
-  | 'linkCards';
+  | 'linkCards'
+  | 'rateLimits';
 
 /** Full i18n key for a group header (under nav.group.*). */
 export type NavGroupKey =
@@ -88,6 +90,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/media', key: 'media', icon: HardDrive },
       { to: '/link-cards', key: 'linkCards', icon: Link2 },
       { to: '/logs', key: 'logs', icon: ScrollText },
+      { to: '/rate-limits', key: 'rateLimits', icon: Gauge },
       { to: '/settings', key: 'settings', icon: Settings },
     ],
   },

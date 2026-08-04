@@ -49,6 +49,9 @@ object SomsBridge {
     object FcmToken {
         @Volatile
         var current: String? = null
+
+        @Volatile
+        var lastError: String? = null
     }
 
     /** A thread id captured from a notification tap before the webview exists (cold start), consumed by

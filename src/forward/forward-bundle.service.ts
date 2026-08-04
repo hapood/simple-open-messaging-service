@@ -16,7 +16,7 @@ import {
   forwardBundleDependency,
   forwardMessage,
   mediaAsset,
-  mediaMessage,
+  messageAsset,
   message,
   threadParticipant,
 } from '../database/schema.js';
@@ -182,10 +182,10 @@ export class ForwardBundleService {
         );
       }
       if (digests.length > 0) {
-        const bindings = await this.database.db.query.mediaMessage.findMany({
+        const bindings = await this.database.db.query.messageAsset.findMany({
           where: and(
-            eq(mediaMessage.messageId, visible.id),
-            inArray(mediaMessage.digest, digests),
+            eq(messageAsset.messageId, visible.id),
+            inArray(messageAsset.digest, digests),
           ),
           columns: { digest: true },
         });
@@ -1165,7 +1165,7 @@ export function localizeForwardMediaContent(
     }
     return JSON.stringify({
       ...(value as Record<string, unknown>),
-      url: `/uploads/cas/${asset.digest.slice(0, 2)}/${asset.digest.slice(2, 4)}/${asset.digest}`,
+      url: `/uploads/msg-assets/${asset.digest.slice(0, 2)}/${asset.digest.slice(2, 4)}/${asset.digest}`,
     });
   } catch {
     return content;

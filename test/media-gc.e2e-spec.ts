@@ -13,7 +13,7 @@ import { DatabaseService } from '../src/database/database.service';
 import {
   forwardBundle,
   mediaAsset,
-  mediaMessage,
+  messageAsset,
   message,
   messageThread,
   pendingMedia,
@@ -66,11 +66,11 @@ describe('Media asset garbage collection', () => {
       Buffer.from(content),
     );
     const digest = url
-      .slice('/uploads/cas/'.length)
+      .slice('/uploads/msg-assets/'.length)
       .split('/')
       .pop()!
       .replace(/\.bin$/, '');
-    const absPath = join(upload.casDir, url.slice('/uploads/cas/'.length));
+    const absPath = join(upload.casDir, url.slice('/uploads/msg-assets/'.length));
     return { digest, absPath };
   }
 
@@ -449,7 +449,7 @@ describe('Media asset garbage collection', () => {
         updatedAt: new Date(),
       })
       .returning();
-    await database.db.insert(mediaMessage).values({
+    await database.db.insert(messageAsset).values({
       messageId: msg.id,
       threadId,
       digest,
@@ -475,8 +475,8 @@ describe('Media asset garbage collection', () => {
     ).toBeUndefined();
     // cleanup
     await database.db
-      .delete(mediaMessage)
-      .where(eq(mediaMessage.messageId, msg.id))
+      .delete(messageAsset)
+      .where(eq(messageAsset.messageId, msg.id))
       .catch(() => {});
     await database.db
       .delete(message)

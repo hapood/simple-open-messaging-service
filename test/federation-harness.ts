@@ -364,7 +364,7 @@ export async function assertSeparateDatabases(
  *  dedup SKIP the /get_file fetch on the next run — defeating the media tests (the proxy would see no
  *  /get_file). MediaMessage + Message are belt-and-suspenders (they FK-cascade, but list them anyway). */
 const FEDERATION_TRUNCATE_SQL =
-  'TRUNCATE TABLE "User", "Invite", "MessageThread", "Message", "MediaMessage", "MediaAsset", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "S2SFriendOpSeen" RESTART IDENTITY CASCADE';
+  'TRUNCATE TABLE "User", "Invite", "MessageThread", "Message", "MessageAsset", "MediaAsset", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "S2SFriendOpSeen" RESTART IDENTITY CASCADE';
 
 /** Truncate BOTH apps' databases between tests (in parallel — a test cannot forget one side). */
 export async function truncateFederationDbs(

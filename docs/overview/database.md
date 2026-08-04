@@ -184,7 +184,7 @@ Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([t
 
 ### Admin / AdminSession / AdminActionLog / 2FA / WebAuthn
 
-- **Admin** — linked profile (`userId → User`, 1:1); role `SUPER_ADMIN`/`ADMIN`/`VIEWER`, `enabled`, `lastLogin*`, TOTP (`twoFactorSecretCipher` AES-256-GCM under `SOMS_2FA_KEY`, `twoFactorLastUsedCounter` replay guard), WebAuthn hint.
+- **Admin** — linked profile (`userId → User`, 1:1); role `SUPER_ADMIN`/`ADMIN`/`VIEWER`, `enabled`, `lastLogin*`, TOTP (`twoFactorSecretCipher` AES-256-GCM under the auto-managed `./data/2fa.key`, `twoFactorLastUsedCounter` replay guard), WebAuthn hint.
 - **AdminSession** — opaque admin session (`tokenHash` sha256; like the user SessionToken pattern, separate secret).
 - **WebAuthnCredential** — passkey credential (public `credentialId` + COSE `publicKey`, clone-detection `counter`, transports/deviceType/backed).
 - **AdminLoginChallenge** — single-use challenge tracker (closes the WebAuthn replay window for counter=0 authenticators).

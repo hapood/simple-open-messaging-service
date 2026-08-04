@@ -155,8 +155,9 @@ npm run dev --prefix admin-web
 | --- | --- | --- |
 | `.env` → `DATABASE_URL` or `PGHOST`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` | PostgreSQL connection | URL form remains supported; Docker deployment uses the standard `PG*` variables |
 | `.env` → `SOMS_DOMAIN` | Public domain of this service (federation identity) | Required (`@user@<domain>`, host of `/.well-known/soms`) |
+| `.env` → `SOMS_WEB_DOMAIN` | Optional public Web/native-client entry hostname; defaults to `SOMS_DOMAIN` |
 | `.env` → `ADMIN_BOOTSTRAP_PASSWORD` | Password used to create the first `admin` account when no administrator exists |
-| `.env` → `SOMS_TLS_MODE` | Public origin mode: `standard`, `custom`, or `disabled` |
+| `.env` → `SOMS_TLS_MODE` | Public origin mode: `standard`, `single-port`, or `disabled` |
 | `.env` → `SOMS_LAN_DOMAIN` | Optional alternate LAN hostname used by native clients |
 | `.env` → `SOMS_S2S_KEY_PATH` | Optional path for the persisted federation Ed25519 key |
 | `.env` → `SOMS_STUN_URLS` / `SOMS_TURN_*` | Optional WebRTC ICE/TURN configuration |
@@ -271,7 +272,7 @@ docker build --target runtime -t soms:slim .
 `deploy/` holds **two launch-template profiles** — copy the one that matches your deployment to a deployment directory and run from there (not inside the source checkout, so `./data` doesn't land in the tree):
 
 - **`deploy/public/`** — public internet: TLS on `80`/`443` (+ `7667` for federation), DNS-01 cert, admin open to all source IPs (`SOMS_TLS_MODE=standard`, `SOMS_ADMIN_ACCESS=public`).
-- **`deploy/nas/`** — intranet/NAS: TLS on a single `7667`, served by the public domain **and** an optional LAN domain (`SOMS_LAN_DOMAIN`) — both real DNS-01 certs, so native clients can reach the box from inside the LAN when the public domain is hairpin-NAT-unreachable (no self-signed cert / click-through; works on iOS PWA too). Admin locked to private-range IPs (`SOMS_TLS_MODE=custom`, `SOMS_ADMIN_ACCESS=lan`).
+- **`deploy/nas/`** — intranet/NAS: TLS on a single `7667`, served by the public domain **and** an optional LAN domain (`SOMS_LAN_DOMAIN`) — both real DNS-01 certs, so native clients can reach the box from inside the LAN when the public domain is hairpin-NAT-unreachable (no self-signed cert / click-through; works on iOS PWA too). Admin locked to private-range IPs (`SOMS_TLS_MODE=single-port`, `SOMS_ADMIN_ACCESS=lan`).
 
 ```bash
 cp -r deploy/public/ /opt/soms/ && cd /opt/soms   # or deploy/nas/ for an intranet/NAS box
@@ -279,13 +280,13 @@ cp .env.example .env                               # then edit .env (profile-spe
 docker compose up -d
 ```
 
-The deployment directory contains only `docker-compose.yml` and the operator-managed `.env`. Required values include `SOMS_DOMAIN`, `PGPASSWORD`, and `ADMIN_BOOTSTRAP_PASSWORD`; Compose injects the standard PostgreSQL `PG*` variables directly into the app and migration runner. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (Zone:DNS:Edit on the `SOMS_DOMAIN` zone).
+The deployment directory contains `docker-compose.yml`, the operator-managed `.env`, and a `data/` directory for persistent application state. Required values include `SOMS_DOMAIN`, `PGPASSWORD`, and `ADMIN_BOOTSTRAP_PASSWORD`; Compose injects the standard PostgreSQL `PG*` variables directly into the app and migration runner. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (Zone:DNS:Edit on the `SOMS_DOMAIN` zone).
 
 Published ports depend on the profile and can be changed in `.env`: NAS uses `SOMS_PORT`; public uses `SOMS_HTTP_PORT`, `SOMS_HTTPS_PORT`, and `SOMS_FEDERATION_PORT`. Container ports remain 80/443/7667. Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
 
-- **First-run certs**: Caddy issues the Let's Encrypt certificate(s) via **DNS-01** on startup (no ports 80/443 needed) — one for `SOMS_DOMAIN` and, if `SOMS_LAN_DOMAIN` is set, one for it too (both via the same provider/zone; the LAN domain **must share** `SOMS_DOMAIN`'s registrable domain). This takes ~10–60s; until then HTTPS returns a TLS error. Watch `docker compose logs -f app` for `certificate obtained successfully`. Issued certs persist in the `app-data` volume (under `/app/data/caddy`) across restarts, so they are not re-issued.
+- **First-run certs**: Caddy issues the Let's Encrypt certificate(s) via **DNS-01** on startup (no ports 80/443 needed) — one for `SOMS_DOMAIN` and, if `SOMS_LAN_DOMAIN` is set, one for it too (both via the same provider/zone; the LAN domain **must share** `SOMS_DOMAIN`'s registrable domain). This takes ~10–60s; until then HTTPS returns a TLS error. Watch `docker compose logs -f app` for `certificate obtained successfully`. Issued certs persist under `./data/caddy` across restarts, so they are not re-issued.
 - **LAN domain & client fallback** (optional, `SOMS_LAN_DOMAIN`): native clients (desktop/Android) accept either domain in server settings — the other is auto-filled from `/shell/compat` and confirmed via a modal, then the client races `GET /api/v1/health` on both and uses whichever is reachable (auto-fallback as you move between LAN and WAN; same backend ⇒ one session works on both). Browser/PWA clients can use the LAN domain manually. **DNS-rebinding note:** if the LAN domain's public A record points directly at a private IP, some resolvers (pi-hole, dnsmasq `stop-dns-rebind`, OpenWrt) may drop it — use split-horizon DNS or allowlist the domain (not observed on most home/ISP resolvers).
-- **Persistent state** lives under one volume (`app-data` → `/app/data`): S2S + JWT keys, app logs, Caddy state, and uploads. Postgres keeps its own dedicated `postgres-data` volume. Named volumes remove host-UID initialization and make the stack start through standard Compose alone.
+- **Persistent state** lives under one bind mount (`./data` → `/app/data`): S2S + JWT keys, app logs, Caddy state, uploads, and the operator-provided Firebase files. Postgres keeps its own dedicated `postgres-data` volume. Put `firebase-service-account.json` and `google-services.json` in `./data` to enable FCM; the corresponding paths are already documented in `.env.example`.
 - **Bootstrap admin** is self-seeded by the app on startup: on every boot it creates `account=admin` from `ADMIN_BOOTSTRAP_PASSWORD` if no admin exists yet (a no-op once one does) — no separate seed container, no manual `docker compose run`. If `ADMIN_BOOTSTRAP_PASSWORD` is left empty, the app still boots but logs a WARN and the `/admin` console has no login until you set it and restart. Log in to `/admin` with `admin` + the password.
 - **HTTP/2**: clients negotiate h2 (and h3 over UDP) with Caddy on `7667`. The origin leg to node is HTTP/1.1 (a loopback hop inside the container).
 

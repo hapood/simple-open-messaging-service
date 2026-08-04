@@ -6,6 +6,9 @@
     "yes": "Yes",
     "no": "No",
     "cancel": "Cancel",
+    "edit": "Edit",
+    "delete": "Delete",
+    "save": "Save",
     "search": "Search",
     "previous": "Previous",
     "next": "Next",
@@ -52,6 +55,7 @@
     "push": "Push Management",
     "federation": "Federation",
     "logs": "Logs",
+    "rateLimits": "Rate Limits",
     "media": "Media & Storage",
     "linkCards": "Link Cards",
     "settings": "Settings",
@@ -488,6 +492,26 @@
       "noSrv": "no SRV, apex",
       "runAt": "Run at",
       "totalDuration": "Total",
+      "primaryIssue": "Primary issue",
+      "blocked": "Blocked upstream",
+      "blockedCount": "{{count}} additional check(s) were not run because of this issue.",
+      "error": {
+        "HPE_INVALID_CONSTANT": "HTTP protocol parse failure: the response did not match the negotiated protocol"
+      },
+      "check": {
+        "config": "Local configuration",
+        "key-file": "Key file permissions",
+        "key-age": "Key creation time",
+        "dns-srv": "SRV record _soms._tcp",
+        "dns-a": "A records (IPv4)",
+        "dns-aaaa": "AAAA records (IPv6)",
+        "tls-public": "TLS certificate (per IP)",
+        "tls-loopback": "Local process loopback",
+        "well-known": ".well-known/soms (per IP)",
+        "key-consistency": "Published key consistency",
+        "sign-loopback": "Signature loopback",
+        "clock-skew": "Clock skew"
+      },
       "status": {
         "ok": "Passed",
         "warn": "Warning",
@@ -965,6 +989,27 @@
     "regen": {
       "title": "Regenerate backup codes",
       "desc": "Confirm with a valid code. The previous backup codes stop working immediately."
+    }
+  },
+  "rateLimits": {
+    "title": "Authentication rate limits",
+    "desc": "Read-only aggregate metrics and conservative tuning hints for the last 24 hours; process restarts clear page history.",
+    "evaluated": "Requests",
+    "wouldBlock": "Would block",
+    "blocked": "Blocked",
+    "hitRatio": "Hit ratio",
+    "recentTrend": "Hits over the latest 12 intervals",
+    "dimension": "Dimension",
+    "rate": "Refill rate",
+    "burst": "Burst",
+    "advice": {
+      "disabled": "Policy is disabled; enable shadow observation or enforcement.",
+      "insufficient-sample": "Fewer than 1,000 requests observed; do not tune or promote from this sample alone.",
+      "stale": "No requests observed for 30 minutes; verify traffic, monitoring wiring, or a recent restart.",
+      "high-would-block": "High would-block ratio; inspect shared NAT and retries, then consider raising burst first.",
+      "high-block-rate": "High block ratio; distinguish attack traffic from false positives before tuning.",
+      "long-retry": "Retry delay reached 30 seconds; burst or refill rate may be too restrictive.",
+      "review-ready": "The sample is large with a low would-block ratio; ready for human rollout review."
     }
   },
   "errors": {

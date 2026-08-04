@@ -1,6 +1,12 @@
 import { Fragment, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { CheckCircle2, AlertTriangle, XCircle, MinusCircle, ChevronDown } from 'lucide-react'
+import {
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  MinusCircle,
+  ChevronDown,
+} from 'lucide-react'
 import type {
   SelfCheckCheck,
   SelfCheckStatus,
@@ -16,10 +22,22 @@ export const STATUS_META: Record<
   SelfCheckStatus,
   { Icon: typeof CheckCircle2; tone: string; chip: string }
 > = {
-  ok: { Icon: CheckCircle2, tone: 'text-emerald-500', chip: 'text-emerald-600 dark:text-emerald-400' },
-  warn: { Icon: AlertTriangle, tone: 'text-amber-500', chip: 'text-amber-600 dark:text-amber-400' },
+  ok: {
+    Icon: CheckCircle2,
+    tone: 'text-emerald-500',
+    chip: 'text-emerald-600 dark:text-emerald-400',
+  },
+  warn: {
+    Icon: AlertTriangle,
+    tone: 'text-amber-500',
+    chip: 'text-amber-600 dark:text-amber-400',
+  },
   fail: { Icon: XCircle, tone: 'text-destructive', chip: 'text-destructive' },
-  skip: { Icon: MinusCircle, tone: 'text-muted-foreground', chip: 'text-muted-foreground' },
+  skip: {
+    Icon: MinusCircle,
+    tone: 'text-muted-foreground',
+    chip: 'text-muted-foreground',
+  },
 }
 
 /** Render any evidence value: booleans as ✓/✗, arrays joined, null/undefined as —. */
@@ -61,20 +79,28 @@ function TlsIpBlock({ probe }: { probe: SelfCheckIpTlsProbe }) {
         </Badge>
         <span className="font-mono text-xs">{probe.ip}</span>
         <meta.Icon className={cn('size-3.5 shrink-0', meta.tone)} />
-        <span className="flex-1 truncate text-xs text-muted-foreground">{probe.detail}</span>
+        <span className="flex-1 truncate text-xs text-muted-foreground">
+          {probe.detail}
+        </span>
         {probe.cert && (
           <button
             type="button"
             className="shrink-0 text-[10px] text-primary hover:underline"
             onClick={() => setCertOpen((o) => !o)}
           >
-            {certOpen ? t('federation.selfCheck.cert.hide') : t('federation.selfCheck.cert.show')}
+            {certOpen
+              ? t('federation.selfCheck.cert.hide')
+              : t('federation.selfCheck.cert.show')}
           </button>
         )}
       </div>
       {certOpen && probe.cert && (
         <div className="mt-2">
-          <CertDetail cert={probe.cert} chain={probe.chain} chainComplete={probe.chainComplete} />
+          <CertDetail
+            cert={probe.cert}
+            chain={probe.chain}
+            chainComplete={probe.chainComplete}
+          />
         </div>
       )}
       {!probe.reachable && probe.code && (
@@ -88,7 +114,13 @@ function TlsIpBlock({ probe }: { probe: SelfCheckIpTlsProbe }) {
 
 /** One per-IP .well-known probe: HTTP status, content-type, software, key validity. */
 function WkIpBlock({ probe }: { probe: SelfCheckIpWellKnownProbe }) {
+  const { t } = useTranslation()
   const meta = STATUS_META[probe.status]
+  const detail = probe.code
+    ? t(`federation.selfCheck.error.${probe.code}`, {
+        defaultValue: probe.detail,
+      })
+    : probe.detail
   return (
     <div className="rounded-md border bg-muted/30 p-2">
       <div className="flex items-center gap-2">
@@ -97,11 +129,16 @@ function WkIpBlock({ probe }: { probe: SelfCheckIpWellKnownProbe }) {
         </Badge>
         <span className="font-mono text-xs">{probe.ip}</span>
         <meta.Icon className={cn('size-3.5 shrink-0', meta.tone)} />
-        <span className="flex-1 truncate text-xs text-muted-foreground">{probe.detail}</span>
+        <span className="flex-1 whitespace-normal text-xs text-muted-foreground">
+          {detail}
+        </span>
       </div>
       <div className="mt-1 font-mono text-[10px] text-muted-foreground">
-        {probe.httpStatus ? `HTTP ${probe.httpStatus}` : probe.code ?? probe.errorClass}
+        {probe.httpVersion ? `HTTP/${probe.httpVersion}` : ''}
+        {probe.httpStatus ? ` · HTTP ${probe.httpStatus}` : ''}
         {probe.contentType ? ` · ${probe.contentType}` : ''}
+        {probe.phase ? ` · phase=${probe.phase}` : ''}
+        {probe.code ? ` · ${probe.code}` : ''}
       </div>
     </div>
   )
@@ -125,9 +162,23 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
         />
       )
     case 'key-file':
-      return <KvList entries={[['path', ev.path], ['mode', ev.mode]]} />
+      return (
+        <KvList
+          entries={[
+            ['path', ev.path],
+            ['mode', ev.mode],
+          ]}
+        />
+      )
     case 'key-age':
-      return <KvList entries={[['createdAt', ev.createdAt], ['ageDays', ev.ageDays]]} />
+      return (
+        <KvList
+          entries={[
+            ['createdAt', ev.createdAt],
+            ['ageDays', ev.ageDays],
+          ]}
+        />
+      )
     case 'dns-srv':
       return (
         <KvList
@@ -143,10 +194,16 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
       return <KvList entries={[['addresses', ev.addresses]]} />
     case 'tls-public': {
       const ips = (ev.ips ?? []) as SelfCheckIpTlsProbe[]
-      const host = ev.host ? `host=${String(ev.host)} · sni=${String(ev.host)} · port=${String(ev.port ?? '')}` : ''
+      const host = ev.host
+        ? `host=${String(ev.host)} · sni=${String(ev.host)} · port=${String(ev.port ?? '')}`
+        : ''
       return (
         <div className="flex flex-col gap-2">
-          {host && <div className="font-mono text-[10px] text-muted-foreground">{host}</div>}
+          {host && (
+            <div className="font-mono text-[10px] text-muted-foreground">
+              {host}
+            </div>
+          )}
           {ips.map((p) => (
             <TlsIpBlock key={p.ip} probe={p} />
           ))}
@@ -200,7 +257,15 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
         />
       )
     case 'tls-loopback':
-      return <KvList entries={[['host', ev.host], ['port', ev.port], ['originTls', ev.originTls]]} />
+      return (
+        <KvList
+          entries={[
+            ['host', ev.host],
+            ['port', ev.port],
+            ['originTls', ev.originTls],
+          ]}
+        />
+      )
     default:
       return <KvList entries={Object.entries(ev)} />
   }
@@ -208,9 +273,20 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
 
 /** A single collapsible check row. Collapsed = status icon + title + detail + duration; expanded = evidence. */
 export function CheckRow({ check }: { check: SelfCheckCheck }) {
+  const { t } = useTranslation()
   const meta = STATUS_META[check.status]
   const hasEvidence = !!check.evidence && Object.keys(check.evidence).length > 0
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(
+    check.status === 'fail' || check.status === 'warn',
+  )
+  const title = t(`federation.selfCheck.check.${check.key}`, {
+    defaultValue: check.title,
+  })
+  const duration = check.blockedBy
+    ? '—'
+    : check.durationMs < 1
+      ? '<1ms'
+      : `${check.durationMs}ms`
   return (
     <div className="rounded-lg border">
       <button
@@ -219,12 +295,27 @@ export function CheckRow({ check }: { check: SelfCheckCheck }) {
         onClick={() => hasEvidence && setOpen((o) => !o)}
       >
         <meta.Icon className={cn('size-4 shrink-0', meta.tone)} />
-        <span className="text-sm font-medium">{check.title}</span>
-        <span className="flex-1 truncate text-xs text-muted-foreground">{check.detail}</span>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{check.durationMs}ms</span>
+        <span className="text-sm font-medium">{title}</span>
+        <span className="flex-1 whitespace-normal text-xs text-muted-foreground">
+          {check.detail}
+        </span>
+        {check.blockedBy && (
+          <Badge
+            variant="outline"
+            className="text-[10px] text-muted-foreground"
+          >
+            {t('federation.selfCheck.blocked')}
+          </Badge>
+        )}
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+          {duration}
+        </span>
         {hasEvidence && (
           <ChevronDown
-            className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
+            className={cn(
+              'size-4 shrink-0 text-muted-foreground transition-transform',
+              open && 'rotate-180',
+            )}
           />
         )}
       </button>

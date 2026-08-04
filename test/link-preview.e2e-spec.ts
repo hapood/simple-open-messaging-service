@@ -7,7 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { invite, mediaMessage, message } from '../src/database/schema';
+import { invite, messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 
@@ -15,7 +15,7 @@ import { registerAndLogin } from './federation-test-helpers';
  * LINK message send contract (single instance). The client sends only the URL; the server rebuilds the
  * card via LinkPreviewService (mocked here to avoid real outbound OG fetches), validates the assembled
  * JSON with parseLinkContent, and — because the card's og:image is a CAS shard URL — writeMsgToThread's
- * extractDigests writes a MediaMessage authz row so /uploads/cas/* admits thread readers. Pins three
+ * extractDigests writes MessageAsset authz rows so /uploads/msg-assets/* admits thread readers. Pins
  * load-bearing behaviors at once: server-authoritative content rebuild, the stored-content form check,
  * and the auto authz row (the federated receiver's localizeMedia relies on that same digest).
  */
@@ -24,15 +24,14 @@ describe('LINK message send (single instance)', () => {
   let database: DatabaseService;
   let baseUrl: string;
 
-  // A fake card the mocked LinkPreviewService "built" — the og:image is the thumbnail's sha256 DIGEST
-  // (the form the real service stores in the DB; the wire serializer inlines the base64 on read).
+  // A fake card the mocked LinkPreviewService built with two shared-CAS assets.
   const DIGEST = 'a'.repeat(64);
   const CARD = {
     url: 'https://example.com/page',
     title: 'Example Page',
     description: 'A page about things.',
-    siteName: 'Example',
-    image: DIGEST,
+    image: `/uploads/msg-assets/aa/aa/${DIGEST}`,
+    favicon: `/uploads/msg-assets/bb/bb/${'b'.repeat(64)}`,
   };
 
   beforeAll(async () => {
@@ -62,7 +61,7 @@ describe('LINK message send (single instance)', () => {
     await app.close();
   });
 
-  it('rebuilds the card server-side from the URL and stores the og:image digest (not base64) in content', async () => {
+  it('rebuilds the card server-side and links every card CAS asset', async () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice', 'Alice');
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
@@ -111,21 +110,21 @@ describe('LINK message send (single instance)', () => {
       .limit(1);
     expect(storedMessage).toBeDefined();
     expect(storedMessage.contentType).toBe('LINK');
-    // The DB stores the image DIGEST (small) — NOT the base64 (the wire serializer inlines it on read).
     expect(JSON.parse(storedMessage.content)).toEqual(CARD);
     expect((JSON.parse(storedMessage.content) as { image: string }).image).toBe(
-      DIGEST,
+      CARD.image,
     );
-    // LINK no longer touches CAS: no MediaMessage authz row (the thumbnail is inlined, not a shard).
-    expect(await countMediaMessages(database, threadId)).toBe(0);
+    expect(await countMessageAssets(database, threadId)).toBe(2);
   });
 
-  it('degrades to a bare-link card when the page has no usable metadata (no MediaMessage row)', async () => {
-    // Swap the mock to a bare card (no image → no shard URL → no authz row).
+  it('stores required empty metadata when the page has no usable metadata', async () => {
+    // Missing metadata is valid, but required fields remain present as empty strings.
     (
       app.get(LinkPreviewService) as { buildCardContent: unknown }
     ).buildCardContent = async () => ({
       url: 'https://example.com/bare',
+      title: '',
+      description: '',
     });
 
     const appLike = { baseUrl, database: database.db };
@@ -171,19 +170,21 @@ describe('LINK message send (single instance)', () => {
       .limit(1);
     expect(JSON.parse(storedMessage.content)).toEqual({
       url: 'https://example.com/bare',
+      title: '',
+      description: '',
     });
     // No image → no shard digest → no MediaMessage authz row.
-    expect(await countMediaMessages(database, threadId)).toBe(0);
+    expect(await countMessageAssets(database, threadId)).toBe(0);
   });
 });
 
-async function countMediaMessages(
+async function countMessageAssets(
   database: DatabaseService,
   threadId: number,
 ): Promise<number> {
   const [row] = await database.db
     .select({ count: sql<number>`count(*)::int` })
-    .from(mediaMessage)
-    .where(eq(mediaMessage.threadId, threadId));
+    .from(messageAsset)
+    .where(eq(messageAsset.threadId, threadId));
   return row.count;
 }

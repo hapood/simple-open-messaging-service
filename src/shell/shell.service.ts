@@ -63,10 +63,12 @@ export class ShellService {
    * floor, so there is nothing else to compute here.
    */
   compat(): ShellCompatDto {
-    const primaryDomain = process.env.SOMS_DOMAIN?.trim();
+    const identityDomain = process.env.SOMS_DOMAIN?.trim();
+    const primaryDomain = process.env.SOMS_WEB_DOMAIN?.trim() || identityDomain;
     const lanDomain = process.env.SOMS_LAN_DOMAIN?.trim();
     // Canonical client origins for the native shell's symmetric auto-fill: the user enters one domain, the
-    // shell fills in the other from these. primaryOrigin always present (SOMS_DOMAIN is required at boot);
+    // shell fills in the other from these. primaryOrigin uses SOMS_WEB_DOMAIN when configured and falls
+    // back to the federation identity SOMS_DOMAIN for backward compatibility;
     // lanOrigin only when SOMS_LAN_DOMAIN is configured. Same backend on both. HTTPS-only (policy).
     // Firebase client config is folded in so the Android shell inits FirebaseApp from THIS response (no
     // separate /push/firebase-config round-trip) — the 4 fields when configured, else {configured:false}.
@@ -77,7 +79,13 @@ export class ShellService {
       ...(primaryDomain ? { primaryOrigin: deriveOrigin(primaryDomain) } : {}),
       ...(lanDomain ? { lanOrigin: deriveOrigin(lanDomain) } : {}),
       firebaseConfig: fb
-        ? { configured: true, apiKey: fb.apiKey, projectId: fb.projectId, appId: fb.appId, gcmSenderId: fb.gcmSenderId }
+        ? {
+            configured: true,
+            apiKey: fb.apiKey,
+            projectId: fb.projectId,
+            appId: fb.appId,
+            gcmSenderId: fb.gcmSenderId,
+          }
         : { configured: false },
     };
   }
@@ -104,7 +112,11 @@ export class ShellService {
     try {
       statSync(path);
     } catch {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'web bundle not found', 404);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'web bundle not found',
+        404,
+      );
     }
     return path;
   }
@@ -133,7 +145,11 @@ export class ShellService {
     try {
       parsed = JSON.parse(readFileSync(this.manifestPath, 'utf8'));
     } catch {
-      throw new BusinessException(BusinessCode.INTERNAL, 'shell manifest is unreadable', 500);
+      throw new BusinessException(
+        BusinessCode.INTERNAL,
+        'shell manifest is unreadable',
+        500,
+      );
     }
     const raw = asRawManifest(parsed);
     this.cache = { mtimeMs: st.mtimeMs, raw };
@@ -152,5 +168,9 @@ function asRawManifest(parsed: unknown): RawManifest {
   if (typeof p?.webVersion === 'string' && typeof p?.sha256 === 'string') {
     return { webVersion: p.webVersion, sha256: p.sha256 };
   }
-  throw new BusinessException(BusinessCode.INTERNAL, 'shell manifest is malformed', 500);
+  throw new BusinessException(
+    BusinessCode.INTERNAL,
+    'shell manifest is malformed',
+    500,
+  );
 }

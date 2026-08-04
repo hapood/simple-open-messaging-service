@@ -17,7 +17,7 @@ function ok(
   }> = {},
 ) {
   return JSON.stringify({
-    url: '/uploads/cas/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    url: '/uploads/msg-assets/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     name: 'report.pdf',
     size: 12345,
     mimeType: 'application/pdf',
@@ -74,7 +74,7 @@ describe('resolveFileType', () => {
 describe('parseFileContent', () => {
   it('accepts a well-formed FILE content blob', () => {
     expect(parseFileContent(ok())).toEqual({
-      url: '/uploads/cas/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      url: '/uploads/msg-assets/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       name: 'report.pdf',
       size: 12345,
       mimeType: 'application/pdf',
@@ -149,21 +149,32 @@ describe('parseLinkContent', () => {
   // The thumbnail's sha256 digest (64 hex) — the form stored in the DB; the wire inlines base64.
   const DIGEST = '0'.repeat(64);
 
-  it('accepts a bare-link card { url }', () => {
+  it('requires title and description, while allowing both to be empty', () => {
     expect(
-      parseLinkContent(JSON.stringify({ url: 'https://example.com' })),
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://example.com',
+          title: '',
+          description: '',
+        }),
+      ),
     ).toEqual({
       url: 'https://example.com',
+      title: '',
+      description: '',
     });
+    expect(
+      parseLinkContent(JSON.stringify({ url: 'https://example.com' })),
+    ).toBeNull();
   });
 
-  it('accepts a full card with an og:image digest', () => {
+  it('accepts a full card with message-asset URLs', () => {
     const card = {
       url: 'https://example.com/p',
       title: 'T',
       description: 'D',
-      siteName: 'Ex',
-      image: DIGEST,
+      image: `/uploads/msg-assets/00/00/${DIGEST}`,
+      favicon: `/uploads/msg-assets/11/11/${'1'.repeat(64)}`,
     };
     expect(parseLinkContent(JSON.stringify(card))).toEqual(card);
   });
@@ -190,28 +201,45 @@ describe('parseLinkContent', () => {
     ).toBeNull(); // scheme-relative
   });
 
-  it('rejects a non-digest image (the DB stores a sha256 digest, not a URL or data URI)', () => {
-    expect(
-      parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', image: 'https://evil/x.jpg' }),
-      ),
-    ).toBeNull();
-    expect(
-      parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', image: 'javascript:alert(1)' }),
-      ),
-    ).toBeNull();
-    expect(
-      parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', image: '/uploads/../secret' }),
-      ),
-    ).toBeNull();
-    // A CAS shard URL is NOT a digest → rejected (the thumbnail is inlined, not a shard reference).
+  it('rejects an image outside the message-asset URL namespace', () => {
     expect(
       parseLinkContent(
         JSON.stringify({
           url: 'https://x.com',
-          image: `/uploads/cas/ab/cd/${DIGEST}.webp`,
+          title: '',
+          description: '',
+          image: 'https://evil/x.jpg',
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://x.com',
+          title: '',
+          description: '',
+          image: 'javascript:alert(1)',
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://x.com',
+          title: '',
+          description: '',
+          image: '/uploads/../secret',
+        }),
+      ),
+    ).toBeNull();
+    // Old paths and filename suffixes are not valid message-asset URLs.
+    expect(
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://x.com',
+          title: '',
+          description: '',
+          image: `/uploads/cas/00/00/${DIGEST}.webp`,
         }),
       ),
     ).toBeNull();
@@ -220,6 +248,8 @@ describe('parseLinkContent', () => {
       parseLinkContent(
         JSON.stringify({
           url: 'https://x.com',
+          title: '',
+          description: '',
           image: 'data:image/webp;base64,AAAA',
         }),
       ),
@@ -229,17 +259,20 @@ describe('parseLinkContent', () => {
   it('rejects over-long display fields', () => {
     expect(
       parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(301) }),
+        JSON.stringify({
+          url: 'https://x.com',
+          title: 'x'.repeat(301),
+          description: '',
+        }),
       ),
     ).toBeNull();
     expect(
       parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(501) }),
-      ),
-    ).toBeNull();
-    expect(
-      parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(101) }),
+        JSON.stringify({
+          url: 'https://x.com',
+          title: '',
+          description: 'x'.repeat(501),
+        }),
       ),
     ).toBeNull();
   });
@@ -247,17 +280,20 @@ describe('parseLinkContent', () => {
   it('accepts boundary-length display fields', () => {
     expect(
       parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(300) }),
+        JSON.stringify({
+          url: 'https://x.com',
+          title: 'x'.repeat(300),
+          description: '',
+        }),
       ),
     ).not.toBeNull();
     expect(
       parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(500) }),
-      ),
-    ).not.toBeNull();
-    expect(
-      parseLinkContent(
-        JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(100) }),
+        JSON.stringify({
+          url: 'https://x.com',
+          title: '',
+          description: 'x'.repeat(500),
+        }),
       ),
     ).not.toBeNull();
   });
@@ -265,10 +301,46 @@ describe('parseLinkContent', () => {
   it('rejects wrong-typed fields', () => {
     expect(parseLinkContent(JSON.stringify({ url: 5 }))).toBeNull();
     expect(
-      parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 5 })),
+      parseLinkContent(
+        JSON.stringify({ url: 'https://x.com', title: 5, description: '' }),
+      ),
     ).toBeNull();
     expect(
-      parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 5 })),
+      parseLinkContent(
+        JSON.stringify({
+          url: 'https://x.com',
+          title: '',
+          description: '',
+          image: 5,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects legacy and unknown fields', () => {
+    const base = { url: 'https://x.com', title: '', description: '' };
+    expect(
+      parseLinkContent(JSON.stringify({ ...base, siteName: 'X' })),
+    ).toBeNull();
+    expect(
+      parseLinkContent(JSON.stringify({ ...base, version: 1 })),
+    ).toBeNull();
+  });
+
+  it('validates favicon as a message-asset URL', () => {
+    const base = { url: 'https://x.com', title: '', description: '' };
+    expect(
+      parseLinkContent(
+        JSON.stringify({
+          ...base,
+          favicon: `/uploads/msg-assets/00/00/${DIGEST}`,
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseLinkContent(
+        JSON.stringify({ ...base, favicon: 'https://x.com/favicon.ico' }),
+      ),
     ).toBeNull();
   });
 });

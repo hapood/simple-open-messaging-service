@@ -12,7 +12,7 @@ import {
   ApiProperty,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResultResponse } from '../common/api-result.js';
 import type { LinkContent } from '../upload/file-content.js';
@@ -28,15 +28,24 @@ class LinkPreviewDto {
   @IsNotEmpty()
   @MaxLength(2048)
   url!: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Original text used only as a description fallback',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(5000)
+  text?: string;
 }
 
 /** Swagger model for a resolved link card (the runtime payload is the LinkContent shape). */
 class LinkCardDto {
   @ApiProperty() url!: string;
-  @ApiProperty({ required: false }) title?: string;
-  @ApiProperty({ required: false }) description?: string;
-  @ApiProperty({ required: false }) siteName?: string;
+  @ApiProperty() title!: string;
+  @ApiProperty() description!: string;
   @ApiProperty({ required: false }) image?: string;
+  @ApiProperty({ required: false }) favicon?: string;
 }
 
 /**
@@ -44,9 +53,8 @@ class LinkCardDto {
  * og:image localization) so the sender sees the card before sending. The same LinkPreviewService is
  * reused by the LINK send path, so the cache built here makes the subsequent send instant.
  *
- * Heavily rate-limited: every call is an outbound fetch, so this is an amplification surface. The
- * handler never errors — a blocked/failed fetch returns a bare-link card { url } so the composer UX
- * degrades gracefully.
+ * Heavily rate-limited: every call is an outbound fetch, so this is an amplification surface. A page
+ * fetch failure rejects generation; missing optional metadata or artwork still produces a valid card.
  */
 @ApiTags('link-preview')
 @Controller()
@@ -58,16 +66,11 @@ export class LinkPreviewController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('link-preview')
-  @ApiOperation({ summary: 'Resolve a URL into a link card (OpenGraph preview)' })
+  @ApiOperation({
+    summary: 'Resolve a URL into a link card (OpenGraph preview)',
+  })
   @ApiResultResponse(LinkCardDto)
-  async preview(
-    @Body() dto: LinkPreviewDto,
-  ): Promise<LinkContent> {
-    const card = await this.linkPreview.buildCardContent(dto.url);
-    // buildCardContent stores the image as a digest (DB form); the composer renders from THIS response,
-    // so inline it as base64 (the wire form) — the same enrichment the query/serve paths apply.
-    return JSON.parse(
-      await this.linkPreview.enrichForWire('LINK', JSON.stringify(card)),
-    ) as LinkContent;
+  async preview(@Body() dto: LinkPreviewDto): Promise<LinkContent> {
+    return this.linkPreview.buildCardContent(dto.url, dto.text ?? '');
   }
 }

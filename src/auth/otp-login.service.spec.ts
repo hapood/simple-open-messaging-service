@@ -130,9 +130,12 @@ describe('OtpLoginService', () => {
       // expiresAt = now + the mocked 10-minute TTL.
       const data = (
         prisma.loginCode.create.mock.calls[0][0] as {
-          data: { expiresAt: Date };
+          data: { issuedAt: Date; expiresAt: Date };
         }
       ).data;
+      expect(data.expiresAt.getTime() - data.issuedAt.getTime()).toBe(
+        10 * 60_000,
+      );
       expect(data.expiresAt.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
       expect(data.expiresAt.getTime() - Date.now()).toBeLessThan(11 * 60_000);
       // Multi-issue: issuing must NOT touch (revoke) the account's other codes.

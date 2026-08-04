@@ -12,17 +12,12 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { ConnectedPosition, OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import {
   ChatEditorComponent,
   type ChatMember,
 } from '../../components/chat-editor/chat-editor.component';
-import {
-  ChatActionMenuComponent,
-  type ChatMenuEntry,
-} from '../../components/chat-action-menu/chat-action-menu.component';
-import { AppIconType } from '../../components/icon/icon.component';
+import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
 import { firstValueFrom } from 'rxjs';
@@ -136,8 +131,7 @@ const MAX_RECORD_SECS = 60;
   imports: [
     ChatEditorComponent,
     PreventFocusStealDirective,
-    ChatActionMenuComponent,
-    OverlayModule,
+    IconComponent,
     TranslocoModule,
   ],
   templateUrl: './chat-input.component.html',
@@ -293,17 +287,34 @@ export class ChatInputComponent implements OnDestroy {
     this.pushRecent(e);
   }
 
-  /** Close the emoji surface when interaction leaves the composer. The form contains the input, emoji
-   *  toggle, category buttons and glyphs, so browser emoji interactions remain exempt and keep the IME. */
+  /** Close transient composer surfaces when interaction leaves the composer. */
   @HostListener('document:pointerdown', ['$event'])
   onDocumentPointerDown(event: PointerEvent): void {
-    if (!this.emojiOpen()) return;
+    if (!this.emojiOpen() && !this.attachOpen()) return;
     const target = event.target;
-    if (
-      !(target instanceof Node) ||
-      !this.inputBar()?.nativeElement.contains(target)
-    ) {
+    if (!(target instanceof Node)) {
       this.closeEmoji();
+      this.closeAttach();
+      return;
+    }
+
+    const inputBar = this.inputBar()?.nativeElement;
+    if (!inputBar?.contains(target)) this.closeEmoji();
+
+    // Unlike the emoji panel, the attachment drawer only owns its trigger and drawer surface. Treat the
+    // editor, controls-row padding and every other blank part of the composer as outside-click territory.
+    // This also covers the rail to the left of the centered controls on wide chat panes.
+    const element =
+      target instanceof Element
+        ? target
+        : target.parentNode instanceof Element
+          ? target.parentNode
+          : null;
+    if (
+      this.attachOpen() &&
+      !element?.closest('.ci-attach, .ci-attach-drawer-shell')
+    ) {
+      this.closeAttach();
     }
   }
 
@@ -408,13 +419,11 @@ export class ChatInputComponent implements OnDestroy {
     input.value = '';
   }
 
-  // ── Attachment "+" popover (Photo / File) ──────────────────────────────────────────────────────
+  // ── Attachment drawer (Photo / File) ───────────────────────────────────────────────────────────
 
-  /** Whether the attachment action menu overlay is open. */
+  /** Whether the in-composer attachment drawer is open. */
   readonly attachOpen = signal(false);
-  /** The popover entries — Photo (image picker) + File (generic picker). Mirrors the header MORE menu's
-   *  ChatActionMenuComponent usage; ChatActionMenuComponent renders labels via labelKey (transloco). */
-  readonly attachEntries: ChatMenuEntry[] = [
+  readonly attachEntries = [
     {
       kind: 'action',
       key: 'photo',
@@ -427,32 +436,7 @@ export class ChatInputComponent implements OnDestroy {
       labelKey: 'chat.sendFile',
       icon: AppIconType.FILE,
     },
-  ];
-  /** The composer sits at the viewport bottom, so prefer opening upward. This also keeps the file/photo
-   *  choices visible after the touch keyboard is dismissed. */
-  readonly attachPositions: ConnectedPosition[] = [
-    {
-      originX: 'start',
-      originY: 'top',
-      overlayX: 'start',
-      overlayY: 'bottom',
-      offsetY: -4,
-    },
-    {
-      originX: 'end',
-      originY: 'top',
-      overlayX: 'end',
-      overlayY: 'bottom',
-      offsetY: -4,
-    },
-    {
-      originX: 'start',
-      originY: 'bottom',
-      overlayX: 'start',
-      overlayY: 'top',
-      offsetY: 4,
-    },
-  ];
+  ] as const;
 
   toggleAttach(): void {
     const opening = !this.attachOpen();
@@ -464,7 +448,7 @@ export class ChatInputComponent implements OnDestroy {
   closeAttach(): void {
     this.attachOpen.set(false);
   }
-  /** A popover item was chosen → open the matching picker + close. */
+  /** A drawer item was chosen → open the matching picker + close. */
   onAttachSelect(key: string): void {
     this.attachOpen.set(false);
     if (key === 'photo') this.onAttachClick();

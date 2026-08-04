@@ -9,6 +9,7 @@ import { readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { AppModule } from './app.module.js';
 import { configureApp } from './bootstrap.js';
+import { parseTrustedProxyConfig } from './rate-limit/trusted-proxy.js';
 
 // HTTP/2 requires TLS — browsers do not negotiate h2 over cleartext. When both TLS_CERT and
 // TLS_KEY (PEM file paths) are provided the service speaks real ALPN h2 directly, which is
@@ -24,12 +25,14 @@ const tlsKey = process.env.TLS_KEY;
 const enableH2 = Boolean(tlsCert && tlsKey);
 
 async function bootstrap() {
+  const trustedProxies = parseTrustedProxyConfig(
+    process.env.TRUSTED_PROXY_CIDRS,
+  );
   const adapter = new FastifyAdapter(
     enableH2
       ? {
-          // Trust a single reverse-proxy hop so rate limiting sees the real client IP
-          // (see local.strategy.ts). Number = trust the last N hops; never `true`.
-          trustProxy: 1,
+          // Only explicitly configured proxy networks may supply X-Forwarded-*.
+          trustProxy: trustedProxies.isTrusted,
           // Correlation ID: honor an inbound X-Request-Id (reverse-proxy / upstream) else mint a UUID.
           // Fastify owns request.id; pino-http reuses it, so every access + app log for one request
           // shares the id, and bootstrap's onSend hook echoes it back on the response header.
@@ -49,7 +52,7 @@ async function bootstrap() {
           bodyLimit: 1_048_576,
         }
       : {
-          trustProxy: 1,
+          trustProxy: trustedProxies.isTrusted,
           // Correlation ID — see the h2 branch above.
           requestIdHeader: 'x-request-id',
           genReqId: () => randomUUID(),
@@ -64,10 +67,30 @@ async function bootstrap() {
   // LoggerModule (nestjs-pino) and replaces Nest's default ConsoleLogger — so every existing
   // `new Logger('Ctx')` call site routes through pino with its context preserved, unchanged.
   // LOG_LEVEL is now resolved inside the pino factory, not here.
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
-    bufferLogs: true,
-  });
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    adapter,
+    {
+      bufferLogs: true,
+    },
+  );
   app.useLogger(app.get(Logger));
+  app.get(Logger).log(
+    {
+      event: 'trusted_proxy_config',
+      rangeCount: trustedProxies.cidrs.length,
+    },
+    'Trusted proxy configuration loaded',
+  );
+  if (trustedProxies.trustAllCidrs.length > 0) {
+    app.get(Logger).warn(
+      {
+        event: 'trusted_proxy_trust_all',
+        cidrs: trustedProxies.trustAllCidrs,
+      },
+      'Trusted proxy configuration accepts forwarded addresses from every peer',
+    );
+  }
   await configureApp(app, adapter);
 
   const port = Number(process.env.PORT ?? 3000);

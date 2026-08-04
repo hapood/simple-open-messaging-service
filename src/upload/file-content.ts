@@ -31,7 +31,7 @@ export const MAX_FILE_NAME_LEN = 100;
 
 /** A FILE message's stored content (JSON-stringified in Message.content). */
 export interface FileContent {
-  /** Server-relative CAS URL (`/uploads/cas/<2hex>/<2hex>/<sha256>`). */
+  /** Server-relative CAS URL (`/uploads/msg-assets/<2hex>/<2hex>/<sha256>`). */
   url: string;
   /** Sanitized original filename for display. */
   name: string;
@@ -70,27 +70,20 @@ export interface AudioContent {
  *  Comfortably within the 5000-char content budget. */
 const MAX_LINK_TITLE_LEN = 300;
 const MAX_LINK_DESC_LEN = 500;
-const MAX_LINK_SITE_NAME_LEN = 100;
-/** A link thumbnail's content-addressed digest (sha256 hex, 64 chars) — the form stored in the DB. */
-const DIGEST_RE = /^[0-9a-f]{64}$/;
-
-/** A LINK message's stored content (JSON-stringified in Message.content) — a web link card. Built
- *  authoritatively by LinkPreviewService from an OpenGraph fetch (title/description/siteName pulled
- *  from the page, og:image localized into CAS), so the metadata is server-sourced and a client
- *  cannot forge it. `url` is the canonical page URL; `image`, when present, is a server-served CAS
- *  shard URL of a localized og:image thumbnail — never the original cross-origin URL, which Tauri's
- *  CSP would block. */
+/** A LINK message's strict stored content. Image fields contain server-relative CAS URLs. Title and
+ *  description are always present,
+ *  including when metadata extraction produced an empty string. */
 export interface LinkContent {
   /** Canonical page URL after redirect resolution; http(s) only. */
   url: string;
   /** Page title (og:title → twitter:title → <title>), length-capped. */
-  title?: string;
+  title: string;
   /** Page description, length-capped. */
-  description?: string;
-  /** Site name (og:site_name), length-capped. */
-  siteName?: string;
-  /** Server-served CAS shard URL of the localized og:image thumbnail; omitted when the page had none. */
+  description: string;
+  /** Content-addressed page image thumbnail URL; omitted when unavailable. */
   image?: string;
+  /** Content-addressed favicon thumbnail URL; omitted when unavailable. */
+  favicon?: string;
 }
 
 /**
@@ -113,7 +106,7 @@ const MIME_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 /** Matches the pure content-addressed URL emitted by UploadService. Filename, MIME and message type
  * are presentation metadata and deliberately never participate in CAS identity. */
 const CAS_UPLOAD_URL_RE =
-  /^\/uploads\/cas\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
+  /^\/uploads\/msg-assets\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
 
 /** Whether a url is an accepted server-served upload path — a CAS shard URL. Rejects traversal
  *  ('..'), query/fragment, and any shape saveCas() would never emit. Shared by parseFileContent and
@@ -132,7 +125,7 @@ export function isUploadUrl(url: string): boolean {
  *  referenced by a message's content string (IMAGE/FILE/VIDEO/AUDIO) so MediaMessage authz rows can be
  *  written at send time. */
 const SHARD_DIGEST_RE =
-  /\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?![0-9a-f])/g;
+  /\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?![0-9a-f])/g;
 
 /** Extract every distinct CAS digest referenced by a message's raw content string. Scans the whole
  *  JSON (works for single-image `{url,...}`, FILE/VIDEO/AUDIO shapes, and future album arrays alike)
@@ -302,27 +295,29 @@ export function parseLinkContent(content: string): LinkContent | null {
     return null;
   }
   if (typeof obj !== 'object' || obj === null) return null;
-  const { url, title, description, siteName, image } = obj as Record<
-    string,
-    unknown
-  >;
+  const record = obj as Record<string, unknown>;
+  const allowed = new Set(['url', 'title', 'description', 'image', 'favicon']);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return null;
+  const { url, title, description, image, favicon } = record;
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
-  if (title !== undefined && typeof title !== 'string') return null;
-  if (description !== undefined && typeof description !== 'string') return null;
-  if (siteName !== undefined && typeof siteName !== 'string') return null;
-  if (title && title.length > MAX_LINK_TITLE_LEN) return null;
-  if (description && description.length > MAX_LINK_DESC_LEN) return null;
-  if (siteName && siteName.length > MAX_LINK_SITE_NAME_LEN) return null;
+  if (typeof title !== 'string' || typeof description !== 'string') return null;
+  if (title.length > MAX_LINK_TITLE_LEN) return null;
+  if (description.length > MAX_LINK_DESC_LEN) return null;
   if (
     image !== undefined &&
-    (typeof image !== 'string' || !DIGEST_RE.test(image))
+    (typeof image !== 'string' || !isUploadUrl(image))
+  )
+    return null;
+  if (
+    favicon !== undefined &&
+    (typeof favicon !== 'string' || !isUploadUrl(favicon))
   )
     return null;
   return {
     url,
-    title: title || undefined,
-    description: description || undefined,
-    siteName: siteName || undefined,
+    title,
+    description,
     image: image || undefined,
+    favicon: favicon || undefined,
   };
 }

@@ -141,10 +141,8 @@
       type="button"
       class="ci-attach"
       appPreventFocusSteal
-      cdkOverlayOrigin
-      #plusTrigger="cdkOverlayOrigin"
       (click)="toggleAttach()"
-      [class.active]="attachOpen()"
+      [class.ci-attach--active]="attachOpen()"
       aria-haspopup="menu"
       [attr.aria-expanded]="attachOpen()"
       [attr.aria-label]="'chat.attachAria' | transloco"
@@ -164,6 +162,29 @@
         />
       </svg>
     </button>
+    <div
+      class="ci-attach-drawer-shell"
+      [class.ci-attach-drawer-shell--open]="attachOpen()"
+      [attr.aria-hidden]="!attachOpen()"
+    >
+      <div class="ci-attach-drawer" role="menu">
+        @for (entry of attachEntries; track entry.key) {
+          <button
+            type="button"
+            class="ci-attach-option"
+            appPreventFocusSteal
+            role="menuitem"
+            [attr.tabindex]="attachOpen() ? 0 : -1"
+            (click)="onAttachSelect(entry.key)"
+          >
+            <span class="ci-attach-option-icon" aria-hidden="true">
+              <app-icon [type]="entry.icon" [style]="{ width: '22px', height: '22px' }" />
+            </span>
+            <span class="ci-attach-option-label">{{ entry.labelKey | transloco }}</span>
+          </button>
+        }
+      </div>
+    </div>
     <div class="ci-input-wrap">
       <!-- Host-owned context occupies the capsule's first row but stays outside the editor document, so
            Backspace edits only the draft and the context's close control is its sole removal path. -->
@@ -256,16 +277,6 @@
       }
     </button>
   </div>
-  <!-- Attachment popover — anchored to the paperclip "+" via cdkOverlayOrigin. The overlay panel attaches at
-       the document root (CDK), so it escapes the bar's transform + the chat pane's stacking context. -->
-  <app-chat-action-menu
-    [entries]="attachEntries"
-    [origin]="plusTrigger"
-    [open]="attachOpen()"
-    [positions]="attachPositions"
-    (select)="onAttachSelect($event)"
-    (closed)="closeAttach()"
-  />
   <input
     #attachInput
     type="file"

@@ -29,7 +29,7 @@ import {
   forwardMessage,
   invite,
   mediaAsset,
-  mediaMessage,
+  messageAsset,
   message,
   messageThread,
   s2SKeyCache,
@@ -708,8 +708,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
         expect(asset).toBeDefined();
         expect(asset!.status).toBe('READY');
-        const mm = await appB.database.query.mediaMessage.findFirst({
-          where: eq(mediaMessage.digest, digest),
+        const mm = await appB.database.query.messageAsset.findFirst({
+          where: eq(messageAsset.digest, digest),
         });
         expect(mm).toBeDefined();
       },
@@ -747,8 +747,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
         expect(asset).toBeDefined();
         expect(asset!.status).toBe('READY');
-        const mm = await appB.database.query.mediaMessage.findFirst({
-          where: eq(mediaMessage.digest, digest),
+        const mm = await appB.database.query.messageAsset.findFirst({
+          where: eq(messageAsset.digest, digest),
         });
         expect(mm).toBeDefined();
       },

@@ -43,7 +43,7 @@ const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
  *  across requests, which the shared hook requires. */
 const SHARD_DIGEST_GATE_RE =
-  /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
+  /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
 
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
  *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
@@ -367,7 +367,7 @@ async function registerStaticServing(
   // how to display/save them; this endpoint only transfers authenticated bytes.
   await app.register(fastifyStatic, {
     root: casDir,
-    prefix: '/uploads/cas/',
+    prefix: '/uploads/msg-assets/',
     decorateReply: false,
     cacheControl: false,
     setHeaders: (res: { setHeader: (name: string, value: string) => void }) => {

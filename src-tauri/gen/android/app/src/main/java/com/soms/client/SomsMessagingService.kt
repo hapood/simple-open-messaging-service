@@ -50,6 +50,11 @@ class SomsMessagingService : FirebaseMessagingService() {
         // push carries { type, ts, threadId, seq } (no body); route on `type`.
         val data = msg.data
         when (data["type"]) {
+            "FCM_HEALTH_PROBE" -> {
+                // Silent end-to-end diagnostic. Confirm receipt directly from the native service so the
+                // result remains reliable even if the WebView is suspended or the process was recreated.
+                data["probeId"]?.let { acknowledgeFcmProbe(this, it) }
+            }
             "ADMIN_TEST" -> {
                 // Admin test push: post the literal title/body as a notification — a delivery check.
                 if (appInForeground) return
@@ -171,6 +176,25 @@ class SomsMessagingService : FirebaseMessagingService() {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
+
+        private fun acknowledgeFcmProbe(ctx: Context, probeId: String) {
+            val token = SomsSecureStore.getSessionToken(ctx) ?: return
+            val origin = SomsSecureStore.getActiveOrigin(ctx) ?: return
+            val request = Request.Builder()
+                .url("$origin${SomsSecureStore.API_PREFIX}/devices/fcm-probes/$probeId/ack")
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+            try {
+                HTTP.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        SomsLog.w("Notif") { "FCM probe ack rejected code=${response.code}" }
+                    }
+                }
+            } catch (e: Exception) {
+                SomsLog.w("Notif") { "FCM probe ack failed: ${e.message}" }
+            }
+        }
 
         /** Fetch the server-authored notification descriptors from `/notifications/missed` (no cursor → the
          *  current unread snapshot — the server-localized title/body + composited stacked-avatar icon), using

@@ -5,7 +5,8 @@
 # 0.13+ covers every feature used below (--mount=type=cache, multi-stage, COPY --chown, EXPOSE .../udp).
 
 # Single published image: builds web + admin-web + server, then assembles them onto soms-base (node +
-# caddy). The server is API-only (Fastify); Caddy (from soms-base) is the TLS edge AND serves the built
+# caddy). The server build uses soms-build-base (Node + native compiler toolchain), which is never
+# copied into the published image. The server is API-only (Fastify); Caddy is the TLS edge and serves
 # frontends (web at /, admin at /admin/) + reverse-proxies /api/* and /uploads/* to the app. See
 # docker/init.sh (Caddyfile generation) + src/bootstrap.ts + Dockerfile.base (soms-base).
 
@@ -13,6 +14,7 @@
 #   NODE_IMAGE=docker.m.daocloud.io/library/node:24-bookworm-slim ./scripts/build-image.sh
 ARG NODE_IMAGE=node:24-bookworm-slim
 ARG SOMS_BASE=soms-base:latest
+ARG SOMS_BUILD_BASE=soms-build-base:latest
 
 # ---- Stage 1: build web (Angular) ----
 FROM ${NODE_IMAGE} AS web-build
@@ -23,6 +25,7 @@ COPY web/package.json web/package-lock.json ./web/
 RUN --mount=type=cache,target=/root/.npm \
     cd web && npm ci
 COPY web ./web
+COPY shared ./shared
 RUN cd web && npm run build
 
 # ---- Stage 2: build admin-web (Vite) ----
@@ -34,12 +37,8 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY admin-web ./admin-web
 RUN cd admin-web && npm run build
 
-# ---- Stage 3: build server (argon2 native-compiles via node-gyp, needing python/make/g++; slim lacks them) ----
-FROM ${NODE_IMAGE} AS server-build
-# Official npm + apt registries (no CN mirrors). Reach them through the build-time proxy forwarded
-# by scripts/build-image.sh (HTTP_PROXY/HTTPS_PROXY from your shell env, or unset = direct).
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
+# ---- Stage 3: build server (reusable base supplies python/make/g++ for native Node dependencies) ----
+FROM ${SOMS_BUILD_BASE} AS server-build
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY tsconfig.migrations.json ./
@@ -47,6 +46,7 @@ COPY scripts/migrate-db.ts ./scripts/migrate-db.ts
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 COPY src ./src
+COPY shared ./shared
 RUN npm run build
 # Package the web SPA as a downloadable, SHA-256-integrity-checked bundle for the Tauri shell
 # dynamic-update flow (scripts/package-web-bundle.mjs → shell-bundle/{manifest.json, soms-web-<ver>.tar.gz}).

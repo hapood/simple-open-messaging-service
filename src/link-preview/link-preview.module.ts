@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { SafeFetchService } from './safe-fetch.service.js';
 import { OpenGraphService } from './open-graph.service.js';
 import { LinkPreviewService } from './link-preview.service.js';
@@ -15,7 +15,9 @@ import { LinkCardRuleService } from './link-card-rule.service.js';
  * send server-side.
  */
 @Module({
-  imports: [UploadModule],
+  // LinkCardRuleService uses UploadService; forwardRef pairs with UploadModule's deferred MessageModule
+  // import to break Upload -> Message -> LinkPreview -> Upload under native ESM initialization.
+  imports: [forwardRef(() => UploadModule)],
   controllers: [LinkPreviewController, LinkCardRuleController],
   providers: [
     SafeFetchService,

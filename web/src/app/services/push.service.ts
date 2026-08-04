@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
 import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
+import { firstValueFrom } from 'rxjs';
 
 /**
  * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
@@ -31,6 +32,18 @@ export type FirebaseClientConfigPayload = {
   gcmSenderId?: string;
 };
 
+export type FcmProbeStatus = {
+  probeId: string;
+  stage: 'fcm_accepted' | 'device_received' | 'failed';
+  createdAt: number;
+  acceptedAt?: number;
+  receivedAt?: number;
+  latencyMs?: number;
+  errorCode?: string;
+};
+
+type ApiEnvelope<T> = { code: number; message: string; data: T };
+
 @Injectable({ providedIn: 'root' })
 export class PushService {
   private readonly http = inject(HttpClient);
@@ -45,7 +58,9 @@ export class PushService {
    *  first login EVER — not the first login of every cold start (which would re-prompt users who merely
    *  dismissed/denied-without-"don't ask again" on each session). */
   private permissionPrompted =
-    typeof window !== 'undefined' ? !!window.SomsFcm?.getNotifPermRequested?.() : false;
+    typeof window !== 'undefined'
+      ? !!window.SomsFcm?.getNotifPermRequested?.()
+      : false;
 
   /** Wire up at app boot (AppComponent). Self-guards to a no-op outside the Tauri shell. */
   init() {
@@ -76,9 +91,12 @@ export class PushService {
    *  fetch). Android-only (desktop has no Firebase). The 4 fields are only re-pushed when they actually
    *  change (avoids needless token churn on identical config); an explicit {configured:false} clears native
    *  Firebase. Sync + never throws. */
-  applyFirebaseConfig(data: FirebaseClientConfigPayload | null | undefined): void {
+  applyFirebaseConfig(
+    data: FirebaseClientConfigPayload | null | undefined,
+  ): void {
     if (!isAndroidNative()) {
-      if (isDevMode()) console.info('firebase config: skipped (not Android native)');
+      if (isDevMode())
+        console.info('firebase config: skipped (not Android native)');
       return;
     }
     if (isDevMode()) {
@@ -96,7 +114,8 @@ export class PushService {
       }
       if (current !== null) {
         window.SomsFcm!.setFirebaseConfig(null);
-        if (isDevMode()) console.info('firebase config: native clear dispatched');
+        if (isDevMode())
+          console.info('firebase config: native clear dispatched');
       } else if (isDevMode()) {
         console.info('firebase config: unchanged (already clear)');
       }
@@ -117,7 +136,8 @@ export class PushService {
     }
     if (current !== next) {
       window.SomsFcm!.setFirebaseConfig(next);
-      if (isDevMode()) console.info('firebase config: native reconfigure dispatched');
+      if (isDevMode())
+        console.info('firebase config: native reconfigure dispatched');
     } else if (isDevMode()) {
       console.info('firebase config: unchanged');
     }
@@ -140,11 +160,19 @@ export class PushService {
     if (!isTauri()) return;
     // SomsFcm is absent on desktop (this runs under isTauri = desktop + Android), so `?.` is correct
     // here — getToken() legitimately no-ops on desktop.
-    const token = this.registeredToken ?? this.currentToken ?? window.SomsFcm?.getToken() ?? null;
+    const token =
+      this.registeredToken ??
+      this.currentToken ??
+      window.SomsFcm?.getToken() ??
+      null;
     if (token) {
       this.http
         .delete(`${apiPrefix()}/devices/register/${encodeURIComponent(token)}`)
-        .subscribe({ error: () => { /* best-effort: a stale token is pruned server-side on next send */ } });
+        .subscribe({
+          error: () => {
+            /* best-effort: a stale token is pruned server-side on next send */
+          },
+        });
     }
     this.registeredToken = null;
   }
@@ -166,9 +194,55 @@ export class PushService {
         platform: 'ANDROID',
       })
       .subscribe({
-        next: (r) => { if (r.code === 0) this.registeredToken = token; },
-        error: () => { /* see method doc */ },
+        next: (r) => {
+          if (r.code === 0) this.registeredToken = token;
+        },
+        error: () => {
+          /* see method doc */
+        },
       });
+  }
+
+  /** Start and poll the authenticated current-device FCM delivery probe. The settings UI owns the
+   * one-second cadence and 15-second deadline; these methods only expose the two server operations. */
+  async createFcmProbe(token: string): Promise<FcmProbeStatus> {
+    await this.ensureTokenRegistered(token);
+    const response = await firstValueFrom(
+      this.http.post<ApiEnvelope<FcmProbeStatus>>(
+        `${apiPrefix()}/devices/fcm-probes`,
+        { token },
+      ),
+    );
+    return this.unwrap(response);
+  }
+
+  async getFcmProbe(probeId: string): Promise<FcmProbeStatus> {
+    const response = await firstValueFrom(
+      this.http.get<ApiEnvelope<FcmProbeStatus>>(
+        `${apiPrefix()}/devices/fcm-probes/${encodeURIComponent(probeId)}`,
+      ),
+    );
+    return this.unwrap(response);
+  }
+
+  private async ensureTokenRegistered(token: string): Promise<void> {
+    if (this.registeredToken === token) return;
+    const response = await firstValueFrom(
+      this.http.post<ApiEnvelope<null>>(`${apiPrefix()}/devices/register`, {
+        token,
+        platform: 'ANDROID',
+      }),
+    );
+    if (response.code !== 0) throw new Error(response.message);
+    this.currentToken = token;
+    this.registeredToken = token;
+  }
+
+  private unwrap<T>(response: ApiEnvelope<T>): T {
+    if (response.code !== 0 || response.data == null) {
+      throw new Error(response.message || 'FCM health check failed');
+    }
+    return response.data;
   }
 
   /** Ask for POST_NOTIFICATIONS once, after the first login (Android 13+). The native side handles the

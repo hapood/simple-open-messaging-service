@@ -25,7 +25,7 @@ import {
   forwardMessage,
   group,
   mediaAsset,
-  mediaMessage,
+  messageAsset,
   message,
   messageThread,
   pendingMedia,
@@ -361,11 +361,15 @@ export class MessageService implements OnModuleInit {
           type === ContentType.AUDIO ||
           type === ContentType.LINK
         ) {
-          const digest = extractDigests(content)[0];
-          if (digest) {
-            await tx
-              .insert(mediaMessage)
-              .values({ messageId: msg.id, threadId, digest });
+          const digests = extractDigests(storedContent);
+          if (digests.length) {
+            await tx.insert(messageAsset).values(
+              digests.map((digest) => ({
+                messageId: msg.id,
+                threadId,
+                digest,
+              })),
+            );
           }
         }
         // Strip the internal BigInt id — a throughput side-channel that must never be serialized.
@@ -674,7 +678,7 @@ export class MessageService implements OnModuleInit {
           );
         const digest = extractDigests(content)[0];
         if (digest) {
-          await tx.insert(mediaMessage).values({
+          await tx.insert(messageAsset).values({
             messageId: msg.id,
             threadId: stage.threadId,
             digest,
@@ -796,11 +800,7 @@ export class MessageService implements OnModuleInit {
           imageShape: 'avatar',
         };
       if (contentType === ContentType.LINK) {
-        const wire = await this.linkPreview.enrichForWire(
-          contentType,
-          rawContent,
-        );
-        const link = JSON.parse(wire) as Record<string, unknown>;
+        const link = JSON.parse(rawContent) as Record<string, unknown>;
         return typeof link['image'] === 'string'
           ? { image: link['image'], imageShape: 'thumbnail' }
           : {};
@@ -920,8 +920,8 @@ export class MessageService implements OnModuleInit {
     }
     const ids = msgs.map((m) => m.id);
     const [authRows, assetRows] = await Promise.all([
-      this.database.db.query.mediaMessage.findMany({
-        where: inArray(mediaMessage.messageId, ids),
+      this.database.db.query.messageAsset.findMany({
+        where: inArray(messageAsset.messageId, ids),
         columns: { messageId: true, digest: true },
       }),
       allDigests.size === 0
@@ -937,22 +937,7 @@ export class MessageService implements OnModuleInit {
     const present = new Set(
       assetRows.filter((a) => a.status === 'READY').map((a) => a.digest),
     );
-    // LINK thumbnails: the DB stores only the image digest; inline it as base64 for the wire (the
-    // frontend renders the card from the data URI). One read per LINK row; non-LINK is untouched.
-    const forWire = await Promise.all(
-      msgs.map(async (m) =>
-        m.contentType === ContentType.LINK
-          ? {
-              ...m,
-              content: await this.linkPreview.enrichForWire(
-                m.contentType,
-                m.content,
-              ),
-            }
-          : m,
-      ),
-    );
-    return forWire.map((m) => {
+    return msgs.map((m) => {
       const { id: _drop, ...rest } = m;
       const ds = byMsg.get(m.id) ?? [];
       const ready =

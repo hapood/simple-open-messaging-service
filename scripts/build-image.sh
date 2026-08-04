@@ -1,24 +1,26 @@
 #!/bin/sh
-# Build soms:latest — the app image (FROM soms-base). If soms-base:latest is missing locally, this
-# auto-calls ./scripts/build-base.sh to build it first. To REFRESH the base (Caddy / DNS provider /
-# node bumped), run ./scripts/build-base.sh yourself.
+# Build soms:latest — the app image (FROM soms-base, compiling the server FROM soms-build-base). If
+# either local base is missing, this script builds it first. Refresh the runtime/Caddy base with
+# ./scripts/build-base.sh and the native compilation base with ./scripts/build-build-base.sh.
 #   ./scripts/build-image.sh
 #
-# Network: the compile stages (web/admin/server) use OFFICIAL npm/apt via the Docker client proxy
-# (~/.docker/config.json "proxies", auto-injected into build containers). --network=host reaches the
-# host's clash (127.0.0.1:7890) — build containers have their own loopback, so they must share the
-# host net. NODE_IMAGE overrides the compile-stage base if Docker Hub is unreachable.
+# Network: proxy variables are forwarded verbatim from the invoking environment. --network=host also
+# permits a build container to reach a system proxy bound to the host loopback; no proxy address or
+# port is defined here. NODE_IMAGE overrides the compile-stage base if Docker Hub is unreachable.
 set -e
 export DOCKER_BUILDKIT=1
 
 VER=$(node -p "require('./package.json').version")
 NODE_IMAGE="${NODE_IMAGE:-node:24-bookworm-slim}"
 
-# Auto-build the base if it's missing (first build, or after `docker rmi soms-base`). build-base.sh
-# inherits this script's env (NODE_IMAGE, PULL, proxy vars), so overrides pass through.
+# Auto-build either base if it is missing. Both scripts inherit NODE_IMAGE, PULL, and proxy vars.
 if ! docker image inspect soms-base:latest >/dev/null 2>&1; then
   echo "soms-base:latest not found locally — building it first (./scripts/build-base.sh)…"
   "$(dirname "$0")"/build-base.sh
+fi
+if ! docker image inspect soms-build-base:latest >/dev/null 2>&1; then
+  echo "soms-build-base:latest not found locally — building it first (./scripts/build-build-base.sh)…"
+  "$(dirname "$0")"/build-build-base.sh
 fi
 
 echo "building soms:$VER (FROM soms-base:latest, also tagged latest) — app…"
@@ -30,6 +32,7 @@ docker build --network=host \
   --build-arg APP_VERSION="$VER" \
   --build-arg NODE_IMAGE="$NODE_IMAGE" \
   --build-arg SOMS_BASE=soms-base:latest \
+  --build-arg SOMS_BUILD_BASE=soms-build-base:latest \
   --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \
   --build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
   -t soms:"$VER" -t soms:latest .

@@ -20,24 +20,45 @@ import { LoginMode } from '../config/public-config.js';
  * unauthenticated (see src/settings/firebase.ts).
  */
 export class ShellFirebaseConfigDto {
-  @ApiProperty({ description: 'Whether a valid google-services.json is configured on this server.' })
+  @ApiProperty({
+    description:
+      'Whether a valid google-services.json is configured on this server.',
+  })
   configured!: boolean;
 
-  @ApiProperty({ required: false, description: 'client[].api_key[0].current_key. Present only when configured.' })
+  @ApiProperty({
+    required: false,
+    description:
+      'client[].api_key[0].current_key. Present only when configured.',
+  })
   apiKey?: string;
 
-  @ApiProperty({ required: false, description: 'project_info.project_id. Present only when configured.' })
+  @ApiProperty({
+    required: false,
+    description: 'project_info.project_id. Present only when configured.',
+  })
   projectId?: string;
 
-  @ApiProperty({ required: false, description: 'client[].client_info.mobilesdk_app_id. Present only when configured.' })
+  @ApiProperty({
+    required: false,
+    description:
+      'client[].client_info.mobilesdk_app_id. Present only when configured.',
+  })
   appId?: string;
 
-  @ApiProperty({ required: false, description: 'project_info.project_number (FCM/GCM sender ID). Present only when configured.' })
+  @ApiProperty({
+    required: false,
+    description:
+      'project_info.project_number (FCM/GCM sender ID). Present only when configured.',
+  })
   gcmSenderId?: string;
 }
 
 export class ShellCompatDto {
-  @ApiProperty({ example: '0.1.0', description: 'The server version (root package.json, same as /health).' })
+  @ApiProperty({
+    example: '0.1.0',
+    description: 'The server version (root package.json, same as /health).',
+  })
   serverVersion!: string;
 
   @ApiProperty({
@@ -51,7 +72,8 @@ export class ShellCompatDto {
     enum: LoginMode,
     enumName: 'LoginMode',
     example: LoginMode.APP_OTP_AND_QR,
-    description: 'Which login methods are enabled (see LoginMode). Mirrors GET /api/v1/config.',
+    description:
+      'Which login methods are enabled (see LoginMode). Mirrors GET /api/v1/config.',
   })
   loginMode!: LoginMode;
 
@@ -59,7 +81,7 @@ export class ShellCompatDto {
     example: 'https://soms.example.com:7667',
     required: false,
     description:
-      'Canonical client origin (scheme+host[:port]) for SOMS_DOMAIN. The native shell uses this + lanOrigin for symmetric auto-fill: the user enters one domain, the shell fills in the other from these and confirms via a modal. Same backend as lanOrigin.',
+      'Canonical client origin (scheme+host[:port]) for SOMS_WEB_DOMAIN, falling back to SOMS_DOMAIN. The native shell uses this + lanOrigin for symmetric auto-fill: the user enters one domain, the shell fills in the other from these and confirms via a modal. Same backend as lanOrigin.',
   })
   primaryOrigin?: string;
 
@@ -91,18 +113,24 @@ export class ShellCompatDto {
  * from a fixed route path.
  */
 export class ShellWebManifestDto {
-  @ApiProperty({ example: '0.1.0', description: 'The web SPA version this bundle contains (web/package.json). Display + filename only.' })
+  @ApiProperty({
+    example: '0.1.0',
+    description:
+      'The web SPA version this bundle contains (web/package.json). Display + filename only.',
+  })
   webVersion!: string;
 
   @ApiProperty({
     example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
-    description: 'Hex SHA-256 of the bundle bytes. The shell recomputes this over the downloaded bytes and MUST match before extracting; it also compares this against the persisted installed hash to detect updates.',
+    description:
+      'Hex SHA-256 of the bundle bytes. The shell recomputes this over the downloaded bytes and MUST match before extracting; it also compares this against the persisted installed hash to detect updates.',
   })
   sha256!: string;
 
   @ApiProperty({
     example: '/api/v1/shell/web-bundle',
-    description: 'Relative URL of the bundle download (streamed application/gzip tarball).',
+    description:
+      'Relative URL of the bundle download (streamed application/gzip tarball).',
   })
   downloadUrl!: string;
 }

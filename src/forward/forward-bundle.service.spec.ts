@@ -96,7 +96,7 @@ function databaseFake(childDepth: number, tx?: unknown) {
             createdAt: new Date(),
           }),
         },
-        mediaMessage: {
+        messageAsset: {
           findMany: vi.fn().mockResolvedValue([]),
         },
         forwardBundle: {
@@ -258,7 +258,7 @@ describe('ForwardBundleService', () => {
           id: 7n,
           contentType: ContentType.IMAGE,
           content: JSON.stringify({
-            url: `/uploads/cas/aa/aa/${digest}?threadId=4&seq=7`,
+            url: `/uploads/msg-assets/aa/aa/${digest}?threadId=4&seq=7`,
             w: 10,
             h: 10,
           }),
@@ -278,7 +278,7 @@ describe('ForwardBundleService', () => {
     const content = localizeForwardMediaContent(
       ContentType.IMAGE,
       JSON.stringify({
-        url: `https://evil.test/uploads/cas/aa/aa/${digest}`,
+        url: `https://evil.test/uploads/msg-assets/aa/aa/${digest}`,
         w: 1,
         h: 1,
       }),
@@ -293,7 +293,7 @@ describe('ForwardBundleService', () => {
     );
 
     expect(JSON.parse(content)).toMatchObject({
-      url: `/uploads/cas/aa/aa/${digest}`,
+      url: `/uploads/msg-assets/aa/aa/${digest}`,
       w: 1,
       h: 1,
     });
@@ -314,7 +314,7 @@ describe('ForwardBundleService', () => {
       service['assetsFromContent'](
         ContentType.FILE,
         JSON.stringify({
-          url: `/uploads/cas/aa/aa/${digest}`,
+          url: `/uploads/msg-assets/aa/aa/${digest}`,
           name: 'quarterly-report-with-a-long-name.pdf',
           size: 10,
           mimeType: 'application/pdf',

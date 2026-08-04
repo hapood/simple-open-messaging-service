@@ -235,7 +235,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     return this.fbFile ?? null;
   }
 
-  /** Read + parse the google-services.json file at FIREBASE_CLIENT_CONFIG (default data/google-services.json).
+  /** Read + parse the google-services.json file at FIREBASE_CLIENT_CONFIG (default <cwd>/data/google-services.json).
    *  A missing DEFAULT path is the normal "not yet configured" case (null, no warning); but when the operator
    *  explicitly set FIREBASE_CLIENT_CONFIG, an unreadable file is a misconfiguration and is warned so it
    *  surfaces in logs rather than reading as a mysterious "not configured" in the admin UI. A present-but-

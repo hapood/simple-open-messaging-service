@@ -291,7 +291,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     if (!asset) return '';
     const context = this.closure()?.accessContext;
     if (!context) return '';
-    return `/uploads/cas/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
+    return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
   }
 }
 

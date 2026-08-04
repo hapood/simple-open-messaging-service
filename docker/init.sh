@@ -23,8 +23,8 @@ die() { log "ERROR — $*"; exit 1; }
 [ -n "${SOMS_DOMAIN:-}" ] || die "SOMS_DOMAIN is required"
 [[ "$SOMS_DOMAIN" =~ ^[A-Za-z0-9._-]+$ ]] || die "SOMS_DOMAIN must be a bare domain (letters/digits/dot/_/- only; no scheme/port/path): '$SOMS_DOMAIN'"
 case "${SOMS_TLS_MODE:-}" in
-  custom|standard|disabled) ;;
-  *) die "SOMS_TLS_MODE must be one of: custom | standard | disabled (got '${SOMS_TLS_MODE:-<unset>}')" ;;
+  single-port|standard|disabled) ;;
+  *) die "SOMS_TLS_MODE must be one of: single-port | standard | disabled (got '${SOMS_TLS_MODE:-<unset>}')" ;;
 esac
 # Admin area exposure. `public` (default) leaves /admin + /api/v1/admin open to all; `lan` restricts both to
 # private-range IPs (a @not_lan guard in the Caddyfile — see emit_handlers). Backward-compatible: an existing
@@ -40,6 +40,30 @@ apex_of() {
   local d="$1"
   if [ "$(awk -F. '{print NF}' <<<"$d")" -ge 2 ]; then awk -F. '{print $(NF-1)"."$NF}' <<<"$d"; else printf '%s' "$d"; fi
 }
+
+# Whether a hostname is already matched by the identity site's exact host or one-label wildcard.
+# Example: SOMS_DOMAIN=qifa.io already covers soms.qifa.io via *.qifa.io, so emitting a second Caddy
+# site for SOMS_WEB_DOMAIN would be redundant. A sibling of a subdomain is not covered.
+covered_by_identity_site() {
+  local candidate="$1" prefix
+  [ "$candidate" = "$SOMS_DOMAIN" ] && return 0
+  case "$candidate" in
+    *."$SOMS_DOMAIN")
+      prefix="${candidate%."$SOMS_DOMAIN"}"
+      [[ "$prefix" != *.* ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Public client/Web entry domain. Federation identity remains SOMS_DOMAIN; this only separates the
+# advertised browser/native origin from @user@domain handles. Omitted = use SOMS_DOMAIN (backward compatible).
+if [ -n "${SOMS_WEB_DOMAIN:-}" ]; then
+  [[ "$SOMS_WEB_DOMAIN" =~ ^[A-Za-z0-9._-]+$ ]] || die "SOMS_WEB_DOMAIN must be a bare domain (letters/digits/dot/_/- only; no scheme/port/path): '$SOMS_WEB_DOMAIN'"
+  if [ "$(apex_of "$SOMS_DOMAIN")" != "$(apex_of "$SOMS_WEB_DOMAIN")" ]; then
+    die "SOMS_WEB_DOMAIN ('$SOMS_WEB_DOMAIN') must share SOMS_DOMAIN's registrable domain ('$SOMS_DOMAIN')"
+  fi
+fi
 
 # LAN domain — an alternate real domain (own DNS-01 cert) fronting the SAME backend, so native clients can
 # reach the box from inside the LAN when the public domain is hairpin-NAT-unreachable. Replaces the old
@@ -58,7 +82,7 @@ if [ -z "${CADDY_DNS_DIRECTIVE:-}" ]; then
   CADDY_DNS_DIRECTIVE='dns cloudflare {CLOUDFLARE_API_TOKEN}'
 fi
 
-# --- Resolve the DNS-01 directive (custom/standard only — disabled serves plain HTTP): transcribe each
+# --- Resolve the DNS-01 directive (single-port/standard only — disabled serves plain HTTP): transcribe each
 # {KEY} ref from the environment into a literal value. Providers such as Route 53 may instead read
 # their credentials directly from the Caddy process environment. ---
 caddy_refs=""
@@ -78,14 +102,14 @@ else
 fi
 
 # --- Caddyfile (self-contained). SOMS_TLS_MODE picks the edge:
-#   custom    HTTPS on the compose port (7667), DNS-01 wildcard cert, no HTTP redirect.
+#   single-port  HTTPS on the compose port (7667), DNS-01 wildcard cert, no HTTP redirect.
 #             + SOMS_LAN_DOMAIN set → ALSO an https://<lan-domain>:7667 site (own DNS-01 cert, same zone).
 #   standard  HTTPS on 443 + auto 80→443 redirect, AND 7667 for federation (one shared cert via snippet).
 #             + SOMS_LAN_DOMAIN set → additional https://<lan-domain> sites (own DNS-01 cert).
 #   disabled  plain HTTP on 7667, no cert (+ http://<lan-domain>:7667 if SOMS_LAN_DOMAIN set).
 # SOMS_ADMIN_ACCESS=lan layers a @not_lan guard onto the admin area (page + API) in every mode.
 # The container always serves federation on canonical 7667; the published HOST port is x-host-port in
-# docker-compose.yml (custom/disabled) — publish 80+443 too for standard. ---
+# docker-compose.yml (single-port/disabled) — publish 80+443 too for standard. ---
 # The route handlers shared by every site. When SOMS_ADMIN_ACCESS=lan the admin page (/admin) and admin API
 # (/api/v1/admin) are gated to private IPs: @not_lan is defined once and reused by both admin handles, and
 # `respond @not_lan 403` short-circuits non-LAN clients. handle blocks are source-ordered / first-match /
@@ -94,10 +118,14 @@ fi
 # branch is byte-identical to the pre-guard output (no var set → no change for existing deploys).
 emit_handlers() {
   printf '\tencode zstd gzip\n'
+  printf '\t# Federation discovery is served by Fastify, not the SPA fallback.\n'
+  printf '\thandle /.well-known/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
   if [ "${SOMS_ADMIN_ACCESS:-public}" = "lan" ]; then
     printf '\t@not_lan not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.1 ::1 fc00::/7 fe80::/10\n'
     printf '\t# Admin API + admin page - LAN-only (403 otherwise); MUST precede the generic /api* handle.\n'
     printf '\thandle /api/v1/admin* {\n\t\trespond @not_lan 403\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
+    printf '\t# React Router uses /admin/ as its basename; canonicalize the bare mount before serving the SPA.\n'
+    printf '\thandle /admin {\n\t\troute {\n\t\t\trespond @not_lan 403\n\t\t\tredir * /admin/ 308\n\t\t}\n\t}\n'
     printf '\thandle /admin* {\n\t\trespond @not_lan 403\n\t\troot * /app/public\n\t\ttry_files {path} /admin/index.html\n\t\tfile_server\n\t}\n'
     printf '\t# Fastify origin on loopback: consumer API (incl. SSE) + auth-gated /uploads.\n'
     printf '\thandle /api* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
@@ -107,6 +135,7 @@ emit_handlers() {
     printf '\thandle /api* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
     printf '\thandle /uploads* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
     printf '\t# Frontend dist (baked into the image) — Caddy serves it; Fastify is API-only.\n'
+    printf '\tredir /admin /admin/ 308\n'
     printf '\thandle /admin* {\n\t\troot * /app/public\n\t\ttry_files {path} /admin/index.html\n\t\tfile_server\n\t}\n'
   fi
   printf '\thandle {\n\t\troot * /app/public/web\n\t\ttry_files {path} /index.html\n\t\tfile_server\n\t}\n'
@@ -119,8 +148,12 @@ emit_handlers() {
     printf '}\n'
     printf 'https://%s, https://*.%s {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
     printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
+    if [ -n "${SOMS_WEB_DOMAIN:-}" ] && ! covered_by_identity_site "$SOMS_WEB_DOMAIN"; then
+      printf 'https://%s {\n\timport soms_site\n}\n' "$SOMS_WEB_DOMAIN"
+      printf 'https://%s:7667 {\n\timport soms_site\n}\n' "$SOMS_WEB_DOMAIN"
+    fi
     # LAN domain (own DNS-01 cert via the same provider/zone) — only when configured.
-    if [ -n "${SOMS_LAN_DOMAIN:-}" ]; then
+    if [ -n "${SOMS_LAN_DOMAIN:-}" ] && ! covered_by_identity_site "$SOMS_LAN_DOMAIN"; then
       printf 'https://%s, https://*.%s {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
       printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
     fi
@@ -130,9 +163,15 @@ emit_handlers() {
     [ -n "$tls_block" ] && printf '%s\n' "$tls_block"
     emit_handlers
     printf '}\n'
+    if [ -n "${SOMS_WEB_DOMAIN:-}" ] && ! covered_by_identity_site "$SOMS_WEB_DOMAIN"; then
+      printf '%s://%s:7667 {\n' "$scheme" "$SOMS_WEB_DOMAIN"
+      [ -n "$tls_block" ] && printf '%s\n' "$tls_block"
+      emit_handlers
+      printf '}\n'
+    fi
     # LAN domain (own DNS-01 cert via the same provider/zone) — only when configured. `disabled` mode serves
-    # it over plain HTTP (tls_block empty); custom mints a cert via the same tls_block.
-    if [ -n "${SOMS_LAN_DOMAIN:-}" ]; then
+    # it over plain HTTP (tls_block empty); single-port mints a cert via the same tls_block.
+    if [ -n "${SOMS_LAN_DOMAIN:-}" ] && ! covered_by_identity_site "$SOMS_LAN_DOMAIN"; then
       printf '%s://%s:7667, %s://*.%s:7667 {\n' "$scheme" "$SOMS_LAN_DOMAIN" "$scheme" "$SOMS_LAN_DOMAIN"
       [ -n "$tls_block" ] && printf '%s\n' "$tls_block"
       emit_handlers
@@ -142,4 +181,4 @@ emit_handlers() {
 } > "$CADDYFILE"
 
 chmod 600 "$CADDYFILE"
-log "OK — domain=$SOMS_DOMAIN lan-domain=${SOMS_LAN_DOMAIN:-none} mode=$SOMS_TLS_MODE admin=${SOMS_ADMIN_ACCESS:-public}; wrote $CADDYFILE"
+log "OK — domain=$SOMS_DOMAIN web-domain=${SOMS_WEB_DOMAIN:-$SOMS_DOMAIN} lan-domain=${SOMS_LAN_DOMAIN:-none} mode=$SOMS_TLS_MODE admin=${SOMS_ADMIN_ACCESS:-public}; wrote $CADDYFILE"

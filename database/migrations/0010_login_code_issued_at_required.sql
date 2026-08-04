@@ -1,0 +1,1 @@
+ALTER TABLE "LoginCode" ALTER COLUMN "issuedAt" DROP DEFAULT;

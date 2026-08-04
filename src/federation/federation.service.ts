@@ -2288,7 +2288,7 @@ export class FederationService implements OnModuleDestroy {
         contentType: m.contentType,
         // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
         // the bytes to render. Non-LINK is a no-op pass-through.
-        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        content: m.content,
         ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
@@ -2339,7 +2339,7 @@ export class FederationService implements OnModuleDestroy {
         seq: m.seq,
         originSeq: m.originSeq ?? 0,
         contentType: m.contentType,
-        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        content: m.content,
         ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
@@ -2640,7 +2640,7 @@ export class FederationService implements OnModuleDestroy {
         contentType: m.contentType,
         // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
         // the bytes to render. Non-LINK is a no-op pass-through.
-        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        content: m.content,
         ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
@@ -2761,7 +2761,7 @@ export class FederationService implements OnModuleDestroy {
         seq: m.seq,
         originSeq: m.originSeq ?? 0,
         contentType: m.contentType,
-        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        content: m.content,
         ...this.quoteTargetField(quoteTargets.get(m.seq)),
         ts: m.createdAt.getTime(),
       })),
@@ -2817,10 +2817,10 @@ export class FederationService implements OnModuleDestroy {
           )
         ).threadId;
     // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
-    const inThread = await this.database.db.query.mediaMessage.findFirst({
+    const inThread = await this.database.db.query.messageAsset.findFirst({
       where: and(
-        eq(tables.mediaMessage.digest, digest),
-        eq(tables.mediaMessage.threadId, threadId),
+        eq(tables.messageAsset.digest, digest),
+        eq(tables.messageAsset.threadId, threadId),
       ),
       columns: { messageId: true },
     });
@@ -3426,12 +3426,7 @@ export class FederationService implements OnModuleDestroy {
       quoteTarget?: S2SQuoteTarget;
     },
   ): Promise<Message | null> {
-    // LINK thumbnails arrive inlined (base64) on the wire; decode + persist content-addressed, keeping
-    // only the digest in our DB (mirrors the local send path's storage). Other types pass through.
-    let storedContent = await this.linkPreview.decodeFromWire(
-      m.contentType,
-      m.content,
-    );
+    let storedContent = m.content;
     const incomingText =
       m.contentType === ContentType.PURE_TEXT
         ? parseTextMessageContent(storedContent)
@@ -3728,7 +3723,8 @@ export class FederationService implements OnModuleDestroy {
       t === ContentType.IMAGE ||
       t === ContentType.FILE ||
       t === ContentType.VIDEO ||
-      t === ContentType.AUDIO
+      t === ContentType.AUDIO ||
+      t === ContentType.LINK
     );
   }
 
@@ -3754,12 +3750,15 @@ export class FederationService implements OnModuleDestroy {
     fromDomain: string,
     toAccount: string,
   ): Promise<void> {
-    // Quota category: IMAGE → 'images'; FILE/VIDEO/AUDIO → 'largeFiles'. MediaAsset stores no mime
+    // Card assets use the image quota; FILE/VIDEO/AUDIO use the large-file quota.
     // (schema declares it redundant), so classify by the message contentType. Enforced inside
     // fetchMediaChunks after the byte size is known; the dedup path below (file already local) skips
     // fetchMediaChunks entirely — counted once on first pull.
     const category: 'images' | 'largeFiles' =
-      msg.contentType === ContentType.IMAGE ? 'images' : 'largeFiles';
+      msg.contentType === ContentType.IMAGE ||
+      msg.contentType === ContentType.LINK
+        ? 'images'
+        : 'largeFiles';
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
@@ -3793,7 +3792,7 @@ export class FederationService implements OnModuleDestroy {
           );
         }
         await this.database.db
-          .insert(tables.mediaMessage)
+          .insert(tables.messageAsset)
           .values({ messageId: msg.id, threadId: msg.threadId, digest })
           .onConflictDoNothing();
       } catch {
@@ -3829,10 +3828,10 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<boolean> {
     const digests = extractDigests(content);
     if (digests.length === 0) return true;
-    const rows = await this.database.db.query.mediaMessage.findMany({
+    const rows = await this.database.db.query.messageAsset.findMany({
       where: and(
-        eq(tables.mediaMessage.messageId, msgId),
-        inArray(tables.mediaMessage.digest, digests),
+        eq(tables.messageAsset.messageId, msgId),
+        inArray(tables.messageAsset.digest, digests),
       ),
       columns: { digest: true },
     });

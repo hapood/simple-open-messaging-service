@@ -117,8 +117,11 @@ object SomsFirebase {
             if (task.isSuccessful) {
                 val token = task.result
                 SomsBridge.FcmToken.current = token
+                SomsBridge.FcmToken.lastError = null
                 SomsBridge.eval("window.__SOMS_FCM_TOKEN__ && window.__SOMS_FCM_TOKEN__(${SomsBridge.jsonStr(token)});")
             } else {
+                SomsBridge.FcmToken.lastError =
+                    task.exception?.javaClass?.simpleName ?: "TOKEN_FETCH_FAILED"
                 Log.w(TAG, "token fetch failed: ${task.exception?.message}")
             }
         }

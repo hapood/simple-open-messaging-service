@@ -53,7 +53,7 @@ export async function stageCasAsset(
       target: mediaAsset.digest,
       set: { bytes: BigInt(buf.length), status: 'READY' },
     });
-  return { url: `/uploads/cas/${rel}`, size: buf.length, digest };
+  return { url: `/uploads/msg-assets/${rel}`, size: buf.length, digest };
 }
 
 /** Upload an avatar via the real HTTP route (multipart) — the test-process equivalent of
@@ -76,8 +76,8 @@ function hashToken(token: string): string {
 }
 
 /** Insert a SessionToken row directly (process-boundary safe) + return its plaintext — the Bearer the
- *  app's SessionAuthGuard validates on first use (a cache miss → DB read → this row). `app` → no expiry;
- *  `web`/`desktop` → 14-day sliding, mirroring SessionTokenService.issue. */
+ *  app's SessionAuthGuard validates on first use (a cache miss → DB read → this row). Every client
+ *  uses the default 30-day inactivity deadline, mirroring SessionTokenService.issue. */
 async function seedSessionToken(
   database: Database,
   userId: number,
@@ -92,9 +92,8 @@ async function seedSessionToken(
     userAgent: null,
     ip: null,
     lastSeenIp: null,
-    expiresAt:
-      client === 'app' ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-    persistent: true,
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    autoTerminateDays: 30,
   });
   return plaintext;
 }

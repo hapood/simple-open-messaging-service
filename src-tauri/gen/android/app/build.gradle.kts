@@ -131,6 +131,8 @@ dependencies {
     // high-priority messages and posts local notifications). See src-tauri/FCM_ANDROID_PATCH.md.
     implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
     implementation("com.google.firebase:firebase-messaging")
+    // Local GMS diagnostics for Settings → FCM health check (missing / disabled / update-required).
+    implementation("com.google.android.gms:play-services-base:18.5.0")
     // NotificationSyncWorker (国内 fallback — polls /notifications/missed on a ~6h periodic, since FCM
     // is blocked in mainland China). WorkManager schedules the poll; EncryptedSharedPreferences guards
     // the session token + dedup cursor; OkHttp does the HTTPS POST. See FCM_ANDROID_PATCH.md.

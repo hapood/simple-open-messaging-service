@@ -43,6 +43,9 @@ import {
   RevokeSessionDto,
   AutoTerminateSessionsDto,
 } from '../dto/auth.dto.js';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard.js';
+import { UseRateLimitPolicy } from '../rate-limit/rate-limit.decorator.js';
+import { AUTH_RATE_LIMIT_POLICIES } from '../rate-limit/auth-policy.registry.js';
 
 @ApiTags('auth')
 @Controller()
@@ -57,7 +60,8 @@ export class AuthController {
   // password, OTP, and QR login paths so every flow sets the session credential identically.
 
   @Public()
-  @UseGuards(PasswordLoginEnabledGuard, LocalAuthGuard)
+  @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.passwordLogin)
+  @UseGuards(RateLimitGuard, PasswordLoginEnabledGuard, LocalAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
   @ApiOperation({

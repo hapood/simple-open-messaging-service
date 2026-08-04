@@ -23,6 +23,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import android.util.TypedValue
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
 import android.graphics.drawable.Icon
@@ -1268,7 +1270,17 @@ class MainActivity : TauriActivity() {
      *  process; it returns null only when no config is persisted yet (first run / cleared), in which case
      *  FCM is unavailable and we skip silently — the app runs on foreground SSE + the WorkManager poller. */
     private fun fetchFcmToken() {
-        if (SomsFirebase.ensureInitialized(this) == null) return
+        val playServices = GoogleApiAvailability.getInstance()
+        val playServicesCode = playServices.isGooglePlayServicesAvailable(this)
+        if (playServicesCode != ConnectionResult.SUCCESS) {
+            SomsBridge.FcmToken.lastError =
+                "PLAY_SERVICES_${playServices.getErrorString(playServicesCode)}"
+            return
+        }
+        if (SomsFirebase.ensureInitialized(this) == null) {
+            SomsBridge.FcmToken.lastError = "FIREBASE_NOT_CONFIGURED"
+            return
+        }
         SomsFirebase.requestToken(this)
     }
 
@@ -1634,9 +1646,19 @@ class MainActivity : TauriActivity() {
          *  for "FCM available" (a token was obtained → Google Play Services present). */
         @JavascriptInterface
         fun getFcmStatus(): String {
+            val a = activityRef.get()
             val hasToken = SomsBridge.FcmToken.current != null
-            val lastCheck = activityRef.get()?.let { SomsSecureStore.getFcmLastCheck(it) } ?: 0L
-            return JSONObject().put("hasToken", hasToken).put("lastCheck", lastCheck).toString()
+            val lastCheck = a?.let { SomsSecureStore.getFcmLastCheck(it) } ?: 0L
+            val playServices = GoogleApiAvailability.getInstance()
+            val playServicesCode = a?.let { playServices.isGooglePlayServicesAvailable(it) }
+                ?: ConnectionResult.INTERNAL_ERROR
+            return JSONObject()
+                .put("hasToken", hasToken)
+                .put("lastCheck", lastCheck)
+                .put("playServicesAvailable", playServicesCode == ConnectionResult.SUCCESS)
+                .put("playServicesStatus", playServices.getErrorString(playServicesCode))
+                .put("tokenError", SomsBridge.FcmToken.lastError ?: JSONObject.NULL)
+                .toString()
         }
 
         /** System notification status for the Settings panel: `{ enabled, canRequest }`.

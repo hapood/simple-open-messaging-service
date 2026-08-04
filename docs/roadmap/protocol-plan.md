@@ -179,13 +179,6 @@ CREATE TABLE "SessionToken" (
 - Logout: set `revokedAt`.
 - Periodically clean up records past `expiresAt` (replacing the existing 15-day in-memory cleanup).
 
-**Secrets** (`.env`):
-
-```bash
-JWT_ACCESS_SECRET=...    # optional; if unset, auto-generated on first start in ./data/jwt-*.key
-JWT_REFRESH_SECRET=...   # recommended to be separate from access (likewise optional, auto-generated)
-```
-
 ### 5.4 Pagination Contract
 
 ```ts

@@ -7,6 +7,9 @@ export interface FcmStatus {
   hasToken: boolean;
   /** Epoch ms of the last FCM availability check. 0 = never. */
   lastCheck: number;
+  playServicesAvailable: boolean;
+  playServicesStatus: string;
+  tokenError: string | null;
 }
 
 /** System notification-permission status returned by the `SomsFcm.getNotificationStatus` bridge. */
@@ -35,12 +38,16 @@ export interface NotifStatus {
 export class BackgroundSyncService {
   /** Whether the 6-hour WorkManager poll is enabled (Kotlin default true). */
   readonly enabled = signal<boolean>(
-    typeof window !== 'undefined' ? (window.SomsFcm?.getPollingEnabled?.() ?? true) : true,
+    typeof window !== 'undefined'
+      ? (window.SomsFcm?.getPollingEnabled?.() ?? true)
+      : true,
   );
 
   /** Whether the dataSync foreground service is enabled (Kotlin default true). */
   readonly fgsEnabled = signal<boolean>(
-    typeof window !== 'undefined' ? (window.SomsFcm?.getForegroundServiceEnabled?.() ?? true) : true,
+    typeof window !== 'undefined'
+      ? (window.SomsFcm?.getForegroundServiceEnabled?.() ?? true)
+      : true,
   );
 
   /** FCM availability snapshot, read once at boot. Refreshed by [requestFcmCheck]. */
@@ -54,11 +61,15 @@ export class BackgroundSyncService {
    *  card). Read from native at boot; written through [setGrouping] (the next background fetch sends it). */
   readonly previewMode = signal<'message' | 'private'>(
     typeof window !== 'undefined'
-      ? ((window.SomsFcm?.getNotificationPreviewMode?.() as 'message' | 'private') ?? 'message')
+      ? ((window.SomsFcm?.getNotificationPreviewMode?.() as
+          | 'message'
+          | 'private') ?? 'message')
       : 'message',
   );
 
-  readonly alertPolicy = signal<'cooldown_2s' | 'cooldown_5s' | 'once_per_thread'>(
+  readonly alertPolicy = signal<
+    'cooldown_2s' | 'cooldown_5s' | 'once_per_thread'
+  >(
     typeof window !== 'undefined'
       ? ((window.SomsFcm?.getNotificationAlertPolicy?.() as
           | 'cooldown_2s'
@@ -78,7 +89,9 @@ export class BackgroundSyncService {
     window.SomsFcm?.setNotificationPreviewMode?.(mode);
   }
 
-  setAlertPolicy(policy: 'cooldown_2s' | 'cooldown_5s' | 'once_per_thread'): void {
+  setAlertPolicy(
+    policy: 'cooldown_2s' | 'cooldown_5s' | 'once_per_thread',
+  ): void {
     this.alertPolicy.set(policy);
     window.SomsFcm?.setNotificationAlertPolicy?.(policy);
   }
@@ -90,7 +103,9 @@ export class BackgroundSyncService {
 
   /** Next scheduled WorkManager poll (epoch ms), or -1 if not scheduled. */
   nextPullTime(): number {
-    return typeof window !== 'undefined' ? (window.SomsFcm?.getNextPullTime?.() ?? -1) : -1;
+    return typeof window !== 'undefined'
+      ? (window.SomsFcm?.getNextPullTime?.() ?? -1)
+      : -1;
   }
 
   /** Manual "check now": force an FCM token fetch (bypassing the daily gate) and re-read the status.
@@ -101,14 +116,36 @@ export class BackgroundSyncService {
   }
 
   private readFcmStatus(): FcmStatus {
-    const raw = typeof window !== 'undefined' ? window.SomsFcm?.getFcmStatus?.() : undefined;
-    if (!raw) return { hasToken: false, lastCheck: 0 };
+    const raw =
+      typeof window !== 'undefined'
+        ? window.SomsFcm?.getFcmStatus?.()
+        : undefined;
+    if (!raw) return this.emptyFcmStatus();
     try {
       const j = JSON.parse(raw) as Partial<FcmStatus>;
-      return { hasToken: !!j.hasToken, lastCheck: Number(j.lastCheck) || 0 };
+      return {
+        hasToken: !!j.hasToken,
+        lastCheck: Number(j.lastCheck) || 0,
+        playServicesAvailable: j.playServicesAvailable !== false,
+        playServicesStatus:
+          typeof j.playServicesStatus === 'string'
+            ? j.playServicesStatus
+            : 'UNKNOWN',
+        tokenError: typeof j.tokenError === 'string' ? j.tokenError : null,
+      };
     } catch {
-      return { hasToken: false, lastCheck: 0 };
+      return this.emptyFcmStatus();
     }
+  }
+
+  private emptyFcmStatus(): FcmStatus {
+    return {
+      hasToken: false,
+      lastCheck: 0,
+      playServicesAvailable: false,
+      playServicesStatus: 'UNKNOWN',
+      tokenError: null,
+    };
   }
 
   /** Re-read the system notification status from native. Call on panel open and on window focus (the user
@@ -132,7 +169,10 @@ export class BackgroundSyncService {
   }
 
   private readNotifStatus(): NotifStatus {
-    const raw = typeof window !== 'undefined' ? window.SomsFcm?.getNotificationStatus?.() : undefined;
+    const raw =
+      typeof window !== 'undefined'
+        ? window.SomsFcm?.getNotificationStatus?.()
+        : undefined;
     if (!raw) return { enabled: true, canRequest: false };
     try {
       const j = JSON.parse(raw) as Partial<NotifStatus>;

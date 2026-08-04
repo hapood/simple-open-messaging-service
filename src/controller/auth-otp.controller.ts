@@ -11,26 +11,28 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { OtpLoginService } from '../auth/otp-login.service.js';
 import { setSessionCookies } from '../auth/media-token.js';
 import { Public } from '../common/public.decorator.js';
 import { OtpLoginDto } from '../dto/auth.dto.js';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard.js';
+import { UseRateLimitPolicy } from '../rate-limit/rate-limit.decorator.js';
+import { AUTH_RATE_LIMIT_POLICIES } from '../rate-limit/auth-policy.registry.js';
 
 /**
  * One-time-code (admin-issued) login — available on every platform. Distinct from the password-login
  * {@link AuthController} (its own throttle surface + it bypasses LocalStrategy's brute-force ban).
- * `@Public()` (callable pre-auth) with a `@Throttle` ceiling so a guessed 6-digit code can't be brute-
- * forced. The session `client` comes from the body (default 'app') and is informational only.
+ * `@Public()` (callable pre-auth) with a dedicated abuse policy so a guessed 6-digit code can't be
+ * brute-forced. The session `client` comes from the body (default 'app') and is informational only.
  */
 @ApiTags('auth')
 @Public()
 @Controller()
-@UseGuards(ThrottleGuard)
 export class AuthOtpController {
   constructor(private readonly otpLoginService: OtpLoginService) {}
 
-  @Throttle(10, 60) // 10 attempts/min per IP — brute-force ceiling on the 6-digit space (10^6)
+  @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.otpLogin)
+  @UseGuards(RateLimitGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/otp/login')
   @ApiOperation({

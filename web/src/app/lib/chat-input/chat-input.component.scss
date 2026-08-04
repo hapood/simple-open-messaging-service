@@ -37,6 +37,7 @@ app-chat-input {
 }
 
 .ci-controls {
+  position: relative;
   width: min(100%, 800px);
   margin-inline: auto;
   display: flex;
@@ -286,6 +287,8 @@ app-chat-input {
 }
 
 .ci-attach {
+  position: relative;
+  z-index: 2;
   flex: 0 0 auto;
   width: 40px;
   height: 40px;
@@ -302,13 +305,119 @@ app-chat-input {
     background 0.12s,
     color 0.12s,
     transform 0.1s;
-  &:hover,
-  &.active {
+  &:hover {
     background: var(--app-hover);
     color: var(--app-text);
   }
+  &.ci-attach--active {
+    background: color-mix(in srgb, var(--app-brand) 16%, var(--im-composer-input-bg));
+    color: var(--app-brand);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-brand) 28%, transparent);
+  }
   &:active {
     transform: scale(0.94);
+  }
+}
+
+// The drawer occupies the current controls-row height and slides out from the attachment key. Its wrapper is
+// a size-query container: a one-line composer scrolls horizontally; once the composer grows, the same tiles
+// use the extra height and scroll vertically. No JS measurement is needed.
+.ci-attach-drawer-shell {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 0 48px;
+  container-type: size;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--im-composer-bar-bg);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-8px);
+  transition:
+    opacity var(--app-motion-fast) var(--app-ease-enter),
+    transform var(--app-motion-fast) var(--app-ease-standard);
+  &--open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
+}
+
+.ci-attach-drawer {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 2px 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.ci-attach-option {
+  flex: 0 0 72px;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--app-radius-md);
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  box-sizing: border-box;
+  &:hover {
+    background: var(--app-hover);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: -2px;
+  }
+  &:active .ci-attach-option-icon {
+    background: color-mix(in srgb, var(--app-brand) 18%, transparent);
+  }
+}
+.ci-attach-option-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 28px;
+  border-radius: var(--app-radius-pill);
+  color: var(--app-brand);
+}
+.ci-attach-option-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: var(--app-font-weight-medium);
+}
+
+@container (min-height: 73px) {
+  .ci-attach-drawer {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    grid-auto-rows: 64px;
+    align-content: start;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .ci-attach-option {
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-attach-drawer-shell {
+    transition: none;
   }
 }
 
@@ -372,9 +481,8 @@ app-chat-input {
 
 @container (min-width: 720px) {
   .ci-input {
-    height: 56px;
     min-height: 56px;
-    max-height: 56px;
+    max-height: 119px;
   }
 }
 

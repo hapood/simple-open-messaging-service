@@ -9,7 +9,7 @@ import {
   threadParticipant,
   user,
   userPreference,
-  mediaMessage,
+  messageAsset,
   userBlock,
   pushToken,
   invite,
@@ -70,7 +70,7 @@ export const forwardBundleRelations = relations(forwardBundle, ({ many }) => ({
 
 export const messageRelations = relations(message, ({ one, many }) => ({
   forwardMessages: many(forwardMessage),
-  mediaMessages: many(mediaMessage),
+  messageAssets: many(messageAsset),
   user: one(user, {
     fields: [message.creator],
     references: [user.id],
@@ -103,7 +103,7 @@ export const messageThreadRelations = relations(
       fields: [messageThread.groupUserId],
       references: [user.id],
     }),
-    mediaMessages: many(mediaMessage),
+    messageAssets: many(messageAsset),
     messages: many(message),
     invites: many(invite),
     pendingMedias: many(pendingMedia),
@@ -147,13 +147,13 @@ export const userPreferenceRelations = relations(userPreference, ({ one }) => ({
   }),
 }));
 
-export const mediaMessageRelations = relations(mediaMessage, ({ one }) => ({
+export const messageAssetRelations = relations(messageAsset, ({ one }) => ({
   message: one(message, {
-    fields: [mediaMessage.messageId],
+    fields: [messageAsset.messageId],
     references: [message.id],
   }),
   messageThread: one(messageThread, {
-    fields: [mediaMessage.threadId],
+    fields: [messageAsset.threadId],
     references: [messageThread.id],
   }),
 }));

@@ -382,6 +382,8 @@ export interface SelfCheckIpWellKnownProbe {
   keysValid?: boolean;
   errorClass?: 'reachability' | 'cert' | 'timeout' | 'http' | 'parse';
   code?: string;
+  phase?: 'connect' | 'tls' | 'http' | 'response' | 'parse';
+  httpVersion?: string;
 }
 
 export interface SelfCheckCheck {
@@ -391,6 +393,7 @@ export interface SelfCheckCheck {
   status: SelfCheckStatus;
   detail: string;
   evidence?: Record<string, unknown>;
+  blockedBy?: string;
   durationMs: number;
 }
 

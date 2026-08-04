@@ -451,7 +451,7 @@ export class UploadService {
     const shard = join(digest.slice(0, 2), digest.slice(2, 4), digest);
     return {
       abs: join(this.casDir, shard),
-      url: `/uploads/cas/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
+      url: `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
     };
   }
 

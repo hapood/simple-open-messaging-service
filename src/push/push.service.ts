@@ -1,4 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   applicationDefault,
   getApps,
@@ -26,6 +29,24 @@ import { pushToken, user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
+
+export type FcmProbeStatus = {
+  probeId: string;
+  stage: 'fcm_accepted' | 'device_received' | 'failed';
+  createdAt: number;
+  acceptedAt?: number;
+  receivedAt?: number;
+  latencyMs?: number;
+  errorCode?: string;
+};
+
+type FcmProbeEntry = FcmProbeStatus & {
+  userId: number;
+  token: string;
+  sending?: boolean;
+};
 
 /**
  * Multi-platform push delivery — the wake-up channel that complements SSE.
@@ -41,23 +62,31 @@ import { RegisterDeviceDto } from '../dto/device.dto.js';
  *  - WEB           → `web-push` lib (standard Web Push + VAPID), payload is the JSON-stringified signal.
  *
  * Degradation: each transport is independently gated on its own config — GOOGLE_APPLICATION_CREDENTIALS
- * (env) for FCM, the DB-backed VAPID keypair (SettingsService, admin-managed) for Web Push. Either missing
+ * (default data/firebase-service-account.json) for FCM, the DB-backed VAPID keypair (SettingsService,
+ * admin-managed) for Web Push. Either missing
  * → that transport no-ops (the other still works; both missing → SSE-only, the local/dev path).
  */
 @Injectable()
 export class PushService {
   private readonly logger = new Logger(PushService.name);
   private readonly messaging: Messaging | null;
+  private readonly fcmProbes = new Map<string, FcmProbeEntry>();
+  private readonly fcmProbeCooldowns = new Map<string, number>();
 
   constructor(
     private readonly database: DatabaseService,
     private readonly sse: SseService,
     private readonly settings: SettingsService,
   ) {
-    // FCM: applicationDefault() reads the service-account JSON at GOOGLE_APPLICATION_CREDENTIALS. FCM is
-    // a file-path credential (a whole service-account JSON), so it stays env/file-based — NOT admin-UI
-    // managed like VAPID.
-    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    // FCM: use the same <cwd>/data convention in local development and Docker (/app/data). An explicit
+    // GOOGLE_APPLICATION_CREDENTIALS overrides the conventional filename. applicationDefault() requires
+    // the resolved path in the environment, so populate it when the default file exists.
+    const explicitCredentialPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const credentialPath =
+      explicitCredentialPath ||
+      join(process.cwd(), 'data', 'firebase-service-account.json');
+    if (existsSync(credentialPath)) {
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = credentialPath;
       const app = getApps().length
         ? getApp()
         : initializeApp({ credential: applicationDefault() });
@@ -68,7 +97,7 @@ export class PushService {
     } else {
       this.messaging = null;
       this.logger.warn(
-        'GOOGLE_APPLICATION_CREDENTIALS unset — FCM dispatch disabled',
+        `FCM service-account file not found at ${credentialPath} — FCM dispatch disabled`,
       );
     }
     // Web Push: VAPID keys are now DB-backed (SettingsService, admin-managed) and passed PER SEND as the
@@ -115,6 +144,121 @@ export class PushService {
     await this.database.db
       .delete(pushToken)
       .where(and(eq(pushToken.token, token), eq(pushToken.userId, userId)));
+  }
+
+  /** Send a data-only probe to the caller's registered Android token. Probe state is intentionally
+   * process-local and short-lived: this is an interactive diagnostic, not delivery telemetry. */
+  async createFcmProbe(userId: number, token: string): Promise<FcmProbeStatus> {
+    this.pruneFcmProbes();
+    const now = Date.now();
+    const cooldownKey = `${userId}:${token}`;
+    const lastProbeAt = this.fcmProbeCooldowns.get(cooldownKey) ?? 0;
+    const retryAfterMs = 30_000 - (now - lastProbeAt);
+    if (retryAfterMs > 0) {
+      throw new BusinessException(
+        BusinessCode.RATE_LIMITED,
+        'FCM health check is cooling down',
+        HttpStatus.TOO_MANY_REQUESTS,
+        { retryAfter: Math.ceil(retryAfterMs / 1000) },
+      );
+    }
+
+    const row = await this.database.db.query.pushToken.findFirst({
+      where: and(
+        eq(pushToken.userId, userId),
+        eq(pushToken.token, token),
+        eq(pushToken.platform, 'ANDROID'),
+      ),
+    });
+    if (!row) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'current Android FCM token is not registered',
+      );
+    }
+
+    this.fcmProbeCooldowns.set(cooldownKey, now);
+    const probeId = randomUUID();
+    const entry: FcmProbeEntry = {
+      probeId,
+      userId,
+      token,
+      stage: 'failed',
+      createdAt: now,
+      sending: true,
+    };
+    this.fcmProbes.set(probeId, entry);
+
+    if (!this.messaging) {
+      entry.errorCode = 'FCM_NOT_CONFIGURED';
+      return this.publicFcmProbe(entry);
+    }
+    try {
+      await this.messaging.send({
+        token,
+        data: { type: 'FCM_HEALTH_PROBE', probeId, ts: String(now) },
+        android: { priority: 'high', ttl: 30_000 },
+      });
+      if (entry.stage !== 'device_received') entry.stage = 'fcm_accepted';
+      entry.acceptedAt = Date.now();
+    } catch (e) {
+      entry.errorCode =
+        (e as { code?: string }).code ??
+        (e as Error).message ??
+        'FCM_SEND_FAILED';
+    } finally {
+      entry.sending = false;
+    }
+    return this.publicFcmProbe(entry);
+  }
+
+  getFcmProbe(userId: number, probeId: string): FcmProbeStatus {
+    this.pruneFcmProbes();
+    const entry = this.fcmProbes.get(probeId);
+    if (!entry || entry.userId !== userId) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'FCM health check not found',
+      );
+    }
+    return this.publicFcmProbe(entry);
+  }
+
+  acknowledgeFcmProbe(userId: number, probeId: string): FcmProbeStatus {
+    this.pruneFcmProbes();
+    const entry = this.fcmProbes.get(probeId);
+    if (!entry || entry.userId !== userId) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'FCM health check not found',
+      );
+    }
+    if (entry.sending || entry.stage === 'fcm_accepted') {
+      entry.stage = 'device_received';
+      entry.receivedAt = Date.now();
+      entry.latencyMs = entry.receivedAt - entry.createdAt;
+    }
+    return this.publicFcmProbe(entry);
+  }
+
+  private publicFcmProbe(entry: FcmProbeEntry): FcmProbeStatus {
+    const {
+      userId: _userId,
+      token: _token,
+      sending: _sending,
+      ...status
+    } = entry;
+    return status;
+  }
+
+  private pruneFcmProbes(): void {
+    const cutoff = Date.now() - 60_000;
+    for (const [probeId, entry] of this.fcmProbes) {
+      if (entry.createdAt < cutoff) this.fcmProbes.delete(probeId);
+    }
+    for (const [key, createdAt] of this.fcmProbeCooldowns) {
+      if (createdAt < cutoff) this.fcmProbeCooldowns.delete(key);
+    }
   }
 
   /** Send one Web Push notification, passing the VAPID details PER CALL from SettingsService (NOT the

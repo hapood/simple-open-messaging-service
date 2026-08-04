@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { contextualCasUrl, contextualizeCasUrls } from './cas-url.js';
 
 const digest = 'ab'.repeat(32);
-const bare = `/uploads/cas/ab/ab/${digest}`;
+const bare = `/uploads/msg-assets/ab/ab/${digest}`;
 
 describe('contextual CAS URLs', () => {
   it('binds a bare URL to its carrier message', () => {
