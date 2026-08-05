@@ -44,8 +44,8 @@ domain；检测到配置 domain 与数据库保存值不同必须禁止联邦模
 sha256:<base64url without padding>
 ```
 
-当前 `soms-s2s-key.json` 中的 Ed25519 密钥在升级时直接成为 root key，并可同时作为第一个
-active signing key，不要求现有部署生成第二份身份文件。
+当前 `soms-s2s-key.json` 中只有一个 Ed25519 密钥对。它同时作为身份 root key 和 S2S signing
+key；两处字段是同一份密钥材料的逻辑表示，不会生成第二把 key。
 
 ### 2.3 pairwise server ID
 
@@ -66,9 +66,8 @@ pairwiseServerId(peerDomain)
 
 ### 2.4 identity epoch
 
-`identityEpoch` 是正整数，初始为 `1`。正常 signing-key 轮换不改变它。只有保留原 root key、
-并由原 root key 签署身份代次转换证明时才允许增加；v1 不提供这种操作，因此实现上固定为 `1`。
-root key 丢失不能通过把 epoch 改成 `2` 恢复。
+`identityEpoch` 在本协议中固定为 `1`，作为身份声明格式的一部分参与比较。协议不提供 key 轮换、
+epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 `2` 恢复。
 
 ### 2.5 消息 ID
 
@@ -130,25 +129,11 @@ root key 丢失不能通过把 epoch 改成 `2` 恢复。
 3. 管理界面要求从备份恢复原密钥；
 4. 不得静默生成新 key，也不得调用 `/s2s/init` 自动恢复同一 domain。
 
-### 3.3 signing-key 轮换
+### 3.3 单密钥约束
 
-正常轮换保留 root key 与 pairwise server ID。`old-key signs new-key` 的 transition proof 至少覆盖：
-
-```json
-{
-  "type": "signing_key_transition",
-  "domain": "a.example",
-  "identityEpoch": 1,
-  "oldKeyId": "a.example/key-1",
-  "newKeyId": "a.example/key-2",
-  "newPublicKey": "base64...",
-  "notBefore": "...",
-  "createdAt": "..."
-}
-```
-
-proof 由已固定且尚有效的 old key 签名。轮换期间 well-known 同时发布 old/new key 与 proof；peer
-验证 proof 后才能更新 active key 集。仅看到同一 domain 发布了新 key 不构成合法轮换。
+本协议不支持在线密钥轮换。well-known 的 `keys` 为兼容既有 wire shape 保持数组形式，但必须且
+只能包含一个 key；`keyId` 或公钥发生变化都表示身份连续性丢失。缓存中的同名 `keyId` 不允许
+覆盖公钥，旧缓存必须保留作为判断依据。
 
 ## 4. 远端节点身份状态机
 
@@ -177,9 +162,9 @@ pending -> trusted <-> demoted
 以下任一情况进入 `identity_lost`：
 
 - pairwise server ID 改变；
-- root fingerprint 改变且没有可验证的 root transition（v1 不支持 root transition）；
-- identity epoch 回退或未经证明地改变；
-- 已固定 key 被替换且没有合法 signing-key transition proof；
+- root fingerprint 改变；
+- identity epoch 改变；
+- 已固定的 `keyId` 或公钥被替换，或出现第二个 key；
 - 本地发现 peer 历史存在，但固定身份字段缺失或互相冲突，无法安全迁移。
 
 网络超时、DNS 失败、TLS 失败、5xx 和签名格式错误不直接等同 identity loss；它们保持现有可重试
@@ -198,8 +183,8 @@ pending -> trusted <-> demoted
 
 ### 5.1 公开 well-known
 
-`GET /.well-known/soms` 继续是公开端点，只发布软件版本、协议 capability、root public key、
-signing keys 与 transition proofs。它不返回 pairwise server ID，因为公开请求没有可靠的请求方身份。
+`GET /.well-known/soms` 继续是公开端点，只发布软件版本、协议版本、root public key 与唯一的
+signing key。它不返回 pairwise server ID，因为公开请求没有可靠的请求方身份。
 
 ### 5.2 首次 init
 
@@ -227,7 +212,7 @@ signing keys 与 transition proofs。它不返回 pairwise server ID，因为公
 - 若 peer 已存在，固定三元组必须完全匹配。
 
 首次成功可按现有产品策略自动建立 `trusted`；“自动建立信任”只适用于数据库中从未出现过该
-domain，或管理员刚完成 reset 并明确允许该 domain 作为全新 peer 再次接入的情况。reset 后的
+domain，或管理员刚完成破坏性 reset、因而允许该 domain 作为全新 peer 再次接入的情况。reset 后的
 `/init` 可以建立新的服务器级信任，但不能恢复任何旧用户、关系、群成员或消息授权。
 
 响应返回本机针对 origin 派生的同结构身份声明，并使用本机 active signing key 做 detached
@@ -247,7 +232,7 @@ GET /api/v1/s2s/identity?recipientDomain=<caller-domain>&nonce=<nonce>
 重连顺序：
 
 1. 解析服务地址并读取 well-known；
-2. 验证已固定 signing key，或验证 old→new transition proof；
+2. 验证唯一 signing key 与已固定 key 完全相同；
 3. 调用 identity endpoint，校验接收方绑定、nonce、响应签名和固定三元组；
 4. 只有成功后才发 ping/miss/业务请求；
 5. 身份矛盾时原子设置 `identity_lost`。
@@ -537,14 +522,20 @@ reset 作业先获得该 peer 的排他维护锁，阻止其 S2S 和本地相关
 - 该 domain 的外域用户和由它代表的群镜像；
 - 与这些用户相关的好友、邀请、群成员和 thread participant；
 - 仅属于该 peer 关系的消息、删除记录、转发依赖和媒体引用；
-- 失去任何本地参与者的孤立 thread。
+- 保留 thread 实体，只解除该 peer 的参与关系和可见性。
 
 共享 group/thread 不能按 domain 粗暴整表删除；必须先计算所有权和剩余本地/其他 peer 参与者，
 只清除该 peer 的可见性与实体。媒体按现有 CAS 引用计数回收。
 
-对仍存在但内容发生变化的本地用户 thread 写入新的 DELETE/ADD revision，使客户端收敛。
-历史 `ThreadRevision` 行无需为 reset 单独物理删除；若其外键级联随已删除 thread 清理，属于现有
-数据库完整性行为，不把它们复制到新身份。
+对失去该 peer 关系的本地用户写入新的 DELETE revision，并将对应 ADD revision 的 `isDelete`
+置为 true，使客户端收敛。`MessageThread` 和历史 `ThreadRevision` 均保留，不做物理删除。
+本地或第三方所有的共享群只移除该 peer 的成员和内容，不从其他成员的 thread 列表删除。
+
+清理不使用跨 thread 的长事务。全局同一时间只允许一个 domain 处于 reset；相关数据在此期间冻结。
+每个异步联邦请求发出时捕获 `MessageThread.federationVersion`，响应返回时同时验证 domain reset 状态
+和当前 version。单个 thread 清理成功后，最后一条原子更新将 `federationTruncated` 置为 true，并将
+`federationVersion` 加一。因此旧节点的 inflight 响应即使晚于 reset 完成或新节点握手，也不能插入
+新身份的数据。服务重启后继续枚举相关且 `federationTruncated=false` 的 thread。
 
 ### 10.3 reset 后
 
@@ -552,8 +543,10 @@ reset 完成后：
 
 - 删除原 `FederatedPeer` 身份锚点，另存仅供安全判断的 domain reset tombstone；
 - tombstone 的 `resetGeneration` 增加；
-- 只有 reset 时管理员明确选择“允许重新接入”，同 domain 才能再次 init；它被视为全新 peer，
-  但不能恢复任何旧用户 ID、关系 epoch、thread audience、
+- reset 与 init 保持为两个独立动作：reset 完成后留下一个待消费的重新初始化许可；随后可由管理员
+  主动发起握手，或由正常客户端握手流程触发 `/init`；
+- 第一次成功 `/init` 固定全新身份后立即消费该许可。同 domain 被视为全新 peer，但不能恢复任何
+  旧用户 ID、关系 epoch、thread audience、
   消息访问权、邀请或群成员资格；
 - 必须由用户重新加好友、重新邀请入群，产生新的关系与 membership epoch；
 - 旧授权永远不能仅凭 domain、account 名称相同而继承。
@@ -591,7 +584,7 @@ reset 完成后：
 - push 重复、乱序或丢失不丢消息且不重复落库；
 - 页面第 N 条失败时整页与 HWM 回滚；
 - 同 domain 换服务器或换 root key 后进入 `identity_lost`，不会自动 init；
-- 正常 old→new signing-key proof 不改变 peer identity；
+- 已固定 `keyId`、公钥改变或发布第二个 key 后进入 `identity_lost`；
 - 密钥文件丢失但数据库有历史时不自动生成；
 - 删除好友/退出/踢人事件与 audience 终点在同一事务；
 - 旧 epoch 的延迟删除事件不破坏重新建立的关系；

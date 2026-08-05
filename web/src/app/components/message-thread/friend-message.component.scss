@@ -126,6 +126,13 @@ app-chat-input {
   z-index: 4;
 }
 
+// A chatbox dialog visually replaces the composer, but the component must remain mounted until the dialog's
+// result callback has delivered its send intent. Destroying it with an `@if` first makes Angular reject the
+// subsequent OutputRef emission (NG0953).
+app-chat-input.msg-composer--dialog-hidden {
+  display: none;
+}
+
 // One stable transport row per state. Angular creates it beside the viewport, then the component moves it
 // into the kernel's measured tail cap so it scrolls with the mounted window and contributes to total height.
 // The card and its thumbnail rail have fixed dimensions: individual completions only change paint.

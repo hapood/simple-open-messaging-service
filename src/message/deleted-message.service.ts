@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, gt, max, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -9,6 +9,7 @@ import {
   deletedMessage,
   federatedMessageTombstone,
   federationDeletedCursor,
+  federatedPeer,
   message,
   messageThread,
 } from '../database/schema.js';
@@ -19,6 +20,40 @@ import { derivePreview } from './message.service.js';
 @Injectable()
 export class DeletedMessageService {
   constructor(private readonly database: DatabaseService) {}
+
+  private async assertFederatedResponseWritable(
+    tx: DatabaseTransaction,
+    threadId: number,
+    peerDomain: string,
+    expectedFederationVersion: number,
+  ): Promise<void> {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock_shared(hashtextextended('federation-reset-global', 0))`,
+    );
+    const [state] = await tx
+      .select({
+        federationTruncated: messageThread.federationTruncated,
+        federationVersion: messageThread.federationVersion,
+        trustLevel: federatedPeer.trustLevel,
+      })
+      .from(messageThread)
+      .innerJoin(federatedPeer, eq(federatedPeer.domain, peerDomain))
+      .where(eq(messageThread.id, threadId))
+      .limit(1);
+    if (
+      !state ||
+      state.federationTruncated ||
+      state.federationVersion !== expectedFederationVersion ||
+      state.trustLevel === 'reset_in_progress' ||
+      state.trustLevel === 'identity_lost'
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `stale federation deletion response for thread ${threadId}`,
+        HttpStatus.LOCKED,
+      );
+    }
+  }
 
   async currentHwm(): Promise<string> {
     const [row] = await this.database.db
@@ -42,15 +77,25 @@ export class DeletedMessageService {
   async withdraw(userId: number, threadId: number, seq: number) {
     return this.database.db.transaction(async (tx) => {
       const locked = await tx.execute(sql`
-        SELECT id, creator, "isDeleted"
+        SELECT id, creator, "contentType", "isDeleted"
         FROM "Message"
         WHERE "threadId" = ${threadId} AND seq = ${seq}
         FOR UPDATE
       `);
       const target = locked.rows[0] as
-        | { id: string; creator: number; isDeleted: boolean }
+        | {
+            id: string;
+            creator: number;
+            contentType: string;
+            isDeleted: boolean;
+          }
         | undefined;
-      if (!target || target.creator !== userId) {
+      if (
+        !target ||
+        target.creator !== userId ||
+        target.contentType === 'INVITE' ||
+        target.contentType === 'CALL'
+      ) {
         throw new BusinessException(
           BusinessCode.NOT_FOUND,
           'message not found',
@@ -110,6 +155,80 @@ export class DeletedMessageService {
     });
   }
 
+  /** Admin moderation path. The caller owns the surrounding transaction so report status and the
+   * deletion fact commit atomically. Idempotency is inherited from DeletedMessage(threadId, seq). */
+  async deleteByReportInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    seq: number,
+  ): Promise<string> {
+    const locked = await tx.execute(sql`
+      SELECT id, "isDeleted"
+      FROM "Message"
+      WHERE "threadId" = ${threadId} AND seq = ${seq}
+      FOR UPDATE
+    `);
+    const target = locked.rows[0] as
+      | { id: string; isDeleted: boolean }
+      | undefined;
+    if (!target) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'message not found');
+    }
+
+    const now = new Date();
+    await tx
+      .update(message)
+      .set({ isDeleted: true, updatedAt: now })
+      .where(and(eq(message.threadId, threadId), eq(message.seq, seq)));
+    const [inserted] = await tx
+      .insert(deletedMessage)
+      .values({
+        threadId,
+        seq,
+        type: MessageDeleteType.REPORT,
+        updatedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [deletedMessage.threadId, deletedMessage.seq],
+      })
+      .returning({ id: deletedMessage.id });
+    const deletionId =
+      inserted?.id ??
+      (
+        await tx.query.deletedMessage.findFirst({
+          where: and(
+            eq(deletedMessage.threadId, threadId),
+            eq(deletedMessage.seq, seq),
+          ),
+          columns: { id: true },
+        })
+      )?.id;
+    if (deletionId === undefined)
+      throw new Error('deleted message log was not persisted');
+
+    if (!target.isDeleted) {
+      const replacement = await tx.query.message.findFirst({
+        where: and(
+          eq(message.threadId, threadId),
+          eq(message.isDeleted, false),
+        ),
+        orderBy: [desc(message.createdAt), desc(message.id)],
+      });
+      await tx
+        .update(messageThread)
+        .set({
+          lastMessageSeq: replacement?.seq ?? null,
+          lastMessagePreview: replacement
+            ? derivePreview(replacement.contentType, replacement.content)
+            : null,
+          lastMessageAt: replacement?.createdAt ?? null,
+          updatedAt: now,
+        })
+        .where(eq(messageThread.id, threadId));
+    }
+    return deletionId.toString();
+  }
+
   /** Both deletion arrival and federated message insertion take this exact lock. There need not be a
    * Message row yet, which is why a stable-identity advisory lock is used instead of FOR UPDATE. */
   static lockFederatedIdentity(
@@ -130,9 +249,16 @@ export class DeletedMessageService {
     threadId: number;
     remoteDeletedId: bigint;
     cursor: { peerDomain: string; streamAccount: string; streamKind: string };
+    expectedFederationVersion: number;
   }): Promise<void> {
-    await this.database.db
-      .insert(federationDeletedCursor)
+    await this.database.db.transaction(async (tx) => {
+      await this.assertFederatedResponseWritable(
+        tx,
+        params.threadId,
+        params.cursor.peerDomain,
+        params.expectedFederationVersion,
+      );
+      await tx.insert(federationDeletedCursor)
       .values({
         threadId: params.threadId,
         peerDomain: params.cursor.peerDomain,
@@ -153,6 +279,7 @@ export class DeletedMessageService {
           updatedAt: new Date(),
         },
       });
+    });
   }
 
   async applyFederated(params: {
@@ -164,8 +291,15 @@ export class DeletedMessageService {
     remoteDeletedId: bigint;
     type: MessageDeleteType;
     cursor: { peerDomain: string; streamAccount: string; streamKind: string };
+    expectedFederationVersion: number;
   }) {
     return this.database.db.transaction(async (tx) => {
+      await this.assertFederatedResponseWritable(
+        tx,
+        params.threadId,
+        params.sourceDomain,
+        params.expectedFederationVersion,
+      );
       await DeletedMessageService.lockFederatedIdentity(
         tx,
         params.threadId,

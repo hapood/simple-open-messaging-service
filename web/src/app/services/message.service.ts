@@ -517,6 +517,25 @@ export class MsgService {
     >(`${apiPrefix()}/deleted-messages/query`, params);
   }
 
+  withdrawMessage(params: { threadId: number; seq: number }) {
+    return this.http.post<
+      StandardResponse<{ id: string; threadId: number; seq: number }>
+    >(`${apiPrefix()}/withdraw-message`, params);
+  }
+
+  reportMessages(params: { threadId: number; seqs: number[] }) {
+    return this.http.post<
+      StandardResponse<{
+        reports: {
+          id: string;
+          threadId: number;
+          messageSeq: number;
+          status: 'PENDING' | 'UPHELD' | 'REJECTED';
+        }[];
+      }>
+    >(`${apiPrefix()}/message-reports`, params);
+  }
+
   /** Resolve the P2P thread with a peer user — returns { threadId } when friends, THREAD_NOT_FOUND otherwise. */
   getThreadByUserId(params: { userId: number }) {
     return this.http.post<StandardResponse<{ threadId: number }>>(

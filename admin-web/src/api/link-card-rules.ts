@@ -4,6 +4,8 @@ export interface LinkCardRule {
   id: number;
   hostname: string;
   note: string | null;
+  imageSelection: 'first' | 'last';
+  descriptionSelection: 'first' | 'last';
   createdAt: number;
   updatedAt: number;
 }
@@ -11,6 +13,8 @@ export interface LinkCardRule {
 export interface LinkCardRuleInput {
   hostname: string;
   note?: string;
+  imageSelection: 'first' | 'last';
+  descriptionSelection: 'first' | 'last';
 }
 
 export function listLinkCardRules(): Promise<LinkCardRule[]> {

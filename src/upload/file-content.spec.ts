@@ -317,10 +317,15 @@ describe('parseLinkContent', () => {
     ).toBeNull();
   });
 
-  it('rejects legacy and unknown fields', () => {
+  it('accepts a bounded site name and rejects unknown fields', () => {
     const base = { url: 'https://x.com', title: '', description: '' };
     expect(
       parseLinkContent(JSON.stringify({ ...base, siteName: 'X' })),
+    ).toMatchObject({ siteName: 'X' });
+    expect(
+      parseLinkContent(
+        JSON.stringify({ ...base, siteName: 'X'.repeat(101) }),
+      ),
     ).toBeNull();
     expect(
       parseLinkContent(JSON.stringify({ ...base, version: 1 })),

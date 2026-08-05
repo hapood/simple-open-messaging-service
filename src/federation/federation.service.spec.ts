@@ -4,10 +4,11 @@ import { describe, it, expect, vi } from 'vitest';
 // must be set before `new FederationService(...)`. Module-top runs before any test body.
 process.env.SOMS_DOMAIN ??= 'soms.io';
 
-import { FederationService } from './federation.service.js';
+import { FederationService, S2sResponseError } from './federation.service.js';
 import type { FederationBufferService } from './federation-buffer.service.js';
 import { message, pendingMedia } from '../database/schema.js';
 import { MessageDeleteType } from '../database/enums.js';
+import { BusinessCode } from '../common/business-code.js';
 
 const OUR = 'soms.io'; // == SOMS_DOMAIN (config.domain)
 
@@ -85,6 +86,7 @@ function makeStubs() {
   );
   return {
     svc,
+    database,
     prisma,
     markDirty,
     flushBatch,
@@ -92,6 +94,165 @@ function makeStubs() {
     deletedMessages,
   };
 }
+
+describe('FederationService thread-bound S2S preflight', () => {
+  function installPreflight(state: {
+    federationTruncated: boolean;
+    federationVersion: number;
+    trustLevel: string;
+  }) {
+    const { svc, database } = makeStubs();
+    const limit = vi.fn().mockResolvedValue([state]);
+    const where = vi.fn(() => ({ limit }));
+    const innerJoin = vi.fn(() => ({ where }));
+    const from = vi.fn(() => ({ innerJoin }));
+    const select = vi.fn(() => ({ from }));
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ execute, select }),
+    );
+    (database.db as { transaction?: typeof transaction }).transaction =
+      transaction;
+    const getSigned = vi.fn().mockResolvedValue({ messages: [] });
+    const target = svc as unknown as {
+      getSigned: typeof getSigned;
+      withTrustedPeer: <T>(
+        domain: string,
+        action: () => Promise<T>,
+      ) => Promise<T>;
+      getSignedForThread: <T>(
+        threadId: number,
+        path: string,
+        domain: string,
+      ) => Promise<{ data: T; federationVersion: number }>;
+    };
+    target.getSigned = getSigned;
+    target.withTrustedPeer = (_domain, action) => action();
+    return { target, getSigned, execute, select, innerJoin, transaction };
+  }
+
+  it('takes the shared reset lock, performs one joined state read, and carries the captured version', async () => {
+    const { target, getSigned, execute, select, innerJoin, transaction } =
+      installPreflight({
+        federationTruncated: false,
+        federationVersion: 7,
+        trustLevel: 'trusted',
+      });
+
+    await expect(
+      target.getSignedForThread<{ messages: unknown[] }>(
+        10,
+        '/messages',
+        'peer.test',
+      ),
+    ).resolves.toEqual({ data: { messages: [] }, federationVersion: 7 });
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenCalledOnce();
+    expect(innerJoin).toHaveBeenCalledOnce();
+    expect(getSigned).toHaveBeenCalledWith('/messages', 'peer.test', undefined);
+  });
+
+  it.each([
+    ['reset domain', false, 'reset_in_progress'],
+    ['truncated thread', true, 'trusted'],
+  ])('does not send for a %s', async (_label, truncated, trustLevel) => {
+    const { target, getSigned } = installPreflight({
+      federationTruncated: truncated,
+      federationVersion: 7,
+      trustLevel,
+    });
+
+    await expect(
+      target.getSignedForThread(10, '/messages', 'peer.test'),
+    ).rejects.toThrow('federation thread 10 is unavailable');
+    expect(getSigned).not.toHaveBeenCalled();
+  });
+
+  it('attaches the captured version to an application error response', async () => {
+    const { target, getSigned } = installPreflight({
+      federationTruncated: false,
+      federationVersion: 7,
+      trustLevel: 'trusted',
+    });
+    getSigned.mockRejectedValueOnce(
+      new S2sResponseError('gone', 410, BusinessCode.GROUP_DISSOLVED),
+    );
+
+    await expect(
+      target.getSignedForThread(10, '/messages', 'peer.test'),
+    ).rejects.toMatchObject({
+      status: 410,
+      code: BusinessCode.GROUP_DISSOLVED,
+      federationVersion: 7,
+    });
+  });
+});
+
+describe('FederationService thread-bound response write gate', () => {
+  function installWriteGate(state: {
+    federationTruncated: boolean;
+    federationVersion: number;
+    trustLevel: string;
+  }) {
+    const { svc } = makeStubs();
+    const limit = vi.fn().mockResolvedValue([state]);
+    const where = vi.fn(() => ({ limit }));
+    const innerJoin = vi.fn(() => ({ where }));
+    const from = vi.fn(() => ({ innerJoin }));
+    const select = vi.fn(() => ({ from }));
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const target = svc as unknown as {
+      assertThreadResponseWritable: (
+        tx: unknown,
+        threadId: number,
+        domain: string,
+        version: number,
+      ) => Promise<void>;
+    };
+    return {
+      target,
+      tx: { execute, select },
+      execute,
+      select,
+      innerJoin,
+    };
+  }
+
+  it('accepts the response only while the joined reset state and version still match', async () => {
+    const { target, tx, execute, select, innerJoin } = installWriteGate({
+      federationTruncated: false,
+      federationVersion: 7,
+      trustLevel: 'trusted',
+    });
+
+    await expect(
+      target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+    ).resolves.toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenCalledOnce();
+    expect(innerJoin).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['changed version', false, 8, 'trusted'],
+    ['truncated thread', true, 7, 'trusted'],
+    ['reset domain', false, 7, 'reset_in_progress'],
+  ])(
+    'rejects a stale response for a %s',
+    async (_label, truncated, version, trustLevel) => {
+      const { target, tx } = installWriteGate({
+        federationTruncated: truncated,
+        federationVersion: version,
+        trustLevel,
+      });
+
+      await expect(
+        target.assertThreadResponseWritable(tx, 10, 'peer.test', 7),
+      ).rejects.toThrow('stale federation response');
+    },
+  );
+});
 
 describe('FederationService quote coordinates', () => {
   it('maps a local quote seq to creator identity + originSeq for the wire', async () => {
@@ -606,17 +767,16 @@ describe('FederationService durable deletion pull', () => {
     streamKind: 'p2p-author' | 'group-origin' | 'group-author' = 'p2p-author',
   ) {
     const getSigned = vi.fn();
-    for (const page of pages) getSigned.mockResolvedValueOnce(page);
+    for (const page of pages)
+      getSigned.mockResolvedValueOnce({
+        data: page,
+        federationVersion: 4,
+      });
     const target = svc as unknown as {
-      getSigned: typeof getSigned;
-      withTrustedPeer: (
-        domain: string,
-        action: () => Promise<unknown>,
-      ) => Promise<unknown>;
+      getSignedForThread: typeof getSigned;
       pullDeletedStream: (params: unknown) => Promise<void>;
     };
-    target.getSigned = getSigned;
-    target.withTrustedPeer = (_domain, action) => action();
+    target.getSignedForThread = getSigned;
     await target.pullDeletedStream({
       threadId: 10,
       sourceDomain: 'peer.test',
@@ -647,7 +807,11 @@ describe('FederationService durable deletion pull', () => {
       { deletions: [deletion()], hasMore: false },
     ]);
 
-    expect(getSigned.mock.calls[0]?.[0]).toBe('/deleted?afterId=7');
+    expect(getSigned.mock.calls[0]).toEqual([
+      10,
+      '/deleted?afterId=7',
+      'peer.test',
+    ]);
     expect(deletedMessages.applyFederated).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: 10,
@@ -656,6 +820,7 @@ describe('FederationService durable deletion pull', () => {
         authorityDomain: 'peer.test',
         sourceDomain: 'peer.test',
         remoteDeletedId: 8n,
+        expectedFederationVersion: 4,
       }),
     );
     expect(sse.onDeletedMessageUpdated.mock.calls).toEqual([
@@ -708,7 +873,11 @@ describe('FederationService durable deletion pull', () => {
     );
 
     expect(deletedMessages.advanceFederatedCursor).toHaveBeenCalledWith(
-      expect.objectContaining({ remoteDeletedId: 8n, threadId: 10 }),
+      expect.objectContaining({
+        remoteDeletedId: 8n,
+        threadId: 10,
+        expectedFederationVersion: 4,
+      }),
     );
     expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
     expect(sse.onDeletedMessageUpdated).not.toHaveBeenCalled();

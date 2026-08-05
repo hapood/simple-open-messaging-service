@@ -1,6 +1,10 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { SignatureService, type SignedRequest, type OutboundSignatureHeaders } from './signature.service.js';
+import {
+  SignatureService,
+  type SignedRequest,
+  type OutboundSignatureHeaders,
+} from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -37,12 +41,16 @@ export class S2sVerifyService {
     };
   }
 
-  /** Build the SignedRequest (method/path/authority/body) the verifier expects. body comes from the
+  /** Build the SignedRequest (method/path/query/authority/body) the verifier expects. body comes from the
    *  /api/v1/s2s/* raw-body capture hook in bootstrap.ts — re-serialized JSON would not match the digest. */
   signedRequest(req: FastifyRequest): SignedRequest {
+    const requestTarget = req.url ?? '';
+    const queryIndex = requestTarget.indexOf('?');
     return {
       method: req.method.toUpperCase(),
-      path: (req.url ?? '').split('?')[0],
+      path:
+        queryIndex === -1 ? requestTarget : requestTarget.slice(0, queryIndex),
+      query: queryIndex === -1 ? '?' : requestTarget.slice(queryIndex),
       authority: (req.headers.host as string) ?? '',
       body: req.rawBody?.toString('utf8') ?? '',
     };
@@ -55,8 +63,22 @@ export class S2sVerifyService {
 
   /** Parse the RFC 9421 keyId from Signature-Input → { keyId, signer domain }. Cheap, no network.
    *  Throws FEDERATION_MALFORMED (401) on missing/malformed Signature-Input/keyId. */
-  parseSigner(headers: OutboundSignatureHeaders): { keyId: string; domain: string } {
-    const keyIdMatch = (headers['signature-input'] ?? '').match(/keyid="([^"]+)"/);
+  parseSigner(headers: OutboundSignatureHeaders): {
+    keyId: string;
+    domain: string;
+  } {
+    if (
+      !this.signature.hasValidMetadata(headers, Math.floor(Date.now() / 1000))
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'malformed or expired Signature-Input',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const keyIdMatch = (headers['signature-input'] ?? '').match(
+      /keyid="([^"]+)"/,
+    );
     if (!keyIdMatch) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,

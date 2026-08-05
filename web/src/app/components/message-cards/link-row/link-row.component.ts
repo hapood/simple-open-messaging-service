@@ -13,6 +13,7 @@ interface LinkCard {
   url: string;
   title: string;
   description: string;
+  siteName?: string;
   image?: string;
   favicon?: string;
 }
@@ -83,6 +84,10 @@ export class LinkRowComponent {
     } catch {
       return this.link().url;
     }
+  });
+  readonly source = computed(() => {
+    const siteName = this.link().siteName?.trim();
+    return siteName ? `${siteName} · ${this.host()}` : this.host();
   });
 
   /** Set when the thumbnail <img> fails to load/decode (a corrupt or missing CAS asset) so the card

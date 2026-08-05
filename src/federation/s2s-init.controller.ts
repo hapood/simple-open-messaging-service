@@ -104,7 +104,9 @@ export class S2sInitController {
       doc.protocolVersion !== 1 ||
       doc.identityEpoch !== claim.identityEpoch ||
       doc.rootKey?.fingerprint !== claim.rootKeyFingerprint ||
-      computed !== claim.rootKeyFingerprint
+      computed !== claim.rootKeyFingerprint ||
+      doc.keys.length !== 1 ||
+      doc.keys[0]?.ed25519 !== rootPublicKey
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,

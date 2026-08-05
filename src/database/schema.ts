@@ -84,6 +84,11 @@ export const messageDeleteType = pgEnum('MessageDeleteType', [
   'WITHDRAW',
   'REPORT',
 ]);
+export const messageReportStatus = pgEnum('MessageReportStatus', [
+  'PENDING',
+  'UPHELD',
+  'REJECTED',
+]);
 
 export const adminSession = pgTable(
   'AdminSession',
@@ -356,6 +361,10 @@ export const messageThread = pgTable(
     pullUntil: integer()
       .default(sql`'-1'`)
       .notNull(),
+    /** Federation reset completion marker. The retained thread shell is invisible after truncation. */
+    federationTruncated: boolean().default(false).notNull(),
+    /** Invalidates asynchronous federation responses captured before a completed thread cleanup. */
+    federationVersion: integer().default(0).notNull(),
   },
   (table) => [
     uniqueIndex('MessageThread_groupUserId_key').using(
@@ -371,7 +380,11 @@ export const messageThread = pgTable(
       .onDelete('cascade'),
     check(
       'MessageThread_groupUserId_type_check',
-      sql`(type = 'P2P'::"MessageThreadType") = ("groupUserId" IS NULL)`,
+      sql`${table.federationTruncated} OR ((type = 'P2P'::"MessageThreadType") = ("groupUserId" IS NULL))`,
+    ),
+    check(
+      'MessageThread_federationVersion_check',
+      sql`${table.federationVersion} >= 0`,
     ),
   ],
 );
@@ -449,6 +462,14 @@ export const linkCardRule = pgTable(
     id: serial().primaryKey().notNull(),
     hostname: varchar({ length: 255 }).notNull(),
     note: varchar({ length: 100 }),
+    imageSelection: varchar({ length: 5 })
+      .$type<'first' | 'last'>()
+      .default('first')
+      .notNull(),
+    descriptionSelection: varchar({ length: 5 })
+      .$type<'first' | 'last'>()
+      .default('first')
+      .notNull(),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -460,6 +481,14 @@ export const linkCardRule = pgTable(
     uniqueIndex('LinkCardRule_hostname_key').using(
       'btree',
       table.hostname.asc(),
+    ),
+    check(
+      'LinkCardRule_imageSelection_check',
+      sql`${table.imageSelection} IN ('first', 'last')`,
+    ),
+    check(
+      'LinkCardRule_descriptionSelection_check',
+      sql`${table.descriptionSelection} IN ('first', 'last')`,
     ),
   ],
 );
@@ -715,6 +744,72 @@ export const admin = pgTable(
       columns: [table.userId],
       foreignColumns: [user.id],
       name: 'Admin_userId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+  ],
+);
+
+/** One user's moderation request for one durable Message row. Message content is deliberately not
+ * copied: Message rows are soft-deleted, so the authoritative evidence remains readable to admins. */
+export const messageReport = pgTable(
+  'MessageReport',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    messageId: bigint({ mode: 'bigint' }).notNull(),
+    threadId: integer().notNull(),
+    messageSeq: integer().notNull(),
+    reporterId: integer().notNull(),
+    status: messageReportStatus().default('PENDING').notNull(),
+    reviewedByAdminId: integer(),
+    reviewedAt: timestamp({ precision: 3, mode: 'date' }),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('MessageReport_reporterId_messageId_key').using(
+      'btree',
+      table.reporterId.asc().nullsLast().op('int4_ops'),
+      table.messageId.asc().nullsLast().op('int8_ops'),
+    ),
+    index('MessageReport_status_createdAt_idx').using(
+      'btree',
+      table.status.asc().nullsLast().op('enum_ops'),
+      table.createdAt.desc().nullsLast().op('timestamp_ops'),
+    ),
+    index('MessageReport_messageId_idx').using(
+      'btree',
+      table.messageId.asc().nullsLast().op('int8_ops'),
+    ),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [message.id],
+      name: 'MessageReport_messageId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'MessageReport_threadId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+    foreignKey({
+      columns: [table.reporterId],
+      foreignColumns: [user.id],
+      name: 'MessageReport_reporterId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+    foreignKey({
+      columns: [table.reviewedByAdminId],
+      foreignColumns: [admin.id],
+      name: 'MessageReport_reviewedByAdminId_fkey',
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
@@ -1128,7 +1223,7 @@ export const federatedPeer = pgTable(
   'FederatedPeer',
   {
     domain: varchar({ length: 63 }).primaryKey().notNull(),
-    trustLevel: varchar({ length: 15 }).default('pending').notNull(),
+    trustLevel: varchar({ length: 31 }).default('pending').notNull(),
     addedBy: varchar({ length: 31 }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1156,6 +1251,10 @@ export const federatedPeer = pgTable(
   },
   (table) => [
     check(
+      'FederatedPeer_trustLevel_check',
+      sql`${table.trustLevel} IN ('pending', 'trusted', 'demoted', 'blocked', 'identity_lost', 'reset_in_progress')`,
+    ),
+    check(
       'FederatedPeer_identityEpoch_check',
       sql`${table.identityEpoch} IS NULL OR ${table.identityEpoch} > 0`,
     ),
@@ -1166,6 +1265,29 @@ export const federatedPeer = pgTable(
     index('FederatedPeer_trustLevel_idx').using(
       'btree',
       table.trustLevel.asc().nullsLast().op('text_ops'),
+    ),
+    uniqueIndex('FederatedPeer_single_reset_in_progress_key')
+      .on(sql`(true)`)
+      .where(sql`${table.trustLevel} = 'reset_in_progress'`),
+  ],
+);
+
+/** Survives destructive peer reset after FederatedPeer itself is removed. It prevents a newly
+ * registered server at the same domain from inheriting trust merely by completing /init. */
+export const federatedPeerReset = pgTable(
+  'FederatedPeerReset',
+  {
+    domain: varchar({ length: 63 }).primaryKey().notNull(),
+    resetGeneration: integer().notNull(),
+    reinitPending: boolean().default(false).notNull(),
+    resetAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    check(
+      'FederatedPeerReset_resetGeneration_check',
+      sql`${table.resetGeneration} > 0`,
     ),
   ],
 );

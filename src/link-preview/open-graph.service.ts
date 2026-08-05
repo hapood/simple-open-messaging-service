@@ -10,7 +10,10 @@ export interface OpenGraphMeta {
   description?: string;
   image?: string;
   favicon?: string;
+  siteName?: string;
 }
+
+export type OpenGraphImageSelection = 'first' | 'last';
 
 /**
  * Extract OpenGraph / Twitter-Card / HTML metadata from a page's HTML. No DOM parser dependency
@@ -24,29 +27,29 @@ export interface OpenGraphMeta {
  */
 @Injectable()
 export class OpenGraphService {
-  parse(html: string, baseUrl: string): OpenGraphMeta {
+  parse(
+    html: string,
+    baseUrl: string,
+    imageSelection: OpenGraphImageSelection = 'first',
+    descriptionSelection: OpenGraphImageSelection = 'first',
+  ): OpenGraphMeta {
     const metas = this.extractMetaMap(html);
     const pick = (keys: string[]): string | undefined => {
       for (const k of keys) {
-        const v = metas.get(k);
+        const v = metas.get(k)?.[0];
         if (v) return v;
       }
       return undefined;
     };
     const title =
       pick(['og:title', 'twitter:title']) ?? this.extractTitleTag(html);
-    const description = pick([
-      'og:description',
-      'twitter:description',
-      'description',
-    ]);
-    const imageRaw = pick([
-      'og:image',
-      'og:image:url',
-      'og:image:secure_url',
-      'twitter:image',
-      'twitter:image:src',
-    ]);
+    const description = this.pickOrdered(
+      metas,
+      ['og:description', 'twitter:description', 'description'],
+      descriptionSelection,
+    );
+    const siteName = pick(['og:site_name']);
+    const imageRaw = this.pickImage(metas, imageSelection);
     let image: string | undefined;
     if (imageRaw) {
       try {
@@ -67,7 +70,41 @@ export class OpenGraphService {
       description: this.cap(this.clean(description), MAX_DESC),
       image,
       favicon,
+      siteName: this.cap(this.clean(siteName), MAX_SITE_NAME),
     };
+  }
+
+  private pickOrdered(
+    metas: Map<string, string[]>,
+    keys: string[],
+    selection: OpenGraphImageSelection,
+  ): string | undefined {
+    for (const key of keys) {
+      const values = metas.get(key)?.filter(Boolean);
+      if (values?.length) {
+        return selection === 'last' ? values.at(-1) : values[0];
+      }
+    }
+    return undefined;
+  }
+
+  private pickImage(
+    metas: Map<string, string[]>,
+    selection: OpenGraphImageSelection,
+  ): string | undefined {
+    for (const key of [
+      'og:image',
+      'og:image:url',
+      'og:image:secure_url',
+      'twitter:image',
+      'twitter:image:src',
+    ]) {
+      const values = metas.get(key)?.filter(Boolean);
+      if (values?.length) {
+        return selection === 'last' ? values.at(-1) : values[0];
+      }
+    }
+    return undefined;
   }
 
   /** Prefer an explicit page icon; fall back to the conventional origin /favicon.ico in parse(). */
@@ -82,17 +119,19 @@ export class OpenGraphService {
     return undefined;
   }
 
-  /** Build a lowercased property/name → content map from every `<meta>` tag. First occurrence wins. */
-  private extractMetaMap(html: string): Map<string, string> {
-    const map = new Map<string, string>();
+  /** Build a lowercased property/name → ordered content list from every `<meta>` tag. */
+  private extractMetaMap(html: string): Map<string, string[]> {
+    const map = new Map<string, string[]>();
     for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
       const tag = m[0];
       const key = (
         this.readAttr(tag, 'property') ?? this.readAttr(tag, 'name')
       )?.toLowerCase();
       const content = this.readAttr(tag, 'content');
-      if (key && content !== undefined && !map.has(key)) {
-        map.set(key, this.decodeEntities(content));
+      if (key && content !== undefined) {
+        const values = map.get(key) ?? [];
+        values.push(this.decodeEntities(content));
+        map.set(key, values);
       }
     }
     return map;
@@ -149,3 +188,4 @@ function safeCodePoint(cp: number): string {
 
 const MAX_TITLE = 300;
 const MAX_DESC = 500;
+const MAX_SITE_NAME = 100;

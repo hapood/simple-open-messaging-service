@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class SaveLinkCardRuleDto {
   @ApiProperty({ example: 'example.com' })
@@ -18,4 +18,12 @@ export class SaveLinkCardRuleDto {
   @IsString()
   @MaxLength(100)
   note?: string;
+
+  @ApiProperty({ enum: ['first', 'last'], default: 'first' })
+  @IsIn(['first', 'last'])
+  imageSelection: 'first' | 'last' = 'first';
+
+  @ApiProperty({ enum: ['first', 'last'], default: 'first' })
+  @IsIn(['first', 'last'])
+  descriptionSelection: 'first' | 'last' = 'first';
 }

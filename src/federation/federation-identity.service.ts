@@ -163,10 +163,25 @@ export class FederationIdentityService {
   ): Promise<void> {
     const normalized = normalizeDomain(domain);
     const mismatchReason = await this.database.db.transaction(async (tx) => {
-      const peer = await tx.query.federatedPeer.findFirst({
-        where: eq(tables.federatedPeer.domain, normalized),
-      });
-      if (peer?.trustLevel === 'identity_lost') {
+      const [peer, reset] = await Promise.all([
+        tx.query.federatedPeer.findFirst({
+          where: eq(tables.federatedPeer.domain, normalized),
+        }),
+        tx.query.federatedPeerReset.findFirst({
+          where: eq(tables.federatedPeerReset.domain, normalized),
+        }),
+      ]);
+      if (!peer && reset && !reset.reinitPending) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+          `${normalized} was reset and is not allowed to rejoin`,
+          HttpStatus.LOCKED,
+        );
+      }
+      if (
+        peer?.trustLevel === 'identity_lost' ||
+        peer?.trustLevel === 'reset_in_progress'
+      ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
           `${normalized} identity is locked pending reset`,
@@ -235,6 +250,15 @@ export class FederationIdentityService {
             demoteReason: null,
           },
         });
+      if (!peer && reset?.reinitPending) {
+        // Completing the destructive admin reset authorizes exactly one fresh identity bootstrap.
+        // From this point onward the newly pinned peer must pass normal continuity checks; deleting
+        // rows cannot reopen /init.
+        await tx
+          .update(tables.federatedPeerReset)
+          .set({ reinitPending: false })
+          .where(eq(tables.federatedPeerReset.domain, normalized));
+      }
       if (!peer) {
         await tx
           .insert(tables.federatedPeerEvent)
@@ -297,7 +321,9 @@ export class FederationIdentityService {
       where: eq(tables.federatedPeer.domain, normalizeDomain(domain)),
     });
     if (!peer || !['trusted', 'demoted'].includes(peer.trustLevel)) {
-      const locked = peer?.trustLevel === 'identity_lost';
+      const locked =
+        peer?.trustLevel === 'identity_lost' ||
+        peer?.trustLevel === 'reset_in_progress';
       throw new BusinessException(
         locked
           ? BusinessCode.FEDERATION_PEER_IDENTITY_LOST

@@ -5,7 +5,7 @@ import {
   NotFoundException,
   OnApplicationBootstrap,
 } from '@nestjs/common';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { DatabaseService } from '../database/database.service.js';
@@ -18,6 +18,8 @@ export interface ClientLinkCardRule {
 
 export interface ManagedLinkCardRule extends ClientLinkCardRule {
   note: string | null;
+  imageSelection: 'first' | 'last';
+  descriptionSelection: 'first' | 'last';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -25,6 +27,8 @@ export interface ManagedLinkCardRule extends ClientLinkCardRule {
 export interface LinkCardRuleInput {
   hostname: string;
   note?: string;
+  imageSelection?: 'first' | 'last';
+  descriptionSelection?: 'first' | 'last';
 }
 
 @Injectable()
@@ -73,11 +77,44 @@ export class LinkCardRuleService implements OnApplicationBootstrap {
         id: linkCardRule.id,
         hostname: linkCardRule.hostname,
         note: linkCardRule.note,
+        imageSelection: linkCardRule.imageSelection,
+        descriptionSelection: linkCardRule.descriptionSelection,
         createdAt: linkCardRule.createdAt,
         updatedAt: linkCardRule.updatedAt,
       })
       .from(linkCardRule)
       .orderBy(asc(linkCardRule.hostname));
+  }
+
+  async metadataSelectionsForUrl(rawUrl: string): Promise<{
+    image: 'first' | 'last';
+    description: 'first' | 'last';
+  }> {
+    let hostname: string;
+    try {
+      hostname = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
+    } catch {
+      return { image: 'first', description: 'first' };
+    }
+    const labels = hostname.split('.');
+    const candidates = labels
+      .map((_, index) => labels.slice(index).join('.'))
+      .filter((candidate) => candidate.includes('.'));
+    const rows = await this.database.db
+      .select({
+        hostname: linkCardRule.hostname,
+        imageSelection: linkCardRule.imageSelection,
+        descriptionSelection: linkCardRule.descriptionSelection,
+      })
+      .from(linkCardRule)
+      .where(inArray(linkCardRule.hostname, candidates));
+    const row = rows.sort(
+      (left, right) => right.hostname.length - left.hostname.length,
+    )[0];
+    return {
+      image: row?.imageSelection ?? 'first',
+      description: row?.descriptionSelection ?? 'first',
+    };
   }
 
   async create(input: LinkCardRuleInput): Promise<ManagedLinkCardRule> {
@@ -138,6 +175,8 @@ function normalizeInput(input: LinkCardRuleInput): LinkCardRuleInput {
   return {
     hostname: input.hostname.toLowerCase().replace(/^www\./, ''),
     note: input.note?.trim() || undefined,
+    imageSelection: input.imageSelection ?? 'first',
+    descriptionSelection: input.descriptionSelection ?? 'first',
   };
 }
 
@@ -150,6 +189,15 @@ function parseConfigRule(value: unknown): LinkCardRuleInput {
   return normalizeInput({
     hostname: item.hostname,
     note: typeof item.note === 'string' ? item.note : undefined,
+    imageSelection:
+      item.imageSelection === 'last' || item.imageSelection === 'first'
+        ? item.imageSelection
+        : undefined,
+    descriptionSelection:
+      item.descriptionSelection === 'last' ||
+      item.descriptionSelection === 'first'
+        ? item.descriptionSelection
+        : undefined,
   });
 }
 

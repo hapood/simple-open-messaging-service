@@ -5,7 +5,7 @@ describe('OpenGraphService.parse', () => {
   const og = new OpenGraphService();
   const base = 'https://example.com/page';
 
-  it('extracts title, description and image while ignoring legacy siteName', () => {
+  it('extracts title, description, image and site name', () => {
     const html = `<head>
       <meta property="og:title" content="Hello">
       <meta property="og:description" content="World">
@@ -17,6 +17,7 @@ describe('OpenGraphService.parse', () => {
       description: 'World',
       image: 'https://example.com/img.jpg',
       favicon: 'https://example.com/favicon.ico',
+      siteName: 'Example',
     });
   });
 
@@ -34,6 +35,35 @@ describe('OpenGraphService.parse', () => {
     const html = `<meta property="og:image" content="/static/cover.jpg">`;
     expect(og.parse(html, base).image).toBe(
       'https://example.com/static/cover.jpg',
+    );
+  });
+
+  it('selects the first or last repeated og:image according to the rule', () => {
+    const html = `
+      <meta property="og:image" content="/platform.png">
+      <meta property="og:image:width" content="1200">
+      <meta property="og:image" content="/note.jpg">
+    `;
+    expect(og.parse(html, base).image).toBe(
+      'https://example.com/platform.png',
+    );
+    expect(og.parse(html, base, 'last').image).toBe(
+      'https://example.com/note.jpg',
+    );
+  });
+
+  it('selects repeated descriptions independently and extracts site_name', () => {
+    const html = `
+      <meta name="og:description" content="Generic">
+      <meta property="og:site_name" content="Xiaohongshu">
+      <meta property="og:description" content="The note body">
+    `;
+    expect(og.parse(html, base)).toMatchObject({
+      description: 'Generic',
+      siteName: 'Xiaohongshu',
+    });
+    expect(og.parse(html, base, 'first', 'last').description).toBe(
+      'The note body',
     );
   });
 

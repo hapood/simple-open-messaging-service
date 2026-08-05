@@ -4,11 +4,22 @@ import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { UserBlockModule } from '../user-block/user-block.module.js';
 import { MessageVisibilityService } from './message-visibility.service.js';
 import { DeletedMessageService } from './deleted-message.service.js';
+import { MessageReportService } from './message-report.service.js';
 
 @Module({
   // LinkPreviewModule: MessageService inlines a LINK card's og:image (digest → base64) on the wire.
-  providers: [MessageService, MessageVisibilityService, DeletedMessageService],
+  providers: [
+    MessageService,
+    MessageVisibilityService,
+    DeletedMessageService,
+    MessageReportService,
+  ],
   imports: [LinkPreviewModule, UserBlockModule],
-  exports: [MessageService, MessageVisibilityService, DeletedMessageService],
+  exports: [
+    MessageService,
+    MessageVisibilityService,
+    DeletedMessageService,
+    MessageReportService,
+  ],
 })
 export class MessageModule {}

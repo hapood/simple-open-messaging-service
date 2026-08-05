@@ -63,6 +63,22 @@
         >
           <span>{{ 'chat.selection.multiSelect' | transloco }}</span>
         </button>
+        @if (canWithdrawOrReport(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            (click)="confirmContextModeration()"
+            [attr.title]="
+              (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
+                | transloco
+            "
+          >
+            <span>{{
+              (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
+                | transloco
+            }}</span>
+          </button>
+        }
       </div>
     }
 
@@ -470,10 +486,11 @@
         {{ 'chat.blockedBanner' | transloco }}
       </button>
     } @else {
-      @if (!nativeComposer.supported && !chatboxDialogOpen()) {
+      @if (!nativeComposer.supported) {
         <app-chat-input
           [class.msg-composer--selection-hidden]="selectionMode()"
-          [attr.aria-hidden]="selectionMode()"
+          [class.msg-composer--dialog-hidden]="chatboxDialogOpen()"
+          [attr.aria-hidden]="selectionMode() || chatboxDialogOpen()"
           [members]="mentionMembers()"
           [threadId]="threadId()"
           (send)="onSendIntent($event)"

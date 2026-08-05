@@ -374,6 +374,18 @@ export class AdminFederationBlockDto {
   note?: string;
 }
 
+/** Destructive federation reset confirmation. The normalized value must exactly match the path domain. */
+export class AdminFederationResetDto {
+  @ApiProperty({
+    example: 'peer.example',
+    description: 'Type the federation domain again to confirm reset',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  confirmDomain!: string;
+}
+
 /** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
  *  field means "use the global default". Stored on FederatedPeer. See QuotaService.setLimits. */
 export class AdminSetQuotaDto {

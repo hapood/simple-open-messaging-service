@@ -177,7 +177,6 @@ let nativeComposerContextSequence = Date.now() * 1000;
 const MESSAGE_CONTEXT_MENU_WIDTH = 192;
 const MESSAGE_CONTEXT_MENU_ITEM_HEIGHT = 40;
 const MESSAGE_CONTEXT_MENU_CHROME_HEIGHT = 14;
-const MESSAGE_CONTEXT_MENU_ITEM_COUNT = 4;
 const MESSAGE_CONTEXT_MENU_INSET = 8;
 
 /**
@@ -1221,9 +1220,10 @@ export class MessageThreadComponent implements OnDestroy {
     if (intent === 'open-menu') {
       const contextItem =
         memberId === undefined ? item : albumMemberItem(item, memberId);
-      const menuItemCount = this.canDirectForward(contextItem.data)
-        ? MESSAGE_CONTEXT_MENU_ITEM_COUNT
-        : MESSAGE_CONTEXT_MENU_ITEM_COUNT - 1;
+      const menuItemCount =
+        4 +
+        (this.canDirectForward(contextItem.data) ? 1 : 0) +
+        (this.canWithdrawOrReport(contextItem.data) ? 1 : 0);
       const menuHeight =
         menuItemCount * MESSAGE_CONTEXT_MENU_ITEM_HEIGHT +
         MESSAGE_CONTEXT_MENU_CHROME_HEIGHT;
@@ -1420,6 +1420,75 @@ export class MessageThreadComponent implements OnDestroy {
     if (!context || !this.canDirectForward(context.targetItem.data)) return;
     this.closeContextMenu();
     this.openForwardDialog([context.targetItem], 'DIRECT');
+  }
+
+  canWithdrawOrReport(message: ChatMsgData): boolean {
+    return (
+      message.msgId >= 0 &&
+      message.status !== 'sending' &&
+      message.status !== 'failed' &&
+      message.contentType !== 'INVITE' &&
+      message.contentType !== 'CALL'
+    );
+  }
+
+  confirmContextModeration(): void {
+    const context = this.messageContextMenu();
+    if (!context || !this.canWithdrawOrReport(context.targetItem.data)) return;
+    const message = context.targetItem.data;
+    const threadId = this.threadId();
+    const seq = context.targetSeq;
+    if (threadId === undefined || seq < 0) return;
+    this.closeContextMenu();
+    const withdraw = message.isSelf;
+    this.route.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: withdraw
+          ? 'chat.withdrawConfirmTitle'
+          : 'chat.reportConfirmTitle',
+        messageKey: withdraw
+          ? 'chat.withdrawConfirmBody'
+          : 'chat.reportConfirmBody',
+        confirmKey: withdraw ? 'chat.withdraw' : 'chat.report',
+        cancelKey: 'common.cancel',
+        danger: withdraw,
+      },
+      (ok) => {
+        if (!ok) return;
+        if (withdraw) this.withdrawMessage(threadId, seq);
+        else this.reportMessage(threadId, seq);
+      },
+      { scopeThreadId: threadId },
+    );
+  }
+
+  private withdrawMessage(threadId: number, seq: number): void {
+    this.msgService.withdrawMessage({ threadId, seq }).subscribe({
+      next: (res) => {
+        if (res.code !== BusinessCode.OK) {
+          this.toast.warn(translateBizResult(res, this.transloco));
+          return;
+        }
+        void this.msgRepo.syncDeleted(threadId);
+      },
+      error: () =>
+        this.toast.warn(this.transloco.translate('chat.withdrawFailed')),
+    });
+  }
+
+  private reportMessage(threadId: number, seq: number): void {
+    this.msgService.reportMessages({ threadId, seqs: [seq] }).subscribe({
+      next: (res) => {
+        if (res.code !== BusinessCode.OK) {
+          this.toast.warn(translateBizResult(res, this.transloco));
+          return;
+        }
+        this.toast.info(this.transloco.translate('chat.reportSubmitted'));
+      },
+      error: () =>
+        this.toast.warn(this.transloco.translate('chat.reportFailed')),
+    });
   }
 
   canDirectForward(message: ChatMsgData): boolean {

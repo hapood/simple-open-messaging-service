@@ -15,6 +15,13 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Table,
   TableBody,
   TableCell,
@@ -35,6 +42,8 @@ import { formatApiError } from '@/lib/format-error';
 const blank: LinkCardRuleInput = {
   hostname: '',
   note: '',
+  imageSelection: 'first',
+  descriptionSelection: 'first',
 };
 
 export function LinkCardRulesPage() {
@@ -56,6 +65,8 @@ export function LinkCardRulesPage() {
         ? {
             hostname: editing.hostname,
             note: editing.note ?? '',
+            imageSelection: editing.imageSelection,
+            descriptionSelection: editing.descriptionSelection,
           }
         : blank,
     );
@@ -108,6 +119,8 @@ export function LinkCardRulesPage() {
             <TableRow>
               <TableHead>{t('linkCards.hostname')}</TableHead>
               <TableHead>{t('linkCards.note')}</TableHead>
+              <TableHead>{t('linkCards.imageSelection')}</TableHead>
+              <TableHead>{t('linkCards.descriptionSelection')}</TableHead>
               <TableHead className="w-28" />
             </TableRow>
           </TableHeader>
@@ -116,7 +129,7 @@ export function LinkCardRulesPage() {
               loading={isLoading}
               error={error}
               empty={!data?.length}
-              colSpan={3}
+              colSpan={5}
               skeletonRows={8}
               emptyMessage={
                 <>
@@ -131,6 +144,14 @@ export function LinkCardRulesPage() {
                     <span className="font-mono text-xs">{rule.hostname}</span>
                   </TableCell>
                   <TableCell>{rule.note || '—'}</TableCell>
+                  <TableCell>
+                    {t(`linkCards.imageSelectionValues.${rule.imageSelection}`)}
+                  </TableCell>
+                  <TableCell>
+                    {t(
+                      `linkCards.imageSelectionValues.${rule.descriptionSelection}`,
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
                       <Button
@@ -185,6 +206,54 @@ export function LinkCardRulesPage() {
               value={form.note ?? ''}
               onChange={(e) => setForm({ ...form, note: e.target.value })}
             />
+            <Label htmlFor="rule-image-selection">
+              {t('linkCards.imageSelection')}
+            </Label>
+            <Select
+              value={form.imageSelection}
+              onValueChange={(value) =>
+                setForm({
+                  ...form,
+                  imageSelection: value as 'first' | 'last',
+                })
+              }
+            >
+              <SelectTrigger id="rule-image-selection" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="first">
+                  {t('linkCards.imageSelectionValues.first')}
+                </SelectItem>
+                <SelectItem value="last">
+                  {t('linkCards.imageSelectionValues.last')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Label htmlFor="rule-description-selection">
+              {t('linkCards.descriptionSelection')}
+            </Label>
+            <Select
+              value={form.descriptionSelection}
+              onValueChange={(value) =>
+                setForm({
+                  ...form,
+                  descriptionSelection: value as 'first' | 'last',
+                })
+              }
+            >
+              <SelectTrigger id="rule-description-selection" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="first">
+                  {t('linkCards.imageSelectionValues.first')}
+                </SelectItem>
+                <SelectItem value="last">
+                  {t('linkCards.imageSelectionValues.last')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <DialogFooter>
             <Button

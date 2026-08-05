@@ -67,19 +67,23 @@ export enum PopupType {
   LINK_CARD_GENERATION,
 }
 
-const componentDict: Record<PopupType, Type<unknown>> = {
-  [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
-  [PopupType.FRIEND_INVITE]: FriendInviteDialogComponent,
-  [PopupType.NEW_GROUP]: NewGroupComponent,
-  [PopupType.EDIT_PROFILE]: EditProfileComponent,
-  [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
-  [PopupType.CONFIRM]: ConfirmDialogComponent,
-  [PopupType.SHELL_INCOMPATIBLE]: ShellIncompatibleDialogComponent,
-  [PopupType.UPLOAD_DETAIL]: UploadDetailDialogComponent,
-  [PopupType.FORWARD]: ForwardDialogComponent,
-  [PopupType.FORWARD_DETAIL]: ForwardDetailComponent,
-  [PopupType.LINK_ORIGINAL]: LinkOriginalDialogComponent,
-  [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogComponent,
+// Resolve components when a dialog is opened, after the ES module graph has finished
+// initializing. Several dialog components inject RouteService themselves; eagerly reading
+// their bindings here can otherwise capture `undefined` from that circular dependency and
+// make NgComponentOutlet fail while looking up the component definition (`ɵcmp`).
+const componentDict: Record<PopupType, () => Type<unknown>> = {
+  [PopupType.FRIEND_REQUESTS]: () => FriendRequestsComponent,
+  [PopupType.FRIEND_INVITE]: () => FriendInviteDialogComponent,
+  [PopupType.NEW_GROUP]: () => NewGroupComponent,
+  [PopupType.EDIT_PROFILE]: () => EditProfileComponent,
+  [PopupType.AVATAR_EDITOR]: () => AvatarEditorComponent,
+  [PopupType.CONFIRM]: () => ConfirmDialogComponent,
+  [PopupType.SHELL_INCOMPATIBLE]: () => ShellIncompatibleDialogComponent,
+  [PopupType.UPLOAD_DETAIL]: () => UploadDetailDialogComponent,
+  [PopupType.FORWARD]: () => ForwardDialogComponent,
+  [PopupType.FORWARD_DETAIL]: () => ForwardDetailComponent,
+  [PopupType.LINK_ORIGINAL]: () => LinkOriginalDialogComponent,
+  [PopupType.LINK_CARD_GENERATION]: () => LinkCardGenerationDialogComponent,
 };
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
@@ -280,9 +284,10 @@ export class RouteService {
     onResult?: (result: PopupResult[K]) => void,
     options?: PopupOptions,
   ): DlgRef {
+    const component = componentDict[popupType]();
     const id = this.nav.pushPane({
       kind: 'dialog',
-      component: componentDict[popupType],
+      component,
       inputs: inputs as Record<string, unknown> | undefined,
       onResult: onResult as ((result: unknown) => void) | undefined,
       presentation: presentationDict[popupType],

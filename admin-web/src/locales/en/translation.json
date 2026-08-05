@@ -3,6 +3,7 @@
     "appName": "Admin Console",
     "loading": "Loading…",
     "noData": "No data",
+    "all": "All",
     "yes": "Yes",
     "no": "No",
     "cancel": "Cancel",
@@ -61,6 +62,7 @@
     "settings": "Settings",
     "security": "My Account",
     "audit": "Audit Trail",
+    "messageReports": "Message Reports",
     "logout": "Log Out",
     "group": {
       "overview": "Common tasks",
@@ -76,6 +78,12 @@
     "edit": "Edit rule",
     "hostname": "Domain",
     "note": "Note",
+    "imageSelection": "OG image",
+    "descriptionSelection": "OG description",
+    "imageSelectionValues": {
+      "first": "First",
+      "last": "Last"
+    },
     "formDesc": "Enter a domain without a protocol or path. Subdomains are included automatically.",
     "empty": "No link card rules",
     "saved": "Rule saved",
@@ -1006,6 +1014,30 @@
       "long-retry": "Retry delay reached 30 seconds; burst or refill rate may be too restrictive.",
       "review-ready": "The sample is large with a low would-block ratio; ready for human rollout review."
     }
+  },
+  "messageReports": {
+    "title": "Message reports",
+    "subtitle": "Review reported messages. Upholding a report removes the message from its conversation.",
+    "statusFilter": "Filter by status",
+    "message": "Reported message",
+    "creator": "Sender",
+    "reporter": "Reporter",
+    "thread": "Conversation",
+    "status": "Status",
+    "createdAt": "Reported at",
+    "pending": "Pending",
+    "upheld": "Upheld",
+    "rejected": "Rejected",
+    "deleted": "Deleted",
+    "empty": "No message reports",
+    "uphold": "Uphold",
+    "reject": "Reject",
+    "upholdConfirm": "Uphold this report?",
+    "upholdConfirmBody": "The reported message will be deleted and cannot be restored.",
+    "rejectConfirm": "Reject this report?",
+    "rejectConfirmBody": "The message will not be changed. A rejected report can still be upheld later.",
+    "resolved": "Report resolved",
+    "resolveFailed": "Could not resolve the report. Try again."
   },
   "errors": {
     "unauthenticated": "Unauthenticated",

@@ -93,6 +93,7 @@ export class S2sResponseError extends Error {
   readonly status: number;
   readonly code?: number;
   readonly data?: unknown;
+  federationVersion?: number;
   constructor(message: string, status: number, code?: number, data?: unknown) {
     super(message);
     this.name = 'S2sResponseError';
@@ -690,6 +691,42 @@ export class FederationService implements OnModuleDestroy {
     return created.id;
   }
 
+  private async ensureForeignUserInTransaction(
+    tx: DatabaseTransaction,
+    account: string,
+    domain: string,
+  ): Promise<number> {
+    const acct = normalizeAccount(account);
+    const existing = await tx.query.user.findFirst({
+      where: and(eq(tables.user.account, acct), eq(tables.user.domain, domain)),
+      columns: { id: true },
+    });
+    if (existing) return existing.id;
+    const [created] = await tx
+      .insert(tables.user)
+      .values({
+        account: acct,
+        domain,
+        isForeigner: true,
+        hashPwd: randomUUID(),
+        name: acct,
+        avatar: '',
+        bio: '',
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing({
+        target: [tables.user.account, tables.user.domain],
+      })
+      .returning({ id: tables.user.id });
+    if (created) return created.id;
+    const winner = await tx.query.user.findFirst({
+      where: and(eq(tables.user.account, acct), eq(tables.user.domain, domain)),
+      columns: { id: true },
+    });
+    if (!winner) throw new Error('failed to create foreign user');
+    return winner.id;
+  }
+
   /**
    * Resolve-on-demand safety net for send-friend-request: ensure a foreign stub has been localized
    * (profile pulled) at least once. No-op if already localized (remoteUpdatedAt set). If the caller
@@ -736,6 +773,7 @@ export class FederationService implements OnModuleDestroy {
     const headers = this.signature.signOutbound({
       method: 'POST',
       path: url.pathname,
+      query: url.search || '?',
       authority: url.host,
       body,
     });
@@ -788,6 +826,7 @@ export class FederationService implements OnModuleDestroy {
     const headers = this.signature.signOutbound({
       method: 'GET',
       path: url.pathname,
+      query: url.search || '?',
       authority: url.host,
       body: '', // GET — the content-digest covers sha256("")
     });
@@ -888,7 +927,10 @@ export class FederationService implements OnModuleDestroy {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (existing?.trustLevel === 'identity_lost') {
+    if (
+      existing?.trustLevel === 'identity_lost' ||
+      existing?.trustLevel === 'reset_in_progress'
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `${domain} identity is locked pending reset`,
@@ -920,7 +962,7 @@ export class FederationService implements OnModuleDestroy {
    *  FIRST-CONTACT — a handshake IS expected during the upcoming resolve, so show a "Connecting to
    *  <domain>…" affordance — from an already-trusted resolve (fast, no banner). This is a known
    *  server-side fact, NOT a latency guess: the rare already-trusted-but-failing case (the peer reset
-   *  its server and lost the prior handshake, or rotated a broken key) re-handshakes inside the resolve
+   *  its server and lost the prior handshake) is rejected by identity verification inside the resolve
    *  and surfaces as an error there, not here. */
   async isPeerTrusted(domain: string): Promise<boolean> {
     if (domain === this.config.domain) return true;
@@ -947,57 +989,6 @@ export class FederationService implements OnModuleDestroy {
    *  the window (59 of 60 ops do zero DB work). Bounded by the (small) trusted-peer count; resets on
    *  restart — the conditional write below keeps correctness across restart + instances. */
   private readonly lastSuccessSentAt = new Map<string, number>();
-
-  /** The single source of truth for trust establishment — used by outbound ensurePeerTrusted and the
-   *  inbound S2sInitController. Idempotent + transition-aware: writes the FederatedPeer row AND the
-   *  matching FederatedPeerEvent(s).
-   *  - no row yet        → create `trusted`, stamp trustedAt/lastSuccessAt, log `discovered` + `trusted`.
-   *  - `blocked`         → NO-OP (do not silently re-trust an admin-blocked peer).
-   *  - pending | demoted → promote to `trusted`, reset trustedAt/lastSuccessAt, clear demote fields, log `trusted`.
-   *  - already `trusted` → refresh lastSuccessAt only (idempotent re-init; no event spam). */
-  async markTrusted(
-    domain: string,
-    opts?: { addedBy?: string },
-  ): Promise<void> {
-    const existing = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
-    });
-    const now = new Date();
-    if (!existing) {
-      await this.database.db.insert(tables.federatedPeer).values({
-        domain,
-        trustLevel: 'trusted',
-        addedBy: opts?.addedBy ?? null,
-        trustedAt: now,
-        lastSuccessAt: now,
-        demotionCount: 0,
-      });
-      await this.logEvent(domain, 'discovered');
-      await this.logEvent(domain, 'trusted');
-      return;
-    }
-    if (existing.trustLevel === 'blocked') return; // respect admin intent
-    if (existing.trustLevel === 'trusted') {
-      // Idempotent re-init: advance liveness, no transition, no event.
-      await this.database.db
-        .update(tables.federatedPeer)
-        .set({ lastSuccessAt: now })
-        .where(eq(tables.federatedPeer.domain, domain));
-      return;
-    }
-    // pending | demoted → (re-)establish trust.
-    await this.database.db
-      .update(tables.federatedPeer)
-      .set({
-        trustLevel: 'trusted',
-        trustedAt: now,
-        lastSuccessAt: now,
-        demotedAt: null,
-        demoteReason: null,
-      })
-      .where(eq(tables.federatedPeer.domain, domain));
-    await this.logEvent(domain, 'trusted');
-  }
 
   /** Advance the per-op liveness watermark (lastSuccessAt) on a successful signed S2S op. Throttled to
    *  ≤1 round trip + ≤1 write per domain per LAST_SUCCESS_WINDOW_MS — two layers keep it cheap AND
@@ -1029,6 +1020,7 @@ export class FederationService implements OnModuleDestroy {
         .where(
           and(
             eq(tables.federatedPeer.domain, domain),
+            ne(tables.federatedPeer.trustLevel, 'reset_in_progress'),
             or(
               isNull(tables.federatedPeer.lastSuccessAt),
               lt(
@@ -1045,15 +1037,20 @@ export class FederationService implements OnModuleDestroy {
 
   /** Record a failed signed S2S op. Always refreshes the latest failure (demotedAt + demoteReason) so
    *  the admin sees the most recent error; if the peer was `trusted` or `pending`, this is a real
-   *  trusted→demoted transition — flip the state, bump demotionCount, log a `demoted` event, and PURGE
-   *  the cached signing keys (a stale/rotated key is the likely cause; the next ensurePeerTrusted
-   *  re-fetches them). `blocked` is admin intent → no-op. Self-healing: a demoted peer re-runs the init
-   *  handshake on the next resolve (ensurePeerTrusted sees non-trusted). */
+   *  trusted→demoted transition — flip the state, bump demotionCount and log a `demoted` event.
+   *  Pinned signing keys are continuity evidence and must never be purged by a transient failure.
+   *  `blocked`, `identity_lost` and `reset_in_progress` are durable policy/maintenance states → no-op. */
   async markDemoted(domain: string, reason: string): Promise<void> {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (!existing || existing.trustLevel === 'blocked') return;
+    if (
+      !existing ||
+      existing.trustLevel === 'blocked' ||
+      existing.trustLevel === 'identity_lost' ||
+      existing.trustLevel === 'reset_in_progress'
+    )
+      return;
     const now = new Date();
     const transitioned =
       existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
@@ -1071,9 +1068,6 @@ export class FederationService implements OnModuleDestroy {
       })
       .where(eq(tables.federatedPeer.domain, domain));
     if (transitioned) {
-      await this.database.db
-        .delete(tables.s2SKeyCache)
-        .where(eq(tables.s2SKeyCache.domain, domain));
       await this.logEvent(domain, 'demoted', reason);
     }
   }
@@ -1179,6 +1173,7 @@ export class FederationService implements OnModuleDestroy {
     const headers = this.signature.signOutbound({
       method: 'POST',
       path: url.pathname,
+      query: url.search || '?',
       authority: url.host,
       body,
     });
@@ -1222,6 +1217,7 @@ export class FederationService implements OnModuleDestroy {
     const headers = this.signature.signOutbound({
       method: 'GET',
       path: url.pathname,
+      query: url.search || '?',
       authority: url.host,
       body: '',
     });
@@ -1265,7 +1261,9 @@ export class FederationService implements OnModuleDestroy {
       doc.protocolVersion !== 1 ||
       doc.identityEpoch !== response.identityEpoch ||
       doc.rootKey?.fingerprint !== response.rootKeyFingerprint ||
-      computedFingerprint !== response.rootKeyFingerprint
+      computedFingerprint !== response.rootKeyFingerprint ||
+      doc.keys.length !== 1 ||
+      doc.keys[0]?.ed25519 !== rootPublicKey
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
@@ -1288,6 +1286,7 @@ export class FederationService implements OnModuleDestroy {
       nonce,
       Uint8Array.from(Buffer.from(signingKey.ed25519, 'base64')),
     );
+    await this.discovery.cacheKeys(peerDomain, doc.keys);
     await this.federationIdentity.pinOrVerify(
       peerDomain,
       claim,
@@ -1922,27 +1921,60 @@ export class FederationService implements OnModuleDestroy {
     try {
       let profileChanged = false;
       let rosterChanged = false;
-      const rev = await this.fetchRemoteRevision(address);
+      const revResponse = await this.getSignedForThread<{
+        profileRev: number;
+      }>(
+        threadId,
+        `/api/v1/s2s/users/${address.account}/revision`,
+        address.domain,
+      );
+      const rev = revResponse.data;
       if (gu.remoteProfileRev == null || rev.profileRev > gu.remoteProfileRev) {
-        const profile = await this.fetchRemoteUser(address);
-        await this.localizeForeignProfile(groupUserId, profile);
+        const profileResponse = await this.getSignedForThread<S2SProfile>(
+          threadId,
+          `/api/v1/s2s/users/${address.account}`,
+          address.domain,
+        );
+        await this.localizeForeignProfile(groupUserId, profileResponse.data, {
+          threadId,
+          peerDomain: address.domain,
+          expectedFederationVersion: profileResponse.federationVersion,
+        });
         profileChanged = true;
       }
       if (grp) {
-        const rrev = await this.fetchRemoteRosterRevision(address);
+        const rrevResponse = await this.getSignedForThread<{
+          rosterRev: number;
+        }>(
+          threadId,
+          `/api/v1/s2s/group/${address.account}/roster-revision`,
+          address.domain,
+        );
+        const rrev = rrevResponse.data;
         if (
           grp.remoteRosterRev == null ||
           rrev.rosterRev > grp.remoteRosterRev
         ) {
-          const roster = await this.pullGroupRoster(gu.account, gu.domain);
-          if (roster) {
-            await this.reconcileRoster(threadId, roster.members);
-            await this.database.db
-              .update(tables.group)
-              .set({ remoteRosterRev: rrev.rosterRev })
-              .where(eq(tables.group.groupUserId, groupUserId));
-            rosterChanged = true;
-          }
+          const rosterResponse = await this.getSignedForThread<{
+            members: {
+              account: string;
+              domain: string;
+              role: GroupRole;
+            }[];
+          }>(
+            threadId,
+            `/api/v1/s2s/group/${encodeURIComponent(address.account)}/roster`,
+            address.domain,
+          );
+          await this.reconcileRoster(
+            threadId,
+            rosterResponse.data.members,
+            address.domain,
+            rosterResponse.federationVersion,
+            groupUserId,
+            rrev.rosterRev,
+          );
+          rosterChanged = true;
         }
       }
       if (profileChanged || rosterChanged) {
@@ -1990,9 +2022,10 @@ export class FederationService implements OnModuleDestroy {
     } catch (e) {
       if (
         e instanceof S2sResponseError &&
-        e.code === BusinessCode.GROUP_DISSOLVED
+        e.code === BusinessCode.GROUP_DISSOLVED &&
+        e.federationVersion !== undefined
       ) {
-        await this.markGroupDissolved(threadId);
+        await this.markGroupDissolved(threadId, gu.domain, e.federationVersion);
         return;
       }
       // Best-effort — keep the cached thread; the next open / push retries.
@@ -2013,18 +2046,22 @@ export class FederationService implements OnModuleDestroy {
     const group = trd?.groupUser;
     if (!group || group.domain === 'local') return;
     try {
-      await this.withTrustedPeer(group.domain, () =>
-        this.fetchRemoteRosterRevision({
-          account: group.account,
-          domain: group.domain,
-        }),
+      await this.getSignedForThread(
+        threadId,
+        `/api/v1/s2s/group/${group.account}/roster-revision`,
+        group.domain,
       );
     } catch (error) {
       if (
         error instanceof S2sResponseError &&
-        error.code === BusinessCode.GROUP_DISSOLVED
+        error.code === BusinessCode.GROUP_DISSOLVED &&
+        error.federationVersion !== undefined
       ) {
-        await this.markGroupDissolved(threadId);
+        await this.markGroupDissolved(
+          threadId,
+          group.domain,
+          error.federationVersion,
+        );
         throw new BusinessException(
           BusinessCode.GROUP_DISSOLVED,
           'group has been dissolved',
@@ -2057,24 +2094,29 @@ export class FederationService implements OnModuleDestroy {
     }
     if (!peer.user.isForeigner) return;
     try {
-      await this.withTrustedPeer(peer.user.domain, () =>
-        this.getSigned(
-          `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(peer.user.account)}` +
-            `&fromDomain=${encodeURIComponent(peer.user.domain)}` +
-            `&toAccount=${encodeURIComponent(local.user.account)}` +
-            // Message.originSeq is PostgreSQL INTEGER. Using MAX_SAFE_INTEGER here overflows the pg
-            // parameter before PostgreSQL can evaluate the comparison.
-            `&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=2147483647&take=1`,
-          peer.user.domain,
-        ),
+      await this.getSignedForThread(
+        threadId,
+        `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(peer.user.account)}` +
+          `&fromDomain=${encodeURIComponent(peer.user.domain)}` +
+          `&toAccount=${encodeURIComponent(local.user.account)}` +
+          // Message.originSeq is PostgreSQL INTEGER. Using MAX_SAFE_INTEGER here overflows the pg
+          // parameter before PostgreSQL can evaluate the comparison.
+          `&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=2147483647&take=1`,
+        peer.user.domain,
       );
     } catch (error) {
       if (
         error instanceof S2sResponseError &&
         (error.code === BusinessCode.FRIEND_NOT_FOUND ||
-          error.code === BusinessCode.FORBIDDEN)
+          error.code === BusinessCode.FORBIDDEN) &&
+        error.federationVersion !== undefined
       ) {
-        await this.markP2PFriendshipEnded(threadId, localUserId);
+        await this.markP2PFriendshipEnded(
+          threadId,
+          localUserId,
+          peer.user.domain,
+          error.federationVersion,
+        );
         throw new BusinessException(
           BusinessCode.FRIEND_NOT_FOUND,
           'not friends',
@@ -2090,14 +2132,42 @@ export class FederationService implements OnModuleDestroy {
   private async markP2PFriendshipEnded(
     threadId: number,
     localUserId: number,
+    peerDomain: string,
+    expectedFederationVersion: number,
   ): Promise<void> {
-    const wasHidden = await this.threadRevisionService.isThreadHidden(
-      localUserId,
-      threadId,
-    );
-    await this.participantService.softLeaveP2PBoth(threadId);
-    if (!wasHidden) {
-      await this.threadRevisionService.recordThreadAdd(localUserId, threadId);
+    const pendingRevision = await this.database.db.transaction(async (tx) => {
+      await this.assertThreadResponseWritable(
+        tx,
+        threadId,
+        peerDomain,
+        expectedFederationVersion,
+      );
+      const wasHidden = await this.threadRevisionService.isThreadHiddenInTx(
+        tx,
+        localUserId,
+        threadId,
+      );
+      await tx
+        .update(tables.threadParticipant)
+        .set({ leftAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.threadParticipant.threadId, threadId),
+            isNull(tables.threadParticipant.leftAt),
+          ),
+        );
+      if (wasHidden) return null;
+      return this.threadRevisionService.recordThreadAddInTx(
+        tx,
+        localUserId,
+        threadId,
+      );
+    });
+    if (pendingRevision !== null) {
+      this.threadRevisionService.notifyThreadRevision({
+        userId: localUserId,
+        revision: pendingRevision,
+      });
     }
   }
 
@@ -2107,33 +2177,68 @@ export class FederationService implements OnModuleDestroy {
   private async reconcileRoster(
     threadId: number,
     members: { account: string; domain: string; role: GroupRole }[],
+    peerDomain: string,
+    expectedFederationVersion: number,
+    groupUserId: number,
+    remoteRosterRev: number,
   ): Promise<void> {
-    const originForeignIds = new Set<number>();
-    for (const m of members) {
-      if (m.domain === this.config.domain) continue; // a local user (us) — managed locally
-      const stubId = await this.ensureForeignUser(m.account, m.domain);
-      originForeignIds.add(stubId);
-      await this.participantService.upsertMember(threadId, stubId, m.role);
-    }
-    const localForeign = await this.database.db
-      .select({ userId: tables.threadParticipant.userId })
-      .from(tables.threadParticipant)
-      .innerJoin(
-        tables.user,
-        eq(tables.user.id, tables.threadParticipant.userId),
-      )
-      .where(
-        and(
-          eq(tables.threadParticipant.threadId, threadId),
-          isNull(tables.threadParticipant.leftAt),
-          eq(tables.user.isForeigner, true),
-        ),
+    await this.database.db.transaction(async (tx) => {
+      await this.assertThreadResponseWritable(
+        tx,
+        threadId,
+        peerDomain,
+        expectedFederationVersion,
       );
-    for (const p of localForeign.filter(
-      (p) => !originForeignIds.has(p.userId),
-    )) {
-      await this.participantService.softLeaveMember(threadId, p.userId);
-    }
+      const originForeignIds = new Set<number>();
+      for (const m of members) {
+        if (m.domain === this.config.domain) continue;
+        const stubId = await this.ensureForeignUserInTransaction(
+          tx,
+          m.account,
+          m.domain,
+        );
+        originForeignIds.add(stubId);
+        await this.participantService.upsertMemberInTx(
+          tx,
+          threadId,
+          stubId,
+          m.role,
+        );
+      }
+      const localForeign = await tx
+        .select({ userId: tables.threadParticipant.userId })
+        .from(tables.threadParticipant)
+        .innerJoin(
+          tables.user,
+          eq(tables.user.id, tables.threadParticipant.userId),
+        )
+        .where(
+          and(
+            eq(tables.threadParticipant.threadId, threadId),
+            isNull(tables.threadParticipant.leftAt),
+            eq(tables.user.isForeigner, true),
+          ),
+        );
+      const removedIds = localForeign
+        .filter((participant) => !originForeignIds.has(participant.userId))
+        .map((participant) => participant.userId);
+      if (removedIds.length > 0) {
+        await tx
+          .update(tables.threadParticipant)
+          .set({ leftAt: new Date(), updatedAt: new Date() })
+          .where(
+            and(
+              eq(tables.threadParticipant.threadId, threadId),
+              inArray(tables.threadParticipant.userId, removedIds),
+              isNull(tables.threadParticipant.leftAt),
+            ),
+          );
+      }
+      await tx
+        .update(tables.group)
+        .set({ remoteRosterRev })
+        .where(eq(tables.group.groupUserId, groupUserId));
+    });
   }
 
   /** Idempotent mirror-thread find-or-create keyed by fedGroupAccount (@unique → one mirror per
@@ -2260,6 +2365,109 @@ export class FederationService implements OnModuleDestroy {
   ): Promise<T> {
     await this.ensurePeerTrusted(domain);
     return fn();
+  }
+
+  /**
+   * Start one thread-bound S2S read. The shared advisory lock makes the preflight mutually exclusive
+   * with reset start; the joined SELECT then observes the peer reset state and thread generation from
+   * one PostgreSQL statement snapshot. The generation travels with the response and is rechecked by
+   * the response-write gate before any returned data may be persisted.
+   */
+  private async getSignedForThread<T>(
+    threadId: number,
+    path: string,
+    peerDomain: string,
+    maxResponseBytes?: number,
+  ): Promise<{ data: T; federationVersion: number }> {
+    const federationVersion = await this.readThreadFederationVersion(
+      threadId,
+      peerDomain,
+    );
+    try {
+      const data = await this.withTrustedPeer(peerDomain, () =>
+        this.getSigned<T>(path, peerDomain, maxResponseBytes),
+      );
+      return { data, federationVersion };
+    } catch (error) {
+      if (error instanceof S2sResponseError) {
+        error.federationVersion = federationVersion;
+      }
+      throw error;
+    }
+  }
+
+  private async readThreadFederationVersion(
+    threadId: number,
+    peerDomain: string,
+  ): Promise<number> {
+    return this.database.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock_shared(hashtextextended('federation-reset-global', 0))`,
+      );
+      const [state] = await tx
+        .select({
+          federationTruncated: tables.messageThread.federationTruncated,
+          federationVersion: tables.messageThread.federationVersion,
+          trustLevel: tables.federatedPeer.trustLevel,
+        })
+        .from(tables.messageThread)
+        .innerJoin(
+          tables.federatedPeer,
+          eq(tables.federatedPeer.domain, peerDomain),
+        )
+        .where(eq(tables.messageThread.id, threadId))
+        .limit(1);
+      if (
+        !state ||
+        state.federationTruncated ||
+        state.trustLevel === 'reset_in_progress' ||
+        state.trustLevel === 'identity_lost'
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+          `federation thread ${threadId} is unavailable for ${peerDomain}`,
+          HttpStatus.LOCKED,
+        );
+      }
+      return state.federationVersion;
+    });
+  }
+
+  private async assertThreadResponseWritable(
+    tx: DatabaseTransaction,
+    threadId: number,
+    peerDomain: string,
+    expectedFederationVersion: number,
+  ): Promise<void> {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock_shared(hashtextextended('federation-reset-global', 0))`,
+    );
+    const [state] = await tx
+      .select({
+        federationTruncated: tables.messageThread.federationTruncated,
+        federationVersion: tables.messageThread.federationVersion,
+        trustLevel: tables.federatedPeer.trustLevel,
+      })
+      .from(tables.messageThread)
+      .innerJoin(
+        tables.federatedPeer,
+        eq(tables.federatedPeer.domain, peerDomain),
+      )
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (
+      !state ||
+      state.federationTruncated ||
+      state.federationVersion !== expectedFederationVersion ||
+      state.trustLevel === 'reset_in_progress' ||
+      state.trustLevel === 'identity_lost'
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `stale federation response for thread ${threadId} from ${peerDomain}`,
+        HttpStatus.LOCKED,
+      );
+    }
   }
 
   /**
@@ -2743,18 +2951,37 @@ export class FederationService implements OnModuleDestroy {
   private async softLeaveMemberAndBump(
     threadId: number,
     userId: number,
+    peerDomain: string,
+    expectedFederationVersion: number,
   ): Promise<void> {
-    await this.participantService.softLeaveMember(threadId, userId);
-    const trd = await this.database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, threadId),
-      columns: { groupUserId: true },
+    await this.database.db.transaction(async (tx) => {
+      await this.assertThreadResponseWritable(
+        tx,
+        threadId,
+        peerDomain,
+        expectedFederationVersion,
+      );
+      await tx
+        .update(tables.threadParticipant)
+        .set({ leftAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.threadParticipant.threadId, threadId),
+            eq(tables.threadParticipant.userId, userId),
+            isNull(tables.threadParticipant.leftAt),
+          ),
+        );
+      const trd = await tx.query.messageThread.findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: { groupUserId: true },
+      });
+      if (trd?.groupUserId != null) {
+        await tx
+          .update(tables.user)
+          .set({ updatedAt: new Date() })
+          .where(eq(tables.user.id, trd.groupUserId));
+      }
     });
-    if (trd?.groupUserId != null) {
-      await this.database.db
-        .update(tables.user)
-        .set({ updatedAt: new Date() })
-        .where(eq(tables.user.id, trd.groupUserId));
-    }
   }
 
   /**
@@ -3321,12 +3548,11 @@ export class FederationService implements OnModuleDestroy {
       });
     let afterId = cursor?.deletedHwm ?? 0n;
     for (;;) {
-      const page = await this.withTrustedPeer(params.sourceDomain, () =>
-        this.getSigned<{
-          deletions: S2SDeletedMessage[];
-          hasMore: boolean;
-        }>(params.path(afterId), params.sourceDomain),
-      );
+      const response = await this.getSignedForThread<{
+        deletions: S2SDeletedMessage[];
+        hasMore: boolean;
+      }>(params.threadId, params.path(afterId), params.sourceDomain);
+      const page = response.data;
       for (const deletion of page.deletions) {
         let remoteDeletedId: bigint;
         try {
@@ -3367,6 +3593,7 @@ export class FederationService implements OnModuleDestroy {
             threadId: params.threadId,
             remoteDeletedId,
             cursor: cursorKey,
+            expectedFederationVersion: response.federationVersion,
           });
           afterId = remoteDeletedId;
           continue;
@@ -3409,6 +3636,7 @@ export class FederationService implements OnModuleDestroy {
           remoteDeletedId,
           type: deletion.type,
           cursor: cursorKey,
+          expectedFederationVersion: response.federationVersion,
         });
         afterId = remoteDeletedId;
         if (applied) {
@@ -3486,23 +3714,23 @@ export class FederationService implements OnModuleDestroy {
       let after = cur.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1
       if (e.latestSeq <= after) return true; // already current
       for (;;) {
-        const res = await this.withTrustedPeer(domain, () =>
-          this.getSigned<{
-            messages: Array<{
-              seq: number;
-              originSeq: number;
-              contentType: string;
-              content: string;
-              ts: number;
-              quoteTarget?: S2SQuoteTarget;
-            }>;
-            latestSeq: number;
-            hasMore: boolean;
-          }>(
-            `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toAccount=${encodeURIComponent(e.toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-            domain,
-          ),
+        const response = await this.getSignedForThread<{
+          messages: Array<{
+            seq: number;
+            originSeq: number;
+            contentType: string;
+            content: string;
+            ts: number;
+            quoteTarget?: S2SQuoteTarget;
+          }>;
+          latestSeq: number;
+          hasMore: boolean;
+        }>(
+          threadId,
+          `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toAccount=${encodeURIComponent(e.toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
+          domain,
         );
+        const res = response.data;
         for (const m of res.messages) {
           const created = await this.storePulledMessage(
             threadId,
@@ -3510,6 +3738,7 @@ export class FederationService implements OnModuleDestroy {
             domain,
             [toLocalUserId],
             m,
+            response.federationVersion,
           );
           if (created && this.isMediaContentType(created.contentType)) {
             await this.localizeMedia(
@@ -3518,6 +3747,7 @@ export class FederationService implements OnModuleDestroy {
               e.fromAccount,
               e.fromDomain,
               e.toAccount,
+              response.federationVersion,
             );
           }
         }
@@ -3530,10 +3760,16 @@ export class FederationService implements OnModuleDestroy {
       if (
         error instanceof S2sResponseError &&
         (error.code === BusinessCode.FRIEND_NOT_FOUND ||
-          error.code === BusinessCode.FORBIDDEN)
+          error.code === BusinessCode.FORBIDDEN) &&
+        error.federationVersion !== undefined
       ) {
         if (threadId !== null && toLocalUserId !== null) {
-          await this.markP2PFriendshipEnded(threadId, toLocalUserId);
+          await this.markP2PFriendshipEnded(
+            threadId,
+            toLocalUserId,
+            domain,
+            error.federationVersion,
+          );
         }
         return true;
       }
@@ -3557,10 +3793,16 @@ export class FederationService implements OnModuleDestroy {
     } catch (error) {
       if (
         error instanceof S2sResponseError &&
-        error.code === BusinessCode.GROUP_DISSOLVED
+        error.code === BusinessCode.GROUP_DISSOLVED &&
+        error.federationVersion !== undefined
       ) {
         const trd = await this.findGroupThread(e.toAccount);
-        if (trd) await this.markGroupDissolved(trd.id);
+        if (trd)
+          await this.markGroupDissolved(
+            trd.id,
+            domain,
+            error.federationVersion,
+          );
         return true;
       }
       return false;
@@ -3570,16 +3812,28 @@ export class FederationService implements OnModuleDestroy {
   /** Converge a federated mirror after the origin reports GROUP_DISSOLVED from either a pull caused by
    * a send hint or the chat-open history pull. Former members keep the thread/history; clients receive
    * GROUP_UPDATED and remove their composer. */
-  private async markGroupDissolved(threadId: number): Promise<void> {
-    const trd = await this.database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, threadId),
-      columns: { groupUserId: true },
+  private async markGroupDissolved(
+    threadId: number,
+    peerDomain: string,
+    expectedFederationVersion: number,
+  ): Promise<void> {
+    await this.database.db.transaction(async (tx) => {
+      await this.assertThreadResponseWritable(
+        tx,
+        threadId,
+        peerDomain,
+        expectedFederationVersion,
+      );
+      const trd = await tx.query.messageThread.findFirst({
+        where: eq(tables.messageThread.id, threadId),
+        columns: { groupUserId: true },
+      });
+      if (trd?.groupUserId == null) return;
+      await tx
+        .update(tables.group)
+        .set({ dissolvedAt: new Date() })
+        .where(eq(tables.group.groupUserId, trd.groupUserId));
     });
-    if (trd?.groupUserId == null) return;
-    await this.database.db
-      .update(tables.group)
-      .set({ dissolvedAt: new Date() })
-      .where(eq(tables.group.groupUserId, trd.groupUserId));
     const localMembers = await this.localActiveMemberIds(threadId);
     for (const userId of localMembers) {
       this.sse.onGroupEvent(userId, GROUP_SSE.GROUP_UPDATED, {
@@ -3640,35 +3894,32 @@ export class FederationService implements OnModuleDestroy {
         `/api/v1/s2s/message-deletions?toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
     });
     for (;;) {
-      const res = await this.withTrustedPeer(originDomain, () =>
-        this.getSigned<{
-          messages: Array<{
-            seq: number; // origin thread seq (the cursor)
-            originSeq: number;
-            creator: { account: string; domain: string };
-            contentType: string;
-            content: string;
-            ts: number;
-            quoteTarget?: S2SQuoteTarget;
-          }>;
-          latestSeq: number;
-          hasMore: boolean;
-        }>(
-          `/api/v1/s2s/messages?toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-          originDomain,
-        ),
+      const response = await this.getSignedForThread<{
+        messages: Array<{
+          seq: number; // origin thread seq (the cursor)
+          originSeq: number;
+          creator: { account: string; domain: string };
+          contentType: string;
+          content: string;
+          ts: number;
+          quoteTarget?: S2SQuoteTarget;
+        }>;
+        latestSeq: number;
+        hasMore: boolean;
+      }>(
+        threadId,
+        `/api/v1/s2s/messages?toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
+        originDomain,
       );
+      const res = response.data;
       for (const m of res.messages) {
-        const creatorId = await this.ensureForeignUser(
-          m.creator.account,
-          m.creator.domain,
-        );
         const created = await this.storePulledMessage(
           threadId,
-          creatorId,
+          m.creator,
           originDomain,
           recipients,
           m,
+          response.federationVersion,
         );
         if (created && this.isMediaContentType(created.contentType)) {
           // Group media: /get_file?toAccount=<group>&fromAccount=<creator> (roster-gated). Group account is `toAccount`.
@@ -3678,6 +3929,7 @@ export class FederationService implements OnModuleDestroy {
             m.creator.account,
             m.creator.domain,
             toAccount,
+            response.federationVersion,
           );
         }
       }
@@ -3685,10 +3937,18 @@ export class FederationService implements OnModuleDestroy {
       // thread total — that would skip the middle of a >`take`-message catch-up). Empty batch ⇒ no advance.
       if (res.messages.length > 0) {
         after = res.messages[res.messages.length - 1].seq;
-        await this.database.db
-          .update(tables.messageThread)
-          .set({ pullUntil: after, updatedAt: new Date() })
-          .where(eq(tables.messageThread.id, threadId));
+        await this.database.db.transaction(async (tx) => {
+          await this.assertThreadResponseWritable(
+            tx,
+            threadId,
+            originDomain,
+            response.federationVersion,
+          );
+          await tx
+            .update(tables.messageThread)
+            .set({ pullUntil: after, updatedAt: new Date() })
+            .where(eq(tables.messageThread.id, threadId));
+        });
       }
       if (!res.hasMore) return true;
     }
@@ -3734,23 +3994,23 @@ export class FederationService implements OnModuleDestroy {
       });
       if (e.latestSeq <= after) return true;
       for (;;) {
-        const res = await this.withTrustedPeer(domain, () =>
-          this.getSigned<{
-            messages?: Array<{
-              seq: number;
-              originSeq: number;
-              contentType: string;
-              content: string;
-              ts: number;
-              quoteTarget?: S2SQuoteTarget;
-            }>;
-            latestSeq?: number;
-            hasMore?: boolean;
-          }>(
-            `/api/v1/s2s/messages?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-            domain,
-          ),
+        const response = await this.getSignedForThread<{
+          messages?: Array<{
+            seq: number;
+            originSeq: number;
+            contentType: string;
+            content: string;
+            ts: number;
+            quoteTarget?: S2SQuoteTarget;
+          }>;
+          latestSeq?: number;
+          hasMore?: boolean;
+        }>(
+          threadId,
+          `/api/v1/s2s/messages?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
+          domain,
         );
+        const res = response.data;
         const messages = res.messages ?? [];
         for (const m of messages) {
           const created = await this.storePulledMessage(
@@ -3759,6 +4019,7 @@ export class FederationService implements OnModuleDestroy {
             domain,
             recipients,
             m,
+            response.federationVersion,
           );
           if (created && this.isMediaContentType(created.contentType)) {
             await this.localizeMedia(
@@ -3767,6 +4028,7 @@ export class FederationService implements OnModuleDestroy {
               e.fromAccount,
               e.fromDomain,
               e.toAccount,
+              response.federationVersion,
             );
           }
         }
@@ -3781,8 +4043,17 @@ export class FederationService implements OnModuleDestroy {
       // response (NOT 401/403/5xx) → getSigned did NOT demote the peer. Dissolve the leaver on our
       // canonical roster + bump the group meta; nothing further to pull from a leaver. See design-review
       // item C2.
-      if (e instanceof S2sResponseError && e.status === HttpStatus.GONE) {
-        await this.softLeaveMemberAndBump(threadId, creatorId);
+      if (
+        e instanceof S2sResponseError &&
+        e.status === HttpStatus.GONE &&
+        e.federationVersion !== undefined
+      ) {
+        await this.softLeaveMemberAndBump(
+          threadId,
+          creatorId,
+          domain,
+          e.federationVersion,
+        );
         return true;
       }
       throw e;
@@ -3822,7 +4093,7 @@ export class FederationService implements OnModuleDestroy {
    */
   private async storePulledMessage(
     threadId: number,
-    creatorId: number,
+    creator: number | S2SAddress,
     fetchedFromDomain: string,
     recipients: number[],
     m: {
@@ -3832,6 +4103,7 @@ export class FederationService implements OnModuleDestroy {
       ts: number;
       quoteTarget?: S2SQuoteTarget;
     },
+    expectedFederationVersion: number,
   ): Promise<Message | null> {
     let storedContent = m.content;
     const incomingText =
@@ -3902,6 +4174,20 @@ export class FederationService implements OnModuleDestroy {
     // back too (no seq gap from a deduped re-pull).
     const created = await this.database.db
       .transaction(async (tx) => {
+        await this.assertThreadResponseWritable(
+          tx,
+          threadId,
+          fetchedFromDomain,
+          expectedFederationVersion,
+        );
+        const creatorId =
+          typeof creator === 'number'
+            ? creator
+            : await this.ensureForeignUserInTransaction(
+                tx,
+                creator.account,
+                creator.domain,
+              );
         await DeletedMessageService.lockFederatedIdentity(
           tx,
           threadId,
@@ -4013,6 +4299,7 @@ export class FederationService implements OnModuleDestroy {
         throw e;
       });
     if (!created) return null;
+    const creatorId = created.creator;
     if (created.isDeleted) {
       const deletion = await this.database.db.query.deletedMessage.findFirst({
         where: and(
@@ -4059,27 +4346,42 @@ export class FederationService implements OnModuleDestroy {
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
     // than what's cached (a message the local user sent after this one must not be overwritten). Ordered
     // by ARRIVAL time (what the user sees), not the origin server time.
-    await this.database.db
-      .update(tables.messageThread)
-      .set({
-        lastMessageSeq: created.seq,
-        lastMessagePreview: derivePreview(
-          m.contentType as ContentType,
-          storedContent,
-        ),
-        lastMessageAt: arrival,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(tables.messageThread.id, threadId),
-          or(
-            isNull(tables.messageThread.lastMessageAt),
-            lt(tables.messageThread.lastMessageAt, arrival),
-          ),
-        ),
+    const restoredRevisions = await this.database.db.transaction(async (tx) => {
+      await this.assertThreadResponseWritable(
+        tx,
+        threadId,
+        fetchedFromDomain,
+        expectedFederationVersion,
       );
-    await this.threadRevisionService.restoreHiddenThreads(threadId, recipients);
+      await tx
+        .update(tables.messageThread)
+        .set({
+          lastMessageSeq: created.seq,
+          lastMessagePreview: derivePreview(
+            m.contentType as ContentType,
+            storedContent,
+          ),
+          lastMessageAt: arrival,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tables.messageThread.id, threadId),
+            or(
+              isNull(tables.messageThread.lastMessageAt),
+              lt(tables.messageThread.lastMessageAt, arrival),
+            ),
+          ),
+        );
+      return this.threadRevisionService.restoreHiddenThreadsInTx(
+        tx,
+        threadId,
+        recipients,
+      );
+    });
+    restoredRevisions.forEach((revision) =>
+      this.threadRevisionService.notifyThreadRevision(revision),
+    );
     // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
     // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
     // the OTHER member-domains. See plan "Hub loop-safety".
@@ -4212,6 +4514,7 @@ export class FederationService implements OnModuleDestroy {
     fromAccount: string,
     fromDomain: string,
     toAccount: string,
+    expectedFederationVersion: number,
   ): Promise<void> {
     // Card assets use the image quota; FILE/VIDEO/AUDIO use the large-file quota.
     // (schema declares it redundant), so classify by the message contentType. Enforced inside
@@ -4254,10 +4557,18 @@ export class FederationService implements OnModuleDestroy {
             digest,
           );
         }
-        await this.database.db
-          .insert(tables.messageAsset)
-          .values({ messageId: msg.id, threadId: msg.threadId, digest })
-          .onConflictDoNothing();
+        await this.database.db.transaction(async (tx) => {
+          await this.assertThreadResponseWritable(
+            tx,
+            msg.threadId,
+            peerDomain,
+            expectedFederationVersion,
+          );
+          await tx
+            .insert(tables.messageAsset)
+            .values({ messageId: msg.id, threadId: msg.threadId, digest })
+            .onConflictDoNothing();
+        });
       } catch {
         // Best-effort per file — never block the text pull. The cross-origin URL stays inert until a
         // later retry (the manual relocalize endpoint, or pull-on-open / next push) re-runs localize.
@@ -4354,12 +4665,17 @@ export class FederationService implements OnModuleDestroy {
       creator.account,
       creator.domain,
     );
+    const federationVersion = await this.readThreadFederationVersion(
+      msg.threadId,
+      peerDomain,
+    );
     await this.localizeMedia(
       msg,
       peerDomain,
       creator.account,
       creator.domain,
       toAccount,
+      federationVersion,
     );
     return (await this.isMessageMediaReady(msg.id, msg.content))
       ? 'ready'
@@ -4580,8 +4896,7 @@ export class FederationService implements OnModuleDestroy {
   /** One signed Range GET to /get_file, with status-based classification (see fetchMediaChunks). Returns
    *  the Response + the parsed Content-Range bounds, or `fallback200` when the peer served the whole
    *  file as 200 (Range unsupported). Throws — with markDemoted for auth/transport failures — on
-   *  anything that isn't 200/206. Only url.pathname is signed (matching getSigned); the query travels
-   *  unsigned by v0.1 design (the 3-check authz is the gate). */
+   *  anything that isn't 200/206. The raw query is covered by the request signature. */
   private async requestRangeUnit(
     url: URL,
     peerDomain: string,
@@ -4597,6 +4912,7 @@ export class FederationService implements OnModuleDestroy {
     const headers = this.signature.signOutbound({
       method: 'GET',
       path: url.pathname,
+      query: url.search || '?',
       authority: url.host,
       body: '', // GET — the content-digest covers sha256("")
     });
@@ -4739,6 +5055,11 @@ export class FederationService implements OnModuleDestroy {
   async localizeForeignProfile(
     userId: number,
     profile: S2SProfile,
+    threadGate?: {
+      threadId: number;
+      peerDomain: string;
+      expectedFederationVersion: number;
+    },
   ): Promise<void> {
     const stub = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, userId),
@@ -4775,10 +5096,25 @@ export class FederationService implements OnModuleDestroy {
       remoteProfileRev: profile.profileRev,
     };
     if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
-    await this.database.db
-      .update(tables.user)
-      .set({ ...data, updatedAt: new Date() })
-      .where(eq(tables.user.id, userId));
+    if (threadGate) {
+      await this.database.db.transaction(async (tx) => {
+        await this.assertThreadResponseWritable(
+          tx,
+          threadGate.threadId,
+          threadGate.peerDomain,
+          threadGate.expectedFederationVersion,
+        );
+        await tx
+          .update(tables.user)
+          .set({ ...data, updatedAt: new Date() })
+          .where(eq(tables.user.id, userId));
+      });
+    } else {
+      await this.database.db
+        .update(tables.user)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(tables.user.id, userId));
+    }
 
     // Catch-up push: this federated stub just changed, so fan the fresh profile to every local friend
     // of this user — they refresh without each having to independently probe. Fire-and-forget so a slow

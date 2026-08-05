@@ -13,16 +13,21 @@ beforeAll(async () => {
   ));
 });
 
-function makeService(peer?: Record<string, unknown>) {
+function makeService(
+  peer?: Record<string, unknown>,
+  reset?: Record<string, unknown>,
+) {
   const privateKey = ed25519.utils.randomSecretKey();
   const publicKey = ed25519.getPublicKey(privateKey);
   const updateSet = vi.fn();
   const updateWhere = vi.fn().mockResolvedValue(undefined);
   updateSet.mockReturnValue({ where: updateWhere });
-  const insertValues = vi.fn().mockResolvedValue(undefined);
+  const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+  const insertValues = vi.fn().mockReturnValue({ onConflictDoUpdate });
   const tx = {
     query: {
       federatedPeer: { findFirst: vi.fn().mockResolvedValue(peer) },
+      federatedPeerReset: { findFirst: vi.fn().mockResolvedValue(reset) },
     },
     update: vi.fn().mockReturnValue({ set: updateSet }),
     insert: vi.fn().mockReturnValue({
@@ -108,5 +113,37 @@ describe('FederationIdentityService', () => {
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'identity_lost' }),
     );
+  });
+
+  it('refuses first contact from a reset domain without an explicit rejoin grant', async () => {
+    const { service } = makeService(undefined, {
+      domain: 'peer.example',
+      resetGeneration: 1,
+      reinitPending: false,
+    });
+    const claim = service.createClaim('local.example', 'n'.repeat(24));
+    claim.originDomain = 'peer.example';
+    claim.recipientDomain = 'local.example';
+
+    await expect(
+      service.pinOrVerify('peer.example', claim),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+    });
+  });
+
+  it('consumes the reset-completion rejoin grant after pinning the new identity', async () => {
+    const { service, updateSet } = makeService(undefined, {
+      domain: 'peer.example',
+      resetGeneration: 1,
+      reinitPending: true,
+    });
+    const claim = service.createClaim('local.example', 'n'.repeat(24));
+    claim.originDomain = 'peer.example';
+    claim.recipientDomain = 'local.example';
+
+    await service.pinOrVerify('peer.example', claim);
+
+    expect(updateSet).toHaveBeenCalledWith({ reinitPending: false });
   });
 });

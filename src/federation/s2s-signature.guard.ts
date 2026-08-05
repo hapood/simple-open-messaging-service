@@ -58,7 +58,10 @@ export class S2sSignatureGuard implements CanActivate {
       columns: { trustLevel: true },
       where: eq(federatedPeer.domain, signerDomain),
     });
-    if (peer?.trustLevel === 'identity_lost') {
+    if (
+      peer?.trustLevel === 'identity_lost' ||
+      peer?.trustLevel === 'reset_in_progress'
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `${signerDomain} identity is locked pending reset`,

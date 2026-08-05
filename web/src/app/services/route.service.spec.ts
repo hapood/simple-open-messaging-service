@@ -142,5 +142,17 @@ describe('RouteService adaptive account surfaces', () => {
         desktopSize: 'wide',
       }),
     );
+    const pane = nav.pushPane.calls.mostRecent().args[0] as {
+      component?: {
+        ɵcmp?: {
+          dependencies?: readonly unknown[] | (() => readonly unknown[]);
+        };
+      };
+    };
+    expect(pane.component?.ɵcmp).toBeDefined();
+    const dependencies = pane.component?.ɵcmp?.dependencies;
+    const resolvedDependencies =
+      typeof dependencies === 'function' ? dependencies() : dependencies;
+    expect(resolvedDependencies?.every(Boolean)).toBeTrue();
   });
 });

@@ -157,7 +157,19 @@ export class ThreadRevisionService {
     activeUserIds: number[],
   ): Promise<void> {
     if (activeUserIds.length === 0) return;
-    const hidden = await this.database.db
+    const pending = await this.database.db.transaction((tx) =>
+      this.restoreHiddenThreadsInTx(tx, threadId, activeUserIds),
+    );
+    pending.forEach((revision) => this.notifyThreadRevision(revision));
+  }
+
+  async restoreHiddenThreadsInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    activeUserIds: number[],
+  ): Promise<PendingThreadRevision[]> {
+    if (activeUserIds.length === 0) return [];
+    const hidden = await tx
       .select({ userId: threadRevision.userId })
       .from(threadRevision)
       .where(
@@ -168,9 +180,14 @@ export class ThreadRevisionService {
           eq(threadRevision.isDelete, true),
         ),
       );
-    await Promise.all(
-      hidden.map((row) => this.recordThreadAdd(row.userId, threadId)),
-    );
+    const pending: PendingThreadRevision[] = [];
+    for (const row of hidden) {
+      pending.push({
+        userId: row.userId,
+        revision: await this.recordThreadAddInTx(tx, row.userId, threadId),
+      });
+    }
+    return pending;
   }
 
   /** Pull ADD/DELETE deltas in (fromRevision, toRevision] (from exclusive, to inclusive). The client

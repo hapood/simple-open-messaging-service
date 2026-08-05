@@ -11,6 +11,7 @@ import type { LinkContent } from '../upload/file-content.js';
 import { UploadService } from '../upload/upload.service.js';
 import { SafeFetchService } from './safe-fetch.service.js';
 import { OpenGraphService } from './open-graph.service.js';
+import { LinkCardRuleService } from './link-card-rule.service.js';
 
 /**
  * Orchestrates LINK card construction for a URL: SSRF-safe HTML fetch → OpenGraph parse → og:image
@@ -36,6 +37,7 @@ export class LinkPreviewService implements OnModuleInit, OnModuleDestroy {
     private readonly safeFetch: SafeFetchService,
     private readonly og: OpenGraphService,
     private readonly uploads: UploadService,
+    private readonly rules: LinkCardRuleService,
   ) {}
 
   onModuleInit(): void {
@@ -184,12 +186,21 @@ export class LinkPreviewService implements OnModuleInit, OnModuleDestroy {
       if (!html) {
         throw new LinkPreviewGenerationError('page could not be fetched');
       }
-      const meta = this.og.parse(html.body, html.finalUrl);
+      const selections = await this.rules.metadataSelectionsForUrl(
+        html.finalUrl,
+      );
+      const meta = this.og.parse(
+        html.body,
+        html.finalUrl,
+        selections.image,
+        selections.description,
+      );
       const card: LinkContent = {
         url: html.finalUrl,
         title: meta.title ?? '',
         description:
           meta.description ?? this.descriptionFallback(fallbackText, rawUrl),
+        siteName: meta.siteName,
         image: await this.localizeImage(meta.image, 'image'),
         favicon: await this.localizeImage(meta.favicon, 'favicon'),
       };

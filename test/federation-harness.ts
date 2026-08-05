@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sql } from 'drizzle-orm';
@@ -77,19 +78,45 @@ function ensureCompiledEntry(): void {
 /** A duck-typed KeypairService held entirely in memory — no file I/O, distinct keys per app. */
 export interface InMemoryKeypair {
   assertAvailable(): void;
+  getStatus(): { available: true };
   getKeyId(): string;
   getPrivateKey(): Uint8Array;
   getPublicKeyB64(): string;
+  getRootPublicKeyB64(): string;
+  getIdentityEpoch(): number;
+  getRootKeyFingerprint(): string;
+  getPairwiseServerId(peerDomain: string): string;
 }
 
 export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
   const privateKey = ed25519.utils.randomSecretKey();
   const publicKey = ed25519.getPublicKey(privateKey);
+  const publicKeyB64 = Buffer.from(publicKey).toString('base64');
+  const rootKeyFingerprint = `sha256:${createHash('sha256')
+    .update(publicKey)
+    .digest('base64url')}`;
+  const identityKey = Buffer.from(
+    hkdfSync(
+      'sha256',
+      privateKey,
+      Buffer.alloc(0),
+      'soms-pairwise-identity-v1',
+      32,
+    ),
+  );
   return {
     assertAvailable: () => undefined,
+    getStatus: () => ({ available: true }),
     getKeyId: () => `${domain}/key-1`,
     getPrivateKey: () => privateKey,
-    getPublicKeyB64: () => Buffer.from(publicKey).toString('base64'),
+    getPublicKeyB64: () => publicKeyB64,
+    getRootPublicKeyB64: () => publicKeyB64,
+    getIdentityEpoch: () => 1,
+    getRootKeyFingerprint: () => rootKeyFingerprint,
+    getPairwiseServerId: (peerDomain: string) =>
+      createHmac('sha256', identityKey)
+        .update(peerDomain.trim().toLowerCase().replace(/\.+$/, ''), 'utf8')
+        .digest('base64url'),
   };
 }
 

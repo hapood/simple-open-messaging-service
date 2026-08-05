@@ -70,6 +70,7 @@ export interface AudioContent {
  *  Comfortably within the 5000-char content budget. */
 const MAX_LINK_TITLE_LEN = 300;
 const MAX_LINK_DESC_LEN = 500;
+const MAX_LINK_SITE_NAME_LEN = 100;
 /** A LINK message's strict stored content. Image fields contain server-relative CAS URLs. Title and
  *  description are always present,
  *  including when metadata extraction produced an empty string. */
@@ -80,6 +81,8 @@ export interface LinkContent {
   title: string;
   /** Page description, length-capped. */
   description: string;
+  /** Open Graph publisher/site name, length-capped. */
+  siteName?: string;
   /** Content-addressed page image thumbnail URL; omitted when unavailable. */
   image?: string;
   /** Content-addressed favicon thumbnail URL; omitted when unavailable. */
@@ -296,13 +299,25 @@ export function parseLinkContent(content: string): LinkContent | null {
   }
   if (typeof obj !== 'object' || obj === null) return null;
   const record = obj as Record<string, unknown>;
-  const allowed = new Set(['url', 'title', 'description', 'image', 'favicon']);
+  const allowed = new Set([
+    'url',
+    'title',
+    'description',
+    'siteName',
+    'image',
+    'favicon',
+  ]);
   if (Object.keys(record).some((key) => !allowed.has(key))) return null;
-  const { url, title, description, image, favicon } = record;
+  const { url, title, description, siteName, image, favicon } = record;
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
   if (typeof title !== 'string' || typeof description !== 'string') return null;
   if (title.length > MAX_LINK_TITLE_LEN) return null;
   if (description.length > MAX_LINK_DESC_LEN) return null;
+  if (
+    siteName !== undefined &&
+    (typeof siteName !== 'string' || siteName.length > MAX_LINK_SITE_NAME_LEN)
+  )
+    return null;
   if (
     image !== undefined &&
     (typeof image !== 'string' || !isUploadUrl(image))
@@ -317,6 +332,7 @@ export function parseLinkContent(content: string): LinkContent | null {
     url,
     title,
     description,
+    siteName: siteName || undefined,
     image: image || undefined,
     favicon: favicon || undefined,
   };

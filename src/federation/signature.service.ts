@@ -8,7 +8,7 @@ import { KeypairService } from './keypair.service.js';
  * The signer and verifier are both our code, so we fix one
  * canonical covered-component set for v0.1; both sides use it.
  *
- * Covered components: @method @path @authority date content-digest
+ * Covered components: @method @path @query @authority date content-digest
  *   - @method / @path / @authority bind the request target (signature can't be replayed onto a
  *     different endpoint or host).
  *   - date is the RFC 7231 Date header (freshness signal; replay itself is handled by (origin,id) dedup).
@@ -28,6 +28,7 @@ const SIG_LABEL = 'sig1';
 export interface SignedRequest {
   method: string; // uppercase, e.g. POST
   path: string; // absolute path WITHOUT query, e.g. /api/v1/s2s/friend-request
+  query: string; // raw query including leading "?"; exactly "?" when absent (RFC 9421 §2.2.7)
   authority: string; // host[:port] — the Host/authority value
   body: string;
 }
@@ -44,15 +45,26 @@ export interface OutboundSignatureHeaders {
 
 /** Content-Digest value: sha-256=<base64(sha256(body))> (RFC 9530). */
 export function contentDigest(body: string | Uint8Array): string {
-  const bytes = typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
+  const bytes =
+    typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
   return 'sha-256=' + createHash('sha256').update(bytes).digest('base64');
 }
 
 /** Serialize the signature-params field (the value after `sig1=` in Signature-Input). */
-export function buildSignatureParams(keyId: string, created: number): string {
-  const components = '("@method" "@path" "@authority" "date" "content-digest")';
+export const SIGNATURE_LIFETIME_SEC = 300;
+export const ALLOWED_PAST_SKEW_SEC = 300;
+export const ALLOWED_FUTURE_SKEW_SEC = 60;
+
+const COVERED_COMPONENTS =
+  '("@method" "@path" "@query" "@authority" "date" "content-digest")';
+
+export function buildSignatureParams(
+  keyId: string,
+  created: number,
+  expires: number,
+): string {
   // Parameter order is fixed within our protocol; the verifier reads it back verbatim from the header.
-  return `${components};created=${created};keyid="${keyId}";alg="ed25519"`;
+  return `${COVERED_COMPONENTS};created=${created};expires=${expires};keyid="${keyId}";alg="ed25519"`;
 }
 
 /**
@@ -61,13 +73,21 @@ export function buildSignatureParams(keyId: string, created: number): string {
  * signature-params value (which MUST byte-match the Signature-Input header's payload).
  */
 export function buildSignatureBase(
-  v: { method: string; path: string; authority: string; date: string; contentDigest: string },
+  v: {
+    method: string;
+    path: string;
+    query: string;
+    authority: string;
+    date: string;
+    contentDigest: string;
+  },
   signatureParams: string,
 ): string {
   return (
     [
       `"@method" ${v.method}`,
       `"@path" ${v.path}`,
+      `"@query" ${v.query}`,
       `"@authority" ${v.authority}`,
       `"date" ${v.date}`,
       `"content-digest" ${v.contentDigest}`,
@@ -83,15 +103,26 @@ export class SignatureService {
   /** Sign an outbound S2S request; returns the four headers to attach (Date, Content-Digest, Signature-Input, Signature). */
   signOutbound(req: SignedRequest): OutboundSignatureHeaders {
     const created = Math.floor(Date.now() / 1000);
+    const expires = created + SIGNATURE_LIFETIME_SEC;
     const date = new Date().toUTCString();
     const digest = contentDigest(req.body);
     const keyId = this.keypair.getKeyId();
-    const sigParams = buildSignatureParams(keyId, created);
+    const sigParams = buildSignatureParams(keyId, created, expires);
     const base = buildSignatureBase(
-      { method: req.method, path: req.path, authority: req.authority, date, contentDigest: digest },
+      {
+        method: req.method,
+        path: req.path,
+        query: req.query,
+        authority: req.authority,
+        date,
+        contentDigest: digest,
+      },
       sigParams,
     );
-    const sig = ed25519.sign(new TextEncoder().encode(base), this.keypair.getPrivateKey());
+    const sig = ed25519.sign(
+      new TextEncoder().encode(base),
+      this.keypair.getPrivateKey(),
+    );
     return {
       date,
       'content-digest': digest,
@@ -114,6 +145,8 @@ export class SignatureService {
     const siMatch = headers['signature-input'].match(/^sig1=(.+)$/);
     if (!siMatch) return false;
     const sigParams = siMatch[1];
+    if (!this.hasValidMetadata(headers, Math.floor(Date.now() / 1000)))
+      return false;
 
     // Body integrity: the Content-Digest header must match the actual body (independently of the signature).
     if (headers['content-digest'] !== contentDigest(req.body)) return false;
@@ -127,6 +160,7 @@ export class SignatureService {
       {
         method: req.method,
         path: req.path,
+        query: req.query,
         authority: req.authority,
         date: headers.date,
         contentDigest: headers['content-digest'],
@@ -134,5 +168,29 @@ export class SignatureService {
       sigParams,
     );
     return ed25519.verify(sigBytes, new TextEncoder().encode(base), publicKey);
+  }
+
+  /** Validate the fixed SOMS signature profile and its stateless replay window. */
+  hasValidMetadata(headers: OutboundSignatureHeaders, now: number): boolean {
+    const match = headers['signature-input']?.match(
+      new RegExp(
+        `^sig1=${COVERED_COMPONENTS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')};created=(\\d+);expires=(\\d+);keyid="([^"\\r\\n]+)";alg="ed25519"$`,
+      ),
+    );
+    if (!match) return false;
+    const created = Number(match[1]);
+    const expires = Number(match[2]);
+    if (!Number.isSafeInteger(created) || !Number.isSafeInteger(expires))
+      return false;
+    if (created < now - ALLOWED_PAST_SKEW_SEC) return false;
+    if (created > now + ALLOWED_FUTURE_SKEW_SEC) return false;
+    if (expires < created || expires > created + SIGNATURE_LIFETIME_SEC)
+      return false;
+    if (now > expires) return false;
+
+    const dateSeconds = Date.parse(headers.date) / 1000;
+    return (
+      Number.isInteger(dateSeconds) && Math.abs(dateSeconds - created) <= 1
+    );
   }
 }

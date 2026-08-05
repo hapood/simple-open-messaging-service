@@ -2,6 +2,7 @@ import {
   Component,
   computed,
   effect,
+  forwardRef,
   inject,
   input,
   signal,
@@ -57,7 +58,9 @@ export interface ForwardDialogResult {
     ThreadSearchInputComponent,
     TranslocoPipe,
     UserAvatarComponent,
-    TextRowComponent,
+    // TextRowComponent opens dialogs through RouteService. RouteService also registers this
+    // forwarding dialog, so defer resolving the row until the module cycle has initialized.
+    forwardRef(() => TextRowComponent),
     MediaRowComponent,
     FileRowComponent,
     InviteRowComponent,

@@ -3,6 +3,7 @@
     "appName": "Admin 控制台",
     "loading": "加载中…",
     "noData": "无数据",
+    "all": "全部",
     "yes": "是",
     "no": "否",
     "cancel": "取消",
@@ -61,6 +62,7 @@
     "settings": "设置",
     "security": "我的账户",
     "audit": "操作审计",
+    "messageReports": "消息举报",
     "logout": "登出",
     "group": {
       "overview": "常用功能",
@@ -76,6 +78,12 @@
     "edit": "编辑规则",
     "hostname": "域名",
     "note": "备注",
+    "imageSelection": "OG 图片",
+    "descriptionSelection": "OG 描述",
+    "imageSelectionValues": {
+      "first": "第一张",
+      "last": "最后一张"
+    },
     "formDesc": "填写不带协议和路径的域名，子域名会自动匹配。",
     "empty": "暂无链接卡片规则",
     "saved": "规则已保存",
@@ -1003,6 +1011,30 @@
       "long-retry": "重试时间达到 30 秒；突发容量或令牌补充速率可能过低。",
       "review-ready": "样本量充足且模拟拦截率较低，可以进入人工上线审核。"
     }
+  },
+  "messageReports": {
+    "title": "消息举报",
+    "subtitle": "审核用户提交的消息举报；举报成立后消息将从会话中删除。",
+    "statusFilter": "按状态筛选",
+    "message": "被举报消息",
+    "creator": "发送者",
+    "reporter": "举报者",
+    "thread": "会话",
+    "status": "状态",
+    "createdAt": "举报时间",
+    "pending": "待审核",
+    "upheld": "已成立",
+    "rejected": "已驳回",
+    "deleted": "已删除",
+    "empty": "暂无消息举报",
+    "uphold": "判定成立",
+    "reject": "驳回",
+    "upholdConfirm": "确认举报成立？",
+    "upholdConfirmBody": "目标消息将被删除，此操作无法恢复。",
+    "rejectConfirm": "确认驳回举报？",
+    "rejectConfirmBody": "消息不会受到影响，之后仍可重新判定为成立。",
+    "resolved": "举报已处理",
+    "resolveFailed": "处理失败，请重试"
   },
   "errors": {
     "unauthenticated": "未认证",

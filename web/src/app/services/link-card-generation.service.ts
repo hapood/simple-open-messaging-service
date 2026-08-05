@@ -8,6 +8,7 @@ export interface LinkCardContent {
   url: string;
   title: string;
   description: string;
+  siteName?: string;
   image?: string;
   favicon?: string;
 }

@@ -59,6 +59,8 @@ import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
+import { MessageReportService } from '../message/message-report.service.js';
+import { CreateMessageReportsDto } from '../message/message-report.dto.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -79,7 +81,22 @@ export class MessageController {
     private readonly threadRevisionService: ThreadRevisionService,
     private readonly userQuota: UserQuotaService,
     private readonly deletedMessages: DeletedMessageService,
+    private readonly messageReports: MessageReportService,
   ) {}
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<CreateMessageReportsDto>('threadId')
+  @Throttle(20, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('message-reports')
+  @ApiOperation({ summary: 'Report one or more messages in one conversation' })
+  async reportMessages(
+    @Request() req: FastifyRequest,
+    @Body() dto: CreateMessageReportsDto,
+  ) {
+    return this.messageReports.create(req.user.userId, dto);
+  }
 
   @ApiBearerAuth()
   @Get('deleted-messages/hwm')

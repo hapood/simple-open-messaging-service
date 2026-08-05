@@ -46,19 +46,24 @@ describe('ThreadRevisionService hidden-thread restoration', () => {
   it('re-adds only active recipients whose current ADD row is marked deleted', async () => {
     const where = vi.fn().mockResolvedValue([{ userId: 2 }]);
     const select = vi.fn(() => ({ from: vi.fn(() => ({ where })) }));
-    const svc = new ThreadRevisionService(
-      { db: { select } } as never,
-      {} as never,
+    const transaction = vi.fn(
+      async (fn: (tx: { select: typeof select }) => unknown) => fn({ select }),
     );
-    const recordAdd = vi
-      .spyOn(svc, 'recordThreadAdd')
-      .mockResolvedValue(undefined);
+    const sse = { onThreadRevisionUpdated: vi.fn() };
+    const svc = new ThreadRevisionService(
+      { db: { select, transaction } } as never,
+      sse as never,
+    );
+    const recordAdd = vi.spyOn(svc, 'recordThreadAddInTx').mockResolvedValue(8);
 
     await svc.restoreHiddenThreads(10, [1, 2, 3]);
 
     expect(where).toHaveBeenCalledTimes(1);
     expect(recordAdd).toHaveBeenCalledTimes(1);
-    expect(recordAdd).toHaveBeenCalledWith(2, 10);
+    expect(recordAdd).toHaveBeenCalledWith(expect.anything(), 2, 10);
+    expect(sse.onThreadRevisionUpdated).toHaveBeenCalledWith(2, {
+      threadRevision: 8,
+    });
   });
 });
 

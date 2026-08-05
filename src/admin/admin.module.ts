@@ -41,6 +41,10 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { LinkCardRuleAdminController } from './link-card-rule-admin.controller.js';
 import { RateLimitMonitoringController } from './rate-limit-monitoring.controller.js';
+import { FederationResetService } from './federation-reset.service.js';
+import { MessageModule } from '../message/message.module.js';
+import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
+import { MessageReportAdminController } from './message-report-admin.controller.js';
 
 @Module({
   imports: [
@@ -61,6 +65,8 @@ import { RateLimitMonitoringController } from './rate-limit-monitoring.controlle
     // LogViewerService (exported by LoggerModule) backs LogViewerController (admin log tail + history).
     LoggerModule,
     LinkPreviewModule,
+    MessageModule,
+    ThreadParticipantModule,
   ],
   controllers: [
     AdminController,
@@ -78,6 +84,7 @@ import { RateLimitMonitoringController } from './rate-limit-monitoring.controlle
     LogViewerController,
     LinkCardRuleAdminController,
     RateLimitMonitoringController,
+    MessageReportAdminController,
   ],
   providers: [
     AdminAuthService,
@@ -87,6 +94,7 @@ import { RateLimitMonitoringController } from './rate-limit-monitoring.controlle
     AdminRolesGuard,
     MediaAssetGcService,
     FederationSelfCheckService,
+    FederationResetService,
     DashboardService,
     AuditTargetLabelService,
     AdminManageService,

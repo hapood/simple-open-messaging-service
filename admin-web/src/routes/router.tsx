@@ -229,6 +229,13 @@ export const router = createBrowserRouter(
                 })),
             },
             {
+              path: '/message-reports',
+              lazy: () =>
+                import('@/routes/message-reports/message-reports-page').then(
+                  (m) => ({ Component: m.MessageReportsPage }),
+                ),
+            },
+            {
               path: '/audit',
               lazy: () =>
                 import('@/routes/audit/audit-page').then((m) => ({

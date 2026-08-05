@@ -1,4 +1,5 @@
 import {
+  HttpStatus,
   Injectable,
   OnModuleInit,
   OnModuleDestroy,
@@ -6,8 +7,10 @@ import {
 } from '@nestjs/common';
 import { resolveSrv } from 'node:dns/promises';
 import { and, eq } from 'drizzle-orm';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { s2SKeyCache } from '../database/schema.js';
+import * as tables from '../database/schema.js';
 import { loadFederationConfig } from './federation.config.js';
 import { KeypairService } from './keypair.service.js';
 
@@ -25,10 +28,10 @@ export interface WellKnownDoc {
 
 /**
  * Resolves peer servers: SRV `_soms._tcp.<domain>` (host:port, fallback https://<domain>) → fetch
- * `.well-known/soms` over HTTPS → cache the peer's signing keys in S2SKeyCache (TTL, JWKS-style).
+ * `.well-known/soms` over HTTPS → cache the peer's single identity/signing key.
  *
  * Key cache: fetch-on-`keyId`-miss + TTL. A proactive refresh worker re-fetches every
- * communicated-with peer's keys each TTL window so rotation is picked up without inbound traffic.
+ * communicated-with peer's key each TTL window. A pinned peer may never replace or add a key.
  * No eviction in v0.1 — the cache only ever holds trusted peers (the allow-list gate at Gate 1
  * precedes any key fetch, so untrusted senders never populate it; the set is small + admin-managed).
  *
@@ -136,40 +139,119 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Uint8Array | null> {
     const ttlMs = this.config.keyCacheTtlSec * 1000;
     const cached = await this.database.db.query.s2SKeyCache.findFirst({
-      where: and(eq(s2SKeyCache.domain, domain), eq(s2SKeyCache.keyId, keyId)),
+      where: and(
+        eq(tables.s2SKeyCache.domain, domain),
+        eq(tables.s2SKeyCache.keyId, keyId),
+      ),
     });
     if (cached && Date.now() - cached.fetchedAt.getTime() < ttlMs) {
       return Uint8Array.from(Buffer.from(cached.publicKey, 'base64'));
     }
-    // Cache miss or stale → re-fetch the full key set (rotation surfaces new keyIds).
+    // Cache miss or stale → re-fetch the peer's single published key.
     const doc = await this.fetchWellKnown(domain); // throws → caller 503
     await this.cacheKeys(domain, doc.keys);
     const hit = doc.keys.find((k) => k.keyId === keyId);
     return hit ? Uint8Array.from(Buffer.from(hit.ed25519, 'base64')) : null;
   }
 
-  /** Cache all of a domain's currently-published keys (upsert + refresh fetchedAt). */
+  /**
+   * Cache a peer's single key. Once identity is pinned, a different keyId or different public key is
+   * identity loss, never a cache refresh. The old cache row is deliberately retained as evidence.
+   */
   async cacheKeys(domain: string, keys: PeerKey[]): Promise<void> {
-    await Promise.all(
-      keys.map((k) => {
-        const fetchedAt = new Date();
-        return this.database.db
-          .insert(s2SKeyCache)
-          .values({ domain, keyId: k.keyId, publicKey: k.ed25519, fetchedAt })
-          .onConflictDoUpdate({
-            target: [s2SKeyCache.domain, s2SKeyCache.keyId],
-            set: { publicKey: k.ed25519, fetchedAt },
+    const normalized = domain.trim().toLowerCase().replace(/\.+$/, '');
+    if (
+      keys.length === 0 ||
+      keys.some(
+        (candidate) =>
+          candidate.keyId.split('/')[0] !== normalized ||
+          !/^[A-Za-z0-9+/]{43}=$/.test(candidate.ed25519),
+      )
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+        `${normalized} must publish exactly one valid domain-bound key`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const key = keys[0];
+    const mismatchReason = await this.database.db.transaction(async (tx) => {
+      const [peer, cachedKeys] = await Promise.all([
+        tx.query.federatedPeer.findFirst({
+          where: eq(tables.federatedPeer.domain, normalized),
+        }),
+        tx.query.s2SKeyCache.findMany({
+          where: eq(tables.s2SKeyCache.domain, normalized),
+        }),
+      ]);
+      const pinned = peer?.identityPinnedAt != null;
+      if (!pinned && keys.length !== 1) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+          `${normalized} must publish exactly one key`,
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+      const cached = cachedKeys.find((row) => row.keyId === key.keyId);
+      const mismatch =
+        keys.length !== 1 ||
+        (cached && cached.publicKey !== key.ed25519) ||
+        (pinned &&
+          (cachedKeys.length !== 1 ||
+            !cached ||
+            cached.publicKey !== key.ed25519));
+      if (mismatch) {
+        const reason = 'peer replaced its pinned federation signing key';
+        if (
+          peer?.trustLevel !== 'identity_lost' &&
+          peer?.trustLevel !== 'reset_in_progress'
+        ) {
+          await tx
+            .update(tables.federatedPeer)
+            .set({
+              trustLevel: 'identity_lost',
+              identityLostAt: new Date(),
+              identityLostReason: reason,
+            })
+            .where(eq(tables.federatedPeer.domain, normalized));
+          await tx.insert(tables.federatedPeerEvent).values({
+            domain: normalized,
+            type: 'identity_lost',
+            reason,
           });
-      }),
-    );
+        }
+        return reason;
+      }
+      const fetchedAt = new Date();
+      await tx
+        .insert(tables.s2SKeyCache)
+        .values({
+          domain: normalized,
+          keyId: key.keyId,
+          publicKey: key.ed25519,
+          fetchedAt,
+        })
+        .onConflictDoUpdate({
+          target: [tables.s2SKeyCache.domain, tables.s2SKeyCache.keyId],
+          set: { fetchedAt },
+        });
+      return undefined;
+    });
+    if (mismatchReason) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        mismatchReason,
+        HttpStatus.CONFLICT,
+      );
+    }
   }
 
   /** Proactive refresh: re-fetch every cached peer's keys. Per-domain failures are logged, not fatal. */
   private async refreshAll(): Promise<void> {
     if (!this.keypair.getStatus().available) return;
     const rows = await this.database.db
-      .selectDistinct({ domain: s2SKeyCache.domain })
-      .from(s2SKeyCache);
+      .selectDistinct({ domain: tables.s2SKeyCache.domain })
+      .from(tables.s2SKeyCache);
     for (const { domain } of rows) {
       try {
         const doc = await this.fetchWellKnown(domain);

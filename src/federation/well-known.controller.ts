@@ -14,7 +14,8 @@ import { loadFederationConfig } from './federation.config.js';
  * peers derive them from the resolved base URL as `${base}/api/v1/s2s/<path>`, the same way the
  * Step 2 pull routes are already resolved.
  *
- * `keys` is a list (JWKS-style) so future rotation can publish two keyIds simultaneously (§5.1).
+ * `keys` remains an array for wire compatibility, but this protocol version publishes exactly one
+ * key. Replacing it is identity loss; online key rotation is intentionally unsupported.
  */
 @Public()
 @Raw()

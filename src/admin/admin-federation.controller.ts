@@ -19,6 +19,7 @@ import {
   AdminFederationPeerEventsDto,
   AdminFederationBlockDto,
   AdminFederationSelfCheckDto,
+  AdminFederationResetDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -27,6 +28,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { federatedPeer } from '../database/schema.js';
 import { FederationService } from '../federation/federation.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
+import { FederationResetService } from './federation-reset.service.js';
 
 /**
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state +
@@ -47,6 +49,7 @@ export class AdminFederationController {
   constructor(
     private readonly federationService: FederationService,
     private readonly selfCheckService: FederationSelfCheckService,
+    private readonly resetService: FederationResetService,
     private readonly database: DatabaseService,
   ) {}
 
@@ -96,6 +99,37 @@ export class AdminFederationController {
     @Body() dto: AdminFederationPeerEventsDto,
   ) {
     return this.federationService.peerEvents(domain, dto.take ?? 100);
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/peers/:domain/reset-preview')
+  @ApiOperation({
+    summary:
+      'Preview the destructive scope of an identity-lost peer reset (read-only)',
+  })
+  async resetPreview(@Param('domain') domain: string) {
+    return this.resetService.preview(domain);
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.peer.reset_start', {
+    targetType: 'peer',
+    targetParam: 'domain',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/peers/:domain/reset')
+  @ApiOperation({
+    summary:
+      'Freeze an identity-lost domain and mark its related threads for resumable truncation',
+  })
+  async resetPeer(
+    @Param('domain') domain: string,
+    @Body() dto: AdminFederationResetDto,
+  ) {
+    return this.resetService.start(domain, dto.confirmDomain);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

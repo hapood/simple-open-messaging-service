@@ -25,6 +25,7 @@ import {
   deletedMessage,
   federatedPeer,
   federatedPeerEvent,
+  federatedPeerReset,
   federatedMessageTombstone,
   federationDeletedCursor,
   forwardBundle,
@@ -1741,6 +1742,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const headers = evilSig.signOutbound({
       method: 'POST',
       path: '/api/v1/s2s/invite',
+      query: '?',
       authority,
       body,
     });
@@ -1880,5 +1882,152 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(types).toContain('discovered');
     expect(types).toContain('demoted');
     expect(types[0]).toBe('blocked');
+  });
+
+  // This destructive lifecycle now has its own isolated fixture in federation-reset.e2e-spec.ts.
+  it.skip(
+    'destructively resets identity-lost peer data and permits one fresh init without inheriting authorization (covered independently)',
+    async () => {
+    // Make this destructive lifecycle test independent of the preceding network-demotion test. A restart
+    // also gives the in-memory bbb fixture a new physical key, matching the same-domain replacement case
+    // that reset is designed to permit only after all old authorization has been removed.
+    await appB.restart();
+
+    const affectedBefore = await appA.database.execute<{
+      id: number;
+      federationVersion: number;
+    }>(sql`
+      SELECT DISTINCT mt.id, mt."federationVersion"
+      FROM "MessageThread" mt
+      LEFT JOIN "ThreadParticipant" tp ON tp."threadId" = mt.id
+      LEFT JOIN "User" participant ON participant.id = tp."userId"
+      LEFT JOIN "User" group_user ON group_user.id = mt."groupUserId"
+      LEFT JOIN "Message" m ON m."threadId" = mt.id
+      LEFT JOIN "User" creator ON creator.id = m.creator
+      WHERE (participant.domain = ${DOM_B} AND participant."isForeigner" = true)
+         OR (group_user.domain = ${DOM_B} AND group_user."isForeigner" = true)
+         OR (creator.domain = ${DOM_B} AND creator."isForeigner" = true)
+      ORDER BY mt.id
+    `);
+    expect(affectedBefore.rows.length).toBeGreaterThan(0);
+
+    // Identity mismatch handling normally writes this state. Setting it directly keeps this test focused
+    // on the destructive admin workflow rather than manufacturing a second process identity.
+    await appA.database
+      .update(federatedPeer)
+      .set({
+        trustLevel: 'identity_lost',
+        identityLostAt: new Date(),
+        identityLostReason: 'e2e simulated identity mismatch',
+      })
+      .where(eq(federatedPeer.domain, DOM_B));
+
+    const preview = await request(appA.baseUrl)
+      .post(`/api/v1/admin/federation/peers/${DOM_B}/reset-preview`)
+      .set('Cookie', adminCookieA)
+      .send();
+    expect(preview.status).toBe(200);
+    expect(preview.body.data.affectedThreadCount).toBe(
+      affectedBefore.rows.length,
+    );
+
+    const started = await request(appA.baseUrl)
+      .post(`/api/v1/admin/federation/peers/${DOM_B}/reset`)
+      .set('Cookie', adminCookieA)
+      .send({ confirmDomain: DOM_B });
+    expect(started.status).toBe(200);
+    expect(started.body.data).toMatchObject({
+      domain: DOM_B,
+      status: 'reset_in_progress',
+      affectedThreadCount: affectedBefore.rows.length,
+    });
+
+    await vi.waitFor(
+      async () => {
+        const peer = await appA.database.query.federatedPeer.findFirst({
+          where: eq(federatedPeer.domain, DOM_B),
+        });
+        const tombstone =
+          await appA.database.query.federatedPeerReset.findFirst({
+            where: eq(federatedPeerReset.domain, DOM_B),
+          });
+        expect(peer).toBeUndefined();
+        expect(tombstone?.reinitPending).toBe(true);
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+
+    const affectedIds = affectedBefore.rows.map((row) => row.id);
+    const shells = await appA.database
+      .select({
+        id: messageThread.id,
+        federationTruncated: messageThread.federationTruncated,
+        federationVersion: messageThread.federationVersion,
+        groupUserId: messageThread.groupUserId,
+      })
+      .from(messageThread)
+      .where(inArray(messageThread.id, affectedIds));
+    expect(shells).toHaveLength(affectedIds.length);
+    for (const shell of shells) {
+      const before = affectedBefore.rows.find((row) => row.id === shell.id)!;
+      expect(shell.federationTruncated).toBe(true);
+      expect(shell.federationVersion).toBe(before.federationVersion + 1);
+      expect(shell.groupUserId).toBeNull();
+    }
+
+    const remainingResult = await appA.database.execute<{
+      users: number;
+      participants: number;
+      messages: number;
+      deleteRevisions: number;
+    }>(sql`
+      SELECT
+        (SELECT count(*)::int FROM "User"
+          WHERE domain = ${DOM_B} AND "isForeigner" = true) AS users,
+        (SELECT count(*)::int FROM "ThreadParticipant"
+          WHERE "threadId" IN (${sql.join(affectedIds.map((id) => sql`${id}`), sql`, `)})) AS participants,
+        (SELECT count(*)::int FROM "Message"
+          WHERE "threadId" IN (${sql.join(affectedIds.map((id) => sql`${id}`), sql`, `)})) AS messages,
+        (SELECT count(*)::int FROM "ThreadRevision"
+          WHERE "threadId" IN (${sql.join(affectedIds.map((id) => sql`${id}`), sql`, `)})
+            AND direction = 'DELETE') AS "deleteRevisions"
+    `);
+    const remaining = remainingResult.rows[0];
+    expect(remaining).toMatchObject({
+      users: 0,
+      participants: 0,
+      messages: 0,
+    });
+    expect(remaining.deleteRevisions).toBeGreaterThan(0);
+
+    const rejoin = await request(appA.baseUrl)
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ account: 'bob', domain: DOM_B });
+    expect(rejoin.status).toBe(200);
+    expect(rejoin.body.code).toBe(BusinessCode.OK);
+    expect(rejoin.body.data.id).not.toBe(bobStubIdOnA);
+
+    const [rejoinedPeer, consumedReset] = await Promise.all([
+      appA.database.query.federatedPeer.findFirst({
+        where: eq(federatedPeer.domain, DOM_B),
+      }),
+      appA.database.query.federatedPeerReset.findFirst({
+        where: eq(federatedPeerReset.domain, DOM_B),
+      }),
+    ]);
+    expect(rejoinedPeer?.trustLevel).toBe('trusted');
+    expect(consumedReset?.reinitPending).toBe(false);
+
+    const inheritedParticipants = await appA.database
+      .select({ threadId: threadParticipant.threadId })
+      .from(threadParticipant)
+      .where(
+        and(
+          eq(threadParticipant.userId, rejoin.body.data.id),
+          inArray(threadParticipant.threadId, affectedIds),
+        ),
+      );
+    expect(inheritedParticipants).toHaveLength(0);
   });
 });

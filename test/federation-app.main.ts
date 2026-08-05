@@ -15,13 +15,19 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { Public } from '../src/common/public.decorator.js';
 import { Raw } from '../src/common/raw.decorator.js';
 import { Test } from '@nestjs/testing';
-import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
 import { SignatureService } from '../src/federation/signature.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
-import { TestDiscoveryService, makeInMemoryKeypair } from './federation-harness.js';
+import {
+  TestDiscoveryService,
+  makeInMemoryKeypair,
+} from './federation-harness.js';
 
 /**
  * Test-only probe (NOT in prod — this is the test subprocess entry): drive a signed S2S GET as THIS app
@@ -52,6 +58,7 @@ class TestS2sHookController {
     const headers = this.sig.signOutbound({
       method: 'GET',
       path: url.pathname,
+      query: url.search || '?',
       authority: url.host,
       body: '', // GET — content-digest covers sha256("")
     });
