@@ -1,5 +1,10 @@
 # SOMS Federation — S2S API Reference
 
+> **文档分类：Implementation API reference（非正式规范）。** 当前代码提取的完整 surface 和
+> 已知差异分别见 [`protocol-baseline.md`](../federation/protocol-baseline.md) 与
+> [`known-conflicts.md`](../federation/known-conflicts.md)。本文仍含待裁决的状态码、响应 envelope
+> 和实施状态描述，不能独立作为第三方兼容性保证。
+>
 > Living reference for the federation server-to-server API. **Built:** Step 1 (trust + friend), Step 2
 > (1:1 messages + media), **Step 3 Phase A** (unified invite — friend + group share `/s2s/invite`;
 > cross-server group invite/join + lazy roster meta-pull), **Step 3 Phase B** (cross-server group

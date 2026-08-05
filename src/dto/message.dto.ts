@@ -13,6 +13,7 @@ import {
   IsUUID,
   Max,
   MaxLength,
+  Matches,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -65,6 +66,15 @@ export class SendMessageDto {
   @IsOptional()
   @IsUUID()
   clientMessageId?: string;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Keep a completed LINK generation available for another selected destination. The final send must omit this flag.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  retainLinkGeneration?: boolean;
 }
 
 export class ForwardSourceMessageDto {
@@ -78,6 +88,41 @@ export class ForwardSourceMessageDto {
     example: 31,
     description: 'Source message seq within the conversation',
   })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  seq!: number;
+}
+
+export class QueryDeletedMessagesDto {
+  @ApiProperty({ example: 12, description: 'Conversation id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({ example: '0', description: 'Exclusive deleted-log cursor' })
+  @IsString()
+  @Matches(/^\d+$/)
+  afterId!: string;
+
+  @ApiProperty({ required: false, default: 100, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  take = 100;
+}
+
+export class WithdrawMessageDto {
+  @ApiProperty({ example: 12, description: 'Conversation id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({ example: 31, description: 'Local message seq' })
   @Type(() => Number)
   @IsInt()
   @Min(0)

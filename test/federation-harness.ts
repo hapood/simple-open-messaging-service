@@ -76,6 +76,7 @@ function ensureCompiledEntry(): void {
 
 /** A duck-typed KeypairService held entirely in memory — no file I/O, distinct keys per app. */
 export interface InMemoryKeypair {
+  assertAvailable(): void;
   getKeyId(): string;
   getPrivateKey(): Uint8Array;
   getPublicKeyB64(): string;
@@ -85,6 +86,7 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
   const privateKey = ed25519.utils.randomSecretKey();
   const publicKey = ed25519.getPublicKey(privateKey);
   return {
+    assertAvailable: () => undefined,
     getKeyId: () => `${domain}/key-1`,
     getPrivateKey: () => privateKey,
     getPublicKeyB64: () => Buffer.from(publicKey).toString('base64'),

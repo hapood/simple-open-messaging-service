@@ -61,4 +61,13 @@ object SomsBridge {
         @Volatile
         var pendingThreadId: String? = null
     }
+
+    data class SharedText(val id: String, val text: String)
+
+    /** Latest Android ACTION_SEND text. It remains native-owned until the web flow explicitly acknowledges
+     *  its id, so Angular boot and WebView recreation cannot lose the external share. */
+    object Share {
+        @Volatile
+        var pending: SharedText? = null
+    }
 }

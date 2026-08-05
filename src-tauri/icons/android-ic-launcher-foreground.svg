@@ -1,44 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS">
-  <!-- Android adaptive-icon foreground.
-
-       A solid white speech bubble with a cutout "M" node-graph (the M is knocked
-       out so the blue background layer shows through) and a short, thick tail
-       placed at the golden-ratio point of the bottom edge.
-
-       The blue fill and outer silhouette come from the background layer
-       (res/values/ic_launcher_background.xml = #2196f3); the launcher mask clips
-       that layer to its shape, and this foreground supplies only the white
-       bubble glyph on a transparent canvas.
-
-       Sizing: the bubble path itself spans x[21,87] — ±33dp from the 54,54
-       center, right on the 66dp safe-zone circle — which placed the glyph
-       edge-to-edge with every launcher mask with no padding. The wrapping <g>
-       scales the glyph 0.82× about the canvas center, retracting the horizontal
-       extent to ±27dp so a visible brand-blue padding ring sits inside every
-       mask shape (circle / squircle / rounded-square). The scale is uniform, so
-       the bubble stays centered and undistorted; only the padding grows.
-
-       `cargo tauri icon` cannot produce this: it scales the source SVG
-       full-bleed, ignoring the adaptive safe zone. Regenerate the PNGs with
-       gen-android-foreground.sh after running `cargo tauri icon`. -->
-  <defs>
-    <mask id="m-cutout">
-      <rect width="108" height="108" fill="#ffffff" />
-      <path d="M35 65 L35 42 L54 57 L73 42 L73 65" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-      <g fill="#000000">
-        <circle cx="35" cy="65" r="6.5" />
-        <circle cx="35" cy="42" r="6.5" />
-        <circle cx="54" cy="57" r="6.5" />
-        <circle cx="73" cy="42" r="6.5" />
-        <circle cx="73" cy="65" r="6.5" />
-      </g>
-    </mask>
-  </defs>
-  <!-- Body [21,87]x[29,79] rx11; tail base x[41,52] (w11), tip (46,84) (h5)
-       at the 0.382 golden section of the bottom edge. These are the unscaled
-       path coordinates; the wrapping <g> scales them 0.82× about (54,54). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS adaptive icon foreground">
+  <!-- Android adaptive foreground: transparent 108dp canvas. The complete
+       artwork is scaled to 82%, yielding an approximately 54dp silhouette
+       inside the guaranteed 66dp safe zone. The background remains a separate
+       full-bleed launcher layer; do not add a mask, corner radius, or shadow. -->
   <g transform="translate(54 54) scale(0.82) translate(-54 -54)">
-    <path fill="#ffffff" mask="url(#m-cutout)"
-      d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
+    <path
+      fill="#f8f4ec"
+      stroke="#d6cbbd"
+      stroke-width="1.5"
+      d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L20 90 L24 75 C18 69 15 61 15 52 C15 32 32 17 54 17 Z"
+    />
+    <path d="M34 68 V40 L54 57 L74 40 V68" fill="none" stroke="#19212a" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+    <g fill="#19212a">
+      <circle cx="34" cy="40" r="6.5" />
+      <circle cx="34" cy="68" r="6.5" />
+      <circle cx="74" cy="40" r="6.5" />
+      <circle cx="74" cy="68" r="6.5" />
+    </g>
+    <circle cx="54" cy="57" r="7" fill="#f04b3a" />
   </g>
 </svg>

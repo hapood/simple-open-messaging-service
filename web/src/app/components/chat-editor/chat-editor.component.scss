@@ -42,10 +42,10 @@ app-chat-editor {
 // Do not let the browser's default blue/purple link palette leak into the composer. Both states use the
 // theme's high-contrast inline-link role because visit history should not change draft legibility.
 .cb-editor .ProseMirror a {
-  color: var(--app-link, #1565c0);
+  color: var(--app-link, #34383d);
 }
 .cb-editor .ProseMirror a:visited {
-  color: var(--app-link-visited, var(--app-link, #1565c0));
+  color: var(--app-link-visited, var(--app-link, #34383d));
 }
 // Placeholder (v3 Placeholder tags the first <p> with .is-editor-empty + data-placeholder).
 .cb-editor .ProseMirror p.is-editor-empty:first-child::before {
@@ -66,10 +66,10 @@ app-chat-editor {
   padding: 0 3px;
 }
 
-// Mention chip — blue pill, atom (non-editable) in the editor, a styled span in sent bubbles.
+// Mention chip — a quiet graphite pill, atom (non-editable) in the editor.
 .cb-mention {
-  background: rgba(33, 150, 243, 0.16);
-  color: #1976d2;
+  background: color-mix(in srgb, var(--app-brand) 13%, transparent);
+  color: var(--app-brand);
   border-radius: 4px;
   padding: 0 3px;
   font-weight: 500;
@@ -104,8 +104,8 @@ app-chat-editor {
   height: 32px;
   flex: 0 0 32px;
   border-radius: 50%;
-  background-color: color-mix(in srgb, #be4749 13%, var(--im-surface, #fff));
-  color: #be4749;
+  background-color: color-mix(in srgb, var(--app-brand) 13%, var(--im-surface, #fff));
+  color: var(--app-brand);
   position: relative;
 }
 .cb-mention-all-icon::before,
@@ -121,7 +121,7 @@ app-chat-editor {
   left: 7px;
   top: 6px;
   box-shadow: 9px 1px 0 -2px
-    color-mix(in srgb, #be4749 13%, var(--im-surface, #fff));
+    color-mix(in srgb, var(--app-brand) 13%, var(--im-surface, #fff));
 }
 .cb-mention-all-icon::after {
   width: 17px;
@@ -132,12 +132,12 @@ app-chat-editor {
   border-radius: 12px 12px 0 0;
 }
 .cb-mention-item--all {
-  color: #be4749;
+  color: var(--app-brand);
   font-weight: 500;
 }
 .cb-mention-item--active {
-  background: rgba(33, 150, 243, 0.14);
-  color: #1976d2;
+  background: color-mix(in srgb, var(--app-brand) 14%, transparent);
+  color: var(--app-brand);
 }
 .cb-mention-popup--empty {
   padding: 8px 10px;

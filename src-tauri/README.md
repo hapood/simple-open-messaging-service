@@ -125,13 +125,11 @@ proxy = "http://192.168.88.8:8080"
 cargo tauri icon ../public/logo.svg   # creates icons/{32x32,128x128,128x128@2x}.png, icon.icns, icon.ico
 ```
 
-`cargo tauri icon` also writes the Android adaptive-icon foreground
+`cargo tauri icon` also resets the Android adaptive-icon foreground and XML
 (`gen/android/.../ic_launcher_foreground.png`), but it scales the source SVG
 **full-bleed** onto the 108dp canvas — it ignores the adaptive safe zone, so the
-white bubble spills past the 66dp circle every launcher mask guarantees visible
-and gets clipped on tight OEM masks. Re-render the padded foreground afterwards
-(glyph only, centered in the safe zone; the blue silhouette comes from the
-background color `ic_launcher_background = #2196f3`):
+artwork without respecting the 66dp safe area, resets the background to white,
+and drops the themed-icon layer. Restore all Android-specific assets afterwards:
 
 ```bash
 icons/gen-android-foreground.sh   # needs rsvg-convert (librsvg)

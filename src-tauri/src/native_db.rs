@@ -690,24 +690,28 @@ pub(crate) async fn native_db_query_messages(
             ("desc", Some(anchor)) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq < ?3
+                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq DESC LIMIT ?4",
                 anchor,
             ),
             ("asc", Some(anchor)) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq > ?3
+                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq ASC LIMIT ?4",
                 anchor,
             ),
             ("desc", None) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq <= ?3
+                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq DESC LIMIT ?4",
                 i64::MAX,
             ),
             ("asc", None) => (
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq >= ?3
+                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq ASC LIMIT ?4",
                 i64::MIN,
             ),
@@ -766,8 +770,12 @@ pub(crate) async fn native_db_put_messages(
                 "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
                  VALUES(?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
-                   created_at = excluded.created_at,
-                   payload_json = excluded.payload_json",
+                   created_at = CASE
+                     WHEN COALESCE(json_extract(messages.payload_json, '$.isDeleted'), 0) = 1
+                     THEN messages.created_at ELSE excluded.created_at END,
+                   payload_json = CASE
+                     WHEN COALESCE(json_extract(messages.payload_json, '$.isDeleted'), 0) = 1
+                     THEN messages.payload_json ELSE excluded.payload_json END",
                 params![user_id, thread_id, seq, created_at, json_text(&message)?],
             )
             .map_err(|e| format!("put message: {e}"))?;
@@ -791,6 +799,87 @@ pub(crate) async fn native_db_put_messages(
     })
     .await
     .map_err(|e| format!("join message write: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_get_deleted_hwm(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        let key = format!("deletedHwm:{thread_id}");
+        let value = conn
+            .query_row(
+                "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
+                params![user_id, key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("get deleted hwm: {e}"))?;
+        match value {
+            Some(value) => serde_json::from_str::<String>(&value)
+                .map_err(|e| format!("parse deleted hwm: {e}")),
+            None => Ok("0".to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("join deleted hwm read: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_apply_deleted_messages(
+    app: tauri::AppHandle,
+    user_id: i64,
+    thread_id: i64,
+    items: Vec<Value>,
+    hwm: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open(&app)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("begin deleted-message write: {e}"))?;
+        for item in items {
+            let seq = item
+                .get("seq")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "deleted message has no numeric seq".to_string())?;
+            let placeholder = serde_json::json!({
+                "threadId": thread_id,
+                "seq": seq,
+                "isDeleted": true,
+                "content": "",
+                "contentType": "PURE_TEXT",
+                "creator": 0,
+                "createdAt": 0,
+                "updatedAt": 0
+            });
+            tx.execute(
+                "INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json)
+                 VALUES(?1,?2,?3,0,?4)
+                 ON CONFLICT(user_id,thread_id,seq) DO UPDATE SET
+                   payload_json=json_set(messages.payload_json,'$.isDeleted',json('true'))",
+                params![user_id, thread_id, seq, json_text(&placeholder)?],
+            )
+            .map_err(|e| format!("apply deleted message: {e}"))?;
+        }
+        tx.execute(
+            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
+             ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
+            params![
+                user_id,
+                format!("deletedHwm:{thread_id}"),
+                serde_json::to_string(&hwm).map_err(|e| format!("encode deleted hwm: {e}"))?
+            ],
+        )
+        .map_err(|e| format!("advance deleted hwm: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("commit deleted-message write: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join deleted-message write: {e}"))?
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -1203,7 +1292,8 @@ pub(crate) async fn native_db_get_message(
         let value = open(&app)?
             .query_row(
                 "SELECT payload_json FROM messages
-                 WHERE user_id = ?1 AND thread_id = ?2 AND seq = ?3",
+                 WHERE user_id = ?1 AND thread_id = ?2 AND seq = ?3
+                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1",
                 params![user_id, thread_id, seq],
                 |row| row.get::<_, String>(0),
             )
@@ -1227,6 +1317,7 @@ pub(crate) async fn native_db_newest_messages(
             .prepare(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2
+                   AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq DESC LIMIT 1",
             )
             .map_err(|e| format!("prepare newest-message query: {e}"))?;

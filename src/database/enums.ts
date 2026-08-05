@@ -54,3 +54,10 @@ export const ThreadRevisionDirection = {
 } as const;
 export type ThreadRevisionDirection =
   (typeof ThreadRevisionDirection)[keyof typeof ThreadRevisionDirection];
+
+export const MessageDeleteType = {
+  WITHDRAW: 'WITHDRAW',
+  REPORT: 'REPORT',
+} as const;
+export type MessageDeleteType =
+  (typeof MessageDeleteType)[keyof typeof MessageDeleteType];

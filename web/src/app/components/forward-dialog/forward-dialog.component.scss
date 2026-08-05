@@ -78,12 +78,39 @@
   }
 }
 
+.forward-dialog__workspace {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.forward-dialog__preview-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--app-bg);
+}
+
+.forward-dialog__pane-title {
+  margin: 0;
+  padding: 10px 16px 0;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
 .forward-dialog__preview {
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  align-items: center;
   justify-content: center;
+  min-height: 0;
   padding: 12px 16px;
-  background: var(--app-bg);
+  overflow: auto;
 }
 
 .forward-dialog__direct-preview {
@@ -91,9 +118,221 @@
   overflow: hidden;
 
   // Reuse the real message renderer, but the preview owns its surrounding spacing.
-  :is(app-msg-text-row, app-msg-media-row, app-msg-file-row, app-msg-invite-row,
-      app-msg-link-row, app-msg-call-row, app-msg-forward-row) {
+  :is(
+      app-msg-text-row,
+      app-msg-media-row,
+      app-msg-file-row,
+      app-msg-invite-row,
+      app-msg-link-row,
+      app-msg-call-row,
+      app-msg-forward-row
+    ) {
     display: block;
+  }
+}
+
+.native-share-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.native-share-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: min(100%, 280px);
+  height: 112px;
+  padding: 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  background: var(--app-surface);
+
+  &--skeleton {
+    overflow: hidden;
+  }
+
+  &--skeleton::after {
+    position: absolute;
+    width: 80px;
+    height: 112px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--app-text) 7%, transparent),
+      transparent
+    );
+    content: '';
+    animation: native-share-shimmer 1.8s ease-in-out infinite;
+  }
+
+  &__icon,
+  &__lines i {
+    display: block;
+    border-radius: var(--app-radius-sm);
+    background: var(--app-hover);
+  }
+
+  &__icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  &__lines {
+    display: grid;
+    gap: 8px;
+
+    i {
+      height: 9px;
+    }
+
+    i:nth-child(2) {
+      width: 88%;
+    }
+
+    i:nth-child(3) {
+      width: 54%;
+    }
+  }
+
+  &--failed {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    color: var(--app-text-muted);
+    text-align: center;
+
+    > span {
+      display: grid;
+      width: 24px;
+      height: 24px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--app-hover);
+      font-weight: 700;
+    }
+
+    strong {
+      color: var(--app-text);
+      font-size: 14px;
+    }
+
+    p {
+      margin: 0;
+      font-size: 12px;
+    }
+  }
+}
+
+@keyframes native-share-shimmer {
+  from {
+    transform: translateX(-180px);
+  }
+  to {
+    transform: translateX(360px);
+  }
+}
+
+.forward-dialog__preview-actions {
+  display: flex;
+  flex: 0 0 48px;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 16px;
+  box-sizing: border-box;
+
+  button {
+    min-height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-sm);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  button:disabled {
+    color: var(--app-text-disabled);
+    cursor: default;
+    opacity: var(--app-disabled-opacity);
+  }
+}
+
+.forward-dialog__recipient-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--app-surface);
+}
+
+.forward-dialog__selected {
+  display: flex;
+  flex: 0 0 42px;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 12px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.forward-dialog__selected-label {
+  flex: 0 0 auto;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.forward-dialog__selected-chips {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.forward-dialog__selected-chip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  max-width: 150px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--app-brand-soft);
+  color: var(--app-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+
+  span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span:last-child {
+    color: var(--app-text-muted);
+    font-size: 16px;
+    line-height: 16px;
   }
 }
 
@@ -103,7 +342,6 @@
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border-top: 1px solid var(--app-border);
 }
 
 .forward-dialog__recent {
@@ -285,8 +523,21 @@
   text-align: center;
 }
 
-@media (min-width: 600px) {
+@media (min-width: 720px) {
   :host {
     height: min(680px, 80dvh);
+  }
+
+  .forward-dialog__workspace {
+    grid-template-columns: minmax(0, 42fr) minmax(0, 58fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .forward-dialog__preview-pane {
+    border-right: 1px solid var(--app-border);
+  }
+
+  .forward-dialog__pane-title {
+    padding-top: 14px;
   }
 }

@@ -320,6 +320,7 @@ Documentation lives under `docs/` in three buckets.
 - [account-naming.md](docs/overview/account-naming.md) — `account` grammar spec (single source of truth)
 - [chat-message-list-design.md](docs/overview/chat-message-list-design.md) — Mobile 1v1 chat message-list UI spec (WhatsApp style)
 - [federation-protocol.md](docs/overview/federation-protocol.md) — Federation protocol & deployment guide (what federation is + how to deploy a node)
+- [federation/README.md](docs/federation/README.md) — Federation documentation authority, current implementation baseline, and known conflicts
 
 **API & interface contracts** (`docs/api/`):
 

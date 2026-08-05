@@ -129,4 +129,18 @@ describe('RouteService adaptive account surfaces', () => {
       }),
     );
   });
+
+  it('opens the shared forwarding workspace as a wide desktop dialog', () => {
+    service.popupDlg(PopupType.FORWARD, {
+      purpose: 'NATIVE_SHARE',
+      sharedText: 'https://example.com',
+    });
+
+    expect(nav.pushPane).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({
+        presentation: 'page',
+        desktopSize: 'wide',
+      }),
+    );
+  });
 });

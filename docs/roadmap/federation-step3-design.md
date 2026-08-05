@@ -1,5 +1,8 @@
 # SOMS Federation — Step 3 Design (cross-server groups)
 
+> **文档分类：Historical design。** 本文解释 Step 3 的设计与实施过程，不具现行规范效力。
+> 当前入口与实现基线见 [`docs/federation/README.md`](../federation/README.md)。
+
 > **Status:** **Phase A BUILT** (2026-07-09): the unified S2S invite (`/s2s/invite` +
 > `/s2s/invite-accept`, friend + group share one endpoint — see `docs/api/federation-s2s-api.md`),
 > cross-server group **invite + join** (origin records the joiner), and the lazy **roster meta-pull**

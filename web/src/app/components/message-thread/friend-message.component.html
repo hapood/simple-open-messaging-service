@@ -470,13 +470,12 @@
         {{ 'chat.blockedBanner' | transloco }}
       </button>
     } @else {
-      @if (!nativeComposer.supported) {
+      @if (!nativeComposer.supported && !chatboxDialogOpen()) {
         <app-chat-input
           [class.msg-composer--selection-hidden]="selectionMode()"
           [attr.aria-hidden]="selectionMode()"
           [members]="mentionMembers()"
           [threadId]="threadId()"
-          [compact]="chatboxDialogOpen()"
           (send)="onSendIntent($event)"
         >
           @if (composingQuote(); as quote) {

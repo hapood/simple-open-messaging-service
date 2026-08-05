@@ -29,7 +29,7 @@ interface DownloadProgress {
   template: `
     <section class="about-page">
       <header class="product-hero">
-        <div class="product-mark" aria-hidden="true"><span>S</span></div>
+        <img class="product-mark" src="/logo.svg" alt="" />
         <div>
           <h2>SOMS</h2>
           <p>{{ 'settings.aboutTagline' | transloco }}</p>

@@ -97,8 +97,8 @@
 }
 
 // ---- Actions ---------------------------------------------------------------
-// NB: the primary CTA stays brand-blue (a positive navigation action), not danger-red —
-// the red is reserved for the "denied" signal in the hero/code, not the way out.
+// The primary CTA uses the accessible interaction vermilion; danger semantics
+// remain on the stronger denied signal in the hero/code.
 .pnf-actions {
   display: flex;
   flex-wrap: wrap;
@@ -123,7 +123,7 @@
   background: var(--app-brand);
   color: #ffffff;
   font-weight: 600;
-  box-shadow: 0 6px 16px rgba(33, 150, 243, 0.30);
+  box-shadow: 0 6px 16px rgba(198, 60, 47, 0.3);
 
   &:hover { background: var(--app-brand-hover); }
 }

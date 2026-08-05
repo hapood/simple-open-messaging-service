@@ -1,5 +1,8 @@
 # SOMS — Unified Daily Quotas (local + federated peers)
 
+> **文档分类：Implementation design。** 本文描述 SOMS 的配额实现，不单独定义联邦 wire
+> protocol。当前联邦文档入口见 [`docs/federation/README.md`](../federation/README.md)。
+
 > **Status:** **BUILT** (2026-07-12). Live end-to-end: the counter table + atomic increment, ingest-side
 > federation enforcement (S2S `requests` / `messages` / `images` / `largeFiles`), handler-side local
 > enforcement, the admin **Quotas** page (`/quotas`), and the consumer `QUOTA_EXCEEDED` toast. See

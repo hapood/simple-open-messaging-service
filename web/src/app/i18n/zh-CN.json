@@ -382,6 +382,12 @@
     "previewLabel": "[聊天记录]",
     "nestedLevel": "第 {{level}} 层"
   },
+  "nativeShare": {
+    "title": "选择聊天",
+    "continue": "继续",
+    "send": "发送（{{count}}）",
+    "preview": "内容预览"
+  },
   "linkCard": {
     "open": "打开链接",
     "original": "查看原文",

@@ -1,5 +1,10 @@
 # SOMS Federation — Protocol & Deployment Guide (v0.1)
 
+> **文档分类：Overview + implementation history + operator guide（非正式规范）。** 联邦文档的
+> 当前权威边界、实现基线和已知冲突见 [`docs/federation/README.md`](../federation/README.md)。
+> 本文在整理期间保留历史叙述；其中已移除的端点和 `BUILT`/`Deferred` 标记不得单独作为
+> 第三方互操作契约。
+>
 > **Status:** Source of truth for both protocol integrators and node operators.
 > **Scope:** Server-to-server (S2S) federation for SOMS IM threads.
 > **Last updated:** 2026-07-10

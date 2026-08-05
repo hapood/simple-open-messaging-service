@@ -14,6 +14,7 @@ import { requireTextMessageContent } from '../../../../shared/text-message-conte
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, ThreadReadState, User } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
+import { MsgService } from './message.service';
 
 /** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
 export const ConversationLoadStatus = {
@@ -57,6 +58,7 @@ export class ThreadRepository {
   private readonly profileRepo = inject(ProfileRepository);
   private readonly messageRepo = inject(MessageRepository);
   private readonly missedSync = inject(MissedSyncService);
+  private readonly messages = inject(MsgService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -157,6 +159,9 @@ export class ThreadRepository {
 
   /** Previous sessionUserId seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
+  /** Account-scoped first thread initialization barrier. It is independent of HELLO payload state;
+   * both the list mount and a fast-arriving HELLO await this same single-flight operation. */
+  private deletionBootstrap: Promise<void> | undefined;
   /** The high-water mark — the `(threadId, seq)` of the newest message the threadlist has accounted for (the
    *  last walked `to`). The backend resolves it to the internal message `id` it never exposes. The lower
    *  bound (`from`) of the missed-summary walk; persisted to IDB so it survives restarts. Null on first boot
@@ -280,12 +285,13 @@ export class ThreadRepository {
     this.readRevision = undefined;
     this.readSyncInFlight = false;
     this.readSyncTarget = 0;
+    this.deletionBootstrap = undefined;
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
     clearTimeout(this.pullTimer);
     this.pullArmedAt = 0;
   }
 
-  // ── boot: HELLO-driven (cache-paint + delta-replay live in onHello) ────────────────────────
+  // ── boot: account thread initialization + HELLO delta replay ──────────────────────────────
 
   /**
    * Eager cache-paint — the ThreadListComponent init trigger. Reads the IDB `threads` store + paints it
@@ -298,8 +304,29 @@ export class ThreadRepository {
    *  landed during the IDB read, or a prior paint). The network refresh is HELLO-driven ({@link onHello});
    *  load() owns only the instant cache paint. The `force` flag is a no-op — a reconnect re-pushes HELLO.
    */
-  load(_opts?: { force?: boolean }): Promise<void> {
-    return this.paintFromCache();
+  async load(_opts?: { force?: boolean }): Promise<void> {
+    await this.ensureDeletionBootstrap();
+    await this.paintFromCache();
+  }
+
+  private ensureDeletionBootstrap(): Promise<void> {
+    if (this.deletionBootstrap) return this.deletionBootstrap;
+    const run = (async () => {
+      const persisted = await this.webdb.getMeta('deletedBootstrapHwm');
+      if (typeof persisted === 'string') return;
+      const baseline = await firstValueFrom(
+        this.messages.getDeletedMessageHwm(),
+      );
+      if (baseline.code !== 0 || typeof baseline.data?.hwm !== 'string') {
+        throw new Error('failed to initialize deleted-message HWM');
+      }
+      await this.webdb.putMeta('deletedBootstrapHwm', baseline.data.hwm);
+    })();
+    this.deletionBootstrap = run.catch((error) => {
+      this.deletionBootstrap = undefined;
+      throw error;
+    });
+    return this.deletionBootstrap;
   }
 
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
@@ -893,6 +920,9 @@ export class ThreadRepository {
       d.friendReqRev ?? null,
       d.friendReqAckRev ?? 0,
     );
+    // HELLO can race the thread-list mount. It awaits the account-level thread-init barrier, but does
+    // not provide or own the deletion HWM; reconnects reuse the persisted result.
+    await this.ensureDeletionBootstrap();
     // 2. Load the persisted missed-summary cursor (the walk's `from`) + the per-thread dismiss-HWM map.
     await this.loadMissedCursor();
     await this.loadThreadHwms();

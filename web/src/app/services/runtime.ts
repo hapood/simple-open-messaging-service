@@ -180,6 +180,12 @@ declare global {
     __SOMS_FCM_TOKEN__?: (token: string) => void;
     __SOMS_DEEP_LINK__?: (threadId: string) => void;
     __SOMS_PENDING_THREAD_ID__?: string;
+    /** Android share-sheet notification. Pull from SomsShare so the payload remains recoverable until ack. */
+    __SOMS_SHARE_AVAILABLE__?: () => void;
+    SomsShare?: {
+      getPending: () => string | null;
+      acknowledge: (id: string) => boolean;
+    };
     /** Android hardware-back hook: Kotlin's `OnBackPressedCallback` evals this on the webview. The handler
      *  peels one navigation layer via NavStateMachineService.back(); if nothing is left to peel it calls
      *  `SomsBack.exit()` (a Kotlin @JavascriptInterface) so the activity finishes. Absent on browser +

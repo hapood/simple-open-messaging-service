@@ -9,13 +9,17 @@ import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { s2SKeyCache } from '../database/schema.js';
 import { loadFederationConfig } from './federation.config.js';
+import { KeypairService } from './keypair.service.js';
 
 interface PeerKey {
   keyId: string;
   ed25519: string; // base64 raw 32 bytes
 }
-interface WellKnownDoc {
+export interface WellKnownDoc {
   software?: string;
+  protocolVersion?: number;
+  identityEpoch?: number;
+  rootKey?: { fingerprint?: string; ed25519?: string };
   keys: PeerKey[];
 }
 
@@ -44,7 +48,10 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
     { baseUrl: string; fetchedAt: number }
   >();
 
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly keypair: KeypairService,
+  ) {}
 
   onModuleInit(): void {
     this.refreshTimer = setInterval(() => {
@@ -97,6 +104,7 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
 
   /** GET `<domain>/.well-known/soms` with the S2S call timeout. Throws on non-2xx or malformed shape. */
   async fetchWellKnown(domain: string): Promise<WellKnownDoc> {
+    this.keypair.assertAvailable();
     const base = await this.resolveBase(domain);
     const res = await fetch(`${base}/.well-known/soms`, {
       signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
@@ -158,6 +166,7 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
 
   /** Proactive refresh: re-fetch every cached peer's keys. Per-domain failures are logged, not fatal. */
   private async refreshAll(): Promise<void> {
+    if (!this.keypair.getStatus().available) return;
     const rows = await this.database.db
       .selectDistinct({ domain: s2SKeyCache.domain })
       .from(s2SKeyCache);

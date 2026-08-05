@@ -8,6 +8,9 @@
   padding: 0;
   display: block;
   overflow: hidden; // clip the thumbnail's rounded corners to the bubble
+  // The meta bar is a flush sibling below the card. The shared bubble's
+  // downward shadow otherwise lands on that join and reads as a stray line.
+  box-shadow: none;
 }
 
 .link-shell {

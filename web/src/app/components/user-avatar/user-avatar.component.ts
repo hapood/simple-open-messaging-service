@@ -8,7 +8,8 @@ import { UserService } from '../../services/user.service'
  * Initial-letter avatar (industry best-practice palette).
  *
  * The placeholder SVG has been removed — instead the first character of the name is centered, with a background color:
- *  · SELF: fixed brand blue (the logo / --app-brand color, instantly recognizable as "you").
+ *  · SELF: fixed graphite avatar color, recognizable as "you" and independent
+ *    from the light/dark interactive brand color.
  *  · OTHER / GROUP: an identity-hashed deterministic palette. The stable key includes the avatar type,
  *    so a user and group with the same numeric id do not share an identity namespace. If an identity is not
  *    available yet (for example, a group being composed before creation), the name provides a preview color.
@@ -157,9 +158,9 @@ export class UserAvatarComponent {
     return h >>> 0
   }
 
-  /** Background fill: SELF = brand blue; everyone else = an identity-hashed palette slot. */
+  /** Background fill: SELF = stable graphite; everyone else = an identity-hashed palette slot. */
   readonly bg = computed(() => {
-    if (this.type() === UserAvatarType.SELF) return 'var(--app-brand)' // brand blue, single-sourced from --app-brand via [style.fill]
+    if (this.type() === UserAvatarType.SELF) return 'var(--app-avatar-self-bg)'
     return PALETTE[this.hashColorKey() % PALETTE.length]
   })
 

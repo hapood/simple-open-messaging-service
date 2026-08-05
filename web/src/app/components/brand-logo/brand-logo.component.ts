@@ -5,8 +5,8 @@ import { Component, input } from '@angular/core';
  * the single shared asset web/public/logo.svg (the same source the favicon /
  * PWA / Tauri icons are generated from), so there is exactly one mark SVG.
  *
- * The mark's background is the fixed brand blue baked into logo.svg (#2196f3 —
- * not a theme variable). Text color/size are exposed via CSS variables
+ * The mark's warm neutral tile and accent are baked into logo.svg rather than
+ * exposed as theme variables. Text color/size are exposed via CSS variables
  * (--bl-word / --bl-tag / --bl-*-color); overriding them on the brand-gradient
  * panel (auth-brand white text) only requires setting these variables on the
  * host — no ::ng-deep needed.

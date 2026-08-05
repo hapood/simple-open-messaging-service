@@ -10,15 +10,27 @@ import type { ChatMsgData } from '../message-cards/chat-item';
  * a Download button — the things a long-name file can't surface in the compact 280px bubble.
  */
 @Injectable({ providedIn: 'root' })
-export class FileDetailService extends TransientOverlayService<{ data: ChatMsgData; threadId: number }> {
+export class FileDetailService extends TransientOverlayService<{
+  data: ChatMsgData;
+  threadId: number;
+}> {
   protected readonly kind = 'file-detail';
   protected readonly component = FileDetailViewerComponent;
   protected readonly presentation = 'modal';
+  private opened: { seq: number; threadId: number } | null = null;
 
   /** Open the detail overlay for a FILE message (scoped to `threadId` so the backend retry can be called).
    *  No-op if the message has no file attachment. */
   open(data: ChatMsgData, threadId: number): void {
     if (!data.file) return;
+    this.opened = { seq: data.msgId, threadId };
     this.pushEntry({ data, threadId });
+  }
+
+  closeIfDeleted(threadId: number, seq: number): void {
+    if (this.opened?.threadId === threadId && this.opened.seq === seq) {
+      this.close();
+      this.opened = null;
+    }
   }
 }

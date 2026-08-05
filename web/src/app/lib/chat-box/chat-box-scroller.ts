@@ -262,6 +262,12 @@ export interface ScrollerApi<T = unknown> {
    *  all resolve to the same mounted entry (album-aware). Each removed entry plays a cb-leave exit animation; the logical
    *  unmount is deferred to animationend. Returns the count of entries scheduled for removal (0 = none mounted). */
   removeItem(ids: number | number[]): number;
+  /** Transform one mounted item (album-aware) while preserving the viewport anchor. Returning null uses
+   * the normal animated removal path; returning an item rebuilds/re-measures the row in place. */
+  mutateItem(
+    id: number,
+    mutate: (item: CbItem<T>) => CbItem<T> | null,
+  ): boolean;
   /** Re-sync the mounted optimistic/pending entries to the source's current `getPending()` snapshot — the entry point
    *  the caller uses after mutating the pending store (e.g. marking a send failed and sinking it to the end). For each
    *  mounted optimistic entry: morphs its data in place via `CbElement.update` (no remount) when the status changed,
@@ -703,6 +709,25 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     for (const e of targets) this.leaveEntry(e); // each starts its own concurrent cb-leave
     if (targets.length > 0) this.emit();
     return targets.length;
+  }
+
+  mutateItem(
+    id: number,
+    mutate: (item: CbItem<T>) => CbItem<T> | null,
+  ): boolean {
+    if (!this.steady) return false;
+    const idx = this.indexOfId(id);
+    if (idx < 0) return false;
+    const entry = this.mounted[idx];
+    const next = mutate(entry.item);
+    if (next === null) return this.removeItem(id) > 0;
+    const anchor = this.captureAnchor();
+    this.rebuildEntry(entry, next);
+    this.measurePending();
+    this.applyAnchor(anchor);
+    this.updateTailCap();
+    this.emit();
+    return true;
   }
 
   /** Start one entry's cb-leave exit: mark leaving, animating++, and kick the class off on the next rAF (consistent

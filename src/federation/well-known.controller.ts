@@ -28,7 +28,18 @@ export class WellKnownController {
   getWellKnown() {
     return {
       software: `soms/${SERVER_VERSION}`,
-      keys: [{ keyId: this.keypair.getKeyId(), ed25519: this.keypair.getPublicKeyB64() }],
+      protocolVersion: 1,
+      identityEpoch: this.keypair.getIdentityEpoch(),
+      rootKey: {
+        fingerprint: this.keypair.getRootKeyFingerprint(),
+        ed25519: this.keypair.getRootPublicKeyB64(),
+      },
+      keys: [
+        {
+          keyId: this.keypair.getKeyId(),
+          ed25519: this.keypair.getPublicKeyB64(),
+        },
+      ],
     };
   }
 }

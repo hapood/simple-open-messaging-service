@@ -7,6 +7,7 @@ process.env.SOMS_DOMAIN ??= 'soms.io';
 import { FederationService } from './federation.service.js';
 import type { FederationBufferService } from './federation-buffer.service.js';
 import { message, pendingMedia } from '../database/schema.js';
+import { MessageDeleteType } from '../database/enums.js';
 
 const OUR = 'soms.io'; // == SOMS_DOMAIN (config.domain)
 
@@ -30,6 +31,13 @@ function makeStubs() {
     messageThread: { findUnique: vi.fn() },
     threadParticipant: { findMany: vi.fn() },
     message: { findMany: vi.fn() },
+    federationDeletedCursor: { findFirst: vi.fn().mockResolvedValue(null) },
+    deletedParticipant: { findFirst: vi.fn() },
+  };
+  const sse = { onDeletedMessageUpdated: vi.fn() };
+  const deletedMessages = {
+    applyFederated: vi.fn(),
+    advanceFederatedCursor: vi.fn(),
   };
   const database = {
     db: {
@@ -40,7 +48,13 @@ function makeStubs() {
             return row ? { ...row, user: row.groupUser } : row;
           },
         },
-        threadParticipant: { findMany: prisma.threadParticipant.findMany },
+        threadParticipant: {
+          findMany: prisma.threadParticipant.findMany,
+          findFirst: prisma.deletedParticipant.findFirst,
+        },
+        federationDeletedCursor: {
+          findFirst: prisma.federationDeletedCursor.findFirst,
+        },
         message: {
           findMany: async (...args: unknown[]) =>
             (await prisma.message.findMany(...args)).map((row) => ({
@@ -59,14 +73,24 @@ function makeStubs() {
     {} as never, // participantService
     {} as never, // message
     {} as never, // invite
-    {} as never, // sse
+    sse as never,
     {} as never, // threadRevisionService
     buffer,
     {} as never, // quota
     {} as never, // linkPreview
+    {} as never, // forwardBundles
+    {} as never, // messageVisibility
+    deletedMessages as never,
     { emitAsync: vi.fn().mockResolvedValue(undefined), emit: vi.fn() } as never, // eventEmitter
   );
-  return { svc, prisma, markDirty, flushBatch };
+  return {
+    svc,
+    prisma,
+    markDirty,
+    flushBatch,
+    sse,
+    deletedMessages,
+  };
 }
 
 describe('FederationService quote coordinates', () => {
@@ -398,11 +422,15 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
         select: (_selection: unknown) => {
           let table: unknown;
           const query = {
-            from: (value: unknown) => { table = value; return query; },
+            from: (value: unknown) => {
+              table = value;
+              return query;
+            },
             where: async () => {
-              const result = table === message
-                ? await prisma.message.aggregate()
-                : await prisma.pendingMedia.aggregate();
+              const result =
+                table === message
+                  ? await prisma.message.aggregate()
+                  : await prisma.pendingMedia.aggregate();
               return [{ originSeq: result._max.originSeq }];
             },
           };
@@ -557,5 +585,152 @@ describe('FederationService federated friend-invite revoke', () => {
       origin: 'peer.test',
       originId: 'shared-op-id',
     });
+  });
+});
+
+describe('FederationService durable deletion pull', () => {
+  const deletion = (overrides: Record<string, unknown> = {}) => ({
+    id: '8',
+    type: MessageDeleteType.WITHDRAW,
+    target: {
+      creator: { account: 'bob', domain: 'peer.test' },
+      originSeq: 17,
+    },
+    deletedAt: Date.now(),
+    ...overrides,
+  });
+
+  async function pull(
+    svc: FederationService,
+    pages: Array<{ deletions: unknown[]; hasMore: boolean }>,
+    streamKind: 'p2p-author' | 'group-origin' | 'group-author' = 'p2p-author',
+  ) {
+    const getSigned = vi.fn();
+    for (const page of pages) getSigned.mockResolvedValueOnce(page);
+    const target = svc as unknown as {
+      getSigned: typeof getSigned;
+      withTrustedPeer: (
+        domain: string,
+        action: () => Promise<unknown>,
+      ) => Promise<unknown>;
+      pullDeletedStream: (params: unknown) => Promise<void>;
+    };
+    target.getSigned = getSigned;
+    target.withTrustedPeer = (_domain, action) => action();
+    await target.pullDeletedStream({
+      threadId: 10,
+      sourceDomain: 'peer.test',
+      streamAccount: 'bob',
+      streamKind,
+      path: (afterId: bigint) => `/deleted?afterId=${afterId}`,
+      expectedCreator:
+        streamKind === 'p2p-author'
+          ? { account: 'bob', domain: 'peer.test' }
+          : undefined,
+      recipients: [1, 3],
+    });
+    return getSigned;
+  }
+
+  it('applies an authoritative tombstone, advances from the durable cursor, and wakes recipients', async () => {
+    const { svc, prisma, deletedMessages, sse } = makeStubs();
+    prisma.federationDeletedCursor.findFirst.mockResolvedValue({
+      deletedHwm: 7n,
+    });
+    prisma.deletedParticipant.findFirst.mockResolvedValue({ userId: 22 });
+    deletedMessages.applyFederated.mockResolvedValue({ id: '31', seq: 4 });
+    const signalOutbound = vi
+      .spyOn(svc, 'signalOutbound')
+      .mockResolvedValue(undefined);
+
+    const getSigned = await pull(svc, [
+      { deletions: [deletion()], hasMore: false },
+    ]);
+
+    expect(getSigned.mock.calls[0]?.[0]).toBe('/deleted?afterId=7');
+    expect(deletedMessages.applyFederated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 10,
+        creatorId: 22,
+        originSeq: 17,
+        authorityDomain: 'peer.test',
+        sourceDomain: 'peer.test',
+        remoteDeletedId: 8n,
+      }),
+    );
+    expect(sse.onDeletedMessageUpdated.mock.calls).toEqual([
+      [1, 10, '31'],
+      [3, 10, '31'],
+    ]);
+    expect(signalOutbound).toHaveBeenCalledWith(10, 22, 17, 'peer.test');
+  });
+
+  it('rejects a peer attempting to delete a message owned by this server', async () => {
+    const { svc, deletedMessages } = makeStubs();
+
+    await expect(
+      pull(svc, [
+        {
+          deletions: [
+            deletion({
+              target: {
+                creator: { account: 'alice', domain: OUR },
+                originSeq: 17,
+              },
+            }),
+          ],
+          hasMore: false,
+        },
+      ]),
+    ).rejects.toThrow('peer is not authoritative for deletion target');
+    expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
+  });
+
+  it('consumes a group-origin relay of our own tombstone without changing local message state', async () => {
+    const { svc, deletedMessages, sse } = makeStubs();
+
+    await pull(
+      svc,
+      [
+        {
+          deletions: [
+            deletion({
+              target: {
+                creator: { account: 'alice', domain: OUR },
+                originSeq: 17,
+              },
+            }),
+          ],
+          hasMore: false,
+        },
+      ],
+      'group-origin',
+    );
+
+    expect(deletedMessages.advanceFederatedCursor).toHaveBeenCalledWith(
+      expect.objectContaining({ remoteDeletedId: 8n, threadId: 10 }),
+    );
+    expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
+    expect(sse.onDeletedMessageUpdated).not.toHaveBeenCalled();
+  });
+
+  it('rejects replayed or out-of-order deletion ids before applying them', async () => {
+    const { svc, prisma, deletedMessages } = makeStubs();
+    prisma.federationDeletedCursor.findFirst.mockResolvedValue({
+      deletedHwm: 8n,
+    });
+
+    await expect(
+      pull(svc, [{ deletions: [deletion()], hasMore: false }]),
+    ).rejects.toThrow('federated deletion stream is not ordered');
+    expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty page that claims another page exists', async () => {
+    const { svc } = makeStubs();
+
+    await expect(pull(svc, [{ deletions: [], hasMore: true }])).rejects.toThrow(
+      'empty federated deletion page has more pages',
+    );
   });
 });

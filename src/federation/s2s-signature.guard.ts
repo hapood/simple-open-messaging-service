@@ -11,6 +11,7 @@ import { federatedPeer } from '../database/schema.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { KeypairService } from './keypair.service.js';
 
 /**
  * Inbound S2S signature guard for the friend-op + signed GET endpoints — Gate 1 (server allow-list +
@@ -41,9 +42,11 @@ export class S2sSignatureGuard implements CanActivate {
   constructor(
     private readonly database: DatabaseService,
     private readonly verify: S2sVerifyService,
+    private readonly keypair: KeypairService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    this.keypair.assertAvailable();
     const req = ctx.switchToHttp().getRequest<FastifyRequest>();
     const headers = this.verify.extractHeaders(req);
 
@@ -55,6 +58,13 @@ export class S2sSignatureGuard implements CanActivate {
       columns: { trustLevel: true },
       where: eq(federatedPeer.domain, signerDomain),
     });
+    if (peer?.trustLevel === 'identity_lost') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `${signerDomain} identity is locked pending reset`,
+        HttpStatus.LOCKED,
+      );
+    }
     if (!peer || peer.trustLevel !== 'trusted') {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_NOT_TRUSTED,

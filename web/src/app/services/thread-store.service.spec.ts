@@ -95,7 +95,12 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
         WebdbService,
         {
           provide: MsgService,
-          useValue: { queryMessageLog: jasmine.createSpy('queryMessageLog') },
+          useValue: {
+            queryMessageLog: jasmine.createSpy('queryMessageLog'),
+            getDeletedMessageHwm: jasmine
+              .createSpy('getDeletedMessageHwm')
+              .and.returnValue(of({ code: 0, data: { hwm: '0' } })),
+          },
         },
         {
           provide: ProfileRepository,

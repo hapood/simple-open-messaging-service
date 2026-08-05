@@ -29,4 +29,13 @@ render hdpi    162
 render xhdpi   216
 render xxhdpi  324
 render xxxhdpi 432
+
+# `cargo tauri icon` also resets these two files to a white background and a
+# two-layer adaptive icon. Restore the branded background and themed-icon layer
+# as part of the same required post-generation step.
+install -m 0644 "$HERE/android-adaptive-icon.xml" \
+  "$RES/mipmap-anydpi-v26/ic_launcher.xml"
+install -m 0644 "$HERE/android-launcher-background.xml" \
+  "$RES/values/ic_launcher_background.xml"
+echo "  restored adaptive background + monochrome layer"
 echo "done."

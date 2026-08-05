@@ -5,9 +5,8 @@
 // (var(--app-*)) rather than hardcoded color values.
 //
 // Layering: raw scale (Sass vars) → semantic tokens (CSS vars --app-*) → component use.
-// The brand color is anchored to the Angular Material 3 theme primary
-// (mat.$blue-palette 500 = #2196f3), so in-house components share the exact
-// color of Material components like mat-button, retiring the 7 legacy blues.
+// The H identity uses graphite neutrals; vermilion is reserved for the tiny
+// connection node in the mark rather than used as an interface theme color.
 //
 // Dark mode: light values on :root; dark overrides on [data-theme="dark"].
 // Because semantic tokens decouple light/dark values, switching themes only
@@ -29,32 +28,35 @@ $app-gray-900: #111827;
 
 // ---- Semantic tokens (CSS variables; what components actually consume) -----
 :root {
-  // Brand (unifies the 7 legacy blues: #3370ff/#2563eb/#3390ec/#448aff/#005cbb/#2196f3/#2ca9bc → M3 primary)
-  --app-brand: #2196f3;
-  --app-brand-hover: #1976d2; // darkened on hover / press
-  --app-brand-pressed: #1565c0;
-  --app-brand-soft: #e3f2fd; // light brand fill (selected pill / highlight)
-  --app-brand-accent: #2ca9bc; // gradient accent (auth brand-page decoration)
+  // Brand
+  --app-brand: #25282c;
+  --app-brand-hover: #17191c;
+  --app-brand-pressed: #090a0b;
+  --app-brand-soft: #e4e6e8;
+  --app-brand-accent: #f04b3a;
   --app-on-brand: #ffffff;
-  --app-on-brand-soft: #0d4770;
-  --app-focus-ring: #0b74c5;
+  --app-on-brand-soft: #25282c;
+  --app-focus-ring: #5c6268;
+  // Generated SELF avatars are identity chrome, not controls. Keep their
+  // contrast stable when the interactive brand flips light in dark mode.
+  --app-avatar-self-bg: #454a4f;
   // Inline links need stronger text contrast than filled brand controls. Composer links deliberately keep
   // visited URLs on the same color: browser history is not a useful editing state and default purple is
   // low-contrast on the dark input surface.
-  --app-link: #1565c0;
+  --app-link: #34383d;
   --app-link-visited: var(--app-link);
 
   // Text (replaces the many "near-blacks": #000000 / #111827 / #1f2329 / #2b2f3a / #374151)
-  --app-text: #{$app-gray-900}; // primary text
+  --app-text: #1d2023;
   --app-text-muted: #{$app-gray-500}; // secondary text (replaces #6b7280/#707579/#707991/#8a919d/#4e5969)
   --app-text-faint: #{$app-gray-400}; // weaker: timestamps / placeholders (replaces #898989/#9ca3af/#a2acb4/#a8aeb8)
   --app-text-disabled: #a6afb7;
   --app-text-inverse: #ffffff;
 
   // Surfaces & backgrounds (replaces the many "whites/light-grays": #fff/#ffffff/#eeeeee/#f4f6f9/#f3f4f6/#faf9fd/#eef0f3)
-  --app-surface: #ffffff; // card / panel white
-  --app-bg: #f0f2f5; // page / pane-separator background (WhatsApp-style warm-neutral chrome gray, softer than pure white)
-  --app-bg-muted: #f0f2f5; // secondary bg (rail / input bar / hover fill)
+  --app-surface: #fbfbfa;
+  --app-bg: #f3f3f1;
+  --app-bg-muted: #ececea;
   // T0 compatibility values: the new four-level surface API starts visually identical to the existing
   // UI. W1/W2 opt individual regions into distinct values after the responsive shell is in place.
   --app-surface-subtle: var(--app-bg-muted);
@@ -62,8 +64,8 @@ $app-gray-900: #111827;
   // Persistent desktop navigation hierarchy. These roles are deliberately separate from generic
   // surfaces: rail → thread list → chat should remain visually ordered even when other surface tokens
   // converge in a theme.
-  --app-nav-rail-bg: #e9edf1;
-  --app-thread-list-bg: #f7f8fa;
+  --app-nav-rail-bg: #e5e6e6;
+  --app-thread-list-bg: #f1f1ef;
   --app-chat-pane-bg: var(--app-surface);
   --app-overlay: rgba(0, 0, 0, 0.4);
   --app-overlay-strong: rgba(0, 0, 0, 0.72);
@@ -80,11 +82,11 @@ $app-gray-900: #111827;
   );
 
   // Borders & interaction-state fills (replaces #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6)
-  --app-border: #{$app-gray-200};
-  --app-border-strong: #{$app-gray-300};
-  --app-hover: #{$app-gray-100}; // list-item hover
-  --app-active: #{$app-gray-200}; // list-item active / selected (replaces #dddddd)
-  --app-pressed: #{$app-gray-200};
+  --app-border: #dedfdf;
+  --app-border-strong: #c5c8ca;
+  --app-hover: #e9eaea;
+  --app-active: #dfe1e2;
+  --app-pressed: #d7d9da;
   --app-selected: var(--app-brand-soft);
   --app-selected-strong: var(--app-active);
   --app-disabled-opacity: 0.44;
@@ -205,25 +207,22 @@ $app-gray-900: #111827;
   );
 }
 
-// ---- Chat / IM semantic tokens (WhatsApp-aligned, --im-*) ------------------
+// ---- Chat / IM semantic tokens (--im-*) -----------------------------------
 // Single source of truth for the 1:1 chat list visuals: bubbles / avatars /
 // timestamps / date separators / media grids — the "IM-specific" semantic colors.
-// Kept separate from the general --app-* (--app-bubble-* are the project's
-// generic blue bubbles; the chat list uses WhatsApp green, hence --im-*).
-// The production MsgGroupComponent reuses these directly.
-// Values track current WhatsApp Web (light: outgoing #d9fdd3, incoming #fff;
-// dark: #005c4b / #202c33).
+// Kept separate from general --app-* tokens so message readability can evolve
+// independently while sharing the graphite H palette.
 :root {
-  --im-chat-bg: #efeae2; // chat-area background (WhatsApp beige, wallpaper feel)
+  --im-chat-bg: #e8e9e7;
   // Low-contrast wallpaper: a tiled line-art doodle (heart / star / speech
   // bubble / smiley / sparkle) as an inline SVG. Opacity is baked into
   // stroke-opacity, so this is layered as background-image over the bg color on
   // the same element — no pseudo-element / stacking context needed (an element's
   // own background always paints behind its content).
   --im-chat-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.05'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
-  --im-bubble-self: #d9fdd3; // outgoing bubble (current WhatsApp green; legacy #dcf8c6)
-  --im-bubble-other: #ffffff; // incoming bubble
-  --im-bubble-text: #111b21; // bubble body text
+  --im-bubble-self: #dadddf;
+  --im-bubble-other: #fbfbfa;
+  --im-bubble-text: #1d2023;
   // Group-invite card surface: ONE opaque brand-tinted fill for BOTH sides (side-agnostic — the green/white
   // bubble colors do not apply to an invite card). Lifting the incoming-bubble surface toward the brand makes
   // the card read as an invite, and stays opaque in both themes so the chat wallpaper never bleeds through.
@@ -236,7 +235,7 @@ $app-gray-900: #111827;
     var(--app-brand) 15%
   );
   --im-meta-bg: #ececf1; // media meta bar fill (independent of bubble color — neutral grey chip)
-  --im-time: #667781; // in-bubble timestamp (gray-green shared by green/white bubbles)
+  --im-time: #6c7175;
   --im-avatar-other: #c7c7cc; // other avatar fill (placeholder gray)
   --im-date-pill-bg: rgba(
     0,
@@ -282,8 +281,19 @@ $app-gray-900: #111827;
   --chat-media-meta-bg: rgba(0, 0, 0, 0.45);
   --chat-card-bg: var(--im-bubble-other);
   --chat-card-text: var(--im-bubble-text);
-  --chat-card-meta-outgoing: var(--im-bubble-self);
-  --chat-card-meta-incoming: var(--im-meta-bg);
+  // Card footers retain sender ownership without introducing a separate color
+  // system: each side is the corresponding message bubble, shaded one quiet
+  // step darker so the footer still reads as secondary information.
+  --chat-card-meta-outgoing: color-mix(
+    in srgb,
+    var(--chat-bubble-outgoing) 94%,
+    #000
+  );
+  --chat-card-meta-incoming: color-mix(
+    in srgb,
+    var(--chat-bubble-incoming) 94%,
+    #000
+  );
   --chat-message-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
 }
 
@@ -296,23 +306,23 @@ $app-gray-900: #111827;
 // ============================================================================
 [data-theme='dark'] {
   // General tokens, dark (replaces the former placeholder comments)
-  --app-bg: #0b141a;
-  --app-bg-muted: #202c33;
-  --app-surface: #202c33;
+  --app-bg: #11161b;
+  --app-bg-muted: #20262c;
+  --app-surface: #20262c;
   // Dark desktop chrome steps up toward the active chat instead of collapsing into one #202c33 plane.
-  --app-nav-rail-bg: #111b21;
-  --app-thread-list-bg: #172229;
+  --app-nav-rail-bg: #171c21;
+  --app-thread-list-bg: #1b2127;
   --app-chat-pane-bg: var(--app-surface);
-  --app-text: #e9edef;
-  --app-text-muted: #8696a0;
-  --app-text-faint: #667781;
+  --app-text: #f0f1f2;
+  --app-text-muted: #a9adb1;
+  --app-text-faint: #7e8489;
   --app-text-disabled: #66747c;
   --app-text-inverse: #10181e;
-  --app-border: #2a3942;
-  --app-border-strong: #3b4a54; // one step lighter than --app-border, for inputs/tabs that need definition (was missing → inherited the bright light #d1d5db)
-  --app-hover: #2a3942;
-  --app-active: #37424a;
-  --app-pressed: #37424a;
+  --app-border: #343a40;
+  --app-border-strong: #4b5157;
+  --app-hover: #2b3137;
+  --app-active: #373e44;
+  --app-pressed: #373e44;
   --app-selected-strong: var(--app-active);
   --app-overlay: rgba(0, 0, 0, 0.62);
   --app-overlay-strong: rgba(0, 0, 0, 0.82);
@@ -342,20 +352,17 @@ $app-gray-900: #111827;
   --app-shadow-3: 0 16px 56px rgba(0, 0, 0, 0.64);
   --app-shadow-float: 0 4px 24px rgba(0, 0, 0, 0.55);
 
-  // Brand & semantic, dark — the light "soft" fills (#e3f2fd / #fef2f2 / #afefc8) are near-white
-  // and would glare; replace with subtle washes tinted over the dark surface.
-  --app-brand-soft: rgba(
-    33,
-    150,
-    243,
-    0.18
-  ); // selected pill / highlight — brand wash over dark
-  --app-brand-pressed: #42a5f5;
-  --app-on-brand: #071a28;
-  --app-on-brand-soft: #b9e1fb;
-  --app-focus-ring: #90caf9;
-  --app-link: #64b5f6;
+  // Brand & semantic, dark.
+  --app-brand: #e4e6e8;
+  --app-brand-hover: #f5f6f7;
+  --app-brand-soft: rgba(228, 230, 232, 0.12);
+  --app-brand-pressed: #c9cdd0;
+  --app-on-brand: #17191b;
+  --app-on-brand-soft: #e4e6e8;
+  --app-focus-ring: #aeb3b7;
+  --app-link: #d4d7d9;
   --app-link-visited: var(--app-link);
+  --app-avatar-self-bg: #454a4f;
   --app-danger: #ef4444; // brighter red for legibility on dark
   --app-danger-soft: rgba(
     239,
@@ -375,14 +382,14 @@ $app-gray-900: #111827;
   --app-on-status: #0e171c;
   --app-bubble-other: #202c33; // generic other-party bubble (chat uses --im-*; overridden for completeness, was bright gray-100)
 
-  // IM tokens, dark (WhatsApp dark)
-  --im-chat-bg: #0b141a;
+  // IM tokens, dark graphite
+  --im-chat-bg: #11161b;
   // Dark wallpaper variant: the same doodles with light strokes; opacity is
   // nudged up so the pattern stays legible on the deep background.
   --im-chat-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.06'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
-  --im-bubble-self: #0b4f6c;
-  --im-bubble-other: #202c33;
-  --im-bubble-text: #e9edef;
+  --im-bubble-self: #373b3f;
+  --im-bubble-other: #24282c;
+  --im-bubble-text: #f0f1f2;
   --im-meta-bg: #111b21; // media meta bar fill (deeper than the bubble so it reads as a chip)
   --im-time: rgba(233, 237, 239, 0.5);
   // Coloured and neutral bubbles need different secondary foregrounds.

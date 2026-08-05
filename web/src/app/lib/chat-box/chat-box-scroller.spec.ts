@@ -2784,6 +2784,37 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelector('[data-cb-id="450"]')).toBeNull(); // whole album gone
   });
 
+  it('Phase C: mutateItem rebuilds an album without removing its surviving members', async () => {
+    const { hooks } = controllableHooks();
+    const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
+      const out: CbItem<number>[] = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].id === 450) {
+          out.push({ ...items[i], ids: [450, 451, 452] });
+          i += 2;
+        } else out.push(items[i]);
+      }
+      return out;
+    };
+    scroller = new ChatBoxScroller<number>({
+      viewport,
+      content,
+      hooks: { ...hooks, mergeItems },
+      source: fakeSource(500),
+    });
+    await scroller.init();
+    const mountedBefore = scroller.getInfo().mounted;
+    expect(
+      scroller.mutateItem(451, (item) => ({
+        ...item,
+        ids: [450, 452],
+      })),
+    ).toBe(true);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore);
+    expect(content.querySelector('[data-cb-id="450"]')).not.toBeNull();
+    expect(scroller.removeItem(452)).toBe(1); // surviving member still resolves to the rebuilt album
+  });
+
   it('Phase C: while a cb-leave is in flight, balance is deferred; it resumes on animationend', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);

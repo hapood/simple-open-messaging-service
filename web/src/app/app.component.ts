@@ -3,6 +3,7 @@ import {
   ApplicationRef,
   Component,
   HostListener,
+  effect,
   inject,
 } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
@@ -27,6 +28,13 @@ import { UpdateBannerComponent } from './components/update-banner/update-banner.
 import { ComposerGeometryService } from './services/composer-geometry.service';
 import { AuthService } from './services/auth.service';
 import { ConfigService } from './services/config.service';
+import { NativeShareService } from './services/native-share.service';
+import { MsgService } from './services/message.service';
+import { ToastService } from './services/toast.service';
+import { TranslocoService } from '@jsverse/transloco';
+import { firstValueFrom } from 'rxjs';
+import { uuid } from './lib/uuid';
+import { stringifyTextMessageContent } from '../../../shared/text-message-content';
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, DebugLogFabComponent, UpdateBannerComponent],
@@ -36,6 +44,12 @@ import { ConfigService } from './services/config.service';
 export class AppComponent {
   // Eagerly instantiate so their effects + listeners are live for the whole session.
   private readonly composerGeometry = inject(ComposerGeometryService);
+  // Register the Android ACTION_SEND pull hook before any recipient UI exists. Payloads remain native-owned
+  // until the future forwarding flow explicitly acknowledges them.
+  private readonly nativeShare = inject(NativeShareService);
+  private readonly messages = inject(MsgService);
+  private readonly toast = inject(ToastService);
+  private readonly transloco = inject(TranslocoService);
   private readonly theme = inject(ThemeService);
   private readonly language = inject(LanguageService);
   // Reflect device-local chat display preferences for the virtual-scroll kernel's detached rows.
@@ -89,6 +103,7 @@ export class AppComponent {
   private readonly callOverlay = inject(CallOverlayService);
   // Guards the incompatibility prompt to once per app session (re-armed only by a fresh app launch).
   private incompatiblePromptShown = false;
+  private nativeShareDialogId: string | null = null;
   constructor() {
     this.nav.initFromUrl();
     // Android hardware-back: Kotlin's OnBackPressedCallback evals window.__SOMS_BACK__(); peel one
@@ -101,6 +116,54 @@ export class AppComponent {
       };
     }
     this.push.init();
+    effect(() => {
+      const payload = this.nativeShare.pending();
+      const claimedId = this.nativeShare.draft()?.id;
+      if (
+        !payload ||
+        !this.auth.loggedIn() ||
+        payload.id === claimedId ||
+        this.nativeShareDialogId === payload.id
+      )
+        return;
+
+      this.nativeShareDialogId = payload.id;
+      this.route.popupDlg(
+        PopupType.FORWARD,
+        {
+          purpose: 'NATIVE_SHARE',
+          sharedText: payload.text,
+          mode: 'DIRECT',
+        },
+        async (result) => {
+          this.nativeShareDialogId = null;
+          if (result?.threadIds.length && result.nativeShare) {
+            this.nativeShare.claimRecipients(payload, result.threadIds);
+            const sent = await this.sendNativeShare(
+              result.threadIds,
+              result.nativeShare,
+            );
+            if (sent > 0) this.nativeShare.acknowledge(payload.id);
+            if (sent === result.threadIds.length) {
+              this.toast.info(
+                this.transloco.translate('forward.sent', { count: sent }),
+              );
+            } else {
+              this.toast.warn(
+                sent > 0
+                  ? this.transloco.translate('forward.partiallySent', {
+                      sent,
+                      total: result.threadIds.length,
+                    })
+                  : this.transloco.translate('forward.sendFailed'),
+              );
+            }
+          } else {
+            this.nativeShare.acknowledge(payload.id);
+          }
+        },
+      );
+    });
     void this.webPush.init();
     // afterNextRender: the SPA has painted — probe for a background web-bundle update and surface an
     // incompatibility prompt if this shell is too old for the backend. The `spa-ready` emit is a
@@ -111,6 +174,38 @@ export class AppComponent {
       void this.shellUpdate.check().then(() => this.maybePromptIncompatible());
       void this.finishNativeSplashWhenReady();
     });
+  }
+
+  private async sendNativeShare(
+    threadIds: readonly number[],
+    delivery:
+      | { readonly kind: 'link'; readonly generationId: string }
+      | { readonly kind: 'text'; readonly text: string },
+  ): Promise<number> {
+    let sent = 0;
+    for (const [index, threadId] of threadIds.entries()) {
+      try {
+        const response = await firstValueFrom(
+          this.messages.sendMessage({
+            threadId,
+            content:
+              delivery.kind === 'link'
+                ? delivery.generationId
+                : stringifyTextMessageContent({ text: delivery.text }),
+            contentType: delivery.kind === 'link' ? 'LINK' : 'PURE_TEXT',
+            clientMessageId: uuid(),
+            ...(delivery.kind === 'link' && index < threadIds.length - 1
+              ? { retainLinkGeneration: true }
+              : {}),
+          }),
+        );
+        if (response.code === 0) sent += 1;
+      } catch {
+        // Continue through the selected destinations and report the aggregate outcome once.
+      }
+    }
+    if (sent === 0) this.nativeShare.releaseDraft();
+    return sent;
   }
 
   /** The consumer clients provide their own contextual actions, except in editable controls where the

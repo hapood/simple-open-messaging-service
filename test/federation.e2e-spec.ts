@@ -22,8 +22,11 @@ import { SignatureService } from '../src/federation/signature.service.js';
 import { ContentType, MessageThreadType } from '../src/database/enums.js';
 import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
+  deletedMessage,
   federatedPeer,
   federatedPeerEvent,
+  federatedMessageTombstone,
+  federationDeletedCursor,
   forwardBundle,
   forwardBundleDependency,
   forwardMessage,
@@ -554,6 +557,115 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(after).toBe(before);
   });
 
+  it('withdraws a P2P message through the durable federated deletion stream', async () => {
+    const threadIdA = await alicesThreadIdOnA();
+    const send = await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: threadIdA,
+        content: 'withdraw-p2p-e2e',
+        contentType: 'PURE_TEXT',
+      });
+    expect(send.body.code).toBe(BusinessCode.OK);
+
+    let mirrored: typeof message.$inferSelect | undefined;
+    await vi.waitFor(
+      async () => {
+        mirrored = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.creator, aliceStubIdOnB),
+            eq(message.content, textContent('withdraw-p2p-e2e')),
+          ),
+        });
+        expect(mirrored).toBeDefined();
+        expect(mirrored!.isDeleted).toBe(false);
+      },
+      { timeout: 8000 },
+    );
+
+    const reader = await openSse(appB.baseUrl, tokenB);
+    try {
+      const withdraw = await request(appA.baseUrl)
+        .post('/api/v1/withdraw-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ threadId: threadIdA, seq: send.body.data.seq });
+      expect(withdraw.body.code).toBe(BusinessCode.OK);
+
+      await vi.waitFor(
+        async () => {
+          const received = await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, mirrored!.threadId),
+              eq(message.seq, mirrored!.seq),
+            ),
+          });
+          expect(received?.isDeleted).toBe(true);
+
+          const tombstone =
+            await appB.database.query.federatedMessageTombstone.findFirst({
+              where: and(
+                eq(federatedMessageTombstone.threadId, mirrored!.threadId),
+                eq(federatedMessageTombstone.creatorId, aliceStubIdOnB),
+                eq(federatedMessageTombstone.originSeq, mirrored!.originSeq!),
+              ),
+            });
+          expect(tombstone?.authorityDomain).toBe(DOM_A);
+          expect(tombstone?.sourceDomain).toBe(DOM_A);
+
+          const localDeletion =
+            await appB.database.query.deletedMessage.findFirst({
+              where: and(
+                eq(deletedMessage.threadId, mirrored!.threadId),
+                eq(deletedMessage.seq, mirrored!.seq),
+              ),
+            });
+          expect(localDeletion).toBeDefined();
+
+          const cursor =
+            await appB.database.query.federationDeletedCursor.findFirst({
+              where: and(
+                eq(federationDeletedCursor.threadId, mirrored!.threadId),
+                eq(federationDeletedCursor.peerDomain, DOM_A),
+                eq(federationDeletedCursor.streamKind, 'p2p-author'),
+              ),
+            });
+          expect(cursor?.deletedHwm).toBe(BigInt(withdraw.body.data.id));
+        },
+        { timeout: 8000 },
+      );
+
+      await waitForSseEvent(
+        reader,
+        (event, data) =>
+          event === 'DELETED_MESSAGE_UPDATED' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === mirrored!.threadId &&
+          typeof (data as { deletedId?: unknown }).deletedId === 'string' &&
+          (data as { deletedId: string }).deletedId.length > 0,
+      );
+
+      const history = await request(appB.baseUrl)
+        .post('/api/v1/query-messages')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({
+          threadId: mirrored!.threadId,
+          skip: 0,
+          take: 50,
+          orderBy: 'desc',
+        });
+      expect(history.body.code).toBe(BusinessCode.OK);
+      expect(
+        history.body.data.some(
+          (row: { seq: number }) => row.seq === mirrored!.seq,
+        ),
+      ).toBe(false);
+    } finally {
+      await reader.cancel();
+    }
+  }, 30_000);
+
   it('GET /s2s/messages/before — backward paging (serve-only path; driven via the test probe)', async () => {
     // /messages/before is the BACKWARD twin of /messages. SOMS is forward-only (no internal caller), so
     // drive it directly: appB's test probe signs a GET as appB → appA serves alice's messages with
@@ -1070,6 +1182,116 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     firstGroupAccount = groupAccount;
     firstMirrorBId = mirrorB.id;
   }, 60_000);
+
+  it('relays an origin-author withdrawal to a federated group mirror', async () => {
+    const send = await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        threadId: firstGroupThreadA,
+        content: 'withdraw-group-e2e',
+        contentType: 'PURE_TEXT',
+      });
+    expect(send.body.code).toBe(BusinessCode.OK);
+
+    let mirrored: typeof message.$inferSelect | undefined;
+    await vi.waitFor(
+      async () => {
+        mirrored = await appB.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, firstMirrorBId),
+            eq(message.creator, aliceStubIdOnB),
+            eq(message.content, textContent('withdraw-group-e2e')),
+          ),
+        });
+        expect(mirrored).toBeDefined();
+        expect(mirrored!.isDeleted).toBe(false);
+      },
+      { timeout: 8000 },
+    );
+
+    const reader = await openSse(appB.baseUrl, tokenB);
+    try {
+      const withdraw = await request(appA.baseUrl)
+        .post('/api/v1/withdraw-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ threadId: firstGroupThreadA, seq: send.body.data.seq });
+      expect(withdraw.body.code).toBe(BusinessCode.OK);
+
+      await vi.waitFor(
+        async () => {
+          const received = await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.seq, mirrored!.seq),
+            ),
+          });
+          expect(received?.isDeleted).toBe(true);
+
+          const tombstone =
+            await appB.database.query.federatedMessageTombstone.findFirst({
+              where: and(
+                eq(federatedMessageTombstone.threadId, firstMirrorBId),
+                eq(federatedMessageTombstone.creatorId, aliceStubIdOnB),
+                eq(federatedMessageTombstone.originSeq, mirrored!.originSeq!),
+              ),
+            });
+          expect(tombstone?.authorityDomain).toBe(DOM_A);
+          expect(tombstone?.sourceDomain).toBe(DOM_A);
+
+          const localDeletion =
+            await appB.database.query.deletedMessage.findFirst({
+              where: and(
+                eq(deletedMessage.threadId, firstMirrorBId),
+                eq(deletedMessage.seq, mirrored!.seq),
+              ),
+            });
+          expect(localDeletion).toBeDefined();
+
+          const cursor =
+            await appB.database.query.federationDeletedCursor.findFirst({
+              where: and(
+                eq(federationDeletedCursor.threadId, firstMirrorBId),
+                eq(federationDeletedCursor.peerDomain, DOM_A),
+                eq(federationDeletedCursor.streamAccount, firstGroupAccount),
+                eq(federationDeletedCursor.streamKind, 'group-origin'),
+              ),
+            });
+          expect(cursor?.deletedHwm).toBe(BigInt(withdraw.body.data.id));
+        },
+        { timeout: 8000 },
+      );
+
+      await waitForSseEvent(
+        reader,
+        (event, data) =>
+          event === 'DELETED_MESSAGE_UPDATED' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === firstMirrorBId &&
+          typeof (data as { deletedId?: unknown }).deletedId === 'string' &&
+          (data as { deletedId: string }).deletedId.length > 0,
+      );
+
+      const history = await request(appB.baseUrl)
+        .post('/api/v1/query-messages')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({
+          threadId: firstMirrorBId,
+          skip: 0,
+          take: 50,
+          orderBy: 'desc',
+        });
+      expect(history.body.code).toBe(BusinessCode.OK);
+      expect(
+        history.body.data.some(
+          (row: { seq: number }) => row.seq === mirrored!.seq,
+        ),
+      ).toBe(false);
+    } finally {
+      await reader.cancel();
+    }
+  }, 30_000);
 
   it('Step 3: group chat-open recovers messages the mirror fell behind on (open-message backstop)', async () => {
     // The #1 fix: a group message that lands in the receiver-debounce window (or a transiently-lost push

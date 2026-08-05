@@ -235,6 +235,11 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'NEW_MESSAGE', { threadId, seq, ts });
   }
 
+  /** Hint only: the client pulls the durable log using its thread-level deletion HWM. */
+  onDeletedMessageUpdated(userId: number, threadId: number, deletedId: string) {
+    this.pushToUser(userId, 'DELETED_MESSAGE_UPDATED', { threadId, deletedId });
+  }
+
   /** Notification: push to all of the user's live connections (e.g. a new friend request). No id (not a message-cursor semantic). */
   onNotify(userId: number, data: unknown) {
     this.pushToUser(userId, 'NOTIFY', data);

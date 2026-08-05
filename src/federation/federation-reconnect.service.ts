@@ -1,4 +1,9 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  OnModuleDestroy,
+  Logger,
+} from '@nestjs/common';
 import { FederationService } from './federation.service.js';
 
 /**
@@ -7,8 +12,7 @@ import { FederationService } from './federation.service.js';
  * re-trigger `ensurePeerTrusted`; this sweep makes recovery active + bounded instead.
  *
  * Each tick, for every pending/demoted peer: ping (cheap, signed — reachability + mutual-key-validity)
- * → `ensurePeerTrusted` (re-handshake; re-fetches `.well-known` FRESH — never pins keys, so a cert/key
- * rotation can't permanently break us, worst case ~60s extra downtime) → flush our buffered outbound
+ * → `ensurePeerTrusted` (re-handshake and verify the pinned pairwise identity) → flush our buffered outbound
  * hint map (a peer that was down missed the debounced pushes) → pull the peer's map (one-directional
  * fallback). A recover() that fails (peer still down) is expected + silent; the next tick retries.
  *
@@ -16,7 +20,9 @@ import { FederationService } from './federation.service.js';
  * inFlight guard dedupes recoveries for one domain within a sweep.
  */
 @Injectable()
-export class FederationReconnectService implements OnModuleInit, OnModuleDestroy {
+export class FederationReconnectService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(FederationReconnectService.name);
   private timer: NodeJS.Timeout | undefined;
   private slowTimer: NodeJS.Timeout | undefined;
@@ -27,9 +33,7 @@ export class FederationReconnectService implements OnModuleInit, OnModuleDestroy
   /** Slow poll cadence (§4.4) — pulls every trusted peer's /new-msg-map to catch a lost push. */
   private static readonly SLOW_POLL_MS = 5 * 60_000;
 
-  constructor(
-    private readonly federation: FederationService,
-  ) {}
+  constructor(private readonly federation: FederationService) {}
 
   onModuleInit(): void {
     this.timer = setInterval(() => {
@@ -60,7 +64,9 @@ export class FederationReconnectService implements OnModuleInit, OnModuleDestroy
       if (this.inFlight.has(domain)) continue;
       this.inFlight.add(domain);
       void this.pullPeerMap(domain)
-        .catch((e) => this.logger.debug(`slow-pull ${domain}: ${(e as Error).message}`))
+        .catch((e) =>
+          this.logger.debug(`slow-pull ${domain}: ${(e as Error).message}`),
+        )
         .finally(() => this.inFlight.delete(domain));
     }
   }
@@ -70,7 +76,9 @@ export class FederationReconnectService implements OnModuleInit, OnModuleDestroy
     for (const domain of domains) {
       if (this.inFlight.has(domain)) continue; // a recovery for this domain is still running
       this.inFlight.add(domain);
-      const jitter = Math.floor(Math.random() * FederationReconnectService.JITTER_MS);
+      const jitter = Math.floor(
+        Math.random() * FederationReconnectService.JITTER_MS,
+      );
       setTimeout(() => {
         void this.recover(domain)
           .catch((e) =>
@@ -82,18 +90,24 @@ export class FederationReconnectService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  /** One peer's recovery sequence. Each step throws on failure (peer still down) → the caller logs + the
-   *  next sweep retries. Order is cheap → expensive: ping before the re-handshake. */
+  /** One peer's recovery sequence. Identity is verified before any ping or data operation. Each step
+   *  throws on failure (peer still down) → the caller logs and the next sweep retries. */
   private async recover(domain: string): Promise<void> {
-    await this.federation.pingPeer(domain);
     await this.federation.ensurePeerTrusted(domain);
+    await this.federation.pingPeer(domain);
     await this.federation.flushDomain(domain);
-    await this.pullPeerMap(domain);
+    await this.pullPeerMap(domain, true);
   }
 
   /** Paginated pull of the peer's /new-msg-map → our pendingPulls → drain. Idempotent (originSeq dedup
    *  absorbs any overlap with a concurrent push). */
-  private async pullPeerMap(domain: string): Promise<void> {
+  private async pullPeerMap(
+    domain: string,
+    identityAlreadyVerified = false,
+  ): Promise<void> {
+    if (!identityAlreadyVerified) {
+      await this.federation.verifyPeerIdentity(domain);
+    }
     let cursor = 0;
     for (;;) {
       const page = await this.federation.pullPeerNewMsgMap(domain, cursor);

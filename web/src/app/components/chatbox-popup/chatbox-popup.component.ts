@@ -10,7 +10,8 @@ import { A11yModule } from '@angular/cdk/a11y';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 
-/** Renders conversation-scoped dialogs inside the chatbox, leaving its composer visible below the scrim. */
+/** Renders conversation-scoped dialogs over the complete chatbox. The conversation host temporarily removes
+ *  its composer while one is open, so the backdrop owns the entire interaction surface. */
 @Component({
   selector: 'app-chatbox-popup',
   standalone: true,

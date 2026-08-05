@@ -1,5 +1,8 @@
 # Federation S2S API — Design Review (in progress)
 
+> **文档分类：Historical design review。** 本文保留评审过程与决策背景，不具现行规范效力。
+> 当前入口与已知冲突见 [`docs/federation/README.md`](../federation/README.md)。
+
 > Working note. Session was paused mid-review of the **federation S2S API + interaction-flow
 > design** (local/consumer API and e2e are explicitly out of scope here). Resume from this file.
 >

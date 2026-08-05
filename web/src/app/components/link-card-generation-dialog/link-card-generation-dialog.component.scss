@@ -3,6 +3,8 @@
 }
 
 .link-generation-dialog__body {
+  height: 142px;
+  box-sizing: border-box;
   padding: 12px 12px 8px;
   text-align: center;
 }
@@ -46,7 +48,7 @@
 
 .link-generation-card {
   width: min(100%, 280px);
-  min-height: 76px;
+  height: 94px;
   margin: 0 auto;
   box-sizing: border-box;
   overflow: hidden;
@@ -189,18 +191,16 @@
 
 .link-generation-card--failed {
   display: flex;
-  min-height: 136px;
-  padding: 24px;
+  padding: 8px 16px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  border-style: dashed;
 }
 .link-generation-card--failed > span {
-  width: 30px;
-  height: 30px;
-  margin-bottom: 10px;
+  width: 24px;
+  height: 24px;
+  margin-bottom: 4px;
   border-radius: 50%;
   display: grid;
   place-items: center;

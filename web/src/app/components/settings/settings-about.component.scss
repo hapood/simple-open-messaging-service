@@ -3,7 +3,7 @@
 .about-page { display: flex; flex-direction: column; gap: 16px; max-width: 680px; margin: 0 auto; }
 
 .product-hero { display: flex; align-items: center; gap: 14px; padding: 6px 4px 10px; }
-.product-mark { width: 54px; height: 54px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 18px; color: #fff; font-size: 25px; font-weight: 750; background: linear-gradient(145deg, var(--app-brand), var(--app-brand-accent)); box-shadow: 0 8px 22px color-mix(in srgb, var(--app-brand) 25%, transparent); }
+.product-mark { width: 54px; height: 54px; flex: 0 0 auto; display: block; }
 .product-hero h2 { margin: 0; color: var(--app-text); font-size: 20px; line-height: 26px; letter-spacing: -0.3px; }
 .product-hero p { margin: 2px 0 0; color: var(--app-text-muted); font-size: 13px; line-height: 19px; }
 .version-chip { margin-left: auto; padding: 4px 9px; border-radius: var(--app-radius-pill); color: var(--app-text-muted); background: var(--app-bg-muted); font-size: 12px; font-variant-numeric: tabular-nums; cursor: default; }

@@ -5,7 +5,7 @@
   <!-- Static theme-color fallback. The FOUC script just below (and ThemeService at runtime)
        updates this to match the resolved theme, so the browser chrome blends from the very first
        frame — placed before the script so the script can find it via querySelector. -->
-  <meta name="theme-color" content="#2196f3">
+  <meta name="theme-color" content="#f3f3f1">
   <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
        somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
        Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /

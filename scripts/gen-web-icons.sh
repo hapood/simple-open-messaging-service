@@ -2,12 +2,12 @@
 # Regenerate the web app icon set from web/public/logo.svg.
 # Requires rsvg-convert (librsvg) and ImageMagick.
 #
-# logo.svg is the ONE shared mark (rounded blue square + bubble + M, mark @85%)
+# logo.svg is the ONE shared H mark (warm tile + bubble + connected M).
 # — also used directly by the in-app <app-brand-logo>. Three render variants:
 #
 #   * rounded   (logo.svg as-is)          -> favicon, icon-192/512 ("any")
 #   * full-bleed (rx stripped)            -> apple-touch-icon (iOS needs a solid bg)
-#   * maskable  (rx stripped + mark @78%) -> icon-*-maskable (inside the 80% safe zone)
+#   * maskable  (full tile + inner artwork @78%) -> maskable safe zone
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,12 +21,16 @@ command -v convert      >/dev/null || { echo "ImageMagick 'convert' is required"
 
 render() { rsvg-convert -w "$1" -h "$1" -f png -o "$2" "$3"; }
 
-# Derive the full-bleed (no rounded corners) and maskable (full-bleed + smaller mark) variants.
+# Derive full-bleed and maskable variants. Only the artwork after the tile rect
+# is scaled for maskable icons; the background must stay full bleed.
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 FB="$TMP/fullbleed.svg"
 sed 's/ rx="24"//' "$SRC" > "$FB"
 MASK="$TMP/maskable.svg"
-sed -e 's/ rx="24"//' -e 's/scale(1\.24)/scale(1.14)/' "$SRC" > "$MASK"
+sed -e 's/ rx="24"//' \
+    -e '0,/<path/{s|<path|<g transform="translate(54 54) scale(0.78) translate(-54 -54)">\n  <path|}' \
+    -e 's|</svg>|  </g>\n</svg>|' \
+    "$SRC" > "$MASK"
 
 echo "Rendering web icons from $(basename "$SRC")"
 render 192 "$ICONS/icon-192.png"        "$SRC"   # rounded
@@ -43,5 +47,5 @@ echo "  favicon.ico (16/32/48, rounded)"
 
 render 192 "$ICONS/icon-192-maskable.png" "$MASK"   # full-bleed + mark @78%
 render 512 "$ICONS/icon-512-maskable.png" "$MASK"
-echo "  icon-192-maskable / icon-512-maskable (full-bleed, mark @78% inside 80% safe zone)"
+echo "  icon-192-maskable / icon-512-maskable (full-bleed, artwork inside safe zone)"
 echo "done."

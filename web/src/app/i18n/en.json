@@ -382,6 +382,12 @@
     "previewLabel": "[Chat history]",
     "nestedLevel": "Level {{level}}"
   },
+  "nativeShare": {
+    "title": "Choose chats",
+    "continue": "Continue",
+    "send": "Send ({{count}})",
+    "preview": "Preview"
+  },
   "linkCard": {
     "open": "Open link",
     "original": "Original text",

@@ -1,5 +1,8 @@
 # SOMS Federation — Step 2 Design (cross-server 1:1 messages + chat media)
 
+> **文档分类：Historical design。** 本文解释 Step 2 的设计与实施过程，不具现行规范效力。
+> 当前入口与实现基线见 [`docs/federation/README.md`](../federation/README.md)。
+
 > **Status:** DESIGN (decided 2026-07-08; coalesced in-memory hint map + self-healing reconnect sweep,
 > same day), **implemented + e2e-verified** in the working tree (2026-07-08). All §8 items 1–11 are live:
 > schema + `originSeq`, the outbound hint buffer, both `/new-msg-map` routes, the `/messages` pull, the

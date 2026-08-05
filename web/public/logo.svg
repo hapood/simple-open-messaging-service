@@ -1,21 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS">
-  <!-- SOMS web icon source. Full-bleed brand-blue background + a solid white
-       speech bubble carrying a brand-blue "M" node-graph, with a short, thick
-       tail at the golden-ratio point of the bottom edge. The mark is scaled to
-       ~85% so it fills the icon (larger than the legacy ~69%). Render the
-       PNG/ICO set with scripts/gen-web-icons.sh; the maskable variants use a
-       smaller scale to stay inside the 80% safe zone. -->
-  <rect width="108" height="108" rx="24" fill="#2196f3" />
-  <g transform="translate(54 54) scale(1.24) translate(-54 -54)">
-    <path fill="#ffffff"
-      d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
-    <path d="M35 65 L35 42 L54 57 L73 42 L73 65" fill="none" stroke="#2196f3" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-    <g fill="#2196f3">
-      <circle cx="35" cy="65" r="6.5" />
-      <circle cx="35" cy="42" r="6.5" />
-      <circle cx="54" cy="57" r="6.5" />
-      <circle cx="73" cy="42" r="6.5" />
-      <circle cx="73" cy="65" r="6.5" />
-    </g>
+  <title>SOMS</title>
+  <!-- SOMS H mark. Keep the artwork flat: platform launchers own masks,
+       shadows, and motion. The warm tile keeps the pale speech bubble visible
+       on white surfaces; the vermilion centre node is the brand accent. -->
+  <rect width="108" height="108" rx="24" fill="#e9e1d5" />
+  <path
+    fill="#f8f4ec"
+    stroke="#d6cbbd"
+    stroke-width="1.5"
+    d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L20 90 L24 75 C18 69 15 61 15 52 C15 32 32 17 54 17 Z"
+  />
+  <path
+    d="M34 68 V40 L54 57 L74 40 V68"
+    fill="none"
+    stroke="#19212a"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <g fill="#19212a">
+    <circle cx="34" cy="40" r="6.5" />
+    <circle cx="34" cy="68" r="6.5" />
+    <circle cx="74" cy="40" r="6.5" />
+    <circle cx="74" cy="68" r="6.5" />
   </g>
+  <circle cx="54" cy="57" r="7" fill="#f04b3a" />
 </svg>

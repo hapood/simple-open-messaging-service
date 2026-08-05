@@ -179,6 +179,7 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) captureSharedText(intent)
         installLaunchOverlay()
         // Seed SomsLog's file sink path before any subsystem logs. Release keeps writes disabled until the
         // persisted/hidden runtime debug gate is enabled by the web layer.
@@ -249,7 +250,7 @@ class MainActivity : TauriActivity() {
         fun dp(value: Int) = Math.round(value * density)
 
         val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(33, 150, 243))
+            setBackgroundColor(Color.rgb(233, 225, 213))
             isClickable = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             elevation = dp(16).toFloat()
@@ -270,7 +271,7 @@ class MainActivity : TauriActivity() {
 
         val status = TextView(this).apply {
             setText(R.string.splash_preparing)
-            setTextColor(Color.argb(150, 255, 255, 255))
+            setTextColor(Color.argb(170, 25, 33, 42))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setTypeface(typeface, Typeface.NORMAL)
             letterSpacing = 0.04f
@@ -700,6 +701,9 @@ class MainActivity : TauriActivity() {
         // Rust downloads authenticated media into the app-private shared cache. This bridge performs
         // only the Android-specific final copy into MediaStore; file bytes never pass through JS.
         webView.addJavascriptInterface(SomsMediaInterface(this), "SomsMedia")
+        // Durable hand-off for Android's share sheet. The payload stays in native memory until the future
+        // recipient-selection flow acknowledges it, so a WebView reload can read it again.
+        webView.addJavascriptInterface(SomsShareInterface(), "SomsShare")
         // Dormant native Media3 video player: its JS bridge is intentionally not registered while the app
         // uses the WebView player. Restore this line together with the Gradle dependencies and manifest entry.
         // webView.addJavascriptInterface(SomsVideoInterface(this), "SomsVideo")
@@ -712,6 +716,7 @@ class MainActivity : TauriActivity() {
             SomsBridge.DeepLink.pendingThreadId = null
             openThread(it)
         }
+        notifyShareAvailable()
         // This (re)created WebView replaces any prior one — release its orphaned video surfaces so the next
         // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
         CallController.onWebViewGone()
@@ -908,12 +913,47 @@ class MainActivity : TauriActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        captureSharedText(intent)
         // Warm start: app already running, user tapped a notification. Route straight to the live
         // webview. (setIntent is unnecessary — singleTask + CLEAR_TOP keeps the back stack sane.)
         intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)?.let { openThread(it) }
         // Warm-start answer: the app was already running when the user tapped Answer on the ringing notif.
         if (intent.action == CallService.ACTION_ANSWER) {
             intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
+        }
+    }
+
+    private fun captureSharedText(intent: Intent?) {
+        val text = NativeShareLogic.normalizedText(
+            intent?.action,
+            intent?.type,
+            intent?.getStringExtra(Intent.EXTRA_TEXT),
+        ) ?: return
+        SomsBridge.Share.pending = SomsBridge.SharedText(UUID.randomUUID().toString(), text)
+        notifyShareAvailable()
+    }
+
+    private fun notifyShareAvailable() {
+        if (SomsBridge.Share.pending == null) return
+        SomsBridge.eval("window.__SOMS_SHARE_AVAILABLE__?.();")
+    }
+
+    private class SomsShareInterface {
+        @JavascriptInterface
+        fun getPending(): String? = SomsBridge.Share.pending?.let { pending ->
+            JSONObject().apply {
+                put("id", pending.id)
+                put("text", pending.text)
+            }.toString()
+        }
+
+        @JavascriptInterface
+        fun acknowledge(id: String): Boolean {
+            synchronized(SomsBridge.Share) {
+                if (SomsBridge.Share.pending?.id != id) return false
+                SomsBridge.Share.pending = null
+                return true
+            }
         }
     }
 

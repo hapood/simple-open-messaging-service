@@ -139,7 +139,8 @@ export class ChatInputComponent implements OnDestroy {
   readonly placeholder = input('');
   /** Browser composer drafts are partitioned by conversation. Omit in the playground. */
   readonly threadId = input<number>();
-  /** Chatbox-dialog mode: keep the draft visible in a deliberately small, single-line composer. */
+  /** Reserved compact presentation: constrains only the editor height to one line. Current chatbox dialogs
+   *  hide the composer; keep this input for a future interaction mode without changing its width. */
   readonly compact = input(false);
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);

@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   mintUlid,
   normalizeAccount,
@@ -19,9 +19,11 @@ import {
 import {
   ContentType,
   GroupRole,
+  MessageDeleteType,
   MessageThreadType,
 } from '../database/enums.js';
 import type { Message } from '../message/message.service.js';
+import { DeletedMessageService } from '../message/deleted-message.service.js';
 import * as tables from '../database/schema.js';
 import { isUniqueViolation } from '../database/database-error.js';
 import {
@@ -75,6 +77,10 @@ import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
+import {
+  FederationIdentityService,
+  type SignedFederationIdentity,
+} from './federation-identity.service.js';
 
 /**
  * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
@@ -110,6 +116,13 @@ export interface S2SAddress {
 export interface S2SQuoteTarget {
   creator: S2SAddress;
   originSeq: number;
+}
+
+interface S2SDeletedMessage {
+  id: string;
+  target: { creator: S2SAddress; originSeq: number };
+  type: MessageDeleteType;
+  deletedAt: number;
 }
 
 /**
@@ -287,10 +300,12 @@ export class FederationService implements OnModuleDestroy {
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
     private readonly messageVisibility: MessageVisibilityService,
+    private readonly deletedMessages: DeletedMessageService,
     // Inbound S2S call frames are bridged to CallsService via emitAsync('call.frame.inbound') rather
     // than a direct injection — FederationService must NOT inject CallsService (that would cycle: the
     // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
     private readonly eventEmitter: EventEmitter2,
+    private readonly federationIdentity: FederationIdentityService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -873,7 +888,17 @@ export class FederationService implements OnModuleDestroy {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (existing?.trustLevel === 'trusted') return; // mutual trust already established
+    if (existing?.trustLevel === 'identity_lost') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `${domain} identity is locked pending reset`,
+        HttpStatus.LOCKED,
+      );
+    }
+    if (existing?.trustLevel === 'trusted') {
+      await this.verifyPeerIdentity(domain);
+      return;
+    }
     if (existing?.trustLevel === 'blocked') {
       // Admin intent — refuse to (re-)handshake. Surfaced as FEDERATION_PEER_BLOCKED (distinct from a
       // delivery failure) so the client can show "blocked by your admin" rather than "unreachable".
@@ -883,13 +908,8 @@ export class FederationService implements OnModuleDestroy {
         HttpStatus.FORBIDDEN,
       );
     }
-    // Confirm they're a real SOMS peer (public .well-known fetch over HTTPS; also warms their key cache
-    // so the signature on their reply traffic verifies without a cold fetch).
-    await this.discovery.fetchWellKnown(domain);
-    // Bootstrap mutual trust: they auto-accept us on verifying this init's signature.
+    // Bootstrap mutual trust and pin the signed pairwise identity returned by the peer.
     await this.sendInit(domain);
-    // They trust us now → trust them back (idempotent + transition-aware: logs discovered/trusted).
-    await this.markTrusted(domain);
   }
 
   /** Whether mutual trust with a peer domain is ALREADY established — a pure local lookup of the
@@ -1148,13 +1168,14 @@ export class FederationService implements OnModuleDestroy {
     });
   }
 
-  /** Send a signed POST /api/v1/s2s/init to a peer so they auto-accept us into their allow-list. The
-   *  body is minimal (`{}`); the signature (covering its content-digest) + keyId is what proves domain
-   *  ownership. Throws on network/timeout/reject — the caller surfaces it. */
+  /** Send a signed identity claim and pin the peer's signed response. */
   private async sendInit(peerDomain: string): Promise<void> {
+    const preUpgradeKeys =
+      await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}/api/v1/s2s/init`);
-    const body = '{}';
+    const claim = this.federationIdentity.createClaim(peerDomain);
+    const body = JSON.stringify(claim);
     const headers = this.signature.signOutbound({
       method: 'POST',
       path: url.pathname,
@@ -1177,6 +1198,101 @@ export class FederationService implements OnModuleDestroy {
     if (res.status !== 200 && res.status !== 202) {
       throw new Error(`S2S init to ${peerDomain} rejected: HTTP ${res.status}`);
     }
+    const payload = (await res.json()) as
+      | { data?: SignedFederationIdentity }
+      | SignedFederationIdentity;
+    await this.verifyAndPinIdentityResponse(
+      peerDomain,
+      claim.nonce,
+      ('data' in payload && payload.data
+        ? payload.data
+        : payload) as SignedFederationIdentity,
+      preUpgradeKeys,
+    );
+  }
+
+  /** Reconnect identity check. A contradictory, correctly signed response permanently locks the peer. */
+  async verifyPeerIdentity(peerDomain: string): Promise<void> {
+    const preUpgradeKeys =
+      await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
+    const nonce = randomBytes(24).toString('base64url');
+    const base = await this.discovery.resolveBase(peerDomain);
+    const url = new URL(`${base}/api/v1/s2s/identity`);
+    url.searchParams.set('nonce', nonce);
+    const headers = this.signature.signOutbound({
+      method: 'GET',
+      path: url.pathname,
+      authority: url.host,
+      body: '',
+    });
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+    });
+    if (!res.ok) {
+      throw new Error(
+        `S2S identity from ${peerDomain} rejected: HTTP ${res.status}`,
+      );
+    }
+    const payload = (await res.json()) as
+      | { data?: SignedFederationIdentity }
+      | SignedFederationIdentity;
+    await this.verifyAndPinIdentityResponse(
+      peerDomain,
+      nonce,
+      ('data' in payload && payload.data
+        ? payload.data
+        : payload) as SignedFederationIdentity,
+      preUpgradeKeys,
+    );
+  }
+
+  private async verifyAndPinIdentityResponse(
+    peerDomain: string,
+    nonce: string,
+    response: SignedFederationIdentity,
+    preUpgradeKeys: string[],
+  ): Promise<void> {
+    const doc = await this.discovery.fetchWellKnown(peerDomain);
+    const rootPublicKey = doc.rootKey?.ed25519;
+    const computedFingerprint = rootPublicKey
+      ? `sha256:${createHash('sha256')
+          .update(Buffer.from(rootPublicKey, 'base64'))
+          .digest('base64url')}`
+      : undefined;
+    if (
+      doc.protocolVersion !== 1 ||
+      doc.identityEpoch !== response.identityEpoch ||
+      doc.rootKey?.fingerprint !== response.rootKeyFingerprint ||
+      computedFingerprint !== response.rootKeyFingerprint
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+        `well-known identity does not match response from ${peerDomain}`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const signingKey = doc.keys.find((key) => key.keyId === response.keyId);
+    if (!signingKey) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+        `identity response key is not published by ${peerDomain}`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const claim = this.federationIdentity.verifySignedClaim(
+      response,
+      peerDomain,
+      this.config.domain,
+      nonce,
+      Uint8Array.from(Buffer.from(signingKey.ed25519, 'base64')),
+    );
+    await this.federationIdentity.pinOrVerify(
+      peerDomain,
+      claim,
+      rootPublicKey !== undefined && preUpgradeKeys.includes(rootPublicKey),
+    );
   }
 
   // ─── invite flows (synchronous, unified friend + group) ─────────────────────
@@ -2273,6 +2389,7 @@ export class FederationService implements OnModuleDestroy {
       where: and(
         eq(tables.message.threadId, threadId),
         eq(tables.message.creator, fromId),
+        eq(tables.message.isDeleted, false),
         gt(tables.message.originSeq, after),
       ),
       orderBy: asc(tables.message.originSeq),
@@ -2303,6 +2420,109 @@ export class FederationService implements OnModuleDestroy {
         ),
       );
     return { messages, latestSeq: latest.originSeq ?? -1, hasMore }; // 0-indexed: empty → -1
+  }
+
+  /** Durable deletion stream. The cursor is this serving node's DeletedMessage.id; the target remains
+   * creator+originSeq so receivers never confuse it with their own local thread seq. */
+  async serveOutboundDeletedMessages(
+    fromAccount: string,
+    toAccount: string,
+    signerDomain: string,
+    afterId: bigint,
+    take: number,
+  ) {
+    const { fromId, threadId } = await this.resolveFriendshipThread(
+      fromAccount,
+      toAccount,
+      signerDomain,
+    );
+    return this.deletedPage(threadId, afterId, take, fromId);
+  }
+
+  async serveOutboundDeletedMessagesGroup(
+    groupAccount: string,
+    signerDomain: string,
+    afterId: bigint,
+    take: number,
+  ) {
+    const { threadId } = await this.resolveGroupThreadAccess(
+      groupAccount,
+      undefined,
+      undefined,
+      signerDomain,
+    );
+    return this.deletedPage(threadId, afterId, take);
+  }
+
+  async serveOutboundDeletedMessagesGroupFrom(
+    groupAccount: string,
+    fromAccount: string,
+    fromDomain: string,
+    signerDomain: string,
+    afterId: bigint,
+    take: number,
+  ) {
+    const { threadId } = await this.resolveGroupThreadAccess(
+      groupAccount,
+      undefined,
+      undefined,
+      signerDomain,
+    );
+    const { authorId } = await this.resolveGroupAuthorOrLeave(
+      threadId,
+      fromAccount,
+      fromDomain,
+    );
+    return this.deletedPage(threadId, afterId, take, authorId);
+  }
+
+  private async deletedPage(
+    threadId: number,
+    afterId: bigint,
+    take: number,
+    creatorId?: number,
+  ) {
+    const conditions = [
+      eq(tables.deletedMessage.threadId, threadId),
+      gt(tables.deletedMessage.id, afterId),
+      eq(tables.message.threadId, threadId),
+      eq(tables.message.seq, tables.deletedMessage.seq),
+      ...(creatorId === undefined
+        ? []
+        : [eq(tables.message.creator, creatorId)]),
+    ];
+    const rows = await this.database.db
+      .select({
+        id: tables.deletedMessage.id,
+        originSeq: tables.message.originSeq,
+        type: tables.deletedMessage.type,
+        createdAt: tables.deletedMessage.createdAt,
+        account: tables.user.account,
+        domain: tables.user.domain,
+        isForeigner: tables.user.isForeigner,
+      })
+      .from(tables.deletedMessage)
+      .innerJoin(tables.message, and(...conditions.slice(2)))
+      .innerJoin(tables.user, eq(tables.user.id, tables.message.creator))
+      .where(and(...conditions.slice(0, 2), ...conditions.slice(4)))
+      .orderBy(asc(tables.deletedMessage.id))
+      .limit(take + 1);
+    const hasMore = rows.length > take;
+    return {
+      deletions: (hasMore ? rows.slice(0, take) : rows).map((row) => ({
+        id: row.id.toString(),
+        target: {
+          creator: {
+            account: row.account,
+            domain: this.effectiveDomain(row),
+          },
+          originSeq: row.originSeq ?? 0,
+        },
+        type: row.type,
+        deletedAt: row.createdAt.getTime(),
+      })),
+      hasMore,
+    };
   }
 
   /** GET /api/v1/s2s/messages/before — the BACKWARD twin of serveOutboundMessages (reserved for external
@@ -2561,6 +2781,7 @@ export class FederationService implements OnModuleDestroy {
       where: and(
         eq(tables.message.threadId, threadId),
         gt(tables.message.seq, after),
+        eq(tables.message.isDeleted, false),
       ),
       orderBy: asc(tables.message.seq),
       limit: take + 1,
@@ -2626,6 +2847,7 @@ export class FederationService implements OnModuleDestroy {
         eq(tables.message.threadId, threadId),
         eq(tables.message.creator, authorId),
         gt(tables.message.originSeq, after),
+        eq(tables.message.isDeleted, false),
       ),
       orderBy: asc(tables.message.originSeq),
       limit: take + 1,
@@ -3066,6 +3288,156 @@ export class FederationService implements OnModuleDestroy {
     return this.pullP2P(domain, e);
   }
 
+  /** Pull one durable deletion stream and advance its HWM in the same transaction that persists each
+   * tombstone. `sourceDomain` may be a group origin relaying an author's authoritative tombstone; the
+   * authority itself is always target.creator.domain. A peer can therefore never delete a local author's
+   * message, and the target must already be an active participant in this local thread. */
+  private async pullDeletedStream(params: {
+    threadId: number;
+    sourceDomain: string;
+    streamAccount: string;
+    streamKind: 'p2p-author' | 'group-origin' | 'group-author';
+    path: (afterId: bigint) => string;
+    expectedCreator?: S2SAddress;
+    recipients: number[];
+  }): Promise<void> {
+    const cursorKey = {
+      peerDomain: params.sourceDomain,
+      streamAccount: params.streamAccount,
+      streamKind: params.streamKind,
+    };
+    const cursor =
+      await this.database.db.query.federationDeletedCursor.findFirst({
+        where: and(
+          eq(tables.federationDeletedCursor.threadId, params.threadId),
+          eq(tables.federationDeletedCursor.peerDomain, cursorKey.peerDomain),
+          eq(
+            tables.federationDeletedCursor.streamAccount,
+            cursorKey.streamAccount,
+          ),
+          eq(tables.federationDeletedCursor.streamKind, cursorKey.streamKind),
+        ),
+        columns: { deletedHwm: true },
+      });
+    let afterId = cursor?.deletedHwm ?? 0n;
+    for (;;) {
+      const page = await this.withTrustedPeer(params.sourceDomain, () =>
+        this.getSigned<{
+          deletions: S2SDeletedMessage[];
+          hasMore: boolean;
+        }>(params.path(afterId), params.sourceDomain),
+      );
+      for (const deletion of page.deletions) {
+        let remoteDeletedId: bigint;
+        try {
+          remoteDeletedId = BigInt(deletion.id);
+        } catch {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid federated deletion id',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        if (remoteDeletedId <= afterId || deletion.target.originSeq < 0) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'federated deletion stream is not ordered',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        if (
+          deletion.type !== MessageDeleteType.WITHDRAW &&
+          deletion.type !== MessageDeleteType.REPORT
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid federated deletion type',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        const creatorAddress = deletion.target.creator;
+        if (
+          creatorAddress.domain === this.ourDomain &&
+          params.streamKind === 'group-origin'
+        ) {
+          // The group origin legitimately relays the whole subscribed stream, including our own
+          // author's event. Our server remains authoritative: consume the remote cursor only and do
+          // not create a tombstone or modify Message.isDeleted from this relay.
+          await this.deletedMessages.advanceFederatedCursor({
+            threadId: params.threadId,
+            remoteDeletedId,
+            cursor: cursorKey,
+          });
+          afterId = remoteDeletedId;
+          continue;
+        }
+        if (
+          creatorAddress.domain === this.ourDomain ||
+          (params.expectedCreator &&
+            (normalizeAccount(creatorAddress.account) !==
+              normalizeAccount(params.expectedCreator.account) ||
+              creatorAddress.domain !== params.expectedCreator.domain))
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'peer is not authoritative for deletion target',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        const participant =
+          await this.database.db.query.threadParticipant.findFirst({
+            where: and(
+              eq(tables.threadParticipant.threadId, params.threadId),
+              isNull(tables.threadParticipant.leftAt),
+              sql`EXISTS (SELECT 1 FROM "User" u WHERE u.id = ${tables.threadParticipant.userId} AND u.account = ${normalizeAccount(creatorAddress.account)} AND u."isForeigner" = true AND u.domain = ${creatorAddress.domain})`,
+            ),
+            columns: { userId: true },
+          });
+        if (!participant) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'deletion target creator is not a thread participant',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        const applied = await this.deletedMessages.applyFederated({
+          threadId: params.threadId,
+          creatorId: participant.userId,
+          originSeq: deletion.target.originSeq,
+          authorityDomain: creatorAddress.domain,
+          sourceDomain: params.sourceDomain,
+          remoteDeletedId,
+          type: deletion.type,
+          cursor: cursorKey,
+        });
+        afterId = remoteDeletedId;
+        if (applied) {
+          for (const userId of params.recipients) {
+            this.sse.onDeletedMessageUpdated(
+              userId,
+              params.threadId,
+              applied.id,
+            );
+          }
+          await this.signalOutbound(
+            params.threadId,
+            participant.userId,
+            deletion.target.originSeq,
+            params.sourceDomain,
+          );
+        }
+      }
+      if (!page.hasMore) return;
+      if (page.deletions.length === 0) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'empty federated deletion page has more pages',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
+  }
+
   /** P2P pull: the peer author `fromAccount`@`fromDomain`'s messages for our local user `toAccount`.
    *  Per-author, cursor DERIVED as MAX(originSeq) per (thread, creator) — the unchanged Step-2 mechanism.
    *  Derivation (not a stored cursor) is deliberate for P2P: it self-heals when the latest row vanishes
@@ -3089,6 +3461,19 @@ export class FederationService implements OnModuleDestroy {
         toLocalUserId,
       );
       if (threadId === null) return true; // not friends (lazy-unfriend §9.4) → drop
+      await this.pullDeletedStream({
+        threadId,
+        sourceDomain: domain,
+        streamAccount: `${normalizeAccount(e.fromAccount)}@${e.fromDomain}`,
+        streamKind: 'p2p-author',
+        expectedCreator: {
+          account: normalizeAccount(e.fromAccount),
+          domain: e.fromDomain,
+        },
+        recipients: [toLocalUserId],
+        path: (afterId) =>
+          `/api/v1/s2s/message-deletions?fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toAccount=${encodeURIComponent(e.toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
+      });
       const [cur] = await this.database.db
         .select({ originSeq: max(tables.message.originSeq) })
         .from(tables.message)
@@ -3245,6 +3630,15 @@ export class FederationService implements OnModuleDestroy {
     });
     let after = th?.pullUntil ?? -1;
     const recipients = await this.localActiveMemberIds(threadId);
+    await this.pullDeletedStream({
+      threadId,
+      sourceDomain: originDomain,
+      streamAccount: toAccount,
+      streamKind: 'group-origin',
+      recipients,
+      path: (afterId) =>
+        `/api/v1/s2s/message-deletions?toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
+    });
     for (;;) {
       const res = await this.withTrustedPeer(originDomain, () =>
         this.getSigned<{
@@ -3323,9 +3717,22 @@ export class FederationService implements OnModuleDestroy {
         ),
       );
     let after = cur.originSeq ?? -1;
-    if (e.latestSeq <= after) return true;
     const recipients = await this.localActiveMemberIds(threadId);
     try {
+      await this.pullDeletedStream({
+        threadId,
+        sourceDomain: domain,
+        streamAccount: `${normalizeAccount(e.fromAccount)}@${e.fromDomain}`,
+        streamKind: 'group-author',
+        expectedCreator: {
+          account: normalizeAccount(e.fromAccount),
+          domain: e.fromDomain,
+        },
+        recipients,
+        path: (afterId) =>
+          `/api/v1/s2s/message-deletions?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
+      });
+      if (e.latestSeq <= after) return true;
       for (;;) {
         const res = await this.withTrustedPeer(domain, () =>
           this.getSigned<{
@@ -3495,6 +3902,12 @@ export class FederationService implements OnModuleDestroy {
     // back too (no seq gap from a deduped re-pull).
     const created = await this.database.db
       .transaction(async (tx) => {
+        await DeletedMessageService.lockFederatedIdentity(
+          tx,
+          threadId,
+          creatorId,
+          m.originSeq,
+        );
         if (forwardClosure && forwardCard) {
           const imported = await this.forwardBundles.importClosure(
             fetchedFromDomain,
@@ -3512,6 +3925,14 @@ export class FederationService implements OnModuleDestroy {
           .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
           .where(eq(tables.messageThread.id, threadId))
           .returning({ curSeq: tables.messageThread.curSeq });
+        const tombstone = await tx.query.federatedMessageTombstone.findFirst({
+          where: and(
+            eq(tables.federatedMessageTombstone.threadId, threadId),
+            eq(tables.federatedMessageTombstone.creatorId, creatorId),
+            eq(tables.federatedMessageTombstone.originSeq, m.originSeq),
+          ),
+          columns: { type: true },
+        });
         storedContent = contextualizeCasUrls(storedContent, threadId, seq);
         if (incomingText?.quote && m.quoteTarget) {
           const localQuoteSeq = await this.resolveLocalQuoteSeq(
@@ -3534,10 +3955,27 @@ export class FederationService implements OnModuleDestroy {
             seq,
             originSeq: m.originSeq,
             originServerTime: originTime,
+            isDeleted: tombstone !== undefined,
             updatedAt: new Date(),
             // createdAt defaults to now() → the local arrival time
           })
           .returning();
+        if (tombstone) {
+          await tx
+            .insert(tables.deletedMessage)
+            .values({
+              threadId,
+              seq,
+              type: tombstone.type,
+              updatedAt: new Date(),
+            })
+            .onConflictDoNothing({
+              target: [
+                tables.deletedMessage.threadId,
+                tables.deletedMessage.seq,
+              ],
+            });
+        }
         if (localForwardBundleId) {
           await tx.insert(tables.forwardMessage).values({
             messageId: msg.id,
@@ -3575,6 +4013,31 @@ export class FederationService implements OnModuleDestroy {
         throw e;
       });
     if (!created) return null;
+    if (created.isDeleted) {
+      const deletion = await this.database.db.query.deletedMessage.findFirst({
+        where: and(
+          eq(tables.deletedMessage.threadId, threadId),
+          eq(tables.deletedMessage.seq, created.seq),
+        ),
+        columns: { id: true },
+      });
+      if (deletion) {
+        for (const uid of recipients) {
+          this.sse.onDeletedMessageUpdated(
+            uid,
+            threadId,
+            deletion.id.toString(),
+          );
+        }
+      }
+      void this.signalOutbound(
+        threadId,
+        creatorId,
+        m.originSeq,
+        fetchedFromDomain,
+      );
+      return created;
+    }
     // SSE FIRST, synchronously — fan to the pre-computed local recipients BEFORE any other await. A DB
     // polling observer (the client's reconcile / an e2e) must not see the committed row before the SSE
     // frame, so delivery is atomic from the client's view (no async gap between commit and onNewMessage).

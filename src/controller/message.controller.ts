@@ -47,6 +47,8 @@ import {
   SearchMessagesDto,
   SendForwardDto,
   ForwardMode,
+  QueryDeletedMessagesDto,
+  WithdrawMessageDto,
 } from '../dto/message.dto.js';
 import {
   serializeAudienceMention,
@@ -56,6 +58,7 @@ import {
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { DeletedMessageService } from '../message/deleted-message.service.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -75,7 +78,65 @@ export class MessageController {
     private readonly forwardBundles: ForwardBundleService,
     private readonly threadRevisionService: ThreadRevisionService,
     private readonly userQuota: UserQuotaService,
+    private readonly deletedMessages: DeletedMessageService,
   ) {}
+
+  @ApiBearerAuth()
+  @Get('deleted-messages/hwm')
+  @ApiOperation({
+    summary: 'Get the account bootstrap deletion high-water mark',
+  })
+  async getDeletedMessageHwm() {
+    return { hwm: await this.deletedMessages.currentHwm() };
+  }
+
+  @UseGuards(ThreadAccessGuard)
+  @ResourceId<QueryDeletedMessagesDto>('threadId')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('deleted-messages/query')
+  @ApiOperation({
+    summary: 'Query one conversation deletion log after its HWM',
+  })
+  async queryDeletedMessages(@Body() dto: QueryDeletedMessagesDto) {
+    const rows = await this.deletedMessages.queryThread(
+      dto.threadId,
+      BigInt(dto.afterId),
+      dto.take,
+    );
+    return envelope(rows, { hasMore: rows.length === dto.take });
+  }
+
+  @UseGuards(ThreadAccessGuard)
+  @ResourceId<WithdrawMessageDto>('threadId')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('withdraw-message')
+  @ApiOperation({ summary: 'Withdraw a locally-authored message' })
+  async withdrawMessage(
+    @Request() req: FastifyRequest,
+    @Body() dto: WithdrawMessageDto,
+  ) {
+    const deleted = await this.deletedMessages.withdraw(
+      req.user.userId,
+      dto.threadId,
+      dto.seq,
+    );
+    const participants =
+      await this.participantService.getActiveParticipantUserIds(dto.threadId);
+    for (const participant of participants) {
+      this.sseService.onDeletedMessageUpdated(
+        participant.userId,
+        dto.threadId,
+        deleted.id,
+      );
+    }
+    // The existing federation hint is only a wake-up signal. Receivers always pull both the message
+    // stream and the durable deletion stream, so reusing it keeps delivery lossy-safe without making
+    // the push itself authoritative.
+    void this.federation.notifyOnSend(req.user.userId, dto.threadId, dto.seq);
+    return deleted;
+  }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SendMessageDto>('threadId')
@@ -209,7 +270,7 @@ export class MessageController {
       (tx) => this.userQuota.tick(req.user.userId, 'messages', tx),
       quoteVisibility,
     );
-    if (generationId) {
+    if (generationId && !dto.retainLinkGeneration) {
       this.linkPreview.finishGeneration(req.user.userId, generationId);
     }
     // Fire-and-forget: the response confirms PERSISTENCE (the row is committed above); recipient

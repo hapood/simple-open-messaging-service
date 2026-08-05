@@ -6,7 +6,7 @@ import {
   type IDBPDatabase,
   type IDBPTransaction,
 } from 'idb';
-import type { ConversationItem, Message } from './model';
+import type { ConversationItem, DeletedMessageItem, Message } from './model';
 import type { HydratedThreadDeltaOp } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
 
@@ -1069,7 +1069,7 @@ export class WebdbService implements OnDestroy {
       orderBy === 'desc' ? 'prev' : 'next',
     );
     while (cursor && out.length < take) {
-      out.push(cursor.value);
+      if (!cursor.value.isDeleted) out.push(cursor.value);
       cursor = await cursor.continue();
     }
     await tx.done;
@@ -1154,6 +1154,9 @@ export class WebdbService implements OnDestroy {
           seq,
         ]);
         if (!current) throw new Error('merged message boundary is missing');
+        // A deletion pull can win while this HTTP page is in flight. Boundary refreshes are the one
+        // additive-cache path that rewrites an existing row, so explicitly preserve the tombstone.
+        if (current.isDeleted) continue;
         await messageStore.put({
           ...message,
           ...(current.sectionLeft ? { sectionLeft: 1 as const } : {}),
@@ -1442,6 +1445,72 @@ export class WebdbService implements OnDestroy {
     );
   }
 
+  async getDeletedHwm(threadId: number): Promise<string> {
+    return this.runMessageOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        const hwm = await tauriInvoke<string>('native_db_get_deleted_hwm', {
+          userId: Number(this.currentUserId),
+          threadId,
+        });
+        if (hwm !== '0') return hwm;
+        const baseline = await this.getMeta('deletedBootstrapHwm');
+        return typeof baseline === 'string' ? baseline : hwm;
+      }
+      const row = await (
+        await this.messageDb()
+      ).get('settings', `deletedHwm:${threadId}`);
+      if (typeof row?.value === 'string') return row.value;
+      const baseline = await this.getMeta('deletedBootstrapHwm');
+      return typeof baseline === 'string' ? baseline : '0';
+    });
+  }
+
+  async applyDeletedMessages(
+    threadId: number,
+    items: DeletedMessageItem[],
+    hwm: string,
+  ): Promise<void> {
+    return this.runMessageOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_apply_deleted_messages', {
+          userId: Number(this.currentUserId),
+          threadId,
+          items,
+          hwm,
+        });
+        return;
+      }
+      const tx = (await this.messageDb()).transaction(
+        ['messages', 'settings'],
+        'readwrite',
+      );
+      for (const item of items) {
+        const current = await tx
+          .objectStore('messages')
+          .get([threadId, item.seq]);
+        if (current) {
+          await tx.objectStore('messages').put({ ...current, isDeleted: true });
+        } else {
+          await tx.objectStore('messages').put({
+            threadId,
+            seq: item.seq,
+            isDeleted: true,
+            content: '',
+            contentType: 'PURE_TEXT',
+            creator: 0,
+            createdAt: 0,
+            updatedAt: 0,
+          } as CachedMessage);
+        }
+      }
+      await tx.objectStore('settings').put({
+        key: `deletedHwm:${threadId}`,
+        value: hwm,
+      });
+      await tx.done;
+    });
+  }
+
   private async getMessageInternal(
     threadId: number,
     seq: number,
@@ -1455,7 +1524,10 @@ export class WebdbService implements OnDestroy {
         })) ?? undefined
       );
     }
-    return (await this.messageDb()).get('messages', [threadId, seq]);
+    const value = await (
+      await this.messageDb()
+    ).get('messages', [threadId, seq]);
+    return value?.isDeleted ? undefined : value;
   }
 
   async getNewestMessages(threadIds: number[]): Promise<Message[]> {
@@ -1481,7 +1553,9 @@ export class WebdbService implements OnDestroy {
           IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
           'prev',
         );
-        return cursor?.value;
+        let current = cursor;
+        while (current?.value.isDeleted) current = await current.continue();
+        return current?.value;
       }),
     );
     await tx.done;

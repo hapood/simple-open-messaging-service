@@ -1,10 +1,14 @@
-import { Component, computed, inject, input, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
-import {
-  displayThreadName,
-  type ConversationItem,
-} from '../../services/model';
+import { displayThreadName, type ConversationItem } from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import {
@@ -26,13 +30,23 @@ import { InviteRowComponent } from '../message-cards/invite-row/invite-row.compo
 import { LinkRowComponent } from '../message-cards/link-row/link-row.component';
 import { CallRowComponent } from '../message-cards/call-row/call-row.component';
 import { ForwardRowComponent } from '../message-cards/forward-row/forward-row.component';
+import { LinkCardService } from '../../services/link-card.service';
+import {
+  LinkCardGenerationService,
+  type LinkCardContent,
+} from '../../services/link-card-generation.service';
+import type { ChatMsgData } from '../message-cards/chat-item';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
+export type ForwardDialogPurpose = 'FORWARD' | 'NATIVE_SHARE';
 
 export interface ForwardDialogResult {
   readonly threadIds: readonly number[];
   readonly messages: readonly ForwardMessageItem[];
   readonly mode: ForwardMode;
+  readonly nativeShare?:
+    | { readonly kind: 'link'; readonly generationId: string }
+    | { readonly kind: 'text'; readonly text: string };
 }
 
 @Component({
@@ -55,15 +69,52 @@ export interface ForwardDialogResult {
   styleUrl: './forward-dialog.component.scss',
 })
 export class ForwardDialogComponent {
-  readonly messages = input.required<readonly ForwardMessageItem[]>();
+  readonly messages = input<readonly ForwardMessageItem[]>([]);
   readonly recordKind = input<ForwardRecordKind>('chat');
   readonly mode = input<ForwardMode>('HISTORY');
+  readonly purpose = input<ForwardDialogPurpose>('FORWARD');
+  readonly sharedText = input('');
   readonly searchText = signal('');
   readonly selectedThreadIds = signal<ReadonlySet<number>>(new Set());
   readonly recentThreadIds = signal<readonly number[]>([]);
   private readonly conversations = inject(ConversationListService);
   private readonly route = inject(RouteService);
   private readonly user = inject(UserService);
+  private readonly linkCards = inject(LinkCardService);
+  private readonly generations = inject(LinkCardGenerationService);
+  private readonly generationId = signal<string | null>(null);
+  readonly shareMode = signal<'link' | 'text'>('link');
+  readonly generationStarting = signal(false);
+  private generationStartedFor = '';
+
+  readonly sharedUrl = computed(() =>
+    this.linkCards.firstUrl(this.sharedText()),
+  );
+  readonly generation = computed(() => {
+    const id = this.generationId();
+    return id ? this.generations.state(id)() : undefined;
+  });
+  readonly generationStatus = computed(() =>
+    this.generationStarting()
+      ? 'pending'
+      : (this.generation()?.status ?? 'failed'),
+  );
+  readonly shareLinkMessage = computed<ChatMsgData | null>(() => {
+    const content = this.generation()?.content;
+    if (!content) return null;
+    return this.previewLinkMessage(content);
+  });
+  readonly canRetryGeneration = computed(
+    () => this.generationStatus() === 'failed' && Boolean(this.sharedUrl()),
+  );
+  readonly canConfirm = computed(() => {
+    if (this.selectedCount() === 0) return false;
+    if (this.purpose() !== 'NATIVE_SHARE') return true;
+    if (this.shareMode() === 'text') return Boolean(this.sharedText().trim());
+    return Boolean(
+      this.generationStatus() === 'succeeded' && this.generation()?.content,
+    );
+  });
 
   readonly filteredConversations = computed(() => {
     const query = this.searchText().trim().toLocaleLowerCase();
@@ -84,6 +135,12 @@ export class ForwardDialogComponent {
   });
 
   readonly selectedCount = computed(() => this.selectedThreadIds().size);
+  readonly selectedConversations = computed(() => {
+    const selected = this.selectedThreadIds();
+    return this.conversations
+      .items()
+      .filter((item) => selected.has(item.threadId));
+  });
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
   readonly avatarIdentityId = conversationAvatarIdentityId;
@@ -95,6 +152,17 @@ export class ForwardDialogComponent {
 
   constructor() {
     this.recentThreadIds.set(this.readRecentThreadIds());
+    effect(() => {
+      if (this.purpose() !== 'NATIVE_SHARE') return;
+      const url = this.sharedUrl();
+      if (!url) {
+        this.shareMode.set('text');
+        return;
+      }
+      if (this.generationStartedFor === url) return;
+      this.generationStartedFor = url;
+      void this.beginGeneration(url);
+    });
   }
 
   setSearchText(value: string): void {
@@ -108,18 +176,82 @@ export class ForwardDialogComponent {
     this.selectedThreadIds.set(next);
   }
 
+  removeConversation(item: ConversationItem): void {
+    const next = new Set(this.selectedThreadIds());
+    next.delete(item.threadId);
+    this.selectedThreadIds.set(next);
+  }
+
   close(): void {
     this.route.closeDlg();
   }
 
   confirm(): void {
-    if (this.selectedCount() === 0) return;
+    if (!this.canConfirm()) return;
     this.rememberRecentThreadIds([...this.selectedThreadIds()]);
+    const generation = this.generation();
     this.route.closeDlg({
       threadIds: [...this.selectedThreadIds()],
       messages: this.messages(),
       mode: this.mode(),
+      ...(this.purpose() === 'NATIVE_SHARE'
+        ? {
+            nativeShare:
+              this.shareMode() === 'link' && generation
+                ? {
+                    kind: 'link' as const,
+                    generationId: generation.generationId,
+                  }
+                : { kind: 'text' as const, text: this.sharedText() },
+          }
+        : {}),
     } satisfies ForwardDialogResult);
+  }
+
+  retryGeneration(): void {
+    const url = this.sharedUrl();
+    if (!url || !this.canRetryGeneration()) return;
+    void this.beginGeneration(url, this.generationId() ?? undefined);
+  }
+
+  useOriginalText(): void {
+    if (this.sharedText().trim()) this.shareMode.set('text');
+  }
+
+  private async beginGeneration(
+    url: string,
+    generationId?: string,
+  ): Promise<void> {
+    this.shareMode.set('link');
+    this.generationStarting.set(true);
+    try {
+      const state = await this.generations.begin(
+        url,
+        this.sharedText(),
+        generationId,
+      );
+      this.generationId.set(state.generationId);
+    } catch {
+      if (!generationId) this.generationId.set(null);
+    } finally {
+      this.generationStarting.set(false);
+    }
+  }
+
+  private previewLinkMessage(content: LinkCardContent): ChatMsgData {
+    return {
+      type: 'msg',
+      msgId: 0,
+      creator: this.user.sessionProfile()?.id ?? 0,
+      isSelf: true,
+      name: this.user.sessionProfile()?.account ?? '',
+      text: JSON.stringify(content),
+      time: '',
+      contentType: 'LINK',
+      images: null,
+      file: null,
+      createdAtMs: Date.now(),
+    };
   }
 
   private readRecentThreadIds(): number[] {

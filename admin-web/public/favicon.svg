@@ -1,22 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS Admin">
   <title>SOMS Admin</title>
-  <!-- Identical speech-bubble "M" mark as the consumer web/app logo
-       (web/public/logo.svg). Only the brand fill differs: a violet background
-       (#7c3aed) distinguishes the admin console's mark from the consumer
-       brand-blue (#2196f3). The geometry is unchanged so both products share
-       one mark, told apart by color. Render/derive any raster variants from
-       this file. -->
-  <rect width="108" height="108" rx="24" fill="#7c3aed" />
-  <g transform="translate(54 54) scale(1.24) translate(-54 -54)">
-    <path fill="#ffffff"
-      d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
-    <path d="M35 65 L35 42 L54 57 L73 42 L73 65" fill="none" stroke="#7c3aed" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-    <g fill="#7c3aed">
-      <circle cx="35" cy="65" r="6.5" />
-      <circle cx="35" cy="42" r="6.5" />
-      <circle cx="54" cy="57" r="6.5" />
-      <circle cx="73" cy="42" r="6.5" />
-      <circle cx="73" cy="65" r="6.5" />
-    </g>
+  <!-- Same H geometry as the consumer mark. A graphite tile distinguishes the
+       administration surface without introducing another brand color. -->
+  <rect width="108" height="108" rx="24" fill="#25282c" />
+  <path
+    fill="#f8f4ec"
+    d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L20 90 L24 75 C18 69 15 61 15 52 C15 32 32 17 54 17 Z"
+  />
+  <path
+    d="M34 68 V40 L54 57 L74 40 V68"
+    fill="none"
+    stroke="#25282c"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <g fill="#25282c">
+    <circle cx="34" cy="40" r="6.5" />
+    <circle cx="34" cy="68" r="6.5" />
+    <circle cx="74" cy="40" r="6.5" />
+    <circle cx="74" cy="68" r="6.5" />
   </g>
+  <circle cx="54" cy="57" r="7" fill="#f04b3a" />
 </svg>

@@ -2,55 +2,116 @@ import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
 import {
   Controller,
-  Post,
+  Get,
   HttpCode,
   HttpStatus,
+  Post,
+  Query,
   Req,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
+import { createHash } from 'node:crypto';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
+import { DiscoveryService } from './discovery.service.js';
+import {
+  FederationIdentityService,
+  type FederationIdentityClaim,
+} from './federation-identity.service.js';
+import { KeypairService } from './keypair.service.js';
+import { loadFederationConfig } from './federation.config.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
-import { FederationService } from './federation.service.js';
 
-/**
- * S2S trust-establishment endpoint — `POST /api/v1/s2s/init`. This is the bootstrap by which two SOMS
- * servers establish mutual trust BEFORE any friend-op traffic (Gate 1 allow-list must pass before a
- * friend.request can be sent). It is NOT guarded by S2sSignatureGuard — it IS the trust step, so the
- * allow-list gate would be circular. Instead it verifies the requester's RFC 9421 signature directly via
- * S2sVerifyService (parse keyId → fetch the requester's public key from their .well-known, authoritative
- * over HTTPS → verify), then AUTO-ACCEPTS the requester into FederatedPeer trusted.
- *
- * v0.1 = AUTO-ACCEPT: any SOMS peer whose init signature verifies is trusted. The real abuse barrier is
- * the friend gate (Gate 2) — a connected peer can only send friend REQUESTS the local user must approve;
- * there is no message read access without an approved friend edge, so server-level auto-accept is
- * contained. The "accept" step below is a single swappable site for future admin-approval / deny-list /
- * reputation gating (reserved hook, not built in v0.1).
- *
- * Raw-body capture (bootstrap.ts preParsing, scoped to /api/v1/s2s/*) feeds req.rawBody to the verifier
- * so the content-digest matches what the sender signed.
- */
 @Public()
 @Raw()
 @Controller('s2s')
 export class S2sInitController {
+  private readonly config = loadFederationConfig();
+
   constructor(
     private readonly verify: S2sVerifyService,
-    private readonly federationService: FederationService,
+    private readonly discovery: DiscoveryService,
+    private readonly identity: FederationIdentityService,
+    private readonly keypair: KeypairService,
   ) {}
 
   @Post('init')
   @HttpCode(HttpStatus.ACCEPTED)
-  async postInit(@Req() req: FastifyRequest): Promise<void> {
-    // Verify the requester's signature via their own .well-known (no inline key — the requester can't
-    // lie; .well-known is CA-validated HTTPS). Throws FEDERATION_MALFORMED / KEY_FETCH_FAILED /
-    // BAD_SIGNATURE on failure (caller-appropriate status codes).
+  async postInit(@Req() req: FastifyRequest) {
+    this.keypair.assertAvailable();
     const headers = this.verify.extractHeaders(req);
     const { keyId, domain } = this.verify.parseSigner(headers);
-    await this.verify.fetchAndVerify(this.verify.signedRequest(req), headers, keyId, domain);
+    const preUpgradeKey = await this.identity.getPreUpgradeCachedKey(
+      domain,
+      keyId,
+    );
+    const claim = this.identity.validateClaim(
+      req.body,
+      domain,
+      this.config.domain,
+    );
+    const doc = await this.assertWellKnownIdentity(domain, claim);
+    await this.discovery.cacheKeys(domain, doc.keys);
+    await this.verify.fetchAndVerify(
+      this.verify.signedRequest(req),
+      headers,
+      keyId,
+      domain,
+    );
+    await this.identity.consumeNonce(domain, claim);
+    await this.identity.pinOrVerify(
+      domain,
+      claim,
+      preUpgradeKey !== undefined && preUpgradeKey === doc.rootKey?.ed25519,
+    );
+    return this.identity.signClaim(
+      this.identity.createClaim(domain, claim.nonce),
+    );
+  }
 
-    // AUTO-ACCEPT (v0.1): trust established. markTrusted is idempotent + transition-aware — a first
-    // contact logs discovered+trusted; a re-init from a demoted peer re-trusts and logs the transition;
-    // a repeat init from an already-trusted peer just refreshes lastSuccessAt. addedBy is null
-    // (auto-accepted, no admin).
-    await this.federationService.markTrusted(domain);
+  @Get('identity')
+  async getIdentity(@Req() req: FastifyRequest, @Query('nonce') nonce: string) {
+    this.keypair.assertAvailable();
+    const headers = this.verify.extractHeaders(req);
+    const { keyId, domain } = this.verify.parseSigner(headers);
+    await this.identity.requireIdentityEndpointPeer(domain);
+    await this.verify.fetchAndVerify(
+      this.verify.signedRequest(req),
+      headers,
+      keyId,
+      domain,
+    );
+    if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{22,128}$/.test(nonce)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+        'invalid identity nonce',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    return this.identity.signClaim(this.identity.createClaim(domain, nonce));
+  }
+
+  private async assertWellKnownIdentity(
+    domain: string,
+    claim: FederationIdentityClaim,
+  ) {
+    const doc = await this.discovery.fetchWellKnown(domain);
+    const rootPublicKey = doc.rootKey?.ed25519;
+    const computed = rootPublicKey
+      ? `sha256:${createHash('sha256').update(Buffer.from(rootPublicKey, 'base64')).digest('base64url')}`
+      : undefined;
+    if (
+      doc.protocolVersion !== 1 ||
+      doc.identityEpoch !== claim.identityEpoch ||
+      doc.rootKey?.fingerprint !== claim.rootKeyFingerprint ||
+      computed !== claim.rootKeyFingerprint
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+        `well-known identity does not match the signed claim for ${domain}`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    return doc;
   }
 }

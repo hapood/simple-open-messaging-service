@@ -12,10 +12,10 @@ const DARK_QUERY = '(prefers-color-scheme: dark)';
 /** Quick-toggle cycle order for the single-button affordance (icon rail, nav drawer, auth toolbar). */
 const THEME_CYCLE: readonly ThemeMode[] = ['system', 'light', 'dark'];
 
-/** `<meta name="theme-color">`: brand in light, dark surface in dark, so mobile browser chrome blends. */
+/** `<meta name="theme-color">`: soft graphite canvas in light, ink canvas in dark. */
 const META_THEME_COLOR: Record<EffectiveTheme, string> = {
-  light: '#2196f3',
-  dark: '#0b141a',
+  light: '#f3f3f1',
+  dark: '#11161b',
 };
 
 /**

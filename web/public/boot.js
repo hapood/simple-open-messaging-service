@@ -10,7 +10,7 @@
     window.matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   var meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', dark ? '#0b141a' : '#2196f3');
+  if (meta) meta.setAttribute('content', dark ? '#11161b' : '#f3f3f1');
 })();
 
 (function () {

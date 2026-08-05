@@ -151,7 +151,7 @@
     color: var(--app-text-muted);
     line-height: 1;
     &.owner { color: var(--app-brand); }
-    &.admin { color: var(--app-accent, #2196f3); }
+    &.admin { color: var(--app-brand, #25282c); }
   }
   .more-btn {
     flex: 0 0 auto;

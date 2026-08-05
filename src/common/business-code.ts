@@ -112,6 +112,12 @@ export enum BusinessCode {
   FEDERATION_CAPABILITY_DISABLED = 50013, // the peer administrator set this category's effective limit/cap to 0.
   // This is a stable policy refusal (HTTP 403), not a depleted daily budget: retrying after midnight
   // cannot help. The body carries {category}; NEVER demotes the peer.
+  FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local key file/immutable domain no longer matches the DB anchor
+  // (503, no automatic retry). Local features remain available, but all S2S traffic stays disabled until
+  // the original key file/configuration is restored.
+  FEDERATION_IDENTITY_MISMATCH = 50015, // a known domain presented a different pinned server identity (409)
+  FEDERATION_PEER_IDENTITY_LOST = 50016, // peer identity is permanently locked pending destructive reset (423)
+  FEDERATION_IDENTITY_PROOF_INVALID = 50017, // malformed, stale, replayed, or incorrectly signed identity proof (401)
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)

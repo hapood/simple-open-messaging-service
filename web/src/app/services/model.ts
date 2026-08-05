@@ -136,3 +136,12 @@ export interface StandardResponse<T = unknown> {
   /** True when this page actually reached the requested truncateSeq boundary. */
   truncated?: boolean;
 }
+
+export interface DeletedMessageItem {
+  id: string;
+  threadId: number;
+  seq: number;
+  type: 'WITHDRAW' | 'REPORT';
+  createdAt: string;
+  updatedAt: string;
+}

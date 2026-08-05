@@ -55,7 +55,7 @@
 .pnf-bubble--main {
   left: 0;
   bottom: 0;
-  filter: drop-shadow(0 16px 26px rgba(33, 150, 243, 0.30));
+  filter: drop-shadow(0 16px 26px rgba(198, 60, 47, 0.3));
 }
 
 .pnf-bubble--ghost {
@@ -129,7 +129,7 @@
   background: var(--app-brand);
   color: #ffffff;
   font-weight: 600;
-  box-shadow: 0 6px 16px rgba(33, 150, 243, 0.30);
+  box-shadow: 0 6px 16px rgba(198, 60, 47, 0.3);
 
   &:hover { background: var(--app-brand-hover); }
 }

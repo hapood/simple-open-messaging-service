@@ -12,7 +12,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { firstValueFrom, takeUntil } from 'rxjs';
+import { firstValueFrom, Subscription, takeUntil } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
@@ -253,6 +253,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);
   private readonly msgRepo = inject(MessageRepository);
+  private readonly deletedSub: Subscription;
   private readonly userService = inject(UserService);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly wsService = inject(WebsocketService);
@@ -522,6 +523,12 @@ export class MessageThreadComponent implements OnDestroy {
    * selection order. Voice notes deliberately bypass this lane. */
 
   constructor() {
+    this.deletedSub = this.msgRepo.deletedLive$.subscribe(
+      ({ threadId, seqs }) => {
+        if (threadId !== this.currentTrdId || !this.scroller) return;
+        for (const seq of seqs) this.onMessageDeleted(threadId, seq);
+      },
+    );
     effect((onCleanup) => {
       const trd = this.userMsgTrd();
       const threadId = this.threadId();
@@ -615,6 +622,7 @@ export class MessageThreadComponent implements OnDestroy {
         !this.leftGroup() &&
         !this.dissolvedGroup() &&
         !this.nativeComposerOccluded() &&
+        !this.chatboxDialogOpen() &&
         !this.selectionMode();
       if (!shouldShow) {
         this.hideNativeComposer();
@@ -692,6 +700,45 @@ export class MessageThreadComponent implements OnDestroy {
         progress.loaded,
         progress.total,
       );
+    });
+  }
+
+  private onMessageDeleted(threadId: number, seq: number): void {
+    this.galleryViewer.closeIfDeleted(threadId, seq);
+    this.fileDetail.closeIfDeleted(threadId, seq);
+    if (this.messageContextMenu()?.targetSeq === seq) {
+      this.messageContextMenu.set(null);
+    }
+    this.selectedMessageItems.delete(seq);
+    this.selectedMessageIds.update((selected) => {
+      if (!selected.has(seq)) return selected;
+      const next = new Set(selected);
+      next.delete(seq);
+      return next;
+    });
+    this.scroller?.mutateItem(seq, (item) => {
+      const images = item.data.images;
+      if (!images || images.length < 2) return null;
+      const remaining = images.filter((image) => image.msgId !== seq);
+      if (remaining.length === images.length) return null;
+      if (remaining.length === 0) return null;
+      const head = remaining[0];
+      const headId = head.msgId;
+      if (headId === undefined) return null;
+      const ids = remaining
+        .map((image) => image.msgId)
+        .filter((id): id is number => id !== undefined);
+      return {
+        ...item,
+        id: headId,
+        ids: ids.length > 1 ? ids : undefined,
+        data: {
+          ...item.data,
+          msgId: headId,
+          contentType: head.kind === 'video' ? 'VIDEO' : 'IMAGE',
+          images: remaining,
+        },
+      };
     });
   }
 
@@ -2940,6 +2987,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.deletedSub.unsubscribe();
     this.hideNativeComposer();
     this.teardown();
   }

@@ -56,6 +56,12 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.bg()).toBe(color);
   });
 
+  it('uses the dedicated graphite token for the self fallback avatar', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.SELF);
+
+    expect(fixture.componentInstance.bg()).toBe('var(--app-avatar-self-bg)');
+  });
+
   it('uses separate user and group identity namespaces for fallback colors', () => {
     fixture.componentRef.setInput('identityId', 42);
     fixture.componentRef.setInput('name', 'Same label');

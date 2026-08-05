@@ -134,9 +134,7 @@ export function derivePreview(type: ContentType, content: string): string {
         };
         const t =
           (c.title && c.title.trim() ? c.title : undefined) ??
-          (c.description && c.description.trim()
-            ? c.description
-            : undefined) ??
+          (c.description && c.description.trim() ? c.description : undefined) ??
           c.url ??
           content;
         return t.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
@@ -718,7 +716,10 @@ export class MessageService implements OnModuleInit {
     //  - clearedThroughSeq: per-user "clear history" watermark — hide rows through it for THIS user only.
     //  - hideCreatorIds: P2P block — the blocker never sees a blocked creator's messages. Scoped to P2P
     //    by the controller (group threads leave blocked members visible).
-    const conditions: SQL[] = [eq(message.threadId, threadId)];
+    const conditions: SQL[] = [
+      eq(message.threadId, threadId),
+      eq(message.isDeleted, false),
+    ];
     if (
       filters?.clearedThroughSeq !== null &&
       filters?.clearedThroughSeq !== undefined
@@ -972,7 +973,11 @@ export class MessageService implements OnModuleInit {
   ): Promise<Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>> {
     if (seqs.length === 0) return [];
     const msgs = await this.database.db.query.message.findMany({
-      where: and(eq(message.threadId, threadId), inArray(message.seq, seqs)),
+      where: and(
+        eq(message.threadId, threadId),
+        inArray(message.seq, seqs),
+        eq(message.isDeleted, false),
+      ),
     });
     const attached = await this.attachMediaStatus(msgs);
     return attached.map((m) => ({
@@ -1001,6 +1006,7 @@ export class MessageService implements OnModuleInit {
       SELECT seq, "createdAt"
       FROM "Message"
       WHERE "threadId" = ${threadId}
+        AND "isDeleted" = false
         ${cursor}
         AND (
           (
@@ -1022,7 +1028,11 @@ export class MessageService implements OnModuleInit {
   findMessageBySeq(threadId: number, seq: number) {
     return this.database.db.query.message
       .findFirst({
-        where: and(eq(message.threadId, threadId), eq(message.seq, seq)),
+        where: and(
+          eq(message.threadId, threadId),
+          eq(message.seq, seq),
+          eq(message.isDeleted, false),
+        ),
       })
       .then((row) => (row ? stripMessageId(row) : null));
   }
@@ -1037,9 +1047,12 @@ export class MessageService implements OnModuleInit {
   ): Promise<Message[]> {
     if (pairs.length === 0) return [];
     return this.database.db.query.message.findMany({
-      where: or(
-        ...pairs.map((pair) =>
-          and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
+      where: and(
+        eq(message.isDeleted, false),
+        or(
+          ...pairs.map((pair) =>
+            and(eq(message.threadId, pair.threadId), eq(message.seq, pair.seq)),
+          ),
         ),
       ),
     });

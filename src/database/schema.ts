@@ -80,6 +80,10 @@ export const threadRevisionDirection = pgEnum('ThreadRevisionDirection', [
   'ADD',
   'DELETE',
 ]);
+export const messageDeleteType = pgEnum('MessageDeleteType', [
+  'WITHDRAW',
+  'REPORT',
+]);
 
 export const adminSession = pgTable(
   'AdminSession',
@@ -561,6 +565,128 @@ export const message = pgTable(
   ],
 );
 
+/** Locally ordered deletion log consumed by apps. A row is created only after the target has a local
+ * thread seq; federation tombstones which arrive before their message live in the separate table below. */
+export const deletedMessage = pgTable(
+  'DeletedMessage',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    threadId: integer().notNull(),
+    seq: integer().notNull(),
+    type: messageDeleteType().notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('DeletedMessage_threadId_seq_key').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.seq.asc().nullsLast().op('int4_ops'),
+    ),
+    index('DeletedMessage_threadId_id_idx').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.id.asc().nullsLast().op('int8_ops'),
+    ),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'DeletedMessage_threadId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+  ],
+);
+
+/** A deletion received before its federated message. It deliberately has no local seq: matching is by
+ * the stable cross-server identity (thread, creator, originSeq). */
+export const federatedMessageTombstone = pgTable(
+  'FederatedMessageTombstone',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    threadId: integer().notNull(),
+    creatorId: integer().notNull(),
+    originSeq: integer().notNull(),
+    authorityDomain: varchar({ length: 255 }).notNull(),
+    sourceDomain: varchar({ length: 255 }).notNull(),
+    remoteDeletedId: bigint({ mode: 'bigint' }).notNull(),
+    type: messageDeleteType().notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederatedMessageTombstone_target_key').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.creatorId.asc().nullsLast().op('int4_ops'),
+      table.originSeq.asc().nullsLast().op('int4_ops'),
+    ),
+    uniqueIndex('FederatedMessageTombstone_source_event_key').using(
+      'btree',
+      table.sourceDomain.asc().nullsLast().op('text_ops'),
+      table.remoteDeletedId.asc().nullsLast().op('int8_ops'),
+    ),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'FederatedMessageTombstone_threadId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    foreignKey({
+      columns: [table.creatorId],
+      foreignColumns: [user.id],
+      name: 'FederatedMessageTombstone_creatorId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
+  ],
+);
+
+/** One cursor per ordered remote deletion stream. A thread can have several streams (notably a group
+ * origin pulling author servers), hence this is not a MessageThread column. */
+export const federationDeletedCursor = pgTable(
+  'FederationDeletedCursor',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    threadId: integer().notNull(),
+    peerDomain: varchar({ length: 255 }).notNull(),
+    streamAccount: varchar({ length: 255 }).default('').notNull(),
+    streamKind: varchar({ length: 32 }).notNull(),
+    deletedHwm: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederationDeletedCursor_stream_key').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.peerDomain.asc().nullsLast().op('text_ops'),
+      table.streamAccount.asc().nullsLast().op('text_ops'),
+      table.streamKind.asc().nullsLast().op('text_ops'),
+    ),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'FederationDeletedCursor_threadId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+  ],
+);
+
 export const admin = pgTable(
   'Admin',
   {
@@ -978,6 +1104,26 @@ export const systemSetting = pgTable('SystemSetting', {
   updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
 });
 
+/** Non-secret anchor for this installation's immutable federation identity. The private root key stays
+ * on disk; this row detects a missing/replaced key file and a changed SOMS_DOMAIN before S2S resumes. */
+export const localFederationIdentity = pgTable(
+  'LocalFederationIdentity',
+  {
+    domain: varchar({ length: 63 }).primaryKey().notNull(),
+    identityEpoch: integer().default(1).notNull(),
+    rootKeyFingerprint: varchar({ length: 80 }).notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    check(
+      'LocalFederationIdentity_identityEpoch_check',
+      sql`${table.identityEpoch} > 0`,
+    ),
+  ],
+);
+
 export const federatedPeer = pgTable(
   'FederatedPeer',
   {
@@ -999,8 +1145,20 @@ export const federatedPeer = pgTable(
     dailyRequestLimit: integer(),
     maxImageBytes: integer(),
     maxLargeFileBytes: integer(),
+    pairwiseServerId: varchar({ length: 64 }),
+    rootKeyFingerprint: varchar({ length: 80 }),
+    identityEpoch: integer(),
+    identityPinnedAt: timestamp({ precision: 3, mode: 'date' }),
+    identityLostAt: timestamp({ precision: 3, mode: 'date' }),
+    identityLostReason: varchar({ length: 255 }),
+    resetGeneration: integer().default(0).notNull(),
+    resetAt: timestamp({ precision: 3, mode: 'date' }),
   },
   (table) => [
+    check(
+      'FederatedPeer_identityEpoch_check',
+      sql`${table.identityEpoch} IS NULL OR ${table.identityEpoch} > 0`,
+    ),
     index('FederatedPeer_lastSuccessAt_idx').using(
       'btree',
       table.lastSuccessAt.asc().nullsLast().op('timestamp_ops'),
@@ -1008,6 +1166,24 @@ export const federatedPeer = pgTable(
     index('FederatedPeer_trustLevel_idx').using(
       'btree',
       table.trustLevel.asc().nullsLast().op('text_ops'),
+    ),
+  ],
+);
+
+/** Persistent replay protection for signed federation identity handshakes. */
+export const s2SIdentityNonce = pgTable(
+  'S2SIdentityNonce',
+  {
+    originDomain: varchar({ length: 63 }).notNull(),
+    nonceHash: varchar({ length: 64 }).notNull(),
+    issuedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.originDomain, table.nonceHash] }),
+    index('S2SIdentityNonce_expiresAt_idx').using(
+      'btree',
+      table.expiresAt.asc().nullsLast().op('timestamp_ops'),
     ),
   ],
 );

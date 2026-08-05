@@ -50,6 +50,7 @@ export class MsgService {
     content: string;
     contentType?: 'PURE_TEXT' | 'LINK';
     clientMessageId?: string;
+    retainLinkGeneration?: boolean;
   }) {
     return this.http.post<StandardResponse<{ id: string; createAt: string }>>(
       `${apiPrefix()}/send-message`,
@@ -498,6 +499,22 @@ export class MsgService {
       `${apiPrefix()}/query-messages`,
       params,
     );
+  }
+
+  getDeletedMessageHwm() {
+    return this.http.get<StandardResponse<{ hwm: string }>>(
+      `${apiPrefix()}/deleted-messages/hwm`,
+    );
+  }
+
+  queryDeletedMessages(params: {
+    threadId: number;
+    afterId: string;
+    take?: number;
+  }) {
+    return this.http.post<
+      StandardResponse<import('./model').DeletedMessageItem[]>
+    >(`${apiPrefix()}/deleted-messages/query`, params);
   }
 
   /** Resolve the P2P thread with a peer user — returns { threadId } when friends, THREAD_NOT_FOUND otherwise. */

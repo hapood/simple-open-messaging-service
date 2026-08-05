@@ -245,6 +245,71 @@ export class S2sController {
     );
   }
 
+  /** Same addressing shapes as /messages, but cursoring over this node's durable deletion log. */
+  @Get('message-deletions')
+  async getMessageDeletions(
+    @Req() req: FastifyRequest,
+    @Query('fromAccount') fromAccount?: string,
+    @Query('fromDomain') fromDomain?: string,
+    @Query('toAccount') toAccount?: string,
+    @Query('toDomain') toDomain?: string,
+    @Query('afterId') afterIdParam?: string,
+    @Query('take') takeParam?: string,
+  ) {
+    const signer = this.signerDomain(req);
+    this.requireBinding(toDomain, signer);
+    if (!toAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing toAccount query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    let afterId: bigint;
+    try {
+      afterId = BigInt(afterIdParam ?? '0');
+      if (afterId < 0n) throw new Error('negative');
+    } catch {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'afterId must be a non-negative integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const take = Math.min(Number(takeParam ?? '50') || 50, 50);
+    if (toAccount.startsWith('!')) {
+      return fromAccount && fromDomain
+        ? this.federation.serveOutboundDeletedMessagesGroupFrom(
+            toAccount,
+            fromAccount,
+            fromDomain,
+            signer,
+            afterId,
+            take,
+          )
+        : this.federation.serveOutboundDeletedMessagesGroup(
+            toAccount,
+            signer,
+            afterId,
+            take,
+          );
+    }
+    if (!fromAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing fromAccount query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return this.federation.serveOutboundDeletedMessages(
+      fromAccount,
+      toAccount,
+      signer,
+      afterId,
+      take,
+    );
+  }
+
   /** GET /api/v1/s2s/messages/before — the BACKWARD twin of /messages (reserved for external/other
    *  federation implementations; SOMS's own transport is forward-only). `beforeSeq` is an exclusive
    *  upper bound (`seq < beforeSeq`); `< 0` (default) means no upper bound → the latest `take` messages.

@@ -17,6 +17,7 @@ import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
+import { FederationIdentityService } from './federation-identity.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -52,6 +53,7 @@ import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
     FederationService,
     FederationBufferService,
     FederationReconnectService,
+    FederationIdentityService,
   ],
   exports: [
     KeypairService,
@@ -59,6 +61,7 @@ import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
     DiscoveryService,
     FederationService,
     FederationBufferService,
+    FederationIdentityService,
   ],
 })
 export class FederationModule {}

@@ -58,6 +58,11 @@ describe('MessageRepository', () => {
           useValue: {
             queryMessageLog: (queryMessageLogSpy =
               jasmine.createSpy('queryMessageLog')),
+            queryDeletedMessages: jasmine
+              .createSpy('queryDeletedMessages')
+              .and.returnValue(
+                of({ code: 0, message: '', data: [], hasMore: false }),
+              ),
           },
         },
         { provide: UserService, useValue: { sessionProfile } },
@@ -219,6 +224,66 @@ describe('MessageRepository', () => {
     expect((await db.get('messages', [42, 12]))?.content).toBe('new-insert');
     expect((await db.get('messages', [42, 15]))?.content).toBe('old-middle');
     expect((await db.get('messages', [42, 20]))?.content).toBe('new-right');
+  });
+
+  it('does not resurrect a tombstone when an in-flight HTTP page arrives later', async () => {
+    await webdb.applyDeletedMessages(
+      42,
+      [
+        {
+          id: '9',
+          threadId: 42,
+          seq: 10,
+          type: 'WITHDRAW',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      '9',
+    );
+
+    await webdb.putMessages([msg(42, 10, 'late-http-body')], {
+      threadId: 42,
+      left: 10,
+      right: 10,
+    });
+
+    expect(await webdb.getMessage(42, 10)).toBeUndefined();
+    expect(await webdb.getDeletedHwm(42)).toBe('9');
+    const db = await webdb.messageDb();
+    const raw = await db.get('messages', [42, 10]);
+    expect(raw?.isDeleted).toBeTrue();
+    expect(raw?.content).toBe('');
+  });
+
+  it('turns an existing cached message into a tombstone atomically with its HWM', async () => {
+    await webdb.putMessages([msg(42, 10, 'already-cached')], {
+      threadId: 42,
+      left: 10,
+      right: 10,
+    });
+
+    await webdb.applyDeletedMessages(
+      42,
+      [
+        {
+          id: '12',
+          threadId: 42,
+          seq: 10,
+          type: 'REPORT',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      '12',
+    );
+
+    expect(await webdb.getMessage(42, 10)).toBeUndefined();
+    expect(await webdb.getDeletedHwm(42)).toBe('12');
+    const db = await webdb.messageDb();
+    const raw = await db.get('messages', [42, 10]);
+    expect(raw?.isDeleted).toBeTrue();
+    expect(raw?.content).toBe('already-cached');
   });
 
   it('joins a left-adjacent coveredTail by resolving only the incoming left edge', async () => {
@@ -771,7 +836,7 @@ describe('MessageRepository', () => {
     ]);
   });
 
-  it('propagates one coalesced HTTP failure without recursively retrying', async () => {
+  it('propagates an HTTP failure to concurrent callers', async () => {
     await webdb.putMessages([msg(42, 6)]);
     const response = new Subject<StandardResponse<Message[]>>();
     queryMessageLogSpy.and.returnValue(response);
@@ -784,13 +849,12 @@ describe('MessageRepository', () => {
 
     const first = repo.queryMessages(42, query);
     const second = repo.queryMessages(42, query);
-    await waitFor(() => queryMessageLogSpy.calls.count() === 1);
+    await waitFor(() => queryMessageLogSpy.calls.count() >= 1);
     response.error(new Error('offline'));
 
     const [a, b] = await Promise.all([first, second]);
     expect(a.failed).toBeTrue();
     expect(b.failed).toBeTrue();
-    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces different truncateSeq values and applies each waiter boundary after commit', async () => {

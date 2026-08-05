@@ -122,9 +122,11 @@ export interface PopupInput {
   [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string };
   [PopupType.UPLOAD_DETAIL]: { threadId?: number };
   [PopupType.FORWARD]: {
-    messages: readonly ForwardMessageItem[];
-    recordKind: ForwardRecordKind;
-    mode: 'DIRECT' | 'HISTORY';
+    messages?: readonly ForwardMessageItem[];
+    recordKind?: ForwardRecordKind;
+    mode?: 'DIRECT' | 'HISTORY';
+    purpose?: 'FORWARD' | 'NATIVE_SHARE';
+    sharedText?: string;
   };
   [PopupType.FORWARD_DETAIL]: { bundleId: string };
   [PopupType.LINK_ORIGINAL]: { text: string; url: string };
@@ -284,7 +286,7 @@ export class RouteService {
       inputs: inputs as Record<string, unknown> | undefined,
       onResult: onResult as ((result: unknown) => void) | undefined,
       presentation: presentationDict[popupType],
-      desktopSize: 'standard',
+      desktopSize: popupType === PopupType.FORWARD ? 'wide' : 'standard',
       scopeThreadId: options?.scopeThreadId,
     });
     return { id };

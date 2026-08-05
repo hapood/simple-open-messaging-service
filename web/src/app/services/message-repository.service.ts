@@ -12,6 +12,7 @@ import {
   StandardResponse,
 } from './model';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
+import { SingleFlight } from '../lib/single-flight';
 
 /** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
 export type MessageQuery = Pick<
@@ -104,6 +105,12 @@ export class MessageRepository {
    */
   private readonly signal$ = new Subject<{ threadId: number; seq: number }>();
   readonly liveSignal$ = this.signal$.asObservable();
+  private readonly deletedSignal$ = new Subject<{
+    threadId: number;
+    seqs: number[];
+  }>();
+  readonly deletedLive$ = this.deletedSignal$.asObservable();
+  private readonly deletedSyncs = new Map<number, Promise<void>>();
 
   /** Successful transport reconnect. The repository clears the finite HTTP cutoff before waking views. */
   private readonly reconnectSignal = new Subject<void>();
@@ -134,7 +141,7 @@ export class MessageRepository {
   >();
   /** Same-start HTTP fills share one request regardless of count/cutoff. The promise resolves only after
    *  its response has committed to DB; every waiter then reloads its own rows from DB. */
-  private readonly inflightFills = new Map<string, Promise<CommittedFill>>();
+  private readonly inflightFills = new SingleFlight<string, CommittedFill>();
 
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
@@ -158,6 +165,20 @@ export class MessageRepository {
           m.data as { threadId: number; seq: number; ts: number },
         ),
       );
+
+    this.ws.eventSubject
+      .pipe(
+        filter(
+          (m) =>
+            m.event === 'DELETED_MESSAGE_UPDATED' &&
+            m.status === 0 &&
+            m.data !== undefined,
+        ),
+      )
+      .subscribe((m) => {
+        const d = m.data as { threadId: number };
+        if (typeof d.threadId === 'number') void this.syncDeleted(d.threadId);
+      });
 
     // Own the MEDIA_STATUS SSE: a federated media message finished localizing ('ready') or failed
     // ('failed'). Flow it through the reducer (anti-regression by sv) + IDB write + the mediaStatus signal
@@ -229,6 +250,7 @@ export class MessageRepository {
 
   /** Open-chat lifecycle hook: hydrate the durable O(1) tail summary once for this mounted thread. */
   retainCoverage(threadId: number, knownNewestSeq?: number): void {
+    void this.syncDeleted(threadId);
     const active = this.activeCoverage.get(threadId);
     if (active) {
       active.refs++;
@@ -273,6 +295,38 @@ export class MessageRepository {
             entry.state = coverage;
         }
       });
+  }
+
+  syncDeleted(threadId: number): Promise<void> {
+    const existing = this.deletedSyncs.get(threadId);
+    if (existing) return existing;
+    const run = this.syncDeletedInternal(threadId).finally(() => {
+      if (this.deletedSyncs.get(threadId) === run)
+        this.deletedSyncs.delete(threadId);
+    });
+    this.deletedSyncs.set(threadId, run);
+    return run;
+  }
+
+  private async syncDeletedInternal(threadId: number): Promise<void> {
+    let hwm = await this.webdb.getDeletedHwm(threadId);
+    for (;;) {
+      const res = await firstValueFrom(
+        this.msg.queryDeletedMessages({ threadId, afterId: hwm, take: 100 }),
+      );
+      if (res.code !== 0 || !res.data) return;
+      const items = res.data;
+      const next = items.at(-1)?.id ?? hwm;
+      await this.webdb.applyDeletedMessages(threadId, items, next);
+      if (items.length) {
+        this.deletedSignal$.next({
+          threadId,
+          seqs: items.map((item) => item.seq),
+        });
+      }
+      hwm = next;
+      if (!res.hasMore || items.length === 0) return;
+    }
   }
 
   /** Close-chat lifecycle hook: the durable summary remains, only its memory acceleration is released. */
@@ -658,23 +712,10 @@ export class MessageRepository {
       q.lastSeq === undefined
         ? undefined
         : `${threadId}:${q.lastSeq}:${q.orderBy}`;
-    let fill = key === undefined ? undefined : this.inflightFills.get(key);
-    if (!fill) {
-      fill = this.fetchAndCommit(threadId, q);
-      if (key !== undefined) {
-        this.inflightFills.set(key, fill);
-        void fill.then(
-          () => {
-            if (this.inflightFills.get(key) === fill)
-              this.inflightFills.delete(key);
-          },
-          () => {
-            if (this.inflightFills.get(key) === fill)
-              this.inflightFills.delete(key);
-          },
-        );
-      }
-    }
+    const fill =
+      key === undefined
+        ? this.fetchAndCommit(threadId, q)
+        : this.inflightFills.run(key, () => this.fetchAndCommit(threadId, q));
     const committed = await fill;
     if (waiterLifetime.aborted) {
       if (isDevMode())

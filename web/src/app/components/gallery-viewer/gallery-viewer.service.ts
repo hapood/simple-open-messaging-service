@@ -14,15 +14,31 @@ import type { AlbumImage } from '../message-cards/chat-item';
  * isn't shareable, so it lives on the pane stack rather than a route.
  */
 @Injectable({ providedIn: 'root' })
-export class GalleryViewerService extends TransientOverlayService<{ images: AlbumImage[]; startIndex: number; threadId: number }> {
+export class GalleryViewerService extends TransientOverlayService<{
+  images: AlbumImage[];
+  startIndex: number;
+  threadId: number;
+}> {
   protected readonly kind = 'gallery';
   protected readonly component = GalleryViewerComponent;
   protected readonly presentation = 'viewer';
+  private opened: { images: AlbumImage[]; threadId: number } | null = null;
 
   /** Open the gallery at `startIndex` within `images`, scoped to `threadId` (so the viewer can call the
    *  backend relocalize retry for the currently-shown image). No-op on an empty album. Replaces any open viewer. */
   open(images: AlbumImage[], startIndex: number, threadId: number): void {
     if (images.length === 0) return;
+    this.opened = { images, threadId };
     this.pushEntry({ images, startIndex, threadId });
+  }
+
+  closeIfDeleted(threadId: number, seq: number): void {
+    if (
+      this.opened?.threadId === threadId &&
+      this.opened.images.some((image) => image.msgId === seq)
+    ) {
+      this.close();
+      this.opened = null;
+    }
   }
 }
