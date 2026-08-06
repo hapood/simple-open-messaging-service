@@ -1,6 +1,6 @@
 // Unit tests for CallsService — the in-memory live state machine, bilateral lifecycle fan-out,
 // terminal CALL-bubble persistence, signaling relay, and the ringing-timeout backstop. The deps
-// (prisma, SSE, push, participants, MessageService, MessageFanoutService) are mocked; the service is
+// (store, SSE, push, participants, MessageService, MessageFanoutService) are mocked; the service is
 // instantiated directly (the codebase's unit-spec convention).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CallsService } from './calls.service.js';

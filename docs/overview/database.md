@@ -209,20 +209,20 @@ One row per (node, UTC day, category). A node is a domain — the local `SOMS_DO
 
 ## Enums
 
-```prisma
-enum PushPlatform { ANDROID  WEB  IOS }
-enum MessageThreadType { P2P  GROUP }
-enum GroupRole { OWNER  ADMIN  MEMBER }        // GROUP only; null for P2P
-enum InviteKind { FRIEND  GROUP }
-enum InviteStatus { PENDING  ACCEPTED  REJECTED  REVOKED  EXPIRED }
-enum ThreadRevisionDirection { ADD  DELETE }
+```sql
+CREATE TYPE "PushPlatform"            AS ENUM ('ANDROID', 'WEB', 'IOS');
+CREATE TYPE "MessageThreadType"       AS ENUM ('P2P', 'GROUP');
+CREATE TYPE "GroupRole"               AS ENUM ('OWNER', 'ADMIN', 'MEMBER');   -- GROUP only; null for P2P
+CREATE TYPE "InviteKind"              AS ENUM ('FRIEND', 'GROUP');
+CREATE TYPE "InviteStatus"            AS ENUM ('PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED');
+CREATE TYPE "ThreadRevisionDirection" AS ENUM ('ADD', 'DELETE');
 
-enum ContentType {
-  PURE_TEXT  INVITE  IMAGE  VIDEO  FILE  AUDIO  LINK
-  CALL       // 1:1 WebRTC call record — SERVER-AUTHORED ONLY (CallsService writes the terminal bubble)
-}
+CREATE TYPE "ContentType" AS ENUM (
+  'PURE_TEXT', 'INVITE', 'IMAGE', 'VIDEO', 'FILE', 'AUDIO', 'LINK',
+  'CALL'   -- 1:1 WebRTC call record — SERVER-AUTHORED ONLY (CallsService writes the terminal bubble)
+);
 
-enum AdminRole { SUPER_ADMIN  ADMIN  VIEWER }
+CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 ```
 
 ## Design Notes

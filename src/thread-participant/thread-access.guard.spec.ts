@@ -121,7 +121,7 @@ describe('ThreadAccessGuard', () => {
 
   it('throws VALIDATION_FAILED when threadId is a non-number (raw body, pre-ValidationPipe)', async () => {
     // Guards run before ValidationPipe coerces, so a client-sent string reaches the guard verbatim —
-    // it must be rejected here or it surfaces as an opaque Prisma 500.
+    // it must be rejected here or it surfaces as an opaque database 500.
     const ctx = makeCtx(7, { threadId: '12' });
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
       bizCode: BusinessCode.VALIDATION_FAILED,

@@ -271,7 +271,7 @@ export class QueryMessagesDto {
   @ApiProperty({
     example: 1,
     description:
-      'Cursor-row flag, NOT offset. 0 includes the lastId row; 1 excludes it (standard Prisma keyset idiom). Capped at 1 — arbitrary offset-on-top-of-cursor is not supported.',
+      'Cursor-row flag, NOT offset. 0 includes the lastId row; 1 excludes it (standard keyset idiom). Capped at 1 — arbitrary offset-on-top-of-cursor is not supported.',
   })
   @Type(() => Number)
   @IsInt()

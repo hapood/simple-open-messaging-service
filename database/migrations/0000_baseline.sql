@@ -1,3 +1,9 @@
+-- Consolidated baseline produced by squashing database/migrations/0000~0031.
+-- Equivalent to applying the 32 incremental migrations in order; each section is the verbatim
+-- original file. Verified against a clean replay (schemaSignature parity).
+
+
+-- ═══════════════════════ Source: 0000_baseline.sql ═══════════════════════
 
 -- Source: 0_init/migration.sql
 
@@ -1305,3 +1311,755 @@ ALTER TABLE "ForwardBundle"
 -- Source: 20260731223000_group_dissolved_state/migration.sql
 
 ALTER TABLE "Group" ADD COLUMN "dissolvedAt" TIMESTAMP(3);
+
+-- ═══════════════════════ Source: 0001_thread_clear_seq.sql ═══════════════════════
+ALTER TABLE "ThreadParticipant" ADD COLUMN "clearedSeq" INTEGER;
+
+UPDATE "ThreadParticipant" AS participant
+SET "clearedSeq" = COALESCE(
+  (
+    SELECT MAX(message.seq)
+    FROM "Message" AS message
+    WHERE message."threadId" = participant."threadId"
+      AND message."createdAt" <= participant."clearedAt"
+  ),
+  -1
+)
+WHERE participant."clearedAt" IS NOT NULL;
+
+ALTER TABLE "ThreadParticipant" DROP COLUMN "clearedAt";
+
+ALTER TABLE "ThreadParticipant"
+  ADD CONSTRAINT "ThreadParticipant_cleared_seq_check"
+  CHECK ("clearedSeq" IS NULL OR "clearedSeq" >= -1);
+
+-- ═══════════════════════ Source: 0002_read_revision.sql ═══════════════════════
+ALTER TABLE "User"
+ADD COLUMN "readRevision" INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE "ThreadParticipant"
+ADD COLUMN "readRevision" INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX "ThreadParticipant_userId_readRevision_idx"
+ON "ThreadParticipant" ("userId", "readRevision");
+
+-- ═══════════════════════ Source: 0003_user_preference.sql ═══════════════════════
+CREATE TABLE "UserPreference" (
+  "userId" INTEGER NOT NULL,
+  "key" VARCHAR(100) NOT NULL,
+  "value" JSONB NOT NULL,
+  "revision" INTEGER NOT NULL DEFAULT 0,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "UserPreference_pkey" PRIMARY KEY ("userId", "key"),
+  CONSTRAINT "UserPreference_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id")
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "UserPreference_value_not_json_null_check"
+    CHECK ("value" <> 'null'::jsonb),
+  CONSTRAINT "UserPreference_revision_check"
+    CHECK ("revision" >= 0)
+);
+
+ALTER TABLE "SessionToken"
+  ADD COLUMN "autoTerminateDays" INTEGER NOT NULL DEFAULT 30,
+  ADD CONSTRAINT "SessionToken_auto_terminate_days_check"
+    CHECK ("autoTerminateDays" IN (7, 30, 90, 180, 365));
+
+DELETE FROM "SessionToken";
+
+ALTER TABLE "SessionToken"
+  ALTER COLUMN "expiresAt" SET NOT NULL,
+  DROP COLUMN "persistent",
+  DROP COLUMN "trusted";
+
+-- ═══════════════════════ Source: 0004_media_asset_status.sql ═══════════════════════
+DELETE FROM "ForwardBundleAsset";
+DELETE FROM "MediaMessage";
+DELETE FROM "PendingMedia" WHERE digest IS NOT NULL;
+DELETE FROM "MediaAsset";
+
+CREATE TYPE "MediaAssetStatus" AS ENUM ('PENDING', 'READY', 'DELETING', 'DELETED');
+
+ALTER TABLE "MediaAsset"
+  ADD COLUMN "status" "MediaAssetStatus" NOT NULL DEFAULT 'READY',
+  ADD COLUMN "stateChangedAt" timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+DROP INDEX "MediaAsset_refs_idx";
+ALTER TABLE "MediaAsset" DROP COLUMN "refs";
+
+CREATE INDEX "MediaAsset_status_createdAt_idx"
+  ON "MediaAsset" USING btree ("status", "stateChangedAt");
+
+-- ═══════════════════════ Source: 0005_remove_local_server_quota.sql ═══════════════════════
+-- Local accounts are no longer aggregated into the server-domain quota bucket. Federated peers remain
+-- domain-scoped; local accounts receive a separate userId-scoped quota model in a subsequent migration.
+DELETE FROM "SystemSetting" WHERE "key" = 'quota:local';
+
+-- ═══════════════════════ Source: 0006_user_quota.sql ═══════════════════════
+CREATE TABLE "UserQuotaPolicy" (
+  "userId" integer PRIMARY KEY NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "dailyMsgLimit" integer,
+  "dailyImageLimit" integer,
+  "dailyLargeFileLimit" integer,
+  "dailyRequestLimit" integer,
+  "maxImageBytes" integer,
+  "maxLargeFileBytes" integer,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "UserQuotaPolicy_nonnegative_check" CHECK (
+    ("dailyMsgLimit" IS NULL OR "dailyMsgLimit" >= 0) AND
+    ("dailyImageLimit" IS NULL OR "dailyImageLimit" >= 0) AND
+    ("dailyLargeFileLimit" IS NULL OR "dailyLargeFileLimit" >= 0) AND
+    ("dailyRequestLimit" IS NULL OR "dailyRequestLimit" >= 0) AND
+    ("maxImageBytes" IS NULL OR "maxImageBytes" >= 0) AND
+    ("maxLargeFileBytes" IS NULL OR "maxLargeFileBytes" >= 0)
+  )
+);
+
+CREATE TABLE "UserQuotaDailyUsage" (
+  "userId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "date" date NOT NULL,
+  "category" varchar(15) NOT NULL,
+  "count" integer DEFAULT 0 NOT NULL,
+  CONSTRAINT "UserQuotaDailyUsage_pkey" PRIMARY KEY("userId", "date", "category"),
+  CONSTRAINT "UserQuotaDailyUsage_count_check" CHECK ("count" >= 0),
+  CONSTRAINT "UserQuotaDailyUsage_category_check" CHECK (
+    "category" IN ('messages', 'images', 'largeFiles', 'requests')
+  )
+);
+
+CREATE INDEX "UserQuotaDailyUsage_date_idx" ON "UserQuotaDailyUsage" USING btree ("date");
+
+-- ═══════════════════════ Source: 0007_media_asset_failed.sql ═══════════════════════
+ALTER TYPE "MediaAssetStatus" ADD VALUE IF NOT EXISTS 'FAILED';
+
+-- ═══════════════════════ Source: 0008_resumable_upload.sql ═══════════════════════
+CREATE TYPE "UploadSessionStatus" AS ENUM (
+  'UPLOADING',
+  'COMPLETING',
+  'COMPLETED',
+  'ABORTED'
+);
+
+CREATE TABLE "UploadSession" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "uploadId" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "clientMessageId" VARCHAR(36) NOT NULL,
+  "creatorId" INTEGER NOT NULL,
+  "contentType" "ContentType" NOT NULL,
+  "originalName" VARCHAR(100) NOT NULL,
+  "mimeType" VARCHAR(255) NOT NULL,
+  "totalBytes" BIGINT NOT NULL,
+  "receivedBytes" BIGINT NOT NULL DEFAULT 0,
+  "status" "UploadSessionStatus" NOT NULL DEFAULT 'UPLOADING',
+  "tmpKey" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "digest" VARCHAR(64),
+  "result" JSONB,
+  "errorReason" VARCHAR(255),
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "completedAt" TIMESTAMP(3),
+  "abortedAt" TIMESTAMP(3),
+  CONSTRAINT "UploadSession_creatorId_fkey" FOREIGN KEY ("creatorId")
+    REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT "UploadSession_totalBytes_check" CHECK ("totalBytes" > 0),
+  CONSTRAINT "UploadSession_receivedBytes_check"
+    CHECK ("receivedBytes" >= 0 AND "receivedBytes" <= "totalBytes")
+);
+
+CREATE UNIQUE INDEX "UploadSession_uploadId_key" ON "UploadSession"("uploadId");
+CREATE UNIQUE INDEX "UploadSession_clientMessageId_key" ON "UploadSession"("clientMessageId");
+CREATE INDEX "UploadSession_creatorId_status_idx" ON "UploadSession"("creatorId", "status");
+CREATE INDEX "UploadSession_status_updatedAt_idx" ON "UploadSession"("status", "updatedAt");
+CREATE INDEX "UploadSession_digest_idx" ON "UploadSession"("digest") WHERE "digest" IS NOT NULL;
+
+-- ═══════════════════════ Source: 0009_link_card_rules.sql ═══════════════════════
+CREATE TABLE "LinkCardRule" (
+  "id" SERIAL PRIMARY KEY,
+  "matchUrl" VARCHAR(2048) NOT NULL,
+  "hostname" VARCHAR(255) NOT NULL,
+  "displayName" VARCHAR(100) NOT NULL,
+  "includeSubdomains" BOOLEAN NOT NULL DEFAULT TRUE,
+  "enabled" BOOLEAN NOT NULL DEFAULT TRUE,
+  "priority" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX "LinkCardRule_hostname_key" ON "LinkCardRule"("hostname");
+CREATE INDEX "LinkCardRule_enabled_priority_idx" ON "LinkCardRule"("enabled", "priority" DESC);
+
+CREATE TABLE "LinkFavicon" (
+  "ruleId" INTEGER PRIMARY KEY,
+  "sourceUrl" VARCHAR(2048) NOT NULL,
+  "digest" VARCHAR(64) NOT NULL,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "LinkFavicon_ruleId_fkey" FOREIGN KEY ("ruleId") REFERENCES "LinkCardRule"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "LinkFavicon_digest_fkey" FOREIGN KEY ("digest") REFERENCES "MediaAsset"("digest") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
+CREATE INDEX "LinkFavicon_digest_idx" ON "LinkFavicon"("digest");
+
+-- ═══════════════════════ Source: 0010_login_code_issued_at_required.sql ═══════════════════════
+ALTER TABLE "LoginCode" ALTER COLUMN "issuedAt" DROP DEFAULT;
+
+-- ═══════════════════════ Source: 0011_message_assets.sql ═══════════════════════
+ALTER TABLE "MediaMessage" RENAME TO "MessageAsset";
+
+ALTER TABLE "MessageAsset" RENAME CONSTRAINT "MediaMessage_messageId_fkey" TO "MessageAsset_messageId_fkey";
+ALTER TABLE "MessageAsset" RENAME CONSTRAINT "MediaMessage_threadId_fkey" TO "MessageAsset_threadId_fkey";
+ALTER TABLE "MessageAsset" RENAME CONSTRAINT "MediaMessage_pkey" TO "MessageAsset_old_pkey";
+ALTER INDEX "MediaMessage_digest_idx" RENAME TO "MessageAsset_digest_idx";
+ALTER INDEX "MediaMessage_threadId_idx" RENAME TO "MessageAsset_threadId_idx";
+
+ALTER TABLE "MessageAsset" DROP CONSTRAINT "MessageAsset_old_pkey";
+ALTER TABLE "MessageAsset" ADD CONSTRAINT "MessageAsset_pkey" PRIMARY KEY ("messageId", "digest");
+ALTER TABLE "MessageAsset" ADD COLUMN "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL;
+
+-- ═══════════════════════ Source: 0012_simplify_link_card_rules.sql ═══════════════════════
+DROP TABLE "LinkFavicon";
+
+DROP INDEX "LinkCardRule_enabled_priority_idx";
+
+ALTER TABLE "LinkCardRule" RENAME COLUMN "displayName" TO "note";
+ALTER TABLE "LinkCardRule" ALTER COLUMN "note" DROP NOT NULL;
+ALTER TABLE "LinkCardRule"
+  DROP COLUMN "matchUrl",
+  DROP COLUMN "includeSubdomains",
+  DROP COLUMN "enabled",
+  DROP COLUMN "priority";
+
+-- ═══════════════════════ Source: 0013_message_deletion.sql ═══════════════════════
+CREATE TYPE "MessageDeleteType" AS ENUM ('WITHDRAW', 'REPORT');
+
+CREATE TABLE "DeletedMessage" (
+    "id" BIGSERIAL PRIMARY KEY,
+    "threadId" INTEGER NOT NULL,
+    "seq" INTEGER NOT NULL,
+    "type" "MessageDeleteType" NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "DeletedMessage_threadId_fkey" FOREIGN KEY ("threadId")
+        REFERENCES "MessageThread"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX "DeletedMessage_threadId_seq_key" ON "DeletedMessage"("threadId", "seq");
+CREATE INDEX "DeletedMessage_threadId_id_idx" ON "DeletedMessage"("threadId", "id");
+
+CREATE TABLE "FederatedMessageTombstone" (
+    "id" BIGSERIAL PRIMARY KEY,
+    "threadId" INTEGER NOT NULL,
+    "creatorId" INTEGER NOT NULL,
+    "originSeq" INTEGER NOT NULL,
+    "authorityDomain" VARCHAR(255) NOT NULL,
+    "sourceDomain" VARCHAR(255) NOT NULL,
+    "remoteDeletedId" BIGINT NOT NULL,
+    "type" "MessageDeleteType" NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "FederatedMessageTombstone_threadId_fkey" FOREIGN KEY ("threadId")
+        REFERENCES "MessageThread"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "FederatedMessageTombstone_creatorId_fkey" FOREIGN KEY ("creatorId")
+        REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX "FederatedMessageTombstone_target_key"
+    ON "FederatedMessageTombstone"("threadId", "creatorId", "originSeq");
+CREATE UNIQUE INDEX "FederatedMessageTombstone_source_event_key"
+    ON "FederatedMessageTombstone"("sourceDomain", "remoteDeletedId");
+
+CREATE TABLE "FederationDeletedCursor" (
+    "id" BIGSERIAL PRIMARY KEY,
+    "threadId" INTEGER NOT NULL,
+    "peerDomain" VARCHAR(255) NOT NULL,
+    "streamAccount" VARCHAR(255) NOT NULL DEFAULT '',
+    "streamKind" VARCHAR(32) NOT NULL,
+    "deletedHwm" BIGINT NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "FederationDeletedCursor_threadId_fkey" FOREIGN KEY ("threadId")
+        REFERENCES "MessageThread"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX "FederationDeletedCursor_stream_key"
+    ON "FederationDeletedCursor"("threadId", "peerDomain", "streamAccount", "streamKind");
+
+-- ═══════════════════════ Source: 0014_local_federation_identity.sql ═══════════════════════
+CREATE TABLE "LocalFederationIdentity" (
+    "domain" VARCHAR(63) PRIMARY KEY,
+    "identityEpoch" INTEGER NOT NULL DEFAULT 1,
+    "rootKeyFingerprint" VARCHAR(80) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "LocalFederationIdentity_identityEpoch_check" CHECK ("identityEpoch" > 0)
+);
+
+-- ═══════════════════════ Source: 0015_federated_peer_identity.sql ═══════════════════════
+ALTER TABLE "FederatedPeer"
+    ADD COLUMN "pairwiseServerId" VARCHAR(64),
+    ADD COLUMN "rootKeyFingerprint" VARCHAR(80),
+    ADD COLUMN "identityEpoch" INTEGER,
+    ADD COLUMN "identityPinnedAt" TIMESTAMP(3),
+    ADD COLUMN "identityLostAt" TIMESTAMP(3),
+    ADD COLUMN "identityLostReason" VARCHAR(255),
+    ADD COLUMN "resetGeneration" INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN "resetAt" TIMESTAMP(3),
+    ADD CONSTRAINT "FederatedPeer_identityEpoch_check"
+      CHECK ("identityEpoch" IS NULL OR "identityEpoch" > 0);
+
+CREATE TABLE "S2SIdentityNonce" (
+    "originDomain" VARCHAR(63) NOT NULL,
+    "nonceHash" VARCHAR(64) NOT NULL,
+    "issuedAt" TIMESTAMP(3) NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "S2SIdentityNonce_pkey" PRIMARY KEY ("originDomain", "nonceHash")
+);
+
+CREATE INDEX "S2SIdentityNonce_expiresAt_idx"
+    ON "S2SIdentityNonce" USING BTREE ("expiresAt");
+
+-- ═══════════════════════ Source: 0016_federated_peer_reset.sql ═══════════════════════
+CREATE TABLE "FederatedPeerReset" (
+  "domain" VARCHAR(63) PRIMARY KEY NOT NULL,
+  "resetGeneration" INTEGER NOT NULL,
+  "reinitPending" BOOLEAN NOT NULL DEFAULT false,
+  "resetAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "FederatedPeerReset_resetGeneration_check"
+    CHECK ("resetGeneration" > 0)
+);
+
+COMMENT ON TABLE "FederatedPeerReset" IS
+  'Persistent tombstone preventing a reset federation domain from inheriting its former identity or authorization.';
+
+-- ═══════════════════════ Source: 0017_federation_thread_truncation.sql ═══════════════════════
+ALTER TABLE "MessageThread"
+  ADD COLUMN "federationTruncated" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN "federationVersion" INTEGER NOT NULL DEFAULT 0,
+  ADD CONSTRAINT "MessageThread_federationVersion_check"
+    CHECK ("federationVersion" >= 0);
+
+COMMENT ON COLUMN "MessageThread"."federationTruncated" IS
+  'True after federation reset has removed the thread contents while retaining its identity shell.';
+
+COMMENT ON COLUMN "MessageThread"."federationVersion" IS
+  'Incremented when federation truncation completes; stale asynchronous responses must not write across versions.';
+
+CREATE UNIQUE INDEX "FederatedPeer_single_reset_in_progress_key"
+  ON "FederatedPeer" ((true))
+  WHERE "trustLevel" = 'reset_in_progress';
+
+-- ═══════════════════════ Source: 0018_message_reports.sql ═══════════════════════
+CREATE TYPE "MessageReportStatus" AS ENUM ('PENDING', 'UPHELD', 'REJECTED');
+
+CREATE TABLE "MessageReport" (
+  "id" bigserial PRIMARY KEY NOT NULL,
+  "messageId" bigint NOT NULL,
+  "threadId" integer NOT NULL,
+  "messageSeq" integer NOT NULL,
+  "reporterId" integer NOT NULL,
+  "status" "MessageReportStatus" DEFAULT 'PENDING' NOT NULL,
+  "reviewedByAdminId" integer,
+  "reviewedAt" timestamp(3),
+  "createdAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "MessageReport_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES "Message"("id") ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT "MessageReport_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES "MessageThread"("id") ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT "MessageReport_reporterId_fkey" FOREIGN KEY ("reporterId") REFERENCES "User"("id") ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT "MessageReport_reviewedByAdminId_fkey" FOREIGN KEY ("reviewedByAdminId") REFERENCES "Admin"("id") ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX "MessageReport_reporterId_messageId_key" ON "MessageReport" USING btree ("reporterId", "messageId");
+CREATE INDEX "MessageReport_status_createdAt_idx" ON "MessageReport" USING btree ("status", "createdAt" DESC);
+CREATE INDEX "MessageReport_messageId_idx" ON "MessageReport" USING btree ("messageId");
+
+-- ═══════════════════════ Source: 0019_allow_truncated_group_shell.sql ═══════════════════════
+ALTER TABLE "MessageThread"
+  DROP CONSTRAINT "MessageThread_groupUserId_type_check";
+
+ALTER TABLE "MessageThread"
+  ADD CONSTRAINT "MessageThread_groupUserId_type_check"
+  CHECK (
+    "federationTruncated"
+    OR ((type = 'P2P'::"MessageThreadType") = ("groupUserId" IS NULL))
+  );
+
+COMMENT ON CONSTRAINT "MessageThread_groupUserId_type_check" ON "MessageThread" IS
+  'A truncated federation thread is an inert retained shell and no longer owns a group user.';
+
+-- ═══════════════════════ Source: 0020_expand_federated_peer_trust_level.sql ═══════════════════════
+ALTER TABLE "FederatedPeer"
+  ALTER COLUMN "trustLevel" TYPE VARCHAR(31);
+
+COMMENT ON COLUMN "FederatedPeer"."trustLevel" IS
+  'Federation trust state, including the reset_in_progress maintenance state.';
+
+-- ═══════════════════════ Source: 0021_federated_peer_trust_level_check.sql ═══════════════════════
+ALTER TABLE "FederatedPeer"
+  ADD CONSTRAINT "FederatedPeer_trustLevel_check"
+  CHECK (
+    "trustLevel" IN (
+      'pending',
+      'trusted',
+      'demoted',
+      'blocked',
+      'identity_lost',
+      'reset_in_progress'
+    )
+  );
+
+-- ═══════════════════════ Source: 0022_link_card_image_selection.sql ═══════════════════════
+ALTER TABLE "LinkCardRule"
+  ADD COLUMN "imageSelection" VARCHAR(5) NOT NULL DEFAULT 'first';
+
+ALTER TABLE "LinkCardRule"
+  ADD COLUMN "descriptionSelection" VARCHAR(5) NOT NULL DEFAULT 'first';
+
+ALTER TABLE "LinkCardRule"
+  ADD CONSTRAINT "LinkCardRule_imageSelection_check"
+  CHECK ("imageSelection" IN ('first', 'last'));
+
+ALTER TABLE "LinkCardRule"
+  ADD CONSTRAINT "LinkCardRule_descriptionSelection_check"
+  CHECK ("descriptionSelection" IN ('first', 'last'));
+
+UPDATE "LinkCardRule"
+SET "imageSelection" = 'last',
+    "descriptionSelection" = 'last',
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "hostname" IN ('xiaohongshu.com', 'xhslink.com');
+
+-- ═══════════════════════ Source: 0023_thread_audience.sql ═══════════════════════
+CREATE TABLE "ThreadAudience" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "targetDomain" VARCHAR(63) NOT NULL,
+  "localUserId" INTEGER,
+  "threadId" INTEGER NOT NULL,
+  "accessEpoch" INTEGER NOT NULL,
+  "visibleFromMessageId" BIGINT NOT NULL,
+  "visibleThroughMessageId" BIGINT,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "endedAt" TIMESTAMP(3),
+
+  CONSTRAINT "ThreadAudience_target_check" CHECK (
+    ("targetDomain" = 'local' AND "localUserId" IS NOT NULL)
+    OR
+    ("targetDomain" <> 'local' AND "localUserId" IS NULL)
+  ),
+  CONSTRAINT "ThreadAudience_accessEpoch_check" CHECK ("accessEpoch" > 0),
+  CONSTRAINT "ThreadAudience_visibleRange_check" CHECK (
+    "visibleThroughMessageId" IS NULL OR "visibleThroughMessageId" >= "visibleFromMessageId"
+  ),
+  CONSTRAINT "ThreadAudience_localUserId_fkey"
+    FOREIGN KEY ("localUserId") REFERENCES "User"("id") ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT "ThreadAudience_threadId_fkey"
+    FOREIGN KEY ("threadId") REFERENCES "MessageThread"("id") ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX "ThreadAudience_local_epoch_key"
+  ON "ThreadAudience" ("targetDomain", "localUserId", "threadId", "accessEpoch")
+  WHERE "targetDomain" = 'local';
+
+CREATE UNIQUE INDEX "ThreadAudience_peer_epoch_key"
+  ON "ThreadAudience" ("targetDomain", "threadId", "accessEpoch")
+  WHERE "targetDomain" <> 'local';
+
+CREATE INDEX "ThreadAudience_local_access_idx"
+  ON "ThreadAudience" ("localUserId", "endedAt", "threadId")
+  WHERE "targetDomain" = 'local';
+
+CREATE INDEX "ThreadAudience_peer_access_idx"
+  ON "ThreadAudience" ("targetDomain", "endedAt", "threadId")
+  WHERE "targetDomain" <> 'local';
+
+CREATE INDEX "Message_threadId_id_idx" ON "Message" ("threadId", "id");
+
+-- ═══════════════════════ Source: 0024_durable_discovery_foundation.sql ═══════════════════════
+ALTER TABLE "ThreadAudience"
+  DROP CONSTRAINT "ThreadAudience_visibleRange_check";
+
+ALTER TABLE "ThreadAudience"
+  RENAME COLUMN "visibleFromMessageId" TO "startAfterOriginSeq";
+
+ALTER TABLE "ThreadAudience"
+  RENAME COLUMN "visibleThroughMessageId" TO "visibleThroughOriginSeq";
+
+-- 0023 has not been a production discovery source. Existing rows describe freshly-created P2P
+-- access, whose exact pre-message boundary is -1; closed rows end at the thread's committed max seq.
+UPDATE "ThreadAudience"
+SET
+  "startAfterOriginSeq" = -1,
+  "visibleThroughOriginSeq" = CASE
+    WHEN "visibleThroughOriginSeq" IS NULL THEN NULL
+    ELSE COALESCE(
+      (SELECT MAX(message.seq) FROM "Message" message WHERE message."threadId" = "ThreadAudience"."threadId"),
+      -1
+    )
+  END;
+
+ALTER TABLE "ThreadAudience"
+  ALTER COLUMN "startAfterOriginSeq" TYPE INTEGER
+    USING "startAfterOriginSeq"::INTEGER,
+  ALTER COLUMN "visibleThroughOriginSeq" TYPE INTEGER
+    USING "visibleThroughOriginSeq"::INTEGER;
+
+ALTER TABLE "ThreadAudience"
+  ADD CONSTRAINT "ThreadAudience_visibleRange_check" CHECK (
+    "startAfterOriginSeq" >= -1
+    AND (
+      "visibleThroughOriginSeq" IS NULL
+      OR "visibleThroughOriginSeq" >= "startAfterOriginSeq"
+    )
+  );
+
+CREATE TABLE "DiscoveryTarget" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "targetDomain" VARCHAR(63) NOT NULL,
+  "localUserId" INTEGER,
+  "latestChangeId" BIGINT NOT NULL DEFAULT 0,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT "DiscoveryTarget_identity_check" CHECK (
+    ("targetDomain" = 'local' AND "localUserId" IS NOT NULL)
+    OR
+    ("targetDomain" <> 'local' AND "localUserId" IS NULL)
+  ),
+  CONSTRAINT "DiscoveryTarget_latestChangeId_check" CHECK ("latestChangeId" >= 0),
+  CONSTRAINT "DiscoveryTarget_localUserId_fkey"
+    FOREIGN KEY ("localUserId") REFERENCES "User"("id") ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX "DiscoveryTarget_local_key"
+  ON "DiscoveryTarget" ("targetDomain", "localUserId")
+  WHERE "targetDomain" = 'local';
+
+CREATE UNIQUE INDEX "DiscoveryTarget_peer_key"
+  ON "DiscoveryTarget" ("targetDomain")
+  WHERE "targetDomain" <> 'local';
+
+CREATE TABLE "DiscoveryChange" (
+  "targetId" BIGINT NOT NULL,
+  "changeId" BIGINT NOT NULL,
+  "audienceId" BIGINT NOT NULL,
+  "threadId" INTEGER NOT NULL,
+  "messageId" BIGINT NOT NULL,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT "DiscoveryChange_pkey" PRIMARY KEY ("targetId", "changeId"),
+  CONSTRAINT "DiscoveryChange_changeId_check" CHECK ("changeId" > 0),
+  CONSTRAINT "DiscoveryChange_targetId_fkey"
+    FOREIGN KEY ("targetId") REFERENCES "DiscoveryTarget"("id") ON DELETE CASCADE,
+  CONSTRAINT "DiscoveryChange_audienceId_fkey"
+    FOREIGN KEY ("audienceId") REFERENCES "ThreadAudience"("id") ON DELETE CASCADE,
+  CONSTRAINT "DiscoveryChange_threadId_fkey"
+    FOREIGN KEY ("threadId") REFERENCES "MessageThread"("id") ON DELETE CASCADE,
+  CONSTRAINT "DiscoveryChange_messageId_fkey"
+    FOREIGN KEY ("messageId") REFERENCES "Message"("id") ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX "DiscoveryChange_target_message_key"
+  ON "DiscoveryChange" ("targetId", "messageId");
+
+CREATE INDEX "DiscoveryChange_audience_idx"
+  ON "DiscoveryChange" ("audienceId");
+
+CREATE TABLE "FederationPullCursor" (
+  "peerDomain" VARCHAR(63) PRIMARY KEY,
+  "remoteHwm" BIGINT NOT NULL DEFAULT 0,
+  "lastAdvertisedHwm" BIGINT NOT NULL DEFAULT 0,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT "FederationPullCursor_remoteHwm_check" CHECK ("remoteHwm" >= 0),
+  CONSTRAINT "FederationPullCursor_lastAdvertisedHwm_check" CHECK ("lastAdvertisedHwm" >= 0),
+  CONSTRAINT "FederationPullCursor_peerDomain_fkey"
+    FOREIGN KEY ("peerDomain") REFERENCES "FederatedPeer"("domain") ON DELETE CASCADE
+);
+
+-- ═══════════════════════ Source: 0025_current_thread_audience.sql ═══════════════════════
+-- ThreadAudience is a current-access set, not an access-history ledger. Revocation deletes the row;
+-- a later authorization inserts it again. Message history remains in the server's shared cache.
+DROP INDEX "ThreadAudience_local_epoch_key";
+DROP INDEX "ThreadAudience_peer_epoch_key";
+DROP INDEX "ThreadAudience_local_access_idx";
+DROP INDEX "ThreadAudience_peer_access_idx";
+
+ALTER TABLE "ThreadAudience"
+  DROP CONSTRAINT "ThreadAudience_accessEpoch_check",
+  DROP CONSTRAINT "ThreadAudience_visibleRange_check",
+  DROP COLUMN "accessEpoch",
+  DROP COLUMN "startAfterOriginSeq",
+  DROP COLUMN "visibleThroughOriginSeq",
+  DROP COLUMN "endedAt";
+
+CREATE UNIQUE INDEX "ThreadAudience_local_key"
+  ON "ThreadAudience" ("targetDomain", "localUserId", "threadId")
+  WHERE "targetDomain" = 'local';
+
+CREATE UNIQUE INDEX "ThreadAudience_peer_key"
+  ON "ThreadAudience" ("targetDomain", "threadId")
+  WHERE "targetDomain" <> 'local';
+
+CREATE INDEX "ThreadAudience_local_access_idx"
+  ON "ThreadAudience" ("localUserId", "threadId")
+  WHERE "targetDomain" = 'local';
+
+CREATE INDEX "ThreadAudience_peer_access_idx"
+  ON "ThreadAudience" ("targetDomain", "threadId")
+  WHERE "targetDomain" <> 'local';
+
+ALTER TABLE "DiscoveryTarget"
+  DROP CONSTRAINT "DiscoveryTarget_latestChangeId_check";
+
+ALTER TABLE "DiscoveryTarget"
+  RENAME COLUMN "latestChangeId" TO "allocatedThrough";
+
+ALTER TABLE "DiscoveryTarget"
+  ADD CONSTRAINT "DiscoveryTarget_allocatedThrough_check" CHECK ("allocatedThrough" >= 0);
+
+-- ═══════════════════════ Source: 0026_creator_audience_delivery_boundary.sql ═══════════════════════
+CREATE TYPE "ThreadAudienceScope" AS ENUM ('THREAD', 'CREATOR');
+
+ALTER TABLE "ThreadAudience"
+  ADD COLUMN "scope" "ThreadAudienceScope" NOT NULL DEFAULT 'THREAD',
+  ADD COLUMN "creatorUserId" INTEGER,
+  ADD COLUMN "deliverThroughChangeId" BIGINT,
+  ADD CONSTRAINT "ThreadAudience_creatorUserId_fkey"
+    FOREIGN KEY ("creatorUserId") REFERENCES "User"("id") ON UPDATE CASCADE ON DELETE CASCADE,
+  ADD CONSTRAINT "ThreadAudience_scope_check" CHECK (
+    (
+      "scope" = 'THREAD'
+      AND "creatorUserId" IS NULL
+      AND "deliverThroughChangeId" IS NULL
+    )
+    OR
+    (
+      "scope" = 'CREATOR'
+      AND "targetDomain" <> 'local'
+      AND "localUserId" IS NULL
+      AND "creatorUserId" IS NOT NULL
+    )
+  ),
+  ADD CONSTRAINT "ThreadAudience_deliverThroughChangeId_check" CHECK (
+    "deliverThroughChangeId" IS NULL OR "deliverThroughChangeId" > 0
+  );
+
+DROP INDEX "ThreadAudience_local_key";
+DROP INDEX "ThreadAudience_peer_key";
+
+CREATE UNIQUE INDEX "ThreadAudience_local_key"
+  ON "ThreadAudience" ("targetDomain", "localUserId", "threadId")
+  WHERE "targetDomain" = 'local' AND "scope" = 'THREAD';
+
+CREATE UNIQUE INDEX "ThreadAudience_peer_key"
+  ON "ThreadAudience" ("targetDomain", "threadId")
+  WHERE "targetDomain" <> 'local' AND "scope" = 'THREAD';
+
+CREATE UNIQUE INDEX "ThreadAudience_peer_creator_key"
+  ON "ThreadAudience" ("targetDomain", "threadId", "creatorUserId")
+  WHERE "scope" = 'CREATOR';
+
+CREATE INDEX "ThreadAudience_creator_access_idx"
+  ON "ThreadAudience" ("creatorUserId", "threadId", "deliverThroughChangeId")
+  WHERE "scope" = 'CREATOR';
+
+-- ═══════════════════════ Source: 0027_federation_sequential_cursors.sql ═══════════════════════
+ALTER TABLE "FederationPullCursor"
+  ADD COLUMN "startChangeId" BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE "FederationPullCursor"
+  DROP CONSTRAINT "FederationPullCursor_remoteHwm_check",
+  DROP CONSTRAINT "FederationPullCursor_lastAdvertisedHwm_check",
+  ADD CONSTRAINT "FederationPullCursor_startChangeId_check" CHECK ("startChangeId" >= 0),
+  ADD CONSTRAINT "FederationPullCursor_remoteHwm_check" CHECK ("remoteHwm" >= "startChangeId"),
+  ADD CONSTRAINT "FederationPullCursor_lastAdvertisedHwm_check"
+    CHECK ("lastAdvertisedHwm" >= "startChangeId");
+
+CREATE TABLE "FederationServeCursor" (
+  "peerDomain" VARCHAR(63) PRIMARY KEY,
+  "targetId" BIGINT NOT NULL,
+  "startChangeId" BIGINT NOT NULL,
+  "acknowledgedThrough" BIGINT NOT NULL,
+  "lastServedThrough" BIGINT NOT NULL,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT "FederationServeCursor_startChangeId_check" CHECK ("startChangeId" >= 0),
+  CONSTRAINT "FederationServeCursor_acknowledgedThrough_check"
+    CHECK ("acknowledgedThrough" >= "startChangeId"),
+  CONSTRAINT "FederationServeCursor_lastServedThrough_check"
+    CHECK ("lastServedThrough" >= "acknowledgedThrough"),
+  CONSTRAINT "FederationServeCursor_peerDomain_fkey"
+    FOREIGN KEY ("peerDomain") REFERENCES "FederatedPeer"("domain") ON DELETE CASCADE,
+  CONSTRAINT "FederationServeCursor_targetId_fkey"
+    FOREIGN KEY ("targetId") REFERENCES "DiscoveryTarget"("id") ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX "FederationServeCursor_targetId_key"
+  ON "FederationServeCursor" ("targetId");
+
+-- ═══════════════════════ Source: 0028_ephemeral_federation_wakeup.sql ═══════════════════════
+ALTER TABLE "FederationPullCursor"
+  DROP CONSTRAINT "FederationPullCursor_lastAdvertisedHwm_check",
+  DROP COLUMN "lastAdvertisedHwm";
+
+-- ═══════════════════════ Source: 0029_file_sync_progress.sql ═══════════════════════
+-- Per-file localization task shared by outbound upload and inbound download (federation design doc §12).
+-- Holds the in-flight state (PENDING/DOWNLOADING/SUCCEEDED/FAILED) that previously lived on MediaAsset;
+-- MediaAsset will be simplified to only verified blobs in a later migration.
+
+CREATE TYPE "FileSyncDirection" AS ENUM ('OUTBOUND', 'INBOUND');
+CREATE TYPE "FileSyncStatus" AS ENUM ('PENDING', 'DOWNLOADING', 'SUCCEEDED', 'FAILED');
+CREATE TYPE "FileSyncKind" AS ENUM ('FILE', 'IMAGE', 'VIDEO', 'AUDIO', 'BUNDLE');
+
+CREATE TABLE "FileSyncProgress" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "batchId" UUID NOT NULL,
+  "digest" VARCHAR(64) NOT NULL,
+  "direction" "FileSyncDirection" NOT NULL,
+  "kind" "FileSyncKind" NOT NULL,
+  "status" "FileSyncStatus" NOT NULL DEFAULT 'PENDING',
+  "bytesTotal" BIGINT NOT NULL DEFAULT 0,
+  "bytesReceived" BIGINT NOT NULL DEFAULT 0,
+  "originDomain" VARCHAR(63),
+  "errorKind" VARCHAR(255),
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX "FileSyncProgress_batchId_digest_key"
+  ON "FileSyncProgress" ("batchId", "digest");
+
+CREATE INDEX "FileSyncProgress_digest_idx"
+  ON "FileSyncProgress" ("digest");
+
+CREATE INDEX "FileSyncProgress_status_updatedAt_idx"
+  ON "FileSyncProgress" ("status", "updatedAt");
+
+-- ═══════════════════════ Source: 0030_media_asset_simplify.sql ═══════════════════════
+-- Simplify MediaAsset to only verified blobs (federation design doc §12.2): drop the lifecycle status
+-- enum and stateChangedAt; add isDeleted. In-flight localization state now lives in FileSyncProgress.
+--
+-- Backfill: only READY was a verified live blob; every other status is treated as reaped (isDeleted).
+-- PENDING/FAILED/DELETING/DELETED rows are not verified-live content and are reclaimed by GC next run.
+
+ALTER TABLE "MediaAsset" ADD COLUMN "isDeleted" BOOLEAN NOT NULL DEFAULT false;
+UPDATE "MediaAsset" SET "isDeleted" = (status <> 'READY');
+
+DROP INDEX "MediaAsset_status_createdAt_idx";
+ALTER TABLE "MediaAsset" DROP COLUMN "status";
+ALTER TABLE "MediaAsset" DROP COLUMN "stateChangedAt";
+
+CREATE INDEX "MediaAsset_isDeleted_idx" ON "MediaAsset" ("isDeleted");
+
+DROP TYPE "MediaAssetStatus";
+
+-- ═══════════════════════ Source: 0031_pending_media_download_inbox.sql ═══════════════════════
+-- Extend PendingMedia into the download-inbox staging table (federation design doc §12.2).
+-- Existing rows are outbound single-file staged sends: direction defaults to OUTBOUND, fileCnt to 1,
+-- batchId to a fresh UUID (one per legacy row — effectively 1:1). The inbound localization path
+-- (Phase 3c) sets direction=INBOUND with a shared batchId and fileCnt=N, tracking per-file state in
+-- FileSyncProgress. originDomain/expectedFederationVersion are inbound-only.
+
+ALTER TABLE "PendingMedia"
+  ADD COLUMN "direction" "FileSyncDirection" NOT NULL DEFAULT 'OUTBOUND',
+  ADD COLUMN "batchId" UUID NOT NULL DEFAULT gen_random_uuid(),
+  ADD COLUMN "fileCnt" INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN "anyFailed" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN "originDomain" VARCHAR(63),
+  ADD COLUMN "expectedFederationVersion" INTEGER;
+
+CREATE INDEX "PendingMedia_batchId_idx" ON "PendingMedia" ("batchId");

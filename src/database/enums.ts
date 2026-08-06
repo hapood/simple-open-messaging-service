@@ -22,6 +22,8 @@ export const ContentType = {
   LINK: 'LINK',
   CALL: 'CALL',
   FORWARD: 'FORWARD',
+  // Phase 7: multi-asset bundle (N files share one batchId).
+  GALLERY: 'GALLERY',
 } as const;
 export type ContentType = (typeof ContentType)[keyof typeof ContentType];
 

@@ -70,7 +70,7 @@ async function hasExistingSchema(client: PoolClient): Promise<boolean> {
       SELECT 1
       FROM pg_tables
       WHERE schemaname = current_schema()
-        AND tablename NOT IN ('schema_migrations', '_prisma_migrations')
+        AND tablename <> 'schema_migrations'
     ) AS exists
   `);
   return result.rows[0]?.exists ?? false;
@@ -92,7 +92,7 @@ async function schemaSignature(
         JOIN pg_attribute a ON a.attrelid = c.oid
         LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
        WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
-         AND c.relname NOT IN ('schema_migrations', '_prisma_migrations')
+         AND c.relname <> 'schema_migrations'
          AND a.attnum > 0 AND NOT a.attisdropped
       UNION ALL
       SELECT 'constraint|' || c.relname || '|' || con.conname || '|' ||
@@ -101,7 +101,7 @@ async function schemaSignature(
        JOIN pg_class c ON c.oid = con.conrelid
        JOIN pg_namespace n ON n.oid = c.relnamespace
        WHERE n.nspname = $1
-         AND c.relname NOT IN ('schema_migrations', '_prisma_migrations')
+         AND c.relname <> 'schema_migrations'
       UNION ALL
       SELECT 'index|' || t.relname || '|' || i.relname || '|' ||
              pg_get_indexdef(i.oid)
@@ -110,7 +110,7 @@ async function schemaSignature(
        JOIN pg_class t ON t.oid = x.indrelid
        JOIN pg_namespace n ON n.oid = t.relnamespace
        WHERE n.nspname = $1
-         AND t.relname NOT IN ('schema_migrations', '_prisma_migrations')
+         AND t.relname <> 'schema_migrations'
       UNION ALL
       SELECT 'enum|' || typ.typname || '|' || e.enumsortorder || '|' || e.enumlabel
         FROM pg_type typ

@@ -46,7 +46,7 @@ type Overrides = {
   backupCode?: string | null; // a BARE 16-char backup code to seed into the store (null = no store)
 };
 
-/** Build an AdminAuthService wired to real TwoFactor + real BruteForce + a Prisma fake. */
+/** Build an AdminAuthService wired to real TwoFactor + real BruteForce + a database fake. */
 async function setup(o: Overrides = {}) {
   const jwt = new JwtService({ secret: jwtConstants.adminSecret });
   const passwordHasher = new PasswordHasher();
@@ -80,7 +80,7 @@ async function setup(o: Overrides = {}) {
   // o.backupCode is a BARE 16-char canonical code; store its HMAC (exactly what consume looks up).
   const backupRows = o.backupCode ? [{ id: 1, codeHash: hashBackupCode(o.backupCode) }] : [];
 
-  const prisma = {
+  const store = {
     user: { findUnique: vi.fn(async () => user) },
     admin: {
       findUnique: vi.fn(async () => (o.adminPresent === false ? null : admin)),
@@ -109,16 +109,16 @@ async function setup(o: Overrides = {}) {
 
   const db = {
     query: {
-      user: { findFirst: prisma.user.findUnique },
-      admin: { findFirst: prisma.admin.findUnique },
+      user: { findFirst: store.user.findUnique },
+      admin: { findFirst: store.admin.findUnique },
       twoFactorBackupCode: {
         findFirst: vi.fn(async () => (backupRows.length > 0 ? { id: 1 } : null)),
       },
     },
     insert: vi.fn((table: unknown) => ({
       values: async (data: Record<string, unknown>) => {
-        if (table === adminSession) return prisma.adminSession.create({ data });
-        if (table === adminLoginChallenge) return prisma.adminLoginChallenge.create({ data: data as never });
+        if (table === adminSession) return store.adminSession.create({ data });
+        if (table === adminLoginChallenge) return store.adminLoginChallenge.create({ data: data as never });
       },
     })),
     update: vi.fn((table: unknown) => {
@@ -126,12 +126,12 @@ async function setup(o: Overrides = {}) {
       const query = {
         set: (data: Record<string, unknown>) => {
           operation = table === adminTable
-            ? prisma.admin.update({ data })
+            ? store.admin.update({ data })
             : table === adminLoginChallenge
-              ? prisma.adminLoginChallenge.updateMany()
+              ? store.adminLoginChallenge.updateMany()
               : table === twoFactorBackupCode
-                ? prisma.twoFactorBackupCode.updateMany()
-                : prisma.adminSession.updateMany();
+                ? store.twoFactorBackupCode.updateMany()
+                : store.adminSession.updateMany();
           return query;
         },
         where: () => query,
@@ -147,7 +147,7 @@ async function setup(o: Overrides = {}) {
   };
   const database = { db };
 
-  // Re-bind TwoFactor to the fake Prisma so backup-code consume uses the seeded store.
+  // Re-bind TwoFactor to the fake database so backup-code consume uses the seeded store.
   const twoFactorBound = new TwoFactorService(database as never, jwt);
   // WebAuthnService is stubbed at the orchestration level: the admin-auth specs test ban/issuance
   // branching, not the assertion crypto (that is covered in webauthn.service.spec.ts).
@@ -161,7 +161,7 @@ async function setup(o: Overrides = {}) {
 
   return {
     svc,
-    prisma,
+    store,
     twoFactor: twoFactorBound,
     bruteForce,
     secret,
@@ -234,12 +234,12 @@ describe('AdminAuthService two-factor orchestration', () => {
   // ── verifyLogin (the second step) ─────────────────────────────────────────────
 
   it('completes login on a valid TOTP and advances the replay counter', async () => {
-    const { svc, prisma, secret, challengeToken } = await setup({ twoFactorEnabled: true });
+    const { svc, store, secret, challengeToken } = await setup({ twoFactorEnabled: true });
     const token = await challengeToken();
     const r = await svc.verifyLogin(token, codeFor(secret), undefined);
     expect(typeof r.sessionToken).toBe('string');
     // The accepted step counter was written back as the replay guard.
-    const update = prisma.admin.update.mock.calls[0][0].data;
+    const update = store.admin.update.mock.calls[0][0].data;
     expect(update.twoFactorLastUsedCounter).toBe(Math.floor(FIXED_NOW / 30_000));
   });
 
@@ -335,11 +335,11 @@ describe('AdminAuthService two-factor orchestration', () => {
   // ── passkey lifecycle: additive factor, sessions stay valid ───────────────────
 
   it('passkey enroll/remove does NOT revoke existing sessions (additive factor)', async () => {
-    const { svc, prisma } = await setup({ webauthnEnabled: true });
+    const { svc, store } = await setup({ webauthnEnabled: true });
     // revokeSessionsByAdmin routes through adminSession.updateMany — pin that neither enroll nor remove
     // touches it (a passkey is an additive optional factor; enroll already required password re-auth).
     await svc.completeWebAuthnRegistration(7, 'pending-token', {} as never);
     await svc.removeWebAuthnCredential(7, 1);
-    expect(prisma.adminSession.updateMany).not.toHaveBeenCalled();
+    expect(store.adminSession.updateMany).not.toHaveBeenCalled();
   });
 });

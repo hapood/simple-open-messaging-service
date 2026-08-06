@@ -28,7 +28,7 @@ function makeStubs() {
     deleteKeys: vi.fn(),
     dropDomainIfEmpty: vi.fn(),
   } as unknown as FederationBufferService;
-  const prisma = {
+  const store = {
     messageThread: { findUnique: vi.fn() },
     threadParticipant: { findMany: vi.fn() },
     message: { findMany: vi.fn() },
@@ -45,20 +45,20 @@ function makeStubs() {
       query: {
         messageThread: {
           findFirst: async (...args: unknown[]) => {
-            const row = await prisma.messageThread.findUnique(...args);
+            const row = await store.messageThread.findUnique(...args);
             return row ? { ...row, user: row.groupUser } : row;
           },
         },
         threadParticipant: {
-          findMany: prisma.threadParticipant.findMany,
-          findFirst: prisma.deletedParticipant.findFirst,
+          findMany: store.threadParticipant.findMany,
+          findFirst: store.deletedParticipant.findFirst,
         },
         federationDeletedCursor: {
-          findFirst: prisma.federationDeletedCursor.findFirst,
+          findFirst: store.federationDeletedCursor.findFirst,
         },
         message: {
           findMany: async (...args: unknown[]) =>
-            (await prisma.message.findMany(...args)).map((row) => ({
+            (await store.message.findMany(...args)).map((row) => ({
               ...row,
               user: row.creatorItem,
             })),
@@ -87,7 +87,7 @@ function makeStubs() {
   return {
     svc,
     database,
-    prisma,
+    store,
     markDirty,
     flushBatch,
     sse,
@@ -390,8 +390,8 @@ describe('FederationService peer-bound response write gate', () => {
 
 describe('FederationService quote coordinates', () => {
   it('maps a local quote seq to creator identity + originSeq for the wire', async () => {
-    const { svc, prisma } = makeStubs();
-    prisma.message.findMany.mockResolvedValue([
+    const { svc, store } = makeStubs();
+    store.message.findMany.mockResolvedValue([
       {
         seq: 7,
         originSeq: 3,
@@ -438,8 +438,8 @@ describe('FederationService quote coordinates', () => {
   });
 
   it('rejects a quote target without a stable originSeq', async () => {
-    const { svc, prisma } = makeStubs();
-    prisma.message.findMany.mockResolvedValue([
+    const { svc, store } = makeStubs();
+    store.message.findMany.mockResolvedValue([
       {
         seq: 7,
         originSeq: null,
@@ -530,11 +530,11 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   // every foreign domain EXCEPT the source. P2P: each foreign peer except the author + the source.
 
   it('P2P: signals every foreign peer except the author', async () => {
-    const { svc, prisma, markDirty } = makeStubs();
-    prisma.messageThread.findUnique.mockResolvedValue({
+    const { svc, store, markDirty } = makeStubs();
+    store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    prisma.threadParticipant.findMany.mockResolvedValue([
+    store.threadParticipant.findMany.mockResolvedValue([
       localUser(1, 'alice'),
       foreignUser(2, 'bob', 'b.com'),
       foreignUser(3, 'carol', 'c.com'),
@@ -548,11 +548,11 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   });
 
   it('P2P: excludes fetchedFromDomain (a pulled message does not re-notify its source)', async () => {
-    const { svc, prisma, markDirty } = makeStubs();
-    prisma.messageThread.findUnique.mockResolvedValue({
+    const { svc, store, markDirty } = makeStubs();
+    store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    prisma.threadParticipant.findMany.mockResolvedValue([
+    store.threadParticipant.findMany.mockResolvedValue([
       localUser(1, 'alice'),
       foreignUser(2, 'bob', 'b.com'),
       foreignUser(3, 'carol', 'c.com'),
@@ -565,12 +565,12 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   });
 
   it('GROUP origin: signals every foreign member-DOMAIN (deduped) except the fetch source', async () => {
-    const { svc, prisma, markDirty } = makeStubs();
-    prisma.messageThread.findUnique.mockResolvedValue({
+    const { svc, store, markDirty } = makeStubs();
+    store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'local' },
     });
     // Two members on b.com (bob + dave) + one on c.com → dest set dedupes to {b.com, c.com}.
-    prisma.threadParticipant.findMany.mockResolvedValue([
+    store.threadParticipant.findMany.mockResolvedValue([
       localUser(1, 'alice'),
       foreignUser(2, 'bob', 'b.com'),
       foreignUser(4, 'dave', 'b.com'),
@@ -591,11 +591,11 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   });
 
   it('GROUP mirror: signals ONLY {originDomain} — and nothing when that was the fetch source', async () => {
-    const { svc, prisma, markDirty } = makeStubs();
-    prisma.messageThread.findUnique.mockResolvedValue({
+    const { svc, store, markDirty } = makeStubs();
+    store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'origin.com' },
     });
-    prisma.threadParticipant.findMany.mockResolvedValue([
+    store.threadParticipant.findMany.mockResolvedValue([
       localUser(1, 'alice'),
     ]);
 
@@ -617,17 +617,17 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   });
 
   it('is a no-op when the thread is missing or the author is not a participant', async () => {
-    const { svc, prisma, markDirty } = makeStubs();
+    const { svc, store, markDirty } = makeStubs();
 
-    prisma.messageThread.findUnique.mockResolvedValue(null);
-    prisma.threadParticipant.findMany.mockResolvedValue([]);
+    store.messageThread.findUnique.mockResolvedValue(null);
+    store.threadParticipant.findMany.mockResolvedValue([]);
     await svc.signalOutbound(10, 1, 5, undefined);
     expect(markDirty).not.toHaveBeenCalled();
 
-    prisma.messageThread.findUnique.mockResolvedValue({
+    store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
-    prisma.threadParticipant.findMany.mockResolvedValue([
+    store.threadParticipant.findMany.mockResolvedValue([
       foreignUser(99, 'x', 'b.com'),
     ]);
     await svc.signalOutbound(10, 1, 5, undefined); // author 1 is not in the roster
@@ -639,11 +639,11 @@ describe('FederationService sender debounce (scheduleFlush / flushDomain)', () =
   it('collapses a same-domain burst into ONE flush (one timer per dest domain)', async () => {
     vi.useFakeTimers();
     try {
-      const { svc, prisma, flushBatch } = makeStubs();
-      prisma.messageThread.findUnique.mockResolvedValue({
+      const { svc, store, flushBatch } = makeStubs();
+      store.messageThread.findUnique.mockResolvedValue({
         groupUser: { account: '!grp', domain: 'origin.com' },
       });
-      prisma.threadParticipant.findMany.mockResolvedValue([
+      store.threadParticipant.findMany.mockResolvedValue([
         localUser(1, 'alice'),
       ]);
 
@@ -689,7 +689,7 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
       deleteKeys: vi.fn(),
       dropDomainIfEmpty: vi.fn(),
     } as unknown as FederationBufferService;
-    const prisma = {
+    const store = {
       messageThread: { findUnique: vi.fn(async () => opts.thread) },
       user: { findUnique: vi.fn(async () => opts.leaver) },
       message: {
@@ -708,11 +708,11 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
         query: {
           messageThread: {
             findFirst: async () => {
-              const row = await prisma.messageThread.findUnique();
+              const row = await store.messageThread.findUnique();
               return row ? { ...row, user: row.groupUser } : row;
             },
           },
-          user: { findFirst: prisma.user.findUnique },
+          user: { findFirst: store.user.findUnique },
         },
         select: (_selection: unknown) => {
           let table: unknown;
@@ -724,8 +724,8 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
             where: async () => {
               const result =
                 table === message
-                  ? await prisma.message.aggregate()
-                  : await prisma.pendingMedia.aggregate();
+                  ? await store.message.aggregate()
+                  : await store.pendingMedia.aggregate();
               return [{ originSeq: result._max.originSeq }];
             },
           };
@@ -927,11 +927,11 @@ describe('FederationService durable deletion pull', () => {
   }
 
   it('applies an authoritative tombstone, advances from the durable cursor, and wakes recipients', async () => {
-    const { svc, prisma, deletedMessages, sse } = makeStubs();
-    prisma.federationDeletedCursor.findFirst.mockResolvedValue({
+    const { svc, store, deletedMessages, sse } = makeStubs();
+    store.federationDeletedCursor.findFirst.mockResolvedValue({
       deletedHwm: 7n,
     });
-    prisma.deletedParticipant.findFirst.mockResolvedValue({ userId: 22 });
+    store.deletedParticipant.findFirst.mockResolvedValue({ userId: 22 });
     deletedMessages.applyFederated.mockResolvedValue({ id: '31', seq: 4 });
     const signalOutbound = vi
       .spyOn(svc, 'signalOutbound')
@@ -1018,8 +1018,8 @@ describe('FederationService durable deletion pull', () => {
   });
 
   it('rejects replayed or out-of-order deletion ids before applying them', async () => {
-    const { svc, prisma, deletedMessages } = makeStubs();
-    prisma.federationDeletedCursor.findFirst.mockResolvedValue({
+    const { svc, store, deletedMessages } = makeStubs();
+    store.federationDeletedCursor.findFirst.mockResolvedValue({
       deletedHwm: 8n,
     });
 

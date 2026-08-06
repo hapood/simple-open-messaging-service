@@ -112,8 +112,8 @@ export function stripMessageId<T extends { id: bigint }>(
 }
 
 /**
- * Derive the short conversation-list preview for a message, by content type. Mirrored by the SQL CASE
- * in migration 20260702120000_message_thread_last_message (one-shot backfill); keep them in sync when
+ * Derive the short conversation-list preview for a message, by content type. Mirrored by a SQL CASE
+ * over content types (the one-shot conversation-preview backfill); keep them in sync when
  * content types change. Text is whitespace-collapsed + trimmed so a multiline message renders on one line.
  */
 export function derivePreview(type: ContentType, content: string): string {

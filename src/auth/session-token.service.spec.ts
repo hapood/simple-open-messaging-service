@@ -10,7 +10,7 @@ import type { KvStoreService } from '../kv-store/kv-store.service.js';
  * the throttled activity+sliding write (now fires for app tokens too), and revokeById ownership.
  */
 describe('SessionTokenService', () => {
-  const prisma = {
+  const store = {
     sessionToken: {
       create: vi.fn(),
       findUnique: vi.fn(),
@@ -24,7 +24,7 @@ describe('SessionTokenService', () => {
     values: (data: Record<string, unknown>) => ({
       returning: async () => {
         if (table !== sessionToken) return [];
-        const created = await prisma.sessionToken.create({ data });
+        const created = await store.sessionToken.create({ data });
         return created ? [{ id: created.id }] : [];
       },
     }),
@@ -33,17 +33,17 @@ describe('SessionTokenService', () => {
     let table: unknown;
     const resolve = async () => {
       if (table === user) {
-        const created = prisma.sessionToken.create.mock.results.at(-1)?.value;
+        const created = store.sessionToken.create.mock.results.at(-1)?.value;
         const row = created
           ? await created
           : { user: { mustChangePassword: false } };
         return [{ mustChangePassword: row.user?.mustChangePassword ?? false }];
       }
-      const rows = await prisma.sessionToken.findMany();
+      const rows = await store.sessionToken.findMany();
       if (rows.length > 0) return rows;
       const row =
-        (await prisma.sessionToken.findFirst()) ??
-        (await prisma.sessionToken.findUnique());
+        (await store.sessionToken.findFirst()) ??
+        (await store.sessionToken.findUnique());
       if (!row) return [];
       return [
         { ...row, mustChangePassword: row.user?.mustChangePassword ?? false },
@@ -66,7 +66,7 @@ describe('SessionTokenService', () => {
   const update = vi.fn(() => {
     const query = {
       set: (data: Record<string, unknown>) => {
-        prisma.sessionToken.update({ data });
+        store.sessionToken.update({ data });
         return query;
       },
       where: async () => undefined,
@@ -89,12 +89,12 @@ describe('SessionTokenService', () => {
   );
 
   beforeEach(() => {
-    prisma.sessionToken.create.mockReset();
-    prisma.sessionToken.findUnique.mockReset();
-    prisma.sessionToken.findFirst.mockReset();
-    prisma.sessionToken.findMany.mockReset();
-    prisma.sessionToken.update.mockReset();
-    prisma.sessionToken.updateMany.mockReset();
+    store.sessionToken.create.mockReset();
+    store.sessionToken.findUnique.mockReset();
+    store.sessionToken.findFirst.mockReset();
+    store.sessionToken.findMany.mockReset();
+    store.sessionToken.update.mockReset();
+    store.sessionToken.updateMany.mockReset();
     insert.mockClear();
     select.mockClear();
     update.mockClear();
@@ -107,13 +107,13 @@ describe('SessionTokenService', () => {
     kv.delPersistent.mockReset();
     // Default Promise returns — the service chains .catch() on every kv + update call, so the mocks
     // must yield Promises (vi.fn() defaults to undefined → .catch on undefined throws).
-    prisma.sessionToken.create.mockResolvedValue({
+    store.sessionToken.create.mockResolvedValue({
       id: 101,
       user: { mustChangePassword: false },
     });
-    prisma.sessionToken.findMany.mockResolvedValue([]);
-    prisma.sessionToken.update.mockResolvedValue({});
-    prisma.sessionToken.updateMany.mockResolvedValue({ count: 0 });
+    store.sessionToken.findMany.mockResolvedValue([]);
+    store.sessionToken.update.mockResolvedValue({});
+    store.sessionToken.updateMany.mockResolvedValue({ count: 0 });
     kv.get.mockResolvedValue(null); // cache miss by default
     kv.setex.mockResolvedValue(undefined);
     kv.del.mockResolvedValue(0);
@@ -130,7 +130,7 @@ describe('SessionTokenService', () => {
         ip: '10.0.0.1',
       });
       expect(plaintext).toMatch(/^[0-9a-f]{64}$/); // 32 random bytes hex
-      expect(prisma.sessionToken.create).toHaveBeenCalledWith({
+      expect(store.sessionToken.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userId: 7,
           client: 'app',
@@ -142,7 +142,7 @@ describe('SessionTokenService', () => {
           tokenHash: expect.any(String),
         }),
       });
-      const expiresAt = prisma.sessionToken.create.mock.calls[0][0].data
+      const expiresAt = store.sessionToken.create.mock.calls[0][0].data
         .expiresAt as Date;
       expect(expiresAt.getTime()).toBeGreaterThan(
         Date.now() + 29 * 24 * 3600 * 1000,
@@ -152,21 +152,21 @@ describe('SessionTokenService', () => {
 
     it('client metadata does not introduce trusted or persistent lifetime branches', async () => {
       await svc.issue(7, 'web');
-      let arg = prisma.sessionToken.create.mock.calls[0][0].data;
+      let arg = store.sessionToken.create.mock.calls[0][0].data;
       expect(arg.client).toBe('web');
       expect(arg).not.toHaveProperty('trusted');
       expect(arg).not.toHaveProperty('persistent');
       expect(arg.expiresAt).toBeInstanceOf(Date);
 
       await svc.issue(7, 'desktop');
-      arg = prisma.sessionToken.create.mock.calls[1][0].data;
+      arg = store.sessionToken.create.mock.calls[1][0].data;
       expect(arg.client).toBe('desktop');
       expect(arg.autoTerminateDays).toBe(30);
     });
 
     it('stores the sha256 hash, never the plaintext', async () => {
       const plaintext = await svc.issue(7, 'web');
-      const stored = prisma.sessionToken.create.mock.calls[0][0].data.tokenHash;
+      const stored = store.sessionToken.create.mock.calls[0][0].data.tokenHash;
       expect(stored).not.toBe(plaintext);
       expect(stored).toMatch(/^[0-9a-f]{64}$/); // sha256 hex
     });
@@ -198,7 +198,7 @@ describe('SessionTokenService', () => {
 
     it('validates a cache miss from DB without creating a cache entry', async () => {
       const raw = 'a'.repeat(64);
-      prisma.sessionToken.findUnique.mockResolvedValue(makeRow());
+      store.sessionToken.findUnique.mockResolvedValue(makeRow());
       await expect(svc.validate(raw)).resolves.toEqual({
         userId: 7,
         sessionId: 101,
@@ -206,7 +206,7 @@ describe('SessionTokenService', () => {
         autoTerminateDays: 180,
         mustChangePassword: false,
       });
-      expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1);
+      expect(store.sessionToken.findUnique).toHaveBeenCalledTimes(1);
       expect(kv.initPersistent).not.toHaveBeenCalled();
       expect(kv.updatePersistent).not.toHaveBeenCalled();
     });
@@ -229,31 +229,31 @@ describe('SessionTokenService', () => {
         autoTerminateDays: 180,
         mustChangePassword: false,
       });
-      expect(prisma.sessionToken.findUnique).not.toHaveBeenCalled();
+      expect(store.sessionToken.findUnique).not.toHaveBeenCalled();
     });
 
     it('rejects an expired web token (expiresAt in the past)', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(
+      store.sessionToken.findUnique.mockResolvedValue(
         makeRow({ expiresAt: new Date(Date.now() - 1000) }),
       );
       await expect(svc.validate('c'.repeat(64))).resolves.toBe(null);
     });
 
     it('rejects a revoked token', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(
+      store.sessionToken.findUnique.mockResolvedValue(
         makeRow({ revokedAt: new Date() }),
       );
       await expect(svc.validate('d'.repeat(64))).resolves.toBe(null);
     });
 
     it('rejects an unknown token (no row)', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(null);
+      store.sessionToken.findUnique.mockResolvedValue(null);
       await expect(svc.validate('e'.repeat(64))).resolves.toBe(null);
     });
 
     it('extends the sliding window (web) + records lastSeenIp + returns slid:true when lastSeenAt is stale', async () => {
       const stale = makeRow({ lastSeenAt: new Date(Date.now() - 10 * 60_000) }); // 10 min ago
-      prisma.sessionToken.findUnique.mockResolvedValue(stale);
+      store.sessionToken.findUnique.mockResolvedValue(stale);
       kv.getPersistent.mockResolvedValue(
         JSON.stringify({
           userId: 7,
@@ -266,8 +266,8 @@ describe('SessionTokenService', () => {
       );
       const res = await svc.validate('f'.repeat(64), { ip: '203.0.113.7' });
       expect(res?.slid).toBe(true); // deadline moved → the guard re-issues the cookie
-      expect(prisma.sessionToken.update).toHaveBeenCalledTimes(1);
-      const data = prisma.sessionToken.update.mock.calls[0][0].data;
+      expect(store.sessionToken.update).toHaveBeenCalledTimes(1);
+      const data = store.sessionToken.update.mock.calls[0][0].data;
       expect(data.lastSeenAt).toBeInstanceOf(Date);
       expect(data.lastSeenIp).toBe('203.0.113.7');
       expect(data.expiresAt.getTime()).toBeGreaterThan(
@@ -280,25 +280,25 @@ describe('SessionTokenService', () => {
       const stale = makeRow({
         lastSeenAt: new Date(Date.now() - 10 * 60_000),
       });
-      prisma.sessionToken.findUnique.mockResolvedValue(stale);
+      store.sessionToken.findUnique.mockResolvedValue(stale);
       await svc.validate('app1'.repeat(16), { ip: '198.51.100.4' });
-      expect(prisma.sessionToken.update).toHaveBeenCalledTimes(1);
-      const data = prisma.sessionToken.update.mock.calls[0][0].data;
+      expect(store.sessionToken.update).toHaveBeenCalledTimes(1);
+      const data = store.sessionToken.update.mock.calls[0][0].data;
       expect(data.lastSeenAt).toBeInstanceOf(Date);
       expect(data.lastSeenIp).toBe('198.51.100.4');
       expect(data.expiresAt).toBeInstanceOf(Date);
     });
 
     it('does NOT write when lastSeenAt is recent', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(
+      store.sessionToken.findUnique.mockResolvedValue(
         makeRow({ lastSeenAt: new Date() }),
       );
       await svc.validate('g'.repeat(64));
-      expect(prisma.sessionToken.update).not.toHaveBeenCalled();
+      expect(store.sessionToken.update).not.toHaveBeenCalled();
     });
 
     it('propagates user.mustChangePassword (drives the global password-rotation gate)', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(
+      store.sessionToken.findUnique.mockResolvedValue(
         makeRow({ user: { mustChangePassword: true } }),
       );
       await expect(svc.validate('p'.repeat(32))).resolves.toEqual(
@@ -324,7 +324,7 @@ describe('SessionTokenService', () => {
           }),
         )
         .mockResolvedValueOnce(null);
-      prisma.sessionToken.findUnique
+      store.sessionToken.findUnique
         .mockResolvedValueOnce(stale)
         .mockResolvedValueOnce(makeRow({ revokedAt: new Date() }));
       kv.updatePersistent.mockResolvedValue(false);
@@ -336,9 +336,9 @@ describe('SessionTokenService', () => {
 
   describe('revoke', () => {
     it('soft-revokes the row by hash and clears the cache (idempotent)', async () => {
-      prisma.sessionToken.updateMany.mockResolvedValue({ count: 1 });
+      store.sessionToken.updateMany.mockResolvedValue({ count: 1 });
       await svc.revoke('h'.repeat(64));
-      expect(prisma.sessionToken.update).toHaveBeenCalledWith({
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
         data: { revokedAt: expect.any(Date), revokeReason: 'logout' },
       });
       expect(kv.delPersistent).toHaveBeenCalledTimes(1);
@@ -347,28 +347,28 @@ describe('SessionTokenService', () => {
 
   describe('revokeById', () => {
     it('revokes the row by id (ownership-checked) and drops the cache', async () => {
-      prisma.sessionToken.findFirst.mockResolvedValue({ tokenHash: 'abc' });
+      store.sessionToken.findFirst.mockResolvedValue({ tokenHash: 'abc' });
       const ok = await svc.revokeById(7, 101);
       expect(ok).toBe(true);
-      expect(prisma.sessionToken.findFirst).toHaveBeenCalled();
-      expect(prisma.sessionToken.update).toHaveBeenCalledWith({
+      expect(store.sessionToken.findFirst).toHaveBeenCalled();
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
         data: { revokedAt: expect.any(Date), revokeReason: 'device_revoke' },
       });
       expect(kv.delPersistent).toHaveBeenCalledTimes(1);
     });
 
     it('returns false (no-op) for a foreign / unknown / already-revoked id', async () => {
-      prisma.sessionToken.findFirst.mockResolvedValue(null);
+      store.sessionToken.findFirst.mockResolvedValue(null);
       const ok = await svc.revokeById(7, 999);
       expect(ok).toBe(false);
-      expect(prisma.sessionToken.update).not.toHaveBeenCalled();
+      expect(store.sessionToken.update).not.toHaveBeenCalled();
       expect(kv.delPersistent).not.toHaveBeenCalled();
     });
 
     it('writes the supplied reason instead of the default device_revoke', async () => {
-      prisma.sessionToken.findFirst.mockResolvedValue({ tokenHash: 'abc' });
+      store.sessionToken.findFirst.mockResolvedValue({ tokenHash: 'abc' });
       await svc.revokeById(7, 101, 'admin_revoke');
-      expect(prisma.sessionToken.update).toHaveBeenCalledWith({
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
         data: { revokedAt: expect.any(Date), revokeReason: 'admin_revoke' },
       });
     });
@@ -376,13 +376,13 @@ describe('SessionTokenService', () => {
 
   describe('revokeAllForUser', () => {
     it('revokes every active row for the user with the given reason', async () => {
-      prisma.sessionToken.findMany.mockResolvedValue([
+      store.sessionToken.findMany.mockResolvedValue([
         { tokenHash: 'hash-a' },
         { tokenHash: 'hash-b' },
       ]);
-      prisma.sessionToken.updateMany.mockResolvedValue({ count: 3 });
+      store.sessionToken.updateMany.mockResolvedValue({ count: 3 });
       await svc.revokeAllForUser(7, 'password_change');
-      expect(prisma.sessionToken.update).toHaveBeenCalledWith({
+      expect(store.sessionToken.update).toHaveBeenCalledWith({
         data: { revokedAt: expect.any(Date), revokeReason: 'password_change' },
       });
       expect(kv.delPersistent).toHaveBeenCalledWith(
@@ -394,14 +394,14 @@ describe('SessionTokenService', () => {
 
   describe('bustCacheBySessionId', () => {
     it('drops the validate-cache entry for the session row (looked up by id)', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue({ tokenHash: 'abc' });
+      store.sessionToken.findUnique.mockResolvedValue({ tokenHash: 'abc' });
       await svc.bustCacheBySessionId(101);
-      expect(prisma.sessionToken.findUnique).toHaveBeenCalled();
+      expect(store.sessionToken.findUnique).toHaveBeenCalled();
       expect(kv.delPersistent).toHaveBeenCalledTimes(1);
     });
 
     it('is a no-op when the session id is unknown (no cache key to drop)', async () => {
-      prisma.sessionToken.findUnique.mockResolvedValue(null);
+      store.sessionToken.findUnique.mockResolvedValue(null);
       await svc.bustCacheBySessionId(999);
       expect(kv.delPersistent).not.toHaveBeenCalled();
     });

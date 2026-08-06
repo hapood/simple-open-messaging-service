@@ -98,29 +98,28 @@ timestamp is the **local arrival** time, not the origin's send time.
 
 ## 3. Data model (deltas only)
 
-```prisma
-model MessageThread {
-  // ...existing columns...
-  // The federated GROUP identity is a `groupUser` — a `!`-sigil User row whose `account` IS the group's
-  // OWN `!account` (a `!`-prefixed ULID minted on group create, globally unique). The SAME `!account` on
-  // the origin and every mirror, so it doubles as the on-wire group address (`toAccount` / `group`), never
-  // the DB thread id. The groupUser's `domain` is the origin server's config.domain ("local" on the
-  // origin, <peer-domain> on a mirror) — denormalized for fast "is this mine / who owns it" queries + the
-  // roster-op signer check (§8). `groupUserId` is NULL for purely-local threads (all P2P, local-only
-  // groups). @unique enforces ONE local mirror per federated group — a second cross-server invite to a
-  // different local user reuses the same mirror. (Earlier iterations carried `fedGroupAccount` +
-  // `originDomain` as two scalar columns; both folded into this one relation.)
-  groupUserId   Int?   @unique
-  groupUser     User?  @relation("GroupUser", fields: [groupUserId], references: [id], onDelete: Cascade)
-}
+```sql
+-- delta on "MessageThread"; ...existing columns omitted...
+-- The federated GROUP identity is a `groupUser` — a `!`-sigil User row whose `account` IS the group's
+-- OWN `!account` (a `!`-prefixed ULID minted on group create, globally unique). The SAME `!account` on
+-- the origin and every mirror, so it doubles as the on-wire group address (`toAccount` / `group`), never
+-- the DB thread id. The groupUser's `domain` is the origin server's config.domain ("local" on the
+-- origin, <peer-domain> on a mirror) — denormalized for fast "is this mine / who owns it" queries + the
+-- roster-op signer check (§8). `groupUserId` is NULL for purely-local threads (all P2P, local-only
+-- groups). UNIQUE enforces ONE local mirror per federated group — a second cross-server invite to a
+-- different local user reuses the same mirror. (Earlier iterations carried `fedGroupAccount` +
+-- `originDomain` as two scalar columns; both folded into this one relation.)
+ALTER TABLE "MessageThread"
+    ADD COLUMN    "groupUserId" INTEGER,
+    ADD CONSTRAINT "MessageThread_groupUserId_key"  UNIQUE ("groupUserId"),
+    ADD CONSTRAINT "MessageThread_groupUserId_fkey"
+        FOREIGN KEY ("groupUserId") REFERENCES "User"("id") ON DELETE CASCADE;
 
-model Message {
-  // ...existing columns (id, originSeq, createdAt, clientMessageId, ...)...
-  // The SENDER server's allocation timestamp, copied verbatim from the pulled payload's `ts`.
-  // NULL for locally-authored messages that never federate and for legacy rows. Stored for future use;
-  // NEVER displayed (the chatbox shows createdAt — the local arrival time). See §5.
-  originServerTime  DateTime?
-}
+-- delta on "Message"; ...existing columns (id, originSeq, createdAt, clientMessageId, ...) omitted...
+-- The SENDER server's allocation timestamp, copied verbatim from the pulled payload's `ts`.
+-- NULL for locally-authored messages that never federate and for legacy rows. Stored for future use;
+-- NEVER displayed (the chatbox shows createdAt — the local arrival time). See §5.
+ALTER TABLE "Message" ADD COLUMN "originServerTime" TIMESTAMP(3);
 ```
 
 Nothing else changes structurally:

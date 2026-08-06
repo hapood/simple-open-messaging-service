@@ -4601,6 +4601,7 @@ export class FederationService implements OnModuleDestroy {
         forwardClosure,
         fetchedFromDomain,
         remoteForwardBundleId,
+        await this.resolveForwardAssetAuth(created),
       );
     }
     return { kind: 'message', message: created };
@@ -5492,6 +5493,7 @@ export class FederationService implements OnModuleDestroy {
         closure,
         root.sourceDomain,
         root.sourceBundleId,
+        await this.resolveForwardAssetAuth(msg),
       );
     }
     const digests = [
@@ -5564,6 +5566,43 @@ export class FederationService implements OnModuleDestroy {
     return {
       toAccount: peer?.user.account ?? creatorAccount,
       peerDomain: creatorDomain,
+    };
+  }
+
+  /**
+   * Resolve the /get_file authorization for a stored FORWARD message's bundle assets. The forward
+   * bundle's bytes are authorized by the FORWARD message's OWN identity bound to its bundle (see
+   * resolveMediaFile's forwardBundleId branch): fromAccount/fromDomain = the forwarder, toAccount =
+   * the thread receiver, sourceSeq = the forward message's seq (COALESCE(originSeq, seq)). Mirrors
+   * localizeMediaForMessage's context resolution; extracted so both the pull-time and retry paths
+   * derive the same authorization. */
+  private async resolveForwardAssetAuth(msg: Message): Promise<{
+    fromAccount: string;
+    fromDomain: string;
+    toAccount: string;
+    sourceSeq: number;
+  }> {
+    const creator = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, msg.creator),
+      columns: { account: true, domain: true, isForeigner: true },
+    });
+    if (!creator) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `forward message ${msg.threadId}/${msg.seq} creator ${msg.creator} not found`,
+      );
+    }
+    const { toAccount } = await this.resolveMediaContext(
+      msg.threadId,
+      msg.creator,
+      creator.account,
+      creator.domain,
+    );
+    return {
+      fromAccount: creator.account,
+      fromDomain: this.effectiveDomain(creator),
+      toAccount,
+      sourceSeq: msg.originSeq ?? msg.seq,
     };
   }
 

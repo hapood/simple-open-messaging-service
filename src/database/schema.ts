@@ -51,6 +51,8 @@ export const contentType = pgEnum('ContentType', [
   'LINK',
   'CALL',
   'FORWARD',
+  // Phase 7: multi-asset bundle. Appended last so ALTER TYPE ADD VALUE keeps enum sort order.
+  'GALLERY',
 ]);
 export const groupRole = pgEnum('GroupRole', ['OWNER', 'ADMIN', 'MEMBER']);
 export const inviteKind = pgEnum('InviteKind', ['FRIEND', 'GROUP']);
@@ -1362,6 +1364,9 @@ export const fileSyncProgress = pgTable(
     updatedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
+    // Phase 7: outbound-only per-file display payload, used by the barrier-promote to assemble message
+    // content without re-deriving metadata from CAS. Always null for inbound rows.
+    payload: jsonb(),
   },
   (table) => [
     uniqueIndex('FileSyncProgress_batchId_digest_key').on(

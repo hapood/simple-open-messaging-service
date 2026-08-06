@@ -314,15 +314,18 @@ trusted/pending/demoted ──admin──▶ blocked ──admin──▶ pendin
 
 Every transition is also written to an **append-only audit log**:
 
-```prisma
-model FederatedPeerEvent {
-  id        BigInt   @id @default(autoincrement())
-  domain    String   @db.VarChar(63)   // NO FK → FederatedPeer (decoupled: history survives any peer-row change)
-  type      String   @db.VarChar(15)   // discovered | trusted | demoted | blocked | unblocked
-  reason    String?  @db.VarChar(255)  // demoted: failure msg; blocked: optional admin note
-  createdAt DateTime @default(now())
-  @@index([domain, createdAt])
-}
+```sql
+CREATE TABLE "FederatedPeerEvent" (
+    "id"        BIGSERIAL     NOT NULL,
+    "domain"    VARCHAR(63)   NOT NULL,  -- NO FK → FederatedPeer (decoupled: history survives any peer-row change)
+    "type"      VARCHAR(15)   NOT NULL,  -- discovered | trusted | demoted | blocked | unblocked
+    "reason"    VARCHAR(255),            -- demoted: failure msg; blocked: optional admin note
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "FederatedPeerEvent_pkey" PRIMARY KEY ("id")
+);
+
+CREATE INDEX "FederatedPeerEvent_domain_createdAt_idx" ON "FederatedPeerEvent"("domain", "createdAt");
 ```
 
 This current-state cache (`FederatedPeer`) + append-only history (`FederatedPeerEvent`) split is the standard pattern when you must show a *process*, not just a snapshot: columns alone collapse repeated trust↔demote cycles into the latest. The admin Federation page renders the per-peer timeline from these events (newest-first) — "let the admin see trust → connection-loss end to end."

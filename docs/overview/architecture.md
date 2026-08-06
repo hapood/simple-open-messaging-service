@@ -268,7 +268,7 @@ Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`Feder
 
 1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): secrets externalized; auto-generated at first startup under `./data/` when unset. (The subsequent SessionToken rewrite removed the access/refresh secrets entirely for users.)
 2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): persisted as a sha256 hash, revocable, rotating. (Later superseded: the dual access/refresh pair was replaced by the single opaque `SessionToken`.)
-3. ~~**`NotifyModule` not wired up**~~ ✅ Resolved: `Notify` / `userNotiBox` were folded into the `User` table as inline columns (`friendReqAckRev`, etc. — see the `20260707180000_fold_user_extra_notibox` migration); there is no `NotifyModule` to wire up.
+3. ~~**`NotifyModule` not wired up**~~ ✅ Resolved: `Notify` / `userNotiBox` were folded into the `User` table as inline columns (`friendReqAckRev`, etc.); there is no `NotifyModule` to wire up.
 4. ~~**File upload**~~ ✅ Implemented: `UploadModule` provides `/upload` + `/send-media` through the content-addressed (sha256 CAS, refcounted `MediaAsset`) pipeline, and `/user/update-avatar` (sharp multi-size webp). Per-user rate limiting / orphan cleanup remain a deferred hardening item.
 5. ~~**Frontend authGuard not in effect**~~ ✅ Fixed: route guards are mounted (auth/guest).
 6. **`/user/query` privacy**: allows batch queries of any non-deleted user's information with no relationship-level visibility isolation. (Open.)

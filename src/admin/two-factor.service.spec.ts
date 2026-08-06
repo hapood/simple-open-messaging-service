@@ -26,7 +26,7 @@ const FIXED_NOW = new Date(2026, 5, 17, 12, 0, 0, 0).getTime();
 /** Build a service with an overridable persistence fake (default: empty backup-code store). */
 function makeService(overrides: Record<string, unknown> = {}) {
   const jwt = new JwtService({ secret: 'unused-see-per-call-secret' });
-  const prisma = {
+  const store = {
     twoFactorBackupCode: {
       findFirst: vi.fn(async () => null),
       findMany: vi.fn(async () => [] as unknown[]),
@@ -42,13 +42,13 @@ function makeService(overrides: Record<string, unknown> = {}) {
       updateMany: vi.fn(async () => ({ count: 1 })),
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(store)),
     ...overrides,
   };
   const db = {
     query: {
       twoFactorBackupCode: {
-        findFirst: (...args: unknown[]) => prisma.twoFactorBackupCode.findFirst(...args),
+        findFirst: (...args: unknown[]) => store.twoFactorBackupCode.findFirst(...args),
       },
     },
     update: (table: unknown) => {
@@ -56,10 +56,10 @@ function makeService(overrides: Record<string, unknown> = {}) {
       const query = {
         set: (data: Record<string, unknown>) => {
           operation = table === adminTable
-            ? prisma.admin.update?.({ data }) ?? Promise.resolve(undefined)
+            ? store.admin.update?.({ data }) ?? Promise.resolve(undefined)
             : table === adminLoginChallenge
-              ? prisma.adminLoginChallenge.updateMany?.() ?? Promise.resolve({ count: 0 })
-              : prisma.twoFactorBackupCode.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
+              ? store.adminLoginChallenge.updateMany?.() ?? Promise.resolve({ count: 0 })
+              : store.twoFactorBackupCode.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
           return query;
         },
         where: () => query,
@@ -73,17 +73,17 @@ function makeService(overrides: Record<string, unknown> = {}) {
     },
     delete: (table: unknown) => ({
       where: () => table === adminLoginChallenge
-        ? prisma.adminLoginChallenge.deleteMany?.() ?? Promise.resolve(undefined)
-        : prisma.twoFactorBackupCode.deleteMany?.() ?? Promise.resolve(undefined),
+        ? store.adminLoginChallenge.deleteMany?.() ?? Promise.resolve(undefined)
+        : store.twoFactorBackupCode.deleteMany?.() ?? Promise.resolve(undefined),
     }),
     insert: (table: unknown) => ({
       values: (data: unknown) => table === adminLoginChallenge
-        ? prisma.adminLoginChallenge.create?.({ data }) ?? Promise.resolve(undefined)
-        : prisma.twoFactorBackupCode.createMany?.({ data }) ?? Promise.resolve(undefined),
+        ? store.adminLoginChallenge.create?.({ data }) ?? Promise.resolve(undefined)
+        : store.twoFactorBackupCode.createMany?.({ data }) ?? Promise.resolve(undefined),
     }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
   };
-  return { svc: new TwoFactorService({ db } as never, jwt), prisma };
+  return { svc: new TwoFactorService({ db } as never, jwt), store };
 }
 
 /** Generate a valid TOTP code for a base32 secret at a given timestamp (mirrors the authenticator). */
@@ -182,13 +182,13 @@ describe('TwoFactorService', () => {
 
   it('consumeChallenge is single-use: the first consume wins, the second returns false (closes the counter=0 passkey replay window)', async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
-    const { svc, prisma } = makeService({
+    const { svc, store } = makeService({
       adminLoginChallenge: { create: vi.fn(async () => ({})), updateMany, deleteMany: vi.fn(async () => ({ count: 0 })) },
     });
     const decoded = svc.verifyChallenge(await svc.signChallenge(42))!;
     expect(await svc.consumeChallenge(decoded.jti)).toBe(true);
     // Second consume: the row is already consumed → updateMany returns count 0 → false (replay rejected).
-    (prisma.adminLoginChallenge.updateMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ count: 0 });
+    (store.adminLoginChallenge.updateMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ count: 0 });
     expect(await svc.consumeChallenge(decoded.jti)).toBe(false);
   });
 
@@ -226,7 +226,7 @@ describe('TwoFactorService', () => {
     const storedHash = hashBackupCode('ABCDEFGHIJKLMNOP'); // bare 16-char canonical form
     const findFirst = vi.fn(async () => ({ id: 1 }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
-    const { svc, prisma } = makeService({
+    const { svc, store } = makeService({
       twoFactorBackupCode: { findFirst, updateMany },
     });
 
@@ -240,14 +240,14 @@ describe('TwoFactorService', () => {
     });
 
     // Second consume with no matching unconsumed row → false (single-use).
-    (prisma.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (store.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
     expect(await svc.consumeBackupCode(42, 'ABCD-EFGH-IJKL-MNOP')).toBe(false);
   });
 
   it('consumeBackupCode rejects an unknown code and malformed input (no consume)', async () => {
     const findFirst = vi.fn(async () => null); // an unknown code's HMAC matches no row
     const updateMany = vi.fn(async () => ({ count: 1 }));
-    const { svc, prisma } = makeService({
+    const { svc, store } = makeService({
       twoFactorBackupCode: { findFirst, updateMany },
     });
 
@@ -256,7 +256,7 @@ describe('TwoFactorService', () => {
 
     // Malformed (not 16 base32 chars) → normalized to null → no DB lookup at all.
     expect(await svc.consumeBackupCode(42, 'short')).toBe(false);
-    expect((prisma.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1); // only the unknown-code lookup
+    expect((store.twoFactorBackupCode.findFirst as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1); // only the unknown-code lookup
   });
 
   // ── enable / disable / regenerate (atomic Admin-row state) ─────────────────────

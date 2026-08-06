@@ -45,31 +45,31 @@ const url = (d: string): string =>
 
 describe('MessageService.attachMediaStatus', () => {
   it('returns [] for empty input', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: { findMany: vi.fn() },
       mediaAsset: { findMany: vi.fn() },
     };
     const svc = new MessageService(
       databaseMock({
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
     expect(await svc.attachMediaStatus([])).toEqual([]);
-    expect(prisma.mediaMessage.findMany).not.toHaveBeenCalled();
+    expect(store.mediaMessage.findMany).not.toHaveBeenCalled();
   });
 
   it('a non-media message (no digest) is ready', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
       mediaAsset: { findMany: vi.fn() },
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -83,15 +83,15 @@ describe('MessageService.attachMediaStatus', () => {
   });
 
   it('keeps an inline text quote inside content while stripping the internal id', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
       mediaAsset: { findMany: vi.fn() },
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -113,19 +113,19 @@ describe('MessageService.attachMediaStatus', () => {
   });
 
   it('every digest has an authz row + READY asset → ready', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, status: 'READY' }]),
+        findMany: vi.fn().mockResolvedValue([{ digest: DIG, isDeleted: false }]),
       },
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -136,15 +136,15 @@ describe('MessageService.attachMediaStatus', () => {
   });
 
   it('a digest with no authz row → failed', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
       mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -155,19 +155,19 @@ describe('MessageService.attachMediaStatus', () => {
   });
 
   it('a READY asset does not depend on a cached reference count', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, status: 'READY' }]),
+        findMany: vi.fn().mockResolvedValue([{ digest: DIG, isDeleted: false }]),
       },
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -177,7 +177,7 @@ describe('MessageService.attachMediaStatus', () => {
     expect(out[0].mediaStatus).toBe('ready');
   });
 
-  it('a PENDING asset is not exposed as ready', async () => {
+  it('a reaped (non-live) asset is not exposed as ready', async () => {
     const svc = new MessageService(
       databaseMock({
         mediaMessage: vi
@@ -185,7 +185,7 @@ describe('MessageService.attachMediaStatus', () => {
           .mockResolvedValue([{ messageId: 1n, digest: DIG }]),
         mediaAsset: vi
           .fn()
-          .mockResolvedValue([{ digest: DIG, status: 'PENDING' }]),
+          .mockResolvedValue([{ digest: DIG, isDeleted: true }]),
       }) as never,
       {} as never,
     );
@@ -196,19 +196,19 @@ describe('MessageService.attachMediaStatus', () => {
   });
 
   it('a batch is served by ONE mediaMessage + ONE mediaAsset query (no per-row N+1)', async () => {
-    const prisma = {
+    const store = {
       mediaMessage: {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, status: 'READY' }]),
+        findMany: vi.fn().mockResolvedValue([{ digest: DIG, isDeleted: false }]),
       },
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -218,8 +218,8 @@ describe('MessageService.attachMediaStatus', () => {
     ]);
     expect(out[0].mediaStatus).toBe('ready');
     expect(out[1].mediaStatus).toBe('failed');
-    expect(prisma.mediaMessage.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.mediaAsset.findMany).toHaveBeenCalledTimes(1);
+    expect(store.mediaMessage.findMany).toHaveBeenCalledTimes(1);
+    expect(store.mediaAsset.findMany).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -242,7 +242,7 @@ describe('MessageService.queryMessages quote previews', () => {
       }),
       user: { name: 'Alice' },
     };
-    const prisma = {
+    const store = {
       message: {
         findMany: vi
           .fn()
@@ -254,9 +254,9 @@ describe('MessageService.queryMessages quote previews', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );
@@ -273,7 +273,7 @@ describe('MessageService.queryMessages quote previews', () => {
       },
     });
     expect(reply.content).toBe(replyContent);
-    expect(prisma.message.findMany).toHaveBeenCalledTimes(2);
+    expect(store.message.findMany).toHaveBeenCalledTimes(2);
   });
 
   it('leaves preview absent when the target is unavailable', async () => {
@@ -283,7 +283,7 @@ describe('MessageService.queryMessages quote previews', () => {
       contentType: 'PURE_TEXT',
       content: replyContent,
     });
-    const prisma = {
+    const store = {
       message: {
         findMany: vi
           .fn()
@@ -295,9 +295,9 @@ describe('MessageService.queryMessages quote previews', () => {
     };
     const svc = new MessageService(
       databaseMock({
-        message: prisma.message?.findMany,
-        mediaMessage: prisma.mediaMessage.findMany,
-        mediaAsset: prisma.mediaAsset.findMany,
+        message: store.message?.findMany,
+        mediaMessage: store.mediaMessage.findMany,
+        mediaAsset: store.mediaAsset.findMany,
       }) as never,
       {} as never,
     );

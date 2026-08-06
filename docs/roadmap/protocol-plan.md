@@ -248,8 +248,7 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 
 ### P2+ — Friend Domain Feature Completion (Product Alignment) ✅ Completed
 
-> The friend domain was rebuilt on a unified `Invite` table (`kind` FRIEND|GROUP) in migration
-> `20260709120000_invite_model`: the old `Friendship` table and its `FriendshipStatus` enum
+> The friend domain was rebuilt on a unified `Invite` table (`kind` FRIEND|GROUP): the old `Friendship` table and its `FriendshipStatus` enum
 > (`PENDING`/`APPROVED`/`BLOCKED`/`DELETED`) were dropped, and a friend relationship is now **derived
 > state** — an active P2P thread shared by both users (`ThreadParticipant.leftAt IS NULL`), not a stored
 > status. Every item that was once a "feature gap" here is live, end-to-end (backend + consumer UI + en/zh

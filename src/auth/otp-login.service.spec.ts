@@ -15,7 +15,7 @@ import type { SettingsService } from '../settings/settings.service.js';
  * before verify.
  */
 describe('OtpLoginService', () => {
-  const prisma = {
+  const store = {
     user: { findUnique: vi.fn() },
     loginCode: {
       create: vi.fn(),
@@ -36,17 +36,17 @@ describe('OtpLoginService', () => {
       db: {
         query: {
           user: {
-            findFirst: (...args: unknown[]) => prisma.user.findUnique(...args),
+            findFirst: (...args: unknown[]) => store.user.findUnique(...args),
           },
           loginCode: {
             findMany: (...args: unknown[]) =>
-              prisma.loginCode.findMany(...args),
+              store.loginCode.findMany(...args),
           },
         },
         insert: vi.fn(() => ({
           values: vi.fn((data: Record<string, unknown>) => ({
             returning: vi.fn(async () => [
-              await prisma.loginCode.create({ data }),
+              await store.loginCode.create({ data }),
             ]),
           })),
         })),
@@ -54,7 +54,7 @@ describe('OtpLoginService', () => {
           from: vi.fn(() => ({
             where: vi.fn(() => ({
               orderBy: vi.fn(() => ({
-                limit: vi.fn(() => prisma.loginCode.findMany()),
+                limit: vi.fn(() => store.loginCode.findMany()),
               })),
             })),
           })),
@@ -62,10 +62,10 @@ describe('OtpLoginService', () => {
         update: vi.fn(() => ({
           set: vi.fn((data: Record<string, unknown>) => ({
             where: vi.fn(() => {
-              const run = () => prisma.loginCode.update({ data });
+              const run = () => store.loginCode.update({ data });
               return {
                 returning: vi.fn(async () => {
-                  const result = await prisma.loginCode.updateMany({ data });
+                  const result = await store.loginCode.updateMany({ data });
                   return Array.from({ length: result.count }, (_, id) => ({
                     id,
                   }));
@@ -91,18 +91,18 @@ describe('OtpLoginService', () => {
       new BruteForceService(),
       settings as unknown as SettingsService,
     );
-    prisma.user.findUnique.mockReset();
-    prisma.loginCode.create.mockReset();
-    prisma.loginCode.findMany.mockReset();
-    prisma.loginCode.updateMany.mockReset();
-    prisma.loginCode.update.mockReset();
+    store.user.findUnique.mockReset();
+    store.loginCode.create.mockReset();
+    store.loginCode.findMany.mockReset();
+    store.loginCode.updateMany.mockReset();
+    store.loginCode.update.mockReset();
     sessionTokens.issue.mockReset();
     sessionTokens.idOfToken.mockReset();
     settings.getOtpTtlMinutes.mockReset();
     settings.getOtpTtlMinutes.mockResolvedValue(10); // 10-minute validity window
     // Default Promise returns — the service chains .catch() on the fire-and-forget producedSessionId
     // update, so the mocks must yield Promises (vi.fn() defaults to undefined → .catch on undefined throws).
-    prisma.loginCode.update.mockResolvedValue({});
+    store.loginCode.update.mockResolvedValue({});
   });
 
   /** Issue a code for userId 42 (admin 7) and capture the argon2 hash so a verify test can match it. */
@@ -110,7 +110,7 @@ describe('OtpLoginService', () => {
     code: string;
     codeHash: string;
   }> {
-    prisma.loginCode.create.mockResolvedValue({
+    store.loginCode.create.mockResolvedValue({
       id: 5,
       issuedAt: new Date(1000),
       expiresAt: new Date(2000),
@@ -118,7 +118,7 @@ describe('OtpLoginService', () => {
     });
     const r = await svc.issueCode(7, 42);
     const data = (
-      prisma.loginCode.create.mock.calls[0][0] as { data: { codeHash: string } }
+      store.loginCode.create.mock.calls[0][0] as { data: { codeHash: string } }
     ).data;
     return { code: r.code, codeHash: data.codeHash };
   }
@@ -129,7 +129,7 @@ describe('OtpLoginService', () => {
       expect(r.code).toMatch(/^\d{6}$/);
       // expiresAt = now + the mocked 10-minute TTL.
       const data = (
-        prisma.loginCode.create.mock.calls[0][0] as {
+        store.loginCode.create.mock.calls[0][0] as {
           data: { issuedAt: Date; expiresAt: Date };
         }
       ).data;
@@ -139,23 +139,23 @@ describe('OtpLoginService', () => {
       expect(data.expiresAt.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
       expect(data.expiresAt.getTime() - Date.now()).toBeLessThan(11 * 60_000);
       // Multi-issue: issuing must NOT touch (revoke) the account's other codes.
-      expect(prisma.loginCode.updateMany).not.toHaveBeenCalled();
+      expect(store.loginCode.updateMany).not.toHaveBeenCalled();
     });
   });
 
   describe('verifyAndLogin', () => {
     it('verifies a correct code with the default app client and records producedSessionId', async () => {
       const { code, codeHash } = await issueAndCaptureHash();
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findMany.mockResolvedValue([
+      store.loginCode.findMany.mockResolvedValue([
         { id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) },
       ]);
-      prisma.loginCode.updateMany.mockResolvedValue({ count: 1 }); // single-use guard wins
+      store.loginCode.updateMany.mockResolvedValue({ count: 1 }); // single-use guard wins
       sessionTokens.issue.mockResolvedValue('token-xyz');
       sessionTokens.idOfToken.mockResolvedValue(99);
 
@@ -168,7 +168,7 @@ describe('OtpLoginService', () => {
           ip: '1.2.3.4',
         }),
       );
-      expect(prisma.loginCode.update).toHaveBeenCalledWith({
+      expect(store.loginCode.update).toHaveBeenCalledWith({
         data: { producedSessionId: 99 },
       });
     });
@@ -176,14 +176,14 @@ describe('OtpLoginService', () => {
     it('accepts ANY active code — not just the newest (multi-issue)', async () => {
       const olderHash = await argon2.hash('111111');
       const newerHash = await argon2.hash('222222');
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
       // findMany returns newest-first; the user enters the OLDER code's value.
-      prisma.loginCode.findMany.mockResolvedValue([
+      store.loginCode.findMany.mockResolvedValue([
         {
           id: 9,
           codeHash: newerHash,
@@ -195,26 +195,26 @@ describe('OtpLoginService', () => {
           expiresAt: new Date(Date.now() + 60_000),
         },
       ]);
-      prisma.loginCode.updateMany.mockResolvedValue({ count: 1 });
+      store.loginCode.updateMany.mockResolvedValue({ count: 1 });
       sessionTokens.issue.mockResolvedValue('t');
 
       await svc.verifyAndLogin('alice', '111111', {});
       // The matched (older) code is the one single-use-claimed.
-      expect(prisma.loginCode.updateMany).toHaveBeenCalledTimes(1);
+      expect(store.loginCode.updateMany).toHaveBeenCalledTimes(1);
     });
 
     it('passes client metadata without lifetime overrides', async () => {
       const codeHash = await argon2.hash('333333');
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findMany.mockResolvedValue([
+      store.loginCode.findMany.mockResolvedValue([
         { id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) },
       ]);
-      prisma.loginCode.updateMany.mockResolvedValue({ count: 1 });
+      store.loginCode.updateMany.mockResolvedValue({ count: 1 });
       sessionTokens.issue.mockResolvedValue('t');
 
       await svc.verifyAndLogin('alice', '333333', { client: 'web' });
@@ -224,7 +224,7 @@ describe('OtpLoginService', () => {
         expect.not.objectContaining({ trusted: expect.anything() }),
       );
 
-      prisma.loginCode.updateMany.mockClear();
+      store.loginCode.updateMany.mockClear();
       sessionTokens.issue.mockClear();
       await svc.verifyAndLogin('alice', '333333', { client: 'desktop' });
       expect(sessionTokens.issue).toHaveBeenLastCalledWith(
@@ -236,13 +236,13 @@ describe('OtpLoginService', () => {
 
     it('throws OTP_INVALID for a wrong code (counted toward the lock)', async () => {
       const codeHash = await argon2.hash('123456');
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findMany.mockResolvedValue([
+      store.loginCode.findMany.mockResolvedValue([
         { id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) },
       ]);
       await expect(
@@ -254,13 +254,13 @@ describe('OtpLoginService', () => {
 
     it('throws OTP_EXPIRED when the matching code is past its expiresAt', async () => {
       const codeHash = await argon2.hash('444444'); // matches the entered value, but expired
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findMany.mockResolvedValue([
+      store.loginCode.findMany.mockResolvedValue([
         { id: 5, codeHash, expiresAt: new Date(Date.now() - 1000) },
       ]);
       await expect(
@@ -272,16 +272,16 @@ describe('OtpLoginService', () => {
 
     it('throws OTP_CONSUMED when the single-use race is lost (another verifier claimed it)', async () => {
       const codeHash = await argon2.hash('555555');
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findMany.mockResolvedValue([
+      store.loginCode.findMany.mockResolvedValue([
         { id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) },
       ]);
-      prisma.loginCode.updateMany.mockResolvedValue({ count: 0 }); // race lost
+      store.loginCode.updateMany.mockResolvedValue({ count: 0 }); // race lost
       await expect(
         svc.verifyAndLogin('race', '555555', {}),
       ).rejects.toMatchObject({
@@ -290,23 +290,23 @@ describe('OtpLoginService', () => {
     });
 
     it('throws OTP_INVALID for a non-existent account (NOT counted; no code lookup)', async () => {
-      prisma.user.findUnique.mockResolvedValue(null);
+      store.user.findUnique.mockResolvedValue(null);
       await expect(
         svc.verifyAndLogin('ghost', '000000', {}),
       ).rejects.toMatchObject({
         bizCode: BusinessCode.OTP_INVALID,
       });
-      expect(prisma.loginCode.findMany).not.toHaveBeenCalled();
+      expect(store.loginCode.findMany).not.toHaveBeenCalled();
     });
 
     it('locks the account (RATE_LIMITED) once failures cross the threshold — surfaced on the crossing attempt', async () => {
-      prisma.user.findUnique.mockResolvedValue({
+      store.user.findUnique.mockResolvedValue({
         id: 42,
         isGroup: false,
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findMany.mockResolvedValue([]); // no active code → OTP_INVALID (counted) before argon2
+      store.loginCode.findMany.mockResolvedValue([]); // no active code → OTP_INVALID (counted) before argon2
       // Attempts 1–5: each OTP_INVALID (count 1..5; the tier bans past 5, so none bans yet).
       for (let i = 0; i < 5; i++) {
         await expect(
@@ -326,11 +326,11 @@ describe('OtpLoginService', () => {
 
   describe('revokeCode', () => {
     it('returns true when a row is actually revoked', async () => {
-      prisma.loginCode.updateMany.mockResolvedValue({ count: 1 });
+      store.loginCode.updateMany.mockResolvedValue({ count: 1 });
       await expect(svc.revokeCode(5)).resolves.toBe(true);
     });
     it('returns false (no-op) for an already-used / unknown code', async () => {
-      prisma.loginCode.updateMany.mockResolvedValue({ count: 0 });
+      store.loginCode.updateMany.mockResolvedValue({ count: 0 });
       await expect(svc.revokeCode(999)).resolves.toBe(false);
     });
   });
@@ -338,9 +338,9 @@ describe('OtpLoginService', () => {
   describe('listCodes', () => {
     it('returns the audit rows (newest first; never the codeHash)', async () => {
       const rows = [{ id: 5 }];
-      prisma.loginCode.findMany.mockResolvedValue(rows);
+      store.loginCode.findMany.mockResolvedValue(rows);
       await expect(svc.listCodes(42)).resolves.toBe(rows);
-      expect(prisma.loginCode.findMany).toHaveBeenCalledTimes(1);
+      expect(store.loginCode.findMany).toHaveBeenCalledTimes(1);
     });
   });
 });

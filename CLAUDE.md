@@ -17,7 +17,7 @@ Project-level guidance for Claude working in this repository. **These instructio
 
 - **Source code and documentation are decoupled: references run one way only — docs → source.**
   - Documentation (`.md`) MAY link to source files for context (e.g. `[src/auth/auth.service.ts](../../src/auth/auth.service.ts)`).
-  - Source files (`.ts`, `.prisma`, config, etc.) MUST NOT reference documentation paths — no `docs/*.md` pointers in code comments. A source comment explains what the code does on its own; if it ever feels the need to say "see docs/x.md", state that context inline or drop it.
+  - Source files (`.ts`, `.sql`, config, etc.) MUST NOT reference documentation paths — no `docs/*.md` pointers in code comments. A source comment explains what the code does on its own; if it ever feels the need to say "see docs/x.md", state that context inline or drop it.
   - **Why:** docs are reorganized often (re-bucketed, moved — e.g. the `overview/` / `api/` / `roadmap/` split); source is the stable source of truth. The dependency must point doc→source so a doc reorg never breaks source comments, never the reverse.
 
 ## CSS Integer-Pixel Rule

@@ -17,7 +17,7 @@ import type { SettingsService } from '../settings/settings.service.js';
  */
 describe('ShellService.compat', () => {
   // SettingsService is @Global in the app; pass a stub whose getFirebaseConfig() returns null so the folded
-  // firebaseConfig is {configured:false} without dragging in the real service + its Prisma dep.
+  // firebaseConfig is {configured:false} without dragging in the real service + its database dep.
   const svc = new ShellService({
     getFirebaseConfig: () => null,
   } as unknown as SettingsService);

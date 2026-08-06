@@ -70,16 +70,17 @@ message is counted **once** at its upload step (not again at send), so it is nev
 
 ## 3. Storage + override resolution
 
-```prisma
-model QuotaDailyUsage {
-  domain    String   @db.VarChar(63)   // SOMS_DOMAIN (local node) OR a peer domain
-  date      DateTime @db.Date          // UTC calendar day (auto-reset at 00:00 UTC)
-  category  String   @db.VarChar(15)   // messages | images | largeFiles | requests
-  count     Int      @default(0)
+```sql
+CREATE TABLE "QuotaDailyUsage" (
+    "domain"    VARCHAR(63) NOT NULL,  -- SOMS_DOMAIN (local node) OR a peer domain
+    "date"      DATE        NOT NULL,  -- UTC calendar day (auto-reset at 00:00 UTC)
+    "category"  VARCHAR(15) NOT NULL,  -- messages | images | largeFiles | requests
+    "count"     INTEGER     NOT NULL DEFAULT 0,
 
-  @@id([domain, date, category])
-  @@index([date])                      // cheap purge sweep (§7)
-}
+    CONSTRAINT "QuotaDailyUsage_pkey" PRIMARY KEY ("domain", "date", "category")
+);
+
+CREATE INDEX "QuotaDailyUsage_date_idx" ON "QuotaDailyUsage"("date");  -- cheap purge sweep (§7)
 ```
 
 **Per-node overrides.** A node may override any field; `null` means "use the global default". The two node

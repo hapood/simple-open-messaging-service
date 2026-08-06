@@ -48,9 +48,6 @@ google-services.json
 .env.production.local
 .env.local
 
-# Prisma 7 generated client（由 `prisma generate` 产出，勿提交；新检出经 postinstall 自动生成）
-/src/prisma/generated
-
 # temp directory
 .temp
 .tmp

@@ -53,7 +53,7 @@ describe('AuthService (session overview → SessionToken)', () => {
     {} as never, // passwordHasher — unused by the session-overview methods under test
   );
 
-  /** A SessionToken row as Prisma would return it (Date fields; expiresAt nullable for app tokens). */
+  /** A SessionToken row as the database would return it (Date fields; expiresAt nullable for app tokens). */
   function row(overrides: Partial<Record<string, unknown>> = {}) {
     return {
       id: 101,

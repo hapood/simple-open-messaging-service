@@ -34,7 +34,7 @@ const mockVerifyAuth = vi.mocked(verifyAuthenticationResponse);
 /** Build a service with an overridable persistence fake. */
 function makeService(overrides: Record<string, unknown> = {}) {
   const jwt = new JwtService({ secret: jwtConstants.adminSecret });
-  const prisma = {
+  const store = {
     webAuthnCredential: {
       findMany: vi.fn(async () => [] as unknown[]),
       findUnique: vi.fn(async () => null),
@@ -45,21 +45,21 @@ function makeService(overrides: Record<string, unknown> = {}) {
       count: vi.fn(async () => 0),
     },
     admin: { update: vi.fn(async () => ({})), updateMany: vi.fn(async () => ({ count: 1 })) },
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(store)),
     ...overrides,
   };
   const db = {
     query: {
       webAuthnCredential: {
-        findMany: (...args: unknown[]) => prisma.webAuthnCredential.findMany?.(...args) ?? Promise.resolve([]),
-        findFirst: (...args: unknown[]) => prisma.webAuthnCredential.findUnique?.(...args) ?? Promise.resolve(null),
+        findMany: (...args: unknown[]) => store.webAuthnCredential.findMany?.(...args) ?? Promise.resolve([]),
+        findFirst: (...args: unknown[]) => store.webAuthnCredential.findUnique?.(...args) ?? Promise.resolve(null),
       },
     },
     insert: (table: unknown) => ({
       values: (data: Record<string, unknown>) => ({
         returning: async () => {
           if (table !== webAuthnCredential) return [];
-          const row = await prisma.webAuthnCredential.create?.({ data });
+          const row = await store.webAuthnCredential.create?.({ data });
           return row ? [row] : [];
         },
       }),
@@ -69,8 +69,8 @@ function makeService(overrides: Record<string, unknown> = {}) {
       const query = {
         set: (data: Record<string, unknown>) => {
           operation = table === adminTable
-            ? prisma.admin.updateMany?.({ data }) ?? prisma.admin.update?.({ data }) ?? Promise.resolve(undefined)
-            : prisma.webAuthnCredential.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
+            ? store.admin.updateMany?.({ data }) ?? store.admin.update?.({ data }) ?? Promise.resolve(undefined)
+            : store.webAuthnCredential.updateMany?.({ data }) ?? Promise.resolve({ count: 0 });
           return query;
         },
         where: () => query,
@@ -85,19 +85,19 @@ function makeService(overrides: Record<string, unknown> = {}) {
     delete: () => ({
       where: () => ({
         returning: async () => {
-          const result = await prisma.webAuthnCredential.deleteMany?.() as { count?: number } | undefined;
+          const result = await store.webAuthnCredential.deleteMany?.() as { count?: number } | undefined;
           return result?.count === 0 ? [] : [{ id: 1n }];
         },
       }),
     }),
     select: () => {
-      const resolve = async () => [{ value: await prisma.webAuthnCredential.count?.() ?? 0 }];
+      const resolve = async () => [{ value: await store.webAuthnCredential.count?.() ?? 0 }];
       const query = { from: () => query, where: () => query, then: (fn: (v: unknown[]) => unknown) => resolve().then(fn) };
       return query;
     },
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
   };
-  return { svc: new WebAuthnService({ db } as never, jwt), prisma };
+  return { svc: new WebAuthnService({ db } as never, jwt), store };
 }
 
 describe('WebAuthnService', () => {

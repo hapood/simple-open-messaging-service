@@ -3321,7 +3321,7 @@ export interface components {
        */
       threadId: number;
       /**
-       * @description Cursor-row flag, NOT offset. 0 includes the lastId row; 1 excludes it (standard Prisma keyset idiom). Capped at 1 — arbitrary offset-on-top-of-cursor is not supported.
+       * @description Cursor-row flag, NOT offset. 0 includes the lastId row; 1 excludes it (standard keyset idiom). Capped at 1 — arbitrary offset-on-top-of-cursor is not supported.
        * @example 1
        */
       skip: number;

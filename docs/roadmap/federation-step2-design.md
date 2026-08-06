@@ -62,18 +62,20 @@ mirrors. Reliable _transactional_ delivery (if ever needed for a paid/hosted tie
 
 ### 2.1 `Message.originSeq` — the cross-server-stable per-(thread, sender) counter
 
-```prisma
-model Message {
-  // ...existing columns...
-  originSeq Int?   // per-(threadId, creator) monotonic seq; the cross-server pull cursor.
-                   //   SENDER side: allocated on insert (MAX(originSeq)+1 in the write tx).
-                   //   RECEIVER side: copied verbatim from the pulled message (idempotent dedup key).
-                   // Nullable: legacy rows (pre-Step-2) and messages in threads that never federate
-                   //   stay NULL; Postgres treats NULLs as distinct under the unique index below, so
-                   //   they coexist with no backfill. New inserts ALWAYS assign a seq.
-  @@unique([threadId, creator, originSeq])   // (a) sender allocation correctness AND (b) receiver dedup
-  @@index([threadId, creator, originSeq])    // the pull query + the MAX(cursor) derivation
-}
+```sql
+-- delta on "Message"; ...existing columns omitted...
+ALTER TABLE "Message" ADD COLUMN "originSeq" INTEGER;
+-- per-(threadId, creator) monotonic seq; the cross-server pull cursor.
+--   SENDER side: allocated on insert (MAX(originSeq)+1 in the write tx).
+--   RECEIVER side: copied verbatim from the pulled message (idempotent dedup key).
+-- Nullable: legacy rows (pre-Step-2) and messages in threads that never federate stay NULL;
+--   Postgres treats NULLs as distinct under the unique index below, so they coexist with no backfill.
+--   New inserts ALWAYS assign a seq.
+
+CREATE UNIQUE INDEX "Message_threadId_creator_originSeq_key"
+    ON "Message"("threadId", "creator", "originSeq");   -- (a) sender allocation correctness AND (b) receiver dedup
+CREATE INDEX "Message_threadId_creator_originSeq_idx"
+    ON "Message"("threadId", "creator", "originSeq");   -- the pull query + the MAX(cursor) derivation
 ```
 
 **Why one column on both sides (not a separate receiver cursor table).** The receiver's "how far am I"
@@ -566,9 +568,8 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 > shipped in Step 3.
 
 1. **Schema migration** — add nullable `Message.originSeq` plus a unique constraint and index on
-   `(threadId, creator, originSeq)`. The change originally landed in migration
-   `20260709000000_message_origin_seq` and is now represented by the consolidated SQL baseline and
-   `src/database/schema.ts`. No data backfill (NULL is correct for legacy rows).
+   `(threadId, creator, originSeq)`. The change is represented by the consolidated SQL baseline
+   (`0000_baseline.sql`) and `src/database/schema.ts`. No data backfill (NULL is correct for legacy rows).
 2. **`originSeq` allocation** — in `MessageService.writeMsgToThread`, allocate `MAX+1` inside the tx;
    retry unique-constraint conflicts caused by concurrent sends from the same user. Return `originSeq`
    on the saved message.
