@@ -147,6 +147,10 @@ export type ConsumedMedia =
 export class UploadService {
   readonly uploadDir = join(process.cwd(), 'data', 'uploads');
   readonly casDir = join(process.cwd(), 'data', 'cas');
+  /** Transient CAS ingest artifacts: the resumable writer's `.part`/`.resume.json`/`.complete` and the
+   *  `*.tmp` crash-leftovers from the buffer publish paths. Kept out of the shard tree so the formal CAS
+   *  dirs hold only published blobs and the GC temp pass is a single flat scan (design doc §12.4/§12.6). */
+  readonly casTmpDir = join(process.cwd(), 'data', 'cas', 'tmp');
   private readonly casIngestLocks = new KeyedMutex();
 
   constructor(private readonly mediaAsset: MediaAssetService) {}
@@ -461,9 +465,14 @@ export class UploadService {
     const digest = createHash('sha256').update(buf).digest('hex');
     const { abs, url } = this.casShardPath(digest);
     await mkdirAsync(dirname(abs), { recursive: true });
-    // Atomic publish: write a unique tmp path, then rename (same filesystem → atomic). Identical
-    // concurrent uploads overwrite each other harmlessly (byte-identical content).
-    const tmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    await mkdirAsync(this.casTmpDir, { recursive: true });
+    // Atomic publish: write a unique tmp path in the CAS tmp dir, then rename onto the shard (same
+    // filesystem → atomic). Identical concurrent uploads overwrite each other harmlessly. File-first
+    // (rename before the row): keeps the reader invariant that a MediaAsset row implies a present shard.
+    const tmp = join(
+      this.casTmpDir,
+      `${digest}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
+    );
     let renamed = false;
     try {
       await writeFileAsync(tmp, buf);
@@ -527,9 +536,14 @@ export class UploadService {
     const digest = hash.digest('hex');
     const { abs, url } = this.casShardPath(digest);
     await mkdirAsync(dirname(abs), { recursive: true });
+    await mkdirAsync(this.casTmpDir, { recursive: true });
     // Keep the resumable source until UploadSession has durably recorded the result. Publishing through
-    // a unique CAS-side temp preserves atomic rename while making a DB failure safely retryable.
-    const publishTmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    // a unique CAS tmp path preserves atomic rename (same filesystem) while making a DB failure safely
+    // retryable. File-first, like saveCas — the row is written only after the shard lands.
+    const publishTmp = join(
+      this.casTmpDir,
+      `${digest}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
+    );
     let renamed = false;
     try {
       await copyFileAsync(tmpPath, publishTmp);
@@ -654,20 +668,25 @@ export class UploadService {
   }
 
   /**
-   * Streaming CAS ingest (Step 2 §4.5): land a media asset fetched from a federated peer in resumable
-   * chunks WITHOUT buffering the whole file in memory. Consumes an ordered async iterable of byte
-   * chunks (the federation transport yields one fully-accumulated Range unit at a time, so the write is
-   * atomic per chunk — a dropped chunk is discarded upstream and re-fetched, never re-written here),
-   * writes them to a tmp file while incrementally hashing, then on completion verifies the digest ===
-   * the peer-advertised `expectedDigest` (the corruption/tamper/truncation backstop), atomically
-   * renames into the shard path, and bumps the MediaAsset refcount. Same CAS pipeline as
-   * saveCasFromPeer — byte-identical on disk to a local upload, served same-origin. Idempotent: a
-   * re-fetch of the same digest overwrites the byte-identical file + re-bumps the ref.
+   * Streaming CAS ingest (federation design doc §12.4): land a media asset fetched from a federated
+   * peer in resumable chunks WITHOUT buffering the whole file in memory. Consumes an ordered async
+   * iterable of byte chunks (the federation transport yields one fully-accumulated Range unit at a
+   * time, so the write is atomic per chunk — a dropped chunk is discarded upstream and re-fetched,
+   * never re-written here), appends them to a tmp `.part` while incrementally hashing, then on
+   * completion verifies the digest === the peer-advertised `expectedDigest` (the corruption/tamper/
+   * truncation backstop) and publishes the blob. Same content as a local upload — byte-identical on
+   * disk, served same-origin. Idempotent: a re-fetch of the same digest re-publishes the live row.
    *
-   * A transport failure retains the stable `.part` plus atomically-written offset sidecar, so a later
-   * task or process restart resumes from the verified contiguous prefix. A final digest mismatch removes
-   * both because no prefix can still be trusted. Per-digest FIFO locking prevents concurrent writers;
-   * only a whole-file SHA-256 match is atomically renamed into the public CAS path.
+   * Crash-safety (DB-first + `.complete` marker). All transient artifacts live in the CAS tmp dir:
+   *   `<digest>.part`       — the accumulated bytes (resumable across restarts)
+   *   `<digest>.resume.json` — the verified-offset sidecar (atomically rewritten per chunk)
+   *   `<digest>.complete`    — written AFTER the digest verifies, BEFORE the DB publish + rename
+   * On verification success the order is: drop `.complete` → publishReady (commit the live MediaAsset
+   * row) → atomic rename `.part` → shard. The `.complete` marker therefore means "bytes verified, only
+   * the final landing was interrupted"; GC salvage re-runs publishReady + rename idempotently from the
+   * `.part`, recovering a crash anywhere after the marker. A transport failure retains the `.part` +
+   * `.resume.json` for a later resume; a digest mismatch removes all three (no prefix can be trusted).
+   * Per-digest FIFO locking prevents concurrent writers; only a whole-file SHA-256 match is published.
    */
   async saveCasFromStream(
     ext: string,
@@ -679,15 +698,18 @@ export class UploadService {
     return this.casIngestLocks.runExclusive(expectedDigest, async () => {
       const { abs, url } = this.casShardPath(expectedDigest);
       await mkdirAsync(dirname(abs), { recursive: true });
+      await mkdirAsync(this.casTmpDir, { recursive: true });
       if (existsSync(abs)) {
         const size = (await statAsync(abs)).size;
         await this.mediaAsset.publishReady(expectedDigest, BigInt(size));
         return { url, digest: expectedDigest, size };
       }
 
-      const part = `${abs}.part`;
-      const resume = `${abs}.resume.json`;
+      const part = join(this.casTmpDir, `${expectedDigest}.part`);
+      const resume = join(this.casTmpDir, `${expectedDigest}.resume.json`);
       const resumeTmp = `${resume}.tmp`;
+      const complete = join(this.casTmpDir, `${expectedDigest}.complete`);
+      const completeTmp = `${complete}.tmp`;
       let offset = 0;
       try {
         const meta = JSON.parse(await readFileAsync(resume, 'utf8')) as {
@@ -722,17 +744,37 @@ export class UploadService {
       };
       if (offset === 0) await persistOffset();
 
+      // Drop the `.complete` marker (digest verified), then commit the live row and atomically land the
+      // shard. GC salvage re-runs exactly these two steps from the `.part` if this process dies between
+      // them, so a crash after the marker never loses a verified blob.
+      const markComplete = async () => {
+        await writeFileAsync(
+          completeTmp,
+          JSON.stringify({
+            version: 1,
+            digest: expectedDigest,
+            bytes: offset,
+          }),
+        );
+        await renameAsync(completeTmp, complete);
+      };
+      const finishPublish = async () => {
+        await this.mediaAsset.publishReady(expectedDigest, BigInt(offset));
+        await renameAsync(part, abs);
+        await unlinkAsync(complete).catch(() => {});
+        await unlinkAsync(resume).catch(() => {});
+      };
+
       try {
-        // A crash can happen after the last offset checkpoint but before verification/rename. Avoid an
+        // A crash can happen after the last offset checkpoint but before verification/publish. Avoid an
         // unsatisfiable Range request at EOF: recognize and publish an already-complete valid part.
         if (offset > 0) {
           const resumedHash = createHash('sha256');
           for await (const piece of createReadStream(part))
             resumedHash.update(piece);
           if (resumedHash.digest('hex') === expectedDigest) {
-            await renameAsync(part, abs);
-            await unlinkAsync(resume).catch(() => {});
-            await this.mediaAsset.publishReady(expectedDigest, BigInt(offset));
+            await markComplete();
+            await finishPublish();
             return { url, digest: expectedDigest, size: offset };
           }
         }
@@ -750,20 +792,21 @@ export class UploadService {
         if (digest !== expectedDigest) {
           await unlinkAsync(part).catch(() => {});
           await unlinkAsync(resume).catch(() => {});
+          await unlinkAsync(complete).catch(() => {});
           throw new Error(
             `CAS digest mismatch (expected ${expectedDigest}, got ${digest})`,
           );
         }
-        await renameAsync(part, abs);
-        await unlinkAsync(resume).catch(() => {});
-        await this.mediaAsset.publishReady(digest, BigInt(offset));
+        await markComplete();
+        await finishPublish();
         return { url, digest, size: offset };
       } catch (error) {
         // Transport failures deliberately retain the verified prefix + sidecar for a later retry.
-        // Integrity failures above remove both because no persisted range can be trusted.
+        // Integrity failures above remove all three tmp artifacts because no prefix can be trusted.
         throw error;
       } finally {
         await unlinkAsync(resumeTmp).catch(() => {});
+        await unlinkAsync(completeTmp).catch(() => {});
       }
     });
   }

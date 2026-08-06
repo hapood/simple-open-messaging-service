@@ -25,6 +25,7 @@ import { ResumableUploadService } from './resumable-upload.service.js';
   // preHandler gate (the gate runs outside DI's request scope, on the Fastify root instance).
   // AvatarStackService is exported so NotificationQueryService (in MessageFanoutModule, which imports this
   // module) can inject it to composite the notification icon.
-  exports: [UploadService, MediaAccessService, ResumableUploadService],
+  // MediaAssetService is exported so MediaAssetGcService (admin layer) can publish salvaged blobs.
+  exports: [UploadService, MediaAccessService, MediaAssetService, ResumableUploadService],
 })
 export class UploadModule {}

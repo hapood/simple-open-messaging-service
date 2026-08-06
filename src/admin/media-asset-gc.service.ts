@@ -7,7 +7,7 @@ import {
 import { randomUUID } from 'crypto';
 import type { ServerResponse } from 'http';
 import { join } from 'path';
-import { readdir, stat, unlink } from 'fs';
+import { mkdir, readFile, readdir, rename, stat, unlink } from 'fs';
 import { promisify } from 'util';
 import { and, count, eq, inArray, lt, ne, or, sql } from 'drizzle-orm';
 import {
@@ -19,10 +19,12 @@ import {
   forwardBundle,
   forwardBundleAsset,
   forwardBundleDependency,
+  fileSyncProgress,
   mediaAsset,
   pendingMedia,
   user,
 } from '../database/schema.js';
+import { MediaAssetService } from '../upload/media-asset.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { parseAvatarBase } from '../upload/avatar-path.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
@@ -30,6 +32,9 @@ import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
 const readdirAsync = promisify(readdir);
 const statAsync = promisify(stat);
 const unlinkAsync = promisify(unlink);
+const readFileAsync = promisify(readFile);
+const renameAsync = promisify(rename);
+const mkdirAsync = promisify(mkdir);
 
 /** A PendingMedia(pending) row older than this is a crashed/abandoned send or localization — reclaim
  *  it (and its orphan file, if any). Generous: a normal upload/localize completes in seconds; this
@@ -37,6 +42,9 @@ const unlinkAsync = promisify(unlink);
 const STALE_PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
 const STALE_FAILED_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days for multi-device recovery
 const STALE_ASSET_PENDING_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours for interrupted CAS writes
+/** A `.complete` marker younger than this may belong to a publish still finishing in another
+ *  process — salvage skips it so it never races a live saveCasFromStream (design doc §12.6). */
+const SALVAGE_FRESH_GUARD_MS = 30 * 1000;
 const PROGRESS_THROTTLE_MS = 300;
 
 export type MediaGcTaskKind = 'gc' | 'reconcile';
@@ -81,7 +89,9 @@ export interface GcResult {
   reapedRows: number;
   /** Shard files actually unlinked (may be < reapedRows if a file was already missing). */
   reapedFiles: number;
-  /** Stale *.tmp files removed (crash leftovers from saveCas's tmp+rename). */
+  /** Crashed CAS publishes recovered: `.complete` markers whose publishReady + rename were finished. */
+  salvagedFiles: number;
+  /** Stale tmp artifacts removed (abandoned `.part`/`.resume.json` without a `.complete`, old `*.tmp`). */
   sweptTmp: number;
 }
 
@@ -92,6 +102,8 @@ export interface ForwardBundleGcResult {
 }
 
 export interface ReconcileResult {
+  /** Crashed CAS publishes recovered before the disk/DB repair scan. */
+  salvagedFiles: number;
   deletedOrphanFiles: number;
   deletedTombstoneFiles: number;
   /** Live (isDeleted=false) rows whose shard file is missing on disk, marked isDeleted. */
@@ -104,12 +116,14 @@ export interface ReconcileResult {
  * FileSyncProgress); forward bundles deliberately do not retain blobs.
  *
  * Two tiers:
- *  - {@link gcOrphanedAssets}: flip unreachable live blobs to isDeleted and unlink the shard files.
- *  - {@link reconcileShards}: bounded-batch disk/database consistency repair.
+ *  - {@link gcOrphanedAssets}: salvage crashed CAS publishes, flip unreachable live blobs to isDeleted
+ *    and unlink the shard files, then sweep stale tmp artifacts.
+ *  - {@link reconcileShards}: salvage crashed CAS publishes, then bounded-batch disk/database repair.
  *
- * GC scans ONLY uploads/cas/. Avatars are never touched — they have no MediaAsset row; avatar
- * overwrite-delete is owned by UploadService.deleteByUrl. `clearHistory` only changes a per-user
- * watermark and therefore never affects media liveness.
+ * GC scans ONLY uploads/cas/ (shards) + uploads/cas/tmp/ (transient ingest artifacts). Avatars are
+ * never touched — they have no MediaAsset row; avatar overwrite-delete is owned by
+ * UploadService.deleteByUrl. `clearHistory` only changes a per-user watermark and therefore never
+ * affects media liveness.
  */
 @Injectable()
 export class MediaAssetGcService {
@@ -122,6 +136,7 @@ export class MediaAssetGcService {
   constructor(
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
+    private readonly mediaAsset: MediaAssetService,
   ) {}
 
   startTask(kind: MediaGcTaskKind): MediaGcProgress {
@@ -388,12 +403,20 @@ export class MediaAssetGcService {
     return rows.rows.map((row) => row.id);
   }
 
-  /** Primary GC: reap unreachable live (isDeleted=false) blobs, then sweep stale tmp. */
+  /** Primary GC: salvage crashed CAS publishes, reap unreachable live (isDeleted=false) blobs, then
+   *  sweep stale tmp artifacts. */
   async gcOrphanedAssets(): Promise<GcResult> {
     return this.runExclusive(() => this.gcOrphanedAssetsCore());
   }
 
   private async gcOrphanedAssetsCore(context?: TaskContext): Promise<GcResult> {
+    // Recover crashed publishes FIRST so their blobs are live (and thus reachable/protected) before
+    // the reap scan judges liveness — a salvaged blob still staged (FileSyncProgress SUCCEEDED) is
+    // spared by the liveness clause; a salvaged orphan is reaped as normal.
+    context?.update({ phase: 'salvaging-crashed-publishes' }, true);
+    const salvagedFiles = context?.cancelled()
+      ? 0
+      : await this.salvageCompleteTmp(context);
     const result = await this.database.db.transaction(async (tx) => {
       let reapedRows = 0;
       let reapedFiles = 0;
@@ -417,6 +440,11 @@ export class MediaAssetGcService {
             SELECT 1 FROM "PendingMedia" pending
             WHERE pending.digest = asset.digest
               AND pending.status IN ('pending', 'failed')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "FileSyncProgress" fsp
+            WHERE fsp.digest = asset.digest
+              AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED')
           )
         ORDER BY asset.digest
         LIMIT 500
@@ -447,6 +475,11 @@ export class MediaAssetGcService {
               SELECT 1 FROM "PendingMedia" pending
               WHERE pending.digest = asset.digest
                 AND pending.status IN ('pending', 'failed')
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM "FileSyncProgress" fsp
+              WHERE fsp.digest = asset.digest
+                AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED')
             )
           RETURNING digest
         `);
@@ -483,9 +516,9 @@ export class MediaAssetGcService {
       return { reapedRows, reapedFiles, sweptTmp };
     });
     this.logger.log(
-      `gcOrphanedAssets: reaped ${result.reapedRows} row(s), ${result.reapedFiles} file(s), swept ${result.sweptTmp} tmp.`,
+      `gcOrphanedAssets: salvaged ${salvagedFiles}, reaped ${result.reapedRows} row(s), ${result.reapedFiles} file(s), swept ${result.sweptTmp} tmp.`,
     );
-    return result;
+    return { ...result, salvagedFiles };
   }
 
   /**
@@ -540,8 +573,9 @@ export class MediaAssetGcService {
     );
   }
 
-  /** Walk uploads/cas/ and delete any file whose digest has no MediaAsset row. Corrects disk/table drift.
-   *  O(files) — run sparingly (monthly). Skips *.tmp (those are swept by gcOrphanedAssets). */
+  /** Disk/database consistency repair. Salvages crashed CAS publishes first, then walks uploads/cas/
+   *  shards: deletes files with no/reaped MediaAsset row (sparing fresh in-flight writes), and marks
+   *  old live rows whose shard is missing as isDeleted. O(files) — run sparingly (monthly). */
   async reconcileShards(): Promise<ReconcileResult> {
     return this.runExclusive(() => this.reconcileShardsCore());
   }
@@ -549,7 +583,13 @@ export class MediaAssetGcService {
   private async reconcileShardsCore(
     context?: TaskContext,
   ): Promise<ReconcileResult> {
-    return this.database.db.transaction(async (tx) => {
+    // Recover crashed publishes before the disk/DB repair so the reverse pass does not mark a
+    // salvageable live row (verified bytes, rename not yet finished) as missing.
+    context?.update({ phase: 'salvaging-crashed-publishes' }, true);
+    const salvagedFiles = context?.cancelled()
+      ? 0
+      : await this.salvageCompleteTmp(context);
+    const txResult = await this.database.db.transaction(async (tx) => {
       const result = {
         deletedOrphanFiles: 0,
         deletedTombstoneFiles: 0,
@@ -720,12 +760,18 @@ export class MediaAssetGcService {
         },
         true,
       );
+      // Only consider rows old enough that a DB-first publish's rename must have settled — a brand-new
+      // live row whose shard is still landing (saveCasFromStream publishReady → rename) must not be
+      // marked missing. Salvage has already recovered any older crashed publish.
+      const missingCutoff = new Date(Date.now() - STALE_ASSET_PENDING_TTL_MS);
       let cursor = '';
       for (;;) {
         if (context?.cancelled()) break;
         const page = await tx.execute<{ digest: string }>(sql`
           SELECT digest FROM "MediaAsset"
-          WHERE "isDeleted" = false AND digest > ${cursor}
+          WHERE "isDeleted" = false
+            AND digest > ${cursor}
+            AND "createdAt" < ${missingCutoff}
           ORDER BY digest LIMIT 500
         `);
         if (page.rows.length === 0) break;
@@ -774,6 +820,7 @@ export class MediaAssetGcService {
       this.logger.log(`reconcileShards: ${JSON.stringify(result)}.`);
       return result;
     });
+    return { ...txResult, salvagedFiles };
   }
 
   /** Storage overview for the media page. `db` is the authoritative content size from MediaAsset
@@ -804,6 +851,11 @@ export class MediaAssetGcService {
             SELECT 1 FROM "PendingMedia" pending
             WHERE pending.digest = asset.digest
               AND pending.status IN ('pending', 'failed')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "FileSyncProgress" fsp
+            WHERE fsp.digest = asset.digest
+              AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED')
           )
       `,
         )
@@ -972,49 +1024,148 @@ export class MediaAssetGcService {
     return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
   }
 
-  /** Recursively remove stale `*.tmp` / `*.tmp.*` files under shards/ (left by a crash between
-   *  saveCas's tmp write and its atomic rename). */
-  private async sweepTmp(): Promise<number> {
-    const shardsDir = this.upload.casDir;
-    let swept = 0;
-    const sweep = async (dir: string): Promise<void> => {
-      try {
-        for (const entry of await readdirAsync(dir, { withFileTypes: true })) {
-          const full = join(dir, entry.name);
-          if (entry.isDirectory()) {
-            await sweep(full);
-          } else if (
-            entry.name.endsWith('.tmp') ||
-            entry.name.includes('.tmp.')
-          ) {
-            await unlinkAsync(full).catch(() => {});
-            swept++;
-          }
-        }
-      } catch {
-        // dir missing — nothing to sweep.
+  /** Salvage crashed CAS publishes (design doc §12.4/§12.6). For each `.complete` marker in the CAS
+   *  tmp dir, finish the publish that saveCasFromStream was interrupted before completing: idempotent
+   *  publishReady + atomic rename of the verified `.part` into the shard. The marker is written after
+   *  digest verification but before the DB-first publish/rename, so its presence means the bytes are
+   *  verified and only the final landing was interrupted. Fresh markers (younger than
+   *  SALVAGE_FRESH_GUARD_MS) are spared to avoid racing a publish still finishing. Returns the number
+   *  of publishes completed. */
+  private async salvageCompleteTmp(context?: TaskContext): Promise<number> {
+    let salvaged = 0;
+    const entries = await readdirAsync(this.upload.casTmpDir, {
+      withFileTypes: true,
+    }).catch(() => null);
+    if (!entries) return 0; // tmp dir missing — nothing to salvage.
+    for (const entry of entries) {
+      if (context?.cancelled()) break;
+      if (!entry.isFile() || !entry.name.endsWith('.complete')) continue;
+      const digest = entry.name.slice(0, -'.complete'.length);
+      if (!/^[0-9a-f]{64}$/.test(digest)) continue;
+      const complete = join(this.upload.casTmpDir, entry.name);
+      const part = join(this.upload.casTmpDir, `${digest}.part`);
+      const shardDir = join(
+        this.upload.casDir,
+        digest.slice(0, 2),
+        digest.slice(2, 4),
+      );
+      const abs = join(shardDir, digest);
+      const completeStat = await statAsync(complete).catch(() => null);
+      if (!completeStat) continue;
+      // A marker this fresh may belong to a publish still finishing — leave it for a later salvage.
+      if (Date.now() - completeStat.mtimeMs < SALVAGE_FRESH_GUARD_MS) continue;
+
+      // Publish already landed — just drop the stale marker (and any orphan part).
+      const shardExists = await statAsync(abs)
+        .then(() => true)
+        .catch(() => false);
+      if (shardExists) {
+        await unlinkAsync(complete).catch(() => {});
+        await unlinkAsync(part).catch(() => {});
+        continue;
       }
-    };
-    await sweep(shardsDir);
-    return swept;
+      const partStat = await statAsync(part).catch(() => null);
+      if (!partStat) {
+        // Verified marker but no recoverable bytes and no shard — cannot complete. Drop the marker; a
+        // live row left behind (if publishReady had run) is corrected by the reconcile reverse pass.
+        await unlinkAsync(complete).catch(() => {});
+        continue;
+      }
+      // Prefer the byte count recorded at verification; fall back to the part size.
+      let bytes = BigInt(partStat.size);
+      try {
+        const meta = JSON.parse(await readFileAsync(complete, 'utf8')) as {
+          bytes?: number;
+        };
+        if (Number.isSafeInteger(meta.bytes) && meta.bytes! >= 0)
+          bytes = BigInt(meta.bytes!);
+      } catch {
+        // unreadable marker — keep the part-size fallback.
+      }
+      try {
+        await mkdirAsync(shardDir, { recursive: true });
+        await this.mediaAsset.publishReady(digest, bytes);
+        await renameAsync(part, abs);
+        await unlinkAsync(complete).catch(() => {});
+        await unlinkAsync(
+          join(this.upload.casTmpDir, `${digest}.resume.json`),
+        ).catch(() => {});
+        salvaged++;
+        if (context) {
+          context.update({
+            phase: 'salvaging-crashed-publishes',
+            directory: `${digest.slice(0, 2)}/${digest.slice(2, 4)}`,
+            file: digest,
+            fileSize: String(bytes),
+          });
+          this.taskLog(
+            'log',
+            context.task,
+            'salvage-complete',
+            'finished a crashed CAS publish from its .complete marker',
+            digest,
+            bytes,
+          );
+        }
+      } catch (error) {
+        if (context && !this.isMissingFileError(error)) {
+          this.taskLog(
+            'error',
+            context.task,
+            'salvage-complete',
+            'failed to finish a crashed CAS publish',
+            digest,
+            bytes,
+            error,
+          );
+        }
+      }
+    }
+    return salvaged;
   }
 
-  private async sweepDigestTmp(digest: string): Promise<number> {
-    const dir = join(
-      this.upload.casDir,
-      digest.slice(0, 2),
-      digest.slice(2, 4),
-    );
+  /** Sweep the CAS tmp dir: remove stale in-flight artifacts (design doc §12.6). A `.complete` marker
+   *  is never swept here — salvage consumes it. A `.part`/`.resume.json` whose digest also has a
+   *  `.complete` is owned by salvage and spared. A `.part`/`.resume.json` WITHOUT a `.complete` is an
+   *  abandoned download (no progress for STALE_PENDING_TTL_MS) — unlinked. `*.tmp` crash leftovers from
+   *  the buffer publish paths (saveCas/publishResumable) are likewise swept once stale. Fresh artifacts
+   *  are spared so an active ingest is never swept mid-write. */
+  private async sweepTmp(): Promise<number> {
     let swept = 0;
-    try {
-      for (const name of await readdirAsync(dir)) {
-        if (name.startsWith(`${digest}.`) && name.endsWith('.tmp')) {
-          await unlinkAsync(join(dir, name)).catch(() => {});
-          swept++;
-        }
+    const entries = await readdirAsync(this.upload.casTmpDir, {
+      withFileTypes: true,
+    }).catch(() => null);
+    if (!entries) return 0; // tmp dir missing — nothing to sweep.
+    const completeDigests = new Set(
+      entries
+        .filter((e) => e.isFile() && e.name.endsWith('.complete'))
+        .map((e) => e.name.slice(0, -'.complete'.length))
+        .filter((d) => /^[0-9a-f]{64}$/.test(d)),
+    );
+    const now = Date.now();
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (entry.name.endsWith('.complete')) continue; // salvage owns the marker
+      const full = join(this.upload.casTmpDir, entry.name);
+      // A `.part`/`.resume.json` belonging to a digest that also has a `.complete` is verified and
+      // awaiting salvage — spare it.
+      const trackedDigest = entry.name.endsWith('.part')
+        ? entry.name.slice(0, -'.part'.length)
+        : entry.name.endsWith('.resume.json')
+          ? entry.name.slice(0, -'.resume.json'.length)
+          : null;
+      if (
+        trackedDigest &&
+        /^[0-9a-f]{64}$/.test(trackedDigest) &&
+        completeDigests.has(trackedDigest)
+      ) {
+        continue;
       }
-    } catch {
-      // Bucket missing.
+      const fileStat = await statAsync(full).catch(() => null);
+      if (!fileStat) continue;
+      if (now - fileStat.mtimeMs < STALE_PENDING_TTL_MS) continue;
+      await unlinkAsync(full).catch(() => {});
+      swept++;
     }
     return swept;
   }
