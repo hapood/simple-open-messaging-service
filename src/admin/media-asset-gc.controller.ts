@@ -1,7 +1,6 @@
 import { Public } from '../common/public.decorator.js';
 import {
   Controller,
-  Body,
   Get,
   Param,
   Post,
@@ -120,23 +119,6 @@ export class MediaAssetGcController {
     this.gc.getTask(id);
     reply.hijack();
     this.gc.attachProgress(id, reply.raw, req.headers.origin);
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/media/pending/list')
-  @ApiOperation({ summary: 'List PENDING CAS uploads for manual review' })
-  listPending() {
-    return this.gc.listPendingAssets();
-  }
-
-  @Audit('media.pending.force_terminate')
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/media/pending/force-terminate')
-  @ApiOperation({
-    summary: 'Best-effort terminate and clean one PENDING CAS upload',
-  })
-  forceTerminatePending(@Body() body: { digest: string }) {
-    return this.gc.forceTerminatePending(body.digest);
   }
 
   @Audit('media.gc_avatars')

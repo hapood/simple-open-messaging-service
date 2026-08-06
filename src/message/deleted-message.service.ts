@@ -10,8 +10,10 @@ import {
   federatedMessageTombstone,
   federationDeletedCursor,
   federatedPeer,
+  fileSyncProgress,
   message,
   messageThread,
+  pendingMedia,
 } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -374,6 +376,28 @@ export class DeletedMessageService {
             })
             .where(eq(messageThread.id, params.threadId));
         }
+      }
+
+      // Download-inbox (§12.8): if the deleted message is still staged in PendingMedia (not yet
+      // promoted), abort the staging — delete the staged row and its per-file progress rows. The
+      // advisory lock above serializes this against a concurrent promote, so the two cannot both act on
+      // the same pending row. Temp files are left for the GC temp pass; the tombstone row inserted above
+      // stays as the seen marker that prevents re-staging on feed replay.
+      const staged = await tx.query.pendingMedia.findFirst({
+        where: and(
+          eq(pendingMedia.threadId, params.threadId),
+          eq(pendingMedia.creatorId, params.creatorId),
+          eq(pendingMedia.originSeq, params.originSeq),
+        ),
+        columns: { batchId: true },
+      });
+      if (staged) {
+        await tx
+          .delete(fileSyncProgress)
+          .where(eq(fileSyncProgress.batchId, staged.batchId));
+        await tx
+          .delete(pendingMedia)
+          .where(eq(pendingMedia.batchId, staged.batchId));
       }
 
       await tx

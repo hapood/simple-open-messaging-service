@@ -67,13 +67,6 @@ export const threadAudienceScope = pgEnum('ThreadAudienceScope', [
   'CREATOR',
 ]);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
-export const mediaAssetStatus = pgEnum('MediaAssetStatus', [
-  'PENDING',
-  'READY',
-  'FAILED',
-  'DELETING',
-  'DELETED',
-]);
 export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
   'UPLOADING',
   'COMPLETING',
@@ -92,6 +85,23 @@ export const messageReportStatus = pgEnum('MessageReportStatus', [
   'PENDING',
   'UPHELD',
   'REJECTED',
+]);
+export const fileSyncDirection = pgEnum('FileSyncDirection', [
+  'OUTBOUND',
+  'INBOUND',
+]);
+export const fileSyncStatus = pgEnum('FileSyncStatus', [
+  'PENDING',
+  'DOWNLOADING',
+  'SUCCEEDED',
+  'FAILED',
+]);
+export const fileSyncKind = pgEnum('FileSyncKind', [
+  'FILE',
+  'IMAGE',
+  'VIDEO',
+  'AUDIO',
+  'BUNDLE',
 ]);
 
 export const adminSession = pgTable(
@@ -579,25 +589,25 @@ export const messageAsset = pgTable(
   ],
 );
 
+/**
+ * Content-addressed media blob store. A row exists iff a verified blob sits in the formal CAS shard;
+ * in-flight localization state lives in FileSyncProgress, not here. isDeleted marks a reaped blob whose
+ * shard file has been (or is being) unlinked. See federation design doc §12.
+ */
 export const mediaAsset = pgTable(
   'MediaAsset',
   {
     digest: varchar({ length: 64 }).primaryKey().notNull(),
-    // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     bytes: bigint({ mode: 'bigint' }).notNull(),
-    status: mediaAssetStatus().default('READY').notNull(),
+    isDeleted: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    stateChangedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
-    index('MediaAsset_status_createdAt_idx').using(
+    index('MediaAsset_isDeleted_idx').using(
       'btree',
-      table.status.asc().nullsLast().op('enum_ops'),
-      table.stateChangedAt.asc().nullsLast().op('timestamp_ops'),
+      table.isDeleted.asc().nullsLast().op('bool_ops'),
     ),
   ],
 );
@@ -1239,8 +1249,18 @@ export const pendingMedia = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
     failReason: varchar({ length: 255 }),
+    // Download-inbox extension (federation design doc §12.2): groups a message's files by batchId and
+    // tracks per-file state in FileSyncProgress. direction distinguishes outbound staging from inbound
+    // localization; originDomain/expectedFederationVersion are inbound-only.
+    direction: fileSyncDirection().default('OUTBOUND').notNull(),
+    batchId: uuid().defaultRandom().notNull(),
+    fileCnt: integer().default(1).notNull(),
+    anyFailed: boolean().default(false).notNull(),
+    originDomain: varchar({ length: 63 }),
+    expectedFederationVersion: integer(),
   },
   (table) => [
+    index('PendingMedia_batchId_idx').on(table.batchId),
     uniqueIndex('PendingMedia_clientMessageId_key').using(
       'btree',
       table.clientMessageId.asc().nullsLast().op('text_ops'),
@@ -1315,6 +1335,44 @@ export const uploadSession = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
+  ],
+);
+
+/**
+ * Per-file localization task shared by outbound upload and inbound download, keyed by (batchId, digest).
+ * Holds the in-flight state (PENDING/DOWNLOADING/SUCCEEDED/FAILED) that previously lived on MediaAsset;
+ * MediaAsset now stores only verified blobs. See federation design doc §12.
+ */
+export const fileSyncProgress = pgTable(
+  'FileSyncProgress',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    batchId: uuid().notNull(),
+    digest: varchar({ length: 64 }).notNull(),
+    direction: fileSyncDirection().notNull(),
+    kind: fileSyncKind().notNull(),
+    status: fileSyncStatus().default('PENDING').notNull(),
+    bytesTotal: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    bytesReceived: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    originDomain: varchar({ length: 63 }),
+    errorKind: varchar({ length: 255 }),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FileSyncProgress_batchId_digest_key').on(
+      table.batchId,
+      table.digest,
+    ),
+    index('FileSyncProgress_digest_idx').on(table.digest),
+    index('FileSyncProgress_status_updatedAt_idx').on(
+      table.status,
+      table.updatedAt,
+    ),
   ],
 );
 

@@ -820,7 +820,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(mediaAsset.digest, digest),
         });
         expect(asset).toBeDefined();
-        expect(asset!.status).toBe('READY');
+        expect(asset!.isDeleted).toBe(false);
         const mm = await appB.database.query.messageAsset.findFirst({
           where: eq(messageAsset.digest, digest),
         });
@@ -859,7 +859,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(mediaAsset.digest, digest),
         });
         expect(asset).toBeDefined();
-        expect(asset!.status).toBe('READY');
+        expect(asset!.isDeleted).toBe(false);
         const mm = await appB.database.query.messageAsset.findFirst({
           where: eq(messageAsset.digest, digest),
         });
@@ -902,7 +902,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: eq(mediaAsset.digest, digest),
         });
         expect(asset).toBeDefined();
-        expect(asset!.status).toBe('READY');
+        expect(asset!.isDeleted).toBe(false);
       },
       { timeout: 8000 },
     );

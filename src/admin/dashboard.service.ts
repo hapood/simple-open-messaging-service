@@ -58,8 +58,8 @@ export class DashboardService {
         .select({
           bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
           assetCount: count(),
-          ready: sql<number>`count(*) filter (where ${mediaAsset.status} = 'READY')::int`,
-          pending: sql<number>`count(*) filter (where ${mediaAsset.status} = 'PENDING')::int`,
+          live: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = false)::int`,
+          deleted: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = true)::int`,
         })
         .from(mediaAsset)
         .then(([row]) => row),
@@ -67,7 +67,7 @@ export class DashboardService {
         .execute<{ value: number }>(
           sql`
         SELECT count(*)::int AS value FROM "MediaAsset" asset
-        WHERE asset.status = 'READY'
+        WHERE asset."isDeleted" = false
           AND NOT EXISTS (
             SELECT 1 FROM "MessageAsset" mm
             JOIN "Message" message ON message.id = mm."messageId"
@@ -123,8 +123,8 @@ export class DashboardService {
       media: {
         bytes: BigInt(mediaAgg.bytes),
         assetCount: mediaAgg.assetCount,
-        ready: mediaAgg.ready,
-        pending: mediaAgg.pending,
+        live: mediaAgg.live,
+        deleted: mediaAgg.deleted,
         reclaimable,
       },
       recentActions,

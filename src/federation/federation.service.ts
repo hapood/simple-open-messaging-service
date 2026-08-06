@@ -3606,7 +3606,7 @@ export class FederationService implements OnModuleDestroy {
     const asset = await this.database.db.query.mediaAsset.findFirst({
       where: and(
         eq(tables.mediaAsset.digest, digest),
-        eq(tables.mediaAsset.status, 'READY'),
+        eq(tables.mediaAsset.isDeleted, false),
       ),
       columns: { bytes: true },
     });
@@ -4015,16 +4015,23 @@ export class FederationService implements OnModuleDestroy {
             m,
             response.federationVersion,
           );
-          if (created && this.isMediaContentType(created.contentType)) {
-            await this.localizeMedia(
-              created,
-              domain,
-              e.fromAccount,
-              e.fromDomain,
-              e.toAccount,
-              m.originSeq,
-              response.federationVersion,
-            );
+          if (created?.kind === 'pending') {
+            const category = this.mediaCategory(m.contentType as ContentType);
+            void this.runFileSyncBatch(
+              created.batchId,
+              (digest, offset) =>
+                this.fetchMediaChunks(
+                  domain,
+                  digest,
+                  e.fromAccount,
+                  e.fromDomain,
+                  e.toAccount,
+                  m.originSeq,
+                  category,
+                  undefined,
+                  offset,
+                ),
+            ).catch(() => undefined);
           }
         }
         if (res.messages.length > 0) {
@@ -4197,17 +4204,24 @@ export class FederationService implements OnModuleDestroy {
           m,
           response.federationVersion,
         );
-        if (created && this.isMediaContentType(created.contentType)) {
+        if (created?.kind === 'pending') {
           // Group media: /get_file?toAccount=<group>&fromAccount=<creator> (roster-gated). Group account is `toAccount`.
-          await this.localizeMedia(
-            created,
-            originDomain,
-            m.creator.account,
-            m.creator.domain,
-            toAccount,
-            m.originSeq,
-            response.federationVersion,
-          );
+          const category = this.mediaCategory(m.contentType as ContentType);
+          void this.runFileSyncBatch(
+            created.batchId,
+            (digest, offset) =>
+              this.fetchMediaChunks(
+                originDomain,
+                digest,
+                m.creator.account,
+                m.creator.domain,
+                toAccount,
+                m.originSeq,
+                category,
+                undefined,
+                offset,
+              ),
+          ).catch(() => undefined);
         }
       }
       // Advance the cursor page-by-page to the last STORED message's thread seq (NOT res.latestSeq/the
@@ -4298,16 +4312,23 @@ export class FederationService implements OnModuleDestroy {
             m,
             response.federationVersion,
           );
-          if (created && this.isMediaContentType(created.contentType)) {
-            await this.localizeMedia(
-              created,
-              domain,
-              e.fromAccount,
-              e.fromDomain,
-              e.toAccount,
-              m.originSeq,
-              response.federationVersion,
-            );
+          if (created?.kind === 'pending') {
+            const category = this.mediaCategory(m.contentType as ContentType);
+            void this.runFileSyncBatch(
+              created.batchId,
+              (digest, offset) =>
+                this.fetchMediaChunks(
+                  domain,
+                  digest,
+                  e.fromAccount,
+                  e.fromDomain,
+                  e.toAccount,
+                  m.originSeq,
+                  category,
+                  undefined,
+                  offset,
+                ),
+            ).catch(() => undefined);
           }
         }
         if (messages.length > 0) {
@@ -4382,7 +4403,11 @@ export class FederationService implements OnModuleDestroy {
       quoteTarget?: S2SQuoteTarget;
     },
     expectedFederationVersion: number,
-  ): Promise<Message | null> {
+  ): Promise<
+    | { kind: 'message'; message: Message }
+    | { kind: 'pending'; batchId: string }
+    | null
+  > {
     let storedContent = m.content;
     const incomingText =
       m.contentType === ContentType.PURE_TEXT
@@ -4471,6 +4496,7 @@ export class FederationService implements OnModuleDestroy {
         throw e;
       });
     if (!stored) return null;
+    if (stored.kind === 'pending') return stored;
     const created = stored.message;
     storedContent = stored.storedContent;
     localForwardBundleId = stored.localForwardBundleId;
@@ -4498,7 +4524,7 @@ export class FederationService implements OnModuleDestroy {
         m.originSeq,
         fetchedFromDomain,
       );
-      return created;
+      return { kind: 'message', message: created };
     }
     // SSE FIRST, synchronously — fan to the pre-computed local recipients BEFORE any other await. A DB
     // polling observer (the client's reconcile / an e2e) must not see the committed row before the SSE
@@ -4573,7 +4599,7 @@ export class FederationService implements OnModuleDestroy {
         remoteForwardBundleId,
       );
     }
-    return created;
+    return { kind: 'message', message: created };
   }
 
   /**
@@ -4599,11 +4625,10 @@ export class FederationService implements OnModuleDestroy {
       forwardClosure?: ForwardWireClosure;
       originTime: Date;
     },
-  ): Promise<{
-    message: Message;
-    storedContent: string;
-    localForwardBundleId?: string;
-  }> {
+  ): Promise<
+    | { kind: 'message'; message: Message; storedContent: string; localForwardBundleId?: string }
+    | { kind: 'pending'; batchId: string }
+  > {
     const {
       threadId,
       creator,
@@ -4635,7 +4660,53 @@ export class FederationService implements OnModuleDestroy {
       creatorId,
       incoming.originSeq,
     );
+    const tombstone = await tx.query.federatedMessageTombstone.findFirst({
+      where: and(
+        eq(tables.federatedMessageTombstone.threadId, threadId),
+        eq(tables.federatedMessageTombstone.creatorId, creatorId),
+        eq(tables.federatedMessageTombstone.originSeq, incoming.originSeq),
+      ),
+      columns: { type: true },
+    });
 
+    // Media (non-deleted) is staged in PendingMedia + FileSyncProgress and promoted only after every
+    // referenced file localizes (federation design doc §12). No seq/Message is allocated here — both
+    // happen at promote time — so a not-yet-localized media message is invisible to receivers by design.
+    if (
+      !tombstone &&
+      this.isMediaContentType(incoming.contentType as ContentType)
+    ) {
+      const batchId = randomUUID();
+      const digests = extractDigestEntries(incoming.content);
+      await tx.insert(tables.pendingMedia).values({
+        threadId,
+        creatorId,
+        contentType: incoming.contentType as ContentType,
+        content: incoming.content,
+        originSeq: incoming.originSeq,
+        direction: 'INBOUND',
+        batchId,
+        fileCnt: digests.length,
+        originDomain: fetchedFromDomain,
+        expectedFederationVersion,
+        updatedAt: new Date(),
+      });
+      for (const { digest } of digests) {
+        await tx
+          .insert(tables.fileSyncProgress)
+          .values({
+            batchId,
+            digest,
+            direction: 'INBOUND',
+            kind: this.fileSyncKindFor(incoming.contentType as ContentType),
+            status: 'PENDING',
+          })
+          .onConflictDoNothing();
+      }
+      return { kind: 'pending', batchId };
+    }
+
+    // Direct path: text/non-media, FORWARD, or born-deleted (tombstone present).
     let storedContent = incoming.content;
     let localForwardBundleId: string | undefined;
     if (forwardClosure && forwardCard) {
@@ -4650,20 +4721,11 @@ export class FederationService implements OnModuleDestroy {
         bundleId: localForwardBundleId,
       });
     }
-
     const [{ curSeq: seq }] = await tx
       .update(tables.messageThread)
       .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
       .where(eq(tables.messageThread.id, threadId))
       .returning({ curSeq: tables.messageThread.curSeq });
-    const tombstone = await tx.query.federatedMessageTombstone.findFirst({
-      where: and(
-        eq(tables.federatedMessageTombstone.threadId, threadId),
-        eq(tables.federatedMessageTombstone.creatorId, creatorId),
-        eq(tables.federatedMessageTombstone.originSeq, incoming.originSeq),
-      ),
-      columns: { type: true },
-    });
     storedContent = contextualizeCasUrls(storedContent, threadId, seq);
     if (incomingText?.quote && incoming.quoteTarget) {
       const localQuoteSeq = await this.resolveLocalQuoteSeq(
@@ -4700,7 +4762,10 @@ export class FederationService implements OnModuleDestroy {
           updatedAt: new Date(),
         })
         .onConflictDoNothing({
-          target: [tables.deletedMessage.threadId, tables.deletedMessage.seq],
+          target: [
+            tables.deletedMessage.threadId,
+            tables.deletedMessage.seq,
+          ],
         });
     }
     if (localForwardBundleId) {
@@ -4720,7 +4785,7 @@ export class FederationService implements OnModuleDestroy {
           )
         : 1,
     );
-    return { message, storedContent, localForwardBundleId };
+    return { kind: 'message', message, storedContent, localForwardBundleId };
   }
 
   private async resolveLocalQuoteSeq(
@@ -4778,7 +4843,7 @@ export class FederationService implements OnModuleDestroy {
         const have = await this.database.db.query.mediaAsset.findFirst({
           where: and(
             eq(tables.mediaAsset.digest, asset.digest),
-            eq(tables.mediaAsset.status, 'READY'),
+            eq(tables.mediaAsset.isDeleted, false),
           ),
           columns: { digest: true },
         });
@@ -4822,6 +4887,273 @@ export class FederationService implements OnModuleDestroy {
     );
   }
 
+  /** Map an inbound message contentType to the FileSyncProgress kind (LINK's image counts as IMAGE). */
+  private fileSyncKindFor(
+    t: ContentType,
+  ): 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'BUNDLE' {
+    switch (t) {
+      case ContentType.IMAGE:
+      case ContentType.LINK:
+        return 'IMAGE';
+      case ContentType.VIDEO:
+        return 'VIDEO';
+      case ContentType.AUDIO:
+        return 'AUDIO';
+      default:
+        return 'FILE';
+    }
+  }
+
+  /** Quota category for fetching a digest from the peer (matches the former localizeMedia split). */
+  private mediaCategory(t: ContentType): 'images' | 'largeFiles' {
+    return t === ContentType.IMAGE || t === ContentType.LINK
+      ? 'images'
+      : 'largeFiles';
+  }
+
+  /**
+   * Drive one file's localization to a terminal state and update its FileSyncProgress row (§12.4/§12.6).
+   * Dedup: a digest already local (live MediaAsset) skips the network fetch. A clean failure (transport
+   * or digest mismatch) marks the row FAILED — no auto-retry; the message stays staged for an admin
+   * (§12.7). A crash mid-fetch leaves the row DOWNLOADING, also admin-recoverable. saveCasFromStream's
+   * per-digest lock + the dedup make concurrent batches over the same digest safe.
+   */
+  private async driveFileSync(
+    progressId: bigint,
+    digest: string,
+    fetchChunks: (offset: number) => AsyncIterable<Buffer>,
+  ): Promise<void> {
+    try {
+      const have = await this.database.db.query.mediaAsset.findFirst({
+        where: and(
+          eq(tables.mediaAsset.digest, digest),
+          eq(tables.mediaAsset.isDeleted, false),
+        ),
+        columns: { digest: true },
+      });
+      if (!have) {
+        await this.upload.saveCasFromStream('', fetchChunks, digest);
+      }
+      await this.database.db
+        .update(tables.fileSyncProgress)
+        .set({ status: 'SUCCEEDED', updatedAt: new Date() })
+        .where(eq(tables.fileSyncProgress.id, progressId));
+    } catch (error) {
+      await this.database.db
+        .update(tables.fileSyncProgress)
+        .set({
+          status: 'FAILED',
+          errorKind:
+            error instanceof Error ? error.message.slice(0, 255) : 'error',
+          updatedAt: new Date(),
+        })
+        .where(eq(tables.fileSyncProgress.id, progressId));
+    }
+  }
+
+  /**
+   * Drive every still-pending file of a batch to terminal, then attempt the message-level promote.
+   * `fetchChunksFor(digest, offset)` is supplied by the caller (the pull loop) bound to the right peer
+   * context, keeping this path free of any FederationService↔FileSync dependency cycle. Fire-and-forget
+   * at the call site — it never blocks the pull drainer or the cursor (§12.6).
+   */
+  async runFileSyncBatch(
+    batchId: string,
+    fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
+  ): Promise<void> {
+    const rows = await this.database.db.query.fileSyncProgress.findMany({
+      where: and(
+        eq(tables.fileSyncProgress.batchId, batchId),
+        inArray(tables.fileSyncProgress.status, ['PENDING', 'FAILED']),
+      ),
+    });
+    await Promise.all(
+      rows.map((row) =>
+        this.driveFileSync(row.id, row.digest, (offset) =>
+          fetchChunksFor(row.digest, offset),
+        ),
+      ),
+    );
+    await this.promotePendingMessage(batchId);
+  }
+
+  /**
+   * Promote a staged inbound media message into the Message table once every referenced file is
+   * SUCCEEDED (§12.5). Replicates storePulledMessageInTransaction's direct-path work — seq allocation,
+   * CAS-URL contextualization, tombstone re-check (may have arrived while pending), MessageAsset authz
+   * rows, last-message cache, quota — then SSE-fans the now-visible message and re-signals the hub. A
+   * not-yet-ready batch (any file PENDING/DOWNLOADING/FAILED) is a no-op; a later runFileSyncBatch retry
+   * re-attempts. On a successful promote the PendingMedia + FileSyncProgress rows are deleted.
+   */
+  private async promotePendingMessage(batchId: string): Promise<void> {
+    const promoted = await this.database.db.transaction(async (tx) => {
+      const batch = await tx.query.pendingMedia.findFirst({
+        where: eq(tables.pendingMedia.batchId, batchId),
+      });
+      if (!batch) return null;
+      // Barrier: every file must be SUCCEEDED (§12.5 — a failed file keeps the message staged for an
+      // admin; it does NOT promote as broken). Derived, not counter-maintained.
+      const outstanding = await tx.execute(sql`
+        SELECT 1 FROM "FileSyncProgress"
+        WHERE "batchId" = ${batchId} AND status <> 'SUCCEEDED'
+        LIMIT 1
+      `);
+      if ((outstanding.rows ?? []).length > 0) return null;
+
+      const threadId = batch.threadId;
+      const creatorId = batch.creatorId;
+      const originSeq = batch.originSeq!;
+      await this.assertThreadResponseWritable(
+        tx,
+        threadId,
+        batch.originDomain!,
+        batch.expectedFederationVersion!,
+      );
+      await DeletedMessageService.lockFederatedIdentity(
+        tx,
+        threadId,
+        creatorId,
+        originSeq,
+      );
+      const tombstone = await tx.query.federatedMessageTombstone.findFirst({
+        where: and(
+          eq(tables.federatedMessageTombstone.threadId, threadId),
+          eq(tables.federatedMessageTombstone.creatorId, creatorId),
+          eq(tables.federatedMessageTombstone.originSeq, originSeq),
+        ),
+        columns: { type: true },
+      });
+      const [{ curSeq: seq }] = await tx
+        .update(tables.messageThread)
+        .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
+        .where(eq(tables.messageThread.id, threadId))
+        .returning({ curSeq: tables.messageThread.curSeq });
+      const storedContent = contextualizeCasUrls(batch.content, threadId, seq);
+      const [message] = await tx
+        .insert(tables.message)
+        .values({
+          contentType: batch.contentType as ContentType,
+          content: storedContent,
+          threadId,
+          creator: creatorId,
+          seq,
+          originSeq,
+          originServerTime: batch.createdAt,
+          isDeleted: tombstone !== undefined,
+          updatedAt: new Date(),
+        })
+        .returning();
+      if (tombstone) {
+        await tx
+          .insert(tables.deletedMessage)
+          .values({
+            threadId,
+            seq,
+            type: tombstone.type,
+            updatedAt: new Date(),
+          })
+          .onConflictDoNothing({
+            target: [
+              tables.deletedMessage.threadId,
+              tables.deletedMessage.seq,
+            ],
+          });
+      } else {
+        for (const digest of extractDigests(batch.content)) {
+          await tx
+            .insert(tables.messageAsset)
+            .values({ messageId: message.id, threadId, digest })
+            .onConflictDoNothing();
+        }
+      }
+      const arrival = message.createdAt;
+      await tx
+        .update(tables.messageThread)
+        .set({
+          lastMessageSeq: seq,
+          lastMessagePreview: derivePreview(
+            batch.contentType as ContentType,
+            storedContent,
+          ),
+          lastMessageAt: arrival,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tables.messageThread.id, threadId),
+            or(
+              isNull(tables.messageThread.lastMessageAt),
+              lt(tables.messageThread.lastMessageAt, arrival),
+            ),
+          ),
+        );
+      const recipients = await this.localActiveMemberIds(threadId);
+      const restored =
+        await this.threadRevisionService.restoreHiddenThreadsInTx(
+          tx,
+          threadId,
+          recipients,
+        );
+      await tx
+        .delete(tables.fileSyncProgress)
+        .where(eq(tables.fileSyncProgress.batchId, batchId));
+      await tx
+        .delete(tables.pendingMedia)
+        .where(eq(tables.pendingMedia.id, batch.id));
+      await this.quota.tick(batch.originDomain!, 'messages', tx, 1);
+      return {
+        message,
+        threadId,
+        creatorId,
+        originSeq,
+        originDomain: batch.originDomain!,
+        recipients,
+        restored,
+      };
+    });
+    if (!promoted) return;
+    const {
+      message,
+      threadId,
+      creatorId,
+      originSeq,
+      originDomain,
+      recipients,
+      restored,
+    } = promoted;
+    restored.forEach((revision) =>
+      this.threadRevisionService.notifyThreadRevision(revision),
+    );
+    if (message.isDeleted) {
+      const deletion = await this.database.db.query.deletedMessage.findFirst({
+        where: and(
+          eq(tables.deletedMessage.threadId, threadId),
+          eq(tables.deletedMessage.seq, message.seq),
+        ),
+        columns: { id: true },
+      });
+      if (deletion) {
+        for (const uid of recipients) {
+          this.sse.onDeletedMessageUpdated(uid, threadId, deletion.id.toString());
+        }
+      }
+    } else {
+      for (const uid of recipients) {
+        if (uid !== creatorId) {
+          this.sse.onNewMessage(
+            uid,
+            threadId,
+            message.seq,
+            message.createdAt.getTime(),
+          );
+        }
+      }
+    }
+    void this.signalOutbound(threadId, creatorId, originSeq, originDomain).catch(
+      () => undefined,
+    );
+  }
+
   /**
    * Receiver-side media localize (§3.3 / §4.5): for each CAS digest referenced by a pulled message,
    * fetch the bytes from the peer's /get_file and store them through the SAME CAS pipeline as a local
@@ -4862,7 +5194,7 @@ export class FederationService implements OnModuleDestroy {
         const have = await this.database.db.query.mediaAsset.findFirst({
           where: and(
             eq(tables.mediaAsset.digest, digest),
-            eq(tables.mediaAsset.status, 'READY'),
+            eq(tables.mediaAsset.isDeleted, false),
           ),
           columns: { digest: true },
         });
@@ -4944,7 +5276,7 @@ export class FederationService implements OnModuleDestroy {
     const assets = await this.database.db.query.mediaAsset.findMany({
       where: and(
         inArray(tables.mediaAsset.digest, digests),
-        eq(tables.mediaAsset.status, 'READY'),
+        eq(tables.mediaAsset.isDeleted, false),
       ),
       columns: { digest: true },
     });
@@ -5057,7 +5389,7 @@ export class FederationService implements OnModuleDestroy {
         await this.database.db.query.mediaAsset.findMany({
           where: and(
             inArray(tables.mediaAsset.digest, digests),
-            eq(tables.mediaAsset.status, 'READY'),
+            eq(tables.mediaAsset.isDeleted, false),
           ),
           columns: { digest: true },
         })

@@ -982,14 +982,6 @@ export class ForwardBundleService {
         digest,
       );
       await mkdir(dirname(target), { recursive: true });
-      await this.database.db
-        .insert(mediaAsset)
-        .values({
-          digest,
-          bytes: BigInt(buffer.length),
-          status: 'PENDING',
-        })
-        .onConflictDoNothing({ target: mediaAsset.digest });
       const temporary = `${target}.${process.pid}.${mintUlid()}.tmp`;
       let renamed = false;
       try {
@@ -1000,13 +992,12 @@ export class ForwardBundleService {
         if (!renamed) await unlink(temporary).catch(() => {});
       }
       await this.database.db
-        .update(mediaAsset)
-        .set({
-          status: 'READY',
-          bytes: BigInt(buffer.length),
-          stateChangedAt: sql`CURRENT_TIMESTAMP`,
-        })
-        .where(eq(mediaAsset.digest, digest));
+        .insert(mediaAsset)
+        .values({ digest, bytes: BigInt(buffer.length), isDeleted: false })
+        .onConflictDoUpdate({
+          target: mediaAsset.digest,
+          set: { bytes: BigInt(buffer.length), isDeleted: false },
+        });
       return {
         digest,
         kind: 'avatar',

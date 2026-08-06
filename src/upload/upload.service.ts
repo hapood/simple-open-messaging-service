@@ -438,11 +438,10 @@ export class UploadService {
   /**
    * Content-addressed save: sha256 → data/cas/<digest[0:2]>/<digest[2:4]>/<digest>.
    *
-   * The digest is reserved as PENDING before atomic publish via a tmp file + rename on the same
-   * filesystem. Two concurrent writers of the
+   * The blob is atomically published via a tmp file + rename on the same filesystem; the MediaAsset
+   * row is written after the rename. Two concurrent writers of the
    * same digest produce byte-identical files, the second rename overwrites the first, and there is
-   * no TOCTOU window (no existsSync pre-check). After publication the asset becomes READY and its
-   * reference is incremented. `ext` is the trusted on-disk extension (the caller decides
+   * no TOCTOU window (no existsSync pre-check). `ext` is the trusted on-disk extension (the caller decides
    * the source: magic-byte-derived for images/video/audio, sanitized client-name-derived for files).
    */
   /** The extensionless content-addressed path for a digest. Shared by saveCas (buffer) and
@@ -461,7 +460,6 @@ export class UploadService {
   ): Promise<{ url: string; digest: string; ext: string; size: number }> {
     const digest = createHash('sha256').update(buf).digest('hex');
     const { abs, url } = this.casShardPath(digest);
-    await this.mediaAsset.reserve(digest, BigInt(buf.length));
     await mkdirAsync(dirname(abs), { recursive: true });
     // Atomic publish: write a unique tmp path, then rename (same filesystem → atomic). Identical
     // concurrent uploads overwrite each other harmlessly (byte-identical content).
@@ -471,7 +469,7 @@ export class UploadService {
       await writeFileAsync(tmp, buf);
       await renameAsync(tmp, abs);
       renamed = true;
-      await this.mediaAsset.markReady(digest, BigInt(buf.length));
+      await this.mediaAsset.publishReady(digest, BigInt(buf.length));
     } finally {
       if (!renamed) await unlinkAsync(tmp).catch(() => {});
     }
@@ -528,7 +526,6 @@ export class UploadService {
     }
     const digest = hash.digest('hex');
     const { abs, url } = this.casShardPath(digest);
-    await this.mediaAsset.reserve(digest, BigInt(info.size));
     await mkdirAsync(dirname(abs), { recursive: true });
     // Keep the resumable source until UploadSession has durably recorded the result. Publishing through
     // a unique CAS-side temp preserves atomic rename while making a DB failure safely retryable.
@@ -538,7 +535,7 @@ export class UploadService {
       await copyFileAsync(tmpPath, publishTmp);
       await renameAsync(publishTmp, abs);
       renamed = true;
-      await this.mediaAsset.markReady(digest, BigInt(info.size));
+      await this.mediaAsset.publishReady(digest, BigInt(info.size));
     } finally {
       if (!renamed) await unlinkAsync(publishTmp).catch(() => {});
     }
@@ -681,11 +678,10 @@ export class UploadService {
       throw new Error('invalid CAS digest');
     return this.casIngestLocks.runExclusive(expectedDigest, async () => {
       const { abs, url } = this.casShardPath(expectedDigest);
-      await this.mediaAsset.reserve(expectedDigest, 0n);
       await mkdirAsync(dirname(abs), { recursive: true });
       if (existsSync(abs)) {
         const size = (await statAsync(abs)).size;
-        await this.mediaAsset.markReady(expectedDigest, BigInt(size));
+        await this.mediaAsset.publishReady(expectedDigest, BigInt(size));
         return { url, digest: expectedDigest, size };
       }
 
@@ -736,7 +732,7 @@ export class UploadService {
           if (resumedHash.digest('hex') === expectedDigest) {
             await renameAsync(part, abs);
             await unlinkAsync(resume).catch(() => {});
-            await this.mediaAsset.markReady(expectedDigest, BigInt(offset));
+            await this.mediaAsset.publishReady(expectedDigest, BigInt(offset));
             return { url, digest: expectedDigest, size: offset };
           }
         }
@@ -760,12 +756,11 @@ export class UploadService {
         }
         await renameAsync(part, abs);
         await unlinkAsync(resume).catch(() => {});
-        await this.mediaAsset.markReady(digest, BigInt(offset));
+        await this.mediaAsset.publishReady(digest, BigInt(offset));
         return { url, digest, size: offset };
       } catch (error) {
         // Transport failures deliberately retain the verified prefix + sidecar for a later retry.
         // Integrity failures above remove both because no persisted range can be trusted.
-        await this.mediaAsset.markFailed(expectedDigest);
         throw error;
       } finally {
         await unlinkAsync(resumeTmp).catch(() => {});

@@ -228,7 +228,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .from(mediaAsset)
       .where(eq(mediaAsset.digest, digest))
       .limit(1);
-    expect(asset?.status).toBe('READY');
+    expect(asset?.isDeleted).toBe(false);
   });
 
   it('promotes a staged IMAGE send on upload and persists size in Message.content', async () => {

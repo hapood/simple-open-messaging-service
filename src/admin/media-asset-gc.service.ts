@@ -77,16 +77,12 @@ interface TaskContext {
 }
 
 export interface GcResult {
-  /** MediaAsset rows transitioned to retained DELETED tombstones. */
+  /** MediaAsset rows flipped from live (isDeleted=false) to reaped (isDeleted=true). */
   reapedRows: number;
   /** Shard files actually unlinked (may be < reapedRows if a file was already missing). */
   reapedFiles: number;
   /** Stale *.tmp files removed (crash leftovers from saveCas's tmp+rename). */
   sweptTmp: number;
-  /** Stale PendingMedia rows reclaimed (pending after 1h; failed after the recovery window). */
-  sweptPending: number;
-  /** Orphan shard files reaped via the stale-pending sweep (file written but the message never committed). */
-  reapedPendingFiles: number;
 }
 
 export interface ForwardBundleGcResult {
@@ -98,23 +94,22 @@ export interface ForwardBundleGcResult {
 export interface ReconcileResult {
   deletedOrphanFiles: number;
   deletedTombstoneFiles: number;
-  markedMissingReadyDeleted: number;
-  skippedPending: number;
-  skippedDeleting: number;
+  /** Live (isDeleted=false) rows whose shard file is missing on disk, marked isDeleted. */
+  markedMissing: number;
 }
 
 /**
- * Manual garbage collection for content-addressed media. READY liveness is derived directly from
- * non-deleted ordinary messages and active PendingMedia; forward bundles deliberately do not retain
- * blobs. PENDING assets are never age-reaped and require explicit administrator termination.
+ * Manual garbage collection for content-addressed media. A MediaAsset row is live (isDeleted=false)
+ * iff referenced by a non-deleted MessageAsset or an in-flight staging row (PendingMedia /
+ * FileSyncProgress); forward bundles deliberately do not retain blobs.
  *
  * Two tiers:
- *  - {@link gcOrphanedAssets}: manually delete unreachable READY blobs and resume DELETING rows.
- *  - {@link reconcileShards}: bounded-batch disk/database consistency repair; PENDING is skipped.
+ *  - {@link gcOrphanedAssets}: flip unreachable live blobs to isDeleted and unlink the shard files.
+ *  - {@link reconcileShards}: bounded-batch disk/database consistency repair.
  *
- * GC scans ONLY uploads/cas/. Avatars are never
- * touched — they have no MediaAsset row; avatar overwrite-delete is owned by UploadService.deleteByUrl.
- * `clearHistory` only changes a per-user watermark and therefore never affects media liveness.
+ * GC scans ONLY uploads/cas/. Avatars are never touched — they have no MediaAsset row; avatar
+ * overwrite-delete is owned by UploadService.deleteByUrl. `clearHistory` only changes a per-user
+ * watermark and therefore never affects media liveness.
  */
 @Injectable()
 export class MediaAssetGcService {
@@ -310,48 +305,9 @@ export class MediaAssetGcService {
     }
   }
 
-  async listPendingAssets() {
-    const result = await this.database.db.execute<{
-      digest: string;
-      bytes: string;
-      stateChangedAt: Date;
-      pendingMediaCount: number;
-    }>(sql`
-      SELECT asset.digest, asset.bytes::text AS bytes,
-             asset."stateChangedAt",
-             count(pending.id)::int AS "pendingMediaCount"
-      FROM "MediaAsset" asset
-      LEFT JOIN "PendingMedia" pending ON pending.digest = asset.digest
-      WHERE asset.status = 'PENDING'
-      GROUP BY asset.digest, asset.bytes, asset."stateChangedAt"
-      ORDER BY asset."stateChangedAt" ASC
-    `);
-    return result.rows;
-  }
-
-  async forceTerminatePending(digest: string) {
-    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('invalid CAS digest');
-    return this.database.db.transaction(async (tx) => {
-      const [claimed] = await tx
-        .update(mediaAsset)
-        .set({ status: 'DELETING', stateChangedAt: sql`CURRENT_TIMESTAMP` })
-        .where(
-          and(eq(mediaAsset.digest, digest), eq(mediaAsset.status, 'PENDING')),
-        )
-        .returning({ digest: mediaAsset.digest });
-      if (!claimed) return { terminated: false, busy: false };
-      await tx.delete(pendingMedia).where(eq(pendingMedia.digest, digest));
-      const deletedBlob = await this.reapDigest(digest);
-      const deletedTmp = await this.sweepDigestTmp(digest);
-      await tx
-        .update(mediaAsset)
-        .set({ status: 'DELETED', stateChangedAt: sql`CURRENT_TIMESTAMP` })
-        .where(
-          and(eq(mediaAsset.digest, digest), eq(mediaAsset.status, 'DELETING')),
-        );
-      return { terminated: true, busy: false, deletedBlob, deletedTmp };
-    });
-  }
+  // Per-file in-flight state (FileSyncProgress) admin views — list / retry / clean — are added with
+  // the download-inbox GC UI (federation design doc §12.6 / §12.7). The former PENDING-asset
+  // terminate/list endpoints are obsolete: MediaAsset now holds only verified blobs (isDeleted).
 
   /** Find immutable bundles that are not reachable from any visible ForwardMessage root. This is
    * intentionally admin-triggered only: bundle retention must never depend on a background timer. */
@@ -432,8 +388,7 @@ export class MediaAssetGcService {
     return rows.rows.map((row) => row.id);
   }
 
-  /** Primary GC: reap unreachable READY assets and resume DELETING assets, then sweep stale tmp.
-   * PENDING assets are never candidates. */
+  /** Primary GC: reap unreachable live (isDeleted=false) blobs, then sweep stale tmp. */
   async gcOrphanedAssets(): Promise<GcResult> {
     return this.runExclusive(() => this.gcOrphanedAssetsCore());
   }
@@ -452,20 +407,17 @@ export class MediaAssetGcService {
         }>(sql`
         SELECT asset.digest, asset.bytes::text AS bytes
         FROM "MediaAsset" asset
-        WHERE asset.status = 'DELETING'
-           OR (
-             asset.status = 'READY'
-             AND NOT EXISTS (
-               SELECT 1 FROM "MessageAsset" mm
-               JOIN "Message" message ON message.id = mm."messageId"
-               WHERE mm.digest = asset.digest AND message."isDeleted" = false
-             )
-             AND NOT EXISTS (
-               SELECT 1 FROM "PendingMedia" pending
-               WHERE pending.digest = asset.digest
-                 AND pending.status IN ('pending', 'failed')
-             )
-           )
+        WHERE asset."isDeleted" = false
+          AND NOT EXISTS (
+            SELECT 1 FROM "MessageAsset" mm
+            JOIN "Message" message ON message.id = mm."messageId"
+            WHERE mm.digest = asset.digest AND message."isDeleted" = false
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "PendingMedia" pending
+            WHERE pending.digest = asset.digest
+              AND pending.status IN ('pending', 'failed')
+          )
         ORDER BY asset.digest
         LIMIT 500
       `);
@@ -483,23 +435,18 @@ export class MediaAssetGcService {
           });
           const claimed = await tx.execute<{ digest: string }>(sql`
           UPDATE "MediaAsset" asset
-          SET status = 'DELETING', "stateChangedAt" = CURRENT_TIMESTAMP
+          SET "isDeleted" = true
           WHERE asset.digest = ${digest}
-            AND (
-              asset.status = 'DELETING'
-              OR (
-                asset.status = 'READY'
-                AND NOT EXISTS (
-                  SELECT 1 FROM "MessageAsset" mm
-                  JOIN "Message" message ON message.id = mm."messageId"
-                  WHERE mm.digest = asset.digest AND message."isDeleted" = false
-                )
-                AND NOT EXISTS (
-                  SELECT 1 FROM "PendingMedia" pending
-                  WHERE pending.digest = asset.digest
-                    AND pending.status IN ('pending', 'failed')
-                )
-              )
+            AND asset."isDeleted" = false
+            AND NOT EXISTS (
+              SELECT 1 FROM "MessageAsset" mm
+              JOIN "Message" message ON message.id = mm."messageId"
+              WHERE mm.digest = asset.digest AND message."isDeleted" = false
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM "PendingMedia" pending
+              WHERE pending.digest = asset.digest
+                AND pending.status IN ('pending', 'failed')
             )
           RETURNING digest
         `);
@@ -525,18 +472,6 @@ export class MediaAssetGcService {
               );
             }
           }
-          await tx
-            .update(mediaAsset)
-            .set({
-              status: 'DELETED',
-              stateChangedAt: sql`CURRENT_TIMESTAMP`,
-            })
-            .where(
-              and(
-                eq(mediaAsset.digest, digest),
-                eq(mediaAsset.status, 'DELETING'),
-              ),
-            );
           reapedRows++;
         }
       }
@@ -545,13 +480,7 @@ export class MediaAssetGcService {
         true,
       );
       const sweptTmp = context?.cancelled() ? 0 : await this.sweepTmp();
-      return {
-        reapedRows,
-        reapedFiles,
-        sweptTmp,
-        sweptPending: 0,
-        reapedPendingFiles: 0,
-      };
+      return { reapedRows, reapedFiles, sweptTmp };
     });
     this.logger.log(
       `gcOrphanedAssets: reaped ${result.reapedRows} row(s), ${result.reapedFiles} file(s), swept ${result.sweptTmp} tmp.`,
@@ -624,19 +553,25 @@ export class MediaAssetGcService {
       const result = {
         deletedOrphanFiles: 0,
         deletedTombstoneFiles: 0,
-        markedMissingReadyDeleted: 0,
-        skippedPending: 0,
-        skippedDeleting: 0,
+        markedMissing: 0,
       };
       let scannedBytes = 0n;
       let deletedBytes = 0n;
       context?.update({ phase: 'scanning-disk' }, true);
       const processBatch = async (
-        files: Array<{ digest: string; path: string; bytes: bigint }>,
+        files: Array<{
+          digest: string;
+          path: string;
+          bytes: bigint;
+          mtimeMs: number;
+        }>,
       ) => {
         if (files.length === 0) return;
         const rows = await tx
-          .select({ digest: mediaAsset.digest, status: mediaAsset.status })
+          .select({
+            digest: mediaAsset.digest,
+            isDeleted: mediaAsset.isDeleted,
+          })
           .from(mediaAsset)
           .where(
             inArray(
@@ -644,7 +579,9 @@ export class MediaAssetGcService {
               files.map((file) => file.digest),
             ),
           );
-        const statuses = new Map(rows.map((row) => [row.digest, row.status]));
+        const rowState = new Map(
+          rows.map((row) => [row.digest, row.isDeleted] as const),
+        );
         for (const file of files) {
           if (context?.cancelled()) return;
           scannedBytes += file.bytes;
@@ -656,16 +593,10 @@ export class MediaAssetGcService {
             scannedFiles: context.task.scannedFiles + 1,
             scannedBytes: String(scannedBytes),
           });
-          const status = statuses.get(file.digest);
-          if (status === 'PENDING') {
-            result.skippedPending++;
-            continue;
-          }
-          if (status === 'DELETING') {
-            result.skippedDeleting++;
-            continue;
-          }
-          if (status === 'DELETED') {
+          const isDeleted = rowState.get(file.digest);
+          if (isDeleted === false) continue; // live row + file present → keep
+          if (isDeleted === true) {
+            // Reaped row but shard file still on disk → residue → unlink.
             const deleted = await this.unlinkReconcileFile(
               file,
               context,
@@ -688,38 +619,22 @@ export class MediaAssetGcService {
                 'log',
                 context.task,
                 'delete-tombstone-residue',
-                'deleted residual CAS tombstone blob',
+                'deleted residual reaped CAS blob',
                 file.digest,
                 file.bytes,
               );
             }
             continue;
           }
-          if (status === 'READY') continue;
-          const [claimed] = await tx
-            .insert(mediaAsset)
-            .values({
-              digest: file.digest,
-              bytes: file.bytes,
-              status: 'DELETING',
-            })
-            .onConflictDoNothing({ target: mediaAsset.digest })
-            .returning({ digest: mediaAsset.digest });
-          if (!claimed) continue;
+          // No MediaAsset row. Spare files newer than the stale window — they may belong to an
+          // in-flight publish (saveCas writes the file before the row; §12.4 makes this crash-safe
+          // later). Older orphans are unlinked directly (no tombstone row to insert).
+          if (Date.now() - file.mtimeMs < STALE_ASSET_PENDING_TTL_MS) continue;
           const deleted = await this.unlinkReconcileFile(
             file,
             context,
             'delete-orphan',
           );
-          await tx
-            .update(mediaAsset)
-            .set({ status: 'DELETED', stateChangedAt: sql`CURRENT_TIMESTAMP` })
-            .where(
-              and(
-                eq(mediaAsset.digest, file.digest),
-                eq(mediaAsset.status, 'DELETING'),
-              ),
-            );
           if (deleted) {
             result.deletedOrphanFiles++;
             deletedBytes += file.bytes;
@@ -737,14 +652,19 @@ export class MediaAssetGcService {
               'log',
               context.task,
               'delete-orphan',
-              'deleted orphan CAS blob',
+              'deleted orphan CAS blob (no MediaAsset row)',
               file.digest,
               file.bytes,
             );
           }
         }
       };
-      let batch: Array<{ digest: string; path: string; bytes: bigint }> = [];
+      let batch: Array<{
+        digest: string;
+        path: string;
+        bytes: bigint;
+        mtimeMs: number;
+      }> = [];
       try {
         for (const a of await readdirAsync(this.upload.casDir, {
           withFileTypes: true,
@@ -762,7 +682,12 @@ export class MediaAssetGcService {
               const path = join(bDir, digest);
               const fileStat = await statAsync(path).catch(() => null);
               if (!fileStat) continue;
-              batch.push({ digest, path, bytes: BigInt(fileStat.size) });
+              batch.push({
+                digest,
+                path,
+                bytes: BigInt(fileStat.size),
+                mtimeMs: fileStat.mtimeMs,
+              });
               if (batch.length >= 500) {
                 await processBatch(batch);
                 batch = [];
@@ -800,7 +725,7 @@ export class MediaAssetGcService {
         if (context?.cancelled()) break;
         const page = await tx.execute<{ digest: string }>(sql`
           SELECT digest FROM "MediaAsset"
-          WHERE status = 'READY' AND digest > ${cursor}
+          WHERE "isDeleted" = false AND digest > ${cursor}
           ORDER BY digest LIMIT 500
         `);
         if (page.rows.length === 0) break;
@@ -825,23 +750,20 @@ export class MediaAssetGcService {
           if (!exists) {
             await tx
               .update(mediaAsset)
-              .set({
-                status: 'DELETED',
-                stateChangedAt: sql`CURRENT_TIMESTAMP`,
-              })
+              .set({ isDeleted: true })
               .where(
                 and(
                   eq(mediaAsset.digest, row.digest),
-                  eq(mediaAsset.status, 'READY'),
+                  eq(mediaAsset.isDeleted, false),
                 ),
               );
-            result.markedMissingReadyDeleted++;
+            result.markedMissing++;
             if (context) {
               this.taskLog(
                 'log',
                 context.task,
-                'mark-missing-ready-deleted',
-                'marked missing READY CAS blob as DELETED',
+                'mark-missing-deleted',
+                'marked missing live CAS blob as isDeleted',
                 row.digest,
               );
             }
@@ -858,18 +780,13 @@ export class MediaAssetGcService {
    *  (deduped by digest); `onDisk` walks uploads/cas/ to break bytes down by extension and surface
    *  drift vs the table. O(files) — fine for a manually triggered admin read. */
   async stats() {
-    const staleStateCutoff = new Date(Date.now() - STALE_ASSET_PENDING_TTL_MS);
     const [agg, reclaimable] = await Promise.all([
       this.database.db
         .select({
           bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,
           assetCount: count(),
-          ready: sql<number>`count(*) filter (where ${mediaAsset.status} = 'READY')::int`,
-          pending: sql<number>`count(*) filter (where ${mediaAsset.status} = 'PENDING')::int`,
-          deleting: sql<number>`count(*) filter (where ${mediaAsset.status} = 'DELETING')::int`,
-          deleted: sql<number>`count(*) filter (where ${mediaAsset.status} = 'DELETED')::int`,
-          stalePending: sql<number>`count(*) filter (where ${mediaAsset.status} = 'PENDING' and ${mediaAsset.stateChangedAt} < ${staleStateCutoff})::int`,
-          staleDeleting: sql<number>`count(*) filter (where ${mediaAsset.status} = 'DELETING' and ${mediaAsset.stateChangedAt} < ${staleStateCutoff})::int`,
+          live: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = false)::int`,
+          deleted: sql<number>`count(*) filter (where ${mediaAsset.isDeleted} = true)::int`,
         })
         .from(mediaAsset)
         .then(([row]) => row),
@@ -877,7 +794,7 @@ export class MediaAssetGcService {
         .execute<{ value: number }>(
           sql`
         SELECT count(*)::int AS value FROM "MediaAsset" asset
-        WHERE asset.status = 'READY'
+        WHERE asset."isDeleted" = false
           AND NOT EXISTS (
             SELECT 1 FROM "MessageAsset" mm
             JOIN "Message" message ON message.id = mm."messageId"
@@ -925,12 +842,8 @@ export class MediaAssetGcService {
       db: {
         bytes: BigInt(agg.bytes),
         assetCount: agg.assetCount,
-        ready: agg.ready,
-        pending: agg.pending,
-        deleting: agg.deleting,
+        live: agg.live,
         deleted: agg.deleted,
-        stalePending: agg.stalePending,
-        staleDeleting: agg.staleDeleting,
         reclaimable,
       },
       onDisk: {

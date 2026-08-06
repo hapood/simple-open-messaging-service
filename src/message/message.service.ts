@@ -937,17 +937,17 @@ export class MessageService implements OnModuleInit {
         columns: { messageId: true, digest: true },
       }),
       allDigests.size === 0
-        ? Promise.resolve([] as { digest: string; status: string }[])
+        ? Promise.resolve([] as { digest: string; isDeleted: boolean }[])
         : this.database.db.query.mediaAsset.findMany({
             where: inArray(mediaAsset.digest, [...allDigests]),
-            columns: { digest: true, status: true },
+            columns: { digest: true, isDeleted: true },
           }),
     ]);
-    // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset has
-    // READY in the asset table. messageId is BigInt; String(1n) === "1" so the key is collision-free.
+    // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset is a
+    // live (non-deleted) blob. messageId is BigInt; String(1n) === "1" so the key is collision-free.
     const auth = new Set(authRows.map((r) => `${r.messageId}:${r.digest}`));
     const present = new Set(
-      assetRows.filter((a) => a.status === 'READY').map((a) => a.digest),
+      assetRows.filter((a) => !a.isDeleted).map((a) => a.digest),
     );
     return msgs.map((m) => {
       const { id: _drop, ...rest } = m;

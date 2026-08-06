@@ -65,7 +65,7 @@ export class MediaAccessService {
           ON asset."bundleId" = closure."bundleId"
         JOIN "MediaAsset" media
           ON media.digest = asset.digest
-         AND media.status = 'READY'
+         AND media."isDeleted" = false
         WHERE asset.digest = ${digest}
       ) AS allowed
     `);

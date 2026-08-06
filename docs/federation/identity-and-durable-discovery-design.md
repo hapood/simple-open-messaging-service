@@ -369,7 +369,7 @@ updatedAt                timestamp not null
 `startChangeId`。接收端以它初始化 `remoteHwm`，源端拒绝任何 `afterChangeId < startChangeId`，
 从协议层禁止读取建立信任前的历史。
 
-`remoteHwm` 表示已经完整拉取并在本地事务中应用的远端 change ID。收到 push/SSE 只在进程内合并
+`remoteHwm` 表示已经完整扫描并在本地页事务中写入的远端 change ID：文本消息直接落 `Message`，媒体消息落 `PendingMessage`（见 §12），二者都使 `remoteHwm` 推进；媒体文件本地化在页事务外异步进行，不阻塞 `remoteHwm`。收到 push/SSE 只在进程内合并
 最新 wake-up HWM 并安排任务，绝不能推进 `remoteHwm`，也不持久化 hint；断线恢复后双方重新发送或
 查询当前 HWM。每个 peer 只有这一条全局 cursor；拉取任务使用按 peer 派生的 PostgreSQL 事务级
 advisory lock 作为数据库级 pull 锁，不维护任何 thread 级 pull seq/cursor。
@@ -552,14 +552,16 @@ GET/POST client missed(afterChangeId: decimal-string, take: 100)
 一个响应页面作为一个本地事务处理：
 
 1. 验证响应身份和页面边界；
-2. 按 `(originDomain, originMessageId)` 去重插入响应中的实际消息正文和附件描述；
-3. 更新本地消息缓存；
+2. 对每条消息执行共享的内容校验（见 §12：contentType 与 content 形状自洽、digest 形态、文本上限、quote 一致性等）；校验失败（格式错误）的消息使整页回滚；
+3. 按 `(originDomain, originMessageId)` 去重，并按消息形态分流：
+   - 已有匹配 tombstone（born-deleted）→ 落 `Message(isDeleted=true)`，跳过 `PendingMessage` 与媒体下载；
+   - 纯文本消息 → 直接落 `Message`；
+   - 媒体消息 → 落 `PendingMessage` + 每文件一行 `FileSyncProgress(PENDING)`；
 4. 应用有效的权威状态修正；
 5. 将 `FederationPullCursor.remoteHwm` 推进到 `scannedThrough`；
-6. 提交后才发本地 SSE。
+6. 提交后才发本地 SSE（仅对已落 `Message` 的文本/born-deleted 消息；`PendingMessage` 中的媒体消息在 §12.5 promote 后才 SSE）。
 
-任一消息失败则整页回滚，HWM 不推进。建议事务超时 10–15 秒；连续处理 10 页或 1000 条后让出
-执行权，再继续追赶，避免 NAS 上的 PostgreSQL 长时间被同步任务占用。
+页事务只覆盖消息正文落库与游标推进；媒体文件本地化在事务外异步进行（§12），不阻塞 `remoteHwm`。任一消息的**格式校验**或去重冲突失败则整页回滚，HWM 不推进；但媒体未下载**不构成**页失败。建议事务超时 10–15 秒；连续处理 10 页或 1000 条后让出执行权，再继续追赶，避免 NAS 上的 PostgreSQL 长时间被同步任务占用。
 
 ## 10. reset 与禁止继承旧授权
 
@@ -625,7 +627,205 @@ reset 完成后：
 
 所有错误响应不得回显私钥、HMAC 派生材料或其他 peer 的 pairwise ID。
 
-## 12. 实现顺序与验收条件
+## 12. Download inbox / file sync 持久层
+
+> 本节定义附件本地化的持久化与状态机，取代当前 fire-and-forget 的 `localizeMedia`。所有携带附件的
+> 消息（本地出站上传与联邦入站下载统一处理）必须先将其引用的全部文件本地化为 `SUCCEEDED`，才
+> promote 进 `Message` 表；否则停在 `PendingMessage`，对接收方不可见，直到管理员处理。
+
+### 12.1 目标与非目标
+
+固定原则：
+
+- 消息正文与媒体本地化解耦：正文落 `PendingMessage`，每个文件的任务落 `FileSyncProgress`，二者以
+  `batchId` 关联；
+- 一条消息引用的全部文件 `SUCCEEDED` 后，消息才 promote 进 `Message` 并分配本地 `seq`；任一文件处于
+  `DOWNLOADING` 或终态 `FAILED`，消息停在 `PendingMessage`，对接收方不可见；
+- 消息的本地可见顺序以**文件本地化完成顺序**为准，不保证与远端 `originSeq` 顺序一致（已接受的取舍）；
+- 媒体本地化不参与 missed 页事务，不阻塞 `remoteHwm`；
+- 本期**不实现后台调度器**：下载例程只在新建 `PendingMessage` 与管理员 retry 两个点被显式调用；进程
+  崩溃中断的下载停留在 `DOWNLOADING`，由管理员经 GC UI 手动续传或清理。后台调度器列为后续扩展。
+
+非目标：
+
+- 不提供下载的自动重试或退避：干净失败即终态 `FAILED`；
+- 不保证失败或进行中的消息对客户端可见；
+- 不保证多文件消息（相册/bundle）内的展示顺序与发送顺序一致。
+
+### 12.2 数据模型
+
+`PendingMessage`——消息暂存，出站上传与入站下载共用，按 `direction` 区分：
+
+```text
+id                        bigserial primary key
+direction                 OUTBOUND | INBOUND
+batchId                   uuid not null                  -- 一条消息的全部文件共用
+threadId                  integer not null
+contentType               contentType not null           -- FILE/IMAGE/VIDEO/AUDIO/ALBUM 或 FORWARD
+content                   jsonb not null                 -- 拉来的正文（INBOUND）或发送意图（OUTBOUND）
+clientMessageId           varchar null                   -- OUTBOUND 去重
+-- INBOUND 身份（OUTBOUND 为 null）：
+creatorId                 integer null
+originSeq                 integer null
+originDomain              varchar(63) null
+expectedFederationVersion integer null
+-- 完成度：
+fileCnt                   integer not null               -- 期望文件数（cnt）
+anyFailed                 boolean not null default false
+createdAt                 timestamp not null
+unique (threadId, creatorId, originSeq)                  -- INBOUND 去重（与 Message 同语义）
+unique (direction, clientMessageId)                      -- OUTBOUND 去重
+```
+
+`FileSyncProgress`——每个文件（按 digest）的本地化任务，出站/入站共用：
+
+```text
+id                        bigserial primary key
+batchId                   uuid not null                  -- 归属哪条 PendingMessage
+digest                    varchar(64) not null           -- CAS key
+direction                 OUTBOUND | INBOUND
+kind                      FILE | IMAGE | VIDEO | AUDIO | BUNDLE
+status                    PENDING | DOWNLOADING | SUCCEEDED | FAILED
+bytesTotal                bigint not null default 0
+bytesReceived             bigint not null default 0
+originDomain              varchar(63) null               -- 仅 INBOUND，下载来源
+errorKind                 varchar(255) null              -- FAILED 时的分类
+createdAt                 timestamp not null
+updatedAt                 timestamp not null
+unique (batchId, digest)
+```
+
+`MediaAsset` 精简为「内容库只放校验通过的 blob」，移除 `PENDING/FAILED` 等在途状态，改用 `isDeleted`：
+
+```text
+digest                    varchar(64) primary key
+bytes                     bigint not null
+isDeleted                 boolean not null default false
+createdAt                 timestamp not null
+```
+
+约束：
+
+- `MediaAsset` 行存在 ⟺ 存在一份校验通过、位于正式 CAS shard 的 blob；在途状态全部由
+  `FileSyncProgress` 承担；
+- 下载按 `digest` single-flight：同一 digest 的并发 `FileSyncProgress` 只发起一次网络请求，结果共享；
+- temp 目录与正式 CAS 分离（见 12.11）。
+
+### 12.3 出站与入站统一
+
+两条路径共用 `PendingMessage` + `FileSyncProgress`，仅 `direction` 与身份字段不同：
+
+- 出站（OUTBOUND）：客户端并行上传 N 个文件（每个仍是单文件请求，复用现有 resumable 传输），同一
+  `batchId`；`/send-media` 阶段化 `PendingMessage`（`fileCnt=N`）+ 每文件一行 `FileSyncProgress`；
+  上传完成即 `SUCCEEDED`；全 `SUCCEEDED` 后 promote；
+- 入站（INBOUND）：missed 页事务把媒体消息写入 `PendingMessage`（带
+  `creatorId/originSeq/originDomain`）+ 每文件一行 `FileSyncProgress(PENDING)`；事务提交后
+  fire-and-forget 触发下载例程；全 `SUCCEEDED` 后 promote；
+- 纯文本消息不经过 `PendingMessage`，仍按现有路径直接落 `Message`。
+
+### 12.4 文件级 promote 与崩溃安全
+
+单个文件下载完成并校验通过后，按以下顺序落库落盘，**DB 先写、move 后做**，使 `MediaAsset` 行成为
+崩溃恢复的提交记录：
+
+1. 校验 temp `.part` 的 SHA-256 与期望 digest 一致；
+2. 原子 rename `<digest>.part` → `<digest>.complete`（标记「已校验、待落库」）；
+3. `insert MediaAsset(isDeleted=false) on conflict do nothing`；
+4. 原子 rename `<digest>.complete` → 正式 shard（同文件系统）；
+5. `FileSyncProgress.status = SUCCEEDED`。
+
+GC reconcile 对每个 `isDeleted=false` 的 `MediaAsset` 行：
+
+- 正式 shard 在 → 完成；
+- 正式 shard 缺失但 temp 有 `<digest>.complete` → 补做第 4 步 rename，恢复中断的 promote；
+- 正式 shard 缺失且无 `.complete` → 置 `isDeleted=true`（真丢失）。
+
+同一 digest 并发 promote 安全：`MediaAsset` 主键唯一 → 第二个 insert `onConflictDoNothing`；两次
+`.complete`→正式 rename 打同一目标、原子、幂等。
+
+### 12.5 消息级 promote
+
+当一条 `PendingMessage` 关联的全部 `FileSyncProgress` 均为 `SUCCEEDED`（用
+`NOT EXISTS (... status IN (PENDING, DOWNLOADING, FAILED))` 判定，不维护计数器），在同一事务内：
+
+1. 把 `content` 中成功 digest 的 URL 改写为本地 CAS URL；
+2. `insert Message`（分配本地 `seq`，顺序以 promote 时刻为准）；
+3. 为每个成功 digest 写 `MessageAsset` 授权行；
+4. 删除 `PendingMessage` 行；
+5. 提交后 SSE `onNewMessage` + 产出 `DiscoveryChange`（出站向 peer 发 hint）。
+
+任一文件终态 `FAILED` 则**不 promote**，消息留在 `PendingMessage` 等管理员（见 12.7）。
+
+### 12.6 下载例程（无调度器）
+
+下载是一个无状态例程，被两个点显式调用，不存在后台 daemon：
+
+- **新建 `PendingMessage` 时**：页事务提交后 fire-and-forget 调用（不 await，不阻塞 drainer，不影响
+  `remoteHwm`）；
+- **管理员 retry 时**：经 GC UI 触发，复用同一例程。
+
+例程内部：取该 `batchId` 下所有 `PENDING/FAILED` 的 `FileSyncProgress`，按 digest single-flight 执行
+下载；启动时读 `.resume.json` 的 offset 断点续传；下载完成走 12.4；干净失败（传输错误、digest 不匹配）
+→ `status=FAILED`（**不自动重试**）；进程崩溃中断 → 停留 `DOWNLOADING`，已下字节保留在 `.part`，等
+管理员 retry 续传。
+
+引用解析（quote）需同时查 `Message ∪ PendingMessage`：引用一条仍在 pending 或终态 FAILED 的媒体消息
+时，按「引用目标不可用」降级渲染，不丢弃引用方消息。
+
+### 12.7 失败、孤儿与管理员操作
+
+- 干净失败 → `FileSyncProgress=FAILED` → 消息不 promote，留 `PendingMessage`；
+- 冻住的 `DOWNLOADING`（进程崩溃中断）与孤儿 batch（客户端/peer 未完成）→ 同样留 `PendingMessage`；
+- 三者都经 GC UI 由管理员处理，提供两个动作：
+  - **retry**：把所选 `FAILED/DOWNLOADING` 的 `FileSyncProgress` 重置为 `PENDING` 并调用下载例程
+    （断点续传）；
+  - **clean**：删 `PendingMessage` + 其全部 `FileSyncProgress`，并对每个 digest 做 ref-check 后删 temp
+    文件（见 12.9）。
+
+### 12.8 tombstone 与 pending 的交互
+
+删除流到达的 tombstone 现在需要能命中 `PendingMessage`（不止 `Message.isDeleted`）：
+
+- tombstone 到达，目标在 `PendingMessage`（下载中或 FAILED）→ 中止在途下载，清 `PendingMessage` +
+  `FileSyncProgress` + ref-check temp；
+- tombstone 行保留，作为 seen 标记，防止 feed 重放或 legacy 重拉把同一条消息重新塞回
+  `PendingMessage`；
+- 权限校验（`creator.domain == 作者 home domain`）不变。
+
+### 12.9 GC 扩展
+
+GC 由「主回收 + temp TTL + salvage/reconcile」三道组成：
+
+- **主回收**：reap `MediaAsset.isDeleted=false` 且无存活引用的行——即不存在
+  `MessageAsset → Message(isDeleted=false)`，且不存在 `PENDING/DOWNLOADING` 的 `FileSyncProgress`
+  引用该 digest；取代当前按 `status=READY` 的查询；
+- **temp TTL 道（新增）**：清理 temp 目录中超过 TTL 的 `.part`/`.resume.json`，但**放过**仍被
+  `PENDING/DOWNLOADING` 的 `FileSyncProgress` claim 的、以及任何 `.complete` 文件；只清 FAILED、无主、
+  或无 task 的 temp；
+- **salvage/reconcile**：对无主 `.complete`（无活跃 `FileSyncProgress` 且无 `MediaAsset`）→ 补写
+  `MediaAsset` 并搬入正式 shard，使其成为正常 CAS 资产（若仍无引用，再由主回收处理）；对 `MediaAsset`
+  在档但正式 shard 缺失且有 `.complete` → 补完 rename（12.4）。
+
+temp 文件清理的 ref-check：删一个 digest 的 temp 前，必须确认无其它 `FileSyncProgress` 或 `MediaAsset`
+引用该 digest（同 digest 合并的前提）。
+
+### 12.10 去重与游标
+
+- 入站去重：`PendingMessage` 上 `unique (threadId, creatorId, originSeq)`，promote 后该身份迁移到
+  `Message` 的同名唯一索引；pull 侧去重需查 `PendingMessage ∪ Message` 任一存在即跳过，`Message` 唯一
+  索引为兜底；
+- `remoteHwm` 在**写入 `PendingMessage`** 时随页事务推进到 `scannedThrough`，不等待 promote；因此失败
+  或慢本地化的消息不会阻塞游标，也不会造成游标穿洞（消息已在 `PendingMessage`，cursor 已记录消费）。
+
+### 12.11 temp 目录与正式 CAS 分离
+
+- 正式 CAS：`data/cas/<dd>/<dd>/<digest>`（现有 shard 布局，仅放校验通过的 blob）；
+- temp：`data/cas/tmp/`，存放 `.part`（断点续传半成品）、`.resume.json`（续传 offset）、`.complete`
+  （已校验待落库）；
+- promote = 校验 + `.complete` 标记 + `MediaAsset` 落库 + rename 进正式 shard；temp 文件由 12.9 的 TTL
+  与 salvage 道回收。
+
+## 13. 实现顺序与验收条件
 
 后续实现按以下依赖顺序推进，每一项单独审核：
 
@@ -636,7 +836,8 @@ reset 完成后：
 5. S2S HWM/missed、持久拉取游标和轻量 wake-up；
 6. 客户端 missed 与 SYSTEM 交互限制；
 7. identity reset 作业和管理端；
-8. 删除旧内存 hint 正确性路径与旧冲突文档。
+8. download inbox / file sync 持久层：`PendingMessage`、`FileSyncProgress` 迁移、`MediaAsset` 精简、文件级/消息级 promote、tombstone 清 pending、GC 三道与 GC UI（依赖 5）；
+9. 删除旧内存 hint 正确性路径与旧冲突文档。
 
 本功能至少通过以下场景才算闭环：
 
@@ -650,8 +851,12 @@ reset 完成后：
 - 迟到的权威查询结果因 revision/resetGeneration/federationVersion 不匹配而被丢弃；
 - SYSTEM 消息无法由客户端伪造、撤回、举报、转发、引用或多选；
 - reset 不影响其他 peer 或纯本地 thread，且同 domain 新节点不继承旧授权。
+- 媒体消息在全部文件本地化 `SUCCEEDED` 后才 promote 进 `Message`，对接收方此前不可见；
+- 进程在下载中途崩溃后，`.complete` 由 GC reconcile 补完 rename、`.part` 由管理员 retry 断点续传，不丢已校验内容；
+- tombstone 命中 `PendingMessage` 时中止下载并清理，且 tombstone 行阻止该消息被重复入库；
+- 媒体下载失败或冻住不阻塞 `remoteHwm`，也不造成游标穿洞。
 
-## 13. 与当前实现的明确差异
+## 14. 与当前实现的明确差异
 
 实施后必须同步修正以下当前行为和文档：
 
@@ -661,6 +866,11 @@ reset 完成后：
 - 当前 S2S 增量主要使用 `(thread, author, originSeq)`；新 missed feed 使用每个 peer 的全局 change ID；
 - 当前好友删除和群 leave 依赖 hint/410；新设计通过权威 thread access 查询异步确认；
 - 当前客户端依赖 thread revision + per-thread seq 发现缺口；新设计增加服务器级全局 change missed。
+- 当前 `FederationService.localizeMedia` 是 fire-and-forget，失败留消息 inert 靠手工 retry；新设计以 `PendingMessage`+`FileSyncProgress` 持久化，全文件 `SUCCEEDED` 才 promote，失败/冻住/孤儿停留等管理员；
+- 当前 `MediaAsset` 带 `PENDING/READY/FAILED/DELETING/DELETED` 状态，且 GC 对 FAILED 盲、不扫 `.part`/`.resume.json`；新设计 `MediaAsset` 仅留成功 blob + `isDeleted`，在途状态移入 `FileSyncProgress`，GC 增 temp TTL 道、salvage/reconcile 与 FAILED/孤儿处理；
+- 当前一条消息只挂单文件、上传单文件/请求；新设计允许一条消息对应多文件（`batchId`），上传仍单文件/请求但以 batch 凑齐 promote；
+- 当前 tombstone 只翻 `Message.isDeleted`；新设计扩展到直接清理 `PendingMessage`（下载中先中止）并保留 tombstone 行作 seen 标记；
+- 当前无下载器状态可视化；新设计要求 GC UI 展示 `FileSyncProgress` 状态并提供 retry/clean。
 
 兼容窗口内可保留旧接口供旧客户端/旧 peer 使用，但旧路径不得继续被宣称具有重启后的完整性；
 新 capability 未协商成功前，不得假设对端支持 identity pinning 或 durable missed。

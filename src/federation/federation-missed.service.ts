@@ -23,7 +23,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 export interface FederationMissedAsset {
   digest: string;
   bytes: string;
-  status: 'PENDING' | 'READY' | 'FAILED' | 'DELETING' | 'DELETED';
+  status: 'READY' | 'DELETED';
 }
 
 export interface FederationMissedMessage {
@@ -141,7 +141,7 @@ export class FederationMissedService {
                   messageId: messageAsset.messageId,
                   digest: messageAsset.digest,
                   bytes: mediaAsset.bytes,
-                  status: mediaAsset.status,
+                  status: sql<'READY' | 'DELETED'>`CASE WHEN ${mediaAsset.isDeleted} THEN 'DELETED' ELSE 'READY' END`,
                 })
                 .from(messageAsset)
                 .innerJoin(

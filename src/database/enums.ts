@@ -69,3 +69,28 @@ export const MessageReportStatus = {
 } as const;
 export type MessageReportStatus =
   (typeof MessageReportStatus)[keyof typeof MessageReportStatus];
+
+export const FileSyncDirection = {
+  OUTBOUND: 'OUTBOUND',
+  INBOUND: 'INBOUND',
+} as const;
+export type FileSyncDirection =
+  (typeof FileSyncDirection)[keyof typeof FileSyncDirection];
+
+export const FileSyncStatus = {
+  PENDING: 'PENDING',
+  DOWNLOADING: 'DOWNLOADING',
+  SUCCEEDED: 'SUCCEEDED',
+  FAILED: 'FAILED',
+} as const;
+export type FileSyncStatus =
+  (typeof FileSyncStatus)[keyof typeof FileSyncStatus];
+
+export const FileSyncKind = {
+  FILE: 'FILE',
+  IMAGE: 'IMAGE',
+  VIDEO: 'VIDEO',
+  AUDIO: 'AUDIO',
+  BUNDLE: 'BUNDLE',
+} as const;
+export type FileSyncKind = (typeof FileSyncKind)[keyof typeof FileSyncKind];

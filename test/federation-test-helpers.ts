@@ -48,10 +48,10 @@ export async function stageCasAsset(
   await writeFile(abs, buf);
   await database
     .insert(mediaAsset)
-    .values({ digest, bytes: BigInt(buf.length), status: 'READY' })
+    .values({ digest, bytes: BigInt(buf.length), isDeleted: false })
     .onConflictDoUpdate({
       target: mediaAsset.digest,
-      set: { bytes: BigInt(buf.length), status: 'READY' },
+      set: { bytes: BigInt(buf.length), isDeleted: false },
     });
   return { url: `/uploads/msg-assets/${rel}`, size: buf.length, digest };
 }
