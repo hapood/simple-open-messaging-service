@@ -59,7 +59,7 @@ export class LinkCardGenerationDialogComponent implements OnInit {
   });
   readonly source = computed(() => {
     const siteName = this.content()?.siteName?.trim();
-    return siteName ? `${siteName} · ${this.host()}` : this.host();
+    return siteName || this.host();
   });
   readonly canConfirm = computed(
     () =>

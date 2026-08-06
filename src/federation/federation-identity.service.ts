@@ -4,7 +4,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, lt } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { DatabaseService } from '../database/database.service.js';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
 import { isUniqueViolation } from '../database/database-error.js';
 import * as tables from '../database/schema.js';
 import { KeypairService } from './keypair.service.js';
@@ -19,6 +22,8 @@ export interface FederationIdentityClaim {
   rootKeyFingerprint: string;
   nonce: string;
   issuedAt: string;
+  /** Decimal bigint; present only on the one-time /init exchange. */
+  startChangeId?: string;
 }
 
 export interface SignedFederationIdentity extends FederationIdentityClaim {
@@ -42,6 +47,7 @@ export class FederationIdentityService {
   createClaim(
     peerDomain: string,
     nonce = randomBytes(24).toString('base64url'),
+    startChangeId?: bigint,
   ): FederationIdentityClaim {
     return {
       protocolVersion: 1,
@@ -52,6 +58,9 @@ export class FederationIdentityService {
       rootKeyFingerprint: this.keypair.getRootKeyFingerprint(),
       nonce,
       issuedAt: new Date().toISOString(),
+      ...(startChangeId === undefined
+        ? {}
+        : { startChangeId: startChangeId.toString() }),
     };
   }
 
@@ -71,6 +80,7 @@ export class FederationIdentityService {
     value: unknown,
     expectedOrigin: string,
     expectedRecipient: string,
+    requireStartChangeId = false,
   ): FederationIdentityClaim {
     const claim = value as Partial<FederationIdentityClaim> | null;
     const issuedAt =
@@ -90,7 +100,10 @@ export class FederationIdentityService {
       Math.abs(Date.now() - issuedAt) > CLAIM_MAX_AGE_MS ||
       normalizeDomain(claim.originDomain) !== normalizeDomain(expectedOrigin) ||
       normalizeDomain(claim.recipientDomain) !==
-        normalizeDomain(expectedRecipient)
+        normalizeDomain(expectedRecipient) ||
+      (claim.startChangeId !== undefined &&
+        !/^(0|[1-9][0-9]*)$/.test(claim.startChangeId)) ||
+      (requireStartChangeId && claim.startChangeId === undefined)
     ) {
       throw this.invalidProof('invalid or stale federation identity claim');
     }
@@ -134,20 +147,10 @@ export class FederationIdentityService {
     originDomain: string,
     claim: FederationIdentityClaim,
   ): Promise<void> {
-    const nonceHash = createHash('sha256').update(claim.nonce).digest('hex');
-    const issuedAt = new Date(claim.issuedAt);
     try {
-      await this.database.db.transaction(async (tx) => {
-        await tx
-          .delete(tables.s2SIdentityNonce)
-          .where(lt(tables.s2SIdentityNonce.expiresAt, new Date()));
-        await tx.insert(tables.s2SIdentityNonce).values({
-          originDomain: normalizeDomain(originDomain),
-          nonceHash,
-          issuedAt,
-          expiresAt: new Date(issuedAt.getTime() + CLAIM_MAX_AGE_MS),
-        });
-      });
+      await this.database.db.transaction((tx) =>
+        this.consumeNonceInTx(tx, originDomain, claim),
+      );
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw this.invalidProof('identity nonce was already used');
@@ -156,128 +159,160 @@ export class FederationIdentityService {
     }
   }
 
+  async consumeNonceInTx(
+    tx: DatabaseTransaction,
+    originDomain: string,
+    claim: FederationIdentityClaim,
+  ): Promise<void> {
+    const issuedAt = new Date(claim.issuedAt);
+    await tx
+      .delete(tables.s2SIdentityNonce)
+      .where(lt(tables.s2SIdentityNonce.expiresAt, new Date()));
+    await tx.insert(tables.s2SIdentityNonce).values({
+      originDomain: normalizeDomain(originDomain),
+      nonceHash: createHash('sha256').update(claim.nonce).digest('hex'),
+      issuedAt,
+      expiresAt: new Date(issuedAt.getTime() + CLAIM_MAX_AGE_MS),
+    });
+  }
+
   async pinOrVerify(
     domain: string,
     claim: FederationIdentityClaim,
     legacyContinuityProven = false,
   ): Promise<void> {
+    const mismatchReason = await this.database.db.transaction((tx) =>
+      this.pinOrVerifyInTx(tx, domain, claim, legacyContinuityProven),
+    );
+    if (mismatchReason) this.throwIdentityMismatch(mismatchReason);
+  }
+
+  async pinOrVerifyInTx(
+    tx: DatabaseTransaction,
+    domain: string,
+    claim: FederationIdentityClaim,
+    legacyContinuityProven = false,
+  ): Promise<string | undefined> {
     const normalized = normalizeDomain(domain);
-    const mismatchReason = await this.database.db.transaction(async (tx) => {
-      const [peer, reset] = await Promise.all([
-        tx.query.federatedPeer.findFirst({
-          where: eq(tables.federatedPeer.domain, normalized),
-        }),
-        tx.query.federatedPeerReset.findFirst({
-          where: eq(tables.federatedPeerReset.domain, normalized),
-        }),
-      ]);
-      if (!peer && reset && !reset.reinitPending) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-          `${normalized} was reset and is not allowed to rejoin`,
-          HttpStatus.LOCKED,
-        );
-      }
-      if (
-        peer?.trustLevel === 'identity_lost' ||
-        peer?.trustLevel === 'reset_in_progress'
-      ) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-          `${normalized} identity is locked pending reset`,
-          HttpStatus.LOCKED,
-        );
-      }
-      if (peer?.trustLevel === 'blocked') {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_PEER_BLOCKED,
-          `${normalized} is blocked by an admin`,
-          HttpStatus.FORBIDDEN,
-        );
-      }
-      const pinned =
-        peer?.identityPinnedAt !== null && peer?.identityPinnedAt !== undefined;
-      const mismatch =
-        pinned &&
-        (peer.pairwiseServerId !== claim.pairwiseServerId ||
-          peer.rootKeyFingerprint !== claim.rootKeyFingerprint ||
-          peer.identityEpoch !== claim.identityEpoch);
-      if (mismatch || (peer && !pinned && !legacyContinuityProven)) {
-        const reason = mismatch
-          ? 'peer presented an identity different from the pinned identity'
-          : 'existing peer identity could not be matched to its pre-upgrade cached key';
-        await tx
-          .update(tables.federatedPeer)
-          .set({
-            trustLevel: 'identity_lost',
-            identityLostAt: new Date(),
-            identityLostReason: reason,
-          })
-          .where(eq(tables.federatedPeer.domain, normalized));
-        await tx.insert(tables.federatedPeerEvent).values({
-          domain: normalized,
-          type: 'identity_lost',
-          reason,
-        });
-        return reason;
-      }
-      const now = new Date();
+    const [peer, reset] = await Promise.all([
+      tx.query.federatedPeer.findFirst({
+        where: eq(tables.federatedPeer.domain, normalized),
+      }),
+      tx.query.federatedPeerReset.findFirst({
+        where: eq(tables.federatedPeerReset.domain, normalized),
+      }),
+    ]);
+    if (!peer && reset && !reset.reinitPending) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `${normalized} was reset and is not allowed to rejoin`,
+        HttpStatus.LOCKED,
+      );
+    }
+    if (
+      peer?.trustLevel === 'identity_lost' ||
+      peer?.trustLevel === 'reset_in_progress'
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `${normalized} identity is locked pending reset`,
+        HttpStatus.LOCKED,
+      );
+    }
+    if (peer?.trustLevel === 'blocked') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_BLOCKED,
+        `${normalized} is blocked by an admin`,
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    const pinned =
+      peer?.identityPinnedAt !== null && peer?.identityPinnedAt !== undefined;
+    const mismatch =
+      pinned &&
+      (peer.pairwiseServerId !== claim.pairwiseServerId ||
+        peer.rootKeyFingerprint !== claim.rootKeyFingerprint ||
+        peer.identityEpoch !== claim.identityEpoch);
+    if (mismatch || (peer && !pinned && !legacyContinuityProven)) {
+      const reason = mismatch
+        ? 'peer presented an identity different from the pinned identity'
+        : 'existing peer identity could not be matched to its pre-upgrade cached key';
       await tx
-        .insert(tables.federatedPeer)
-        .values({
-          domain: normalized,
+        .update(tables.federatedPeer)
+        .set({
+          trustLevel: 'identity_lost',
+          identityLostAt: new Date(),
+          identityLostReason: reason,
+        })
+        .where(eq(tables.federatedPeer.domain, normalized));
+      await tx.insert(tables.federatedPeerEvent).values({
+        domain: normalized,
+        type: 'identity_lost',
+        reason,
+      });
+      return reason;
+    }
+    const now = new Date();
+    await tx
+      .insert(tables.federatedPeer)
+      .values({
+        domain: normalized,
+        trustLevel: 'trusted',
+        pairwiseServerId: claim.pairwiseServerId,
+        rootKeyFingerprint: claim.rootKeyFingerprint,
+        identityEpoch: claim.identityEpoch,
+        identityPinnedAt: now,
+        trustedAt: now,
+        lastSuccessAt: now,
+      })
+      .onConflictDoUpdate({
+        target: tables.federatedPeer.domain,
+        set: {
           trustLevel: 'trusted',
           pairwiseServerId: claim.pairwiseServerId,
           rootKeyFingerprint: claim.rootKeyFingerprint,
           identityEpoch: claim.identityEpoch,
-          identityPinnedAt: now,
+          identityPinnedAt: peer?.identityPinnedAt ?? now,
+          identityLostAt: null,
+          identityLostReason: null,
           trustedAt: now,
           lastSuccessAt: now,
-        })
-        .onConflictDoUpdate({
-          target: tables.federatedPeer.domain,
-          set: {
-            trustLevel: 'trusted',
-            pairwiseServerId: claim.pairwiseServerId,
-            rootKeyFingerprint: claim.rootKeyFingerprint,
-            identityEpoch: claim.identityEpoch,
-            identityPinnedAt: peer?.identityPinnedAt ?? now,
-            identityLostAt: null,
-            identityLostReason: null,
-            trustedAt: now,
-            lastSuccessAt: now,
-            demotedAt: null,
-            demoteReason: null,
-          },
-        });
-      if (!peer && reset?.reinitPending) {
-        // Completing the destructive admin reset authorizes exactly one fresh identity bootstrap.
-        // From this point onward the newly pinned peer must pass normal continuity checks; deleting
-        // rows cannot reopen /init.
-        await tx
-          .update(tables.federatedPeerReset)
-          .set({ reinitPending: false })
-          .where(eq(tables.federatedPeerReset.domain, normalized));
-      }
-      if (!peer) {
-        await tx
-          .insert(tables.federatedPeerEvent)
-          .values({ domain: normalized, type: 'discovered' });
-      }
-      if (!peer || peer.trustLevel !== 'trusted') {
-        await tx
-          .insert(tables.federatedPeerEvent)
-          .values({ domain: normalized, type: 'trusted' });
-      }
-      return undefined;
-    });
-    if (mismatchReason) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-        mismatchReason,
-        HttpStatus.CONFLICT,
-      );
+          demotedAt: null,
+          demoteReason: null,
+        },
+      });
+    if (!peer && reset?.reinitPending) {
+      // Completing the destructive admin reset authorizes exactly one fresh identity bootstrap.
+      // From this point onward the newly pinned peer must pass normal continuity checks; deleting
+      // rows cannot reopen /init.
+      await tx
+        .update(tables.federatedPeerReset)
+        .set({ reinitPending: false })
+        .where(eq(tables.federatedPeerReset.domain, normalized));
     }
+    if (!peer) {
+      await tx
+        .insert(tables.federatedPeerEvent)
+        .values({ domain: normalized, type: 'discovered' });
+    }
+    if (!peer || peer.trustLevel !== 'trusted') {
+      await tx
+        .insert(tables.federatedPeerEvent)
+        .values({ domain: normalized, type: 'trusted' });
+    }
+    return undefined;
+  }
+
+  throwIdentityMismatch(reason: string): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+      reason,
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  throwNonceReplay(): never {
+    throw this.invalidProof('identity nonce was already used');
   }
 
   /** Read before any well-known refresh so an upgraded peer cannot replace its own continuity evidence. */
@@ -346,6 +381,9 @@ export class FederationIdentityService {
       rootKeyFingerprint: claim.rootKeyFingerprint,
       nonce: claim.nonce,
       issuedAt: claim.issuedAt,
+      ...(claim.startChangeId === undefined
+        ? {}
+        : { startChangeId: claim.startChangeId }),
     });
   }
 

@@ -62,6 +62,10 @@ export const inviteStatus = pgEnum('InviteStatus', [
   'EXPIRED',
 ]);
 export const messageThreadType = pgEnum('MessageThreadType', ['P2P', 'GROUP']);
+export const threadAudienceScope = pgEnum('ThreadAudienceScope', [
+  'THREAD',
+  'CREATOR',
+]);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
 export const mediaAssetStatus = pgEnum('MediaAssetStatus', [
   'PENDING',
@@ -389,6 +393,149 @@ export const messageThread = pgTable(
   ],
 );
 
+/** Current thread access set shared by local users and federated peers. A row exists iff the target
+ * may currently receive changes for the thread; revocation physically deletes it. */
+export const threadAudience = pgTable(
+  'ThreadAudience',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    /** `local` addresses one local user; every other value addresses the whole federated peer domain. */
+    targetDomain: varchar({ length: 63 }).notNull(),
+    localUserId: integer(),
+    threadId: integer().notNull(),
+    scope: threadAudienceScope().default('THREAD').notNull(),
+    creatorUserId: integer(),
+    /** Inclusive per-target change boundary. Null means this audience may still produce changes. */
+    deliverThroughChangeId: bigint({ mode: 'bigint' }),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('ThreadAudience_local_key')
+      .using(
+        'btree',
+        table.targetDomain.asc().nullsLast().op('text_ops'),
+        table.localUserId.asc().nullsLast().op('int4_ops'),
+        table.threadId.asc().nullsLast().op('int4_ops'),
+      )
+      .where(
+        sql`${table.targetDomain} = 'local' AND ${table.scope} = 'THREAD'`,
+      ),
+    uniqueIndex('ThreadAudience_peer_key')
+      .using(
+        'btree',
+        table.targetDomain.asc().nullsLast().op('text_ops'),
+        table.threadId.asc().nullsLast().op('int4_ops'),
+      )
+      .where(
+        sql`${table.targetDomain} <> 'local' AND ${table.scope} = 'THREAD'`,
+      ),
+    uniqueIndex('ThreadAudience_peer_creator_key')
+      .using(
+        'btree',
+        table.targetDomain.asc().nullsLast().op('text_ops'),
+        table.threadId.asc().nullsLast().op('int4_ops'),
+        table.creatorUserId.asc().nullsLast().op('int4_ops'),
+      )
+      .where(sql`${table.scope} = 'CREATOR'`),
+    index('ThreadAudience_local_access_idx')
+      .using(
+        'btree',
+        table.localUserId.asc().nullsLast().op('int4_ops'),
+        table.threadId.asc().nullsLast().op('int4_ops'),
+      )
+      .where(sql`${table.targetDomain} = 'local'`),
+    index('ThreadAudience_peer_access_idx')
+      .using(
+        'btree',
+        table.targetDomain.asc().nullsLast().op('text_ops'),
+        table.threadId.asc().nullsLast().op('int4_ops'),
+      )
+      .where(sql`${table.targetDomain} <> 'local'`),
+    index('ThreadAudience_creator_access_idx')
+      .using(
+        'btree',
+        table.creatorUserId.asc().nullsLast().op('int4_ops'),
+        table.threadId.asc().nullsLast().op('int4_ops'),
+        table.deliverThroughChangeId.asc().nullsLast().op('int8_ops'),
+      )
+      .where(sql`${table.scope} = 'CREATOR'`),
+    foreignKey({
+      columns: [table.localUserId],
+      foreignColumns: [user.id],
+      name: 'ThreadAudience_localUserId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'ThreadAudience_threadId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    foreignKey({
+      columns: [table.creatorUserId],
+      foreignColumns: [user.id],
+      name: 'ThreadAudience_creatorUserId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    check(
+      'ThreadAudience_target_check',
+      sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL)`,
+    ),
+    check(
+      'ThreadAudience_scope_check',
+      sql`(${table.scope} = 'THREAD' AND ${table.creatorUserId} IS NULL AND ${table.deliverThroughChangeId} IS NULL) OR (${table.scope} = 'CREATOR' AND ${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL AND ${table.creatorUserId} IS NOT NULL)`,
+    ),
+    check(
+      'ThreadAudience_deliverThroughChangeId_check',
+      sql`${table.deliverThroughChangeId} IS NULL OR ${table.deliverThroughChangeId} > 0`,
+    ),
+  ],
+);
+
+/** Transactional change-id allocator for one pull target. `local` identifies one local user; a real
+ * domain identifies the whole remote federation server. Updating allocatedThrough row-locks only this
+ * target, so unrelated users/peers do not serialize their message writes. */
+export const discoveryTarget = pgTable(
+  'DiscoveryTarget',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    targetDomain: varchar({ length: 63 }).notNull(),
+    localUserId: integer(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('DiscoveryTarget_local_key')
+      .on(table.targetDomain, table.localUserId)
+      .where(sql`${table.targetDomain} = 'local'`),
+    uniqueIndex('DiscoveryTarget_peer_key')
+      .on(table.targetDomain)
+      .where(sql`${table.targetDomain} <> 'local'`),
+    foreignKey({
+      columns: [table.localUserId],
+      foreignColumns: [user.id],
+      name: 'DiscoveryTarget_localUserId_fkey',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    check(
+      'DiscoveryTarget_identity_check',
+      sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL)`,
+    ),
+    check(
+      'DiscoveryTarget_allocatedThrough_check',
+      sql`${table.allocatedThrough} >= 0`,
+    ),
+  ],
+);
+
 export const messageAsset = pgTable(
   'MessageAsset',
   {
@@ -566,6 +713,11 @@ export const message = pgTable(
       table.threadId.asc().nullsLast().op('int4_ops'),
       table.createdAt.asc().nullsLast().op('int4_ops'),
     ),
+    index('Message_threadId_id_idx').using(
+      'btree',
+      table.threadId.asc().nullsLast().op('int4_ops'),
+      table.id.asc().nullsLast().op('int8_ops'),
+    ),
     uniqueIndex('Message_threadId_creator_originSeq_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -591,6 +743,54 @@ export const message = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
+  ],
+);
+
+/** Lightweight persistent discovery entry. Message bodies remain in Message and are pulled through
+ * the thread endpoint; this row only makes their existence durable across restart/SSE loss. */
+export const discoveryChange = pgTable(
+  'DiscoveryChange',
+  {
+    targetId: bigint({ mode: 'bigint' }).notNull(),
+    changeId: bigint({ mode: 'bigint' }).notNull(),
+    audienceId: bigint({ mode: 'bigint' }).notNull(),
+    threadId: integer().notNull(),
+    messageId: bigint({ mode: 'bigint' }).notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.targetId, table.changeId],
+      name: 'DiscoveryChange_pkey',
+    }),
+    uniqueIndex('DiscoveryChange_target_message_key').on(
+      table.targetId,
+      table.messageId,
+    ),
+    index('DiscoveryChange_audience_idx').on(table.audienceId),
+    foreignKey({
+      columns: [table.targetId],
+      foreignColumns: [discoveryTarget.id],
+      name: 'DiscoveryChange_targetId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.audienceId],
+      foreignColumns: [threadAudience.id],
+      name: 'DiscoveryChange_audienceId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'DiscoveryChange_threadId_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [message.id],
+      name: 'DiscoveryChange_messageId_fkey',
+    }).onDelete('cascade'),
+    check('DiscoveryChange_changeId_check', sql`${table.changeId} > 0`),
   ],
 );
 
@@ -1269,6 +1469,78 @@ export const federatedPeer = pgTable(
     uniqueIndex('FederatedPeer_single_reset_in_progress_key')
       .on(sql`(true)`)
       .where(sql`${table.trustLevel} = 'reset_in_progress'`),
+  ],
+);
+
+/** Receiver-side cursor for one remote server's durable discovery feed. remoteHwm advances only after
+ * a missed page is fully applied in a local transaction; wake-up HWM hints remain process-local. */
+export const federationPullCursor = pgTable(
+  'FederationPullCursor',
+  {
+    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
+    /** Immutable floor received during the current peer identity's first trusted handshake. */
+    startChangeId: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    remoteHwm: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.peerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederationPullCursor_peerDomain_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FederationPullCursor_remoteHwm_check',
+      sql`${table.remoteHwm} >= ${table.startChangeId}`,
+    ),
+    check(
+      'FederationPullCursor_startChangeId_check',
+      sql`${table.startChangeId} >= 0`,
+    ),
+  ],
+);
+
+/** Source-side missed protocol state. startChangeId is the immutable pre-trust history floor.
+ * acknowledgedThrough never moves backwards; lastServedThrough records the latest scanned page.
+ * A NOWAIT row lock rejects overlapping requests from the same peer without blocking. */
+export const federationServeCursor = pgTable(
+  'FederationServeCursor',
+  {
+    peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
+    targetId: bigint({ mode: 'bigint' }).notNull(),
+    startChangeId: bigint({ mode: 'bigint' }).notNull(),
+    acknowledgedThrough: bigint({ mode: 'bigint' }).notNull(),
+    lastServedThrough: bigint({ mode: 'bigint' }).notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederationServeCursor_targetId_key').on(table.targetId),
+    foreignKey({
+      columns: [table.peerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederationServeCursor_peerDomain_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.targetId],
+      foreignColumns: [discoveryTarget.id],
+      name: 'FederationServeCursor_targetId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FederationServeCursor_startChangeId_check',
+      sql`${table.startChangeId} >= 0`,
+    ),
+    check(
+      'FederationServeCursor_acknowledgedThrough_check',
+      sql`${table.acknowledgedThrough} >= ${table.startChangeId}`,
+    ),
+    check(
+      'FederationServeCursor_lastServedThrough_check',
+      sql`${table.lastServedThrough} >= ${table.acknowledgedThrough}`,
+    ),
   ],
 );
 

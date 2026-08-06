@@ -1,9 +1,5 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { randomUUID } from 'node:crypto';
 import { decodeIco, isIco, type DecodeImage } from 'icojs';
 import sharp from 'sharp';
@@ -24,14 +20,13 @@ import { LinkCardRuleService } from './link-card-rule.service.js';
  * re-exposing the server's egress IP.
  */
 @Injectable()
-export class LinkPreviewService implements OnModuleInit, OnModuleDestroy {
+export class LinkPreviewService {
   private readonly logger = new Logger(LinkPreviewService.name);
   private readonly cache = new Map<
     string,
     { card: LinkContent; expires: number }
   >();
   private readonly generations = new Map<string, LinkCardGeneration>();
-  private cleanupTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly safeFetch: SafeFetchService,
@@ -39,18 +34,6 @@ export class LinkPreviewService implements OnModuleInit, OnModuleDestroy {
     private readonly uploads: UploadService,
     private readonly rules: LinkCardRuleService,
   ) {}
-
-  onModuleInit(): void {
-    this.cleanupTimer = setInterval(
-      () => this.deleteExpiredGenerations(),
-      GENERATION_SWEEP_MS,
-    );
-    this.cleanupTimer.unref?.();
-  }
-
-  onModuleDestroy(): void {
-    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
-  }
 
   startGeneration(
     userId: number,
@@ -166,7 +149,10 @@ export class LinkPreviewService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private deleteExpiredGenerations(): void {
+  /** Sweep expired link-card generations every 5 minutes. Registered with @nestjs/schedule; cleared on
+   *  shutdown. */
+  @Interval(5 * 60 * 1000)
+  deleteExpiredGenerations(): void {
     const now = Date.now();
     for (const [id, generation] of this.generations) {
       if (generation.expiresAt <= now) this.generations.delete(id);
@@ -349,7 +335,6 @@ const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h for a successfully-built card
 const CACHE_MAX = 512;
 const MAX_DESC_LEN = 500;
 const GENERATION_TTL_MS = 5 * 60 * 1000;
-const GENERATION_SWEEP_MS = 5 * 60 * 1000;
 
 export type LinkCardGenerationStatus = 'pending' | 'succeeded' | 'failed';
 

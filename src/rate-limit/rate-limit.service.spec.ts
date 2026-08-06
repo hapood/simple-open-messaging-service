@@ -4,17 +4,11 @@ import { RateLimitService } from './rate-limit.service.js';
 import type { RateLimitPolicy } from './rate-limit.types.js';
 
 describe('RateLimitService', () => {
-  const services: RateLimitService[] = [];
-
-  afterEach(() => {
-    for (const service of services) service.onModuleDestroy();
-    services.length = 0;
-  });
+  // No afterEach teardown: @Interval only schedules inside a Nest context, and these tests instantiate
+  // RateLimitService directly — no scheduler runs, so no periodic timer is ever started to clear.
 
   function createService(): RateLimitService {
-    const service = new RateLimitService();
-    services.push(service);
-    return service;
+    return new RateLimitService();
   }
 
   function policy(mode: 'disabled' | 'shadow' | 'enforce'): RateLimitPolicy {

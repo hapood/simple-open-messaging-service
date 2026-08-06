@@ -26,7 +26,8 @@ describe('BruteForceService', () => {
     svc = new BruteForceService();
   });
   afterEach(() => {
-    svc.onModuleDestroy();
+    // No timer teardown: @Interval only schedules inside a Nest context (the scheduler scans providers),
+    // and these tests instantiate the service directly — no scheduler, no periodic timer to clear.
     vi.useRealTimers();
   });
 

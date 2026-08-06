@@ -68,7 +68,15 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.LOCKED,
       );
     }
-    if (!peer || peer.trustLevel !== 'trusted') {
+    // A signed ping is the only operation accepted from a demoted peer. This lets two peers that
+    // demoted each other recover without weakening data endpoints or repeating /init. The pinned
+    // current key is still verified below before the ping handler can promote the peer.
+    const isPing = req.routeOptions.url?.endsWith('/s2s/ping') === true;
+    if (
+      !peer ||
+      (peer.trustLevel !== 'trusted' &&
+        !(peer.trustLevel === 'demoted' && isPing))
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
         `${signerDomain} is not a trusted peer`,

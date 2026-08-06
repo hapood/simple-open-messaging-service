@@ -25,7 +25,6 @@ function request(
 }
 
 describe('AuthPolicyRegistry', () => {
-  const services: RateLimitService[] = [];
   const originalTrustedProxies = process.env.TRUSTED_PROXY_CIDRS;
 
   beforeEach(() => {
@@ -33,8 +32,8 @@ describe('AuthPolicyRegistry', () => {
   });
 
   afterEach(() => {
-    for (const service of services) service.onModuleDestroy();
-    services.length = 0;
+    // No timer teardown: @Interval only schedules inside a Nest context; these tests instantiate
+    // RateLimitService directly, so no periodic timer is ever started.
     if (originalTrustedProxies === undefined)
       delete process.env.TRUSTED_PROXY_CIDRS;
     else process.env.TRUSTED_PROXY_CIDRS = originalTrustedProxies;
@@ -42,7 +41,6 @@ describe('AuthPolicyRegistry', () => {
 
   function registry(): AuthPolicyRegistry {
     const rateLimits = new RateLimitService();
-    services.push(rateLimits);
     return new AuthPolicyRegistry(new ClientIdentityService(), rateLimits, {
       forPolicy: (name: string) => configFor(name, 'shadow'),
     } as RateLimitModeService);
@@ -147,7 +145,6 @@ describe('AuthPolicyRegistry', () => {
 
   it('enforces IPv4 and its IPv4-mapped IPv6 representation as one exact-IP bucket', () => {
     const rateLimits = new RateLimitService();
-    services.push(rateLimits);
     const registryUnderTest = enforcingRegistry(rateLimits);
     for (let index = 0; index < 10; index++) {
       expect(
@@ -173,7 +170,6 @@ describe('AuthPolicyRegistry', () => {
 
   it('enforces rotating IPv6 addresses through their shared /64 bucket', () => {
     const rateLimits = new RateLimitService();
-    services.push(rateLimits);
     const registryUnderTest = enforcingRegistry(rateLimits);
     for (let index = 1; index <= 10; index++) {
       expect(

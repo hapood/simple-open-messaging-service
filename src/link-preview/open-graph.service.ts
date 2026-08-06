@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { getDomain } from 'tldts';
 
 /**
  * Parsed OpenGraph metadata for a page. `image` is an absolute URL resolved against the page's final
@@ -41,14 +42,15 @@ export class OpenGraphService {
       }
       return undefined;
     };
-    const title =
-      pick(['og:title', 'twitter:title']) ?? this.extractTitleTag(html);
+    const documentTitle = this.extractTitleTag(html);
+    const title = pick(['og:title', 'twitter:title']) ?? documentTitle;
     const description = this.pickOrdered(
       metas,
       ['og:description', 'twitter:description', 'description'],
       descriptionSelection,
     );
-    const siteName = pick(['og:site_name']);
+    const siteName =
+      pick(['og:site_name']) ?? documentTitle ?? this.mainDomain(baseUrl);
     const imageRaw = this.pickImage(metas, imageSelection);
     let image: string | undefined;
     if (imageRaw) {
@@ -72,6 +74,15 @@ export class OpenGraphService {
       favicon,
       siteName: this.cap(this.clean(siteName), MAX_SITE_NAME),
     };
+  }
+
+  private mainDomain(baseUrl: string): string | undefined {
+    try {
+      const hostname = new URL(baseUrl).hostname;
+      return getDomain(hostname) ?? hostname.replace(/^www\./i, '');
+    } catch {
+      return undefined;
+    }
   }
 
   private pickOrdered(

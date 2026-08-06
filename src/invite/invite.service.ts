@@ -20,6 +20,7 @@ import {
   group,
   invite,
   messageThread,
+  threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -915,9 +916,10 @@ export class InviteService {
     return result.rows[0]?.threadId ?? null;
   }
 
-  /** Create the P2P MessageThread + both active participants. A fresh threadId means brand-new
+  /** Create the P2P MessageThread + both active participants and durable discovery audiences. A fresh threadId means brand-new
    *  participant rows even when re-friending (the old soft-left thread stays, filtered out by
-   *  findP2PThreadBetween's leftAt:null check). */
+   *  findP2PThreadBetween's leftAt:null check). Since the thread is empty and cannot contain an old
+   *  relationship's history, message id 0 is the exact lower bound for this access epoch. */
   private async createP2PFriendshipInTx(
     tx: DatabaseTransaction,
     userAId: number,
@@ -930,6 +932,36 @@ export class InviteService {
     await tx.insert(threadParticipant).values([
       { userId: userAId, threadId: thread.id, updatedAt: new Date() },
       { userId: userBId, threadId: thread.id, updatedAt: new Date() },
+    ]);
+    const participants = await tx
+      .select({ id: user.id, domain: user.domain })
+      .from(user)
+      .where(inArray(user.id, [userAId, userBId]));
+    if (participants.length !== 2) {
+      throw new Error('P2P audience participants are missing');
+    }
+
+    const localAudience = participants
+      .filter((participant) => participant.domain === 'local')
+      .map((participant) => ({
+        targetDomain: 'local',
+        localUserId: participant.id,
+        threadId: thread.id,
+      }));
+    const peerDomains = [
+      ...new Set(
+        participants
+          .map((participant) => participant.domain)
+          .filter((domain) => domain !== 'local'),
+      ),
+    ];
+    await tx.insert(threadAudience).values([
+      ...localAudience,
+      ...peerDomains.map((targetDomain) => ({
+        targetDomain,
+        localUserId: null,
+        threadId: thread.id,
+      })),
     ]);
     return thread.id;
   }

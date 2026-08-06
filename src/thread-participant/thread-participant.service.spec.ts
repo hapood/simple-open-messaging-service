@@ -6,7 +6,11 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
     const returning = vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
     const where = vi.fn(() => ({ returning }));
     const set = vi.fn(() => ({ where }));
-    const tx = { update: vi.fn(() => ({ set })) };
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [{ id: 10 }] }),
+      update: vi.fn(() => ({ set })),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    };
     let committed = false;
     const database = {
       db: {
@@ -31,7 +35,9 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
     await expect(service.endP2P(10, 1, true, 2)).resolves.toEqual({
       transitioned: true,
     });
+    expect(tx.execute).toHaveBeenCalledTimes(1);
     expect(tx.update).toHaveBeenCalledTimes(2);
+    expect(tx.delete).toHaveBeenCalledTimes(1);
     expect(revisions.recordThreadDeleteInTx).toHaveBeenCalledWith(tx, 1, 10);
     expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
     expect(revisions.notifyThreadRevision).toHaveBeenCalledTimes(2);
@@ -40,9 +46,11 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
   it('publishes no SSE if either revision write aborts the transaction', async () => {
     const returning = vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [{ id: 10 }] }),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })),
       })),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     };
     const database = {
       db: {

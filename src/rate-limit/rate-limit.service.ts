@@ -1,4 +1,5 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { performance } from 'node:perf_hooks';
 import { createHmac, randomBytes } from 'node:crypto';
 import { TokenBucketStore } from './token-bucket.store.js';
@@ -33,32 +34,18 @@ const HISTORY_LIMIT = 288;
  * Policies choose whether evaluated decisions are enforced, observed in shadow, or disabled.
  */
 @Injectable()
-export class RateLimitService implements OnModuleDestroy {
+export class RateLimitService {
   private readonly logger = new Logger(RateLimitService.name);
   private readonly store = new TokenBucketStore();
   private readonly stats = new Map<string, RateLimitPolicyStats>();
   private readonly history: RateLimitStatsInterval[] = [];
   private intervalStartedAt = Date.now();
   private readonly subjectHashKey = randomBytes(32);
-  private readonly cleanupTimer: NodeJS.Timeout;
-  private readonly summaryTimer: NodeJS.Timeout;
 
-  constructor() {
-    this.cleanupTimer = setInterval(
-      () => this.store.cleanup(performance.now()),
-      5 * 60 * 1000,
-    );
-    this.cleanupTimer.unref();
-    this.summaryTimer = setInterval(
-      () => this.flushSummary(),
-      SUMMARY_INTERVAL_MS,
-    );
-    this.summaryTimer.unref();
-  }
-
-  onModuleDestroy(): void {
-    clearInterval(this.cleanupTimer);
-    clearInterval(this.summaryTimer);
+  /** Token-bucket reclamation sweep (5 min). Registered with @nestjs/schedule; cleared on shutdown. */
+  @Interval(5 * 60 * 1000)
+  periodicCleanup(): void {
+    this.store.cleanup(performance.now());
   }
 
   evaluate(
@@ -138,7 +125,9 @@ export class RateLimitService implements OnModuleDestroy {
       .slice(0, 16);
   }
 
-  /** Emit and reset a bounded interval aggregate; never includes raw subject values. */
+  /** Emit and reset a bounded interval aggregate; never includes raw subject values. Registered with
+   *  @nestjs/schedule (5 min); cleared on shutdown. */
+  @Interval(SUMMARY_INTERVAL_MS)
   flushSummary(): void {
     const endedAt = Date.now();
     const policies = this.snapshotStats();

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 import { LoggerModule } from './logger/logger.module.js';
 import { MessageController } from './controller/message.controller.js';
 import { AuthController } from './controller/auth.controller.js';
@@ -46,6 +47,9 @@ import { RateLimitModule } from './rate-limit/rate-limit.module.js';
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
+    // Registers the SchedulerOrchestrator that scans providers for @Interval/@Timeout/@Cron and clears
+    // intervals in beforeApplicationShutdown. One-time global registration.
+    ScheduleModule.forRoot(),
     LoggerModule,
     RateLimitModule,
     KvStoreModule,

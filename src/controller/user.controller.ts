@@ -544,6 +544,8 @@ export class UserController {
         );
       }
       let profile: S2SProfile;
+      const peerToken =
+        await this.federationService.capturePeerResponseToken(domain);
       try {
         profile = await this.federationService.fetchRemoteUser({
           account,
@@ -555,11 +557,13 @@ export class UserController {
           `could not reach ${domain}: ${(e as Error).message}`,
         );
       }
-      const foreignId = await this.federationService.ensureForeignUser(
-        account,
-        domain,
-      );
-      await this.federationService.localizeForeignProfile(foreignId, profile);
+      const foreignId =
+        await this.federationService.upsertForeignUserFromPeerResponse(
+          account,
+          domain,
+          profile,
+          peerToken,
+        );
       // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
       return this.userService.findUniqueUser({ id: foreignId });
     }

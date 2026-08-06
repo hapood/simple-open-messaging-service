@@ -8,6 +8,7 @@ import {
 import {
   group,
   messageThread,
+  threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -319,6 +320,15 @@ export class ThreadParticipantService {
   ): Promise<{ transitioned: boolean }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
+      // Message writes lock this same row while allocating seq. Taking the lock first makes the
+      // audience boundary an exact cut: prior writes commit before MAX(id), later writes wait and
+      // receive ids outside the closed access epoch.
+      await tx.execute(sql`
+        SELECT id
+        FROM "MessageThread"
+        WHERE id = ${threadId}
+        FOR UPDATE
+      `);
       const callerHidden = await this.threadRevisionService.isThreadHiddenInTx(
         tx,
         callerUserId,
@@ -360,6 +370,11 @@ export class ThreadParticipantService {
           );
       }
       const transitioned = ended.length > 0;
+      if (transitioned) {
+        await tx
+          .delete(threadAudience)
+          .where(eq(threadAudience.threadId, threadId));
+      }
       const revisions: PendingThreadRevision[] = [];
       if (shouldDelete) {
         revisions.push({

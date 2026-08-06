@@ -81,6 +81,9 @@ import {
   FederationIdentityService,
   type SignedFederationIdentity,
 } from './federation-identity.service.js';
+import { FederationCursorService } from './federation-cursor.service.js';
+import { FederationInitService } from './federation-init.service.js';
+import type { FederationMissedPage } from './federation-missed.service.js';
 
 /**
  * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
@@ -114,9 +117,23 @@ export interface S2SAddress {
   domain: string;
 }
 
+export interface PeerResponseToken {
+  domain: string;
+  resetGeneration: number;
+  rootKeyFingerprint: string;
+}
+
 export interface S2SQuoteTarget {
   creator: S2SAddress;
   originSeq: number;
+}
+
+interface FederatedForwardCard {
+  version: number;
+  bundleId: string;
+  summaryLines: string[];
+  messageCount: number;
+  assetCount: number;
 }
 
 interface S2SDeletedMessage {
@@ -307,6 +324,8 @@ export class FederationService implements OnModuleDestroy {
     // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
     private readonly eventEmitter: EventEmitter2,
     private readonly federationIdentity: FederationIdentityService,
+    private readonly federationCursor: FederationCursorService,
+    private readonly federationInit: FederationInitService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -743,8 +762,9 @@ export class FederationService implements OnModuleDestroy {
       columns: { remoteProfileRev: true },
     });
     if (!stub || stub.remoteProfileRev !== null) return; // already localized (or gone)
+    const peerToken = await this.capturePeerResponseToken(address.domain);
     const profile = await this.fetchRemoteUser(address);
-    await this.localizeForeignProfile(userId, profile);
+    await this.localizeForeignProfile(userId, profile, { peerToken });
   }
 
   /** Sign + synchronously POST an arbitrary JSON body to a peer S2S path (`${base}${path}`). The single
@@ -950,8 +970,41 @@ export class FederationService implements OnModuleDestroy {
         HttpStatus.FORBIDDEN,
       );
     }
-    // Bootstrap mutual trust and pin the signed pairwise identity returned by the peer.
+    if (existing?.trustLevel === 'demoted') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
+        `${domain} is temporarily unavailable pending signed heartbeat recovery`,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    // Only a new/pending peer bootstraps mutual trust and pins the signed pairwise identity.
     await this.sendInit(domain);
+  }
+
+  /**
+   * Recover one reconnect-sweep candidate without confusing availability with identity bootstrap.
+   * A pending first contact may retry the atomic/idempotent /init. A demoted established peer must
+   * prove the already-pinned identity and complete a signed ping; it can never silently re-bootstrap.
+   */
+  async recoverPeerTrust(domain: string): Promise<void> {
+    const peer = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
+      columns: { trustLevel: true },
+    });
+    if (peer?.trustLevel === 'pending') {
+      await this.ensurePeerTrusted(domain);
+      return;
+    }
+    if (peer?.trustLevel !== 'demoted') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
+        `${domain} is not eligible for automatic recovery`,
+        HttpStatus.CONFLICT,
+      );
+    }
+    await this.verifyPeerIdentity(domain);
+    await this.pingPeer(domain);
+    await this.markRecovered(domain);
   }
 
   /** Whether mutual trust with a peer domain is ALREADY established — a pure local lookup of the
@@ -978,7 +1031,7 @@ export class FederationService implements OnModuleDestroy {
   // log of every transition (the admin timeline). FederationService is the single owner: every
   // transition — runtime (init, op success/failure) and admin (block/unblock) — flows through these
   // methods, so the row + the event stay consistent. State machine:
-  //   pending ──init ok──► trusted ──op failed──► demoted ──init ok──► trusted …   (+ blocked: admin)
+  //   pending ──init ok──► trusted ──op failed──► demoted ──signed ping ok──► trusted …
 
   /** Best-practice liveness watermark window. "Last successful contact" is an admin observability
    *  signal whose consumer needs MINUTE granularity (is this peer up?), not sub-second — so write
@@ -1070,6 +1123,35 @@ export class FederationService implements OnModuleDestroy {
     if (transitioned) {
       await this.logEvent(domain, 'demoted', reason);
     }
+  }
+
+  /** Promote a demoted peer only after its pinned identity and signed heartbeat have succeeded. */
+  async markRecovered(domain: string): Promise<void> {
+    const now = new Date();
+    const transitioned = await this.database.db.transaction(async (tx) => {
+      const [peer] = await tx
+        .update(tables.federatedPeer)
+        .set({
+          trustLevel: 'trusted',
+          lastSuccessAt: now,
+          demotedAt: null,
+          demoteReason: null,
+        })
+        .where(
+          and(
+            eq(tables.federatedPeer.domain, domain),
+            eq(tables.federatedPeer.trustLevel, 'demoted'),
+          ),
+        )
+        .returning({ domain: tables.federatedPeer.domain });
+      if (!peer) return false;
+      await tx.insert(tables.federatedPeerEvent).values({
+        domain,
+        type: 'recovered',
+      });
+      return true;
+    });
+    if (transitioned) this.lastSuccessSentAt.set(domain, now.getTime());
   }
 
   /** Admin block: forbid federation with a peer (ensurePeerTrusted refuses to re-handshake; the inbound
@@ -1168,7 +1250,13 @@ export class FederationService implements OnModuleDestroy {
       await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}/api/v1/s2s/init`);
-    const claim = this.federationIdentity.createClaim(peerDomain);
+    const localStartChangeId =
+      await this.federationCursor.prepareHandshakeStart(peerDomain);
+    const claim = this.federationIdentity.createClaim(
+      peerDomain,
+      undefined,
+      localStartChangeId,
+    );
     const body = JSON.stringify(claim);
     const headers = this.signature.signOutbound({
       method: 'POST',
@@ -1196,13 +1284,15 @@ export class FederationService implements OnModuleDestroy {
     const payload = (await res.json()) as
       | { data?: SignedFederationIdentity }
       | SignedFederationIdentity;
+    const response = (
+      'data' in payload && payload.data ? payload.data : payload
+    ) as SignedFederationIdentity;
     await this.verifyAndPinIdentityResponse(
       peerDomain,
       claim.nonce,
-      ('data' in payload && payload.data
-        ? payload.data
-        : payload) as SignedFederationIdentity,
+      response,
       preUpgradeKeys,
+      true,
     );
   }
 
@@ -1241,6 +1331,7 @@ export class FederationService implements OnModuleDestroy {
         ? payload.data
         : payload) as SignedFederationIdentity,
       preUpgradeKeys,
+      false,
     );
   }
 
@@ -1249,6 +1340,7 @@ export class FederationService implements OnModuleDestroy {
     nonce: string,
     response: SignedFederationIdentity,
     preUpgradeKeys: string[],
+    initializeCursors: boolean,
   ): Promise<void> {
     const doc = await this.discovery.fetchWellKnown(peerDomain);
     const rootPublicKey = doc.rootKey?.ed25519;
@@ -1287,11 +1379,28 @@ export class FederationService implements OnModuleDestroy {
       Uint8Array.from(Buffer.from(signingKey.ed25519, 'base64')),
     );
     await this.discovery.cacheKeys(peerDomain, doc.keys);
-    await this.federationIdentity.pinOrVerify(
-      peerDomain,
-      claim,
-      rootPublicKey !== undefined && preUpgradeKeys.includes(rootPublicKey),
-    );
+    const legacyContinuityProven =
+      rootPublicKey !== undefined && preUpgradeKeys.includes(rootPublicKey);
+    if (initializeCursors) {
+      if (claim.startChangeId === undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+          `S2S init response from ${peerDomain} has no startChangeId`,
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+      await this.federationInit.pinResponse({
+        domain: peerDomain,
+        claim,
+        legacyContinuityProven,
+      });
+    } else {
+      await this.federationIdentity.pinOrVerify(
+        peerDomain,
+        claim,
+        legacyContinuityProven,
+      );
+    }
   }
 
   // ─── invite flows (synchronous, unified friend + group) ─────────────────────
@@ -2470,6 +2579,77 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
+  async capturePeerResponseToken(domain: string): Promise<PeerResponseToken> {
+    return this.database.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock_shared(hashtextextended('federation-reset-global', 0))`,
+      );
+      const result = await tx.execute<{
+        trustLevel: string;
+        resetGeneration: number;
+        rootKeyFingerprint: string | null;
+      }>(sql`
+        SELECT peer."trustLevel",
+               COALESCE(reset."resetGeneration", 0)::int AS "resetGeneration",
+               peer."rootKeyFingerprint"
+        FROM "FederatedPeer" peer
+        LEFT JOIN "FederatedPeerReset" reset ON reset.domain = peer.domain
+        WHERE peer.domain = ${domain}
+      `);
+      const state = result.rows[0];
+      if (
+        !state ||
+        state.trustLevel !== 'trusted' ||
+        !state.rootKeyFingerprint
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+          `federation peer ${domain} is unavailable`,
+          HttpStatus.LOCKED,
+        );
+      }
+      return {
+        domain,
+        resetGeneration: state.resetGeneration,
+        rootKeyFingerprint: state.rootKeyFingerprint,
+      };
+    });
+  }
+
+  private async assertPeerResponseWritable(
+    tx: DatabaseTransaction,
+    token: PeerResponseToken,
+  ): Promise<void> {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock_shared(hashtextextended('federation-reset-global', 0))`,
+    );
+    const result = await tx.execute<{
+      trustLevel: string;
+      resetGeneration: number;
+      rootKeyFingerprint: string | null;
+    }>(sql`
+      SELECT peer."trustLevel",
+             COALESCE(reset."resetGeneration", 0)::int AS "resetGeneration",
+             peer."rootKeyFingerprint"
+      FROM "FederatedPeer" peer
+      LEFT JOIN "FederatedPeerReset" reset ON reset.domain = peer.domain
+      WHERE peer.domain = ${token.domain}
+    `);
+    const state = result.rows[0];
+    if (
+      !state ||
+      state.trustLevel !== 'trusted' ||
+      state.resetGeneration !== token.resetGeneration ||
+      state.rootKeyFingerprint !== token.rootKeyFingerprint
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `stale federation response from ${token.domain}`,
+        HttpStatus.LOCKED,
+      );
+    }
+  }
+
   /**
    * Push a batch of OUR outbound hint entries (dirty conversations) to the peer's /new-msg-map. The
    * caller (FederationBufferService) deletes the pushed entries on success; on failure they stay
@@ -2503,6 +2683,58 @@ export class FederationService implements OnModuleDestroy {
       '/api/v1/s2s/ping',
       domain,
     );
+  }
+
+  /** Lightweight, ephemeral discovery wake-up. The receiver never persists this advertised HWM. */
+  async pushDiscoveryHwm(domain: string): Promise<void> {
+    const allocatedThrough =
+      await this.federationCursor.readAllocatedThrough(domain);
+    await this.postSigned(
+      '/api/v1/s2s/discovery-hwm',
+      JSON.stringify({
+        origin: this.config.domain,
+        allocatedThrough: allocatedThrough.toString(),
+      }),
+      domain,
+    );
+  }
+
+  /** Query the peer's current source HWM after reconnect or during reconciliation. */
+  async pullDiscoveryHwm(domain: string): Promise<bigint> {
+    const result = await this.getSigned<{ allocatedThrough: string }>(
+      '/api/v1/s2s/discovery-hwm',
+      domain,
+    );
+    if (!/^(0|[1-9]\d*)$/.test(result.allocatedThrough)) {
+      throw new Error(`peer ${domain} returned an invalid discovery HWM`);
+    }
+    return BigInt(result.allocatedThrough);
+  }
+
+  /**
+   * Fetch one durable discovery page. The peer token is captured before the network request and must
+   * be checked by the page applier in the same transaction that advances remoteHwm. This is the
+   * peer-wide counterpart of getSignedForThread's federationVersion fence: a reset or identity change
+   * while GET /missed is in flight makes the returned token stale and the complete page is discarded.
+   */
+  async pullMissedPage(
+    domain: string,
+    after: bigint,
+    take = 100,
+  ): Promise<{ page: FederationMissedPage; token: PeerResponseToken }> {
+    if (after < 0n) throw new Error('missed cursor must be non-negative');
+    if (!Number.isInteger(take) || take < 1 || take > 200) {
+      throw new Error('missed page size must be an integer from 1 to 200');
+    }
+    const token = await this.capturePeerResponseToken(domain);
+    const page = await this.withTrustedPeer(domain, () =>
+      this.getSigned<FederationMissedPage>(
+        `/api/v1/s2s/missed?after=${after.toString()}&take=${take}`,
+        domain,
+        16 * 1024 * 1024,
+      ),
+    );
+    return { page, token };
   }
 
   /** Outbound signed GET of the peer's /new-msg-map (the one-directional fallback, §4.3) — the reconnect
@@ -3230,25 +3462,16 @@ export class FederationService implements OnModuleDestroy {
   async resolveMediaFile(
     fromAccount: string,
     toAccount: string,
-    fromDomain: string | undefined,
+    fromDomain: string,
     signerDomain: string,
     digest: string,
+    sourceSeq: number,
     forwardBundleId?: string,
   ): Promise<{ absPath: string; bytes: number }> {
-    if (forwardBundleId) {
-      await this.requireForwardBundlePeerAccess(forwardBundleId, signerDomain);
-      const closure = await this.forwardBundles.buildClosure(forwardBundleId);
-      if (!closure.assets.some((asset) => asset.digest === digest)) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'digest not in forward bundle',
-        );
-      }
-      return this.resolveCasFile(digest);
-    }
-    // Group media (`toAccount` is the group `!account`): roster gate via resolveGroupThreadAccess. P2P
-    // media: friendship gate via resolveFriendshipThread (`fromAccount` is the local owner). The 3rd
-    // check (digest in thread) is identical for both — it keys on threadId, however resolved.
+    // Resolve the authorized conversation first, then bind the digest to one exact wire-visible
+    // message identity. `sourceSeq` is COALESCE(originSeq, seq), matching the value emitted by both the
+    // legacy thread feed and /missed. This mirrors local CAS authorization's thread + seq + digest
+    // check and prevents one digest referenced elsewhere in the thread from authorizing this request.
     const threadId = toAccount.startsWith('!')
       ? (
           await this.resolveGroupThreadAccess(
@@ -3265,18 +3488,70 @@ export class FederationService implements OnModuleDestroy {
             signerDomain,
           )
         ).threadId;
-    // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
-    const inThread = await this.database.db.query.messageAsset.findFirst({
+    const candidates = await this.database.db.query.user.findMany({
+      where: eq(tables.user.account, normalizeAccount(fromAccount)),
+      columns: { id: true, domain: true, isForeigner: true },
+    });
+    const author = candidates.find(
+      (candidate) => this.effectiveDomain(candidate) === fromDomain,
+    );
+    if (!author) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'message author not found',
+      );
+    }
+    const [sourceMessage] = await this.database.db
+      .select({ id: tables.message.id })
+      .from(tables.message)
+      .where(
+        and(
+          eq(tables.message.threadId, threadId),
+          eq(tables.message.creator, author.id),
+          sql`COALESCE(${tables.message.originSeq}, ${tables.message.seq}) = ${sourceSeq}`,
+        ),
+      )
+      .limit(1);
+    if (!sourceMessage) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'message media source not found',
+      );
+    }
+    if (forwardBundleId) {
+      const binding = await this.database.db.query.forwardMessage.findFirst({
+        where: and(
+          eq(tables.forwardMessage.messageId, sourceMessage.id),
+          eq(tables.forwardMessage.bundleId, forwardBundleId),
+        ),
+        columns: { bundleId: true },
+      });
+      if (!binding) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'forward bundle is not bound to message',
+        );
+      }
+      const closure = await this.forwardBundles.buildClosure(forwardBundleId);
+      if (!closure.assets.some((asset) => asset.digest === digest)) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'digest not in forward bundle',
+        );
+      }
+      return this.resolveCasFile(digest);
+    }
+    const binding = await this.database.db.query.messageAsset.findFirst({
       where: and(
+        eq(tables.messageAsset.messageId, sourceMessage.id),
         eq(tables.messageAsset.digest, digest),
-        eq(tables.messageAsset.threadId, threadId),
       ),
       columns: { messageId: true },
     });
-    if (!inThread) {
+    if (!binding) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        'digest not in thread',
+        'digest is not bound to message',
       );
     }
     return this.resolveCasFile(digest);
@@ -3747,6 +4022,7 @@ export class FederationService implements OnModuleDestroy {
               e.fromAccount,
               e.fromDomain,
               e.toAccount,
+              m.originSeq,
               response.federationVersion,
             );
           }
@@ -3929,6 +4205,7 @@ export class FederationService implements OnModuleDestroy {
             m.creator.account,
             m.creator.domain,
             toAccount,
+            m.originSeq,
             response.federationVersion,
           );
         }
@@ -4028,6 +4305,7 @@ export class FederationService implements OnModuleDestroy {
               e.fromAccount,
               e.fromDomain,
               e.toAccount,
+              m.originSeq,
               response.federationVersion,
             );
           }
@@ -4123,15 +4401,7 @@ export class FederationService implements OnModuleDestroy {
     let remoteForwardBundleId: string | undefined;
     let forwardClosure: ForwardWireClosure | undefined;
     let localForwardBundleId: string | undefined;
-    let forwardCard:
-      | {
-          version: number;
-          bundleId: string;
-          summaryLines: string[];
-          messageCount: number;
-          assetCount: number;
-        }
-      | undefined;
+    let forwardCard: FederatedForwardCard | undefined;
     if (m.contentType === ContentType.FORWARD) {
       try {
         forwardCard = JSON.parse(m.content) as typeof forwardCard;
@@ -4172,117 +4442,19 @@ export class FederationService implements OnModuleDestroy {
     // the peer's originSeq verbatim — the dedup key + the value the receiver tracks as its pull cursor.
     // Wrapped in a tx so a P2002 dup-pull (same (threadId, creator, originSeq)) rolls the curSeq increment
     // back too (no seq gap from a deduped re-pull).
-    const created = await this.database.db
+    const stored = await this.database.db
       .transaction(async (tx) => {
-        await this.assertThreadResponseWritable(
-          tx,
+        return this.storePulledMessageInTransaction(tx, {
           threadId,
+          creator,
           fetchedFromDomain,
+          message: m,
           expectedFederationVersion,
-        );
-        const creatorId =
-          typeof creator === 'number'
-            ? creator
-            : await this.ensureForeignUserInTransaction(
-                tx,
-                creator.account,
-                creator.domain,
-              );
-        await DeletedMessageService.lockFederatedIdentity(
-          tx,
-          threadId,
-          creatorId,
-          m.originSeq,
-        );
-        if (forwardClosure && forwardCard) {
-          const imported = await this.forwardBundles.importClosure(
-            fetchedFromDomain,
-            forwardClosure,
-            tx,
-          );
-          localForwardBundleId = imported.localRootBundleId;
-          storedContent = JSON.stringify({
-            ...forwardCard,
-            bundleId: localForwardBundleId,
-          });
-        }
-        const [{ curSeq: seq }] = await tx
-          .update(tables.messageThread)
-          .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
-          .where(eq(tables.messageThread.id, threadId))
-          .returning({ curSeq: tables.messageThread.curSeq });
-        const tombstone = await tx.query.federatedMessageTombstone.findFirst({
-          where: and(
-            eq(tables.federatedMessageTombstone.threadId, threadId),
-            eq(tables.federatedMessageTombstone.creatorId, creatorId),
-            eq(tables.federatedMessageTombstone.originSeq, m.originSeq),
-          ),
-          columns: { type: true },
+          incomingText,
+          forwardCard,
+          forwardClosure,
+          originTime,
         });
-        storedContent = contextualizeCasUrls(storedContent, threadId, seq);
-        if (incomingText?.quote && m.quoteTarget) {
-          const localQuoteSeq = await this.resolveLocalQuoteSeq(
-            tx,
-            threadId,
-            m.quoteTarget,
-          );
-          storedContent = stringifyTextMessageContent({
-            text: incomingText.text,
-            quote: { seq: localQuoteSeq },
-          });
-        }
-        const [msg] = await tx
-          .insert(tables.message)
-          .values({
-            contentType: m.contentType as ContentType,
-            content: storedContent,
-            threadId,
-            creator: creatorId,
-            seq,
-            originSeq: m.originSeq,
-            originServerTime: originTime,
-            isDeleted: tombstone !== undefined,
-            updatedAt: new Date(),
-            // createdAt defaults to now() → the local arrival time
-          })
-          .returning();
-        if (tombstone) {
-          await tx
-            .insert(tables.deletedMessage)
-            .values({
-              threadId,
-              seq,
-              type: tombstone.type,
-              updatedAt: new Date(),
-            })
-            .onConflictDoNothing({
-              target: [
-                tables.deletedMessage.threadId,
-                tables.deletedMessage.seq,
-              ],
-            });
-        }
-        if (localForwardBundleId) {
-          await tx.insert(tables.forwardMessage).values({
-            messageId: msg.id,
-            bundleId: localForwardBundleId,
-          });
-        }
-        // Quota: tick the peer's daily message budget ON THE SAME tx. Over-limit throws inside the tx →
-        // rolls back the seq increment + this message too (no seq gap, no count burn); caught below as a
-        // skip. `fetchedFromDomain` is always a peer (we pull FROM peers, never ourselves).
-        await this.quota.tick(
-          fetchedFromDomain,
-          'messages',
-          tx,
-          forwardClosure
-            ? forwardClosure.bundles.reduce(
-                (sum, bundle) => sum + bundle.manifest.messages.length,
-                0,
-              )
-            : 1,
-        );
-        return msg;
       })
       .catch((e: unknown) => {
         if (isUniqueViolation(e)) {
@@ -4298,7 +4470,10 @@ export class FederationService implements OnModuleDestroy {
         }
         throw e;
       });
-    if (!created) return null;
+    if (!stored) return null;
+    const created = stored.message;
+    storedContent = stored.storedContent;
+    localForwardBundleId = stored.localForwardBundleId;
     const creatorId = created.creator;
     if (created.isDeleted) {
       const deletion = await this.database.db.query.deletedMessage.findFirst({
@@ -4401,6 +4576,153 @@ export class FederationService implements OnModuleDestroy {
     return created;
   }
 
+  /**
+   * Transaction-only core shared by the legacy thread pull today and the global /missed page applier
+   * in the next stage. It performs no SSE and starts no media download; callers own post-commit work.
+   */
+  private async storePulledMessageInTransaction(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      creator: number | S2SAddress;
+      fetchedFromDomain: string;
+      message: {
+        originSeq: number;
+        contentType: string;
+        content: string;
+        ts: number;
+        quoteTarget?: S2SQuoteTarget;
+      };
+      expectedFederationVersion: number;
+      incomingText: ReturnType<typeof parseTextMessageContent>;
+      forwardCard?: FederatedForwardCard;
+      forwardClosure?: ForwardWireClosure;
+      originTime: Date;
+    },
+  ): Promise<{
+    message: Message;
+    storedContent: string;
+    localForwardBundleId?: string;
+  }> {
+    const {
+      threadId,
+      creator,
+      fetchedFromDomain,
+      message: incoming,
+      expectedFederationVersion,
+      incomingText,
+      forwardCard,
+      forwardClosure,
+      originTime,
+    } = params;
+    await this.assertThreadResponseWritable(
+      tx,
+      threadId,
+      fetchedFromDomain,
+      expectedFederationVersion,
+    );
+    const creatorId =
+      typeof creator === 'number'
+        ? creator
+        : await this.ensureForeignUserInTransaction(
+            tx,
+            creator.account,
+            creator.domain,
+          );
+    await DeletedMessageService.lockFederatedIdentity(
+      tx,
+      threadId,
+      creatorId,
+      incoming.originSeq,
+    );
+
+    let storedContent = incoming.content;
+    let localForwardBundleId: string | undefined;
+    if (forwardClosure && forwardCard) {
+      const imported = await this.forwardBundles.importClosure(
+        fetchedFromDomain,
+        forwardClosure,
+        tx,
+      );
+      localForwardBundleId = imported.localRootBundleId;
+      storedContent = JSON.stringify({
+        ...forwardCard,
+        bundleId: localForwardBundleId,
+      });
+    }
+
+    const [{ curSeq: seq }] = await tx
+      .update(tables.messageThread)
+      .set({ curSeq: sql`${tables.messageThread.curSeq} + 1` })
+      .where(eq(tables.messageThread.id, threadId))
+      .returning({ curSeq: tables.messageThread.curSeq });
+    const tombstone = await tx.query.federatedMessageTombstone.findFirst({
+      where: and(
+        eq(tables.federatedMessageTombstone.threadId, threadId),
+        eq(tables.federatedMessageTombstone.creatorId, creatorId),
+        eq(tables.federatedMessageTombstone.originSeq, incoming.originSeq),
+      ),
+      columns: { type: true },
+    });
+    storedContent = contextualizeCasUrls(storedContent, threadId, seq);
+    if (incomingText?.quote && incoming.quoteTarget) {
+      const localQuoteSeq = await this.resolveLocalQuoteSeq(
+        tx,
+        threadId,
+        incoming.quoteTarget,
+      );
+      storedContent = stringifyTextMessageContent({
+        text: incomingText.text,
+        quote: { seq: localQuoteSeq },
+      });
+    }
+    const [message] = await tx
+      .insert(tables.message)
+      .values({
+        contentType: incoming.contentType as ContentType,
+        content: storedContent,
+        threadId,
+        creator: creatorId,
+        seq,
+        originSeq: incoming.originSeq,
+        originServerTime: originTime,
+        isDeleted: tombstone !== undefined,
+        updatedAt: new Date(),
+      })
+      .returning();
+    if (tombstone) {
+      await tx
+        .insert(tables.deletedMessage)
+        .values({
+          threadId,
+          seq,
+          type: tombstone.type,
+          updatedAt: new Date(),
+        })
+        .onConflictDoNothing({
+          target: [tables.deletedMessage.threadId, tables.deletedMessage.seq],
+        });
+    }
+    if (localForwardBundleId) {
+      await tx.insert(tables.forwardMessage).values({
+        messageId: message.id,
+        bundleId: localForwardBundleId,
+      });
+    }
+    await this.quota.tick(
+      fetchedFromDomain,
+      'messages',
+      tx,
+      forwardClosure
+        ? forwardClosure.bundles.reduce(
+            (sum, bundle) => sum + bundle.manifest.messages.length,
+            0,
+          )
+        : 1,
+    );
+    return { message, storedContent, localForwardBundleId };
+  }
+
   private async resolveLocalQuoteSeq(
     tx: DatabaseTransaction,
     threadId: number,
@@ -4442,6 +4764,12 @@ export class FederationService implements OnModuleDestroy {
     closure: ForwardWireClosure,
     peerDomain: string,
     remoteRootBundleId: string,
+    authorization: {
+      fromAccount: string;
+      fromDomain: string;
+      toAccount: string;
+      sourceSeq: number;
+    },
   ): Promise<void> {
     // Derive from the validated per-bundle manifests; the top-level `assets` array is only a wire
     // convenience summary and is never an independent authorization/download authority.
@@ -4467,9 +4795,10 @@ export class FederationService implements OnModuleDestroy {
             this.fetchMediaChunks(
               peerDomain,
               asset.digest,
-              '',
-              '',
-              '',
+              authorization.fromAccount,
+              authorization.fromDomain,
+              authorization.toAccount,
+              authorization.sourceSeq,
               category,
               remoteRootBundleId,
               offset,
@@ -4514,6 +4843,7 @@ export class FederationService implements OnModuleDestroy {
     fromAccount: string,
     fromDomain: string,
     toAccount: string,
+    sourceSeq: number,
     expectedFederationVersion: number,
   ): Promise<void> {
     // Card assets use the image quota; FILE/VIDEO/AUDIO use the large-file quota.
@@ -4550,6 +4880,7 @@ export class FederationService implements OnModuleDestroy {
                 fromAccount,
                 fromDomain,
                 toAccount,
+                sourceSeq,
                 category,
                 undefined,
                 offset,
@@ -4651,7 +4982,7 @@ export class FederationService implements OnModuleDestroy {
     if (!this.isMediaContentType(msg.contentType)) return 'ready';
     const creator = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, msg.creator),
-      columns: { account: true, domain: true },
+      columns: { account: true, domain: true, isForeigner: true },
     });
     if (!creator) {
       throw new BusinessException(
@@ -4673,8 +5004,9 @@ export class FederationService implements OnModuleDestroy {
       msg,
       peerDomain,
       creator.account,
-      creator.domain,
+      this.effectiveDomain(creator),
       toAccount,
+      msg.originSeq ?? msg.seq,
       federationVersion,
     );
     return (await this.isMessageMediaReady(msg.id, msg.content))
@@ -4807,6 +5139,7 @@ export class FederationService implements OnModuleDestroy {
     fromAccount: string,
     fromDomain: string,
     toAccount: string,
+    sourceSeq: number,
     category: 'images' | 'largeFiles',
     forwardBundleId?: string,
     startOffset = 0,
@@ -4814,8 +5147,8 @@ export class FederationService implements OnModuleDestroy {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
     const path = forwardBundleId
-      ? `/api/v1/s2s/get_file?digest=${digest}&bundleId=${encodeURIComponent(forwardBundleId)}`
-      : `/api/v1/s2s/get_file?digest=${digest}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}`;
+      ? `/api/v1/s2s/get_file?digest=${digest}&bundleId=${encodeURIComponent(forwardBundleId)}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&seq=${sourceSeq}`
+      : `/api/v1/s2s/get_file?digest=${digest}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&seq=${sourceSeq}`;
     const url = new URL(`${base}${path}`);
     let offset = startOffset;
     let total: number | null = null;
@@ -5055,11 +5388,13 @@ export class FederationService implements OnModuleDestroy {
   async localizeForeignProfile(
     userId: number,
     profile: S2SProfile,
-    threadGate?: {
-      threadId: number;
-      peerDomain: string;
-      expectedFederationVersion: number;
-    },
+    gate?:
+      | {
+          threadId: number;
+          peerDomain: string;
+          expectedFederationVersion: number;
+        }
+      | { peerToken: PeerResponseToken },
   ): Promise<void> {
     const stub = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, userId),
@@ -5073,37 +5408,19 @@ export class FederationService implements OnModuleDestroy {
       return; // already at least as fresh as this profile
     }
 
-    // Avatar is optional + fallible; resolve it before the tx so a failure can't poison the update.
-    let newAvatarUrl: string | null = null; // null = leave the existing avatar untouched
-    if (profile.avatar) {
-      try {
-        newAvatarUrl = await this.upload.saveAvatarFromWire(profile.avatar);
-      } catch {
-        newAvatarUrl = null; // keep the existing avatar; name/bio/remoteUpdatedAt still advance below
-      }
-    } else {
-      newAvatarUrl = ''; // peer explicitly has no avatar → clear our localized copy
-    }
-
-    const data: {
-      name: string;
-      bio: string;
-      remoteProfileRev: number;
-      avatar?: string;
-    } = {
-      name: profile.displayName,
-      bio: profile.bio,
-      remoteProfileRev: profile.profileRev,
-    };
-    if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
-    if (threadGate) {
+    const data = await this.prepareForeignProfileData(profile);
+    if (gate) {
       await this.database.db.transaction(async (tx) => {
-        await this.assertThreadResponseWritable(
-          tx,
-          threadGate.threadId,
-          threadGate.peerDomain,
-          threadGate.expectedFederationVersion,
-        );
+        if ('peerToken' in gate) {
+          await this.assertPeerResponseWritable(tx, gate.peerToken);
+        } else {
+          await this.assertThreadResponseWritable(
+            tx,
+            gate.threadId,
+            gate.peerDomain,
+            gate.expectedFederationVersion,
+          );
+        }
         await tx
           .update(tables.user)
           .set({ ...data, updatedAt: new Date() })
@@ -5125,6 +5442,65 @@ export class FederationService implements OnModuleDestroy {
     // The previous localized avatar files are intentionally LEFT on disk — gcOrphanedAvatars reaps
     // them once they are no longer any User/Group's current avatar (no delete racing a render, and
     // re-localization on a transient profile-fetch hiccup no longer thrashes the disk).
+  }
+
+  async upsertForeignUserFromPeerResponse(
+    account: string,
+    domain: string,
+    profile: S2SProfile,
+    peerToken: PeerResponseToken,
+  ): Promise<number> {
+    if (peerToken.domain !== domain) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'peer response token domain does not match foreign user domain',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const data = await this.prepareForeignProfileData(profile);
+    return this.database.db.transaction(async (tx) => {
+      await this.assertPeerResponseWritable(tx, peerToken);
+      const userId = await this.ensureForeignUserInTransaction(
+        tx,
+        account,
+        domain,
+      );
+      await tx
+        .update(tables.user)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(tables.user.id, userId));
+      return userId;
+    });
+  }
+
+  private async prepareForeignProfileData(profile: S2SProfile): Promise<{
+    name: string;
+    bio: string;
+    remoteProfileRev: number;
+    avatar?: string;
+  }> {
+    let newAvatarUrl: string | null = null;
+    if (profile.avatar) {
+      try {
+        newAvatarUrl = await this.upload.saveAvatarFromWire(profile.avatar);
+      } catch {
+        newAvatarUrl = null;
+      }
+    } else {
+      newAvatarUrl = '';
+    }
+    const data: {
+      name: string;
+      bio: string;
+      remoteProfileRev: number;
+      avatar?: string;
+    } = {
+      name: profile.displayName,
+      bio: profile.bio,
+      remoteProfileRev: profile.profileRev,
+    };
+    if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
+    return data;
   }
 
   /**
@@ -5168,6 +5544,7 @@ export class FederationService implements OnModuleDestroy {
       domain: stub.domain,
     };
     try {
+      const peerToken = await this.capturePeerResponseToken(address.domain);
       const rev = await this.fetchRemoteRevision(address);
       if (
         stub.remoteProfileRev !== null &&
@@ -5176,7 +5553,7 @@ export class FederationService implements OnModuleDestroy {
         return; // fresh
       }
       const profile = await this.fetchRemoteUser(address);
-      await this.localizeForeignProfile(userId, profile);
+      await this.localizeForeignProfile(userId, profile, { peerToken });
     } catch {
       // Best-effort: keep the cached profile. The next chat-open retries.
     }

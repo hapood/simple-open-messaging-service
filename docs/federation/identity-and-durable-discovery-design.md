@@ -73,7 +73,7 @@ epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 
 
 `Message.id` 只在生成它的数据库内单调递增：
 
-- S2S 的 `originMessageId` / `afterOriginMessageId` 属于源联邦服务器；
+- S2S 的 `changeId` / `afterChangeId` 属于源联邦服务器为该 peer 分配的全局 change feed；
 - 客户端的 `messageId` / `afterMessageId` 属于客户端当前连接的本地服务器；
 - 一个远端消息落库后会获得新的本地 `Message.id`，不得拿远端 ID 与本地 ID 比较；
 - JavaScript 无法安全表示全部 bigint，因此 JSON 中必须使用 `/^[0-9]+$/` 十进制字符串。
@@ -140,7 +140,7 @@ epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 
 建议 `FederatedPeer.trustLevel` 明确支持：
 
 ```text
-pending -> trusted <-> demoted
+pending --首次 /init--> trusted --传输失败--> demoted --固定身份 + 签名 ping--> trusted
                  \-> blocked
                  \-> identity_lost
 ```
@@ -149,7 +149,7 @@ pending -> trusted <-> demoted
 
 - `pending`：尚未完成首次握手；
 - `trusted`：身份三元组匹配，可处理授权范围内的流量；
-- `demoted`：暂时连接失败，可自动重试；
+- `demoted`：暂时连接失败，可用已固定身份和签名心跳自动恢复，但禁止重新 `/init`；
 - `blocked`：管理员策略阻断，不自动重试；
 - `identity_lost`：domain 返回了与固定身份不一致的服务器，永久停止自动重试和自动 init。
 
@@ -198,6 +198,7 @@ signing key。它不返回 pairwise server ID，因为公开请求没有可靠�
   "identityEpoch": 1,
   "pairwiseServerId": "...value derived for b.example...",
   "rootKeyFingerprint": "sha256:...",
+  "startChangeId": "0",
   "nonce": "base64url...",
   "issuedAt": "2026-08-05T00:00:00.000Z"
 }
@@ -209,6 +210,7 @@ signing key。它不返回 pairwise server ID，因为公开请求没有可靠�
 - `recipientDomain` 等于本机 domain，防止把 A→B 的 pairwise ID 转交给 C；
 - root fingerprint 与 well-known root key 匹配；
 - nonce 未使用且时间在允许窗口内；
+- `startChangeId` 是十进制 bigint 字符串，并被身份声明签名覆盖；
 - 若 peer 已存在，固定三元组必须完全匹配。
 
 首次成功可按现有产品策略自动建立 `trusted`；“自动建立信任”只适用于数据库中从未出现过该
@@ -217,6 +219,11 @@ domain，或管理员刚完成破坏性 reset、因而允许该 domain 作为全
 
 响应返回本机针对 origin 派生的同结构身份声明，并使用本机 active signing key 做 detached
 application signature。不能依赖 TLS 响应本身证明 pairwise payload 来自预期联邦身份。
+
+well-known、HTTP 签名和声明签名的网络验证在事务外完成。验证通过后，接收端在一个数据库事务中
+消费 nonce、固定 `FederatedPeer` 身份、消费 reset reinit 授权、写审计事件，并同时建立
+`FederationServeCursor` 与 `FederationPullCursor`。因此管理 UI 看到 `trustLevel=trusted` 时，两条
+cursor 必然已经存在；任一步失败则全部回滚，不使用额外 initialized flag 或补偿状态。
 
 ### 5.3 重连身份查询
 
@@ -273,39 +280,68 @@ resetAt                 timestamp null
 
 ### 6.3 ThreadAudience
 
-本地用户和远端 peer 共用 thread 可见性索引，避免为每条消息复制大量 recipient 行：
+本地用户和远端 peer 共用“当前访问集合”：
 
 ```text
 id                       bigserial primary key
-targetType               LOCAL_USER | FEDERATED_PEER
-localUserId               integer null
-peerDomain                varchar(63) null
+targetDomain              varchar(63) not null (`local` 或远端 domain)
+localUserId               integer null（仅 targetDomain=`local`）
 threadId                  integer not null
-accessEpoch               integer not null
-visibleFromMessageId      bigint not null
-visibleThroughMessageId   bigint null
+scope                     THREAD | CREATOR
+creatorUserId             integer null
+deliverThroughChangeId    bigint null
 createdAt                 timestamp not null
-endedAt                   timestamp null
 ```
 
 约束：
 
-- `LOCAL_USER` 只能设置 `localUserId`，`FEDERATED_PEER` 只能设置 `peerDomain`；
-- `visibleThroughMessageId IS NULL OR visibleThroughMessageId >= visibleFromMessageId`；
-- 同一 target/thread 的每次重新加好友或重新入群创建新的 `accessEpoch`，不复用旧区间；
-- 重新授权默认从新 epoch 的起点可见，不自动恢复旧 epoch 历史；
+- `targetDomain='local'` 必须设置 `localUserId`，其他 domain 禁止设置；
+- 同一 target/thread 最多一条 THREAD；同一 target/thread/creator 最多一条 CREATOR；
+- 解除好友、退出群聊、被踢，或远端 domain 的最后一个本地群成员离开时物理删除对应行；
+- 重新获得权限时直接重新插入，不保留 thread 级 epoch 或 pull cursor；
+- 同一服务器的群消息缓存由该服务器上的成员共享：仍有其他成员时继续拉取并缓存，重新加入者
+  可以看到服务器已经缓存的历史；
+- `THREAD` 表示当前订阅整个 thread，撤权时物理删除；
+- `CREATOR` 仅允许群 origin 拉取 `creatorUserId` 在该群中的发言。退群系统消息产生 change 后，
+  将其包含式 change ID 写入 `deliverThroughChangeId`；生产端只读取该字段为 null 的 CREATOR，
+  `/missed` 仍允许消费 `changeId <= deliverThroughChangeId`；
+- `remoteHwm >= deliverThroughChangeId` 后可以物理删除已排空的 CREATOR audience；
 - 建议索引：
-  - unique `(targetType, localUserId, threadId, accessEpoch)`（local partial）；
-  - unique `(targetType, peerDomain, threadId, accessEpoch)`（peer partial）；
-  - `(localUserId, endedAt, threadId)`（local partial）；
-  - `(peerDomain, endedAt, threadId)`（peer partial）；
+  - unique `(targetDomain, localUserId, threadId)`（local partial）；
+  - unique `(targetDomain, threadId)`（peer partial）；
+  - unique `(targetDomain, threadId, creatorUserId)`（CREATOR partial）；
+  - `(localUserId, threadId)`（local partial）；
+  - `(targetDomain, threadId)`（peer partial）；
   - `Message(threadId, id)`。
 
-`visibleFromMessageId` 的边界是包含。若建立关系时尚无消息，可在事务中先分配/插入建立关系的
-SYSTEM 消息，并以该消息 ID 作为起点；如果产品不展示建立事件，则使用下一条实际消息的 ID，
-实现时不得用“当前序列值 + 1”猜测未提交 ID。
+### 6.4 Durable discovery change feed
 
-### 6.4 SystemMessageTarget
+`Message.id` 的 PostgreSQL sequence 分配顺序不等于事务提交顺序，不能单独承担可靠 HWM。
+持久发现使用按目标分配、事务内递增的 change ID：
+
+```text
+DiscoveryTarget
+id                       bigserial primary key
+targetDomain             varchar(63) not null
+localUserId              integer null
+allocatedThrough         bigint not null default 0
+
+DiscoveryChange
+targetId                 bigint not null
+changeId                 bigint not null
+audienceId               bigint not null
+threadId                 integer not null
+messageId                bigint not null
+primary key              (targetId, changeId)
+unique                   (targetId, messageId)
+```
+
+消息事务对每个可见目标锁定其 `DiscoveryTarget` 行，递增 `allocatedThrough` 并插入
+`DiscoveryChange`。该字段只负责源端事务型 change ID 分配和行锁，不是接收端 HWM。
+`audienceId` 将 change 固定到当时有效的访问授权；删除 audience 会级联删除该授权尚未消费的
+change。重新插入 audience 后只为此后新消息产生 change。
+
+### 6.5 SystemMessageTarget
 
 部分关系事件只应让特定成员/peer 看见，不能仅依靠 thread 级 audience：
 
@@ -317,25 +353,50 @@ peerDomain               varchar(63) null
 primary key              (messageId, target identity)
 ```
 
-普通消息没有 target 行，按 `ThreadAudience` 判断；SYSTEM 消息存在 target 行时，必须同时满足
-audience 区间和 target 命中。
+普通消息没有 target 行，按当前 `ThreadAudience` 判断；SYSTEM 消息存在 target 行时，必须同时
+满足当前 audience 和 target 命中。
 
-### 6.5 FederationPullCursor
+### 6.6 FederationPullCursor
 
 ```text
 peerDomain               varchar(63) primary key
+startChangeId            bigint not null
 remoteHwm                bigint not null default 0
-lastAdvertisedHwm        bigint not null default 0
 updatedAt                timestamp not null
 ```
 
-`remoteHwm` 表示已经完整拉取并在本地事务中应用的远端 `Message.id`。收到 push/SSE 只更新
-`lastAdvertisedHwm` 或安排任务，绝不能推进 `remoteHwm`。
+双方首次可信互联时交换各自当前 `DiscoveryTarget.allocatedThrough`，作为不可变
+`startChangeId`。接收端以它初始化 `remoteHwm`，源端拒绝任何 `afterChangeId < startChangeId`，
+从协议层禁止读取建立信任前的历史。
+
+`remoteHwm` 表示已经完整拉取并在本地事务中应用的远端 change ID。收到 push/SSE 只在进程内合并
+最新 wake-up HWM 并安排任务，绝不能推进 `remoteHwm`，也不持久化 hint；断线恢复后双方重新发送或
+查询当前 HWM。每个 peer 只有这一条全局 cursor；拉取任务使用按 peer 派生的 PostgreSQL 事务级
+advisory lock 作为数据库级 pull 锁，不维护任何 thread 级 pull seq/cursor。
+
+源端另存一条 `FederationServeCursor`：
+
+```text
+peerDomain               varchar(63) primary key
+targetId                 bigint unique not null
+startChangeId            bigint not null
+acknowledgedThrough      bigint not null
+lastServedThrough        bigint not null
+```
+
+`/missed?after=X` 在数据库事务中以 `FOR UPDATE NOWAIT` 锁定该行。同一 peer 已有请求执行时，
+后来的请求立即返回 `FEDERATION_MISSED_CONCURRENT`，不排队。X 必须满足
+`startChangeId <= X`、`acknowledgedThrough <= X` 且 `X <= allocatedThrough`：禁止回退和伪造超前
+ACK，但允许调用方跳过已经确认落库的区间。页面扫描成功后，同一事务将
+`acknowledgedThrough` 设为 X，并记录新的 `lastServedThrough`；扫描或响应组装失败则全部回滚。
+初始化时三个水位均等于 `startChangeId`。该确认水位同时为 CREATOR audience 的排空 GC 提供依据。
+cursor 被拒绝时，错误 `data` 返回十进制字符串形式的 `requestedCursor`、`availableCursor`、
+`startChangeId` 和 `allocatedThrough`；调用方使用 `availableCursor` 恢复请求，不使用 JSON number。
 
 如果拉取结果允许因无权限而跳过 ID，响应必须返回服务端扫描水位 `scannedThrough`；客户端只有在
 整页成功提交后才将 `remoteHwm` 推进到该值。否则无权限行造成的 ID 空洞会导致永久重复扫描。
 
-### 6.6 远端消息去重
+### 6.7 远端消息去重
 
 现有 `originSeq` 在改造期间仍可用于旧协议兼容和 thread 内语义，但新 change feed 必须持久保存：
 
@@ -356,23 +417,19 @@ unique (originDomain, originMessageId)
 ```json
 {
   "version": 1,
-  "event": "friend_deleted",
-  "relationshipEpoch": 3,
+  "event": "group_member_joined",
+  "memberRevision": 18,
   "actor": { "account": "alice", "domain": "a.example" },
   "subject": { "account": "bob", "domain": "b.example" }
 }
 ```
 
-首批事件：
+首批事件是群 meta 的可显示提示，例如 `group_member_joined`、成员/角色/管理员变更。事件携带稳定
+group address、`memberRevision`、actor 和 subject；它不是权限事实，接收端以群 origin 的统一
+thread access/meta 查询结果为准。
 
-- `friend_deleted`；
-- `group_member_joined`；
-- `group_member_left`（本人主动退出）；
-- `group_member_removed`（被 owner/admin 移除）；
-- `group_dissolved`。
-
-群事件携带稳定 group address、`membershipEpoch`、actor 和 subject。客户端根据当前用户与
-actor/subject 的关系显示“你删除了对方”“对方删除了你”“你退出了群聊”“你被移出群聊”等文案。
+删除好友、本人退群或被踢不发送独立终止 change。源端删除对应 `ThreadAudience` 后自然停止产生
+后续消息 change；仍显示旧 thread 的客户端立即打开本地缓存，服务器在后台查询权威状态并异步修正。
 
 拉黑、屏蔽、重复删除、好友不存在及普通权限失败不创建 SYSTEM 消息：按既有幂等成功或 toast
 处理。消息撤回/举报继续使用专门的删除模型，不改造成关系 SYSTEM 消息。
@@ -388,26 +445,25 @@ SYSTEM 消息只能由服务端创建，并在后端和客户端同时强制：
 - 不可回复/引用；
 - 多选模式不可选中。
 
-### 7.3 epoch 防止旧事件破坏新关系
+### 7.3 权威 thread access 查询
 
-每次重新加好友或重新入群都会增加对应 epoch。收到 SYSTEM 事件时：
+统一查询不传 thread type：`localAccount` 以 `!` 开头表示群聊，否则表示 P2P。统一返回
+`active`、`revision`、`role`、`reason`；P2P active 时 `role` 固定为 `MEMBER`。P2P 查询用户
+home server，群聊查询 group origin。
 
-- 事件 epoch 等于当前 active epoch：应用状态变化；
-- 事件 epoch 小于当前 epoch：只按需要保存历史消息，不改变当前关系；
-- 事件 epoch 大于预期：暂停该关系流并触发定向 reconciliation，不猜测中间状态。
-
-因此旧的 `friend_deleted(epoch=1)` 可以与重新加好友后的新关系及未来
-`friend_deleted(epoch=2)` 同时存在，且不会误删 epoch 2。
+查询发出时捕获 relationship/meta revision、peer `resetGeneration` 和 thread
+`federationVersion`。写入迟到响应前在同一事务重新比较；任何一项变化都丢弃响应。有效响应在事务
+内更新 participant/audience/ThreadRevision，提交后通过 SSE 异步修正客户端，不阻塞打开本地缓存。
 
 ## 8. 持久 change feed 与 missed API
 
 ### 8.1 S2S HWM
 
-提供一个轻量查询，返回调用 peer 当前可访问集合中的最大源端 `Message.id`：
+提供一个轻量查询，返回为调用 peer 已事务分配的全局 change ID：
 
 ```text
-GET /api/v1/s2s/messages/hwm
-200 { "latestMessageId": "92831" }
+GET /api/v1/s2s/discovery-hwm
+200 { "allocatedThrough": "92831" }
 ```
 
 没有可访问消息时返回 `"0"`。值仅用于判断“可能有变化”，不代表调用方已经同步。
@@ -415,32 +471,34 @@ GET /api/v1/s2s/messages/hwm
 ### 8.2 S2S missed
 
 ```text
-GET /api/v1/s2s/messages/missed?afterOriginMessageId=90000&take=100
+GET /api/v1/s2s/missed?after=90000&take=100
 ```
 
 响应示意：
 
 ```json
 {
-  "items": [],
+  "messages": [],
   "scannedThrough": "90100",
-  "latestMessageId": "92831",
+  "allocatedThrough": "92831",
   "hasMore": true
 }
 ```
 
 查询语义：
 
-1. 以请求开始时的可见 HWM 作为本次响应上界；
-2. 扫描 `Message.id > afterOriginMessageId`，按 ID 升序；
-3. join `ThreadAudience` 的 peer 可见区间，并应用可选 `SystemMessageTarget`；
-4. 返回消息携带源端 `originMessageId`（即服务端本地 `Message.id`）；
-5. `scannedThrough` 是本页已经检查到的最大源端 ID，即使其中部分行因不可见而未返回；
+1. 以请求开始时的 `allocatedThrough` 作为本次响应上界；
+2. 扫描该 peer 的 `DiscoveryChange.changeId > afterChangeId`，按 change ID 升序；
+3. change 必须仍关联当前存在的 `ThreadAudience`，并应用可选 `SystemMessageTarget`；
+4. 直接返回实际消息正文和附件描述，媒体二进制仍按需下载；
+5. `scannedThrough` 是本页已经完整检查到的最大 change ID，即使部分 change 已级联删除；
 6. `hasMore` 表示固定上界内仍有未扫描 ID；
-7. 媒体正文只返回元数据/digest，二进制继续由 `get_file` 获取。
+7. 不再二次调用任何 thread 级消息 pull，也不维护 thread 级 pull seq/cursor。
 
-默认 `take=100`，最大 `take=500`。服务端可因响应体达到 4 MiB 提前结束页面，但必须准确返回
-`scannedThrough` 和 `hasMore`。实现可使用 `take+1` 或基于扫描窗口的等价方式判断后续数据。
+默认 `take=100`，硬上限 `take=200`，以限制 NAS 上一次事务的行数和响应组装成本。页面事务设置
+10 秒 `statement_timeout`、15 秒 `idle_in_transaction_session_timeout`，应用层总截止时间为 15 秒；
+超时或响应组装失败都回滚 cursor 更新。页面不足 `take` 时，`scannedThrough` 直接推进到锁内固定的
+`allocatedThrough`，因此 audience 删除造成的 change ID 空洞不会被永久重复扫描。
 
 ### 8.3 轻量 push/SSE
 
@@ -448,12 +506,15 @@ GET /api/v1/s2s/messages/missed?afterOriginMessageId=90000&take=100
 
 ```json
 {
-  "originDomain": "a.example",
-  "latestMessageId": "92831"
+  "origin": "a.example",
+  "allocatedThrough": "92831"
 }
 ```
 
-接收者将其视为 wake-up signal，随后调用 missed。push 丢失由定时 HWM reconciliation 恢复。
+发送路径为 `POST /api/v1/s2s/discovery-hwm`。接收者校验 `origin` 等于签名域，仅在进程内合并该
+水位并将其视为 wake-up signal，随后调用 missed；它不写入 pull cursor。push 失败按普通 S2S
+传输失败将 peer 降级。签名心跳恢复后，双方重新 push 并查询当前 HWM。push 丢失也可由定时 HWM
+reconciliation 恢复。
 建议 trusted peer 在建立连接、重连后立即查询 HWM，在线时按 NAS 友好的低频周期再次查询；精确
 周期作为部署配置，不属于 wire contract。
 
@@ -462,11 +523,12 @@ GET /api/v1/s2s/messages/missed?afterOriginMessageId=90000&take=100
 客户端使用本地消息 ID 调用等价增量接口：
 
 ```text
-GET/POST client missed(afterMessageId: decimal-string, take: 100)
+GET/POST client missed(afterChangeId: decimal-string, take: 100)
 ```
 
-响应同样提供 `scannedThrough`、`latestMessageId`、`hasMore`。SSE `NEW_MESSAGE` 只携带本地
-`latestMessageId` 用于唤醒。客户端在一个页面完整写入其本地存储后才持久推进 cursor。
+响应提供实际消息正文和附件描述，以及 `scannedThrough`、`allocatedThrough`、`hasMore`；媒体
+二进制仍按需下载。SSE `NEW_MESSAGE` 只携带最新 change ID 用于唤醒。客户端在一个页面完整写入
+其本地存储后才持久推进 cursor。
 
 客户端 thread revision 仍用于 thread 列表 ADD/DELETE 变化；消息 ID missed 负责发现消息，二者
 不能互相替代。
@@ -477,24 +539,22 @@ GET/POST client missed(afterMessageId: decimal-string, take: 100)
 
 以下操作必须在同一数据库事务完成：
 
-1. 校验当前 relationship/membership epoch；
+1. 校验当前 relationship/membership revision；
 2. 更新好友或群成员状态；
-3. 插入 SYSTEM `Message`；
-4. 插入所需 `SystemMessageTarget`；
-5. 关闭旧 `ThreadAudience`，且 `visibleThroughMessageId` 包含终止 SYSTEM 消息；
-6. 写入/更新受影响用户的 `ThreadRevision`；
-7. 提交后才发送 SSE 和联邦轻量 push。
+3. 物理删除不再有效的 `ThreadAudience`；
+4. 写入/更新受影响用户的 `ThreadRevision`；
+5. 提交后才发送 SSE。
 
-事务失败时所有状态回滚，不允许出现“关系已删除但终止消息未进入 change feed”。
+删除好友、被踢或退群不发送独立终止 change；删除 audience 后自然停止产生后续消息 change。
 
 ### 9.2 远端 missed 页面
 
 一个响应页面作为一个本地事务处理：
 
 1. 验证响应身份和页面边界；
-2. 按 `(originDomain, originMessageId)` 去重插入消息；
-3. 应用 SYSTEM epoch 状态机；
-4. 更新 audience、target 和 ThreadRevision；
+2. 按 `(originDomain, originMessageId)` 去重插入响应中的实际消息正文和附件描述；
+3. 更新本地消息缓存；
+4. 应用有效的权威状态修正；
 5. 将 `FederationPullCursor.remoteHwm` 推进到 `scannedThrough`；
 6. 提交后才发本地 SSE。
 
@@ -546,9 +606,9 @@ reset 完成后：
 - reset 与 init 保持为两个独立动作：reset 完成后留下一个待消费的重新初始化许可；随后可由管理员
   主动发起握手，或由正常客户端握手流程触发 `/init`；
 - 第一次成功 `/init` 固定全新身份后立即消费该许可。同 domain 被视为全新 peer，但不能恢复任何
-  旧用户 ID、关系 epoch、thread audience、
+  旧用户 ID、关系状态、thread audience、
   消息访问权、邀请或群成员资格；
-- 必须由用户重新加好友、重新邀请入群，产生新的关系与 membership epoch；
+- 必须由用户重新加好友、重新邀请入群，重新建立当前 audience；
 - 旧授权永远不能仅凭 domain、account 名称相同而继承。
 
 ## 11. 错误与重试分类
@@ -561,7 +621,7 @@ reset 完成后：
 - `FEDERATION_IDENTITY_PROOF_INVALID`：401，不直接判 identity lost；
 - `FEDERATION_CURSOR_INVALID`：400；
 - `FEDERATION_CURSOR_AHEAD`：409，调用方不得自动倒退 cursor；
-- `FEDERATION_RELATIONSHIP_EPOCH_GAP`：409，触发定向 reconciliation。
+- `FEDERATION_RELATIONSHIP_REVISION_GAP`：409，触发定向 reconciliation。
 
 所有错误响应不得回显私钥、HMAC 派生材料或其他 peer 的 pairwise ID。
 
@@ -572,7 +632,7 @@ reset 完成后：
 1. v1 身份文件、本机身份锚点和启动保护；
 2. peer identity 字段、init/identity wire contract 和状态机；
 3. audience/cursor/origin ID 数据库迁移和回填；
-4. SYSTEM 消息类型、epoch 与本地关系事务；
+4. SYSTEM 消息类型、权威 revision 与本地关系事务；
 5. S2S HWM/missed、持久拉取游标和轻量 wake-up；
 6. 客户端 missed 与 SYSTEM 交互限制；
 7. identity reset 作业和管理端；
@@ -586,8 +646,8 @@ reset 完成后：
 - 同 domain 换服务器或换 root key 后进入 `identity_lost`，不会自动 init；
 - 已固定 `keyId`、公钥改变或发布第二个 key 后进入 `identity_lost`；
 - 密钥文件丢失但数据库有历史时不自动生成；
-- 删除好友/退出/踢人事件与 audience 终点在同一事务；
-- 旧 epoch 的延迟删除事件不破坏重新建立的关系；
+- 删除好友/退出/踢人与 audience 物理删除在同一事务；
+- 迟到的权威查询结果因 revision/resetGeneration/federationVersion 不匹配而被丢弃；
 - SYSTEM 消息无法由客户端伪造、撤回、举报、转发、引用或多选；
 - reset 不影响其他 peer 或纯本地 thread，且同 domain 新节点不继承旧授权。
 
@@ -597,10 +657,10 @@ reset 完成后：
 
 - 当前 `/s2s/init` 对同 domain 的新 well-known key 验签成功后会自动 `markTrusted`；新设计禁止；
 - 当前 `KeypairService` 在文件缺失时总会生成新 key；有联邦历史时新设计禁止；
-- 当前 `FederationBufferService` 是进程内 hint；新设计以持久 audience + Message ID feed 保证发现；
-- 当前 S2S 增量主要使用 `(thread, author, originSeq)`；新 missed feed 使用源端 `Message.id`；
-- 当前好友删除没有权威 S2S 终止事件、群 leave 依赖 hint/410；新设计使用持久 SYSTEM 消息；
-- 当前客户端依赖 thread revision + per-thread seq 发现缺口；新设计增加服务器级本地 Message ID missed。
+- 当前 `FederationBufferService` 是进程内 hint；新设计以当前 audience + 持久 change feed 保证发现；
+- 当前 S2S 增量主要使用 `(thread, author, originSeq)`；新 missed feed 使用每个 peer 的全局 change ID；
+- 当前好友删除和群 leave 依赖 hint/410；新设计通过权威 thread access 查询异步确认；
+- 当前客户端依赖 thread revision + per-thread seq 发现缺口；新设计增加服务器级全局 change missed。
 
 兼容窗口内可保留旧接口供旧客户端/旧 peer 使用，但旧路径不得继续被宣称具有重启后的完整性；
 新 capability 未协商成功前，不得假设对端支持 identity pinning 或 durable missed。

@@ -1,4 +1,5 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 
 /** Sliding window: only failures within this span count; older ones auto-age-out so a legitimate user's
  *  occasional typos never accumulate into a permanent ban. */
@@ -67,23 +68,11 @@ export interface BanView {
  * remain deferred P3 hardening.
  */
 @Injectable()
-export class BruteForceService implements OnModuleDestroy {
+export class BruteForceService {
   // `${dimension}:${value}` → recent failure timestamps within WINDOW_MS
   private readonly _failLog = new Map<string, number[]>();
   // `${dimension}:${value}` → ban deadline (ms epoch)
   private readonly _banned = new Map<string, number>();
-  private readonly _timer: NodeJS.Timeout;
-
-  constructor() {
-    this._timer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
-    // A background reclamation sweep must never keep the process alive on its own — unref so a graceful
-    // shutdown / test run exits promptly; OnModuleDestroy clears it on normal module teardown.
-    this._timer.unref();
-  }
-
-  onModuleDestroy(): void {
-    clearInterval(this._timer);
-  }
 
   /** Record one failure for (dimension, value) under the given ascending steps; return the ban deadline iff a
    *  tier is newly crossed this call (else undefined). Only failures within {@link WINDOW_MS} are counted. */
@@ -170,8 +159,10 @@ export class BruteForceService implements OnModuleDestroy {
   }
 
   /** Periodic reclamation: drop fully-aged failure logs and expired bans so a flood of distinct keys can't
-   *  bloat the maps. (The public methods also reclaim lazily; this bounds memory between calls.) */
-  private cleanup(): void {
+   *  bloat the maps. (The public methods also reclaim lazily; this bounds memory between calls.) Registered
+   *  with @nestjs/schedule; the framework clears it on shutdown. */
+  @Interval(CLEANUP_INTERVAL_MS)
+  cleanup(): void {
     const now = Date.now();
     for (const [key, list] of this._failLog) {
       const fresh = list.filter((t) => now - t < WINDOW_MS);

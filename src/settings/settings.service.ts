@@ -1,9 +1,5 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleInit,
-  OnModuleDestroy,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import webpush from 'web-push';
@@ -65,7 +61,7 @@ type VapidEntry = { value: VapidConfig | null; fetchedAt: number };
  * the keypair breaks existing subscriptions → clients must re-subscribe.
  */
 @Injectable()
-export class SettingsService implements OnModuleInit, OnModuleDestroy {
+export class SettingsService implements OnModuleInit {
   private readonly logger = new Logger(SettingsService.name);
   private entry: VapidEntry = { value: null, fetchedAt: 0 };
   /** Lazily-loaded Firebase client config from disk (see loadFirebaseClientConfig). `undefined` = not yet
@@ -73,7 +69,6 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
    *  for the process lifetime — restart to pick up a changed file (same model as GOOGLE_APPLICATION_CREDENTIALS). */
   private fbFile: FirebaseClientConfig | null | undefined;
   private inflight: Promise<void> | null = null;
-  private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly database: DatabaseService) {}
 
@@ -89,15 +84,15 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     // (tiny) sync read happens here, at startup — the admin status + public serve paths then never touch
     // the filesystem. A missing/malformed file logs + leaves FCM unconfigured (see loadFirebaseClientConfig).
     this.fbFile = this.loadFirebaseClientConfig();
-    this.timer = setInterval(() => {
-      this.refresh().catch((e) =>
-        this.logger.debug(`settings refresh failed: ${(e as Error).message}`),
-      );
-    }, TTL_MS);
   }
 
-  onModuleDestroy(): void {
-    if (this.timer) clearInterval(this.timer);
+  /** Stale-while-revalidate refresh of the VAPID cache (30s). Registered with @nestjs/schedule; cleared
+   *  on shutdown. The eager first load still happens in onModuleInit. */
+  @Interval(TTL_MS)
+  periodicRefresh(): void {
+    this.refresh().catch((e) =>
+      this.logger.debug(`settings refresh failed: ${(e as Error).message}`),
+    );
   }
 
   /** The current VAPID config, or null when Web Push is not configured. SYNC — never blocks on IO; may

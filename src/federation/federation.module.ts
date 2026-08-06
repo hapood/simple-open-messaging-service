@@ -18,6 +18,10 @@ import { MessageModule } from '../message/message.module.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 import { FederationIdentityService } from './federation-identity.service.js';
+import { FederationCursorService } from './federation-cursor.service.js';
+import { FederationInitService } from './federation-init.service.js';
+import { FederationMissedService } from './federation-missed.service.js';
+import { FederationMissedPullService } from './federation-missed-pull.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -54,6 +58,10 @@ import { FederationIdentityService } from './federation-identity.service.js';
     FederationBufferService,
     FederationReconnectService,
     FederationIdentityService,
+    FederationCursorService,
+    FederationInitService,
+    FederationMissedService,
+    FederationMissedPullService,
   ],
   exports: [
     KeypairService,
@@ -62,6 +70,10 @@ import { FederationIdentityService } from './federation-identity.service.js';
     FederationService,
     FederationBufferService,
     FederationIdentityService,
+    FederationCursorService,
+    FederationInitService,
+    FederationMissedService,
+    FederationMissedPullService,
   ],
 })
 export class FederationModule {}

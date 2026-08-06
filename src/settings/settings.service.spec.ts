@@ -48,7 +48,8 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     else process.env.FIREBASE_CLIENT_CONFIG = savedEnv;
   });
 
-  /** Boot a fresh service (runs onModuleInit → the eager disk read) and return it. Caller calls onModuleDestroy. */
+  /** Boot a fresh service (runs onModuleInit → the eager disk read) and return it. No teardown needed:
+   *  @Interval only schedules inside a Nest context, and this direct instantiation starts no timer. */
   async function boot(): Promise<SettingsService> {
     const s = new SettingsService(databaseStub);
     await s.onModuleInit();
@@ -66,7 +67,6 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
       appId: '1:987654321098:android:0123456789abcdef',
       gcmSenderId: '987654321098',
     });
-    s.onModuleDestroy();
   });
 
   it('is unconfigured (null) when the file is missing', async () => {
@@ -74,7 +74,6 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     const s = await boot();
     expect(s.getFirebaseConfig()).toBeNull();
     expect(s.firebaseClientConfigured).toBe(false);
-    s.onModuleDestroy();
   });
 
   it('is unconfigured (null) when the file is malformed', async () => {
@@ -83,7 +82,6 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     process.env.FIREBASE_CLIENT_CONFIG = p;
     const s = await boot();
     expect(s.getFirebaseConfig()).toBeNull();
-    s.onModuleDestroy();
   });
 
   it('caches the boot read — a later file change is not picked up without a restart', async () => {
@@ -96,6 +94,5 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     // re-read on each getFirebaseConfig call).
     writeFileSync(p, '{garbage');
     expect(s.getFirebaseConfig()).not.toBeNull();
-    s.onModuleDestroy();
   });
 });

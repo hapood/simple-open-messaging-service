@@ -118,6 +118,8 @@ export enum BusinessCode {
   FEDERATION_IDENTITY_MISMATCH = 50015, // a known domain presented a different pinned server identity (409)
   FEDERATION_PEER_IDENTITY_LOST = 50016, // peer identity is permanently locked pending destructive reset (423)
   FEDERATION_IDENTITY_PROOF_INVALID = 50017, // malformed, stale, replayed, or incorrectly signed identity proof (401)
+  FEDERATION_MISSED_CONCURRENT = 50018, // another /missed request for this peer is still running (409); retry after it completes
+  FEDERATION_MISSED_CURSOR_INVALID = 50019, // /missed cursor moved backwards or beyond the source HWM (409); data returns the usable cursor
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)

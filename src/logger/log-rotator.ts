@@ -1,31 +1,39 @@
 import {
-  existsSync,
   mkdirSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import pino from 'pino';
-import type { SonicBoom } from 'sonic-boom';
+import { createStream, type RotatingFileStream } from 'rotating-file-stream';
 import { optionalIntEnv } from '../common/env.js';
 
 /**
- * Rotating file destination for pino, built on SonicBoom (pino.destination). Rotates the stable
- * `soms.log` to a date-stamped archive on (a) a day boundary and (b) when it exceeds
- * LOG_FILE_MAX_SIZE, then reopens the stable file via SonicBoom.reopen() (which re-opens the same
- * path fresh). Archives older than LOG_FILE_RETENTION days are pruned.
+ * Rotating file destination for pino, built on `rotating-file-stream` (rfs — a self-described "logrotate
+ * alternative"). rfs is a plain main-thread `stream.Writable` (NOT a worker transport), so it composes
+ * with the in-process pino multistream exactly like the old SonicBoom destination did — the multistream
+ * still fans out to stdout, this file, and the live SSE LogStreamStore on the main thread.
  *
- * Why not pino-roll: pino-roll is a pino *transport* (runs in a worker_thread). Our pipeline is a
+ * Why rfs and not pino-roll: pino-roll is a pino *transport* (runs in a worker_thread). Our pipeline is a
  * pino multistream on the main thread so the in-process LogStreamStore can fan out to live SSE
- * connections — a worker cannot reach main-thread JS objects. A transport cannot share that
- * multistream, so rotation is done here, in-process, on the same SonicBoom the multistream writes to.
+ * connections — a worker cannot reach main-thread JS objects. rfs, being a plain Writable, plugs into that
+ * multistream and lets a vetted library own the hard part of rotation (atomic rename/reopen, filename
+ * uniqueness, size+interval triggers) instead of hand-rolling it.
  *
- * SonicBoom writes are async (non-blocking libuv I/O) so the main thread is never blocked on
- * write(2). A process 'exit' hook flushes synchronously so no buffered lines are lost on hard exit
- * (this app does not call enableShutdownHooks, so onModuleDestroy is NOT guaranteed on signal — the
- * exit hook is the reliable flush point).
+ * Naming (see {@link fileName}): the current file is always the stable {@link CURRENT_LOG_FILE}
+ * (`soms.log`); each rotation renames it to a UTC-dated archive `soms-YYYY-MM-DD.log`, with a `.N` suffix
+ * for same-day size-based rotations. This preserves the exact on-disk layout the history viewer
+ * enumerates, so {@link listLogFiles} is unchanged.
+ *
+ * Retention is still time-based (prune archives older than {@link RETENTION_DAYS} by mtime) — rfs only
+ * offers count/size retention, not age. {@link pruneOld} runs once at boot and on each rfs `rotated`
+ * event, so no polling timer is needed.
+ *
+ * Durability note: SonicBoom exposed a synchronous `flushSync` we once called on `process('exit')`; rfs is
+ * a normal async Writable with no sync flush, so on a hard exit a sub-second of buffered lines may not
+ * reach this file. That is an acceptable trade — the multistream also writes stdout, which Docker captures
+ * (the durable record), and adopting rfs removes a large surface of bespoke rotation logic. The app does
+ * not call `enableShutdownHooks`, so graceful drain hooks would not help on SIGTERM anyway.
  */
 
 // Conventional fixed location (NOT operator-facing config): <cwd>/data/logs. In the Docker image
@@ -34,32 +42,42 @@ import { optionalIntEnv } from '../common/env.js';
 // ./data/logs. The LOG_DIR env override is kept ONLY as an internal/test escape hatch (test/setup-env
 // redirects forks to a tmpdir) — operators never need to set it.
 const LOG_DIR = process.env.LOG_DIR ?? join(process.cwd(), 'data', 'logs');
-const MAX_SIZE = optionalIntEnv('LOG_FILE_MAX_SIZE', 50 * 1024 * 1024); // 50 MB
+const MAX_SIZE = optionalIntEnv('LOG_FILE_MAX_SIZE', 50 * 1024 * 1024); // 50 MB (bytes; rfs wants a unit string)
 const RETENTION_DAYS = optionalIntEnv('LOG_FILE_RETENTION', 7);
-const CHECK_INTERVAL_MS = 30_000;
 const ARCHIVE_PREFIX = 'soms-';
 const ARCHIVE_SUFFIX = '.log';
+const CURRENT_BASENAME = 'soms.log';
 
-/** The stable current-day log path; the multistream always writes here, rotation renames it away. */
-export const CURRENT_LOG_FILE = join(LOG_DIR, 'soms.log');
+/** The stable current-day log path; rfs always writes here, rotation renames it away to a dated archive. */
+export const CURRENT_LOG_FILE = join(LOG_DIR, CURRENT_BASENAME);
 
-/** Tracked across checks so a day rollover is detected by string comparison, not just by file mtime. */
-let currentDay = new Date().toISOString().slice(0, 10);
+const pad = (n: number): string => (n < 10 ? `0${n}` : `${n}`);
 
 /**
- * Build the archive filename for a rotation: soms-YYYY-MM-DD.log, with a `.N` suffix when the same-day
- * name already exists (multiple size-based rotations within one day). Uses the process start day as the
- * stamp baseline; the actual day string is whatever `currentDay` was set to before rotation.
+ * rfs file-name generator. rfs invokes it with a falsy `time` to obtain the *not-rotated* (current) file
+ * name — we keep that stable as {@link CURRENT_BASENAME} so the live writer and the history viewer agree
+ * on the current path. On rotation it passes the period boundary (a `Date`, because
+ * `intervalBoundary`+`intervalUTC` are set) plus an `index` for within-period size rotations, which we fold
+ * into a `.N` suffix to guarantee uniqueness without colliding with the day's first archive.
  */
-function archiveName(): string {
-  const base = join(LOG_DIR, `${ARCHIVE_PREFIX}${currentDay}${ARCHIVE_SUFFIX}`);
-  if (!existsSync(base)) return base;
-  let n = 1;
-  for (;;) {
-    const candidate = join(LOG_DIR, `${ARCHIVE_PREFIX}${currentDay}.${n}${ARCHIVE_SUFFIX}`);
-    if (!existsSync(candidate)) return candidate;
-    n++;
-  }
+function fileName(time: number | Date, index = 0): string {
+  if (!time) return CURRENT_BASENAME;
+  const d = time instanceof Date ? time : new Date(time);
+  const ymd = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  return index > 0
+    ? `${ARCHIVE_PREFIX}${ymd}.${index}${ARCHIVE_SUFFIX}`
+    : `${ARCHIVE_PREFIX}${ymd}${ARCHIVE_SUFFIX}`;
+}
+
+/** Format a byte count as the unit-string rfs expects (`size` option), picking the largest whole unit. */
+function rfsSize(bytes: number): string {
+  const GB = 1024 ** 3;
+  const MB = 1024 ** 2;
+  const KB = 1024;
+  if (bytes >= GB) return `${Math.floor(bytes / GB)}G`;
+  if (bytes >= MB) return `${Math.floor(bytes / MB)}M`;
+  if (bytes >= KB) return `${Math.floor(bytes / KB)}K`;
+  return `${bytes}B`;
 }
 
 /** Delete archives whose mtime is older than RETENTION_DAYS. Never touches the current soms.log. */
@@ -82,73 +100,35 @@ function pruneOld(): void {
   }
 }
 
-/** Rotate the current file: flush, rename to a dated archive, reopen the stable path, prune. No-op on
- *  the rename if the current file is absent (e.g. a fresh boot with no logs yet). */
-function rotate(dest: SonicBoom): void {
-  try {
-    dest.flushSync();
-  } catch {
-    /* ignore */
-  }
-  if (existsSync(CURRENT_LOG_FILE)) {
-    try {
-      renameSync(CURRENT_LOG_FILE, archiveName());
-    } catch {
-      // If rename fails (e.g. cross-device), keep writing the current file rather than losing logs.
-      return;
-    }
-  }
-  try {
-    dest.reopen();
-  } catch {
-    /* ignore */
-  }
-  pruneOld();
-}
-
 /**
- * Open the rotating SonicBoom destination and start the rotation timer. The returned SonicBoom is
- * handed to pino's multistream as one of its streams. mkdirSync guarantees the dir exists regardless
- * of the SonicBoom `mkdir` option (belt and suspenders across pino versions).
+ * Open the rotating rfs destination and hand it to pino's multistream as one of its streams. mkdirSync
+ * guarantees the dir exists regardless of rfs's own path handling (belt and suspenders). Retention is
+ * pruned once here and on each `rotated` event — no polling timer.
  */
-export function openRotatingDestination(): SonicBoom {
+export function openRotatingDestination(): RotatingFileStream {
   mkdirSync(LOG_DIR, { recursive: true });
 
-  const dest = pino.destination({
-    dest: CURRENT_LOG_FILE,
-    mkdir: true,
-    sync: false,
-    append: true, // a hard restart must not truncate the current day's log
-  }) as SonicBoom;
-
-  // Periodic rotation check: day boundary OR size overrun.
-  const timer = setInterval(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const dayRolled = today !== currentDay;
-    let sizeOver = false;
-    try {
-      sizeOver = existsSync(CURRENT_LOG_FILE) && statSync(CURRENT_LOG_FILE).size >= MAX_SIZE;
-    } catch {
-      /* ignore */
-    }
-    if (dayRolled || sizeOver) {
-      currentDay = today;
-      rotate(dest);
-    }
-  }, CHECK_INTERVAL_MS);
-  timer.unref();
-
-  // Flush on process exit so async-buffered lines are not lost (no enableShutdownHooks in this app).
-  process.on('exit', () => {
-    try {
-      dest.flushSync();
-    } catch {
-      /* ignore */
-    }
+  const stream = createStream(fileName, {
+    size: rfsSize(MAX_SIZE), // rotate when the current file exceeds MAX_SIZE
+    interval: '1d', // …and on each UTC day boundary
+    intervalBoundary: true, // generator `time` = period lower boundary (deterministic day), not rotation moment
+    intervalUTC: true, // boundaries in UTC (matches the old toISOString day stamp)
+    initialRotation: true, // if the current file is already oversized at boot, rotate it now
+    path: LOG_DIR,
   });
 
+  // A logger must never crash its own sink: rfs 'warning' is non-blocking (rename race, history hiccup),
+  // 'error' is fatal — both go to stderr and are swallowed.
+  stream.on('warning', (e: Error) =>
+    process.stderr.write(`[log-rotator] rotation warning: ${e.message}\n`),
+  );
+  stream.on('error', (e: Error) =>
+    process.stderr.write(`[log-rotator] rotation error: ${e.message}\n`),
+  );
+  stream.on('rotated', () => pruneOld());
+
   pruneOld();
-  return dest;
+  return stream;
 }
 
 /** Enumerate log files for the history viewer: the current file first, then archives newest-first by

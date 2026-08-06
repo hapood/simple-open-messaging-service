@@ -80,6 +80,40 @@ describe('FederationIdentityService', () => {
     ).toThrow(BusinessException);
   });
 
+  it('signs the init startChangeId and requires it only for /init claims', () => {
+    const { service, publicKey } = makeService();
+    const signed = service.signClaim(
+      service.createClaim('peer.example', 'n'.repeat(24), 42n),
+    );
+    expect(
+      service.validateClaim(
+        signed,
+        'local.example',
+        'peer.example',
+        true,
+      ).startChangeId,
+    ).toBe('42');
+
+    expect(() =>
+      service.validateClaim(
+        service.createClaim('peer.example', 'n'.repeat(24)),
+        'local.example',
+        'peer.example',
+        true,
+      ),
+    ).toThrow(BusinessException);
+
+    expect(() =>
+      service.verifySignedClaim(
+        { ...signed, startChangeId: '43' },
+        'local.example',
+        'peer.example',
+        'n'.repeat(24),
+        publicKey,
+      ),
+    ).toThrow(BusinessException);
+  });
+
   it('rejects stale identity claims', () => {
     const { service } = makeService();
     const claim = service.createClaim('peer.example', 'n'.repeat(24));

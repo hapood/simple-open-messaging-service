@@ -21,6 +21,7 @@ import {
 import { KeypairService } from './keypair.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
+import { FederationInitService } from './federation-init.service.js';
 
 @Public()
 @Raw()
@@ -33,6 +34,7 @@ export class S2sInitController {
     private readonly discovery: DiscoveryService,
     private readonly identity: FederationIdentityService,
     private readonly keypair: KeypairService,
+    private readonly federationInit: FederationInitService,
   ) {}
 
   @Post('init')
@@ -49,6 +51,7 @@ export class S2sInitController {
       req.body,
       domain,
       this.config.domain,
+      true,
     );
     const doc = await this.assertWellKnownIdentity(domain, claim);
     await this.discovery.cacheKeys(domain, doc.keys);
@@ -58,14 +61,14 @@ export class S2sInitController {
       keyId,
       domain,
     );
-    await this.identity.consumeNonce(domain, claim);
-    await this.identity.pinOrVerify(
+    const localStartChangeId = await this.federationInit.accept({
       domain,
       claim,
-      preUpgradeKey !== undefined && preUpgradeKey === doc.rootKey?.ed25519,
-    );
+      legacyContinuityProven:
+        preUpgradeKey !== undefined && preUpgradeKey === doc.rootKey?.ed25519,
+    });
     return this.identity.signClaim(
-      this.identity.createClaim(domain, claim.nonce),
+      this.identity.createClaim(domain, claim.nonce, localStartChangeId),
     );
   }
 

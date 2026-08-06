@@ -87,7 +87,7 @@ export class LinkRowComponent {
   });
   readonly source = computed(() => {
     const siteName = this.link().siteName?.trim();
-    return siteName ? `${siteName} · ${this.host()}` : this.host();
+    return siteName || this.host();
   });
 
   /** Set when the thumbnail <img> fails to load/decode (a corrupt or missing CAS asset) so the card

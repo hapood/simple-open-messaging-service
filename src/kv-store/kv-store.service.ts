@@ -1,9 +1,5 @@
-import {
-  Injectable,
-  OnModuleInit,
-  OnModuleDestroy,
-  Logger,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 
 /**
  * In-process key-value storage: issue-initialized SessionToken validation entries plus TTL-backed
@@ -13,12 +9,12 @@ import {
  * (setex/get/del/incrWithExpire) so that going multi-instance only requires swapping this
  * implementation for ioredis; callers stay unchanged.
  *
- * Periodically cleans up expired keys (a 5-minute setInterval). Loss on restart is bounded: the
+ * Periodically cleans up expired keys (a 5-minute @Interval sweep). Loss on restart is bounded: the
  * SessionToken cache is a read optimization only (a miss re-reads the DB without recreating the
  * entry), and the rate-limit counters are best-effort — both acceptable at small scale.
  */
 @Injectable()
-export class KvStoreService implements OnModuleInit, OnModuleDestroy {
+export class KvStoreService {
   private readonly logger = new Logger(KvStoreService.name);
   private readonly store = new Map<string, { val: string; expireAt: number }>();
   /** Long-lived session validation entries. Unlike rate-limit/challenge entries, these are created only
@@ -28,20 +24,9 @@ export class KvStoreService implements OnModuleInit, OnModuleDestroy {
     string,
     { val: string; expireAt: number | null }
   >();
-  private cleanupTimer: NodeJS.Timeout | undefined;
-
-  async onModuleInit() {
-    // clean up expired keys every 5 minutes
-    this.cleanupTimer = setInterval(() => this.cleanup(), 5 * 60 * 1000);
-  }
-
-  onModuleDestroy() {
-    if (this.cleanupTimer) {
-      clearInterval(this.cleanupTimer);
-    }
-  }
-
-  private cleanup() {
+  /** Reclaim expired keys every 5 minutes. Registered with @nestjs/schedule; cleared on shutdown. */
+  @Interval(5 * 60 * 1000)
+  cleanup() {
     const now = Date.now();
     for (const [k, v] of this.store) {
       if (v.expireAt <= now) this.store.delete(k);

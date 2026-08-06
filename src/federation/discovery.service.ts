@@ -1,10 +1,5 @@
-import {
-  HttpStatus,
-  Injectable,
-  OnModuleInit,
-  OnModuleDestroy,
-  Logger,
-} from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { resolveSrv } from 'node:dns/promises';
 import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -13,6 +8,13 @@ import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { loadFederationConfig } from './federation.config.js';
 import { KeypairService } from './keypair.service.js';
+
+/** Proactive peer-key refresh cadence — equals the lazy cache TTL (SOMS_KEY_CACHE_TTL_SEC, 6h default).
+ *  Read directly from env, NOT via loadFederationConfig, so evaluating it at module scope never triggers
+ *  the fail-fast requireEnv('SOMS_DOMAIN') at import time (test harnesses import this module before SOMS_DOMAIN
+ *  is set). Numerically identical to loadFederationConfig().keyCacheTtlSec * 1000. */
+const KEY_REFRESH_MS =
+  Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60) * 1000;
 
 interface PeerKey {
   keyId: string;
@@ -42,10 +44,9 @@ export interface WellKnownDoc {
  * must NEVER become a permanent 401 — that would violate §6.1's "401 = do not retry".
  */
 @Injectable()
-export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
+export class DiscoveryService {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
-  private refreshTimer: NodeJS.Timeout | undefined;
   private readonly baseCache = new Map<
     string,
     { baseUrl: string; fetchedAt: number }
@@ -56,18 +57,14 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly keypair: KeypairService,
   ) {}
 
-  onModuleInit(): void {
-    this.refreshTimer = setInterval(() => {
-      this.refreshAll().catch((e) =>
-        this.logger.warn(
-          `proactive key-refresh round failed: ${(e as Error).message}`,
-        ),
-      );
-    }, this.config.keyCacheTtlSec * 1000);
-  }
-
-  onModuleDestroy(): void {
-    if (this.refreshTimer) clearInterval(this.refreshTimer);
+  /** Proactive peer-key refresh round. Registered with @nestjs/schedule; cleared on shutdown. */
+  @Interval(KEY_REFRESH_MS)
+  periodicRefresh(): void {
+    this.refreshAll().catch((e) =>
+      this.logger.warn(
+        `proactive key-refresh round failed: ${(e as Error).message}`,
+      ),
+    );
   }
 
   /** Resolve a peer's base URL via SRV `_soms._tcp.<domain>` (fallback to apex), in-memory cached. */

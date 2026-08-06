@@ -31,6 +31,16 @@ describe('OpenGraphService.parse', () => {
     expect(og.parse(`<title>The Tag</title>`, base).title).toBe('The Tag');
   });
 
+  it('uses document title then the registrable domain as the site name fallback', () => {
+    expect(
+      og.parse('<title>Document source</title>', 'https://www.example.com/x')
+        .siteName,
+    ).toBe('Document source');
+    expect(
+      og.parse('<html></html>', 'https://news.example.co.uk/x').siteName,
+    ).toBe('example.co.uk');
+  });
+
   it('resolves a relative og:image against the base URL', () => {
     const html = `<meta property="og:image" content="/static/cover.jpg">`;
     expect(og.parse(html, base).image).toBe(
@@ -78,6 +88,7 @@ describe('OpenGraphService.parse', () => {
       description: undefined,
       image: undefined,
       favicon: 'https://example.com/favicon.ico',
+      siteName: 'example.com',
     });
   });
 

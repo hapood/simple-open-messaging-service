@@ -189,6 +189,86 @@ describe('FederationService thread-bound S2S preflight', () => {
   });
 });
 
+describe('FederationService global missed transport', () => {
+  it('captures the peer generation before issuing the signed page request', async () => {
+    const { svc } = makeStubs();
+    const token = {
+      domain: 'peer.test',
+      resetGeneration: 3,
+      rootKeyFingerprint: 'sha256:test',
+    };
+    const page = {
+      messages: [],
+      scannedThrough: '9',
+      allocatedThrough: '9',
+      hasMore: false,
+    };
+    const order: string[] = [];
+    const target = svc as unknown as {
+      capturePeerResponseToken: (domain: string) => Promise<typeof token>;
+      withTrustedPeer: <T>(
+        domain: string,
+        action: () => Promise<T>,
+      ) => Promise<T>;
+      getSigned: <T>(
+        path: string,
+        domain: string,
+        maxResponseBytes?: number,
+      ) => Promise<T>;
+      pullMissedPage: (
+        domain: string,
+        after: bigint,
+        take?: number,
+      ) => Promise<{ page: typeof page; token: typeof token }>;
+    };
+    target.capturePeerResponseToken = vi.fn(async () => {
+      order.push('token');
+      return token;
+    });
+    target.withTrustedPeer = vi.fn(async (_domain, action) => action());
+    target.getSigned = vi.fn(async () => {
+      order.push('request');
+      return page;
+    });
+
+    await expect(target.pullMissedPage('peer.test', 7n, 100)).resolves.toEqual({
+      page,
+      token,
+    });
+    expect(order).toEqual(['token', 'request']);
+    expect(target.getSigned).toHaveBeenCalledWith(
+      '/api/v1/s2s/missed?after=7&take=100',
+      'peer.test',
+      16 * 1024 * 1024,
+    );
+  });
+
+  it.each([
+    [-1n, 100],
+    [0n, 0],
+    [0n, 201],
+    [0n, 1.5],
+  ])(
+    'rejects invalid cursor/page input before network I/O',
+    async (after, take) => {
+      const { svc } = makeStubs();
+      const target = svc as unknown as {
+        capturePeerResponseToken: ReturnType<typeof vi.fn>;
+        pullMissedPage: (
+          domain: string,
+          after: bigint,
+          take?: number,
+        ) => Promise<unknown>;
+      };
+      target.capturePeerResponseToken = vi.fn();
+      await expect(
+        target.pullMissedPage('peer.test', after, take),
+      ).rejects.toThrow();
+      expect(target.capturePeerResponseToken).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('FederationService thread-bound response write gate', () => {
   function installWriteGate(state: {
     federationTruncated: boolean;
@@ -252,6 +332,60 @@ describe('FederationService thread-bound response write gate', () => {
       ).rejects.toThrow('stale federation response');
     },
   );
+});
+
+describe('FederationService peer-bound response write gate', () => {
+  const token = {
+    domain: 'peer.test',
+    resetGeneration: 3,
+    rootKeyFingerprint: 'sha256:root-a',
+  };
+
+  function installPeerGate(state: {
+    trustLevel: string;
+    resetGeneration: number;
+    rootKeyFingerprint: string | null;
+  }) {
+    const { svc } = makeStubs();
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [state] });
+    const target = svc as unknown as {
+      assertPeerResponseWritable: (
+        tx: { execute: typeof execute },
+        value: typeof token,
+      ) => Promise<void>;
+    };
+    return { target, tx: { execute } };
+  }
+
+  it('accepts a response while generation and root identity still match', async () => {
+    const { target, tx } = installPeerGate({
+      trustLevel: 'trusted',
+      resetGeneration: 3,
+      rootKeyFingerprint: 'sha256:root-a',
+    });
+
+    await expect(
+      target.assertPeerResponseWritable(tx, token),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['reset generation changed', 4, 'sha256:root-a'],
+    ['root identity changed', 3, 'sha256:root-b'],
+  ])('rejects a stale response when %s', async (_label, generation, root) => {
+    const { target, tx } = installPeerGate({
+      trustLevel: 'trusted',
+      resetGeneration: generation,
+      rootKeyFingerprint: root,
+    });
+
+    await expect(target.assertPeerResponseWritable(tx, token)).rejects.toThrow(
+      'stale federation response',
+    );
+  });
 });
 
 describe('FederationService quote coordinates', () => {

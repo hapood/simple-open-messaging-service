@@ -7,7 +7,13 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { invite, message } from '../src/database/schema';
+import {
+  invite,
+  message,
+  threadAudience,
+  user,
+} from '../src/database/schema';
+import { InviteService } from '../src/invite/invite.service';
 import {
   registerAndLogin,
   openSse,
@@ -97,6 +103,27 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const threadId: number = accept.body.data.threadId;
     expect(threadId).toBeGreaterThan(0);
 
+    const audiences = await database.db
+      .select({
+        targetDomain: threadAudience.targetDomain,
+        localUserId: threadAudience.localUserId,
+      })
+      .from(threadAudience)
+      .where(eq(threadAudience.threadId, threadId));
+    expect(audiences).toEqual(
+      expect.arrayContaining([
+        {
+          targetDomain: 'local',
+          localUserId: alice.id,
+        },
+        {
+          targetDomain: 'local',
+          localUserId: bob.id,
+        },
+      ]),
+    );
+    expect(audiences).toHaveLength(2);
+
     // Sanity: the thread truly has NO messages yet (this is the "empty chatbox" precondition).
     const [emptyCount] = await database.db
       .select({ count: sql<number>`count(*)::int` })
@@ -142,5 +169,59 @@ describe('First message after friend-add is delivered (single instance)', () => 
     } finally {
       await reader.cancel();
     }
+
+    await request(baseUrl)
+      .post('/api/v1/user/delete-friend')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ userId: bob.id })
+      .expect((res) => {
+        expect(res.status).toBe(200);
+        expect(res.body.code).toBe(0);
+      });
+    const revokedAudiences = await database.db
+      .select({ id: threadAudience.id })
+      .from(threadAudience)
+      .where(eq(threadAudience.threadId, threadId));
+    expect(revokedAudiences).toEqual([]);
+  });
+
+  it('creates one local-user audience and one peer-domain audience for a federated friendship', async () => {
+    const appLike = { baseUrl, database: database.db };
+    const alice = await registerAndLogin(appLike, 'alice', 'Alice');
+    const [foreignBob] = await database.db
+      .insert(user)
+      .values({
+        account: 'bob',
+        name: 'Bob',
+        isForeigner: true,
+        domain: 'peer.test',
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id });
+
+    const friendship = await app
+      .get(InviteService)
+      .applyInboundFriendApprove(alice.id, foreignBob.id);
+    const audiences = await database.db
+      .select({
+        targetDomain: threadAudience.targetDomain,
+        localUserId: threadAudience.localUserId,
+      })
+      .from(threadAudience)
+      .where(eq(threadAudience.threadId, friendship.threadId));
+
+    expect(audiences).toEqual(
+      expect.arrayContaining([
+        {
+          targetDomain: 'local',
+          localUserId: alice.id,
+        },
+        {
+          targetDomain: 'peer.test',
+          localUserId: null,
+        },
+      ]),
+    );
+    expect(audiences).toHaveLength(2);
   });
 });

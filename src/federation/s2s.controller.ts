@@ -26,6 +26,9 @@ import {
 import { FederationBufferService } from './federation-buffer.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { FederationMissedService } from './federation-missed.service.js';
+import { FederationMissedPullService } from './federation-missed-pull.service.js';
+import { FederationCursorService } from './federation-cursor.service.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
@@ -55,7 +58,60 @@ export class S2sController {
   constructor(
     private readonly federation: FederationService,
     private readonly federationBuffer: FederationBufferService,
+    private readonly federationMissed: FederationMissedService,
+    private readonly federationMissedPull: FederationMissedPullService,
+    private readonly federationCursor: FederationCursorService,
   ) {}
+
+  /** Receive an ephemeral source HWM. Actual data remains pull-only through GET /missed. */
+  @Post('discovery-hwm')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
+    const signer = this.signerDomain(req);
+    const body = req.body as {
+      origin?: unknown;
+      allocatedThrough?: unknown;
+    };
+    if (body.origin !== signer) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_BINDING_VIOLATION,
+        `origin (${String(body.origin)}) != signer (${signer})`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    if (
+      typeof body.allocatedThrough !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(body.allocatedThrough)
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'allocatedThrough must be an unsigned decimal string',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    this.federationMissedPull.advertise(signer, BigInt(body.allocatedThrough));
+  }
+
+  /** Read our current source HWM for the signed peer; used after heartbeat recovery. */
+  @Get('discovery-hwm')
+  async getDiscoveryHwm(@Req() req: FastifyRequest) {
+    const allocatedThrough = await this.federationCursor.readAllocatedThrough(
+      this.signerDomain(req),
+    );
+    return { allocatedThrough: allocatedThrough.toString() };
+  }
+
+  /** Durable cross-thread feed. changeId values stay decimal strings on the JSON wire. */
+  @Get('missed')
+  async getMissed(
+    @Req() req: FastifyRequest,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+  ) {
+    const after = this.parseUnsignedBigInt(afterParam, 'after');
+    const take = takeParam === undefined ? undefined : Number(takeParam);
+    return this.federationMissed.serve(this.signerDomain(req), after, take);
+  }
 
   @Post('invite')
   @HttpCode(HttpStatus.ACCEPTED)
@@ -417,6 +473,17 @@ export class S2sController {
     return (req as FastifyRequest & { peer: { domain: string } }).peer.domain;
   }
 
+  private parseUnsignedBigInt(value: string | undefined, name: string): bigint {
+    if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be an unsigned decimal integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return BigInt(value);
+  }
+
   /** Binding-check `toDomain` (the REQUESTER's asserted domain) against the RFC 9421 signer — belt-and-
    *  suspenders over the signature, same pattern as the `origin === signer` check in POST /new-msg-map. The
    *  signature proves only the signer DOMAIN (not a specific user), so the requester explicitly asserts
@@ -443,7 +510,9 @@ export class S2sController {
    *  peer is reachable + the mutual keys still verify. Advances the requester's liveness watermark. */
   @Get('ping')
   async ping(@Req() req: FastifyRequest) {
-    await this.federation.markContactSuccess(this.signerDomain(req));
+    const domain = this.signerDomain(req);
+    await this.federation.markRecovered(domain);
+    await this.federation.markContactSuccess(domain);
     return { domain: this.federation.ourDomain, ts: Date.now() };
   }
 
@@ -464,23 +533,33 @@ export class S2sController {
     @Query('fromDomain') fromDomain?: string,
     @Query('toAccount') toAccount?: string,
     @Query('toDomain') toDomain?: string,
+    @Query('seq') seqParam?: string,
     @Query('bundleId') bundleId?: string,
   ) {
     const signer = this.signerDomain(req);
-    if (!bundleId) this.requireBinding(toDomain, signer);
-    if (!digest || (!bundleId && (!fromAccount || !toAccount))) {
+    this.requireBinding(toDomain, signer);
+    const seq = Number(seqParam);
+    if (
+      !digest ||
+      !fromAccount ||
+      !fromDomain ||
+      !toAccount ||
+      !Number.isInteger(seq) ||
+      seq < 0
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing digest or media authorization query params',
+        'missing or invalid message media authorization query params',
         HttpStatus.BAD_REQUEST,
       );
     }
     const { absPath, bytes } = await this.federation.resolveMediaFile(
-      fromAccount ?? '',
-      toAccount ?? '',
+      fromAccount,
+      toAccount,
       fromDomain,
       signer,
       digest,
+      seq,
       bundleId,
     );
     const range = parseRange(req.headers.range, bytes);
