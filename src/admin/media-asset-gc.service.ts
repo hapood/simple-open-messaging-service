@@ -9,7 +9,7 @@ import type { ServerResponse } from 'http';
 import { join } from 'path';
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'fs';
 import { promisify } from 'util';
-import { and, count, eq, inArray, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, lt, ne, or, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type Database,
@@ -320,9 +320,122 @@ export class MediaAssetGcService {
     }
   }
 
-  // Per-file in-flight state (FileSyncProgress) admin views — list / retry / clean — are added with
-  // the download-inbox GC UI (federation design doc §12.6 / §12.7). The former PENDING-asset
-  // terminate/list endpoints are obsolete: MediaAsset now holds only verified blobs (isDeleted).
+  // ─── Download-inbox admin views (federation design doc §12.6/§12.7) ───────────────────────────
+  // The former PENDING-asset terminate/list endpoints are obsolete: MediaAsset now holds only verified
+  // blobs (isDeleted). In-flight localization state lives in FileSyncProgress, staged under PendingMedia.
+
+  /** List every staged inbound media batch with its per-file FileSyncProgress state — the admin's view
+   *  of the download inbox (what is stuck/failed/pending promotion). Read-only. Retry/clean are the
+   *  companion actions; this is what the admin watches after triggering them. BigInt columns (id, byte
+   *  counters) are stringified for JSON. */
+  async listInboxState(): Promise<{
+    batches: Array<{
+      batchId: string;
+      threadId: number;
+      creatorId: number;
+      originSeq: number | null;
+      contentType: string;
+      fileCnt: number;
+      anyFailed: boolean;
+      originDomain: string | null;
+      updatedAt: Date;
+      files: Array<{
+        id: string;
+        digest: string;
+        kind: string;
+        status: string;
+        bytesTotal: string;
+        bytesReceived: string;
+        errorKind: string | null;
+        updatedAt: Date;
+      }>;
+    }>;
+  }> {
+    const batches = await this.database.db.query.pendingMedia.findMany({
+      where: eq(pendingMedia.direction, 'INBOUND'),
+      orderBy: [desc(pendingMedia.updatedAt)],
+    });
+    if (batches.length === 0) return { batches: [] };
+    const files = await this.database.db.query.fileSyncProgress.findMany({
+      where: inArray(
+        fileSyncProgress.batchId,
+        batches.map((b) => b.batchId),
+      ),
+      orderBy: [asc(fileSyncProgress.id)],
+    });
+    const filesByBatch = new Map<string, typeof files>();
+    for (const f of files) {
+      const arr = filesByBatch.get(f.batchId) ?? [];
+      arr.push(f);
+      filesByBatch.set(f.batchId, arr);
+    }
+    return {
+      batches: batches.map((b) => ({
+        batchId: b.batchId,
+        threadId: b.threadId,
+        creatorId: b.creatorId,
+        originSeq: b.originSeq,
+        contentType: b.contentType,
+        fileCnt: b.fileCnt,
+        anyFailed: b.anyFailed,
+        originDomain: b.originDomain,
+        updatedAt: b.updatedAt,
+        files: (filesByBatch.get(b.batchId) ?? []).map((f) => ({
+          id: f.id.toString(),
+          digest: f.digest,
+          kind: f.kind,
+          status: f.status,
+          bytesTotal: f.bytesTotal.toString(),
+          bytesReceived: f.bytesReceived.toString(),
+          errorKind: f.errorKind,
+          updatedAt: f.updatedAt,
+        })),
+      })),
+    };
+  }
+
+  /** Drop a staged inbound batch for good: delete its PendingMedia + FileSyncProgress rows (inside one
+   *  tx) and unlink the transient CAS artifacts (.part/.resume.json/.complete) for each file. Any
+   *  SUCCEEDED MediaAsset blob the batch produced is left for the normal reap pass — with its
+   *  FileSyncProgress liveness gone, it is unreachable and will be reclaimed on the next gc run. */
+  async cleanInboxBatch(
+    batchId: string,
+  ): Promise<{ clearedBatch: boolean; fileRows: number; tempFiles: number }> {
+    const files = await this.database.db.query.fileSyncProgress.findMany({
+      where: eq(fileSyncProgress.batchId, batchId),
+      columns: { digest: true },
+    });
+    const clearedBatch = await this.database.db.transaction(async (tx) => {
+      await tx
+        .delete(fileSyncProgress)
+        .where(eq(fileSyncProgress.batchId, batchId));
+      const gone = await tx
+        .delete(pendingMedia)
+        .where(eq(pendingMedia.batchId, batchId))
+        .returning({ id: pendingMedia.id });
+      return gone.length > 0;
+    });
+    let tempFiles = 0;
+    for (const { digest } of files) {
+      tempFiles += await this.cleanTempForDigest(digest);
+    }
+    return { clearedBatch, fileRows: files.length, tempFiles };
+  }
+
+  /** Unlink the transient CAS artifacts for one digest (.part/.resume.json/.complete). Digests come
+   *  from FileSyncProgress rows (validated 64-hex on the write path), so the filenames are safe. */
+  private async cleanTempForDigest(digest: string): Promise<number> {
+    let removed = 0;
+    for (const suffix of ['.part', '.resume.json', '.complete']) {
+      const removedFlag = await unlinkAsync(
+        join(this.upload.casTmpDir, `${digest}${suffix}`),
+      )
+        .then(() => true)
+        .catch(() => false);
+      if (removedFlag) removed++;
+    }
+    return removed;
+  }
 
   /** Find immutable bundles that are not reachable from any visible ForwardMessage root. This is
    * intentionally admin-triggered only: bundle retention must never depend on a background timer. */

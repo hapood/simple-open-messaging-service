@@ -71,6 +71,7 @@ import {
 } from '../upload/file-content.js';
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
+import { KeyedMutex } from '../common/keyed-mutex.js';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -298,6 +299,9 @@ export class FederationService implements OnModuleDestroy {
   private static readonly GROUP_PULL_DEBOUNCE_MS = 500;
   /** Per-group-thread last pull timestamp (the receiver debounce on pullGroupWhole). */
   private readonly recentGroupPulls = new Map<number, number>();
+  /** Serializes runFileSyncBatch per batchId so the fire-and-forget pull driver and an admin retry
+   *  never double-drive the same batch (and never reach promote concurrently for one). */
+  private readonly batchSyncLocks = new KeyedMutex();
 
   constructor(
     private readonly database: DatabaseService,
@@ -4953,28 +4957,142 @@ export class FederationService implements OnModuleDestroy {
 
   /**
    * Drive every still-pending file of a batch to terminal, then attempt the message-level promote.
-   * `fetchChunksFor(digest, offset)` is supplied by the caller (the pull loop) bound to the right peer
-   * context, keeping this path free of any FederationService↔FileSync dependency cycle. Fire-and-forget
-   * at the call site — it never blocks the pull drainer or the cursor (§12.6).
+   * `fetchChunksFor(digest, offset)` is supplied by the caller (the pull loop, or `retryInboundBatch`)
+   * bound to the right peer context, keeping this path free of any FederationService↔FileSync dependency
+   * cycle. Fire-and-forget at the call site — it never blocks the pull drainer or the cursor (§12.6).
+   *
+   * Serialized per batchId so the fire-and-forget pull driver and an admin retry never double-drive the
+   * same batch (and never reach promote concurrently for one). A retry that arrives while the original
+   * driver still holds the lock simply waits, then re-queries: any newly-SUCCEEDED files are skipped, a
+   * fully-promoted batch is gone (promote no-ops), and the rest are re-driven.
    */
   async runFileSyncBatch(
     batchId: string,
     fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
   ): Promise<void> {
-    const rows = await this.database.db.query.fileSyncProgress.findMany({
-      where: and(
-        eq(tables.fileSyncProgress.batchId, batchId),
-        inArray(tables.fileSyncProgress.status, ['PENDING', 'FAILED']),
-      ),
-    });
-    await Promise.all(
-      rows.map((row) =>
-        this.driveFileSync(row.id, row.digest, (offset) =>
-          fetchChunksFor(row.digest, offset),
+    await this.batchSyncLocks.runExclusive(batchId, async () => {
+      const rows = await this.database.db.query.fileSyncProgress.findMany({
+        where: and(
+          eq(tables.fileSyncProgress.batchId, batchId),
+          inArray(tables.fileSyncProgress.status, ['PENDING', 'FAILED']),
         ),
-      ),
-    );
-    await this.promotePendingMessage(batchId);
+      });
+      await Promise.all(
+        rows.map((row) =>
+          this.driveFileSync(row.id, row.digest, (offset) =>
+            fetchChunksFor(row.digest, offset),
+          ),
+        ),
+      );
+      await this.promotePendingMessage(batchId);
+    });
+  }
+
+  /**
+   * Admin-driven retry of a stalled inbound media batch (design doc §12.7). Resets files frozen in
+   * DOWNLOADING (a crashed driver) or FAILED back to PENDING, re-derives the download routing purely
+   * from persisted state — `fromAccount`/`fromDomain` from the creator, `toAccount` from the thread
+   * (the group `!account` or the local P2P participant), `originDomain`/`originSeq`/`category` from the
+   * batch — then fire-and-forgets runFileSyncBatch. Routing is never persisted because it is fully
+   * derivable from the same creator+thread identity that determines message placement. Returns the
+   * number of stuck files reset (FAILED/DOWNLOADING → PENDING); the admin observes progress via the
+   * inbox list endpoint.
+   */
+  async retryInboundBatch(
+    batchId: string,
+  ): Promise<{ batchId: string; resetFiles: number }> {
+    const batch = await this.database.db.query.pendingMedia.findFirst({
+      where: eq(tables.pendingMedia.batchId, batchId),
+    });
+    if (!batch || batch.direction !== 'INBOUND') {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `inbound media batch ${batchId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    // A crash freezes a file in DOWNLOADING (runFileSyncBatch only drives PENDING/FAILED); a permanent
+    // peer error leaves FAILED. Reset both so the re-drive picks them up. SUCCEEDED files are left as-is.
+    const reset = await this.database.db
+      .update(tables.fileSyncProgress)
+      .set({ status: 'PENDING', errorKind: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(tables.fileSyncProgress.batchId, batchId),
+          inArray(tables.fileSyncProgress.status, [
+            'DOWNLOADING',
+            'FAILED',
+          ]),
+        ),
+      )
+      .returning({ id: tables.fileSyncProgress.id });
+
+    // Re-derive routing from persisted state (no routing columns are stored). `toAccount` is the
+    // recipient on the wire: the group `!account` for a group thread, or the local P2P participant.
+    const creator = await this.database.db.query.user.findFirst({
+      where: eq(tables.user.id, batch.creatorId),
+      columns: { account: true, domain: true },
+    });
+    const thread = await this.database.db.query.messageThread.findFirst({
+      where: eq(tables.messageThread.id, batch.threadId),
+      columns: { groupUserId: true },
+    });
+    let toAccount: string | null = null;
+    if (thread?.groupUserId != null) {
+      const groupUser = await this.database.db.query.user.findFirst({
+        where: eq(tables.user.id, thread.groupUserId),
+        columns: { account: true },
+      });
+      toAccount = groupUser?.account ?? null;
+    } else {
+      const [localMember] = await this.database.db
+        .select({ account: tables.user.account })
+        .from(tables.threadParticipant)
+        .innerJoin(
+          tables.user,
+          eq(tables.threadParticipant.userId, tables.user.id),
+        )
+        .where(
+          and(
+            eq(tables.threadParticipant.threadId, batch.threadId),
+            isNull(tables.threadParticipant.leftAt),
+            eq(tables.user.domain, 'local'),
+          ),
+        )
+        .limit(1);
+      toAccount = localMember?.account ?? null;
+    }
+    if (!creator || !toAccount || !batch.originDomain || !batch.originSeq) {
+      throw new BusinessException(
+        BusinessCode.INTERNAL,
+        `cannot re-derive routing for batch ${batchId}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    const fromAccount = creator.account;
+    const fromDomain = creator.domain;
+    const originDomain = batch.originDomain;
+    const originSeq = batch.originSeq;
+    const category = this.mediaCategory(batch.contentType as ContentType);
+
+    // Fire-and-forget: the per-batch mutex serializes this against any in-flight original driver.
+    void this.runFileSyncBatch(
+      batchId,
+      (digest, offset) =>
+        this.fetchMediaChunks(
+          originDomain,
+          digest,
+          fromAccount,
+          fromDomain,
+          toAccount,
+          originSeq,
+          category,
+          undefined,
+          offset,
+        ),
+    ).catch(() => undefined);
+
+    return { batchId, resetFiles: reset.length };
   }
 
   /**

@@ -21,6 +21,7 @@ import { AdminRole } from '../database/enums.js';
 import { MediaAssetGcService } from './media-asset-gc.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { ResumableUploadService } from '../upload/resumable-upload.service.js';
+import { FederationService } from '../federation/federation.service.js';
 
 /**
  * Admin-only media garbage-collection endpoints. Not exposed to regular users. The primary trigger
@@ -41,6 +42,7 @@ export class MediaAssetGcController {
   constructor(
     private readonly gc: MediaAssetGcService,
     private readonly resumable: ResumableUploadService,
+    private readonly federation: FederationService,
   ) {}
 
   @HttpCode(HttpStatus.OK)
@@ -148,5 +150,43 @@ export class MediaAssetGcController {
   })
   gcForwardBundles() {
     return this.gc.gcOrphanedForwardBundles();
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('admin/media/inbox')
+  @ApiOperation({
+    summary:
+      'List staged inbound media batches and their per-file download state',
+  })
+  inbox() {
+    return this.gc.listInboxState();
+  }
+
+  @Audit('media.inbox.retry', {
+    targetType: 'media-batch',
+    targetParam: 'batchId',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/media/inbox/:batchId/retry')
+  @ApiOperation({
+    summary:
+      'Re-drive a stalled inbound media batch (reset FAILED/DOWNLOADING → PENDING and re-download)',
+  })
+  retryInboxBatch(@Param('batchId', new ParseUUIDPipe()) batchId: string) {
+    return this.federation.retryInboundBatch(batchId);
+  }
+
+  @Audit('media.inbox.clean', {
+    targetType: 'media-batch',
+    targetParam: 'batchId',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/media/inbox/:batchId/clean')
+  @ApiOperation({
+    summary:
+      'Drop a staged inbound media batch (delete PendingMedia + FileSyncProgress + temp files)',
+  })
+  cleanInboxBatch(@Param('batchId', new ParseUUIDPipe()) batchId: string) {
+    return this.gc.cleanInboxBatch(batchId);
   }
 }
