@@ -17,6 +17,8 @@
 /** Per-file size cap (bytes). The global multipart limit (bootstrap.ts) is the hard ceiling above
  *  this; the service enforces this so raising the multipart limit for files does not also raise it
  *  for images (images stay capped at MAX_IMAGE_BYTES). */
+import { ContentType } from '../database/enums.js';
+
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 /** Per-video size cap (bytes). The global multipart ceiling is raised to 100MB in bootstrap.ts to
@@ -336,4 +338,124 @@ export function parseLinkContent(content: string): LinkContent | null {
     image: image || undefined,
     favicon: favicon || undefined,
   };
+}
+
+// ─── Phase 7: type-agnostic outbound upload (design doc §12.3) ───────────────────────────────
+
+/** The server-detected family of one uploaded file, derived from magic bytes (isImage/detectMedia).
+ *  This is independent of the message-level contentType (IMAGE/FILE/VIDEO/AUDIO/GALLERY), which the
+ *  client sets at stage time. The family drives the trusted on-disk extension, the FileSyncProgress
+ *  kind, and — for a GALLERY bundle — each item's self-describing `kind`. */
+export type OutboundFileFamily = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
+
+/** Per-file payload produced by the type-agnostic upload and stored on the batch's
+ *  FileSyncProgress(OUTBOUND, SUCCEEDED) row. The barrier-promote assembles message content from these
+ *  payloads without re-deriving display metadata from CAS. `url` is the uncontextualized CAS shard URL
+ *  (/uploads/msg-assets/<shard>); contextualizeCasUrls rewrites every URL at promote time. */
+export interface OutboundFilePayload {
+  digest: string;
+  url: string;
+  size: number;
+  family: OutboundFileFamily;
+  /** Sanitized display filename (FILE/VIDEO/AUDIO). Omitted for IMAGE. */
+  name?: string;
+  /** Display MIME (FILE/VIDEO/AUDIO). Omitted for IMAGE. */
+  mimeType?: string;
+  /** Image/video pixel width (client-companion field). */
+  w?: number;
+  /** Image/video pixel height (client-companion field). */
+  h?: number;
+  /** Video/audio duration in seconds (client-companion field). */
+  duration?: number;
+}
+
+/** Map a detected file family to the FileSyncProgress kind value. GALLERY bundles use per-item kinds
+ *  on their FileSyncProgress rows; the BUNDLE kind is reserved for inbound federation only. */
+export function familyToFileSyncKind(
+  family: OutboundFileFamily,
+): 'FILE' | 'IMAGE' | 'VIDEO' | 'AUDIO' {
+  return family;
+}
+
+/** One element of a GALLERY message's `items` array. `kind` self-describes so the renderer picks the
+ *  right row component — a GALLERY may mix image/video/file/audio items. */
+export interface GalleryItem {
+  kind: OutboundFileFamily;
+  url: string;
+  size: number;
+  name?: string;
+  mimeType?: string;
+  w?: number;
+  h?: number;
+  duration?: number;
+}
+
+/**
+ * Assemble the final message content JSON for an outbound batch from its per-file payloads.
+ *
+ * Single-file (IMAGE/FILE/VIDEO/AUDIO): the unchanged per-type object shape, so rendering is identical
+ * to the legacy typed-upload path — the payload already carries every display field the client used to
+ * send at stage time (now it rides with the upload part).
+ *
+ * GALLERY: `{ items: [...] }`, digest-sorted so the same batch always assembles the same message
+ * regardless of which parallel upload request landed last. Returns the JSON string; the caller runs
+ * contextualizeCasUrls on it (which rewrites every CAS URL in one pass).
+ */
+export function assembleOutboundContent(
+  contentType: ContentType,
+  payloads: OutboundFilePayload[],
+): string {
+  const byDigest = [...payloads].sort((a, b) =>
+    a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0,
+  );
+  if (contentType === ContentType.GALLERY) {
+    const items: GalleryItem[] = byDigest.map((p) => ({
+      kind: p.family,
+      url: p.url,
+      size: p.size,
+      ...(p.name !== undefined ? { name: p.name } : {}),
+      ...(p.mimeType !== undefined ? { mimeType: p.mimeType } : {}),
+      ...(p.w !== undefined ? { w: p.w } : {}),
+      ...(p.h !== undefined ? { h: p.h } : {}),
+      ...(p.duration !== undefined ? { duration: p.duration } : {}),
+    }));
+    return JSON.stringify({ items });
+  }
+  const p = byDigest[0];
+  switch (contentType) {
+    case ContentType.IMAGE:
+      return JSON.stringify({
+        url: p.url,
+        w: p.w ?? 0,
+        h: p.h ?? 0,
+        size: p.size,
+      });
+    case ContentType.FILE:
+      return JSON.stringify({
+        url: p.url,
+        name: p.name ?? 'file',
+        size: p.size,
+        mimeType: p.mimeType ?? 'application/octet-stream',
+      });
+    case ContentType.VIDEO:
+      return JSON.stringify({
+        url: p.url,
+        name: p.name ?? 'video',
+        size: p.size,
+        mimeType: p.mimeType ?? 'video/mp4',
+        w: p.w ?? 0,
+        h: p.h ?? 0,
+        duration: p.duration ?? 0,
+      });
+    case ContentType.AUDIO:
+      return JSON.stringify({
+        url: p.url,
+        name: p.name ?? 'audio',
+        size: p.size,
+        mimeType: p.mimeType ?? 'audio/mpeg',
+        duration: p.duration ?? 0,
+      });
+    default:
+      return JSON.stringify({ url: p.url, size: p.size });
+  }
 }

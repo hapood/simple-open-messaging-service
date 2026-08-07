@@ -1,114 +1,180 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UploadService } from './upload.service.js';
+import { ContentType } from '../database/enums.js';
+
+/** PNG magic bytes + enough trailing length for detectMedia's checks. */
+const PNG = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
+/** EBML magic (1A 45 DF A3) — shared by webm/mkv; detectMedia resolves it as video/webm. */
+const EBML = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00]);
+/** 'OggS' — a native audio container. */
+const OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53]);
 
 /**
- * A minimal multipart FastifyRequest stand-in: yields exactly one file part whose `toBuffer()`
- * resolves to `buf`. consumeSingle drains it inside the loop (backpressure-safe contract) and
- * captures mimetype/filename. Only the shape consumeAudio/consumeMedia reads is implemented — the
- * CAS write (saveMedia) happens in the controller, so MediaAssetService is never hit here.
+ * A minimal multipart FastifyRequest stand-in for consumeParts: yields the given file parts (each with
+ * a `toBuffer()`) interleaved with non-file form fields. Mirrors the shape @fastify/multipart exposes.
  */
 function fakeReq(
-  buf: Buffer,
-  filename = 'voice.webm',
-  mimetype = 'audio/webm',
+  files: Array<{
+    buf: Buffer;
+    filename?: string;
+    mimetype?: string;
+  }>,
+  fields: Record<string, string> = {},
 ): any {
-  const part = {
-    type: 'file' as const,
-    mimetype,
-    filename,
-    file: { resume: () => {} },
-    toBuffer: async () => buf,
-  };
+  const parts: any[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    parts.push({ type: 'field', fieldname: k, value: v });
+  }
+  for (const f of files) {
+    parts.push({
+      type: 'file',
+      mimetype: f.mimetype ?? 'application/octet-stream',
+      ...(f.filename ? { filename: f.filename } : {}),
+      file: { resume: () => {} },
+      toBuffer: async () => f.buf,
+    });
+  }
   return {
     parts: async function* () {
-      yield part;
+      for (const p of parts) yield p;
     },
   };
 }
 
-describe('UploadService.consumeAudio — recorder-emitted container acceptance', () => {
+describe('UploadService.detectFamily — magic-byte family resolution', () => {
   const svc = new UploadService({} as never);
 
-  it('accepts EBML/webm (Chrome/Android/Tauri MediaRecorder output) as audio/webm', async () => {
-    // EBML magic: 1A 45 DF A3 + enough trailing bytes for detectMedia's length checks.
-    const ebml = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00]);
-    const r = await svc.consumeAudio(fakeReq(ebml));
-    expect(r.kind).toBe('file');
-    if (r.kind === 'file') {
-      expect(r.ext).toBe('webm');
-      expect(r.mime).toBe('audio/webm');
-    }
+  it('maps PNG magic bytes to IMAGE', () => {
+    expect(svc.detectFamily(PNG)).toBe('IMAGE');
   });
 
-  it('accepts ISO-BMFF ftyp (Safari/iOS MediaRecorder output) as audio/mp4', async () => {
-    // size(4) + 'ftyp' + 'isom' brand (a non-M4A brand → detectMedia resolves it as mp4/video).
-    const mp4 = Buffer.from([
-      0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
-    ]);
-    const r = await svc.consumeAudio(fakeReq(mp4, 'voice.mp4', 'audio/mp4'));
-    expect(r.kind).toBe('file');
-    if (r.kind === 'file') {
-      expect(r.ext).toBe('mp4');
-      expect(r.mime).toBe('audio/mp4');
-    }
+  it('maps EBML/webm to VIDEO (free detection; an AUDIO intent re-maps it via savePart)', () => {
+    expect(svc.detectFamily(EBML)).toBe('VIDEO');
   });
 
-  it('still accepts a native audio container (ogg) as audio/ogg', async () => {
-    const ogg = Buffer.from([0x4f, 0x67, 0x67, 0x53]); // 'OggS'
-    const r = await svc.consumeAudio(fakeReq(ogg, 'clip.ogg', 'audio/ogg'));
-    expect(r.kind).toBe('file');
-    if (r.kind === 'file') expect(r.ext).toBe('ogg');
+  it('maps OggS to AUDIO', () => {
+    expect(svc.detectFamily(OGG)).toBe('AUDIO');
   });
 
-  it('rejects a non-media buffer (no recognized container signature) as wrong-type', async () => {
-    const r = await svc.consumeAudio(
-      fakeReq(Buffer.from([0x00, 0x00, 0x00, 0x00])),
+  it('falls back to FILE for unrecognized bytes', () => {
+    expect(svc.detectFamily(Buffer.from([0x00, 0x00, 0x00, 0x00]))).toBe(
+      'FILE',
     );
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.reason).toBe('wrong-type');
   });
 });
 
-describe('UploadService.consumeChatImage — unsupported-format fallback', () => {
-  const svc = new UploadService({} as never);
+describe('UploadService.savePart — family gating by staged intent', () => {
+  let root: string | undefined;
+  const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+  const svc = new UploadService(mediaAsset as never);
 
-  it('keeps an unsupported HEIC selection as a generic file', async () => {
-    const bytes = Buffer.from('unsupported-image-bytes');
-    const r = await svc.consumeChatImage(
-      fakeReq(bytes, 'phone.heic', 'image/heic'),
-    );
-    expect(r).toEqual({
-      kind: 'fallback-file',
-      mimetype: 'image/heic',
-      buffer: bytes,
-      filename: 'phone.heic',
-    });
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-savepart-'));
+    // saveCas writes the shard under casDir + a publish tmp under casTmpDir; redirect both to the
+    // test root so no real data/cas is touched.
+    Object.defineProperty(svc, 'casDir', { value: root });
+    Object.defineProperty(svc, 'casTmpDir', { value: join(root, 'tmp') });
+    mediaAsset.publishReady.mockClear();
+  });
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = undefined;
   });
 
-  it('keeps a supported MIME on the image validation path', async () => {
-    const pngHeader = Buffer.from([
-      0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ]);
-    const r = await svc.consumeChatImage(
-      fakeReq(pngHeader, 'photo.png', 'image/png'),
+  it('accepts a PNG under an IMAGE intent as IMAGE (no override)', async () => {
+    const { payload, overrideContentType } = await svc.savePart(
+      PNG,
+      ContentType.IMAGE,
+      { filename: 'photo.png', declaredMime: 'image/png', w: 10, h: 20 },
     );
-    expect(r.kind).toBe('file');
-    if (r.kind === 'file') {
-      expect(r.mimetype).toBe('image/png');
-      expect(r.buffer).toBe(pngHeader);
-      expect(r.filename).toBe('photo.png');
+    expect(payload.family).toBe('IMAGE');
+    expect(payload.size).toBe(PNG.length);
+    expect(payload.w).toBe(10);
+    expect(payload.h).toBe(20);
+    expect(payload.mimeType).toBeUndefined();
+    expect(payload.name).toBeUndefined();
+    expect(overrideContentType).toBeUndefined();
+    expect(mediaAsset.publishReady).toHaveBeenCalledOnce();
+  });
+
+  it('falls back HEIC bytes under an IMAGE intent to FILE + overrideContentType=FILE', async () => {
+    const heic = Buffer.from('unsupported-image-bytes');
+    const { payload, overrideContentType } = await svc.savePart(
+      heic,
+      ContentType.IMAGE,
+      { filename: 'phone.heic', declaredMime: 'image/heic' },
+    );
+    expect(payload.family).toBe('FILE');
+    expect(payload.name).toBe('phone.heic');
+    expect(payload.mimeType).toBe('image/heic');
+    expect(overrideContentType).toBe(ContentType.FILE);
+  });
+
+  it('accepts EBML/webm under an AUDIO intent as audio/webm (recorder-emitted container)', async () => {
+    const { payload } = await svc.savePart(EBML, ContentType.AUDIO, {
+      filename: 'voice.webm',
+      declaredMime: 'audio/webm',
+      duration: 3,
+    });
+    expect(payload.family).toBe('AUDIO');
+    expect(payload.mimeType).toBe('audio/webm');
+    expect(payload.duration).toBe(3);
+  });
+
+  it('rejects a non-video buffer under a VIDEO intent', async () => {
+    await expect(
+      svc.savePart(OGG, ContentType.VIDEO, { filename: 'clip.ogg' }),
+    ).rejects.toThrow('invalid video');
+  });
+
+  it('detects freely under a GALLERY intent (a webm is VIDEO by signature)', async () => {
+    const { payload } = await svc.savePart(EBML, ContentType.GALLERY, {
+      filename: 'clip.webm',
+    });
+    expect(payload.family).toBe('VIDEO');
+    expect(payload.mimeType).toBe('video/webm');
+  });
+});
+
+describe('UploadService.consumeParts — multi-file drain', () => {
+  const svc = new UploadService({} as never);
+
+  it('collects file parts and companion form fields', async () => {
+    const r = await svc.consumeParts(
+      fakeReq(
+        [{ buf: PNG, filename: 'a.png', mimetype: 'image/png' }],
+        { w: '10', h: '20' },
+      ),
+      { maxBytes: 1024 },
+    );
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') {
+      expect(r.files).toHaveLength(1);
+      expect(r.files[0].filename).toBe('a.png');
+      expect(r.fields).toEqual({ w: '10', h: '20' });
     }
   });
 
-  it('rejects an empty unsupported file instead of reporting success', async () => {
-    const r = await svc.consumeChatImage(
-      fakeReq(Buffer.alloc(0), 'empty.heic', 'image/heic'),
+  it('drops empty parts and rejects with no-file when none remain', async () => {
+    const r = await svc.consumeParts(
+      fakeReq([{ buf: Buffer.alloc(0), filename: 'empty.bin' }]),
+      { maxBytes: 1024 },
     );
     expect(r).toEqual({ kind: 'rejected', reason: 'no-file' });
+  });
+
+  it('rejects a part exceeding the per-part cap as too-large', async () => {
+    const r = await svc.consumeParts(
+      fakeReq([{ buf: Buffer.alloc(10), filename: 'big.bin' }]),
+      { maxBytes: 4 },
+    );
+    expect(r).toEqual({ kind: 'rejected', reason: 'too-large' });
   });
 });
 
@@ -165,9 +231,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     expect(firstOffsets).toEqual([0]);
     expect(resumedOffsets).toEqual([10]);
     expect(
-      await readFile(
-        join(root, digest.slice(0, 2), digest.slice(2, 4), digest),
-      ),
+      await readFile(join(root, digest.slice(0, 2), digest.slice(2, 4), digest)),
     ).toEqual(body);
     expect(saved.digest).toBe(digest);
     expect(mediaAsset.publishReady).toHaveBeenCalledWith(

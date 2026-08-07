@@ -3,6 +3,26 @@
 > **Status (2026-08-07):** Phases 1–6 of the download-inbox plan are DONE and committed on `dev`
 > (`03270b7b` P1–4, `b9340ff3` P5, `284877b6` P6). Build green + 696/696 unit green. This file now
 > drives **Phase 7 only**. Session memory: `download-inbox-implementation.md`.
+>
+> **7a DONE** (committed `20743c8`, squashed into the re-baseline): migration `0001_gallery_and_upload.sql`
+> + `ContentType.GALLERY` + `FileSyncProgress.payload`; also folded in the `resolveForwardAssetAuth` fix
+> that unblocked the red tree.
+>
+> **7b DONE (functional, build + unit green):** type-agnostic `POST /upload` (4 typed routes removed),
+> `consumeParts`/`savePart`/`detectFamily`/`resolveOutboundFile`, `markOutboundFileSucceeded` +
+> `promoteOutboundBatchIfReady` (FileSyncProgress barrier + DELETE win-guard; fixes the old
+> `extractDigests[0]` single-digest bug), `SendMediaDto.fileCnt` + `GALLERY`, quota tick moved from
+> stage to upload (per file, by detected family), `publishResumable`/`complete` on the barrier path.
+> Specs rewritten: `upload.controller.spec`, `upload.service.spec`, `message-query.controller.spec`,
+> `media-stage.e2e` (now covers single + GALLERY + HEIC override), `resumable-upload.e2e`.
+>
+> **7b deferred cleanup (non-blocking):**
+> - Remove now-dead `UploadService` members (`save`/`saveFile`/`saveMedia`, `consumeChatImage`/
+>   `consumeFile`/`consumeVideo`/`consumeAudio`/`consumeMedia`, `IMG_EXT`, `ConsumedChatImage`/
+>   `ConsumedFile`/`ConsumedMedia` types) — unused by prod + unit specs; only `media-gc.e2e` still
+>   references `saveFile`, and that spec is already broken by Phase 5 (see next).
+> - `test/media-gc.e2e-spec.ts` is **pre-existing Phase 5 breakage** (asserts the removed `MediaAsset`
+>   status enum + `reserve`/`markReady`); needs a Phase-5-aligned rewrite, independent of Phase 7.
 
 ## Context
 

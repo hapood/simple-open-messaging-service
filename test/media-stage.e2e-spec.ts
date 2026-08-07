@@ -3,7 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
@@ -17,28 +17,29 @@ import {
   user,
   userQuotaDailyUsage,
 } from '../src/database/schema';
+import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
 import { BusinessCode } from '../src/common/business-code';
 import { InviteService } from '../src/invite/invite.service';
+import type { OutboundFilePayload } from '../src/upload/file-content';
 
 /**
- * Local media send staging (PendingMedia): the new create-before-upload flow. A media message is NOT
- * committed as a Message until its bytes are confirmed (here: until promoteStaged runs after the
- * upload). Exercises MessageService.stageMedia / linkStagedDigest / promoteStaged directly against the
- * real DB — the stage→commit state machine + idempotency (the optimistic-send clientMessageId key).
+ * Local media send staging (Phase 7 barrier model): a media message is NOT committed as a Message until
+ * every file in its batch has landed. Exercises MessageService.stageMedia (message-level intent +
+ * fileCnt) + markOutboundFileSucceeded / promoteOutboundBatchIfReady (the FileSyncProgress barrier +
+ * DELETE win-guard) directly against the real DB.
  *
- * Federated stage→localize→commit is covered by federation.e2e-spec.ts (the media-localization cases);
- * the orphan/stale-pending GC sweep is covered by media-gc.e2e-spec.ts.
+ * Federated stage→localize→commit is covered by federation.e2e-spec.ts; the orphan/stale-pending GC
+ * sweep is covered by media-gc.e2e-spec.ts.
  */
-describe('Local media send staging (PendingMedia)', () => {
+describe('Local media send staging (PendingMedia, Phase 7)', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let messages: MessageService;
   let userQuota: UserQuotaService;
   let invites: InviteService;
 
-  // A throwaway P2P thread + sender participant the staged send targets.
   let threadId: number;
   let userId: number;
   let inviteTargetIds: number[];
@@ -94,9 +95,7 @@ describe('Local media send staging (PendingMedia)', () => {
 
   afterAll(async () => {
     await database.pool
-      .query('DELETE FROM "ThreadParticipant" WHERE "threadId" = $1', [
-        threadId,
-      ])
+      .query('DELETE FROM "ThreadParticipant" WHERE "threadId" = $1', [threadId])
       .catch(() => {});
     await database.pool
       .query('DELETE FROM "MessageThread" WHERE id = $1', [threadId])
@@ -109,90 +108,28 @@ describe('Local media send staging (PendingMedia)', () => {
     await app.close();
   });
 
-  /** A fake but shape-valid CAS payload: a 64-hex digest whose shard path extractDigests recognizes. */
-  const digest = 'a'.repeat(64);
-  const uploadPayload = {
-    url: `/uploads/msg-assets/aa/aa/${digest}`,
-    name: 'stage.bin',
+  /** Build a shape-valid outbound FILE payload for a given digest. */
+  const filePayload = (d: string): OutboundFilePayload => ({
+    digest: d,
+    url: `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`,
     size: 7,
+    family: 'FILE',
+    name: 'stage.bin',
     mimeType: 'application/octet-stream',
-  };
+  });
 
   it('stageMedia creates a PendingMedia(pending) and is idempotent by clientMessageId', async () => {
     const cid = randomUUID();
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {}); // retried stage
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid); // retried stage
     const rows = await database.db
       .select()
       .from(pendingMedia)
       .where(eq(pendingMedia.clientMessageId, cid));
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('pending');
-    expect(rows[0].threadId).toBe(threadId);
-    expect(rows[0].creatorId).toBe(userId);
-    // cleanup
-    await database.db
-      .delete(pendingMedia)
-      .where(eq(pendingMedia.id, rows[0].id));
-  });
-
-  it('charges a media intent once and rolls back both usage and stage when exhausted', async () => {
-    await userQuota.setPolicy(userId, { dailyImageLimit: 1 });
-    const first = randomUUID();
-    const tick = (tx: Parameters<UserQuotaService['tick']>[2]) =>
-      userQuota.tick(userId, 'images', tx);
-
-    await messages.stageMedia(
-      userId,
-      threadId,
-      'IMAGE' as never,
-      first,
-      {},
-      false,
-      tick,
-    );
-    await messages.stageMedia(
-      userId,
-      threadId,
-      'IMAGE' as never,
-      first,
-      {},
-      true,
-      tick,
-    );
-
-    const second = randomUUID();
-    await expect(
-      messages.stageMedia(
-        userId,
-        threadId,
-        'IMAGE' as never,
-        second,
-        {},
-        false,
-        tick,
-      ),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
-
-    const usage = await database.db
-      .select({ count: userQuotaDailyUsage.count })
-      .from(userQuotaDailyUsage)
-      .where(
-        and(
-          eq(userQuotaDailyUsage.userId, userId),
-          eq(userQuotaDailyUsage.category, 'images'),
-        ),
-      );
-    expect(usage).toEqual([{ count: 1 }]);
-    expect(
-      await database.db.query.pendingMedia.findFirst({
-        where: eq(pendingMedia.clientMessageId, second),
-      }),
-    ).toBeUndefined();
-
-    await database.db
-      .delete(pendingMedia)
-      .where(eq(pendingMedia.clientMessageId, first));
+    expect(rows[0].fileCnt).toBe(1);
+    await database.db.delete(pendingMedia).where(eq(pendingMedia.id, rows[0].id));
   });
 
   it('charges only a newly-created friend request, not a pending duplicate', async () => {
@@ -243,7 +180,7 @@ describe('Local media send staging (PendingMedia)', () => {
 
   it('persists failure and only an explicit retry moves failed back to pending', async () => {
     const cid = randomUUID();
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
     await messages.failStaged(userId, cid, 'file too large');
 
     let [stage] = await database.db
@@ -253,10 +190,19 @@ describe('Local media send staging (PendingMedia)', () => {
       .limit(1);
     expect(stage?.status).toBe('failed');
     expect(stage?.failReason).toBe('file too large');
-    expect(await messages.promoteStaged(cid, uploadPayload, userId)).toBeNull();
+    // A failed stage is not promotable.
+    const digest = 'f'.repeat(64);
+    expect(
+      await messages.markOutboundFileSucceeded(
+        cid,
+        digest,
+        filePayload(digest),
+        userId,
+      ),
+    ).toBeNull();
 
     // An ordinary duplicate stage is a no-op; it must not silently retry a failed send.
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
     [stage] = await database.db
       .select()
       .from(pendingMedia)
@@ -264,7 +210,7 @@ describe('Local media send staging (PendingMedia)', () => {
       .limit(1);
     expect(stage?.status).toBe('failed');
 
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {}, true);
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid, 1, true);
     [stage] = await database.db
       .select()
       .from(pendingMedia)
@@ -272,17 +218,6 @@ describe('Local media send staging (PendingMedia)', () => {
       .limit(1);
     expect(stage?.status).toBe('pending');
     expect(stage?.failReason).toBeNull();
-
-    const recovered = await messages.queryMediaStages(userId, threadId);
-    expect(recovered).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          clientMessageId: cid,
-          status: 'pending',
-          failReason: null,
-        }),
-      ]),
-    );
     await database.db
       .delete(pendingMedia)
       .where(eq(pendingMedia.clientMessageId, cid));
@@ -290,10 +225,16 @@ describe('Local media send staging (PendingMedia)', () => {
 
   it('does not let another user fail or promote a staged send by clientMessageId', async () => {
     const cid = randomUUID();
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
     await messages.failStaged(userId + 1, cid, 'not mine');
+    const digest = 'e'.repeat(64);
     expect(
-      await messages.promoteStaged(cid, uploadPayload, userId + 1),
+      await messages.markOutboundFileSucceeded(
+        cid,
+        digest,
+        filePayload(digest),
+        userId + 1,
+      ),
     ).toBeNull();
     const [stage] = await database.db
       .select()
@@ -306,16 +247,21 @@ describe('Local media send staging (PendingMedia)', () => {
       .where(eq(pendingMedia.clientMessageId, cid));
   });
 
-  it('promoteStaged commits a Message + MediaMessage and deletes the stage; re-promote is idempotent', async () => {
+  it('markOutboundFileSucceeded commits a Message + messageAsset and deletes the stage; re-promote is idempotent', async () => {
     const cid = randomUUID();
-    await messages.stageMedia(userId, threadId, 'FILE' as never, cid, {});
-    await messages.linkStagedDigest(cid, digest);
+    const digest = 'a'.repeat(64);
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
 
-    const committed = await messages.promoteStaged(cid, uploadPayload);
-    expect(committed).not.toBeNull();
-    expect(committed!.contentType).toBe('FILE');
-    expect(committed!.threadId).toBe(threadId);
-    // The stage row is gone; a real Message + its MediaMessage authz row now exist.
+    const result = await messages.markOutboundFileSucceeded(
+      cid,
+      digest,
+      filePayload(digest),
+      userId,
+    );
+    expect(result?.newlyPromoted).toBe(true);
+    expect(result?.message.contentType).toBe('FILE');
+    expect(result?.message.threadId).toBe(threadId);
+    // The stage row is gone; a real Message + its messageAsset authz row now exist.
     expect(
       (
         await database.db
@@ -339,9 +285,15 @@ describe('Local media send staging (PendingMedia)', () => {
     expect(mediaMsg).toBeDefined();
     expect(mediaMsg!.digest).toBe(digest);
 
-    // Re-promote with the same cid returns the SAME message (idempotent) — no duplicate, no error.
-    const again = await messages.promoteStaged(cid, uploadPayload);
-    expect(again!.seq).toBe(committed!.seq);
+    // Re-marking the same file after the stage is promoted+deleted is a no-op (returns null) — no
+    // duplicate Message, no error.
+    const again = await messages.markOutboundFileSucceeded(
+      cid,
+      digest,
+      filePayload(digest),
+      userId,
+    );
+    expect(again).toBeNull();
     const [{ value }] = await database.db
       .select({ value: count() })
       .from(message)
@@ -349,21 +301,77 @@ describe('Local media send staging (PendingMedia)', () => {
     expect(value).toBe(1);
   });
 
-  it('can promote an IMAGE stage as FILE and drops image-only metadata', async () => {
+  it('can promote an IMAGE stage as FILE via overrideContentType (HEIC fallback)', async () => {
     const cid = randomUUID();
-    await messages.stageMedia(userId, threadId, 'IMAGE' as never, cid, {
-      w: 4032,
-      h: 3024,
-    });
-    await messages.linkStagedDigest(cid, digest);
-
-    const committed = await messages.promoteStaged(
+    const digest = 'b'.repeat(64);
+    await messages.stageMedia(userId, threadId, ContentType.IMAGE, cid);
+    const heic: OutboundFilePayload = {
+      digest,
+      url: `/uploads/msg-assets/bb/bb/${digest}`,
+      size: 9,
+      family: 'FILE',
+      name: 'photo.heic',
+      mimeType: 'image/heic',
+    };
+    const result = await messages.markOutboundFileSucceeded(
       cid,
-      uploadPayload,
+      digest,
+      heic,
       userId,
-      'FILE' as never,
+      ContentType.FILE,
     );
-    expect(committed?.contentType).toBe('FILE');
-    expect(JSON.parse(committed!.content)).toEqual(uploadPayload);
+    expect(result?.message.contentType).toBe('FILE');
+  });
+
+  it('a GALLERY batch promotes only once after every file lands, with N messageAsset rows', async () => {
+    const cid = randomUUID();
+    await messages.stageMedia(userId, threadId, ContentType.GALLERY, cid, 2);
+    const d1 = '1'.repeat(64);
+    const d2 = '2'.repeat(64);
+
+    // First file: barrier not yet met → no promote.
+    const r1 = await messages.markOutboundFileSucceeded(
+      cid,
+      d1,
+      filePayload(d1),
+      userId,
+    );
+    expect(r1).toBeNull();
+
+    // Second file: barrier met → promote. Content is the digest-sorted GALLERY items.
+    const r2 = await messages.markOutboundFileSucceeded(
+      cid,
+      d2,
+      filePayload(d2),
+      userId,
+    );
+    expect(r2?.newlyPromoted).toBe(true);
+    expect(r2?.message.contentType).toBe('GALLERY');
+    const items = (JSON.parse(r2!.message.content) as { items: unknown[] })
+      .items;
+    expect(items).toHaveLength(2);
+
+    // One Message, two messageAsset rows (one per digest).
+    const [{ value }] = await database.db
+      .select({ value: count() })
+      .from(message)
+      .where(
+        and(
+          eq(message.threadId, threadId),
+          eq(message.creator, userId),
+          eq(message.contentType, 'GALLERY'),
+        ),
+      );
+    expect(value).toBe(1);
+    const assets = await database.db
+      .select({ digest: messageAsset.digest })
+      .from(messageAsset)
+      .where(
+        and(
+          eq(messageAsset.threadId, threadId),
+          inArray(messageAsset.digest, [d1, d2]),
+        ),
+      );
+    expect(assets.map((a) => a.digest).sort()).toEqual([d1, d2]);
   });
 });

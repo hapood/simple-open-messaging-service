@@ -25,9 +25,11 @@ import {
   MAX_VIDEO_BYTES,
   parseFileExt,
   resolveFileType,
+  type OutboundFilePayload,
 } from './file-content.js';
+import { ContentType } from '../database/enums.js';
 import { MediaAssetService } from './media-asset.service.js';
-import { detectMedia } from './media-sig.js';
+import { detectMedia, type DetectedMedia } from './media-sig.js';
 import { AVATAR_SIZES, AVATAR_MAX } from './avatar-path.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
 
@@ -121,6 +123,24 @@ export type ConsumedMedia =
       kind: 'rejected';
       reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name';
     };
+
+/** One buffered file part collected by {@link UploadService.consumeParts} (Phase 7 type-agnostic upload). */
+export interface ConsumedPartFile {
+  mimetype: string;
+  buffer: Buffer;
+  filename?: string;
+}
+
+/** Multi-file multipart consumer result. The primary contract is ONE file per request (GALLERY is the
+ *  client sending N parallel single-file requests sharing one x-client-message-id); multiple files in
+ *  one request are tolerated, with companion form fields shared across them. */
+export type ConsumedParts =
+  | {
+      kind: 'ok';
+      files: ConsumedPartFile[];
+      fields: Record<string, string>;
+    }
+  | { kind: 'rejected'; reason: 'no-file' | 'too-large' };
 
 /**
  * Image / media upload service.
@@ -401,6 +421,213 @@ export class UploadService {
     return { kind: 'file', ...file, fields };
   }
 
+  // ─── Phase 7: type-agnostic upload (design doc §12.3) ─────────────────────────────────────
+
+  /**
+   * Type-agnostic multi-file multipart consumer (Phase 7). Iterates req.parts(), buffering each file
+   * part up to the global per-part cap and collecting the companion form fields ({name, mimeType, w,
+   * h, duration}) that describe it. Supersedes consumeChatImage/consumeFile/consumeVideo/consumeAudio:
+   * the upload transport no longer branches on media family — {@link savePart} detects family from the
+   * bytes.
+   *
+   * Backpressure: every file part is drained inside the loop (toBuffer before the iterator advances) —
+   * the same invariant consumeSingle owns. Deferring the drain stalls the parts() iterator once a file
+   * spans more than one read chunk. A 0-byte part is dropped; if no non-empty file arrived → 'no-file'.
+   */
+  async consumeParts(
+    req: FastifyRequest,
+    opts: { maxBytes: number },
+  ): Promise<ConsumedParts> {
+    const files: ConsumedPartFile[] = [];
+    const fields: Record<string, string> = {};
+    for await (const part of req.parts()) {
+      if (part.type !== 'file') {
+        fields[part.fieldname] = String(part.value);
+        continue;
+      }
+      let buffer: Buffer;
+      try {
+        buffer = await part.toBuffer();
+      } catch {
+        return { kind: 'rejected', reason: 'too-large' };
+      }
+      if (buffer.length > opts.maxBytes) {
+        return { kind: 'rejected', reason: 'too-large' };
+      }
+      if (buffer.length === 0) continue; // drop empty parts
+      files.push({
+        mimetype: part.mimetype,
+        buffer,
+        ...(part.filename ? { filename: part.filename } : {}),
+      });
+    }
+    if (files.length === 0) return { kind: 'rejected', reason: 'no-file' };
+    return { kind: 'ok', files, fields };
+  }
+
+  /**
+   * Detect the outbound file family from magic bytes WITHOUT persisting (Phase 7). Used by the upload
+   * route to enforce per-category byte/count quota BEFORE saveCas lands the file, so a quota failure
+   * leaves no orphan on disk. Mirrors the detection inside {@link savePart}.
+   */
+  detectFamily(buf: Buffer): OutboundFilePayload['family'] {
+    const detected = detectMedia(buf);
+    if (detected?.family === 'image') return 'IMAGE';
+    if (detected?.family === 'video') return 'VIDEO';
+    if (detected?.family === 'audio') return 'AUDIO';
+    return 'FILE';
+  }
+
+  /**
+   * Type-agnostic content-addressed save for one uploaded file (Phase 7). Detects the file family from
+   * the bytes (image/video/audio via magic-byte signatures, else FILE), derives the trusted on-disk
+   * extension, saves through the shared CAS pipeline, and returns the per-file payload the barrier-
+   * promote assembles message content from.
+   *
+   * `intent` is the staged message-level contentType (NOT a transport concern) and is used only to gate
+   * family mismatches the way the legacy typed routes did: an IMAGE intent whose bytes are not an
+   * inline-renderable image (HEIC/AVIF/…) is stored as a downloadable FILE and signals an
+   * `overrideContentType: FILE` so the message lands as FILE; a VIDEO/AUDIO intent rejects a
+   * non-matching container; AUDIO accepts the recorder-shared webm/mp4 containers (mapped to audio);
+   * GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
+   *
+   * Collapses the legacy save/saveFile/saveMedia trio into one type-agnostic writer.
+   */
+  async savePart(
+    buf: Buffer,
+    intent: ContentType,
+    opts: {
+      filename?: string;
+      declaredMime?: string;
+      w?: number;
+      h?: number;
+      duration?: number;
+    },
+  ): Promise<{ payload: OutboundFilePayload; overrideContentType?: ContentType }> {
+    if (buf.length === 0) {
+      throw new Error('empty upload part');
+    }
+    const resolved = this.resolveOutboundFile(
+      detectMedia(buf),
+      intent,
+      opts.filename ?? '',
+      opts.declaredMime ?? '',
+    );
+    const { url, digest, size } = await this.saveCas(resolved.ext, buf);
+    const payload: OutboundFilePayload = {
+      digest,
+      url,
+      size,
+      family: resolved.family,
+      ...(resolved.name !== undefined ? { name: resolved.name } : {}),
+      ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
+      ...(opts.w !== undefined ? { w: opts.w } : {}),
+      ...(opts.h !== undefined ? { h: opts.h } : {}),
+      ...(opts.duration !== undefined ? { duration: opts.duration } : {}),
+    };
+    return {
+      payload,
+      ...(resolved.overrideContentType
+        ? { overrideContentType: resolved.overrideContentType }
+        : {}),
+    };
+  }
+
+  /**
+   * Shared family/ext/mime/name resolution for one outbound file (Phase 7). Used by both
+   * {@link savePart} (in-memory buffer) and {@link publishResumable} (streamed tmp file) so the two
+   * paths gate identically on the staged `intent`:
+   *   - IMAGE intent whose bytes are not an inline-renderable image (HEIC/AVIF/…) → downloadable FILE,
+   *     signaling `overrideContentType: FILE`;
+   *   - VIDEO/AUDIO intent rejects a non-matching container (AUDIO accepts the recorder-shared
+   *     webm/mp4 containers, mapped to audio);
+   *   - GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
+   * Returns the detected family, the trusted on-disk ext, the display MIME (omitted for IMAGE), and the
+   * sanitized display name (omitted for IMAGE).
+   */
+  private resolveOutboundFile(
+    detected: DetectedMedia | null,
+    intent: ContentType,
+    filename: string,
+    declaredMime: string,
+  ): {
+    family: OutboundFilePayload['family'];
+    ext: string;
+    mime?: string;
+    name?: string;
+    overrideContentType?: ContentType;
+  } {
+    let family: OutboundFilePayload['family'];
+    let ext: string;
+    let overrideContentType: ContentType | undefined;
+    switch (intent) {
+      case ContentType.IMAGE:
+        if (detected?.family === 'image') {
+          family = 'IMAGE';
+          ext = detected.ext;
+        } else {
+          family = 'FILE';
+          ext = parseFileExt(filename) || 'bin';
+          overrideContentType = ContentType.FILE;
+        }
+        break;
+      case ContentType.FILE:
+        family = 'FILE';
+        ext = parseFileExt(filename) || 'bin';
+        break;
+      case ContentType.VIDEO:
+        if (!detected || detected.family !== 'video') {
+          throw new Error('invalid video');
+        }
+        family = 'VIDEO';
+        ext = detected.ext;
+        break;
+      case ContentType.AUDIO: {
+        const sharedAsAudio =
+          detected?.family === 'video' &&
+          (detected.ext === 'webm' || detected.ext === 'mp4');
+        if (!detected || (detected.family !== 'audio' && !sharedAsAudio)) {
+          throw new Error('invalid audio');
+        }
+        family = 'AUDIO';
+        ext = detected.ext;
+        break;
+      }
+      case ContentType.GALLERY:
+      default:
+        if (detected?.family === 'image') {
+          family = 'IMAGE';
+          ext = detected.ext;
+        } else if (detected?.family === 'video') {
+          family = 'VIDEO';
+          ext = detected.ext;
+        } else if (detected?.family === 'audio') {
+          family = 'AUDIO';
+          ext = detected.ext;
+        } else {
+          family = 'FILE';
+          ext = parseFileExt(filename) || 'bin';
+        }
+        break;
+    }
+    let mime: string | undefined;
+    let name: string | undefined;
+    if (family === 'FILE') {
+      const ft = resolveFileType(filename, declaredMime);
+      mime = ft.mime;
+      if (ext === 'bin' && ft.ext) ext = ft.ext;
+      name = this.sanitizeName(filename, ext);
+    } else if (family === 'VIDEO') {
+      mime = `video/${ext}`;
+      // VIDEO keeps the client's original display extension; the CAS blob uses the detected ext.
+      name = this.sanitizeName(filename, '');
+    } else if (family === 'AUDIO') {
+      mime = `audio/${ext}`;
+      name = this.sanitizeName(filename, '');
+    }
+    return { family, ext, mime, name, overrideContentType };
+  }
+
   /**
    * Second-pass magic-number check: read the real file-header bytes to confirm the declared image
    * format. consumeImage's coarse filter only looks at the client-declared mimetype (forgeable); this
@@ -485,16 +712,23 @@ export class UploadService {
     return { url, digest, ext, size: buf.length };
   }
 
-  /** Publish a completed resumable-upload temporary file without materializing it in memory. */
+  /**
+   * Publish a completed resumable-upload temporary file without materializing it in memory (Phase 7
+   * type-agnostic). Streams the tmp file once to SHA-256 it + capture the leading magic bytes, resolves
+   * the outbound family/ext/mime/name through the SAME {@link resolveOutboundFile} path as
+   * {@link savePart} (so buffered and resumable uploads gate identically on the staged `intent`),
+   * publishes the blob through the CAS tmp-then-rename path, and returns the per-file payload the
+   * barrier-promote assembles message content from. `companion` carries the client-probed w/h/duration.
+   */
   async publishResumable(
     tmpPath: string,
-    contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO',
+    intent: ContentType,
     originalName: string,
     declaredMime: string,
+    companion: { w?: number; h?: number; duration?: number },
   ): Promise<{
-    digest: string;
-    payload: Record<string, unknown>;
-    contentTypeOverride?: 'FILE';
+    payload: OutboundFilePayload;
+    overrideContentType?: ContentType;
   }> {
     const info = await statAsync(tmpPath);
     const hash = createHash('sha256');
@@ -510,29 +744,12 @@ export class UploadService {
       }
     }
     const header = Buffer.concat(headerChunks);
-    const detected = detectMedia(header);
-    let ext = parseFileExt(originalName) || 'bin';
-    let mime = declaredMime || 'application/octet-stream';
-    let contentTypeOverride: 'FILE' | undefined;
-    if (contentType === 'IMAGE') {
-      if (detected?.family === 'image') {
-        ext = detected.ext;
-      } else {
-        ext = 'bin';
-        contentTypeOverride = 'FILE';
-      }
-    } else if (contentType === 'VIDEO' || contentType === 'AUDIO') {
-      const family = contentType.toLowerCase();
-      const sharedAsAudio =
-        family === 'audio' &&
-        detected?.family === 'video' &&
-        (detected.ext === 'webm' || detected.ext === 'mp4');
-      if (!detected || (detected.family !== family && !sharedAsAudio)) {
-        throw new Error(`invalid ${family}`);
-      }
-      ext = detected.ext;
-      mime = `${family}/${detected.ext}`;
-    }
+    const resolved = this.resolveOutboundFile(
+      detectMedia(header),
+      intent,
+      originalName,
+      declaredMime,
+    );
     const digest = hash.digest('hex');
     const { abs, url } = this.casShardPath(digest);
     await mkdirAsync(dirname(abs), { recursive: true });
@@ -553,18 +770,24 @@ export class UploadService {
     } finally {
       if (!renamed) await unlinkAsync(publishTmp).catch(() => {});
     }
-    const name = this.sanitizeName(
-      originalName,
-      contentType === 'FILE' ? ext : '',
-    );
-    const payload =
-      contentType === 'IMAGE' && !contentTypeOverride
-        ? { url, size: info.size }
-        : { url, name, size: info.size, mimeType: mime };
-    return {
+    const payload: OutboundFilePayload = {
       digest,
+      url,
+      size: info.size,
+      family: resolved.family,
+      ...(resolved.name !== undefined ? { name: resolved.name } : {}),
+      ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
+      ...(companion.w !== undefined ? { w: companion.w } : {}),
+      ...(companion.h !== undefined ? { h: companion.h } : {}),
+      ...(companion.duration !== undefined
+        ? { duration: companion.duration }
+        : {}),
+    };
+    return {
       payload,
-      ...(contentTypeOverride ? { contentTypeOverride } : {}),
+      ...(resolved.overrideContentType
+        ? { overrideContentType: resolved.overrideContentType }
+        : {}),
     };
   }
 

@@ -11,11 +11,11 @@ import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { MessageService } from '../message/message.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import {
-  MAX_AUDIO_BYTES,
-  MAX_FILE_BYTES,
   MAX_FILE_NAME_LEN,
   MAX_VIDEO_BYTES,
+  type OutboundFilePayload,
 } from './file-content.js';
+import { ContentType } from '../database/enums.js';
 import { UploadService } from './upload.service.js';
 
 export const RESUMABLE_CHUNK_SIZE = 4 * 1024 * 1024;
@@ -29,7 +29,7 @@ interface UploadSessionView {
   offset: number;
   chunkSize: number;
   status: 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'ABORTED';
-  result?: Record<string, unknown>;
+  result?: OutboundFilePayload;
 }
 
 @Injectable()
@@ -61,18 +61,10 @@ export class ResumableUploadService {
         'media send is not pending',
       );
     }
-    if (!['IMAGE', 'FILE', 'VIDEO', 'AUDIO'].includes(stage.contentType)) {
-      return this.invalid('invalid media content type');
-    }
-    const limit =
-      stage.contentType === 'IMAGE'
-        ? UploadService.MAX_IMAGE_BYTES
-        : stage.contentType === 'VIDEO'
-          ? MAX_VIDEO_BYTES
-          : stage.contentType === 'AUDIO'
-            ? MAX_AUDIO_BYTES
-            : MAX_FILE_BYTES;
-    if (dto.totalBytes > limit) {
+    // Phase 7 type-agnostic: accept any staged media contentType (IMAGE/FILE/VIDEO/AUDIO/GALLERY).
+    // The per-type size caps are dropped in favor of the global multipart ceiling (MAX_VIDEO_BYTES)
+    // plus the per-account byte quota asserted below.
+    if (dto.totalBytes > MAX_VIDEO_BYTES) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'file too large',
@@ -80,7 +72,7 @@ export class ResumableUploadService {
     }
     await this.quota.assertWithinByteCap(
       userId,
-      stage.contentType === 'IMAGE' ? 'images' : 'largeFiles',
+      stage.contentType === ContentType.IMAGE ? 'images' : 'largeFiles',
       dto.totalBytes,
     );
     const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
@@ -210,8 +202,11 @@ export class ResumableUploadService {
       if (session.receivedBytes !== session.totalBytes) {
         return this.invalid('upload is incomplete');
       }
-      let stored = session.result as Record<string, unknown> | null;
-      if (!stored) {
+      let stored = session.result as {
+        payload?: OutboundFilePayload;
+        overrideContentType?: ContentType;
+      } | null;
+      if (!stored || !stored.payload) {
         const path = this.tmpPath(session.tmpKey);
         const actual = await stat(path);
         if (BigInt(actual.size) !== session.totalBytes) {
@@ -223,41 +218,41 @@ export class ResumableUploadService {
           .where(eq(uploadSession.id, session.id));
         const published = await this.upload.publishResumable(
           path,
-          session.contentType as 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO',
+          session.contentType as ContentType,
           session.originalName,
           session.mimeType,
+          // Resumable sessions do not yet carry client-probed w/h/duration (the DTO has no fields for
+          // them); the buffered /upload path does. assembleOutboundContent defaults missing dims to 0.
+          {},
         );
         stored = {
           payload: published.payload,
-          ...(published.contentTypeOverride
-            ? { contentTypeOverride: published.contentTypeOverride }
+          ...(published.overrideContentType
+            ? { overrideContentType: published.overrideContentType }
             : {}),
         };
         [session] = await this.database.db
           .update(uploadSession)
           .set({
             status: 'COMPLETING',
-            digest: published.digest,
+            digest: published.payload.digest,
             result: stored,
             updatedAt: new Date(),
           })
           .where(eq(uploadSession.id, session.id))
           .returning();
-        await this.messages.linkStagedDigest(
-          session.clientMessageId,
-          published.digest,
-          userId,
-        );
       }
-      const payload = stored.payload as Record<string, unknown>;
-      const promoted = await this.messages.promoteStaged(
+      // Phase 7 barrier promote: upsert the file's FileSyncProgress(SUCCEEDED) row + attempt the batch
+      // promote. markOutboundFileSucceeded returns the committed Message iff THIS call newly committed
+      // it (the win-guard makes a concurrent/race re-complete a no-op) — only then fire the fan-out.
+      const result = await this.messages.markOutboundFileSucceeded(
         session.clientMessageId,
-        payload,
+        stored.payload!.digest,
+        stored.payload!,
         userId,
-        stored.contentTypeOverride as 'FILE' | undefined,
+        stored.overrideContentType,
       );
-      if (!promoted) throw new Error('media stage could not be promoted');
-      void this.fanout.dispatch(promoted);
+      if (result?.newlyPromoted) void this.fanout.dispatch(result.message);
       const [completed] = await this.database.db
         .update(uploadSession)
         .set({
@@ -344,7 +339,7 @@ export class ResumableUploadService {
 
   private view(session: typeof uploadSession.$inferSelect): UploadSessionView {
     const stored = session.result as {
-      payload?: Record<string, unknown>;
+      payload?: OutboundFilePayload;
     } | null;
     return {
       uploadId: session.uploadId,

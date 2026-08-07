@@ -67,7 +67,6 @@ describe('sequential resumable uploads', () => {
       threadId,
       'FILE' as never,
       clientMessageId,
-      {},
     );
     const initialized = await uploads.init(userId, {
       clientMessageId,

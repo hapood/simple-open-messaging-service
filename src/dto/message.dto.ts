@@ -164,44 +164,6 @@ export class SendForwardDto {
 }
 
 /**
- * Client-probed display metadata for a staged media send. Only the fields the upload route does NOT
- * itself derive are carried here: w/h (pixels) for image/video and duration (seconds) for video/audio.
- * The CAS url, filename, byte size, and MIME are all server-generated at upload and injected at promote,
- * so they never appear in (and cannot be forged via) this DTO.
- */
-export class SendMediaMetaDto {
-  @ApiProperty({
-    required: false,
-    description: 'Image/video pixel width (client-probed)',
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100000)
-  w?: number;
-
-  @ApiProperty({
-    required: false,
-    description: 'Image/video pixel height (client-probed)',
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100000)
-  h?: number;
-
-  @ApiProperty({
-    required: false,
-    description: 'Video/audio duration in seconds (client-probed)',
-  })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Max(86400)
-  duration?: number;
-}
-
-/**
  * Stage a media send BEFORE the upload: the server creates a PendingMedia(pending) row carrying
  * clientMessageId (+ optional display meta) so a crash between staging and upload leaves an
  * attributable record. No Message or seq is created yet — the upload route promotes the stage to a
@@ -216,11 +178,11 @@ export class SendMediaDto {
   threadId!: number;
 
   @ApiProperty({
-    enum: ['IMAGE', 'FILE', 'VIDEO', 'AUDIO'],
+    enum: ['IMAGE', 'FILE', 'VIDEO', 'AUDIO', 'GALLERY'],
     description:
-      'Media content type being staged (PURE_TEXT uses /send-message directly).',
+      'Media content type being staged (PURE_TEXT uses /send-message directly). GALLERY is a multi-asset bundle of N files.',
   })
-  @IsIn(['IMAGE', 'FILE', 'VIDEO', 'AUDIO'])
+  @IsIn(['IMAGE', 'FILE', 'VIDEO', 'AUDIO', 'GALLERY'])
   contentType!: ContentType;
 
   @ApiProperty({
@@ -232,6 +194,18 @@ export class SendMediaDto {
 
   @ApiProperty({
     required: false,
+    default: 1,
+    description:
+      'Number of files in this batch. 1 for single-file types (the default); N (≤10) for GALLERY. Each file is uploaded separately sharing the same clientMessageId; the Nth upload promotes the batch.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  fileCnt?: number;
+
+  @ApiProperty({
+    required: false,
     default: false,
     description:
       'Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.',
@@ -239,17 +213,6 @@ export class SendMediaDto {
   @IsOptional()
   @IsBoolean()
   retry?: boolean;
-
-  @ApiProperty({
-    required: false,
-    type: SendMediaMetaDto,
-    description:
-      'Client-probed display metadata (w/h, duration). Omitted fields are not staged.',
-  })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => SendMediaMetaDto)
-  meta?: SendMediaMetaDto;
 }
 
 /** Query the caller's uncommitted local media sends in one conversation. */

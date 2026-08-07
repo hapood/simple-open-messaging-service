@@ -510,23 +510,15 @@ export class MessageController {
     } else {
       await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
     }
-    const meta: Record<string, unknown> = {};
-    if (dto.meta?.w !== undefined) meta.w = dto.meta.w;
-    if (dto.meta?.h !== undefined) meta.h = dto.meta.h;
-    if (dto.meta?.duration !== undefined) meta.duration = dto.meta.duration;
+    // Phase 7: stage only message-level intent + fileCnt. Per-file display metadata rides with each
+    // upload part; the daily count tick moved to upload time (charged per file, by detected family).
     await this.messageService.stageMedia(
       req.user.userId,
       dto.threadId,
       dto.contentType,
       dto.clientMessageId,
-      meta,
+      dto.fileCnt ?? 1,
       dto.retry === true,
-      (tx) =>
-        this.userQuota.tick(
-          req.user.userId,
-          dto.contentType === ContentType.IMAGE ? 'images' : 'largeFiles',
-          tx,
-        ),
     );
     return { clientMessageId: dto.clientMessageId };
   }

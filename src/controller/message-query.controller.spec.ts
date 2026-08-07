@@ -113,21 +113,17 @@ describe('MessageController.queryMessages truncation', () => {
   });
 });
 
-describe('MessageController.sendMedia quota category', () => {
+describe('MessageController.sendMedia staging (Phase 7)', () => {
   it.each([
-    [ContentType.IMAGE, 'images'],
-    [ContentType.FILE, 'largeFiles'],
-    [ContentType.VIDEO, 'largeFiles'],
-    [ContentType.AUDIO, 'largeFiles'],
-  ] as const)(
-    'maps %s to %s when the stage is created',
-    async (contentType, category) => {
-      const stageMedia = vi
-        .fn()
-        .mockImplementation(async (...args: unknown[]) => {
-          const beforeStageCreate = args[6] as (tx: object) => Promise<void>;
-          await beforeStageCreate({});
-        });
+    ContentType.IMAGE,
+    ContentType.FILE,
+    ContentType.VIDEO,
+    ContentType.AUDIO,
+    ContentType.GALLERY,
+  ])(
+    'stages %s with fileCnt and does NOT tick quota (the tick moved to upload time)',
+    async (contentType) => {
+      const stageMedia = vi.fn().mockResolvedValue({ clientMessageId: 'cid' });
       const tick = vi.fn().mockResolvedValue(undefined);
       const controller = new MessageController(
         { stageMedia } as never,
@@ -158,7 +154,59 @@ describe('MessageController.sendMedia quota category', () => {
         clientMessageId: '00000000-0000-4000-8000-000000000001',
       });
 
-      expect(tick).toHaveBeenCalledWith(7, category, {});
+      // Stage carries only message-level intent + fileCnt (default 1). Quota is charged per FILE at
+      // upload time (by detected family), NOT here.
+      expect(stageMedia).toHaveBeenCalledWith(
+        7,
+        42,
+        contentType,
+        '00000000-0000-4000-8000-000000000001',
+        1,
+        false,
+      );
+      expect(tick).not.toHaveBeenCalled();
     },
   );
+
+  it('forwards fileCnt for a GALLERY batch', async () => {
+    const stageMedia = vi.fn().mockResolvedValue({ clientMessageId: 'cid' });
+    const controller = new MessageController(
+      { stageMedia } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        assertP2PWritable: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { tick: vi.fn() } as never,
+    );
+    const req = {
+      user: { userId: 7 },
+      threadAccess: {
+        threadType: 'P2P',
+        membershipActive: true,
+        groupDissolved: false,
+      },
+    } as unknown as FastifyRequest;
+
+    await controller.sendMedia(req, {
+      threadId: 42,
+      contentType: ContentType.GALLERY,
+      clientMessageId: '00000000-0000-4000-8000-000000000002',
+      fileCnt: 4,
+    });
+
+    expect(stageMedia).toHaveBeenCalledWith(
+      7,
+      42,
+      ContentType.GALLERY,
+      '00000000-0000-4000-8000-000000000002',
+      4,
+      false,
+    );
+  });
 });

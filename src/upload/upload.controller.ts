@@ -25,7 +25,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
-import { extractDigests } from './file-content.js';
+import { MAX_VIDEO_BYTES } from './file-content.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
 import {
@@ -34,20 +34,21 @@ import {
 } from './resumable-upload.service.js';
 
 /**
- * Image upload: multipart/form-data, field file=<image bytes> + w/h (the dimensions the frontend read
- * via createImageBitmap). w/h are parsed by consumeImage (no DTO class; ValidationPipe is not involved)
- * and passed through verbatim.
+ * Phase 7 type-agnostic upload (design doc §12.3). ONE `POST /upload` accepts 1 or N file parts,
+ * magic-byte-detects each file's family, and returns `{digest,url,size,family,name?,mimeType?,w?,
+ * h?,duration?}` per part. Media TYPE is a message-level concern, not a transport concern — the
+ * staged contentType (`x-client-message-id`) supplies the upload `intent` for family gating
+ * (IMAGE→FILE HEIC fallback, VIDEO/AUDIO container checks); GALLERY detects freely.
  *
- * The four media routes (/upload, /upload/file, /upload/video, /upload/audio) double as the PROMOTE
- * step of a staged media send: when the request carries an `x-client-message-id` header (set by the
- * client after POST /send-media), the route — after writing the file — links the staged record to the
- * asset's digest and promotes it to a real Message (allocating seq, creating the MediaMessage authz
- * row, deleting the PendingMedia), then runs the unified fan-out. Without the header the route behaves
- * exactly as before (a plain upload). /upload/avatar never carries the header → never promotes.
+ * The route doubles as the PROMOTE step of a staged media send: each part upserts a
+ * FileSyncProgress(OUTBOUND, SUCCEEDED) row for the batch, and the part that completes the barrier
+ * (`fileCnt` files) promotes the staged PendingMedia into a real Message via the win-guard
+ * transaction, then fires the unified fan-out. `/upload/avatar` never carries a client-message-id →
+ * never promotes; it stays a separate sharp-pipeline route.
  *
  * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope. Validation /
- * handled failures throw BusinessException (after persisting a staged failure, via failUpload); the global
- * AllExceptionsFilter renders the error body.
+ * handled failures throw BusinessException (after persisting a staged failure, via failUpload); the
+ * global AllExceptionsFilter renders the error body.
  */
 @ApiTags('upload')
 @Controller()
@@ -113,73 +114,80 @@ export class UploadController {
     return this.resumable.complete(req.user.userId, uploadId);
   }
 
+  /**
+   * Type-agnostic media upload + staged-send promote (Phase 7). Accepts 1 or N file parts; each part
+   * carries its companion form fields (w/h/duration). For a single file the per-file payload object is
+   * returned; for multiple files in one request, `{ items: [...] }`. GALLERY sends are N parallel
+   * single-file requests sharing one `x-client-message-id`; the Nth request's barrier check promotes
+   * the batch into one Message and fires the fan-out.
+   */
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload')
   @ApiOperation({
     summary:
-      'Upload an image (returns url + width/height provided by the client)',
+      'Upload one or more media files (type-agnostic; promotes a staged send at the batch barrier)',
   })
   @ApiConsumes('multipart/form-data')
   async upload(@Request() req: FastifyRequest) {
-    const img = await this.withStageFailure(req, () =>
-      this.uploadService.consumeChatImage(req),
+    const clientMessageId = this.clientMessageId(req);
+    if (!clientMessageId) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'missing x-client-message-id',
+        HttpStatus.OK,
+      );
+    }
+    const intent = await this.messageService.getStagedIntent(
+      clientMessageId,
+      req.user.userId,
     );
-    if (img.kind === 'rejected') {
+    if (!intent) {
       return this.failUpload(
         req,
         BusinessCode.VALIDATION_FAILED,
-        this.imageRejectMessage(img.reason),
+        'media send is not pending',
       );
     }
-    await this.admitUpload(req, 'images', img.buffer.length);
-    // A phone/WebView photo picker can return formats outside the inline-image whitelist (commonly
-    // HEIC/HEIF/AVIF). Preserve those bytes through the generic-file pipeline instead of failing the
-    // send. The staged IMAGE intent is committed as FILE; the authoritative NEW_MESSAGE echo
-    // reconciles the optimistic bubble, so the client needs no retry or response-kind branch.
-    if (img.kind === 'fallback-file') {
-      const data = await this.withStageFailure(req, () =>
-        this.uploadService.saveFile(
-          img.mimetype,
-          img.filename,
-          img.buffer,
-          true,
+    const consumed = await this.withStageFailure(req, () =>
+      this.uploadService.consumeParts(req, { maxBytes: MAX_VIDEO_BYTES }),
+    );
+    if (consumed.kind === 'rejected') {
+      return this.failUpload(
+        req,
+        BusinessCode.VALIDATION_FAILED,
+        this.partRejectMessage(consumed.reason),
+      );
+    }
+    const companion = this.companionFields(consumed.fields);
+    const payloads = [];
+    for (const file of consumed.files) {
+      // Quota BEFORE saveCas: detect family from bytes, enforce the per-category byte cap + count tick,
+      // so a quota failure leaves no orphan file on disk.
+      const family = this.uploadService.detectFamily(file.buffer);
+      await this.admitPartUpload(req, family, file.buffer.length);
+      const saved = await this.withStageFailure(req, () =>
+        this.uploadService.savePart(file.buffer, intent, {
+          filename: file.filename,
+          declaredMime: file.mimetype,
+          ...companion,
+        }),
+      );
+      const result = await this.withStageFailure(req, () =>
+        this.messageService.markOutboundFileSucceeded(
+          clientMessageId,
+          saved.payload.digest,
+          saved.payload,
+          req.user.userId,
+          saved.overrideContentType,
         ),
       );
-      await this.withStageFailure(req, () =>
-        this.maybePromote(req, data, 'FILE'),
-      );
-      return data;
+      // Only the request that newly commits the Message fires the fan-out (win-guard makes the rest
+      // no-ops). Promote may be null while the barrier is not yet met (more files still to come).
+      if (result?.newlyPromoted) void this.fanout.dispatch(result.message);
+      payloads.push(saved.payload);
     }
-    // A claimed PNG/JPEG/GIF/WebP whose bytes do not match is still a valid attachment send. Store it
-    // through the generic-file path, which is forced to download and cannot execute inline.
-    if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      const data = await this.withStageFailure(req, () =>
-        this.uploadService.saveFile(
-          img.mimetype,
-          img.filename,
-          img.buffer,
-          true,
-        ),
-      );
-      await this.withStageFailure(req, () =>
-        this.maybePromote(req, data, 'FILE'),
-      );
-      return data;
-    }
-    const { url, size } = await this.withStageFailure(req, () =>
-      this.uploadService.save(img.mimetype, img.buffer),
-    );
-    // Promote a staged IMAGE send if this upload carries a client-message-id. The promote payload is the
-    // full server-authored content {url,w,h,size} — `size` (the real buffer length from saveCas) MUST be
-    // carried here so the persisted Message.content carries it; parseImageContent reads it back to render
-    // the meta bar (omit it and every reloaded/echoed image shows "unknown size"). Mirrors FILE/VIDEO/
-    // AUDIO, which all pass the complete server-generated payload. The staged meta for an image is empty
-    // — w/h come from consumeImage above.
-    await this.withStageFailure(req, () =>
-      this.maybePromote(req, { url, w: img.w, h: img.h, size }),
-    );
-    return { url, w: img.w, h: img.h, size };
+    return payloads.length === 1 ? payloads[0] : { items: payloads };
   }
 
   /**
@@ -226,134 +234,19 @@ export class UploadController {
     }
   }
 
-  /**
-   * Generic file upload: multipart/form-data, field file=<binary>. Returns the server-generated
-   * { url, name, size, mimeType } the client stores verbatim as a FILE message's content. The
-   * client cannot forge any of these — url/name/mimeType are produced by the server, size is the
-   * real buffer length, and parseFileContent re-validates the shape on send.
-   */
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('upload/file')
-  @ApiOperation({
-    summary: 'Upload a generic file (returns url/name/size/mimeType)',
-  })
-  @ApiConsumes('multipart/form-data')
-  async uploadFile(@Request() req: FastifyRequest) {
-    const f = await this.withStageFailure(req, () =>
-      this.uploadService.consumeFile(req),
-    );
-    if (f.kind === 'rejected') {
-      return this.failUpload(
-        req,
-        BusinessCode.VALIDATION_FAILED,
-        this.fileRejectMessage(f.reason),
-      );
-    }
-    await this.admitUpload(req, 'largeFiles', f.buffer.length);
-    const data = await this.withStageFailure(req, () =>
-      this.uploadService.saveFile(f.mimetype, f.filename, f.buffer),
-    );
-    // Promote a staged FILE send if a client-message-id is present (data is already the {url,name,size,
-    // mimeType} FILE content shape; staged meta for a file is empty).
-    await this.withStageFailure(req, () => this.maybePromote(req, data));
-    return data;
-  }
-
-  /**
-   * Video upload: multipart/form-data, field file=<binary>. Backend validates only the container
-   * family via magic bytes (detectMedia) — NO probe/extract/transcode. w/h/duration are client-probed
-   * (<video> loadedmetadata) and carried in the VIDEO message content; the server neither reads nor
-   * trusts them. Returns {url, name, size, mimeType}; the client stores it verbatim as VIDEO content.
-   */
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('upload/video')
-  @ApiOperation({
-    summary:
-      'Upload a video (magic-byte validated; width/height/duration probed client-side)',
-  })
-  @ApiConsumes('multipart/form-data')
-  async uploadVideo(@Request() req: FastifyRequest) {
-    const v = await this.withStageFailure(req, () =>
-      this.uploadService.consumeVideo(req),
-    );
-    if (v.kind === 'rejected') {
-      return this.failUpload(
-        req,
-        BusinessCode.VALIDATION_FAILED,
-        this.mediaRejectMessage(v.reason, 'video'),
-      );
-    }
-    await this.admitUpload(req, 'largeFiles', v.buffer.length);
-    const data = await this.withStageFailure(req, () =>
-      this.uploadService.saveMedia(v.ext, v.mime, v.filename, v.buffer),
-    );
-    // Promote a staged VIDEO send if a client-message-id is present. data is {url,name,size,mimeType};
-    // the staged meta {w,h,duration} is merged in at promote → the full VIDEO content shape.
-    await this.withStageFailure(req, () => this.maybePromote(req, data));
-    return data;
-  }
-
-  /** Audio upload: same contract as video with the audio family + cap. */
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('upload/audio')
-  @ApiOperation({
-    summary: 'Upload audio (magic-byte validated; duration probed client-side)',
-  })
-  @ApiConsumes('multipart/form-data')
-  async uploadAudio(@Request() req: FastifyRequest) {
-    const a = await this.withStageFailure(req, () =>
-      this.uploadService.consumeAudio(req),
-    );
-    if (a.kind === 'rejected') {
-      return this.failUpload(
-        req,
-        BusinessCode.VALIDATION_FAILED,
-        this.mediaRejectMessage(a.reason, 'audio'),
-      );
-    }
-    await this.admitUpload(req, 'largeFiles', a.buffer.length);
-    const data = await this.withStageFailure(req, () =>
-      this.uploadService.saveMedia(a.ext, a.mime, a.filename, a.buffer),
-    );
-    // Promote a staged AUDIO send if a client-message-id is present. data is {url,name,size,mimeType};
-    // the staged meta {duration} is merged in at promote → the full AUDIO content shape.
-    const promoted = await this.withStageFailure(req, () =>
-      this.maybePromote(req, data),
-    );
-    return { ...data, promoted };
-  }
-
-  /** Map a ConsumedMedia image rejection reason to a user-facing message. */
+  /** Map a ConsumedImage image rejection reason to a user-facing message (avatar path). */
   private imageRejectMessage(
-    reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
+    reason: 'no-file' | 'wrong-type' | 'too-large',
   ): string {
     if (reason === 'no-file') return 'no file';
     if (reason === 'too-large') return 'file too large';
     return 'invalid image';
   }
 
-  /** Map a ConsumedMedia file rejection reason to a user-facing message. */
-  private fileRejectMessage(
-    reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
-  ): string {
+  /** Map a type-agnostic consumeParts rejection reason to a user-facing message. */
+  private partRejectMessage(reason: 'no-file' | 'too-large'): string {
     if (reason === 'no-file') return 'no file';
-    if (reason === 'too-large') return 'file too large';
-    if (reason === 'bad-name') return 'invalid filename';
-    return 'invalid file type';
-  }
-
-  /** Map a ConsumedMedia media (video/audio) rejection reason to a user-facing message. */
-  private mediaRejectMessage(
-    reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
-    kind: 'video' | 'audio',
-  ): string {
-    if (reason === 'no-file') return 'no file';
-    if (reason === 'too-large') return 'file too large';
-    if (reason === 'bad-name') return 'invalid filename';
-    return `invalid ${kind}`;
+    return 'file too large';
   }
 
   /** Persist a handled upload rejection as a staged failure, then throw it as a BusinessException
@@ -402,23 +295,25 @@ export class UploadController {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
   }
 
-  /** Enforce the account's real-byte cap before CAS persistence. Staged sends consumed their daily
-   * count atomically with PendingMedia creation; legacy/plain uploads have no stage, so admission here
-   * is their formal acceptance point and consumes the count before storage work begins. */
-  private async admitUpload(
+  /**
+   * Enforce the account's per-category byte cap + daily count tick BEFORE CAS persistence (Phase 7).
+   * The count tick moved here from stage time: it is charged per uploaded file, by the server-detected
+   * family, so a mixed GALLERY batch correctly ticks images vs large files. A failure persists a staged
+   * failure (failUpload) and aborts the send.
+   */
+  private async admitPartUpload(
     req: FastifyRequest,
-    category: 'images' | 'largeFiles',
+    family: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
     bytes: number,
   ): Promise<void> {
+    const category = family === 'IMAGE' ? 'images' : 'largeFiles';
     try {
       await this.userQuota.assertWithinByteCap(
         req.user.userId,
         category,
         bytes,
       );
-      if (!this.clientMessageId(req)) {
-        await this.userQuota.tickStandalone(req.user.userId, category);
-      }
+      await this.userQuota.tickStandalone(req.user.userId, category, 1);
     } catch (error) {
       if (error instanceof BusinessException) {
         return this.failUpload(req, error.bizCode, error.message, error.data);
@@ -427,39 +322,25 @@ export class UploadController {
     }
   }
 
-  /**
-   * Promote a staged media send when the upload carries an `x-client-message-id` header (the client
-   * set it after POST /send-media). Links the staged record to the asset's digest (so a crash between
-   * this and the promote leaves an attributable orphan), promotes it to a real Message — merging
-   * `contentPayload` (the server-generated url/name/size/mimeType) with the staged client-probed meta
-   * (w/h/duration) — and runs the unified fan-out. Without the header this is a plain upload (no-op).
-   * A missing/stale stage → promoteStaged returns null → nothing is promoted (the upload still succeeds
-   * and its result is returned; the orphan file is reclaimable by the GC).
-   */
-  private async maybePromote(
-    req: FastifyRequest,
-    contentPayload: Record<string, unknown>,
-    contentTypeOverride?: 'FILE',
-  ): Promise<boolean> {
-    const clientMessageId = this.clientMessageId(req);
-    if (!clientMessageId) return false; // plain upload — no staged send to promote
-    const digest = extractDigests(String(contentPayload.url))[0];
-    if (digest) {
-      await this.messageService.linkStagedDigest(
-        clientMessageId,
-        digest,
-        req.user.userId,
-      );
-    }
-    const promoted = await this.messageService.promoteStaged(
-      clientMessageId,
-      contentPayload,
-      req.user.userId,
-      contentTypeOverride,
-    );
-    // Fire-and-forget: promoteStaged already committed the Message (the upload response confirms that);
-    // the recipient fan-out runs off the request critical path, same as the text send path.
-    if (promoted) void this.fanout.dispatch(promoted);
-    return promoted !== null;
+  /** Extract the client-probed companion fields (w/h/duration) from the multipart form fields. The
+   *  filename + declared MIME come from the file part itself; only dimensions/duration ride as separate
+   *  form fields (the backend never parses media content for them). */
+  private companionFields(fields: Record<string, string>): {
+    w?: number;
+    h?: number;
+    duration?: number;
+  } {
+    const num = (key: string): number | undefined => {
+      const value = Number(fields[key]);
+      return Number.isFinite(value) && value > 0 ? value : undefined;
+    };
+    const w = num('w');
+    const h = num('h');
+    const duration = num('duration');
+    return {
+      ...(w !== undefined ? { w } : {}),
+      ...(h !== undefined ? { h } : {}),
+      ...(duration !== undefined ? { duration } : {}),
+    };
   }
 }
