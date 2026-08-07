@@ -4888,11 +4888,13 @@ export class FederationService implements OnModuleDestroy {
       t === ContentType.FILE ||
       t === ContentType.VIDEO ||
       t === ContentType.AUDIO ||
-      t === ContentType.LINK
+      t === ContentType.LINK ||
+      t === ContentType.GALLERY
     );
   }
 
-  /** Map an inbound message contentType to the FileSyncProgress kind (LINK's image counts as IMAGE). */
+  /** Map an inbound message contentType to the FileSyncProgress kind (LINK's image counts as IMAGE;
+   *  GALLERY's per-item rows are tagged BUNDLE — the per-item family lives in the message content). */
   private fileSyncKindFor(
     t: ContentType,
   ): 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'BUNDLE' {
@@ -4904,6 +4906,8 @@ export class FederationService implements OnModuleDestroy {
         return 'VIDEO';
       case ContentType.AUDIO:
         return 'AUDIO';
+      case ContentType.GALLERY:
+        return 'BUNDLE';
       default:
         return 'FILE';
     }

@@ -158,6 +158,17 @@ export function derivePreview(type: ContentType, content: string): string {
       return '[File]';
     case ContentType.AUDIO:
       return '[Voice message]';
+    case ContentType.GALLERY: {
+      // A multi-asset bundle: surface the item count when the content parses.
+      try {
+        const c = JSON.parse(content) as { items?: unknown[] };
+        return c.items?.length
+          ? `[Gallery · ${c.items.length}]`
+          : '[Gallery]';
+      } catch {
+        return '[Gallery]';
+      }
+    }
     case ContentType.FORWARD: {
       try {
         const c = JSON.parse(content) as { summaryLines?: string[] };
@@ -374,7 +385,8 @@ export class MessageService implements OnModuleInit {
           type === ContentType.FILE ||
           type === ContentType.VIDEO ||
           type === ContentType.AUDIO ||
-          type === ContentType.LINK
+          type === ContentType.LINK ||
+          type === ContentType.GALLERY
         ) {
           const digests = extractDigests(storedContent);
           if (digests.length) {
@@ -914,6 +926,18 @@ export class MessageService implements OnModuleInit {
           ? { image: link['image'], imageShape: 'thumbnail' }
           : {};
       }
+      if (contentType === ContentType.GALLERY) {
+        // Reply thumbnail = the first item that carries a CAS url (digest-sorted order).
+        const items = Array.isArray(content['items'])
+          ? (content['items'] as Array<Record<string, unknown>>)
+          : [];
+        const firstUrl = items
+          .map((it) => it['url'])
+          .find((u): u is string => typeof u === 'string');
+        return firstUrl !== undefined
+          ? { image: firstUrl, imageShape: 'thumbnail' }
+          : {};
+      }
     } catch {
       // Malformed legacy content degrades to a text-only reply summary.
     }
@@ -1113,6 +1137,14 @@ export class MessageService implements OnModuleInit {
           OR (
             "contentType" IN ('IMAGE', 'FILE', 'VIDEO', 'AUDIO')
             AND (content::jsonb ->> 'name') ILIKE ${`%${keyword}%`}
+          )
+          OR (
+            "contentType" = 'GALLERY'
+            AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(content::jsonb -> 'items') AS item
+              WHERE (item ->> 'name') ILIKE ${`%${keyword}%`}
+            )
           )
         )
       ORDER BY seq DESC

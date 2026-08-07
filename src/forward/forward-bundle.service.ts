@@ -151,6 +151,7 @@ export class ForwardBundleService {
       ContentType.AUDIO,
       ContentType.FILE,
       ContentType.LINK,
+      ContentType.GALLERY,
       ContentType.FORWARD,
     ]);
     if (!directTypes.has(visible.contentType)) {
@@ -173,7 +174,12 @@ export class ForwardBundleService {
       visible.contentType === ContentType.FILE ||
       visible.contentType === ContentType.VIDEO ||
       visible.contentType === ContentType.AUDIO;
-    if (isAttachedMedia || visible.contentType === ContentType.LINK) {
+    // GALLERY carries N item digests; single-file attached media must reference exactly one.
+    if (
+      isAttachedMedia ||
+      visible.contentType === ContentType.GALLERY ||
+      visible.contentType === ContentType.LINK
+    ) {
       const digests = extractDigests(visible.content);
       if (isAttachedMedia && digests.length !== 1) {
         throw new BusinessException(
@@ -764,6 +770,35 @@ export class ForwardBundleService {
             );
           }
         }
+        // GALLERY: validate the items[] envelope and that every item digest is bound to a bundle asset
+        // (the single-media bind check above only covers IMAGE/FILE/VIDEO/AUDIO).
+        if (message.contentType === ContentType.GALLERY) {
+          let galleryParsed: unknown;
+          try {
+            galleryParsed = JSON.parse(message.content);
+          } catch {
+            throw this.invalidWire('invalid forward gallery content');
+          }
+          const galleryItems = Array.isArray(
+            (galleryParsed as { items?: unknown })?.items,
+          )
+            ? (galleryParsed as { items: unknown[] }).items
+            : null;
+          if (!galleryItems) {
+            throw this.invalidWire('invalid forward gallery content');
+          }
+          const galleryDigests = extractDigests(message.content);
+          if (
+            galleryDigests.length === 0 ||
+            galleryDigests.some(
+              (d) => !bundle.assets.some((a) => a.digest === d),
+            )
+          ) {
+            throw this.invalidWire(
+              'forward gallery content is not bound to bundle assets',
+            );
+          }
+        }
       }
       const messageIds = new Set(
         bundle.manifest.messages.flatMap((message) =>
@@ -922,6 +957,9 @@ export class ForwardBundleService {
     contentType: ContentType,
     content: string,
   ): Promise<ForwardAssetDocument[]> {
+    if (contentType === ContentType.GALLERY) {
+      return this.galleryAssetsFromContent(content);
+    }
     const kind =
       contentType === ContentType.IMAGE
         ? 'image'
@@ -954,6 +992,54 @@ export class ForwardBundleService {
         bytes: Math.max(1, meta.size ?? Number(row?.bytes ?? 1n)),
         ...(meta.name ? { filename: meta.name } : {}),
         ...(meta.mimeType ? { mime: meta.mimeType } : {}),
+      });
+    }
+    return result;
+  }
+
+  /** Build one ForwardAssetDocument per GALLERY item, each tagged with the item's own kind (a gallery may
+   *  mix image/video/file/audio). Digest comes from the item's CAS url; bytes fall back to the live
+   *  MediaAsset row when the item omits size. */
+  private async galleryAssetsFromContent(
+    content: string,
+  ): Promise<ForwardAssetDocument[]> {
+    let items: Array<Record<string, unknown>> = [];
+    try {
+      const parsed = JSON.parse(content) as { items?: unknown };
+      if (Array.isArray(parsed.items)) {
+        items = parsed.items as Array<Record<string, unknown>>;
+      }
+    } catch {
+      // malformed gallery content → no assets
+    }
+    const result: ForwardAssetDocument[] = [];
+    for (const item of items) {
+      const url = typeof item['url'] === 'string' ? item['url'] : undefined;
+      const digest = url ? extractDigests(url)[0] : undefined;
+      if (!digest) continue;
+      const k = item['kind'];
+      const kind: ForwardAssetDocument['kind'] =
+        k === 'IMAGE'
+          ? 'image'
+          : k === 'VIDEO'
+            ? 'video'
+            : k === 'AUDIO'
+              ? 'audio'
+              : 'file';
+      const name = typeof item['name'] === 'string' ? item['name'] : undefined;
+      const mimeType =
+        typeof item['mimeType'] === 'string' ? item['mimeType'] : undefined;
+      const size = typeof item['size'] === 'number' ? item['size'] : undefined;
+      const row = await this.database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, digest),
+      });
+      result.push({
+        digest,
+        kind,
+        extension: parseFileExt(name ?? '') || 'bin',
+        bytes: Math.max(1, size ?? Number(row?.bytes ?? 1n)),
+        ...(name ? { filename: name } : {}),
+        ...(mimeType ? { mime: mimeType } : {}),
       });
     }
     return result;
@@ -1020,8 +1106,10 @@ export class ForwardBundleService {
             ? '[视频]'
             : message.contentType === ContentType.AUDIO
               ? '[语音]'
-              : message.contentType === ContentType.FORWARD
-                ? '[转发消息]'
+              : message.contentType === ContentType.GALLERY
+                ? '[图集]'
+                : message.contentType === ContentType.FORWARD
+                  ? '[转发消息]'
                 : toDisplayText(
                     parseTextMessageContent(message.content)?.text ?? '',
                   )
@@ -1138,6 +1226,30 @@ export function localizeForwardMediaContent(
   content: string,
   assets: ForwardAssetDocument[],
 ): string {
+  // GALLERY: rebind every item's url to the canonical CAS path from its digest (only for items whose
+  // digest is bound to a bundle asset — unbound items are left untouched).
+  if (contentType === ContentType.GALLERY) {
+    try {
+      const value = JSON.parse(content) as { items?: unknown };
+      if (!Array.isArray(value.items)) return content;
+      const bound = new Set(assets.map((a) => a.digest));
+      const items = (value.items as Array<Record<string, unknown>>).map(
+        (item) => {
+          const url =
+            typeof item['url'] === 'string' ? (item['url'] as string) : '';
+          const digest = url ? extractDigests(url)[0] : undefined;
+          if (!digest || !bound.has(digest)) return item;
+          return {
+            ...item,
+            url: `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
+          };
+        },
+      );
+      return JSON.stringify({ ...value, items });
+    } catch {
+      return content;
+    }
+  }
   const kind = forwardMediaKind(contentType);
   if (!kind) return content;
   const digests = extractDigests(content);

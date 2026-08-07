@@ -31,7 +31,8 @@ export class MediaAccessService {
       visible.contentType === ContentType.FILE ||
       visible.contentType === ContentType.VIDEO ||
       visible.contentType === ContentType.AUDIO ||
-      visible.contentType === ContentType.LINK
+      visible.contentType === ContentType.LINK ||
+      visible.contentType === ContentType.GALLERY
     ) {
       const direct = await this.database.db.query.messageAsset.findFirst({
         where: and(
