@@ -24,40 +24,20 @@ import {
 } from '@/components/ui/dialog';
 import { formatApiError } from '@/lib/format-error';
 
-const CATEGORIES: QuotaCategory[] = [
-  'messages',
-  'images',
-  'largeFiles',
-  'requests',
-];
-type CountKey =
-  | 'dailyMsgLimit'
-  | 'dailyImageLimit'
-  | 'dailyLargeFileLimit'
-  | 'dailyRequestLimit';
-type ByteKey = 'maxImageBytes' | 'maxLargeFileBytes';
+// Count dimensions surfaced as usage cards. `signals` is global-only and not shown here.
+const CATEGORIES: QuotaCategory[] = ['messages', 'files', 'requests'];
+type CountKey = 'dailyMsgLimit' | 'dailyFileLimit' | 'dailyRequestLimit';
 const COUNT_FIELDS: { key: CountKey; cat: QuotaCategory }[] = [
   { key: 'dailyMsgLimit', cat: 'messages' },
-  { key: 'dailyImageLimit', cat: 'images' },
-  { key: 'dailyLargeFileLimit', cat: 'largeFiles' },
+  { key: 'dailyFileLimit', cat: 'files' },
   { key: 'dailyRequestLimit', cat: 'requests' },
 ];
-const BYTE_FIELDS: { key: ByteKey; cat: QuotaCategory }[] = [
-  { key: 'maxImageBytes', cat: 'images' },
-  { key: 'maxLargeFileBytes', cat: 'largeFiles' },
-];
-const MB = 1024 * 1024;
-
 const COUNT_OVERRIDE_BY_CATEGORY: Record<QuotaCategory, CountKey> = {
   messages: 'dailyMsgLimit',
-  images: 'dailyImageLimit',
-  largeFiles: 'dailyLargeFileLimit',
+  files: 'dailyFileLimit',
   requests: 'dailyRequestLimit',
 };
-
-function formatMegabytes(bytes: number): string {
-  return (bytes / MB).toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
+const MB = 1024 * 1024;
 
 export function quotaRisk(node: QuotaNode | undefined): number | undefined {
   if (!node?.usage) return undefined;
@@ -96,7 +76,7 @@ export function PeerQuotaPanel({ node }: { node: QuotaNode }) {
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {CATEGORIES.map((category) => {
               const usage = node.usage?.[category];
               const count = usage?.count ?? 0;
@@ -168,35 +148,6 @@ export function PeerQuotaPanel({ node }: { node: QuotaNode }) {
               );
             })}
           </div>
-          <div className="rounded-md border bg-muted/30 p-3">
-            <div className="text-sm font-medium">{t('quota.itemCaps')}</div>
-            <div className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
-              {(['images', 'largeFiles'] as const).map((category) => {
-                const key =
-                  category === 'images' ? 'maxImageBytes' : 'maxLargeFileBytes';
-                return (
-                  <div key={category} className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">
-                      {t(`quota.col.${category}`)}
-                    </span>
-                    <span>
-                      {node.effectiveCaps[category] === 0
-                        ? t('quota.disabled')
-                        : t('quota.megabytes', {
-                            count: formatMegabytes(
-                              node.effectiveCaps[category],
-                            ),
-                          })}{' '}
-                      ·{' '}
-                      {node.overrides[key] == null
-                        ? t('quota.source.default')
-                        : t('quota.source.custom')}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
           <p className="text-xs text-muted-foreground">
             {t('quota.resetHint')}
           </p>
@@ -220,46 +171,40 @@ function EditQuotaDialog({
   const setLimits = useSetQuotaNodeLimits();
   const [counts, setCounts] = useState<Record<CountKey, string>>({
     dailyMsgLimit: node.overrides.dailyMsgLimit?.toString() ?? '',
-    dailyImageLimit: node.overrides.dailyImageLimit?.toString() ?? '',
-    dailyLargeFileLimit: node.overrides.dailyLargeFileLimit?.toString() ?? '',
+    dailyFileLimit: node.overrides.dailyFileLimit?.toString() ?? '',
     dailyRequestLimit: node.overrides.dailyRequestLimit?.toString() ?? '',
   });
-  const [mbs, setMbs] = useState<Record<ByteKey, string>>({
-    maxImageBytes:
-      node.overrides.maxImageBytes == null
-        ? ''
-        : String(node.overrides.maxImageBytes / MB),
-    maxLargeFileBytes:
-      node.overrides.maxLargeFileBytes == null
-        ? ''
-        : String(node.overrides.maxLargeFileBytes / MB),
-  });
+  // File total size override, edited in MB (wire value is bytes).
+  const [fileBytesMb, setFileBytesMb] = useState<string>(
+    node.overrides.dailyFileBytesLimit == null
+      ? ''
+      : String(node.overrides.dailyFileBytesLimit / MB),
+  );
 
   const parseCount = (value: string): number | null =>
     value.trim() === '' ? null : Number(value);
-  const parseMb = (value: string): number | null =>
-    value.trim() === '' ? null : Number(value) * MB;
   const invalidCount = Object.values(counts).some((value) => {
     if (value.trim() === '') return false;
     const n = Number(value);
     return !Number.isSafeInteger(n) || n < 0;
   });
-  const invalidMb = Object.values(mbs).some((value) => {
-    if (value.trim() === '') return false;
-    const bytes = Number(value) * MB;
+  const invalidMb = (() => {
+    if (fileBytesMb.trim() === '') return false;
+    const bytes = Number(fileBytesMb) * MB;
     return !Number.isSafeInteger(bytes) || bytes < 0;
-  });
+  })();
   const invalid = invalidCount || invalidMb;
 
   const onSave = async () => {
     if (invalid) return;
     const overrides: QuotaOverrides = {
       dailyMsgLimit: parseCount(counts.dailyMsgLimit),
-      dailyImageLimit: parseCount(counts.dailyImageLimit),
-      dailyLargeFileLimit: parseCount(counts.dailyLargeFileLimit),
+      dailyFileLimit: parseCount(counts.dailyFileLimit),
       dailyRequestLimit: parseCount(counts.dailyRequestLimit),
-      maxImageBytes: parseMb(mbs.maxImageBytes),
-      maxLargeFileBytes: parseMb(mbs.maxLargeFileBytes),
+      dailyFileBytesLimit:
+        fileBytesMb.trim() === ''
+          ? null
+          : Math.round(Number(fileBytesMb) * MB),
     };
     try {
       await setLimits.mutateAsync({ domain: node.domain, overrides });
@@ -297,25 +242,16 @@ function EditQuotaDialog({
               />
             </div>
           ))}
-          {BYTE_FIELDS.map((field) => (
-            <div key={field.key} className="flex flex-col gap-1.5">
-              <Label>
-                {t('quota.maxBytes', { cat: t(`quota.col.${field.cat}`) })}
-              </Label>
-              <Input
-                type="number"
-                min={0}
-                value={mbs[field.key]}
-                onChange={(event) =>
-                  setMbs((state) => ({
-                    ...state,
-                    [field.key]: event.target.value,
-                  }))
-                }
-                placeholder={t('quota.placeholder.default')}
-              />
-            </div>
-          ))}
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('quota.breaker.dimFileBytes')} (MB)</Label>
+            <Input
+              type="number"
+              min={0}
+              value={fileBytesMb}
+              onChange={(event) => setFileBytesMb(event.target.value)}
+              placeholder={t('quota.placeholder.default')}
+            />
+          </div>
           <p className="col-span-2 text-xs text-muted-foreground">
             {invalid ? t('quota.invalid') : t('quota.editHint')}
           </p>

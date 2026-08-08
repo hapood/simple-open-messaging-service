@@ -42,7 +42,7 @@ import {
   or,
   sql,
 } from 'drizzle-orm';
-import { UploadService } from '../upload/upload.service.js';
+import { CasOversizeError, UploadService } from '../upload/upload.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
@@ -3754,11 +3754,16 @@ export class FederationService implements OnModuleDestroy {
    * pull failure (peer transiently down — the reconnect sweep retries). Bounded by the conversation count.
    */
   async drainPendingPulls(domain: string): Promise<void> {
+    // Per-peer circuit breaker: a tripped peer gets no NEW pull loops (in-flight work is allowed to finish).
+    if (this.quota.isTripped(domain)) return;
     if (this.drainingPulls.has(domain)) return;
     this.drainingPulls.add(domain);
     let progressed = false; // did we clear ≥1 hint this drain? gates the re-trigger (anti-spin)
     try {
       for (;;) {
+        // Re-check each iteration so a breaker that trips mid-drain stops the chase after the current page
+        // (bounds the msg overshoot to ≤ one page), rather than draining every queued hint.
+        if (this.quota.isTripped(domain)) break;
         const snap = this.snapshotPendingPulls(domain);
         if (snap.length === 0) break;
         // Dispatch one hint by shape: `toAccount` is a group → group pull (origin does per-author hub-leg,
@@ -4020,7 +4025,6 @@ export class FederationService implements OnModuleDestroy {
             response.federationVersion,
           );
           if (created?.kind === 'pending') {
-            const category = this.mediaCategory(m.contentType as ContentType);
             void this.runFileSyncBatch(
               created.batchId,
               (digest, offset) =>
@@ -4031,7 +4035,6 @@ export class FederationService implements OnModuleDestroy {
                   e.fromDomain,
                   e.toAccount,
                   m.originSeq,
-                  category,
                   undefined,
                   offset,
                 ),
@@ -4210,7 +4213,6 @@ export class FederationService implements OnModuleDestroy {
         );
         if (created?.kind === 'pending') {
           // Group media: /get_file?toAccount=<group>&fromAccount=<creator> (roster-gated). Group account is `toAccount`.
-          const category = this.mediaCategory(m.contentType as ContentType);
           void this.runFileSyncBatch(
             created.batchId,
             (digest, offset) =>
@@ -4221,7 +4223,6 @@ export class FederationService implements OnModuleDestroy {
                 m.creator.domain,
                 toAccount,
                 m.originSeq,
-                category,
                 undefined,
                 offset,
               ),
@@ -4317,7 +4318,6 @@ export class FederationService implements OnModuleDestroy {
             response.federationVersion,
           );
           if (created?.kind === 'pending') {
-            const category = this.mediaCategory(m.contentType as ContentType);
             void this.runFileSyncBatch(
               created.batchId,
               (digest, offset) =>
@@ -4328,7 +4328,6 @@ export class FederationService implements OnModuleDestroy {
                   e.fromDomain,
                   e.toAccount,
                   m.originSeq,
-                  category,
                   undefined,
                   offset,
                 ),
@@ -4705,6 +4704,9 @@ export class FederationService implements OnModuleDestroy {
             direction: 'INBOUND',
             kind: this.fileSyncKindFor(incoming.contentType as ContentType),
             status: 'PENDING',
+            // TODO(quota): populate bytesTotal from the message content's per-file size so driveFileSync can
+            // pre-check the file-total-size dimension (strict-before) and detect oversize. Until then inbound
+            // downloads charge file CNT only; outbound uploads charge cnt + bytes at admitUpload.
           })
           .onConflictDoNothing();
       }
@@ -4779,17 +4781,18 @@ export class FederationService implements OnModuleDestroy {
         bundleId: localForwardBundleId,
       });
     }
-    await this.quota.tick(
-      fetchedFromDomain,
-      'messages',
-      tx,
-      forwardClosure
-        ? forwardClosure.bundles.reduce(
-            (sum, bundle) => sum + bundle.manifest.messages.length,
-            0,
-          )
-        : 1,
-    );
+    // Quota (land-then-mark): the outer forward counts as ONE message; each bundle in the closure counts as
+    // ONE file (regardless of inner asset/message count). Inner messages no longer count individually, and
+    // bundle asset bytes are intentionally excluded (bundles contribute 0 to file total size).
+    await this.quota.tickLax(fetchedFromDomain, 'messages', tx, 1);
+    if (forwardClosure) {
+      await this.quota.tickLax(
+        fetchedFromDomain,
+        'files',
+        tx,
+        forwardClosure.bundles.length,
+      );
+    }
     return { kind: 'message', message, storedContent, localForwardBundleId };
   }
 
@@ -4853,12 +4856,6 @@ export class FederationService implements OnModuleDestroy {
           columns: { digest: true },
         });
         if (have) continue;
-        const category: 'images' | 'largeFiles' =
-          asset.kind === 'avatar' ||
-          asset.kind === 'image' ||
-          asset.kind === 'link'
-            ? 'images'
-            : 'largeFiles';
         await this.upload.saveCasFromStream(
           asset.extension,
           (offset) =>
@@ -4869,7 +4866,6 @@ export class FederationService implements OnModuleDestroy {
               authorization.fromDomain,
               authorization.toAccount,
               authorization.sourceSeq,
-              category,
               remoteRootBundleId,
               offset,
             ),
@@ -4913,13 +4909,6 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** Quota category for fetching a digest from the peer (matches the former localizeMedia split). */
-  private mediaCategory(t: ContentType): 'images' | 'largeFiles' {
-    return t === ContentType.IMAGE || t === ContentType.LINK
-      ? 'images'
-      : 'largeFiles';
-  }
-
   /**
    * Drive one file's localization to a terminal state and update its FileSyncProgress row (§12.4/§12.6).
    * Dedup: a digest already local (live MediaAsset) skips the network fetch. A clean failure (transport
@@ -4932,6 +4921,18 @@ export class FederationService implements OnModuleDestroy {
     digest: string,
     fetchChunks: (offset: number) => AsyncIterable<Buffer>,
   ): Promise<void> {
+    // Load declared size + origin domain + the tick-once guard up front so quota is charged exactly once
+    // per file across retries/crash-resume.
+    const row = await this.database.db.query.fileSyncProgress.findFirst({
+      where: eq(tables.fileSyncProgress.id, progressId),
+      columns: {
+        bytesTotal: true,
+        originDomain: true,
+        quotaCounted: true,
+      },
+    });
+    const originDomain = row?.originDomain;
+    const declaredBytes = row?.bytesTotal ?? 0n;
     try {
       const have = await this.database.db.query.mediaAsset.findFirst({
         where: and(
@@ -4941,13 +4942,57 @@ export class FederationService implements OnModuleDestroy {
         columns: { digest: true },
       });
       if (!have) {
-        await this.upload.saveCasFromStream('', fetchChunks, digest);
+        // Charge file quota ONCE (quotaCounted guard): file cnt + declared bytes. Strict-before — preCheckFile
+        // throws if the claim would exceed the daily cap (the file is left PENDING/FAILED, not re-charged on
+        // retry). Skipped when originDomain is absent (e.g. outbound rows have no peer to charge).
+        if (originDomain && !row?.quotaCounted) {
+          await this.quota.preCheckFile(originDomain, 1, declaredBytes);
+          await this.quota.tickLax(originDomain, 'files');
+          if (declaredBytes > 0n)
+            await this.quota.tickFileBytes(originDomain, declaredBytes);
+          await this.database.db
+            .update(tables.fileSyncProgress)
+            .set({ quotaCounted: true })
+            .where(eq(tables.fileSyncProgress.id, progressId));
+        }
+        await this.database.db
+          .update(tables.fileSyncProgress)
+          .set({
+            status: 'DOWNLOADING',
+            bytesTotal: declaredBytes,
+            updatedAt: new Date(),
+          })
+          .where(eq(tables.fileSyncProgress.id, progressId));
+        let lastWrite = 0;
+        await this.upload.saveCasFromStream('', fetchChunks, digest, {
+          // No declaredBytes → no oversize detection (size unknown for this row); bytesTotal still tracked.
+          declaredBytes:
+            declaredBytes > 0n ? Number(declaredBytes) : undefined,
+          onProgress: (received) => {
+            // Throttle DB writes to ~every 256 KiB — progress is advisory; per-chunk writes would hammer NAS.
+            if (received - lastWrite >= 256 * 1024) {
+              lastWrite = received;
+              void this.database.db
+                .update(tables.fileSyncProgress)
+                .set({
+                  bytesReceived: BigInt(received),
+                  updatedAt: new Date(),
+                })
+                .where(eq(tables.fileSyncProgress.id, progressId));
+            }
+          },
+        });
       }
       await this.database.db
         .update(tables.fileSyncProgress)
         .set({ status: 'SUCCEEDED', updatedAt: new Date() })
         .where(eq(tables.fileSyncProgress.id, progressId));
     } catch (error) {
+      // Oversize: the stream exceeded the declared size — charge the excess toward file total size so the
+      // breaker reflects reality, then surface as FAILED (the file is abandoned). Conservative: never subtract.
+      if (error instanceof CasOversizeError && originDomain) {
+        await this.quota.addFileBytesDelta(originDomain, error.extraBytes);
+      }
       await this.database.db
         .update(tables.fileSyncProgress)
         .set({
@@ -4982,6 +5027,10 @@ export class FederationService implements OnModuleDestroy {
           inArray(tables.fileSyncProgress.status, ['PENDING', 'FAILED']),
         ),
       });
+      // Per-peer circuit breaker: if this batch's origin peer is tripped, start no new downloads for it
+      // (in-flight downloads continue; promote is still allowed so an already-complete batch finalizes).
+      const originDomain = rows[0]?.originDomain;
+      if (originDomain && this.quota.isTripped(originDomain)) return;
       await Promise.all(
         rows.map((row) =>
           this.driveFileSync(row.id, row.digest, (offset) =>
@@ -4997,7 +5046,7 @@ export class FederationService implements OnModuleDestroy {
    * Admin-driven retry of a stalled inbound media batch (design doc §12.7). Resets files frozen in
    * DOWNLOADING (a crashed driver) or FAILED back to PENDING, re-derives the download routing purely
    * from persisted state — `fromAccount`/`fromDomain` from the creator, `toAccount` from the thread
-   * (the group `!account` or the local P2P participant), `originDomain`/`originSeq`/`category` from the
+   * (the group `!account` or the local P2P participant), `originDomain`/`originSeq` from the
    * batch — then fire-and-forgets runFileSyncBatch. Routing is never persisted because it is fully
    * derivable from the same creator+thread identity that determines message placement. Returns the
    * number of stuck files reset (FAILED/DOWNLOADING → PENDING); the admin observes progress via the
@@ -5078,7 +5127,6 @@ export class FederationService implements OnModuleDestroy {
     const fromDomain = creator.domain;
     const originDomain = batch.originDomain;
     const originSeq = batch.originSeq;
-    const category = this.mediaCategory(batch.contentType as ContentType);
 
     // Fire-and-forget: the per-batch mutex serializes this against any in-flight original driver.
     void this.runFileSyncBatch(
@@ -5091,7 +5139,6 @@ export class FederationService implements OnModuleDestroy {
           fromDomain,
           toAccount,
           originSeq,
-          category,
           undefined,
           offset,
         ),
@@ -5223,7 +5270,7 @@ export class FederationService implements OnModuleDestroy {
       await tx
         .delete(tables.pendingMedia)
         .where(eq(tables.pendingMedia.id, batch.id));
-      await this.quota.tick(batch.originDomain!, 'messages', tx, 1);
+      await this.quota.tickLax(batch.originDomain!, 'messages', tx, 1);
       return {
         message,
         threadId,
@@ -5301,15 +5348,8 @@ export class FederationService implements OnModuleDestroy {
     sourceSeq: number,
     expectedFederationVersion: number,
   ): Promise<void> {
-    // Card assets use the image quota; FILE/VIDEO/AUDIO use the large-file quota.
-    // (schema declares it redundant), so classify by the message contentType. Enforced inside
-    // fetchMediaChunks after the byte size is known; the dedup path below (file already local) skips
-    // fetchMediaChunks entirely — counted once on first pull.
-    const category: 'images' | 'largeFiles' =
-      msg.contentType === ContentType.IMAGE ||
-      msg.contentType === ContentType.LINK
-        ? 'images'
-        : 'largeFiles';
+    // Quota is charged inside driveFileSync (quotaCounted-guarded, type-agnostic) once the byte size is
+    // known; the dedup path below (file already local) skips fetchMediaChunks entirely — counted once.
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
@@ -5336,7 +5376,6 @@ export class FederationService implements OnModuleDestroy {
                 fromDomain,
                 toAccount,
                 sourceSeq,
-                category,
                 undefined,
                 offset,
               ),
@@ -5633,7 +5672,6 @@ export class FederationService implements OnModuleDestroy {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-    category: 'images' | 'largeFiles',
     forwardBundleId?: string,
     startOffset = 0,
   ): AsyncGenerator<Buffer> {
@@ -5646,7 +5684,6 @@ export class FederationService implements OnModuleDestroy {
     let offset = startOffset;
     let total: number | null = null;
     let markedAlive = false;
-    let quotaChecked = false;
 
     while (total === null || offset < total) {
       const reqEnd =
@@ -5659,28 +5696,12 @@ export class FederationService implements OnModuleDestroy {
         markedAlive = true;
       }
       if (unit.fallback200) {
-        // Quota: enforce the byte cap + tick ONCE before streaming. On the no-Range path Content-Length
-        // is the only size hint; if absent the cap is best-effort (skipped) but the COUNT still ticks.
-        if (!quotaChecked) {
-          const len = Number(unit.res.headers.get('content-length') ?? 0);
-          if (len > 0)
-            await this.quota.assertUnderCap(peerDomain, category, len);
-          await this.quota.tick(peerDomain, category);
-          quotaChecked = true;
-        }
-        // Peer ignored Range: stream the full body once and stop (no resume, no loop).
+        // Peer ignored Range: stream the full body once and stop (no resume, no loop). Quota for regular
+        // media is charged in driveFileSync (quotaCounted-guarded); bundle assets never charge here.
         for await (const piece of this.webBody(unit.res)) yield piece;
         return;
       }
       total = unit.total;
-      // Quota: the 206 Content-Range total is the authoritative size — enforce the byte cap + tick ONCE
-      // before the first chunk. Over cap/limit → throws → saveCasFromStream gets no bytes (nothing
-      // written); localizeMedia's catch leaves the message inert. 413/429 never demote the peer.
-      if (!quotaChecked) {
-        await this.quota.assertUnderCap(peerDomain, category, total);
-        await this.quota.tick(peerDomain, category);
-        quotaChecked = true;
-      }
       let unitLen = unit.end - unit.start + 1;
 
       // Accumulate the unit body with retry-on-abort. A body-read error or a byte-count mismatch

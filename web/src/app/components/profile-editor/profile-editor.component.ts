@@ -82,8 +82,7 @@ export class ProfileEditorComponent {
   readonly quotaExpanded = signal(false);
   readonly quotaCategories: PersonalQuotaCategory[] = [
     'messages',
-    'images',
-    'largeFiles',
+    'files',
     'requests',
   ];
   readonly quotaStatus = computed(() => {

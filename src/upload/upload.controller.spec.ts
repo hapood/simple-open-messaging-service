@@ -22,7 +22,6 @@ function setup({
     consumeParts: vi
       .fn()
       .mockResolvedValue({ kind: 'ok', files, fields }),
-    detectFamily: vi.fn().mockReturnValue('IMAGE'),
     savePart: vi.fn().mockResolvedValue({
       payload: {
         digest: 'd'.repeat(64),
@@ -40,8 +39,10 @@ function setup({
     failStaged: vi.fn().mockResolvedValue(undefined),
   };
   const userQuota = {
-    assertWithinByteCap: vi.fn().mockResolvedValue(undefined),
-    tickStandalone: vi.fn().mockResolvedValue(undefined),
+    assertCanSend: vi.fn().mockResolvedValue(undefined),
+    preCheckFile: vi.fn().mockResolvedValue(undefined),
+    tickLax: vi.fn().mockResolvedValue(undefined),
+    tickFileBytes: vi.fn().mockResolvedValue(undefined),
   };
   const fanout = { dispatch: vi.fn() };
   const controller = new UploadController(
@@ -68,21 +69,18 @@ function setup({
 }
 
 describe('UploadController type-agnostic upload (Phase 7)', () => {
-  it('admits + ticks each file by detected family, then promotes at the barrier', async () => {
+  it('charges file cnt + bytes at admission before saving, then promotes at the barrier', async () => {
     const { controller, uploadService, userQuota, messageService, req } =
       setup();
 
     await controller.upload(req);
 
-    // Quota BEFORE save: family detected from bytes, byte cap + count tick by family.
-    expect(uploadService.detectFamily).toHaveBeenCalledOnce();
-    expect(userQuota.assertWithinByteCap).toHaveBeenCalledWith(
-      7,
-      'images',
-      9, // buffer length
-    );
-    expect(userQuota.tickStandalone).toHaveBeenCalledWith(7, 'images', 1);
-    expect(userQuota.tickStandalone.mock.invocationCallOrder[0]).toBeLessThan(
+    // Quota BEFORE save: breaker gate + strict-before file claim + cnt/byte tick, type-agnostic.
+    expect(userQuota.assertCanSend).toHaveBeenCalledWith(7);
+    expect(userQuota.preCheckFile).toHaveBeenCalledWith(7, 1, 9n);
+    expect(userQuota.tickLax).toHaveBeenCalledWith(7, 'files');
+    expect(userQuota.tickFileBytes).toHaveBeenCalledWith(7, 9n);
+    expect(userQuota.tickFileBytes.mock.invocationCallOrder[0]).toBeLessThan(
       uploadService.savePart.mock.invocationCallOrder[0],
     );
     expect(uploadService.savePart).toHaveBeenCalledOnce();
@@ -137,10 +135,10 @@ describe('UploadController type-agnostic upload (Phase 7)', () => {
     expect(uploadService.savePart).not.toHaveBeenCalled();
   });
 
-  it('marks the stage failed and skips save when quota rejects the byte cap', async () => {
+  it('marks the stage failed and skips save when quota rejects the file claim', async () => {
     const { controller, messageService, uploadService, userQuota, req } =
       setup();
-    userQuota.assertWithinByteCap.mockRejectedValue(
+    userQuota.preCheckFile.mockRejectedValue(
       new BusinessException(BusinessCode.QUOTA_EXCEEDED, 'quota exceeded'),
     );
 

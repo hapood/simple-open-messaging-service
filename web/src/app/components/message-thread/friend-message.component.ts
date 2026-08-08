@@ -392,6 +392,10 @@ export class MessageThreadComponent implements OnDestroy {
       this.userMsgTrd()?.type === 'GROUP' &&
       this.userMsgTrd()?.group?.dissolvedAt != null,
   );
+  /** Per-user quota breaker tripped for the local user → sending/uploading is paused server-side. Set when a
+   *  send returns QUOTA_EXCEEDED; cleared on the next successful send (which implies the breaker was lifted,
+   *  e.g. an admin added quota or UTC midnight reset it). */
+  readonly sendPaused = signal(false);
   /** The media viewer must also suppress the native sibling composer, which otherwise sits outside the
    *  WebView DOM and can remain visible above a CDK overlay. The browser composer uses the same flag. */
   readonly mediaViewerOpen = computed(() =>
@@ -2377,6 +2381,9 @@ export class MessageThreadComponent implements OnDestroy {
       res.code === BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE ||
       res.code === BusinessCode.FEDERATION_CAPABILITY_DISABLED
     ) {
+      // A local-user quota trip means this user's send/upload is paused until reset/admin action — surface
+      // the persistent composer banner so they aren't left guessing why retries keep failing today.
+      if (res.code === BusinessCode.QUOTA_EXCEEDED) this.sendPaused.set(true);
       this.toast.warn(translateBizResult(res, this.transloco));
     }
   }
@@ -2824,6 +2831,8 @@ export class MessageThreadComponent implements OnDestroy {
     if (!scroller || !source || item.clientMessageId === undefined) return;
     if (!source.markPendingSent(item.clientMessageId)) return; // already confirmed/dropped — the real owns the choreography
     scroller.confirmPending(item.clientMessageId);
+    // A successful send means the local-user quota breaker is no longer tripped — drop the pause banner.
+    this.sendPaused.set(false);
   }
 
   // ---------- optimistic-insert orchestration (ported from the playground) ----------

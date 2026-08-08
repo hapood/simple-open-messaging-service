@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { NAV_GROUPS, type NavItem } from '@/components/layout/nav-config'
 import { TopBar } from '@/components/layout/top-bar'
 import { CommandPalette } from '@/components/layout/command-palette'
+import { BreakerBanner } from '@/components/admin/breaker-banner'
 
 export function AdminLayout({ children }: { children: ReactNode }) {
   const { logout } = useAuth()
@@ -85,7 +86,10 @@ export function AdminLayout({ children }: { children: ReactNode }) {
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar onOpenNavigation={() => setMobileNavOpen(true)} />
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto w-full max-w-[1440px] p-4 sm:p-6 lg:px-8">{children}</div>
+          <div className="mx-auto w-full max-w-[1440px] p-4 sm:p-6 lg:px-8">
+            <BreakerBanner />
+            {children}
+          </div>
         </main>
       </div>
       <CommandPalette />

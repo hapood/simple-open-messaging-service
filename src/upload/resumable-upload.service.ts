@@ -70,11 +70,12 @@ export class ResumableUploadService {
         'file too large',
       );
     }
-    await this.quota.assertWithinByteCap(
-      userId,
-      stage.contentType === ContentType.IMAGE ? 'images' : 'largeFiles',
-      dto.totalBytes,
-    );
+    // Charge the full file cnt + total size at session init (the claim point); chunk appends never
+    // re-charge. Type-agnostic — media family no longer affects quota.
+    await this.quota.assertCanSend(userId);
+    await this.quota.preCheckFile(userId, 1, BigInt(dto.totalBytes));
+    await this.quota.tickLax(userId, 'files');
+    await this.quota.tickFileBytes(userId, BigInt(dto.totalBytes));
     const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
     if (!originalName) {
       throw new BusinessException(

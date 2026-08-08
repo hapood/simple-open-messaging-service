@@ -258,16 +258,14 @@ export interface FederatedPeerListResult {
 }
 
 // ─── Federated peer daily quotas (POST /admin/quota/nodes) ───
-export type QuotaCategory = 'messages' | 'images' | 'largeFiles' | 'requests';
+export type QuotaCategory = 'messages' | 'files' | 'requests';
 
-/** Per-node override set (null/absent = use the global default). */
+/** Per-entity override set (null/absent = use the global default). */
 export interface QuotaOverrides {
   dailyMsgLimit?: number | null;
-  dailyImageLimit?: number | null;
-  dailyLargeFileLimit?: number | null;
   dailyRequestLimit?: number | null;
-  maxImageBytes?: number | null;
-  maxLargeFileBytes?: number | null;
+  dailyFileLimit?: number | null;
+  dailyFileBytesLimit?: number | null;
 }
 
 /** Today's usage for one category (count against the effective limit). */
@@ -281,8 +279,33 @@ export interface QuotaNode {
   domain: string;
   trustLevel: FederationTrustLevel;
   overrides: QuotaOverrides;
-  effectiveCaps: Record<'images' | 'largeFiles', number>;
   usage: Record<QuotaCategory, QuotaCategoryUsage> | undefined;
+}
+
+/** One entity's circuit-breaker snapshot (msg cnt / file cnt / file total size). `fileBytes.bytes` is a
+ *  decimal string because file-total-size is a backend bigint that can exceed JS safe-integer range. */
+export interface BreakerStatus {
+  entity: string;
+  scope: 'peer' | 'user';
+  tripped: boolean;
+  trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+  retryAfter: number;
+  msg: { count: number; limit: number };
+  file: { count: number; limit: number };
+  fileBytes: { bytes: string; limit: number };
+}
+
+/** All currently-tripped breakers (POST /admin/quota/breakers). */
+export interface Breakers {
+  peers: BreakerStatus[];
+  users: BreakerStatus[];
+}
+
+/** Additive daily quota bump for the "continue" action (bytes, before the backend BigInt conversion). */
+export interface ContinueQuotaInput {
+  addMsg?: number;
+  addFile?: number;
+  addFileBytes?: number;
 }
 
 // One trust-lifecycle transition (POST /admin/federation/peers/:domain/events) — the admin timeline
@@ -485,7 +508,13 @@ export interface UserDetail {
 export interface UserQuotaState {
   overrides: QuotaOverrides;
   usage: Record<QuotaCategory, QuotaCategoryUsage>;
-  caps: { imageBytes: number; largeFileBytes: number };
+  breaker: {
+    tripped: boolean;
+    trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+    msg: { count: number; limit: number };
+    file: { count: number; limit: number };
+    fileBytes: { bytes: string; limit: number };
+  };
 }
 
 // ── Dashboard overview (POST /admin/dashboard) ───────────────────────────────

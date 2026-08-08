@@ -61,17 +61,15 @@ export interface QuotaConfig {
   dailyRequestLimit: number;
   /** Messages/day per node. */
   dailyMsgLimit: number;
-  /** Image media items/day per node. */
-  dailyImageLimit: number;
-  /** Video/large-file media items/day per node. */
-  dailyLargeFileLimit: number;
   /** Federated WebRTC signal frames/day per node (offer/answer/ICE relay). A dedicated budget so an ICE
    *  burst can't starve, or be starved by, the friend-op `requests` bucket. No per-node override (global). */
   dailySignalLimit: number;
-  /** Single-image byte cap (oversized → refused at ingest). */
-  maxImageBytes: number;
-  /** Single-large-file byte cap (oversized → refused at ingest). */
-  maxLargeFileBytes: number;
+  /** File items/day per node for the file-cnt breaker dimension. All file types (image/video/audio/file) count
+   *  +1; a forward bundle counts +1 regardless of inner asset count. */
+  dailyFileLimit: number;
+  /** Total file bytes/day per node for the file-total-size breaker dimension (uploads + downloads, actual
+   *  bytes). Bundles contribute 0 bytes. */
+  dailyFileBytesLimit: number;
 }
 
 export function loadQuotaConfig(): QuotaConfig {
@@ -80,18 +78,14 @@ export function loadQuotaConfig(): QuotaConfig {
       process.env.SOMS_QUOTA_DAILY_REQUEST_LIMIT ?? 100,
     ),
     dailyMsgLimit: Number(process.env.SOMS_QUOTA_DAILY_MSG_LIMIT ?? 5000),
-    dailyImageLimit: Number(process.env.SOMS_QUOTA_DAILY_IMAGE_LIMIT ?? 500),
-    dailyLargeFileLimit: Number(
-      process.env.SOMS_QUOTA_DAILY_LARGE_FILE_LIMIT ?? 50,
-    ),
     dailySignalLimit: Number(
       process.env.SOMS_QUOTA_DAILY_SIGNAL_LIMIT ?? 50_000,
     ),
-    maxImageBytes: Number(
-      process.env.SOMS_QUOTA_MAX_IMAGE_BYTES ?? 50 * 1024 * 1024,
+    dailyFileLimit: Number(
+      process.env.SOMS_QUOTA_DAILY_FILE_LIMIT ?? 500,
     ),
-    maxLargeFileBytes: Number(
-      process.env.SOMS_QUOTA_MAX_LARGE_FILE_BYTES ?? 500 * 1024 * 1024,
+    dailyFileBytesLimit: Number(
+      process.env.SOMS_QUOTA_DAILY_FILE_BYTES_LIMIT ?? 5 * 1024 * 1024 * 1024,
     ),
   };
 }

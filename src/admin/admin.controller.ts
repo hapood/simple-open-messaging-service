@@ -338,7 +338,15 @@ export class AdminController {
     @Param('id') id: string,
     @Body() dto: AdminSetQuotaDto,
   ): Promise<void> {
-    await this.userQuotaService.setPolicy(Number(id), dto);
+    await this.userQuotaService.setPolicy(Number(id), {
+      dailyMsgLimit: dto.dailyMsgLimit,
+      dailyRequestLimit: dto.dailyRequestLimit,
+      dailyFileLimit: dto.dailyFileLimit,
+      dailyFileBytesLimit:
+        dto.dailyFileBytesLimit != null
+          ? BigInt(dto.dailyFileBytesLimit)
+          : null,
+    });
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

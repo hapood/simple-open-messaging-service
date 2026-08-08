@@ -485,6 +485,10 @@
       <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
         {{ 'chat.blockedBanner' | transloco }}
       </button>
+    } @else if (sendPaused()) {
+      <div class="msg-blocked-banner">
+        {{ 'chat.quotaPausedBanner' | transloco }}
+      </div>
     } @else {
       @if (!nativeComposer.supported) {
         <app-chat-input

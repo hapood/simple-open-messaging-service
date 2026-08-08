@@ -218,13 +218,11 @@
       },
       "category": {
         "messages": "Messages",
-        "images": "Images",
-        "largeFiles": "Large files",
+        "files": "Files",
         "requests": "Friend requests"
       },
       "disabled": "Unavailable",
-      "imageCap": "Image limit {{size}} each",
-      "fileCap": "Large-file limit {{size}} each",
+      "paused": "Your daily quota is exhausted — sending is paused until 00:00 UTC or until an administrator adds quota.",
       "reset": "Resets at {{time}}"
     }
   },
@@ -539,6 +537,7 @@
     "menuConfirm": "Confirm",
     "menuCancel": "Cancel",
     "blockedBanner": "You blocked this contact. Tap to unblock.",
+    "quotaPausedBanner": "Your daily quota is exhausted — sending is paused until 00:00 UTC or until an administrator adds quota.",
     "groupDissolvedBanner": "This group has been dissolved.",
     "notFriendsBanner": "This person is not your friend.",
     "leftGroupBanner": "You have left this group.",

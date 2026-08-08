@@ -105,15 +105,21 @@ export type Invite = S['InviteDto'];
 /** Live invite state returned by /invite/detail (group-invite dialog). */
 export type InviteDetail = S['InviteDetailDto'];
 
-export type PersonalQuotaCategory =
-  | 'messages'
-  | 'images'
-  | 'largeFiles'
-  | 'requests';
+export type PersonalQuotaCategory = 'messages' | 'files' | 'requests';
+
+/** Per-user quota breaker snapshot (msg cnt / file cnt / file total size). `fileBytes` is a decimal string
+ *  because file-total-size is a backend bigint. */
+export interface PersonalQuotaBreaker {
+  tripped: boolean;
+  trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+  msg: { count: number; limit: number };
+  file: { count: number; limit: number };
+  fileBytes: { bytes: string; limit: number };
+}
 
 export interface PersonalQuotaState {
   usage: Record<PersonalQuotaCategory, { count: number; limit: number }>;
-  caps: { imageBytes: number; largeFileBytes: number };
+  breaker: PersonalQuotaBreaker;
   resetAt: string;
 }
 

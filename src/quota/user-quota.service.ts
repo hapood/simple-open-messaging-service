@@ -8,38 +8,45 @@ import {
 } from '../database/database.service.js';
 import {
   user,
+  userQuotaDailyAllowance,
   userQuotaDailyUsage,
+  userQuotaFileByteUsage,
   userQuotaPolicy,
 } from '../database/schema.js';
-import type { QuotaCategory, QuotaOverrides } from './quota.service.js';
+import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
+import type {
+  BreakerStatus,
+  QuotaCategory,
+  QuotaOverrides,
+} from './quota.service.js';
 
 type UserQuotaCategory = Exclude<QuotaCategory, 'signals'>;
 
+/**
+ * Daily-quota enforcement for LOCAL user accounts, scoped per `userId`. Mirrors the federated {@link QuotaService}
+ * shape: a 3-dimension circuit breaker (msg cnt / file cnt / file total size) with an in-memory tripped flag that
+ * pauses ONLY this user's sends + uploads, plus the legacy `requests` anti-spam counter. Foreign/group accounts are
+ * rejected (personal quota is local-accounts only). The breaker flag is a cache over persisted daily counters and
+ * self-heals lazily (the next overshooting tick re-marks it after a restart); file claims are always gated by the
+ * authoritative {@link preCheckFile} read.
+ */
 @Injectable()
 export class UserQuotaService {
   private readonly defaults: UserQuotaDefaults = {
     dailyMsgLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_MSG_LIMIT', 1000),
-    dailyImageLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_IMAGE_LIMIT', 100),
-    dailyLargeFileLimit: quotaIntEnv(
-      'SOMS_USER_QUOTA_DAILY_LARGE_FILE_LIMIT',
-      20,
-    ),
     dailyRequestLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_REQUEST_LIMIT', 50),
-    maxImageBytes: quotaIntEnv(
-      'SOMS_USER_QUOTA_MAX_IMAGE_BYTES',
-      20 * 1024 * 1024,
-    ),
-    maxLargeFileBytes: quotaIntEnv(
-      'SOMS_USER_QUOTA_MAX_LARGE_FILE_BYTES',
-      200 * 1024 * 1024,
+    dailyFileLimit: quotaIntEnv('SOMS_USER_QUOTA_DAILY_FILE_LIMIT', 100),
+    dailyFileBytesLimit: BigInt(
+      quotaIntEnv('SOMS_USER_QUOTA_DAILY_FILE_BYTES_LIMIT', 500 * 1024 * 1024),
     ),
   };
+  private readonly breaker = new BreakerFlags();
 
   constructor(private readonly database: DatabaseService) {}
 
   async getState(userId: number): Promise<UserQuotaState> {
     await this.assertLocalAccount(userId);
-    const [policy, rows] = await Promise.all([
+    const [policy, rows, bytesRow, allowance] = await Promise.all([
       this.database.db.query.userQuotaPolicy.findFirst({
         where: eq(userQuotaPolicy.userId, userId),
       }),
@@ -55,8 +62,17 @@ export class UserQuotaService {
             eq(userQuotaDailyUsage.date, utcToday()),
           ),
         ),
+      this.database.db.query.userQuotaFileByteUsage.findFirst({
+        where: and(
+          eq(userQuotaFileByteUsage.userId, userId),
+          eq(userQuotaFileByteUsage.date, utcToday()),
+        ),
+        columns: { bytes: true },
+      }),
+      this.getAllowance(userId),
     ]);
     const overrides = normalizeOverrides(policy ?? {});
+    const limits = this.effectiveBreakerLimits(overrides, allowance);
     const counts = zeroCounts();
     for (const row of rows) {
       if (row.category in counts)
@@ -74,10 +90,15 @@ export class UserQuotaService {
         },
         {} as UserQuotaState['usage'],
       ),
-      caps: {
-        imageBytes: overrides.maxImageBytes ?? this.defaults.maxImageBytes,
-        largeFileBytes:
-          overrides.maxLargeFileBytes ?? this.defaults.maxLargeFileBytes,
+      breaker: {
+        tripped: this.breaker.isTripped(String(userId), utcToday()),
+        trippedDims: this.breaker.trippedDims(String(userId), utcToday()),
+        msg: { count: counts.messages, limit: limits.msg },
+        file: { count: counts.files ?? 0, limit: limits.file },
+        fileBytes: {
+          bytes: (bytesRow?.bytes ?? 0n).toString(),
+          limit: limits.fileBytes,
+        },
       },
     };
   }
@@ -149,6 +170,11 @@ export class UserQuotaService {
       });
   }
 
+  /**
+   * Authoritative atomic count+check for the `requests` anti-spam counter (and any caller that wants a throwing
+   * per-category check). Throws QUOTA_EXCEEDED (10008, HTTP 200) if the post-increment count exceeds the limit.
+   * NOT used for the breaker dimensions — those use {@link tickLax} (land-then-mark) so a message can land.
+   */
   async tick(
     userId: number,
     category: UserQuotaCategory,
@@ -193,27 +219,316 @@ export class UserQuotaService {
     );
   }
 
-  async assertWithinByteCap(
+  // ── circuit breaker (msg cnt / file cnt / file total size), per-user ────────────────────────────────
+
+  /** Synchronous send/upload gate: throw QUOTA_EXCEEDED (10008, HTTP 200) if this user's breaker is tripped. */
+  async assertCanSend(userId: number): Promise<void> {
+    const today = utcToday();
+    const dims = this.breaker.trippedDims(String(userId), today);
+    if (dims.length > 0) {
+      throw new BusinessException(
+        BusinessCode.QUOTA_EXCEEDED,
+        `daily quota exhausted (paused): ${dims.join(',')}`,
+        HttpStatus.OK,
+        { dims, retryAfter: retryAfterSeconds() },
+      );
+    }
+  }
+
+  isTripped(userId: number): boolean {
+    return this.breaker.isTripped(String(userId), utcToday());
+  }
+
+  /** Non-throwing atomic increment for msg cnt / file cnt (land-then-mark). Marks the breaker if over. */
+  async tickLax(
     userId: number,
-    category: 'images' | 'largeFiles',
-    bytes: number,
+    category: 'messages' | 'files',
+    tx?: DatabaseTransaction,
+    amount = 1,
+  ): Promise<{ count: number; limit: number; over: boolean }> {
+    if (!Number.isSafeInteger(amount) || amount < 1) {
+      throw new Error('quota amount must be a positive safe integer');
+    }
+    const limits = this.effectiveBreakerLimits(
+      normalizeOverrides(await this.getPolicy(userId)),
+      await this.getAllowance(userId),
+    );
+    const limit = category === 'messages' ? limits.msg : limits.file;
+    const today = utcToday();
+    const runner = tx ?? this.database.db;
+    const rows = await runner
+      .insert(userQuotaDailyUsage)
+      .values({ userId, date: today, category, count: amount })
+      .onConflictDoUpdate({
+        target: [
+          userQuotaDailyUsage.userId,
+          userQuotaDailyUsage.date,
+          userQuotaDailyUsage.category,
+        ],
+        set: { count: sql`${userQuotaDailyUsage.count} + ${amount}` },
+      })
+      .returning({ count: userQuotaDailyUsage.count });
+    const count = rows[0]?.count ?? amount;
+    const over = count > limit;
+    if (over) this.breaker.mark(String(userId), category === 'messages' ? 'msg' : 'file', today);
+    return { count, limit, over };
+  }
+
+  /** Atomic increment of the file-total-size accumulator (bigint) at claim time; marks the breaker if over. */
+  async tickFileBytes(
+    userId: number,
+    declaredBytes: bigint,
+    tx?: DatabaseTransaction,
+  ): Promise<{ bytes: bigint; limit: number; over: boolean }> {
+    const limits = this.effectiveBreakerLimits(
+      normalizeOverrides(await this.getPolicy(userId)),
+      await this.getAllowance(userId),
+    );
+    const limit = BigInt(limits.fileBytes);
+    const today = utcToday();
+    const runner = tx ?? this.database.db;
+    const rows = await runner
+      .insert(userQuotaFileByteUsage)
+      .values({ userId, date: today, bytes: declaredBytes })
+      .onConflictDoUpdate({
+        target: [userQuotaFileByteUsage.userId, userQuotaFileByteUsage.date],
+        set: { bytes: sql`${userQuotaFileByteUsage.bytes} + ${declaredBytes}` },
+      })
+      .returning({ bytes: userQuotaFileByteUsage.bytes });
+    const bytes = rows[0]?.bytes ?? declaredBytes;
+    const over = bytes > limit;
+    if (over) this.breaker.mark(String(userId), 'fileBytes', today);
+    return { bytes, limit: limits.fileBytes, over };
+  }
+
+  /** Add `extraBytes` without a pre-check (download oversize); conservative, never subtracts; marks the breaker. */
+  async addFileBytesDelta(
+    userId: number,
+    extraBytes: bigint,
+    tx?: DatabaseTransaction,
   ): Promise<void> {
+    if (extraBytes <= 0n) return;
+    const today = utcToday();
+    const runner = tx ?? this.database.db;
+    await runner
+      .insert(userQuotaFileByteUsage)
+      .values({ userId, date: today, bytes: extraBytes })
+      .onConflictDoUpdate({
+        target: [userQuotaFileByteUsage.userId, userQuotaFileByteUsage.date],
+        set: { bytes: sql`${userQuotaFileByteUsage.bytes} + ${extraBytes}` },
+      });
+    this.breaker.mark(String(userId), 'fileBytes', today);
+  }
+
+  /**
+   * Strict-before file claim gate: refuse a download/upload if it would push file cnt OR file total size over today's
+   * effective limit. Throws QUOTA_EXCEEDED (10008, HTTP 200) and marks the breaker.
+   */
+  async preCheckFile(
+    userId: number,
+    addCnt: number,
+    addBytes: bigint,
+  ): Promise<void> {
+    const limits = this.effectiveBreakerLimits(
+      normalizeOverrides(await this.getPolicy(userId)),
+      await this.getAllowance(userId),
+    );
+    const today = utcToday();
+    const cntRow = await this.database.db.query.userQuotaDailyUsage.findFirst({
+      where: and(
+        eq(userQuotaDailyUsage.userId, userId),
+        eq(userQuotaDailyUsage.date, today),
+        eq(userQuotaDailyUsage.category, 'files'),
+      ),
+      columns: { count: true },
+    });
+    const bytesRow = await this.database.db.query.userQuotaFileByteUsage.findFirst({
+      where: and(
+        eq(userQuotaFileByteUsage.userId, userId),
+        eq(userQuotaFileByteUsage.date, today),
+      ),
+      columns: { bytes: true },
+    });
+    const curCnt = cntRow?.count ?? 0;
+    const curBytes = bytesRow?.bytes ?? 0n;
+    const overCnt = curCnt + addCnt > limits.file;
+    const overBytes = curBytes + addBytes > BigInt(limits.fileBytes);
+    if (overCnt || overBytes) {
+      if (overCnt) this.breaker.mark(String(userId), 'file', today);
+      if (overBytes) this.breaker.mark(String(userId), 'fileBytes', today);
+      throw new BusinessException(
+        BusinessCode.QUOTA_EXCEEDED,
+        `daily file quota exceeded: cnt ${curCnt + addCnt}/${limits.file} bytes ${(
+          curBytes + addBytes
+        ).toString()}/${limits.fileBytes}`,
+        HttpStatus.OK,
+        { category: 'files', limit: limits.file, retryAfter: retryAfterSeconds() },
+      );
+    }
+  }
+
+  /** Admin "continue / add quota": additive bump to today's allowance, then reconcile. */
+  async addQuota(
+    userId: number,
+    input: { addMsg?: number; addFile?: number; addFileBytes?: bigint },
+  ): Promise<BreakerStatus> {
+    const addMsg = Math.max(0, Math.trunc(input.addMsg ?? 0));
+    const addFile = Math.max(0, Math.trunc(input.addFile ?? 0));
+    const addFileBytes =
+      input.addFileBytes && input.addFileBytes > 0n ? input.addFileBytes : 0n;
+    const today = utcToday();
+    await this.database.db
+      .insert(userQuotaDailyAllowance)
+      .values({
+        userId,
+        date: today,
+        extraMsg: addMsg,
+        extraFile: addFile,
+        extraFileBytes: addFileBytes,
+      })
+      .onConflictDoUpdate({
+        target: [userQuotaDailyAllowance.userId, userQuotaDailyAllowance.date],
+        set: {
+          extraMsg: sql`${userQuotaDailyAllowance.extraMsg} + ${addMsg}`,
+          extraFile: sql`${userQuotaDailyAllowance.extraFile} + ${addFile}`,
+          extraFileBytes: sql`${userQuotaDailyAllowance.extraFileBytes} + ${addFileBytes}`,
+        },
+      });
+    await this.recomputeBreaker(userId);
+    return this.breakerStatus(userId);
+  }
+
+  /** Re-derive this user's breaker dims from persisted counters (after addQuota / admin tooling). */
+  async recomputeBreaker(userId: number): Promise<void> {
+    const limits = this.effectiveBreakerLimits(
+      normalizeOverrides(await this.getPolicy(userId)),
+      await this.getAllowance(userId),
+    );
+    const today = utcToday();
+    const [msgRow, fileRow, bytesRow] = await Promise.all([
+      this.database.db.query.userQuotaDailyUsage.findFirst({
+        where: and(
+          eq(userQuotaDailyUsage.userId, userId),
+          eq(userQuotaDailyUsage.date, today),
+          eq(userQuotaDailyUsage.category, 'messages'),
+        ),
+        columns: { count: true },
+      }),
+      this.database.db.query.userQuotaDailyUsage.findFirst({
+        where: and(
+          eq(userQuotaDailyUsage.userId, userId),
+          eq(userQuotaDailyUsage.date, today),
+          eq(userQuotaDailyUsage.category, 'files'),
+        ),
+        columns: { count: true },
+      }),
+      this.database.db.query.userQuotaFileByteUsage.findFirst({
+        where: and(
+          eq(userQuotaFileByteUsage.userId, userId),
+          eq(userQuotaFileByteUsage.date, today),
+        ),
+        columns: { bytes: true },
+      }),
+    ]);
+    const over: BreakerDim[] = [];
+    if ((msgRow?.count ?? 0) > limits.msg) over.push('msg');
+    if ((fileRow?.count ?? 0) > limits.file) over.push('file');
+    if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes)) over.push('fileBytes');
+    this.breaker.reconcile(String(userId), over, today);
+  }
+
+  async breakerStatus(userId: number): Promise<BreakerStatus> {
+    const limits = this.effectiveBreakerLimits(
+      normalizeOverrides(await this.getPolicy(userId)),
+      await this.getAllowance(userId),
+    );
+    const today = utcToday();
+    const [msgRow, fileRow, bytesRow] = await Promise.all([
+      this.database.db.query.userQuotaDailyUsage.findFirst({
+        where: and(
+          eq(userQuotaDailyUsage.userId, userId),
+          eq(userQuotaDailyUsage.date, today),
+          eq(userQuotaDailyUsage.category, 'messages'),
+        ),
+        columns: { count: true },
+      }),
+      this.database.db.query.userQuotaDailyUsage.findFirst({
+        where: and(
+          eq(userQuotaDailyUsage.userId, userId),
+          eq(userQuotaDailyUsage.date, today),
+          eq(userQuotaDailyUsage.category, 'files'),
+        ),
+        columns: { count: true },
+      }),
+      this.database.db.query.userQuotaFileByteUsage.findFirst({
+        where: and(
+          eq(userQuotaFileByteUsage.userId, userId),
+          eq(userQuotaFileByteUsage.date, today),
+        ),
+        columns: { bytes: true },
+      }),
+    ]);
+    const dims = this.breaker.trippedDims(String(userId), today);
+    return {
+      entity: String(userId),
+      scope: 'user',
+      tripped: dims.length > 0,
+      trippedDims: dims,
+      retryAfter: retryAfterSeconds(),
+      msg: { count: msgRow?.count ?? 0, limit: limits.msg },
+      file: { count: fileRow?.count ?? 0, limit: limits.file },
+      fileBytes: {
+        bytes: (bytesRow?.bytes ?? 0n).toString(),
+        limit: limits.fileBytes,
+      },
+    };
+  }
+
+  /** All currently-tripped user breakers (admin dashboard banner). */
+  async trippedBreakers(): Promise<BreakerStatus[]> {
+    const today = utcToday();
+    const keys = this.breaker.trippedEntities(today);
+    return Promise.all(
+      keys.map((k) => this.breakerStatus(Number(k))),
+    );
+  }
+
+  // ── internals ───────────────────────────────────────────────────────────────────────────────────────
+
+  private async getPolicy(userId: number): Promise<QuotaOverrides> {
     const policy = await this.database.db.query.userQuotaPolicy.findFirst({
       where: eq(userQuotaPolicy.userId, userId),
     });
-    const overrides = normalizeOverrides(policy ?? {});
-    const limit =
-      category === 'images'
-        ? (overrides.maxImageBytes ?? this.defaults.maxImageBytes)
-        : (overrides.maxLargeFileBytes ?? this.defaults.maxLargeFileBytes);
-    if (bytes > limit) {
-      throw new BusinessException(
-        BusinessCode.QUOTA_EXCEEDED,
-        `personal upload size cap exceeded: ${category} ${bytes}/${limit}`,
-        HttpStatus.OK,
-        { category, limit, actual: bytes },
-      );
-    }
+    return normalizeOverrides(policy ?? {});
+  }
+
+  private async getAllowance(
+    userId: number,
+  ): Promise<{ extraMsg: number; extraFile: number; extraFileBytes: bigint }> {
+    const row = await this.database.db.query.userQuotaDailyAllowance.findFirst({
+      where: and(
+        eq(userQuotaDailyAllowance.userId, userId),
+        eq(userQuotaDailyAllowance.date, utcToday()),
+      ),
+    });
+    return {
+      extraMsg: row?.extraMsg ?? 0,
+      extraFile: row?.extraFile ?? 0,
+      extraFileBytes: row?.extraFileBytes ?? 0n,
+    };
+  }
+
+  private effectiveBreakerLimits(
+    overrides: QuotaOverrides,
+    allowance: { extraMsg: number; extraFile: number; extraFileBytes: bigint },
+  ): { msg: number; file: number; fileBytes: number } {
+    return {
+      msg: (overrides.dailyMsgLimit ?? this.defaults.dailyMsgLimit) + allowance.extraMsg,
+      file: (overrides.dailyFileLimit ?? this.defaults.dailyFileLimit) + allowance.extraFile,
+      fileBytes:
+        Number(overrides.dailyFileBytesLimit ?? this.defaults.dailyFileBytesLimit) +
+        Number(allowance.extraFileBytes),
+    };
   }
 
   private effectiveLimit(
@@ -222,10 +537,8 @@ export class UserQuotaService {
   ): number {
     if (category === 'messages')
       return overrides.dailyMsgLimit ?? this.defaults.dailyMsgLimit;
-    if (category === 'images')
-      return overrides.dailyImageLimit ?? this.defaults.dailyImageLimit;
-    if (category === 'largeFiles')
-      return overrides.dailyLargeFileLimit ?? this.defaults.dailyLargeFileLimit;
+    if (category === 'files')
+      return overrides.dailyFileLimit ?? this.defaults.dailyFileLimit;
     return overrides.dailyRequestLimit ?? this.defaults.dailyRequestLimit;
   }
 
@@ -248,13 +561,12 @@ export class UserQuotaService {
 
 const userQuotaCategories: UserQuotaCategory[] = [
   'messages',
-  'images',
-  'largeFiles',
+  'files',
   'requests',
 ];
 
 function zeroCounts(): Record<UserQuotaCategory, number> {
-  return { messages: 0, images: 0, largeFiles: 0, requests: 0 };
+  return { messages: 0, files: 0, requests: 0 };
 }
 
 function utcToday(): Date {
@@ -288,20 +600,26 @@ function normalizeOverrides(input: QuotaOverrides): QuotaOverrides {
     candidate >= 0
       ? candidate
       : null;
+  const big = (candidate: unknown): bigint | null =>
+    typeof candidate === 'bigint' && candidate >= 0n ? candidate : null;
   return {
     dailyMsgLimit: value(input.dailyMsgLimit),
-    dailyImageLimit: value(input.dailyImageLimit),
-    dailyLargeFileLimit: value(input.dailyLargeFileLimit),
     dailyRequestLimit: value(input.dailyRequestLimit),
-    maxImageBytes: value(input.maxImageBytes),
-    maxLargeFileBytes: value(input.maxLargeFileBytes),
+    dailyFileLimit: value(input.dailyFileLimit),
+    dailyFileBytesLimit: big(input.dailyFileBytesLimit),
   };
 }
 
 export interface UserQuotaState {
   overrides: QuotaOverrides;
   usage: Record<UserQuotaCategory, { count: number; limit: number }>;
-  caps: { imageBytes: number; largeFileBytes: number };
+  breaker: {
+    tripped: boolean;
+    trippedDims: BreakerDim[];
+    msg: { count: number; limit: number };
+    file: { count: number; limit: number };
+    fileBytes: { bytes: string; limit: number };
+  };
 }
 
 export type UserQuotaSummaryStatus =
@@ -328,9 +646,7 @@ export function quotaSummaryStatus(
 
 interface UserQuotaDefaults {
   dailyMsgLimit: number;
-  dailyImageLimit: number;
-  dailyLargeFileLimit: number;
   dailyRequestLimit: number;
-  maxImageBytes: number;
-  maxLargeFileBytes: number;
+  dailyFileLimit: number;
+  dailyFileBytesLimit: bigint;
 }

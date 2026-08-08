@@ -1,16 +1,22 @@
-import { Injectable, HttpStatus } from '@nestjs/common';
+import { Injectable, type OnModuleInit, HttpStatus } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { federatedPeer, quotaDailyUsage } from '../database/schema.js';
+import {
+  federatedPeer,
+  quotaDailyAllowance,
+  quotaDailyUsage,
+  quotaFileByteUsage,
+} from '../database/schema.js';
 import {
   loadQuotaConfig,
   type QuotaConfig,
 } from '../federation/federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
 
 /**
  * Daily-quota enforcement for federated peer servers. A peer's domain is the trust and accounting
@@ -31,9 +37,29 @@ import { BusinessCode } from '../common/business-code.js';
  * `FEDERATION_PAYLOAD_TOO_LARGE` (413); these capacity responses never demote the peer.
  */
 @Injectable()
-export class QuotaService {
+export class QuotaService implements OnModuleInit {
   private readonly cfg: QuotaConfig = loadQuotaConfig();
+  private readonly breaker = new BreakerFlags();
   constructor(private readonly database: DatabaseService) {}
+
+  /**
+   * Startup self-heal: re-derive the in-memory breaker flags for every federated peer from today's persisted
+   * counters. Without this, a restart would clear the flags and let one more pull/send through before the next
+   * overshooting tick re-set them. Idempotent + cheap (one domain per reconcile).
+   */
+  async onModuleInit(): Promise<void> {
+    await this.refreshAll();
+  }
+
+  /** Recompute every peer's breaker flags from persisted counters (startup + admin tooling). */
+  async refreshAll(): Promise<void> {
+    const peers = await this.database.db.query.federatedPeer.findMany({
+      columns: { domain: true },
+    });
+    for (const { domain } of peers) {
+      await this.recomputeBreaker(domain);
+    }
+  }
 
   // ── limit / cap resolution ───────────────────────────────────────────────
 
@@ -43,11 +69,9 @@ export class QuotaService {
       where: eq(federatedPeer.domain, domain),
       columns: {
         dailyMsgLimit: true,
-        dailyImageLimit: true,
-        dailyLargeFileLimit: true,
         dailyRequestLimit: true,
-        maxImageBytes: true,
-        maxLargeFileBytes: true,
+        dailyFileLimit: true,
+        dailyFileBytesLimit: true,
       },
     });
     return peer ?? {};
@@ -58,10 +82,8 @@ export class QuotaService {
     switch (category) {
       case 'messages':
         return overrides.dailyMsgLimit ?? this.cfg.dailyMsgLimit;
-      case 'images':
-        return overrides.dailyImageLimit ?? this.cfg.dailyImageLimit;
-      case 'largeFiles':
-        return overrides.dailyLargeFileLimit ?? this.cfg.dailyLargeFileLimit;
+      case 'files':
+        return overrides.dailyFileLimit ?? this.cfg.dailyFileLimit;
       case 'requests':
         return overrides.dailyRequestLimit ?? this.cfg.dailyRequestLimit;
       case 'signals':
@@ -69,15 +91,6 @@ export class QuotaService {
         // a dedicated budget so an ICE burst can't be starved by, or starve, the friend-op `requests` bucket.
         return this.cfg.dailySignalLimit;
     }
-  }
-
-  /** Effective single-item byte cap (images/largeFiles); MAX_SAFE_INTEGER for count-only categories. */
-  effectiveCap(overrides: QuotaOverrides, category: QuotaCategory): number {
-    if (category === 'images')
-      return overrides.maxImageBytes ?? this.cfg.maxImageBytes;
-    if (category === 'largeFiles')
-      return overrides.maxLargeFileBytes ?? this.cfg.maxLargeFileBytes;
-    return Number.MAX_SAFE_INTEGER;
   }
 
   // ── federation path: peek (read-only) + tick (atomic count+check, throws 429) ─────────
@@ -166,30 +179,6 @@ export class QuotaService {
     else await this.database.db.transaction(run);
   }
 
-  /**
-   * Federation media byte-cap: throw FEDERATION_PAYLOAD_TOO_LARGE (413) if `bytes` exceeds the single-item
-   * cap for the category. Call BEFORE streaming/storing so nothing is written. No-op for count-only
-   * categories (messages/requests). The over-limit item is permanently refused (no retry).
-   */
-  async assertUnderCap(
-    domain: string,
-    category: QuotaCategory,
-    bytes: number,
-  ): Promise<void> {
-    if (category !== 'images' && category !== 'largeFiles') return;
-    const overrides = await this.getOverrides(domain);
-    const cap = this.effectiveCap(overrides, category);
-    this.assertCapabilityEnabled(category, cap);
-    if (bytes > cap) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
-        `oversized ${category}: ${bytes} bytes > cap ${cap}`,
-        HttpStatus.PAYLOAD_TOO_LARGE,
-        { category, limit: cap, received: bytes },
-      );
-    }
-  }
-
   private assertCapabilityEnabled(
     category: QuotaCategory,
     effectiveLimit: number,
@@ -201,6 +190,319 @@ export class QuotaService {
       HttpStatus.FORBIDDEN,
       { category },
     );
+  }
+
+  // ── circuit breaker (3 dimensions: msg cnt / file cnt / file total size) ───────────────────────────
+  //
+  // Federation landing is land-then-count: msg may overshoot by ≤ one pull page, and that overshoot TRIPS the
+  // breaker rather than rolling the page back (the page commits, the cursor advances, future pulls pause). File
+  // claims are strict-before ({@link preCheckFile} rejects before the transfer starts). Both mark the in-memory
+  // flag; {@link isTripped} gates new pull loops and downloads. Counters persist across restart; the flag is
+  // re-derived in {@link onModuleInit} and after {@link addQuota}.
+
+  /** Today's additive admin allowance for `domain` (zeros if none granted today). */
+  private async getAllowance(
+    domain: string,
+  ): Promise<{ extraMsg: number; extraFile: number; extraFileBytes: bigint }> {
+    const row = await this.database.db.query.quotaDailyAllowance.findFirst({
+      where: and(
+        eq(quotaDailyAllowance.domain, domain),
+        eq(quotaDailyAllowance.date, this.utcToday()),
+      ),
+    });
+    return {
+      extraMsg: row?.extraMsg ?? 0,
+      extraFile: row?.extraFile ?? 0,
+      extraFileBytes: row?.extraFileBytes ?? 0n,
+    };
+  }
+
+  /** Effective breaker limits for today = base (override ?? default) + admin allowance. fileBytes as a JS number
+   *  (safe: caps are GiB-scale, well under 2^53). */
+  private async effectiveBreakerLimits(
+    overrides: QuotaOverrides,
+    allowance: { extraMsg: number; extraFile: number; extraFileBytes: bigint },
+  ): Promise<{ msg: number; file: number; fileBytes: number }> {
+    return {
+      msg: (overrides.dailyMsgLimit ?? this.cfg.dailyMsgLimit) + allowance.extraMsg,
+      file: (overrides.dailyFileLimit ?? this.cfg.dailyFileLimit) + allowance.extraFile,
+      fileBytes:
+        Number(overrides.dailyFileBytesLimit ?? this.cfg.dailyFileBytesLimit) +
+        Number(allowance.extraFileBytes),
+    };
+  }
+
+  /**
+   * Non-throwing atomic increment for federation LANDING (msg cnt / file cnt). Marks the breaker if the
+   * post-increment count exceeds today's effective limit, but does NOT throw — the page that pushed over still
+   * commits (cursor advances) and the overshoot trips the breaker to pause FUTURE pulls. Contrast {@link tick},
+   * which throws + rolls back and is used on synchronous legs (invite).
+   */
+  async tickLax(
+    domain: string,
+    category: 'messages' | 'files',
+    tx?: DatabaseTransaction,
+    amount = 1,
+  ): Promise<{ count: number; limit: number; over: boolean }> {
+    if (!Number.isSafeInteger(amount) || amount < 1) {
+      throw new Error('quota amount must be a positive safe integer');
+    }
+    const limits = await this.effectiveBreakerLimits(
+      await this.getOverrides(domain),
+      await this.getAllowance(domain),
+    );
+    const limit = category === 'messages' ? limits.msg : limits.file;
+    const today = this.utcToday();
+    const runner = tx ?? this.database.db;
+    const rows = await runner
+      .insert(quotaDailyUsage)
+      .values({ domain, date: today, category, count: amount })
+      .onConflictDoUpdate({
+        target: [
+          quotaDailyUsage.domain,
+          quotaDailyUsage.date,
+          quotaDailyUsage.category,
+        ],
+        set: { count: sql`${quotaDailyUsage.count} + ${amount}` },
+      })
+      .returning({ count: quotaDailyUsage.count });
+    const count = rows[0]?.count ?? amount;
+    const over = count > limit;
+    if (over) this.breaker.mark(domain, category === 'messages' ? 'msg' : 'file', today);
+    return { count, limit, over };
+  }
+
+  /**
+   * Atomic increment of the file-total-size accumulator (bigint) by `declaredBytes`, at download/upload CLAIM
+   * time (before the transfer). Marks the breaker if over; does NOT throw ({@link preCheckFile} already gated, and
+   * a concurrent push merely trips the breaker for the next claim). Guard at the caller with
+   * `FileSyncProgress.quotaCounted` so a retry does not re-charge the same file.
+   */
+  async tickFileBytes(
+    domain: string,
+    declaredBytes: bigint,
+    tx?: DatabaseTransaction,
+  ): Promise<{ bytes: bigint; limit: number; over: boolean }> {
+    const limits = await this.effectiveBreakerLimits(
+      await this.getOverrides(domain),
+      await this.getAllowance(domain),
+    );
+    const limit = BigInt(limits.fileBytes);
+    const today = this.utcToday();
+    const runner = tx ?? this.database.db;
+    const rows = await runner
+      .insert(quotaFileByteUsage)
+      .values({ domain, date: today, bytes: declaredBytes })
+      .onConflictDoUpdate({
+        target: [quotaFileByteUsage.domain, quotaFileByteUsage.date],
+        set: { bytes: sql`${quotaFileByteUsage.bytes} + ${declaredBytes}` },
+      })
+      .returning({ bytes: quotaFileByteUsage.bytes });
+    const bytes = rows[0]?.bytes ?? declaredBytes;
+    const over = bytes > limit;
+    if (over) this.breaker.mark(domain, 'fileBytes', today);
+    return { bytes, limit: limits.fileBytes, over };
+  }
+
+  /**
+   * Add `extraBytes` to the file-total-size accumulator WITHOUT a pre-check — used when a download stream
+   * overshoots its declared size (actual > declared). The excess must still count toward quota even though the
+   * file is then abandoned (FAILED). Conservative: never subtracts on undersize. Non-throwing; marks the breaker.
+   */
+  async addFileBytesDelta(
+    domain: string,
+    extraBytes: bigint,
+    tx?: DatabaseTransaction,
+  ): Promise<void> {
+    if (extraBytes <= 0n) return;
+    const today = this.utcToday();
+    const runner = tx ?? this.database.db;
+    await runner
+      .insert(quotaFileByteUsage)
+      .values({ domain, date: today, bytes: extraBytes })
+      .onConflictDoUpdate({
+        target: [quotaFileByteUsage.domain, quotaFileByteUsage.date],
+        set: { bytes: sql`${quotaFileByteUsage.bytes} + ${extraBytes}` },
+      });
+    this.breaker.mark(domain, 'fileBytes', today);
+  }
+
+  /**
+   * Strict-before file claim gate: refuse to start a download/upload if it would push file cnt OR file total
+   * size over today's effective limit. Throws FEDERATION_QUOTA_EXCEEDED (429; never demotes the peer) and marks the
+   * breaker. The read-then-check is not atomic with the subsequent {@link tickFileBytes}, but tickFileBytes
+   * re-marks on the increment, so the worst case under concurrency is one extra claim before the breaker trips.
+   */
+  async preCheckFile(domain: string, addCnt: number, addBytes: bigint): Promise<void> {
+    const limits = await this.effectiveBreakerLimits(
+      await this.getOverrides(domain),
+      await this.getAllowance(domain),
+    );
+    const today = this.utcToday();
+    const cntRow = await this.database.db.query.quotaDailyUsage.findFirst({
+      where: and(
+        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.date, today),
+        eq(quotaDailyUsage.category, 'files'),
+      ),
+      columns: { count: true },
+    });
+    const bytesRow = await this.database.db.query.quotaFileByteUsage.findFirst({
+      where: and(
+        eq(quotaFileByteUsage.domain, domain),
+        eq(quotaFileByteUsage.date, today),
+      ),
+      columns: { bytes: true },
+    });
+    const curCnt = cntRow?.count ?? 0;
+    const curBytes = bytesRow?.bytes ?? 0n;
+    const overCnt = curCnt + addCnt > limits.file;
+    const overBytes = curBytes + addBytes > BigInt(limits.fileBytes);
+    if (overCnt || overBytes) {
+      if (overCnt) this.breaker.mark(domain, 'file', today);
+      if (overBytes) this.breaker.mark(domain, 'fileBytes', today);
+      const retryAfter = this.retryAfterSeconds();
+      throw new BusinessException(
+        BusinessCode.FEDERATION_QUOTA_EXCEEDED,
+        `daily file quota exceeded: cnt ${curCnt + addCnt}/${limits.file} bytes ${(
+          curBytes + addBytes
+        ).toString()}/${limits.fileBytes}`,
+        HttpStatus.TOO_MANY_REQUESTS,
+        { category: 'files', limit: limits.file, retryAfter },
+      );
+    }
+  }
+
+  /** Is this peer's breaker currently tripped (any dimension)? Gate for async pull loops + new downloads. */
+  isTripped(domain: string): boolean {
+    return this.breaker.isTripped(domain, this.utcToday());
+  }
+
+  /** Re-derive `domain`'s breaker dims from persisted counters (startup self-heal + after {@link addQuota}). */
+  async recomputeBreaker(domain: string): Promise<void> {
+    const limits = await this.effectiveBreakerLimits(
+      await this.getOverrides(domain),
+      await this.getAllowance(domain),
+    );
+    const today = this.utcToday();
+    const msgRow = await this.database.db.query.quotaDailyUsage.findFirst({
+      where: and(
+        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.date, today),
+        eq(quotaDailyUsage.category, 'messages'),
+      ),
+      columns: { count: true },
+    });
+    const fileRow = await this.database.db.query.quotaDailyUsage.findFirst({
+      where: and(
+        eq(quotaDailyUsage.domain, domain),
+        eq(quotaDailyUsage.date, today),
+        eq(quotaDailyUsage.category, 'files'),
+      ),
+      columns: { count: true },
+    });
+    const bytesRow = await this.database.db.query.quotaFileByteUsage.findFirst({
+      where: and(
+        eq(quotaFileByteUsage.domain, domain),
+        eq(quotaFileByteUsage.date, today),
+      ),
+      columns: { bytes: true },
+    });
+    const over: BreakerDim[] = [];
+    if ((msgRow?.count ?? 0) > limits.msg) over.push('msg');
+    if ((fileRow?.count ?? 0) > limits.file) over.push('file');
+    if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes)) over.push('fileBytes');
+    this.breaker.reconcile(domain, over, today);
+  }
+
+  /**
+   * Admin "continue / add quota": add an ADDITIVE bump to today's allowance (persisted to QuotaDailyAllowance so a
+   * restart does not lose it), then reconcile — dims now within (base+allowance) clear, dims still over stay
+   * tripped. Returns the new status.
+   */
+  async addQuota(
+    domain: string,
+    input: { addMsg?: number; addFile?: number; addFileBytes?: bigint },
+  ): Promise<BreakerStatus> {
+    const addMsg = Math.max(0, Math.trunc(input.addMsg ?? 0));
+    const addFile = Math.max(0, Math.trunc(input.addFile ?? 0));
+    const addFileBytes =
+      input.addFileBytes && input.addFileBytes > 0n ? input.addFileBytes : 0n;
+    const today = this.utcToday();
+    await this.database.db
+      .insert(quotaDailyAllowance)
+      .values({
+        domain,
+        date: today,
+        extraMsg: addMsg,
+        extraFile: addFile,
+        extraFileBytes: addFileBytes,
+      })
+      .onConflictDoUpdate({
+        target: [quotaDailyAllowance.domain, quotaDailyAllowance.date],
+        set: {
+          extraMsg: sql`${quotaDailyAllowance.extraMsg} + ${addMsg}`,
+          extraFile: sql`${quotaDailyAllowance.extraFile} + ${addFile}`,
+          extraFileBytes: sql`${quotaDailyAllowance.extraFileBytes} + ${addFileBytes}`,
+        },
+      });
+    await this.recomputeBreaker(domain);
+    return this.breakerStatus(domain);
+  }
+
+  /** Full breaker + usage snapshot for one peer (admin surfaces + client hint). */
+  async breakerStatus(domain: string): Promise<BreakerStatus> {
+    const limits = await this.effectiveBreakerLimits(
+      await this.getOverrides(domain),
+      await this.getAllowance(domain),
+    );
+    const today = this.utcToday();
+    const [msgRow, fileRow, bytesRow] = await Promise.all([
+      this.database.db.query.quotaDailyUsage.findFirst({
+        where: and(
+          eq(quotaDailyUsage.domain, domain),
+          eq(quotaDailyUsage.date, today),
+          eq(quotaDailyUsage.category, 'messages'),
+        ),
+        columns: { count: true },
+      }),
+      this.database.db.query.quotaDailyUsage.findFirst({
+        where: and(
+          eq(quotaDailyUsage.domain, domain),
+          eq(quotaDailyUsage.date, today),
+          eq(quotaDailyUsage.category, 'files'),
+        ),
+        columns: { count: true },
+      }),
+      this.database.db.query.quotaFileByteUsage.findFirst({
+        where: and(
+          eq(quotaFileByteUsage.domain, domain),
+          eq(quotaFileByteUsage.date, today),
+        ),
+        columns: { bytes: true },
+      }),
+    ]);
+    const dims = this.breaker.trippedDims(domain, today);
+    return {
+      entity: domain,
+      scope: 'peer',
+      tripped: dims.length > 0,
+      trippedDims: dims,
+      retryAfter: this.retryAfterSeconds(),
+      msg: { count: msgRow?.count ?? 0, limit: limits.msg },
+      file: { count: fileRow?.count ?? 0, limit: limits.file },
+      fileBytes: {
+        bytes: (bytesRow?.bytes ?? 0n).toString(),
+        limit: limits.fileBytes,
+      },
+    };
+  }
+
+  /** All currently-tripped peer breakers (admin dashboard banner). */
+  async trippedBreakers(): Promise<BreakerStatus[]> {
+    const today = this.utcToday();
+    const domains = this.breaker.trippedEntities(today);
+    return Promise.all(domains.map((d) => this.breakerStatus(d)));
   }
 
   // ── time helpers ─────────────────────────────────────────────────────────
@@ -264,12 +566,7 @@ export class QuotaService {
     counts: Record<QuotaCategory, number>,
     overrides: QuotaOverrides,
   ): Record<QuotaCategory, { count: number; limit: number }> {
-    const cats: QuotaCategory[] = [
-      'messages',
-      'images',
-      'largeFiles',
-      'requests',
-    ];
+    const cats: QuotaCategory[] = ['messages', 'files', 'requests'];
     return cats.reduce(
       (acc, c) => {
         acc[c] = { count: counts[c], limit: this.effectiveLimit(overrides, c) };
@@ -297,11 +594,9 @@ export class QuotaService {
         domain: true,
         trustLevel: true,
         dailyMsgLimit: true,
-        dailyImageLimit: true,
-        dailyLargeFileLimit: true,
         dailyRequestLimit: true,
-        maxImageBytes: true,
-        maxLargeFileBytes: true,
+        dailyFileLimit: true,
+        dailyFileBytesLimit: true,
       },
     });
     const domains = peers.map((p) => p.domain);
@@ -309,20 +604,14 @@ export class QuotaService {
     const peerNodes: QuotaNode[] = peers.map((p) => {
       const overrides: QuotaOverrides = {
         dailyMsgLimit: p.dailyMsgLimit,
-        dailyImageLimit: p.dailyImageLimit,
-        dailyLargeFileLimit: p.dailyLargeFileLimit,
         dailyRequestLimit: p.dailyRequestLimit,
-        maxImageBytes: p.maxImageBytes,
-        maxLargeFileBytes: p.maxLargeFileBytes,
+        dailyFileLimit: p.dailyFileLimit,
+        dailyFileBytesLimit: p.dailyFileBytesLimit ?? null,
       };
       return {
         domain: p.domain,
         trustLevel: p.trustLevel,
         overrides,
-        effectiveCaps: {
-          images: this.effectiveCap(overrides, 'images'),
-          largeFiles: this.effectiveCap(overrides, 'largeFiles'),
-        },
         usage: this.buildUsage(counts.get(p.domain) ?? zeroCounts(), overrides),
       };
     });
@@ -337,11 +626,9 @@ export class QuotaService {
       .update(federatedPeer)
       .set({
         dailyMsgLimit: normalized.dailyMsgLimit ?? null,
-        dailyImageLimit: normalized.dailyImageLimit ?? null,
-        dailyLargeFileLimit: normalized.dailyLargeFileLimit ?? null,
         dailyRequestLimit: normalized.dailyRequestLimit ?? null,
-        maxImageBytes: normalized.maxImageBytes ?? null,
-        maxLargeFileBytes: normalized.maxLargeFileBytes ?? null,
+        dailyFileLimit: normalized.dailyFileLimit ?? null,
+        dailyFileBytesLimit: normalized.dailyFileBytesLimit ?? null,
       })
       .where(eq(federatedPeer.domain, domain))
       .returning({ domain: federatedPeer.domain });
@@ -358,19 +645,16 @@ export class QuotaService {
 
 export type QuotaCategory =
   | 'messages'
-  | 'images'
-  | 'largeFiles'
+  | 'files'
   | 'requests'
   | 'signals';
 
 /** A per-node override set. null/absent = use the global default for that field. */
 export interface QuotaOverrides {
   dailyMsgLimit?: number | null;
-  dailyImageLimit?: number | null;
-  dailyLargeFileLimit?: number | null;
   dailyRequestLimit?: number | null;
-  maxImageBytes?: number | null;
-  maxLargeFileBytes?: number | null;
+  dailyFileLimit?: number | null;
+  dailyFileBytesLimit?: bigint | null;
 }
 
 /** One federated peer's quota state for the admin peer-detail surface. */
@@ -378,31 +662,43 @@ export interface QuotaNode {
   domain: string;
   trustLevel: string;
   overrides: QuotaOverrides;
-  effectiveCaps: Record<'images' | 'largeFiles', number>;
   usage: Record<QuotaCategory, { count: number; limit: number }> | undefined;
+}
+
+/** Snapshot of one entity's circuit breaker + usage (admin surfaces + client hint). `bytes` is a decimal
+ *  string because file-total-size is a bigint that can exceed JS safe-integer range. */
+export interface BreakerStatus {
+  entity: string;
+  scope: 'peer' | 'user';
+  tripped: boolean;
+  trippedDims: BreakerDim[];
+  retryAfter: number;
+  msg: { count: number; limit: number };
+  file: { count: number; limit: number };
+  fileBytes: { bytes: string; limit: number };
 }
 
 /** A fresh all-zero per-category count record (the default for a node with no usage row today). */
 function zeroCounts(): Record<QuotaCategory, number> {
-  return { messages: 0, images: 0, largeFiles: 0, requests: 0, signals: 0 };
+  return { messages: 0, files: 0, requests: 0, signals: 0 };
 }
 
 type LegacyRawTransaction = {
   $queryRawUnsafe<T>(query: string, ...values: unknown[]): Promise<T>;
 };
 
-/** Coerce a loose/partial override object into a clean QuotaOverrides (numbers-or-null, no junk). */
+/** Coerce a loose/partial override object into a clean QuotaOverrides (numbers/bigint-or-null, no junk). */
 function normalizeOverrides(
   src: Partial<QuotaOverrides> | null | undefined,
 ): QuotaOverrides {
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+  const big = (v: unknown): bigint | null =>
+    typeof v === 'bigint' && v >= 0n ? v : null;
   return {
     dailyMsgLimit: num(src?.dailyMsgLimit),
-    dailyImageLimit: num(src?.dailyImageLimit),
-    dailyLargeFileLimit: num(src?.dailyLargeFileLimit),
     dailyRequestLimit: num(src?.dailyRequestLimit),
-    maxImageBytes: num(src?.maxImageBytes),
-    maxLargeFileBytes: num(src?.maxLargeFileBytes),
+    dailyFileLimit: num(src?.dailyFileLimit),
+    dailyFileBytesLimit: big(src?.dailyFileBytesLimit),
   };
 }

@@ -401,26 +401,6 @@ export class AdminSetQuotaDto {
 
   @ApiProperty({
     required: false,
-    example: 500,
-    description: 'Image media items/day (null = default)',
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  dailyImageLimit?: number | null;
-
-  @ApiProperty({
-    required: false,
-    example: 50,
-    description: 'Video/large-file media items/day (null = default)',
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  dailyLargeFileLimit?: number | null;
-
-  @ApiProperty({
-    required: false,
     example: 100,
     description: 'Inbound friend ops/day — anti-spam (null = default)',
   })
@@ -431,23 +411,58 @@ export class AdminSetQuotaDto {
 
   @ApiProperty({
     required: false,
-    example: 52428800,
-    description: 'Single-image byte cap (null = default)',
+    example: 500,
+    description:
+      'File items/day — all file types (image/video/audio/file) + bundles count +1 each (null = default)',
   })
   @IsOptional()
   @IsInt()
   @Min(0)
-  maxImageBytes?: number | null;
+  dailyFileLimit?: number | null;
 
   @ApiProperty({
     required: false,
-    example: 524288000,
-    description: 'Single-large-file byte cap (null = default)',
+    example: 5368709120,
+    description: 'Total file bytes/day — uploads + downloads (null = default)',
   })
   @IsOptional()
   @IsInt()
   @Min(0)
-  maxLargeFileBytes?: number | null;
+  dailyFileBytesLimit?: number | null;
+}
+
+/** Additive daily quota bump for the "continue" action (POST admin/quota/.../continue). Each value is ADDED
+ *  to today's effective limit for the tripped entity; 0/absent = no bump on that dimension. */
+export class AdminContinueQuotaDto {
+  @ApiProperty({
+    required: false,
+    example: 1000,
+    description: 'Additional messages granted for today',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addMsg?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 100,
+    description: 'Additional file count granted for today',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addFile?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 1073741824,
+    description: 'Additional file total bytes granted for today',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addFileBytes?: number;
 }
 
 /** Inputs to the S2S self-check: which NTP server to compare the clock against, and which DNS resolver

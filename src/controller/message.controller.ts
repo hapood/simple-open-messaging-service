@@ -277,6 +277,7 @@ export class MessageController {
       const blocked = await this.userBlockService.blockedByMe(req.user.userId);
       if (blocked.size > 0) quoteVisibility.hideCreatorIds = [...blocked];
     }
+    await this.userQuota.assertCanSend(req.user.userId);
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
@@ -284,7 +285,9 @@ export class MessageController {
       contentType,
       dto.clientMessageId,
       undefined,
-      (tx) => this.userQuota.tick(req.user.userId, 'messages', tx),
+      async (tx) => {
+        await this.userQuota.tickLax(req.user.userId, 'messages', tx);
+      },
       quoteVisibility,
     );
     if (generationId && !dto.retainLinkGeneration) {
@@ -350,6 +353,7 @@ export class MessageController {
         req.user.userId,
         dto.sourceMessages[0],
       );
+      await this.userQuota.assertCanSend(req.user.userId);
       const data = await this.messageService.writeMsgToThread(
         req.user.userId,
         dto.threadId,
@@ -357,7 +361,9 @@ export class MessageController {
         direct.contentType,
         dto.clientMessageId,
         direct.forwardBundleId,
-        (tx) => this.userQuota.tick(req.user.userId, 'messages', tx),
+        async (tx) => {
+        await this.userQuota.tickLax(req.user.userId, 'messages', tx);
+      },
       );
       void this.fanout.dispatch(data);
       return data;
@@ -366,6 +372,7 @@ export class MessageController {
       req.user.userId,
       dto.sourceMessages,
     );
+    await this.userQuota.assertCanSend(req.user.userId);
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
@@ -374,12 +381,17 @@ export class MessageController {
       dto.clientMessageId,
       bundle.bundleId,
       async (tx) => {
-        await this.userQuota.tick(
-          req.user.userId,
-          'messages',
-          tx,
-          bundle.quotaMessageCount,
-        );
+        // Quota: the outer forward counts as ONE message; each bundle in the closure counts as ONE file
+        // (inner messages no longer count individually; bundle asset bytes are excluded by design).
+        await this.userQuota.tickLax(req.user.userId, 'messages', tx, 1);
+        if (bundle.bundleCount > 0) {
+          await this.userQuota.tickLax(
+            req.user.userId,
+            'files',
+            tx,
+            bundle.bundleCount,
+          );
+        }
         await this.forwardBundles.persistPrepared(tx, bundle);
       },
     );
@@ -510,8 +522,10 @@ export class MessageController {
     } else {
       await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
     }
-    // Phase 7: stage only message-level intent + fileCnt. Per-file display metadata rides with each
-    // upload part; the daily count tick moved to upload time (charged per file, by detected family).
+    // Phase 7: stage only message-level intent + fileCnt. Per-file display metadata (w/h/duration)
+    // rides with each upload part; the daily file cnt + byte quota is charged at upload admission
+    // (UploadController.admitUpload), where the real byte size is known — not here.
+    await this.userQuota.assertCanSend(req.user.userId);
     await this.messageService.stageMedia(
       req.user.userId,
       dto.threadId,

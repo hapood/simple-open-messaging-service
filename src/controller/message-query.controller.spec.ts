@@ -121,9 +121,10 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
     ContentType.AUDIO,
     ContentType.GALLERY,
   ])(
-    'stages %s with fileCnt and does NOT tick quota (the tick moved to upload time)',
+    'stages %s with fileCnt, gates with assertCanSend, and does NOT tick quota at stage',
     async (contentType) => {
       const stageMedia = vi.fn().mockResolvedValue({ clientMessageId: 'cid' });
+      const assertCanSend = vi.fn().mockResolvedValue(undefined);
       const tick = vi.fn().mockResolvedValue(undefined);
       const controller = new MessageController(
         { stageMedia } as never,
@@ -137,7 +138,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         {} as never,
         {} as never,
         {} as never,
-        { tick } as never,
+        { assertCanSend, tick } as never,
       );
       const req = {
         user: { userId: 7 },
@@ -154,8 +155,9 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         clientMessageId: '00000000-0000-4000-8000-000000000001',
       });
 
-      // Stage carries only message-level intent + fileCnt (default 1). Quota is charged per FILE at
-      // upload time (by detected family), NOT here.
+      // Stage carries only message-level intent + fileCnt (default 1). The user breaker is gated here
+      // (assertCanSend); the per-file cnt + byte quota is charged at upload admission, NOT here.
+      expect(assertCanSend).toHaveBeenCalledWith(7);
       expect(stageMedia).toHaveBeenCalledWith(
         7,
         42,
@@ -182,7 +184,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {} as never,
       {} as never,
       {} as never,
-      { tick: vi.fn() } as never,
+      { assertCanSend: vi.fn().mockResolvedValue(undefined) } as never,
     );
     const req = {
       user: { userId: 7 },

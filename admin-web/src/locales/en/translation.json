@@ -139,9 +139,27 @@
     "col": {
       "node": "Node",
       "messages": "Messages",
-      "images": "Images",
-      "largeFiles": "Large files",
+      "files": "Files",
       "requests": "Requests"
+    },
+    "breaker": {
+      "bannerTitle": "Quota circuit breakers tripped",
+      "bannerBody": "{{peers}} peer(s) + {{users}} user(s) are over a daily quota and paused. New pulls/sends for them are blocked until reset (00:00 UTC) or an admin adds quota.",
+      "review": "Review & add quota",
+      "none": "No tripped breakers",
+      "tripped": "Tripped",
+      "dimMsg": "Messages",
+      "dimFile": "Files",
+      "dimFileBytes": "File total size",
+      "continueTitle": "Add today's quota — {{entity}}",
+      "continueHint": "Additions stack on today's limit. 0 = no bump on that dimension.",
+      "addMsg": "Additional messages",
+      "addFile": "Additional file count",
+      "addFileBytes": "Additional file total size (MB)",
+      "needHint": "Need ≥ {{amount}} to unblock this dimension",
+      "apply": "Apply & resume",
+      "toastResumed": "Breaker cleared — traffic resumed",
+      "toastStillTripped": "Quota added; some dimensions still over the limit"
     }
   },
   "dashboard": {

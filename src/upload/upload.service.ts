@@ -915,6 +915,13 @@ export class UploadService {
     ext: string,
     chunksFromOffset: (offset: number) => AsyncIterable<Buffer>,
     expectedDigest: string,
+    opts?: {
+      /** Notified as bytes are appended (throttle at the caller — fires once per buffered chunk). */
+      onProgress?: (received: number) => void;
+      /** Declared file size; if the stream exceeds it, {@link CasOversizeError} is thrown (excess still counts
+       *  toward quota — the caller charges it before abandoning the file). */
+      declaredBytes?: number;
+    },
   ): Promise<{ url: string; digest: string; size: number }> {
     if (!/^[0-9a-f]{64}$/.test(expectedDigest))
       throw new Error('invalid CAS digest');
@@ -1007,6 +1014,15 @@ export class UploadService {
           await appendFileAsync(part, buf);
           offset += buf.length;
           await persistOffset();
+          opts?.onProgress?.(offset);
+          if (opts?.declaredBytes !== undefined && offset > opts.declaredBytes) {
+            // The stream exceeded its declared size — abandon. The excess bytes still count toward quota;
+            // the caller (driveFileSync) charges the delta via addFileBytesDelta before this surfaces as FAILED.
+            await unlinkAsync(part).catch(() => {});
+            await unlinkAsync(resume).catch(() => {});
+            await unlinkAsync(complete).catch(() => {});
+            throw new CasOversizeError(BigInt(offset - opts.declaredBytes));
+          }
         }
 
         const hash = createHash('sha256');
@@ -1153,5 +1169,15 @@ export class UploadService {
     }
     const buf = Buffer.from(avatar.b64, 'base64');
     return this.saveAvatars(buf);
+  }
+}
+
+/** Thrown by {@link UploadService.saveCasFromStream} when an inbound stream exceeds its declared size. The
+ *  `extraBytes` (offset − declared) must still be charged toward file-total-size quota by the caller before
+ *  the file is abandoned as FAILED. */
+export class CasOversizeError extends Error {
+  constructor(readonly extraBytes: bigint) {
+    super(`CAS oversize: stream exceeded declared size by ${extraBytes} bytes`);
+    this.name = 'CasOversizeError';
   }
 }

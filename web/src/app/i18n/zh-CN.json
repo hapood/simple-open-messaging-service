@@ -218,13 +218,11 @@
       },
       "category": {
         "messages": "消息",
-        "images": "图片",
-        "largeFiles": "大文件",
+        "files": "文件",
         "requests": "好友请求"
       },
       "disabled": "不可使用",
-      "imageCap": "单张图片上限 {{size}}",
-      "fileCap": "单个大文件上限 {{size}}",
+      "paused": "今日额度已用尽 — 发送已暂停，将于 00:00 (UTC) 自动重置或由管理员追加额度后恢复。",
       "reset": "将在 {{time}} 自动重置"
     }
   },
@@ -539,6 +537,7 @@
     "menuConfirm": "确认",
     "menuCancel": "取消",
     "blockedBanner": "你已拉黑该联系人。点击取消拉黑。",
+    "quotaPausedBanner": "今日额度已用尽 — 发送已暂停，将于 00:00 (UTC) 重置或由管理员追加额度后恢复。",
     "groupDissolvedBanner": "群聊已解散。",
     "notFriendsBanner": "对方不是你的好友。",
     "leftGroupBanner": "你已退出群聊。",

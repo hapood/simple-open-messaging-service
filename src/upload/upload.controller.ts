@@ -162,10 +162,10 @@ export class UploadController {
     const companion = this.companionFields(consumed.fields);
     const payloads = [];
     for (const file of consumed.files) {
-      // Quota BEFORE saveCas: detect family from bytes, enforce the per-category byte cap + count tick,
-      // so a quota failure leaves no orphan file on disk.
-      const family = this.uploadService.detectFamily(file.buffer);
-      await this.admitPartUpload(req, family, file.buffer.length);
+      // Quota BEFORE saveCas: charge file cnt + total bytes at admission (the real byte size is known
+      // here), so a quota failure leaves no orphan file on disk. Type-agnostic — media family no longer
+      // affects quota (savePart detects family from the staged intent for storage, not for quota).
+      await this.admitUpload(req, file.buffer.length);
       const saved = await this.withStageFailure(req, () =>
         this.uploadService.savePart(file.buffer, intent, {
           filename: file.filename,
@@ -296,24 +296,23 @@ export class UploadController {
   }
 
   /**
-   * Enforce the account's per-category byte cap + daily count tick BEFORE CAS persistence (Phase 7).
-   * The count tick moved here from stage time: it is charged per uploaded file, by the server-detected
-   * family, so a mixed GALLERY batch correctly ticks images vs large files. A failure persists a staged
-   * failure (failUpload) and aborts the send.
+   * Charge the account's daily file quota — file cnt + file total size — at the admission point, BEFORE
+   * CAS persistence, where the real byte size is known. This is where BOTH the staged-send file count
+   * (deferred from POST /send-media) and any plain upload are consumed. Type-agnostic: media family no
+   * longer factors into quota (the old images/largeFiles split is gone). assertCanSend gates the user's
+   * breaker; preCheckFile refuses a claim that would exceed; tickLax + tickFileBytes record it. A quota
+   * failure persists a staged failure (failUpload) and aborts the send, leaving no orphan file on disk.
    */
-  private async admitPartUpload(
+  private async admitUpload(
     req: FastifyRequest,
-    family: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
     bytes: number,
   ): Promise<void> {
-    const category = family === 'IMAGE' ? 'images' : 'largeFiles';
     try {
-      await this.userQuota.assertWithinByteCap(
-        req.user.userId,
-        category,
-        bytes,
-      );
-      await this.userQuota.tickStandalone(req.user.userId, category, 1);
+      const userId = req.user.userId;
+      await this.userQuota.assertCanSend(userId);
+      await this.userQuota.preCheckFile(userId, 1, BigInt(bytes));
+      await this.userQuota.tickLax(userId, 'files');
+      await this.userQuota.tickFileBytes(userId, BigInt(bytes));
     } catch (error) {
       if (error instanceof BusinessException) {
         return this.failUpload(req, error.bizCode, error.message, error.data);

@@ -139,9 +139,27 @@
     "col": {
       "node": "节点",
       "messages": "消息",
-      "images": "图片",
-      "largeFiles": "大文件",
+      "files": "文件",
       "requests": "请求"
+    },
+    "breaker": {
+      "bannerTitle": "配额熔断已触发",
+      "bannerBody": "{{peers}} 个联邦 peer + {{users}} 个用户已超出当日配额并被暂停。其新的拉取/发送已被拦截，直到次日 00:00 (UTC) 重置或管理员追加额度。",
+      "review": "查看并追加额度",
+      "none": "无熔断",
+      "tripped": "已熔断",
+      "dimMsg": "消息数",
+      "dimFile": "文件数",
+      "dimFileBytes": "文件总大小",
+      "continueTitle": "追加今日额度 — {{entity}}",
+      "continueHint": "追加值叠加到今日额度上。0 = 该维度不追加。",
+      "addMsg": "追加消息条数",
+      "addFile": "追加文件数",
+      "addFileBytes": "追加文件总大小 (MB)",
+      "needHint": "该维度至少需追加 {{amount}} 才能解除",
+      "apply": "应用并恢复",
+      "toastResumed": "熔断已解除 — 流量已恢复",
+      "toastStillTripped": "额度已追加；部分维度仍超限"
     }
   },
   "dashboard": {

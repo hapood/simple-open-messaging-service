@@ -114,7 +114,7 @@ export class UserController {
     const state = await this.userQuotaService.getState(req.user.userId);
     return {
       usage: state.usage,
-      caps: state.caps,
+      breaker: state.breaker,
       resetAt: nextUtcMidnight().toISOString(),
     };
   }

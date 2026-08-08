@@ -2,15 +2,20 @@ import { personalQuotaStatus } from './personal-quota-status';
 import type { PersonalQuotaState } from '../../services/model';
 
 function state(values: Array<[number, number]>): PersonalQuotaState {
-  const [messages, images, largeFiles, requests] = values;
+  const [messages, files, requests] = values;
   return {
     usage: {
       messages: { count: messages[0], limit: messages[1] },
-      images: { count: images[0], limit: images[1] },
-      largeFiles: { count: largeFiles[0], limit: largeFiles[1] },
+      files: { count: files[0], limit: files[1] },
       requests: { count: requests[0], limit: requests[1] },
     },
-    caps: { imageBytes: 1, largeFileBytes: 1 },
+    breaker: {
+      tripped: false,
+      trippedDims: [],
+      msg: { count: messages[0], limit: messages[1] },
+      file: { count: files[0], limit: files[1] },
+      fileBytes: { bytes: '0', limit: 0 },
+    },
     resetAt: '2026-08-04T00:00:00.000Z',
   };
 }
@@ -22,7 +27,6 @@ describe('personalQuotaStatus', () => {
         state([
           [0, 0],
           [8, 10],
-          [0, 20],
           [0, 10],
         ]),
       ),
@@ -35,7 +39,6 @@ describe('personalQuotaStatus', () => {
         state([
           [10, 10],
           [9, 10],
-          [0, 20],
           [0, 10],
         ]),
       ),
@@ -46,7 +49,6 @@ describe('personalQuotaStatus', () => {
     expect(
       personalQuotaStatus(
         state([
-          [0, 0],
           [0, 0],
           [0, 0],
           [0, 0],

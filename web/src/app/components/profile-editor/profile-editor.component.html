@@ -172,17 +172,11 @@
                   </div>
                 </div>
               }
-              <div class="quota-caps">
-                <span>{{
-                  'profile.quota.imageCap'
-                    | transloco: { size: formatBytes(state.caps.imageBytes) }
-                }}</span>
-                <span>{{
-                  'profile.quota.fileCap'
-                    | transloco
-                      : { size: formatBytes(state.caps.largeFileBytes) }
-                }}</span>
-              </div>
+              @if (state.breaker.tripped) {
+                <div class="quota-caps quota-caps--tripped">
+                  {{ 'profile.quota.paused' | transloco }}
+                </div>
+              }
               <p>
                 {{
                   'profile.quota.reset'

@@ -109,7 +109,8 @@ export interface PreparedForwardBundle {
   manifestDigest: string;
   assets: ForwardAssetDocument[];
   createdBy: number;
-  quotaMessageCount: number;
+  /** Number of bundles in the closure (root + all descendants) — each counts as ONE file for quota. */
+  bundleCount: number;
 }
 
 export interface DirectForwardSource {
@@ -459,12 +460,9 @@ export class ForwardBundleService {
       for (const bundle of closure.bundles)
         descendantBundles.set(bundle.id, bundle);
     }
-    const quotaMessageCount =
-      messages.length +
-      [...descendantBundles.values()].reduce(
-        (sum, bundle) => sum + bundle.manifest.messages.length,
-        0,
-      );
+    // Quota: each bundle in the closure (root + all descendant child bundles) counts as ONE file; inner
+    // messages no longer count toward msg cnt (only the outer forward message does).
+    const bundleCount = 1 + descendantBundles.size;
     const manifestDigest = digestManifest(manifest);
     const assetList = [...assets.values()];
     const content = JSON.stringify({
@@ -484,7 +482,7 @@ export class ForwardBundleService {
       manifestDigest,
       assets: assetList,
       createdBy: userId,
-      quotaMessageCount,
+      bundleCount,
     };
   }
 

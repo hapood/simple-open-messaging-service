@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { Pencil } from 'lucide-react';
+import { Pencil, TriangleAlert } from 'lucide-react';
 import { useSetUserQuota, useUserQuota } from '@/hooks/use-user-detail';
 import type {
   QuotaCategory,
@@ -28,21 +28,11 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatApiError } from '@/lib/format-error';
 
-const categories: QuotaCategory[] = [
-  'messages',
-  'images',
-  'largeFiles',
-  'requests',
-];
+const categories: QuotaCategory[] = ['messages', 'files', 'requests'];
 const countFields = [
   ['dailyMsgLimit', 'messages'],
-  ['dailyImageLimit', 'images'],
-  ['dailyLargeFileLimit', 'largeFiles'],
+  ['dailyFileLimit', 'files'],
   ['dailyRequestLimit', 'requests'],
-] as const;
-const byteFields = [
-  ['maxImageBytes', 'images'],
-  ['maxLargeFileBytes', 'largeFiles'],
 ] as const;
 const countOverrideByCategory = Object.fromEntries(
   countFields.map(([key, category]) => [category, key]),
@@ -56,10 +46,6 @@ export function userQuotaStatus(count: number, limit: number): QuotaStatus {
   if (count >= limit) return 'exhausted';
   if (count / limit >= 0.8) return 'warning';
   return 'healthy';
-}
-
-function formatMegabytes(bytes: number): string {
-  return (bytes / MB).toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 export function UserQuotaPanel({
@@ -104,7 +90,7 @@ export function UserQuotaPanel({
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-3">
             {categories.map((category) => {
               const item = state.usage[category];
               const status = userQuotaStatus(item.count, item.limit);
@@ -173,7 +159,7 @@ export function UserQuotaPanel({
               );
             })}
           </div>
-          <MediaCaps state={state} />
+          <BreakerLine state={state} />
           <p className="text-xs text-muted-foreground">
             {t('userQuota.resetHint')}
           </p>
@@ -190,35 +176,18 @@ export function UserQuotaPanel({
   );
 }
 
-function MediaCaps({ state }: { state: UserQuotaState }) {
+function BreakerLine({ state }: { state: UserQuotaState }) {
   const { t } = useTranslation();
+  if (!state.breaker.tripped) return null;
+  const dims = state.breaker.trippedDims
+    .map((d) => t(`quota.breaker.dim${d === 'msg' ? 'Msg' : d === 'file' ? 'File' : 'FileBytes'}`))
+    .join(', ');
   return (
-    <div className="rounded-md border bg-muted/30 p-3">
-      <div className="text-sm font-medium">{t('quota.itemCaps')}</div>
-      <div className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
-        {byteFields.map(([key, category]) => {
-          const cap =
-            category === 'images'
-              ? state.caps.imageBytes
-              : state.caps.largeFileBytes;
-          return (
-            <div key={category} className="flex justify-between gap-3">
-              <span className="text-muted-foreground">
-                {t(`quota.col.${category}`)}
-              </span>
-              <span>
-                {cap === 0
-                  ? t('quota.disabled')
-                  : t('quota.megabytes', { count: formatMegabytes(cap) })}{' '}
-                ·{' '}
-                {state.overrides[key] == null
-                  ? t('userQuota.source.default')
-                  : t('userQuota.source.custom')}
-              </span>
-            </div>
-          );
-        })}
-      </div>
+    <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <TriangleAlert className="size-4 shrink-0" />
+      <span>
+        {t('quota.breaker.tripped')} · {dims}
+      </span>
     </div>
   );
 }
@@ -241,18 +210,13 @@ function EditUserQuota({
       countFields.map(([key]) => [key, value[key]?.toString() ?? '']),
     ) as Record<(typeof countFields)[number][0], string>,
   );
-  const [bytes, setBytes] = useState<
-    Record<(typeof byteFields)[number][0], string>
-  >(
-    Object.fromEntries(
-      byteFields.map(([key]) => [
-        key,
-        value[key] == null ? '' : String(value[key] / MB),
-      ]),
-    ) as Record<(typeof byteFields)[number][0], string>,
+  const [fileBytesMb, setFileBytesMb] = useState<string>(
+    value.dailyFileBytesLimit == null
+      ? ''
+      : String(value.dailyFileBytesLimit / MB),
   );
   const invalid =
-    [...Object.values(counts), ...Object.values(bytes)].some((raw) => {
+    [...Object.values(counts), fileBytesMb].some((raw) => {
       if (!raw.trim()) return false;
       const n = Number(raw);
       return !Number.isFinite(n) || n < 0;
@@ -260,22 +224,23 @@ function EditUserQuota({
     Object.values(counts).some(
       (raw) => raw.trim() !== '' && !Number.isSafeInteger(Number(raw)),
     ) ||
-    Object.values(bytes).some(
-      (raw) => raw.trim() !== '' && !Number.isSafeInteger(Number(raw) * MB),
-    );
+    (fileBytesMb.trim() !== '' &&
+      !Number.isSafeInteger(Number(fileBytesMb) * MB));
 
   const save = async () => {
     if (invalid) return;
-    const overrides = Object.fromEntries([
-      ...countFields.map(([key]) => [
-        key,
-        counts[key].trim() ? Number(counts[key]) : null,
-      ]),
-      ...byteFields.map(([key]) => [
-        key,
-        bytes[key].trim() ? Number(bytes[key]) * MB : null,
-      ]),
-    ]) as QuotaOverrides;
+    const overrides = {
+      ...Object.fromEntries(
+        countFields.map(([key]) => [
+          key,
+          counts[key].trim() ? Number(counts[key]) : null,
+        ]),
+      ),
+      dailyFileBytesLimit:
+        fileBytesMb.trim() === ''
+          ? null
+          : Math.round(Number(fileBytesMb) * MB),
+    } as QuotaOverrides;
     try {
       await mutation.mutateAsync(overrides);
       toast.success(t('quota.toast.saved'));
@@ -310,25 +275,16 @@ function EditUserQuota({
               />
             </div>
           ))}
-          {byteFields.map(([key, category]) => (
-            <div key={key} className="flex flex-col gap-1.5">
-              <Label>
-                {t('quota.maxBytes', { cat: t(`quota.col.${category}`) })}
-              </Label>
-              <Input
-                type="number"
-                min={0}
-                value={bytes[key]}
-                placeholder={t('quota.placeholder.default')}
-                onChange={(event) =>
-                  setBytes((state) => ({
-                    ...state,
-                    [key]: event.target.value,
-                  }))
-                }
-              />
-            </div>
-          ))}
+          <div key="dailyFileBytesLimit" className="flex flex-col gap-1.5">
+            <Label>{t('quota.breaker.dimFileBytes')} (MB)</Label>
+            <Input
+              type="number"
+              min={0}
+              value={fileBytesMb}
+              placeholder={t('quota.placeholder.default')}
+              onChange={(event) => setFileBytesMb(event.target.value)}
+            />
+          </div>
           <p className="col-span-2 text-xs text-muted-foreground">
             {invalid ? t('quota.invalid') : t('userQuota.editHint')}
           </p>
