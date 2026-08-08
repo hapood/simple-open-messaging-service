@@ -47,6 +47,14 @@ class HelloMergerTest {
     }
 
     @Test
+    fun thread_revision_is_monotonic_out_of_order_dropped() {
+        var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"threadRevision":5}""")
+        c = HelloMerger.merge(c, "THREAD_REVISION_UPDATED", """{"threadRevision":9}""")
+        c = HelloMerger.merge(c, "THREAD_REVISION_UPDATED", """{"threadRevision":8}""")
+        assertEquals(9L, c!!.getLong("threadRevision"))
+    }
+
+    @Test
     fun incremental_before_hello_is_dropped_no_partial_cache() {
         assertNull(HelloMerger.merge(null, "THREAD_REVISION_UPDATED", """{"threadRevision":6}"""))
     }

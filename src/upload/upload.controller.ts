@@ -32,6 +32,7 @@ import {
   RESUMABLE_CHUNK_SIZE,
   ResumableUploadService,
 } from './resumable-upload.service.js';
+import { ContentType } from '../database/enums.js';
 
 /**
  * Phase 7 type-agnostic upload (design doc §12.3). ONE `POST /upload` accepts 1 or N file parts,
@@ -159,7 +160,22 @@ export class UploadController {
         this.partRejectMessage(consumed.reason),
       );
     }
-    const companion = this.companionFields(consumed.fields);
+    if (consumed.files.length !== 1) {
+      return this.failUpload(
+        req,
+        BusinessCode.VALIDATION_FAILED,
+        'exactly one file part is required per request',
+      );
+    }
+    let part: ReturnType<UploadController['uploadPartFields']>;
+    try {
+      part = this.uploadPartFields(consumed.fields, intent);
+    } catch (error) {
+      if (error instanceof BusinessException) {
+        return this.failUpload(req, error.bizCode, error.message, error.data);
+      }
+      throw error;
+    }
     const payloads = [];
     for (const file of consumed.files) {
       // Quota BEFORE saveCas: charge file cnt + total bytes at admission (the real byte size is known
@@ -167,15 +183,16 @@ export class UploadController {
       // affects quota (savePart detects family from the staged intent for storage, not for quota).
       await this.admitUpload(req, file.buffer.length);
       const saved = await this.withStageFailure(req, () =>
-        this.uploadService.savePart(file.buffer, intent, {
+        this.uploadService.savePart(file.buffer, part.intent, {
           filename: file.filename,
           declaredMime: file.mimetype,
-          ...companion,
         }),
       );
       const result = await this.withStageFailure(req, () =>
         this.messageService.markOutboundFileSucceeded(
           clientMessageId,
+          part.partId,
+          part.position,
           saved.payload.digest,
           saved.payload,
           req.user.userId,
@@ -303,10 +320,7 @@ export class UploadController {
    * breaker; preCheckFile refuses a claim that would exceed; tickLax + tickFileBytes record it. A quota
    * failure persists a staged failure (failUpload) and aborts the send, leaving no orphan file on disk.
    */
-  private async admitUpload(
-    req: FastifyRequest,
-    bytes: number,
-  ): Promise<void> {
+  private async admitUpload(req: FastifyRequest, bytes: number): Promise<void> {
     try {
       const userId = req.user.userId;
       await this.userQuota.assertCanSend(userId);
@@ -321,25 +335,41 @@ export class UploadController {
     }
   }
 
-  /** Extract the client-probed companion fields (w/h/duration) from the multipart form fields. The
-   *  filename + declared MIME come from the file part itself; only dimensions/duration ride as separate
-   *  form fields (the backend never parses media content for them). */
-  private companionFields(fields: Record<string, string>): {
-    w?: number;
-    h?: number;
-    duration?: number;
+  private uploadPartFields(
+    fields: Record<string, string>,
+    stagedType: ContentType,
+  ): {
+    partId: string;
+    position: number;
+    intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
   } {
-    const num = (key: string): number | undefined => {
-      const value = Number(fields[key]);
-      return Number.isFinite(value) && value > 0 ? value : undefined;
-    };
-    const w = num('w');
-    const h = num('h');
-    const duration = num('duration');
+    const partId = fields.partId;
+    const position = Number(fields.position);
+    const intent = fields.intent;
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        partId ?? '',
+      ) ||
+      !Number.isInteger(position) ||
+      position < 0 ||
+      position > 9 ||
+      !['IMAGE', 'VIDEO', 'AUDIO', 'FILE'].includes(intent)
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid upload part identity',
+      );
+    }
+    if (stagedType !== ContentType.GALLERY && stagedType !== intent) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'upload intent does not match the staged message',
+      );
+    }
     return {
-      ...(w !== undefined ? { w } : {}),
-      ...(h !== undefined ? { h } : {}),
-      ...(duration !== undefined ? { duration } : {}),
+      partId,
+      position,
+      intent: intent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
     };
   }
 }

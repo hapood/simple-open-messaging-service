@@ -95,7 +95,9 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   afterAll(async () => {
     await database.pool
-      .query('DELETE FROM "ThreadParticipant" WHERE "threadId" = $1', [threadId])
+      .query('DELETE FROM "ThreadParticipant" WHERE "threadId" = $1', [
+        threadId,
+      ])
       .catch(() => {});
     await database.pool
       .query('DELETE FROM "MessageThread" WHERE id = $1', [threadId])
@@ -129,7 +131,9 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('pending');
     expect(rows[0].fileCnt).toBe(1);
-    await database.db.delete(pendingMedia).where(eq(pendingMedia.id, rows[0].id));
+    await database.db
+      .delete(pendingMedia)
+      .where(eq(pendingMedia.id, rows[0].id));
   });
 
   it('charges only a newly-created friend request, not a pending duplicate', async () => {
@@ -195,6 +199,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     expect(
       await messages.markOutboundFileSucceeded(
         cid,
+        randomUUID(),
+        0,
         digest,
         filePayload(digest),
         userId,
@@ -231,6 +237,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     expect(
       await messages.markOutboundFileSucceeded(
         cid,
+        randomUUID(),
+        0,
         digest,
         filePayload(digest),
         userId + 1,
@@ -249,11 +257,14 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   it('markOutboundFileSucceeded commits a Message + messageAsset and deletes the stage; re-promote is idempotent', async () => {
     const cid = randomUUID();
+    const partId = randomUUID();
     const digest = 'a'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
 
     const result = await messages.markOutboundFileSucceeded(
       cid,
+      partId,
+      0,
       digest,
       filePayload(digest),
       userId,
@@ -289,6 +300,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     // duplicate Message, no error.
     const again = await messages.markOutboundFileSucceeded(
       cid,
+      partId,
+      0,
       digest,
       filePayload(digest),
       userId,
@@ -315,6 +328,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     };
     const result = await messages.markOutboundFileSucceeded(
       cid,
+      randomUUID(),
+      0,
       digest,
       heic,
       userId,
@@ -332,6 +347,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     // First file: barrier not yet met → no promote.
     const r1 = await messages.markOutboundFileSucceeded(
       cid,
+      randomUUID(),
+      0,
       d1,
       filePayload(d1),
       userId,
@@ -341,6 +358,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     // Second file: barrier met → promote. Content is the digest-sorted GALLERY items.
     const r2 = await messages.markOutboundFileSucceeded(
       cid,
+      randomUUID(),
+      1,
       d2,
       filePayload(d2),
       userId,
@@ -373,5 +392,43 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         ),
       );
     expect(assets.map((a) => a.digest).sort()).toEqual([d1, d2]);
+  });
+
+  it('counts repeated digest selections as distinct logical gallery parts', async () => {
+    const cid = randomUUID();
+    const digest = '3'.repeat(64);
+    await messages.stageMedia(userId, threadId, ContentType.GALLERY, cid, 2);
+
+    expect(
+      await messages.markOutboundFileSucceeded(
+        cid,
+        randomUUID(),
+        0,
+        digest,
+        filePayload(digest),
+        userId,
+      ),
+    ).toBeNull();
+    const result = await messages.markOutboundFileSucceeded(
+      cid,
+      randomUUID(),
+      1,
+      digest,
+      filePayload(digest),
+      userId,
+    );
+    const items = (JSON.parse(result!.message.content) as { items: unknown[] })
+      .items;
+    expect(items).toHaveLength(2);
+
+    const stored = await database.db.query.message.findFirst({
+      where: eq(message.clientMessageId, cid),
+      columns: { id: true },
+    });
+    const assets = await database.db
+      .select({ digest: messageAsset.digest })
+      .from(messageAsset)
+      .where(eq(messageAsset.messageId, stored!.id));
+    expect(assets).toEqual([{ digest }]);
   });
 });

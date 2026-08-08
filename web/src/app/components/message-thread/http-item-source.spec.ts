@@ -759,6 +759,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.addPending(pendingItem(cid)); // HTTP 200 has NOT fired yet → still 'sending'
     outbox.retainResource(cid, {
       type: 'native-attachment',
+      partId: 'part-native',
       selection: {} as never,
       release: dispose,
       discard: jasmine.createSpy('discard'),
@@ -782,6 +783,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.addPending(pendingItem('cid-discard'));
     outbox.retainResource('cid-discard', {
       type: 'native-attachment',
+      partId: 'part-discard',
       selection: {} as never,
       release: jasmine.createSpy('release'),
       discard: dispose,

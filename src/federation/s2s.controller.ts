@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import {
   FederationService,
@@ -23,12 +24,12 @@ import {
   type S2SCallFrame,
   type S2SAddress,
 } from './federation.service.js';
-import { FederationBufferService } from './federation-buffer.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMissedService } from './federation-missed.service.js';
 import { FederationMissedPullService } from './federation-missed-pull.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
@@ -57,10 +58,10 @@ import { FederationCursorService } from './federation-cursor.service.js';
 export class S2sController {
   constructor(
     private readonly federation: FederationService,
-    private readonly federationBuffer: FederationBufferService,
     private readonly federationMissed: FederationMissedService,
     private readonly federationMissedPull: FederationMissedPullService,
     private readonly federationCursor: FederationCursorService,
+    private readonly settings: SettingsService,
   ) {}
 
   /** Receive an ephemeral source HWM. Actual data remains pull-only through GET /missed. */
@@ -90,6 +91,11 @@ export class S2sController {
       );
     }
     this.federationMissedPull.advertise(signer, BigInt(body.allocatedThrough));
+    // Wake-up is intentionally fire-and-forget: the durable cursor/page transaction owns recovery,
+    // while this lightweight push returns promptly even when the peer has a large backlog.
+    void this.federation
+      .pullMissedFromPeer(this.federationMissedPull, signer)
+      .catch(() => undefined);
   }
 
   /** Read our current source HWM for the signed peer; used after heartbeat recovery. */
@@ -207,264 +213,32 @@ export class S2sController {
     return roster;
   }
 
-  // ─── Step 2: coalesced hint map + message pull (serving side) ────────────────
-
-  /** GET /api/v1/s2s/new-msg-map — the peer pulls OUR outbound hint entries (the one-directional
-   *  fallback, §4.3). Non-destructive: we serve a snapshot; entries leave only on a successful PUSH ack.
-   *  The requester is the signing server (req.peer.domain). */
-  @Get('new-msg-map')
-  async getNewMsgMap(
+  /** Authoritative current relationship check. `localAccount` beginning with `!` addresses a group;
+   * otherwise it addresses this server's user in a P2P relationship with `peerAccount` on the signer. */
+  @Get('thread-access')
+  async getThreadAccess(
     @Req() req: FastifyRequest,
-    @Query('cursor') cursorParam?: string,
-    @Query('take') takeParam?: string,
+    @Query('localAccount') localAccount?: string,
+    @Query('peerAccount') peerAccount?: string,
   ) {
-    const cursor = Number(cursorParam ?? '0') || 0;
-    // Cap matches FederationBufferService.BATCH (1000); keeps one batch ≈ 80 KB.
-    const take = Math.min(Number(takeParam ?? '1000') || 1000, 1000);
-    return this.federationBuffer.snapshotOutboundFor(
+    if (!localAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing localAccount query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!localAccount.startsWith('!') && !peerAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing peerAccount query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return this.federation.queryThreadAccess(
+      localAccount,
+      peerAccount,
       this.signerDomain(req),
-      cursor,
-      take,
-    );
-  }
-
-  /** GET /api/v1/s2s/messages — the peer pulls messages. Three shapes, all account-based (no internal
-   *  thread id): `toAccount` is a peer user (P2P, `fromAccount` = our local sender) or the group
-   *  `!account` (group). For a group: `fromAccount` absent → ALL-SENDERS whole-thread pull (mirror ←
-   *  origin, keyed by thread seq, advances the mirror's pullUntil); `fromAccount` present → PER-AUTHOR
-   *  pull (origin ← mirror hub leg, keyed by originSeq). `fromDomain` is the author's domain (required
-   *  for group; for P2P it is our own). `toDomain` is the REQUESTER's domain (== the signature signer;
-   *  binding-checked). Gates (friendship / roster) are enforced inside the serve* methods. */
-  @Get('messages')
-  async getMessages(
-    @Req() req: FastifyRequest,
-    @Query('fromAccount') fromAccount?: string,
-    @Query('fromDomain') fromDomain?: string,
-    @Query('toAccount') toAccount?: string,
-    @Query('toDomain') toDomain?: string,
-    @Query('afterSeq') afterSeqParam?: string,
-    @Query('take') takeParam?: string,
-  ) {
-    const signer = this.signerDomain(req);
-    this.requireBinding(toDomain, signer);
-    if (!toAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing toAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    // 0-indexed seq: default afterSeq = -1 so a backfill (`>` -1) returns from seq 0. An explicit value
-    // is the caller's last-seen seq (e.g. 0 → `>` 0 skips seq 0).
-    const after = Number(afterSeqParam ?? '-1');
-    if (Number.isNaN(after)) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'afterSeq must be an integer',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const take = Math.min(Number(takeParam ?? '50') || 50, 50);
-    if (toAccount.startsWith('!')) {
-      // Group: all-senders (mirror ← origin) when no `fromAccount`; per-author (origin ← mirror) when present.
-      if (fromAccount && fromDomain) {
-        return this.federation.serveOutboundMessagesGroupFrom(
-          toAccount,
-          fromAccount,
-          fromDomain,
-          after,
-          take,
-          signer,
-        );
-      }
-      return this.federation.serveOutboundMessagesGroup(
-        toAccount,
-        after,
-        take,
-        signer,
-      );
-    }
-    // P2P: `fromAccount` is our local sender, `toAccount` is the requester's user. Friendship gate inside.
-    if (!fromAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing fromAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return this.federation.serveOutboundMessages(
-      fromAccount,
-      toAccount,
-      signer,
-      after,
-      take,
-    );
-  }
-
-  /** Same addressing shapes as /messages, but cursoring over this node's durable deletion log. */
-  @Get('message-deletions')
-  async getMessageDeletions(
-    @Req() req: FastifyRequest,
-    @Query('fromAccount') fromAccount?: string,
-    @Query('fromDomain') fromDomain?: string,
-    @Query('toAccount') toAccount?: string,
-    @Query('toDomain') toDomain?: string,
-    @Query('afterId') afterIdParam?: string,
-    @Query('take') takeParam?: string,
-  ) {
-    const signer = this.signerDomain(req);
-    this.requireBinding(toDomain, signer);
-    if (!toAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing toAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    let afterId: bigint;
-    try {
-      afterId = BigInt(afterIdParam ?? '0');
-      if (afterId < 0n) throw new Error('negative');
-    } catch {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'afterId must be a non-negative integer',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const take = Math.min(Number(takeParam ?? '50') || 50, 50);
-    if (toAccount.startsWith('!')) {
-      return fromAccount && fromDomain
-        ? this.federation.serveOutboundDeletedMessagesGroupFrom(
-            toAccount,
-            fromAccount,
-            fromDomain,
-            signer,
-            afterId,
-            take,
-          )
-        : this.federation.serveOutboundDeletedMessagesGroup(
-            toAccount,
-            signer,
-            afterId,
-            take,
-          );
-    }
-    if (!fromAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing fromAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return this.federation.serveOutboundDeletedMessages(
-      fromAccount,
-      toAccount,
-      signer,
-      afterId,
-      take,
-    );
-  }
-
-  /** GET /api/v1/s2s/messages/before — the BACKWARD twin of /messages (reserved for external/other
-   *  federation implementations; SOMS's own transport is forward-only). `beforeSeq` is an exclusive
-   *  upper bound (`seq < beforeSeq`); `< 0` (default) means no upper bound → the latest `take` messages.
-   *  Returns the batch OLDEST-FIRST (descending query, reversed) so a caller prepends it directly. The
-   *  next-older page uses `messages[0].originSeq`/`messages[0].seq` as the new `beforeSeq`. THREE shapes,
-   *  symmetric with /messages: P2P (`fromAccount`+`toAccount`), group all-senders (`toAccount=!group`),
-   *  group per-author (`toAccount=!group`+`fromAccount`+`fromDomain`, carries the {code:50010} leave
-   *  signal). Same gates (friendship / roster) as the forward leg. */
-  @Get('messages/before')
-  async getMessagesBefore(
-    @Req() req: FastifyRequest,
-    @Query('fromAccount') fromAccount?: string,
-    @Query('fromDomain') fromDomain?: string,
-    @Query('toAccount') toAccount?: string,
-    @Query('toDomain') toDomain?: string,
-    @Query('beforeSeq') beforeSeqParam?: string,
-    @Query('take') takeParam?: string,
-  ) {
-    const signer = this.signerDomain(req);
-    this.requireBinding(toDomain, signer);
-    if (!toAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing toAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    // 0-indexed seq: default beforeSeq = -1 → no upper bound (the latest take messages).
-    const beforeSeq = Number(beforeSeqParam ?? '-1');
-    if (Number.isNaN(beforeSeq)) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'beforeSeq must be an integer',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const take = Math.min(Number(takeParam ?? '50') || 50, 50);
-    if (toAccount.startsWith('!')) {
-      // Group: all-senders when no `fromAccount`; per-author (with the {code:50010} leave signal) when present.
-      if (fromAccount && fromDomain) {
-        return this.federation.serveOutboundMessagesGroupFromBefore(
-          toAccount,
-          fromAccount,
-          fromDomain,
-          beforeSeq,
-          take,
-          signer,
-        );
-      }
-      return this.federation.serveOutboundMessagesGroupBefore(
-        toAccount,
-        beforeSeq,
-        take,
-        signer,
-      );
-    }
-    // P2P: `fromAccount` is our local sender, `toAccount` is the requester's user. Friendship gate inside.
-    if (!fromAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing fromAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return this.federation.serveOutboundMessagesBefore(
-      fromAccount,
-      toAccount,
-      signer,
-      beforeSeq,
-      take,
-    );
-  }
-
-  /** POST /api/v1/s2s/new-msg-map — a peer pushes ITS outbound hint entries (dirty conversations) to us.
-   *  Validate `origin === signer` (belt-and-suspenders over the signature), then enqueue + drain. ACKs
-   *  fast (202 Accepted — the actual message pull runs out of band). */
-  @Post('new-msg-map')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async postNewMsgMap(@Req() req: FastifyRequest): Promise<void> {
-    const body = req.body as
-      | { origin?: unknown; entries?: unknown }
-      | undefined;
-    const signer = this.signerDomain(req);
-    if (typeof body?.origin !== 'string' || body.origin !== signer) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BINDING_VIOLATION,
-        `origin (${String(body?.origin)}) != signer (${signer})`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    const entries = Array.isArray(body?.entries) ? body.entries : [];
-    this.federation.receiveNewMsgMapPush(
-      signer,
-      entries as ReadonlyArray<{
-        fromAccount?: unknown;
-        fromDomain?: unknown;
-        toAccount?: unknown;
-        latestSeq?: unknown;
-      }>,
     );
   }
 
@@ -485,7 +259,7 @@ export class S2sController {
   }
 
   /** Binding-check `toDomain` (the REQUESTER's asserted domain) against the RFC 9421 signer — belt-and-
-   *  suspenders over the signature, same pattern as the `origin === signer` check in POST /new-msg-map. The
+   *  suspenders over the signature, matching the binding checks on other signed S2S endpoints. The
    *  signature proves only the signer DOMAIN (not a specific user), so the requester explicitly asserts
    *  which domain `toAccount` lives on and we enforce it matches the cryptographic identity. */
   private requireBinding(toDomain: string | undefined, signer: string): void {
@@ -581,6 +355,19 @@ export class S2sController {
         .send();
       return;
     }
+    // Optional extra integrity signal. It costs an additional disk pass, so NAS deployments default it
+    // off. Receivers always verify a supplied value and still verify the final whole-file CAS digest.
+    let chunkDigest: string | undefined;
+    if (await this.settings.isFederationChunkDigestEnabled()) {
+      const chunkHash = createHash('sha256');
+      for await (const piece of createReadStream(absPath, {
+        start: range.start,
+        end: range.end,
+      })) {
+        chunkHash.update(piece);
+      }
+      chunkDigest = `sha-256=${chunkHash.digest('base64')}`;
+    }
     // Single byte range → 206. Hijack the raw response: the byte-exact partial body MUST pass through
     // untouched (compress must not gzip it, interceptors must not touch it).
     reply.hijack();
@@ -588,6 +375,7 @@ export class S2sController {
       'content-type': 'application/octet-stream',
       'content-length': String(range.end - range.start + 1),
       'content-range': `bytes ${range.start}-${range.end}/${bytes}`,
+      ...(chunkDigest ? { 'content-digest': chunkDigest } : {}),
       'accept-ranges': 'bytes',
       'cache-control': 'no-store',
     });

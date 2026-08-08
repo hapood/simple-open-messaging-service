@@ -11,6 +11,8 @@ import {
   threadParticipant,
   user,
 } from '../database/schema.js';
+import { ContentType } from '../database/enums.js';
+import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { FederationCursorService } from './federation-cursor.service.js';
 import { loadFederationConfig } from './federation.config.js';
 
@@ -36,13 +38,17 @@ export interface FederationMissedMessage {
       };
   author: { account: string; domain: string };
   seq: number;
-  originSeq: number | null;
+  /** Stable source-author coordinate. Locally-authored messages use their source thread seq. */
+  originSeq: number;
   contentType: string;
   content: string;
   createdAt: number;
   updatedAt: number;
-  isDeleted: boolean;
   clientMessageId: string | null;
+  quoteTarget?: {
+    creator: { account: string; domain: string };
+    originSeq: number;
+  };
   assets: FederationMissedAsset[];
 }
 
@@ -93,7 +99,6 @@ export class FederationMissedService {
             content: message.content,
             createdAt: message.createdAt,
             updatedAt: message.updatedAt,
-            isDeleted: message.isDeleted,
             clientMessageId: message.clientMessageId,
             threadType: messageThread.type,
             groupUserId: messageThread.groupUserId,
@@ -112,6 +117,7 @@ export class FederationMissedService {
               eq(discoveryChange.targetId, targetId),
               gt(discoveryChange.changeId, after),
               lte(discoveryChange.changeId, allocatedThrough),
+              eq(message.isDeleted, false),
             ),
           )
           .orderBy(asc(discoveryChange.changeId))
@@ -141,7 +147,9 @@ export class FederationMissedService {
                   messageId: messageAsset.messageId,
                   digest: messageAsset.digest,
                   bytes: mediaAsset.bytes,
-                  status: sql<'READY' | 'DELETED'>`CASE WHEN ${mediaAsset.isDeleted} THEN 'DELETED' ELSE 'READY' END`,
+                  status: sql<
+                    'READY' | 'DELETED'
+                  >`CASE WHEN ${mediaAsset.isDeleted} THEN 'DELETED' ELSE 'READY' END`,
                 })
                 .from(messageAsset)
                 .innerJoin(
@@ -202,6 +210,56 @@ export class FederationMissedService {
           ]),
         );
 
+        // Message content stores a quote as this server's local thread seq. Federation wire data must
+        // instead carry the quoted author's stable (address, originSeq) coordinate, because the receiver
+        // allocates its own unrelated local seq. Resolve all quoted targets for the page in one query.
+        const quoteRefs = new Map<string, { threadId: number; seq: number }>();
+        for (const row of changes) {
+          if (row.contentType !== ContentType.PURE_TEXT) continue;
+          const quoteSeq = parseTextMessageContent(row.content)?.quote?.seq;
+          if (quoteSeq !== undefined) {
+            quoteRefs.set(`${row.threadId}\u0000${quoteSeq}`, {
+              threadId: row.threadId,
+              seq: quoteSeq,
+            });
+          }
+        }
+        const quotedRows =
+          quoteRefs.size === 0
+            ? []
+            : await tx
+                .select({
+                  threadId: message.threadId,
+                  seq: message.seq,
+                  originSeq: message.originSeq,
+                  account: user.account,
+                  domain: user.domain,
+                })
+                .from(message)
+                .innerJoin(user, eq(user.id, message.creator))
+                .where(
+                  sql`(${message.threadId}, ${message.seq}) IN (${sql.join(
+                    [...quoteRefs.values()].map(
+                      (ref) => sql`(${ref.threadId}, ${ref.seq})`,
+                    ),
+                    sql`, `,
+                  )})`,
+                );
+        const quoteTargets = new Map(
+          quotedRows.map((row) => [
+            `${row.threadId}\u0000${row.seq}`,
+            {
+              creator: {
+                account: row.account,
+                domain: this.wireDomain(row.domain),
+              },
+              // All newly-created messages persist originSeq=seq. COALESCE keeps old local rows safe
+              // during the pre-release migration window.
+              originSeq: row.originSeq ?? row.seq,
+            },
+          ]),
+        );
+
         const messages = changes.map((row): FederationMissedMessage => {
           const group = row.groupUserId
             ? groups.get(row.groupUserId)
@@ -209,6 +267,19 @@ export class FederationMissedService {
           if (row.threadType === 'GROUP' && !group) {
             throw new Error(
               `group identity missing for thread ${row.threadId}`,
+            );
+          }
+          const quoteSeq =
+            row.contentType === ContentType.PURE_TEXT
+              ? parseTextMessageContent(row.content)?.quote?.seq
+              : undefined;
+          const quoteTarget =
+            quoteSeq === undefined
+              ? undefined
+              : quoteTargets.get(`${row.threadId}\u0000${quoteSeq}`);
+          if (quoteSeq !== undefined && !quoteTarget) {
+            throw new Error(
+              `quoted message ${row.threadId}/${quoteSeq} is missing`,
             );
           }
           return {
@@ -224,13 +295,13 @@ export class FederationMissedService {
               domain: this.wireDomain(row.authorDomain),
             },
             seq: row.seq,
-            originSeq: row.originSeq,
+            originSeq: row.originSeq ?? row.seq,
             contentType: row.contentType,
             content: row.content,
             createdAt: row.createdAt.getTime(),
             updatedAt: row.updatedAt.getTime(),
-            isDeleted: row.isDeleted,
             clientMessageId: row.clientMessageId,
+            ...(quoteTarget ? { quoteTarget } : {}),
             assets: assets.get(row.messageId) ?? [],
           };
         });

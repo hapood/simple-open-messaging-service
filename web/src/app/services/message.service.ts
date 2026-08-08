@@ -14,6 +14,14 @@ import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireClosure } from '../components/forward-detail/forward-bundle.model';
 
 export type UploadProgressHandler = (loaded: number, total: number) => void;
+export type UploadPartIntent = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
+
+export interface UploadPartIdentity {
+  clientMessageId: string;
+  partId: string;
+  position: number;
+  intent: UploadPartIntent;
+}
 
 interface ResumableUploadState {
   uploadId: string;
@@ -96,9 +104,9 @@ export class MsgService {
    */
   sendMedia(params: {
     threadId: number;
-    contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO';
+    contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
     clientMessageId: string;
-    meta?: { w?: number; h?: number; duration?: number };
+    fileCnt?: number;
     retry?: boolean;
   }) {
     return this.http.post<StandardResponse<{ clientMessageId: string }>>(
@@ -124,204 +132,33 @@ export class MsgService {
     >(`${apiPrefix()}/query-media-stages`, { threadId });
   }
 
-  /** Upload an image (multipart: file + width/height), returns {url,w,h}. w/h are read client-side via
-   *  createImageBitmap and sent along. When `clientMessageId` is set (a prior POST /send-media staged
-   *  this send), the server promotes the staged send to a real Message after the upload. */
-  uploadMedia(
+  /** Upload one logical message part. The server derives digest, size and media metadata; the client
+   * only declares its stable identity, order and intended card family. Retries must reuse identity. */
+  uploadPart<T>(
     file: File,
-    w: number,
-    h: number,
-    clientMessageId?: string,
+    identity: UploadPartIdentity,
     onProgress?: UploadProgressHandler,
-  ): Observable<StandardResponse<{ url: string; w: number; h: number }>> {
-    if (clientMessageId) {
-      return defer(() =>
-        this.resumableUpload<{ url: string; w: number; h: number }>(
-          file,
-          clientMessageId,
-          onProgress,
-        ),
-      );
-    }
+  ): Observable<StandardResponse<T>> {
     if (this.canStream(file)) {
       return defer(() =>
-        this.streamUpload<{ url: string; w: number; h: number }>(
+        this.streamUpload<T>(
           file,
           '/upload',
-          { w: String(w), h: String(h) },
-          clientMessageId,
+          this.partFields(identity),
+          identity.clientMessageId,
           onProgress,
         ),
       );
     }
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('w', String(w));
-    fd.append('h', String(h));
-    return this.httpUpload<
-      StandardResponse<{ url: string; w: number; h: number }>
-    >(`${apiPrefix()}/upload`, fd, clientMessageId, onProgress);
+    return defer(() => this.resumableUpload<T>(file, identity, onProgress));
   }
 
-  /**
-   * Upload a generic file (multipart: file), returns the server-generated {url,name,size,mimeType}, used verbatim
-   * as the FILE message content. The mimetype allowlist and size cap for POST /upload/file are enforced by
-   * the backend. `onProgress` receives byte progress from Angular upload events in browser/Android and
-   * from the Rust ReaderStream event bridge on Tauri desktop.
-   */
-  uploadFile(
-    file: File,
-    clientMessageId?: string,
-    onProgress?: UploadProgressHandler,
-  ): Observable<
-    StandardResponse<{
-      url: string;
-      name: string;
-      size: number;
-      mimeType: string;
-    }>
-  > {
-    if (clientMessageId) {
-      return defer(() =>
-        this.resumableUpload<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-        }>(file, clientMessageId, onProgress),
-      );
-    }
-    if (this.canStream(file)) {
-      return defer(() =>
-        this.streamUpload<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-        }>(file, '/upload/file', {}, clientMessageId, onProgress),
-      );
-    }
-    const fd = new FormData();
-    fd.append('file', file);
-    return this.httpUpload<
-      StandardResponse<{
-        url: string;
-        name: string;
-        size: number;
-        mimeType: string;
-      }>
-    >(`${apiPrefix()}/upload/file`, fd, clientMessageId, onProgress);
-  }
-
-  /** Upload a video (multipart: file). The server validates only the container family via magic bytes
-   *  (no probe/extract); w/h/duration are NOT sent here — they are client-probed via <video>
-   *  loadedmetadata and ride in the staged send's meta. Returns {url,name,size,mimeType}. When
-   *  `clientMessageId` is set, the upload promotes a staged send to a real Message. */
-  uploadVideo(
-    file: File,
-    clientMessageId?: string,
-    onProgress?: UploadProgressHandler,
-  ): Observable<
-    StandardResponse<{
-      url: string;
-      name: string;
-      size: number;
-      mimeType: string;
-    }>
-  > {
-    if (clientMessageId) {
-      return defer(() =>
-        this.resumableUpload<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-        }>(file, clientMessageId, onProgress),
-      );
-    }
-    if (this.canStream(file)) {
-      return defer(() =>
-        this.streamUpload<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-        }>(file, '/upload/video', {}, clientMessageId, onProgress),
-      );
-    }
-    const fd = new FormData();
-    fd.append('file', file);
-    return this.httpUpload<
-      StandardResponse<{
-        url: string;
-        name: string;
-        size: number;
-        mimeType: string;
-      }>
-    >(`${apiPrefix()}/upload/video`, fd, clientMessageId, onProgress);
-  }
-
-  /** Upload an audio clip (multipart: file). Same contract as uploadVideo (magic-byte check only);
-   *  duration is client-probed and carried in the staged send's meta. When `clientMessageId` is set,
-   *  the upload promotes a staged send to a real Message. */
-  uploadAudio(
-    file: File,
-    clientMessageId?: string,
-    onProgress?: UploadProgressHandler,
-  ): Observable<
-    StandardResponse<{
-      url: string;
-      name: string;
-      size: number;
-      mimeType: string;
-      /** True only when the staged AUDIO intent was durably promoted to a Message row. */
-      promoted: boolean;
-    }>
-  > {
-    if (clientMessageId) {
-      return defer(async () => {
-        const response = await this.resumableUpload<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-        }>(file, clientMessageId, onProgress);
-        return {
-          ...response,
-          data: response.data
-            ? { ...response.data, promoted: true }
-            : undefined,
-        } as StandardResponse<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-          promoted: boolean;
-        }>;
-      });
-    }
-    if (this.canStream(file)) {
-      return defer(() =>
-        this.streamUpload<{
-          url: string;
-          name: string;
-          size: number;
-          mimeType: string;
-          promoted: boolean;
-        }>(file, '/upload/audio', {}, clientMessageId, onProgress),
-      );
-    }
-    const fd = new FormData();
-    fd.append('file', file);
-    return this.httpUpload<
-      StandardResponse<{
-        url: string;
-        name: string;
-        size: number;
-        mimeType: string;
-        promoted: boolean;
-      }>
-    >(`${apiPrefix()}/upload/audio`, fd, clientMessageId, onProgress);
+  private partFields(identity: UploadPartIdentity): Record<string, string> {
+    return {
+      partId: identity.partId,
+      position: String(identity.position),
+      intent: identity.intent,
+    };
   }
 
   /** True when the upload can stream from disk: the Tauri DESKTOP shell, where Tauri's `<input type=file>`
@@ -335,7 +172,7 @@ export class MsgService {
   /** Stream-upload a file via the Rust `upload_stream_file` command, which reads + sends it in chunks
    *  straight from disk (peak memory = one chunk, NOT the whole file — the api:// URI-scheme proxy can't
    *  do this: Tauri hands it a fully-buffered `Request<Vec<u8>>` at the IPC boundary). `endpoint` is the
-   *  path SUFFIX after /api/v1 (e.g. '/upload/video'); `fields` are extra form fields (w/h). Returns the
+   *  path suffix after /api/v1. `fields` carry the stable upload-part identity. Returns the
    *  raw {code,message,data} envelope so callers read it exactly like the HttpClient response. */
   private async streamUpload<T>(
     file: File,
@@ -421,14 +258,17 @@ export class MsgService {
    * recovers its authoritative offset, with offset=0 naturally meaning a fresh upload. */
   private async resumableUpload<T>(
     file: File,
-    clientMessageId: string,
+    identity: UploadPartIdentity,
     onProgress?: UploadProgressHandler,
   ): Promise<StandardResponse<T>> {
     const init = await firstValueFrom(
       this.http.post<StandardResponse<ResumableUploadState>>(
         `${apiPrefix()}/uploads/resumable/init`,
         {
-          clientMessageId,
+          clientMessageId: identity.clientMessageId,
+          partId: identity.partId,
+          position: identity.position,
+          intent: identity.intent,
           originalName: file.name || 'attachment',
           mimeType: file.type || 'application/octet-stream',
           totalBytes: file.size,

@@ -5,29 +5,13 @@ import { describe, it, expect, vi } from 'vitest';
 process.env.SOMS_DOMAIN ??= 'soms.io';
 
 import { FederationService, S2sResponseError } from './federation.service.js';
-import type { FederationBufferService } from './federation-buffer.service.js';
-import { message, pendingMedia } from '../database/schema.js';
-import { MessageDeleteType } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
 
 const OUR = 'soms.io'; // == SOMS_DOMAIN (config.domain)
 
 /** Build a FederationService wired with hand-rolled fakes (the project's spec style — direct
- *  construction, not the Nest DI container). Only the database fake + `buffer` are exercised by the routing /
- *  debounce logic under test; the rest are inert stubs. */
+ *  construction, not the Nest DI container). */
 function makeStubs() {
-  const markDirty = vi.fn();
-  const flushBatch = vi.fn(() => ({
-    entries: [],
-    keys: [] as string[],
-    hasMore: false,
-  }));
-  const buffer = {
-    markDirty,
-    flushBatch,
-    deleteKeys: vi.fn(),
-    dropDomainIfEmpty: vi.fn(),
-  } as unknown as FederationBufferService;
   const store = {
     messageThread: { findUnique: vi.fn() },
     threadParticipant: { findMany: vi.fn() },
@@ -76,24 +60,81 @@ function makeStubs() {
     {} as never, // invite
     sse as never,
     {} as never, // threadRevisionService
-    buffer,
     {} as never, // quota
     {} as never, // linkPreview
     {} as never, // forwardBundles
     {} as never, // messageVisibility
     deletedMessages as never,
     { emitAsync: vi.fn().mockResolvedValue(undefined), emit: vi.fn() } as never, // eventEmitter
+    {} as never, // federationIdentity
+    { readAllocatedThrough: vi.fn().mockResolvedValue(0n) } as never, // federationCursor
+    {} as never, // federationInit
+    {} as never, // downloadScheduler
   );
   return {
     svc,
     database,
     store,
-    markDirty,
-    flushBatch,
     sse,
     deletedMessages,
   };
 }
+
+describe('FederationService optional range digest', () => {
+  function target() {
+    const { svc } = makeStubs();
+    const privateService = svc as unknown as {
+      signature: { signOutbound: () => Record<string, string> };
+      requestRangeUnit: (
+        url: URL,
+        domain: string,
+        start: number,
+        end: number,
+      ) => Promise<{ contentDigest?: string }>;
+    };
+    privateService.signature = { signOutbound: () => ({}) };
+    return privateService;
+  }
+
+  it('accepts a valid 206 range when the peer omits the optional digest', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('abc', {
+        status: 206,
+        headers: { 'content-range': 'bytes 0-2/3' },
+      }),
+    );
+    await expect(
+      target().requestRangeUnit(
+        new URL('https://peer.test/file'),
+        'peer.test',
+        0,
+        2,
+      ),
+    ).resolves.toMatchObject({ contentDigest: undefined });
+    fetchMock.mockRestore();
+  });
+
+  it('rejects a supplied malformed range digest', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('abc', {
+        status: 206,
+        headers: {
+          'content-range': 'bytes 0-2/3',
+          'content-digest': 'not-a-digest',
+        },
+      }),
+    );
+    await expect(
+      target().requestRangeUnit(
+        new URL('https://peer.test/file'),
+        'peer.test',
+        0,
+        2,
+      ),
+    ).rejects.toThrow('invalid Content-Digest');
+    fetchMock.mockRestore();
+  });
+});
 
 describe('FederationService thread-bound S2S preflight', () => {
   function installPreflight(state: {
@@ -389,91 +430,6 @@ describe('FederationService peer-bound response write gate', () => {
 });
 
 describe('FederationService quote coordinates', () => {
-  it('maps a local quote seq to creator identity + originSeq for the wire', async () => {
-    const { svc, store } = makeStubs();
-    store.message.findMany.mockResolvedValue([
-      {
-        seq: 7,
-        originSeq: 3,
-        creatorItem: {
-          account: 'alice',
-          domain: 'local',
-          isForeigner: false,
-        },
-      },
-    ]);
-    const quoteTargetsForWire = (
-      svc as unknown as {
-        quoteTargetsForWire: (
-          threadId: number,
-          messages: Array<{
-            seq: number;
-            contentType: 'PURE_TEXT';
-            content: string;
-          }>,
-        ) => Promise<
-          Map<
-            number,
-            {
-              creator: { account: string; domain: string };
-              originSeq: number;
-            }
-          >
-        >;
-      }
-    ).quoteTargetsForWire.bind(svc);
-
-    const result = await quoteTargetsForWire(10, [
-      {
-        seq: 12,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'reply', quote: { seq: 7 } }),
-      },
-    ]);
-
-    expect(result.get(12)).toEqual({
-      creator: { account: 'alice', domain: OUR },
-      originSeq: 3,
-    });
-  });
-
-  it('rejects a quote target without a stable originSeq', async () => {
-    const { svc, store } = makeStubs();
-    store.message.findMany.mockResolvedValue([
-      {
-        seq: 7,
-        originSeq: null,
-        creatorItem: {
-          account: 'alice',
-          domain: 'local',
-          isForeigner: false,
-        },
-      },
-    ]);
-    const quoteTargetsForWire = (
-      svc as unknown as {
-        quoteTargetsForWire: (
-          threadId: number,
-          messages: Array<{
-            seq: number;
-            contentType: 'PURE_TEXT';
-            content: string;
-          }>,
-        ) => Promise<Map<number, unknown>>;
-      }
-    ).quoteTargetsForWire.bind(svc);
-
-    await expect(
-      quoteTargetsForWire(10, [
-        {
-          seq: 12,
-          contentType: 'PURE_TEXT',
-          content: JSON.stringify({ text: 'reply', quote: { seq: 7 } }),
-        },
-      ]),
-    ).rejects.toThrow('quoted message has no federated coordinate');
-  });
-
   it('maps a wire creator + originSeq back to the receiver local seq', async () => {
     const { svc } = makeStubs();
     const legacy = {
@@ -530,7 +486,8 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   // every foreign domain EXCEPT the source. P2P: each foreign peer except the author + the source.
 
   it('P2P: signals every foreign peer except the author', async () => {
-    const { svc, store, markDirty } = makeStubs();
+    const { svc, store } = makeStubs();
+    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
@@ -542,13 +499,12 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
 
     await svc.signalOutbound(10, 1, 5, undefined);
 
-    expect(markDirty).toHaveBeenCalledTimes(2);
-    expect(markDirty).toHaveBeenCalledWith('b.com', 'alice', OUR, 'bob', 5);
-    expect(markDirty).toHaveBeenCalledWith('c.com', 'alice', OUR, 'carol', 5);
+    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
   });
 
   it('P2P: excludes fetchedFromDomain (a pulled message does not re-notify its source)', async () => {
-    const { svc, store, markDirty } = makeStubs();
+    const { svc, store } = makeStubs();
+    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
     });
@@ -560,12 +516,12 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
 
     await svc.signalOutbound(10, 1, 5, 'b.com');
 
-    expect(markDirty).toHaveBeenCalledTimes(1);
-    expect(markDirty).toHaveBeenCalledWith('c.com', 'alice', OUR, 'carol', 5);
+    expect(push).toHaveBeenCalledExactlyOnceWith('c.com');
   });
 
   it('GROUP origin: signals every foreign member-DOMAIN (deduped) except the fetch source', async () => {
-    const { svc, store, markDirty } = makeStubs();
+    const { svc, store } = makeStubs();
+    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'local' },
     });
@@ -579,50 +535,40 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
 
     await svc.signalOutbound(10, 1, 7, undefined);
 
-    expect(markDirty).toHaveBeenCalledTimes(2);
-    expect(markDirty).toHaveBeenCalledWith('b.com', 'alice', OUR, '!grp', 7);
-    expect(markDirty).toHaveBeenCalledWith('c.com', 'alice', OUR, '!grp', 7);
+    expect(push.mock.calls).toEqual([['b.com'], ['c.com']]);
 
     // ...and the fetch source is excluded (the origin re-signals everyone EXCEPT where it pulled from).
-    markDirty.mockClear();
+    push.mockClear();
     await svc.signalOutbound(10, 1, 7, 'b.com');
-    expect(markDirty).toHaveBeenCalledTimes(1);
-    expect(markDirty).toHaveBeenCalledWith('c.com', 'alice', OUR, '!grp', 7);
+    expect(push).toHaveBeenCalledExactlyOnceWith('c.com');
   });
 
   it('GROUP mirror: signals ONLY {originDomain} — and nothing when that was the fetch source', async () => {
-    const { svc, store, markDirty } = makeStubs();
+    const { svc, store } = makeStubs();
+    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: { account: '!grp', domain: 'origin.com' },
     });
-    store.threadParticipant.findMany.mockResolvedValue([
-      localUser(1, 'alice'),
-    ]);
+    store.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
 
     // A mirror's sole destination is the origin (the hub it pulls from).
     await svc.signalOutbound(10, 1, 7, undefined);
-    expect(markDirty).toHaveBeenCalledTimes(1);
-    expect(markDirty).toHaveBeenCalledWith(
-      'origin.com',
-      'alice',
-      OUR,
-      '!grp',
-      7,
-    );
+    expect(push).toHaveBeenCalledExactlyOnceWith('origin.com');
 
     // ...which is exactly the domain it just pulled from → excluded → signals nothing (loop closed).
-    markDirty.mockClear();
+    push.mockClear();
     await svc.signalOutbound(10, 1, 7, 'origin.com');
-    expect(markDirty).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('is a no-op when the thread is missing or the author is not a participant', async () => {
-    const { svc, store, markDirty } = makeStubs();
+    const { svc, store } = makeStubs();
+    const push = vi.spyOn(svc, 'pushDiscoveryHwm').mockResolvedValue();
 
     store.messageThread.findUnique.mockResolvedValue(null);
     store.threadParticipant.findMany.mockResolvedValue([]);
     await svc.signalOutbound(10, 1, 5, undefined);
-    expect(markDirty).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
 
     store.messageThread.findUnique.mockResolvedValue({
       groupUser: null,
@@ -631,179 +577,7 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
       foreignUser(99, 'x', 'b.com'),
     ]);
     await svc.signalOutbound(10, 1, 5, undefined); // author 1 is not in the roster
-    expect(markDirty).not.toHaveBeenCalled();
-  });
-});
-
-describe('FederationService sender debounce (scheduleFlush / flushDomain)', () => {
-  it('collapses a same-domain burst into ONE flush (one timer per dest domain)', async () => {
-    vi.useFakeTimers();
-    try {
-      const { svc, store, flushBatch } = makeStubs();
-      store.messageThread.findUnique.mockResolvedValue({
-        groupUser: { account: '!grp', domain: 'origin.com' },
-      });
-      store.threadParticipant.findMany.mockResolvedValue([
-        localUser(1, 'alice'),
-      ]);
-
-      // A burst of three sends to the same dest domain (origin.com).
-      await svc.signalOutbound(10, 1, 1, undefined);
-      await svc.signalOutbound(10, 1, 2, undefined);
-      await svc.signalOutbound(10, 1, 3, undefined);
-
-      // Not flushed until the 500ms debounce window elapses.
-      expect(flushBatch).not.toHaveBeenCalled();
-
-      vi.advanceTimersByTime(500);
-
-      // The whole burst collapsed to a single flush (one timer fired → one flushDomain → one flushBatch).
-      expect(flushBatch).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
-
-describe('FederationService.notifyGroupLeave — mirror-leave → origin per-author hint', () => {
-  // The leave producer: a MIRROR member's leave nudges the ORIGIN with a normal per-author hint whose
-  // latestSeq beats the origin's derived cursor (MAX(Message ∪ PendingMedia) for the leaver) so the pull —
-  // and the FEDERATION_GROUP_AUTHOR_LEFT dissolution — always fires. No-op when we are the origin or the
-  // group is non-federated (the origin's own leave is already on the canonical roster; mirrors catch up via
-  // the lazy roster meta-pull).
-
-  function makeSvc(opts: {
-    thread: { groupUser: { account: string; domain: string } | null } | null;
-    leaver: { account: string; domain: string; isForeigner: boolean } | null;
-    maxMsg?: number | null;
-    maxPending?: number | null;
-  }) {
-    const markDirty = vi.fn();
-    const buffer = {
-      markDirty,
-      flushBatch: vi.fn(() => ({
-        entries: [],
-        keys: [] as string[],
-        hasMore: false,
-      })),
-      deleteKeys: vi.fn(),
-      dropDomainIfEmpty: vi.fn(),
-    } as unknown as FederationBufferService;
-    const store = {
-      messageThread: { findUnique: vi.fn(async () => opts.thread) },
-      user: { findUnique: vi.fn(async () => opts.leaver) },
-      message: {
-        aggregate: vi.fn(async () => ({
-          _max: { originSeq: opts.maxMsg ?? null },
-        })),
-      },
-      pendingMedia: {
-        aggregate: vi.fn(async () => ({
-          _max: { originSeq: opts.maxPending ?? null },
-        })),
-      },
-    };
-    const database = {
-      db: {
-        query: {
-          messageThread: {
-            findFirst: async () => {
-              const row = await store.messageThread.findUnique();
-              return row ? { ...row, user: row.groupUser } : row;
-            },
-          },
-          user: { findFirst: store.user.findUnique },
-        },
-        select: (_selection: unknown) => {
-          let table: unknown;
-          const query = {
-            from: (value: unknown) => {
-              table = value;
-              return query;
-            },
-            where: async () => {
-              const result =
-                table === message
-                  ? await store.message.aggregate()
-                  : await store.pendingMedia.aggregate();
-              return [{ originSeq: result._max.originSeq }];
-            },
-          };
-          return query;
-        },
-      },
-    };
-    const svc = new FederationService(
-      database as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      buffer,
-      {} as never, // quota
-      {} as never, // linkPreview
-      {
-        emitAsync: vi.fn().mockResolvedValue(undefined),
-        emit: vi.fn(),
-      } as never, // eventEmitter
-    );
-    return { svc, markDirty };
-  }
-
-  it('MIRROR thread: pushes a per-author hint to the origin, latestSeq = cursor+1 (local leaver w/ history)', async () => {
-    const { svc, markDirty } = makeSvc({
-      thread: { groupUser: { account: '!grp', domain: 'origin.com' } },
-      leaver: { account: 'bob', domain: 'local', isForeigner: false },
-      maxMsg: 5, // bob authored up to originSeq 5 on the mirror
-    });
-    await svc.notifyGroupLeave(10, 42);
-    // cursor = MAX(5, -1) = 5 → latestSeq 6 (beats the origin's per-author cursor so the probe fires).
-    // The leaver is local → its wire domain is OUR.
-    expect(markDirty).toHaveBeenCalledTimes(1);
-    expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 6);
-  });
-
-  it('MIRROR thread, leaver authored nothing: latestSeq floors at 0 (cursor -1 → 0 still beats -1)', async () => {
-    const { svc, markDirty } = makeSvc({
-      thread: { groupUser: { account: '!grp', domain: 'origin.com' } },
-      leaver: { account: 'bob', domain: 'local', isForeigner: false },
-      // no maxMsg/maxPending → both null → cursor -1 → latestSeq 0
-    });
-    await svc.notifyGroupLeave(10, 42);
-    expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 0);
-  });
-
-  it('PendingMedia is included in the cursor (a staged-but-uncommitted media bumps latestSeq past it)', async () => {
-    const { svc, markDirty } = makeSvc({
-      thread: { groupUser: { account: '!grp', domain: 'origin.com' } },
-      leaver: { account: 'bob', domain: 'local', isForeigner: false },
-      maxMsg: 3,
-      maxPending: 7, // a staged media at originSeq 7 → cursor 7 → latestSeq 8
-    });
-    await svc.notifyGroupLeave(10, 42);
-    expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 8);
-  });
-
-  it('ORIGIN thread (we are the origin — groupUser.domain is the "local" sentinel): no hint pushed', async () => {
-    const { svc, markDirty } = makeSvc({
-      thread: { groupUser: { account: '!grp', domain: 'local' } },
-      leaver: { account: 'bob', domain: 'local', isForeigner: false },
-    });
-    await svc.notifyGroupLeave(10, 42);
-    expect(markDirty).not.toHaveBeenCalled();
-  });
-
-  it('non-federated group (no groupUser): no hint pushed', async () => {
-    const { svc, markDirty } = makeSvc({
-      thread: { groupUser: null },
-      leaver: { account: 'bob', domain: 'local', isForeigner: false },
-    });
-    await svc.notifyGroupLeave(10, 42);
-    expect(markDirty).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
   });
 });
 
@@ -880,160 +654,5 @@ describe('FederationService federated friend-invite revoke', () => {
       origin: 'peer.test',
       originId: 'shared-op-id',
     });
-  });
-});
-
-describe('FederationService durable deletion pull', () => {
-  const deletion = (overrides: Record<string, unknown> = {}) => ({
-    id: '8',
-    type: MessageDeleteType.WITHDRAW,
-    target: {
-      creator: { account: 'bob', domain: 'peer.test' },
-      originSeq: 17,
-    },
-    deletedAt: Date.now(),
-    ...overrides,
-  });
-
-  async function pull(
-    svc: FederationService,
-    pages: Array<{ deletions: unknown[]; hasMore: boolean }>,
-    streamKind: 'p2p-author' | 'group-origin' | 'group-author' = 'p2p-author',
-  ) {
-    const getSigned = vi.fn();
-    for (const page of pages)
-      getSigned.mockResolvedValueOnce({
-        data: page,
-        federationVersion: 4,
-      });
-    const target = svc as unknown as {
-      getSignedForThread: typeof getSigned;
-      pullDeletedStream: (params: unknown) => Promise<void>;
-    };
-    target.getSignedForThread = getSigned;
-    await target.pullDeletedStream({
-      threadId: 10,
-      sourceDomain: 'peer.test',
-      streamAccount: 'bob',
-      streamKind,
-      path: (afterId: bigint) => `/deleted?afterId=${afterId}`,
-      expectedCreator:
-        streamKind === 'p2p-author'
-          ? { account: 'bob', domain: 'peer.test' }
-          : undefined,
-      recipients: [1, 3],
-    });
-    return getSigned;
-  }
-
-  it('applies an authoritative tombstone, advances from the durable cursor, and wakes recipients', async () => {
-    const { svc, store, deletedMessages, sse } = makeStubs();
-    store.federationDeletedCursor.findFirst.mockResolvedValue({
-      deletedHwm: 7n,
-    });
-    store.deletedParticipant.findFirst.mockResolvedValue({ userId: 22 });
-    deletedMessages.applyFederated.mockResolvedValue({ id: '31', seq: 4 });
-    const signalOutbound = vi
-      .spyOn(svc, 'signalOutbound')
-      .mockResolvedValue(undefined);
-
-    const getSigned = await pull(svc, [
-      { deletions: [deletion()], hasMore: false },
-    ]);
-
-    expect(getSigned.mock.calls[0]).toEqual([
-      10,
-      '/deleted?afterId=7',
-      'peer.test',
-    ]);
-    expect(deletedMessages.applyFederated).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: 10,
-        creatorId: 22,
-        originSeq: 17,
-        authorityDomain: 'peer.test',
-        sourceDomain: 'peer.test',
-        remoteDeletedId: 8n,
-        expectedFederationVersion: 4,
-      }),
-    );
-    expect(sse.onDeletedMessageUpdated.mock.calls).toEqual([
-      [1, 10, '31'],
-      [3, 10, '31'],
-    ]);
-    expect(signalOutbound).toHaveBeenCalledWith(10, 22, 17, 'peer.test');
-  });
-
-  it('rejects a peer attempting to delete a message owned by this server', async () => {
-    const { svc, deletedMessages } = makeStubs();
-
-    await expect(
-      pull(svc, [
-        {
-          deletions: [
-            deletion({
-              target: {
-                creator: { account: 'alice', domain: OUR },
-                originSeq: 17,
-              },
-            }),
-          ],
-          hasMore: false,
-        },
-      ]),
-    ).rejects.toThrow('peer is not authoritative for deletion target');
-    expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
-  });
-
-  it('consumes a group-origin relay of our own tombstone without changing local message state', async () => {
-    const { svc, deletedMessages, sse } = makeStubs();
-
-    await pull(
-      svc,
-      [
-        {
-          deletions: [
-            deletion({
-              target: {
-                creator: { account: 'alice', domain: OUR },
-                originSeq: 17,
-              },
-            }),
-          ],
-          hasMore: false,
-        },
-      ],
-      'group-origin',
-    );
-
-    expect(deletedMessages.advanceFederatedCursor).toHaveBeenCalledWith(
-      expect.objectContaining({
-        remoteDeletedId: 8n,
-        threadId: 10,
-        expectedFederationVersion: 4,
-      }),
-    );
-    expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
-    expect(sse.onDeletedMessageUpdated).not.toHaveBeenCalled();
-  });
-
-  it('rejects replayed or out-of-order deletion ids before applying them', async () => {
-    const { svc, store, deletedMessages } = makeStubs();
-    store.federationDeletedCursor.findFirst.mockResolvedValue({
-      deletedHwm: 8n,
-    });
-
-    await expect(
-      pull(svc, [{ deletions: [deletion()], hasMore: false }]),
-    ).rejects.toThrow('federated deletion stream is not ordered');
-    expect(deletedMessages.applyFederated).not.toHaveBeenCalled();
-  });
-
-  it('rejects an empty page that claims another page exists', async () => {
-    const { svc } = makeStubs();
-
-    await expect(pull(svc, [{ deletions: [], hasMore: true }])).rejects.toThrow(
-      'empty federated deletion page has more pages',
-    );
   });
 });

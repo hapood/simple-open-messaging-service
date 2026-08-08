@@ -89,7 +89,11 @@ export interface InMemoryKeypair {
 }
 
 export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
-  const privateKey = ed25519.utils.randomSecretKey();
+  // Stable per test domain: restarting a subprocess models a normal process restart that reloads the
+  // same on-disk identity, not catastrophic key loss. Distinct domains still receive distinct keys.
+  const privateKey = createHash('sha256')
+    .update(`soms-federation-e2e-key:${domain}`, 'utf8')
+    .digest();
   const publicKey = ed25519.getPublicKey(privateKey);
   const publicKeyB64 = Buffer.from(publicKey).toString('base64');
   const rootKeyFingerprint = `sha256:${createHash('sha256')
@@ -229,6 +233,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
   const pool = new Pool({ connectionString: cfg.dbUrl });
   const database = drizzle({ client: pool, schema: databaseSchema });
   let child: ChildProcess | null = null;
+  let stopping = false;
 
   const start = async (): Promise<void> => {
     const env: NodeJS.ProcessEnv = {
@@ -238,32 +243,50 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       APP_PORT: String(cfg.appPort),
       FED_PORT_A: String(cfg.portA),
       FED_PORT_B: String(cfg.portB),
-      // Verbose (→ pino trace) so the e2e subprocess emits debug-level logs. Federation's best-effort
-      // paths (signalOutbound, localizeMedia) log failures at debug — the default `info` hides them,
-      // making a swallowed media-localize failure invisible. Trace is cheap in the short-lived test
-      // subprocess and essential for diagnosing federation delivery.
-      LOG_LEVEL: 'verbose',
+      // Keep routine subprocess SQL/access logs out of the test reporter. Set FED_E2E_DEBUG=1 when
+      // diagnosing a swallowed best-effort federation path to restore trace-level forwarding.
+      LOG_LEVEL: process.env.FED_E2E_DEBUG === '1' ? 'verbose' : 'warn',
     };
-    child = fork(APP_MAIN, {
+    const startedChild = fork(APP_MAIN, {
       env,
       // fork() requires an IPC channel (the 4th stdio slot); we don't use it — readiness comes via
       // stdout, shutdown via SIGTERM — but the slot must be present. The entry is compiled JS (see
       // ensureCompiledEntry), so no tsx/ts-node loader — plain `node` runs it.
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
-    // TEMP DEBUG — forward the subprocess logs so a swallowed best-effort failure is visible.
-    child.stdout!.on('data', (d: Buffer) =>
-      process.stdout.write(`[${cfg.domain}] ${d}`),
-    );
-    child.stderr!.on('data', (d: Buffer) =>
-      process.stderr.write(`[${cfg.domain}] ${d}`),
-    );
-    await waitForReady(child, cfg);
+    child = startedChild;
+    stopping = false;
+    let stdoutTail = '';
+    let stderrTail = '';
+    startedChild.stdout!.on('data', (d: Buffer) => {
+      stdoutTail = (stdoutTail + d.toString()).slice(-2000);
+      if (process.env.FED_E2E_DEBUG === '1') {
+        process.stdout.write(`[${cfg.domain}] ${d}`);
+      }
+    });
+    startedChild.stderr!.on('data', (d: Buffer) => {
+      stderrTail = (stderrTail + d.toString()).slice(-4000);
+      if (process.env.FED_E2E_DEBUG === '1') {
+        process.stderr.write(`[${cfg.domain}] ${d}`);
+      }
+    });
+    startedChild.once('exit', (code, signal) => {
+      if (child === startedChild) child = null;
+      if (!stopping && (code !== 0 || signal !== null)) {
+        console.error(
+          `${cfg.domain}: federation test app exited unexpectedly ` +
+            `(code=${String(code)}, signal=${String(signal)}).\n` +
+            `stdout tail:\n${stdoutTail}\nstderr tail:\n${stderrTail}`,
+        );
+      }
+    });
+    await waitForReady(startedChild, cfg);
   };
 
   const stop = async (): Promise<void> => {
     const c = child;
     if (!c) return;
+    stopping = true;
     child = null;
     const exited = new Promise<void>((resolve) => {
       c.once('exit', () => resolve());
@@ -272,6 +295,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     });
     c.kill('SIGTERM');
     await exited;
+    stopping = false;
   };
 
   return {

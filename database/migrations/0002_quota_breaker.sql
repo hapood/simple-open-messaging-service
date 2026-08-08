@@ -4,6 +4,14 @@
 -- because byte totals exceed INTEGER range). In-memory tripped flags are derived from these persisted counters.
 -- See docs plan + src/quota/{quota,user-quota}.service.ts.
 
+-- The squashed baseline retains the original local-user category check. Extend it before the new
+-- unified file counter is used.
+ALTER TABLE "UserQuotaDailyUsage"
+    DROP CONSTRAINT "UserQuotaDailyUsage_category_check",
+    ADD CONSTRAINT "UserQuotaDailyUsage_category_check" CHECK (
+        "category" IN ('messages', 'images', 'largeFiles', 'requests', 'files')
+    );
+
 -- Daily file-total-size accumulator for a federated peer (bigint). One row per (domain, UTC day).
 CREATE TABLE "QuotaFileByteUsage" (
     "domain" VARCHAR(63) NOT NULL,
@@ -26,7 +34,7 @@ CREATE INDEX "UserQuotaFileByteUsage_date_idx" ON "UserQuotaFileByteUsage" ("dat
 
 ALTER TABLE "UserQuotaFileByteUsage"
     ADD CONSTRAINT "UserQuotaFileByteUsage_userId_fkey"
-    FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE;
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE;
 
 -- Tick-once guard: once a file's file-cnt/file-bytes quota is charged, admin retry or crash-resume must not
 -- re-charge it. Default false; set true after the first successful claim.
@@ -80,5 +88,4 @@ CREATE TABLE "UserQuotaDailyAllowance" (
 
 ALTER TABLE "UserQuotaDailyAllowance"
     ADD CONSTRAINT "UserQuotaDailyAllowance_userId_fkey"
-    FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE;
-
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE;

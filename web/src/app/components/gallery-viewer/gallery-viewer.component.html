@@ -49,7 +49,7 @@
     [attr.aria-label]="'gallery.mediaRailAria' | transloco"
     [attr.aria-hidden]="!chromeVisible()"
   >
-    @for (media of images(); track media.msgId ?? $index) {
+    @for (media of images(); track $index) {
       <button
         type="button"
         class="gv-thumb"
@@ -61,7 +61,16 @@
         "
         (click)="goTo($index)"
       >
-        @if (media.kind === 'video') {
+        @if (media.kind === 'file' || media.kind === 'audio') {
+          <span class="gv-thumb-placeholder" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+              />
+              <path d="M14 3v5h5" />
+            </svg>
+          </span>
+        } @else if (media.kind === 'video') {
           @if (useNativeVideo) {
             <img [src]="mediaUrl(media)" alt="" />
           } @else {

@@ -9,10 +9,10 @@ import org.json.JSONObject
  * test in src-tauri/src/lib.rs) WITHOUT instantiating the Android `Service`.
  *
  * HELLO replaces the cache wholesale; each incremental revision frame patches its matching field IN PLACE
- * (cheap — one deserialize on HELLO + one serialize at replay). `friendReqRev` / `friendReqAckRev` are
- * monotonic (epoch-ms) — an out-of-order (older) value is dropped so a stale push can't regress the badge
- * state. A frame before the first HELLO yields null (no partial cached handshake). Best-effort: a malformed
- * frame leaves the cache untouched.
+ * (cheap — one deserialize on HELLO + one serialize at replay). `threadRevision`, `friendReqRev`, and
+ * `friendReqAckRev` are monotonic — an out-of-order (older) value is dropped so a stale push can't regress
+ * replay state. A frame before the first HELLO yields null (no partial cached handshake). Best-effort: a
+ * malformed frame leaves the cache untouched.
  */
 object HelloMerger {
 
@@ -24,8 +24,12 @@ object HelloMerger {
     else {
       val c = cached ?: return null
       when (type) {
-        "THREAD_REVISION_UPDATED" ->
-          c.put("threadRevision", JSONObject(data).opt("threadRevision"))
+        "THREAD_REVISION_UPDATED" -> {
+          val inc = JSONObject(data).optLong("threadRevision", Long.MIN_VALUE)
+          if (inc != Long.MIN_VALUE && inc >= c.optLong("threadRevision", Long.MIN_VALUE)) {
+            c.put("threadRevision", inc)
+          }
+        }
         "PROFILE_REV_UPDATED" ->
           c.put("profileRev", JSONObject(data).opt("profileRev"))
         "FRIEND_REQ_REV_UPDATED" -> {

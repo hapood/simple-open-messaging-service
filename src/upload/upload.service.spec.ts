@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UploadService } from './upload.service.js';
@@ -14,6 +14,19 @@ const PNG = Buffer.from([
 const EBML = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00]);
 /** 'OggS' — a native audio container. */
 const OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53]);
+
+const mediaMetadata = {
+  fromBuffer: vi.fn(async (_buf: Buffer, intent: string) =>
+    intent === 'IMAGE'
+      ? { w: 10, h: 20 }
+      : intent === 'AUDIO'
+        ? { duration: 3 }
+        : intent === 'VIDEO'
+          ? { w: 640, h: 360, duration: 4 }
+          : {},
+  ),
+  fromFile: vi.fn(),
+};
 
 /**
  * A minimal multipart FastifyRequest stand-in for consumeParts: yields the given file parts (each with
@@ -48,7 +61,7 @@ function fakeReq(
 }
 
 describe('UploadService.detectFamily — magic-byte family resolution', () => {
-  const svc = new UploadService({} as never);
+  const svc = new UploadService({} as never, mediaMetadata as never);
 
   it('maps PNG magic bytes to IMAGE', () => {
     expect(svc.detectFamily(PNG)).toBe('IMAGE');
@@ -72,7 +85,7 @@ describe('UploadService.detectFamily — magic-byte family resolution', () => {
 describe('UploadService.savePart — family gating by staged intent', () => {
   let root: string | undefined;
   const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
-  const svc = new UploadService(mediaAsset as never);
+  const svc = new UploadService(mediaAsset as never, mediaMetadata as never);
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-savepart-'));
@@ -103,17 +116,14 @@ describe('UploadService.savePart — family gating by staged intent', () => {
     expect(mediaAsset.publishReady).toHaveBeenCalledOnce();
   });
 
-  it('falls back HEIC bytes under an IMAGE intent to FILE + overrideContentType=FILE', async () => {
+  it('rejects bytes that cannot be decoded as the declared IMAGE intent', async () => {
     const heic = Buffer.from('unsupported-image-bytes');
-    const { payload, overrideContentType } = await svc.savePart(
-      heic,
-      ContentType.IMAGE,
-      { filename: 'phone.heic', declaredMime: 'image/heic' },
-    );
-    expect(payload.family).toBe('FILE');
-    expect(payload.name).toBe('phone.heic');
-    expect(payload.mimeType).toBe('image/heic');
-    expect(overrideContentType).toBe(ContentType.FILE);
+    await expect(
+      svc.savePart(heic, ContentType.IMAGE, {
+        filename: 'phone.heic',
+        declaredMime: 'image/heic',
+      }),
+    ).rejects.toThrow('invalid image');
   });
 
   it('accepts EBML/webm under an AUDIO intent as audio/webm (recorder-emitted container)', async () => {
@@ -143,14 +153,14 @@ describe('UploadService.savePart — family gating by staged intent', () => {
 });
 
 describe('UploadService.consumeParts — multi-file drain', () => {
-  const svc = new UploadService({} as never);
+  const svc = new UploadService({} as never, mediaMetadata as never);
 
   it('collects file parts and companion form fields', async () => {
     const r = await svc.consumeParts(
-      fakeReq(
-        [{ buf: PNG, filename: 'a.png', mimetype: 'image/png' }],
-        { w: '10', h: '20' },
-      ),
+      fakeReq([{ buf: PNG, filename: 'a.png', mimetype: 'image/png' }], {
+        w: '10',
+        h: '20',
+      }),
       { maxBytes: 1024 },
     );
     expect(r.kind).toBe('ok');
@@ -197,7 +207,10 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const mediaAsset = {
       publishReady: vi.fn().mockResolvedValue(undefined),
     };
-    const service = new UploadService(mediaAsset as never);
+    const service = new UploadService(
+      mediaAsset as never,
+      mediaMetadata as never,
+    );
     stubService(service);
     const body = Buffer.from('persistent resumable CAS body');
     const digest = createHash('sha256').update(body).digest('hex');
@@ -231,7 +244,9 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     expect(firstOffsets).toEqual([0]);
     expect(resumedOffsets).toEqual([10]);
     expect(
-      await readFile(join(root, digest.slice(0, 2), digest.slice(2, 4), digest)),
+      await readFile(
+        join(root, digest.slice(0, 2), digest.slice(2, 4), digest),
+      ),
     ).toEqual(body);
     expect(saved.digest).toBe(digest);
     expect(mediaAsset.publishReady).toHaveBeenCalledWith(
@@ -240,12 +255,102 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     );
   });
 
+  it('keeps only the continuous verified blocks before the first corrupt resume block', async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
+    const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+    const service = new UploadService(
+      mediaAsset as never,
+      mediaMetadata as never,
+    );
+    stubService(service);
+    const body = Buffer.from('first-second-final');
+    const digest = createHash('sha256').update(body).digest('hex');
+
+    await expect(
+      service.saveCasFromStream(
+        'bin',
+        () =>
+          (async function* () {
+            yield body.subarray(0, 6);
+            yield body.subarray(6, 12);
+            throw new Error('network dropped');
+          })(),
+        digest,
+      ),
+    ).rejects.toThrow('network dropped');
+
+    const partPath = join(root, 'tmp', `${digest}.part`);
+    const corrupt = await readFile(partPath);
+    corrupt[8] ^= 0xff;
+    await writeFile(partPath, corrupt);
+
+    const offsets: number[] = [];
+    await service.saveCasFromStream(
+      'bin',
+      (offset) => {
+        offsets.push(offset);
+        return (async function* () {
+          yield body.subarray(offset);
+        })();
+      },
+      digest,
+    );
+
+    expect(offsets).toEqual([6]);
+    expect(
+      await readFile(
+        join(root, digest.slice(0, 2), digest.slice(2, 4), digest),
+      ),
+    ).toEqual(body);
+  });
+
+  it('automatically restarts from zero when a live partial disappears', async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
+    const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+    const service = new UploadService(
+      mediaAsset as never,
+      mediaMetadata as never,
+    );
+    stubService(service);
+    const body = Buffer.from('partial-removed-while-downloading');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const partPath = join(root, 'tmp', `${digest}.part`);
+    const offsets: number[] = [];
+    let removed = false;
+
+    await service.saveCasFromStream(
+      'bin',
+      (offset) => {
+        offsets.push(offset);
+        return (async function* () {
+          if (!removed) {
+            yield body.subarray(offset, 8);
+            await rm(partPath);
+            removed = true;
+          }
+          yield body.subarray(removed && offset !== 0 ? offset : 0);
+        })();
+      },
+      digest,
+    );
+
+    expect(offsets).toEqual([0, 0]);
+    expect(
+      await readFile(
+        join(root, digest.slice(0, 2), digest.slice(2, 4), digest),
+      ),
+    ).toEqual(body);
+  });
+
   it('deletes untrusted partial state when the final digest mismatches', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
     const mediaAsset = {
       publishReady: vi.fn().mockResolvedValue(undefined),
     };
-    const service = new UploadService(mediaAsset as never);
+    const service = new UploadService(
+      mediaAsset as never,
+      mediaMetadata as never,
+    );
     stubService(service);
     const expected = createHash('sha256').update('expected').digest('hex');
     await expect(

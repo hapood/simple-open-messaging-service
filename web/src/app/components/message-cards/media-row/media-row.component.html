@@ -54,6 +54,7 @@
     <div
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media"
       [class.msg-media--audio]="isAudioOnly()"
+      [class.msg-media--gallery]="data().contentType === 'GALLERY'"
       [class.msg-sending]="isSending()"
       [style.width.px]="containerW()"
     >
@@ -71,10 +72,14 @@
             [style.width.%]="c.rect.wPct"
             [style.height.px]="c.rect.hPx"
             [attr.role]="
-              c.kind === 'image' || c.kind === 'video' ? 'button' : null
+              c.kind === 'image' || c.kind === 'video' || c.kind === 'file'
+                ? 'button'
+                : null
             "
             [attr.tabindex]="
-              c.kind === 'image' || c.kind === 'video' ? 0 : null
+              c.kind === 'image' || c.kind === 'video' || c.kind === 'file'
+                ? 0
+                : null
             "
             [attr.aria-label]="
               c.kind === 'image'
@@ -184,6 +189,12 @@
                 [transferId]="clientMessageId()"
                 [showUnplayed]="!data().isSelf"
               />
+            }
+            @if (c.kind === 'file') {
+              <span class="msg-media-file" aria-hidden="true">
+                <mat-icon>description</mat-icon>
+                <span [title]="c.name ?? ''">{{ c.name }}</span>
+              </span>
             }
             @if (c.kind !== 'audio') {
               <span class="msg-media-size">{{

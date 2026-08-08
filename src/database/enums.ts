@@ -84,6 +84,7 @@ export const FileSyncStatus = {
   DOWNLOADING: 'DOWNLOADING',
   SUCCEEDED: 'SUCCEEDED',
   FAILED: 'FAILED',
+  TOMBSTONED: 'TOMBSTONED',
 } as const;
 export type FileSyncStatus =
   (typeof FileSyncStatus)[keyof typeof FileSyncStatus];

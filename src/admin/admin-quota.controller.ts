@@ -19,6 +19,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { FederationDownloadRecoveryService } from '../federation/federation-download-recovery.service.js';
 
 /**
  * Admin quota endpoints for federated peer servers AND local users (see src/quota/quota.service.ts and
@@ -39,6 +40,7 @@ export class AdminQuotaController {
   constructor(
     private readonly quota: QuotaService,
     private readonly userQuota: UserQuotaService,
+    private readonly federationDownloads: FederationDownloadRecoveryService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -109,12 +111,16 @@ export class AdminQuotaController {
     @Param('domain') domain: string,
     @Body() dto: AdminContinueQuotaDto,
   ) {
-    return this.quota.addQuota(domain, {
+    const status = await this.quota.addQuota(domain, {
       addMsg: dto.addMsg,
       addFile: dto.addFile,
       addFileBytes:
         dto.addFileBytes != null ? BigInt(dto.addFileBytes) : undefined,
     });
+    if (!status.tripped) {
+      await this.federationDownloads.wakeQuotaPaused(domain);
+    }
+    return status;
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

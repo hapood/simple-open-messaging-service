@@ -664,6 +664,11 @@ export interface NotificationSettings {
   somsDomain: string;
   /** Admin-configured one-time-code validity window, in minutes (default 10). */
   otpTtlMinutes: number;
+  federationDownloadLimits: {
+    global: number;
+    perPeer: number;
+    chunkDigestEnabled: boolean;
+  };
 }
 
 /** Deterministic VAPID health-check report (POST /admin/settings/health-check). */

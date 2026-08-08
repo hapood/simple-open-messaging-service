@@ -7,6 +7,7 @@ describe('ThreadSendOutbox', () => {
 
     outbox.retainResource('cid-native', {
       type: 'native-attachment',
+      partId: 'part-native',
       selection: {} as never,
       release: dispose,
       discard: dispose,
@@ -27,12 +28,14 @@ describe('ThreadSendOutbox', () => {
     const second = jasmine.createSpy('secondDispose');
     outbox.retainResource('cid-1', {
       type: 'native-attachment',
+      partId: 'part-1',
       selection: {} as never,
       release: jasmine.createSpy('firstRelease'),
       discard: first,
     });
     outbox.retainResource('cid-2', {
       type: 'native-attachment',
+      partId: 'part-2',
       selection: {} as never,
       release: jasmine.createSpy('secondRelease'),
       discard: second,
@@ -44,5 +47,19 @@ describe('ThreadSendOutbox', () => {
     expect(second).toHaveBeenCalledTimes(1);
     expect(outbox.resource('cid-1')).toBeUndefined();
     expect(outbox.resource('cid-2')).toBeUndefined();
+  });
+
+  it('releases every preview owned by an atomic web gallery', () => {
+    const outbox = new ThreadSendOutbox();
+    const revoke = spyOn(URL, 'revokeObjectURL');
+    outbox.retainResource('cid-gallery', {
+      type: 'web-gallery',
+      parts: [],
+      previewUrls: ['blob:first', 'blob:second'],
+    });
+
+    outbox.releaseResource('cid-gallery');
+
+    expect(revoke.calls.allArgs()).toEqual([['blob:first'], ['blob:second']]);
   });
 });

@@ -315,13 +315,6 @@ export class GroupController {
     void this.federationService.syncGroupMetaIfStale(
       req.threadAccess!.threadId,
     );
-    // Chat-open MESSAGE catch-up (the group twin of /user/sync-peer-profile's pull-on-open): if this is a
-    // federated mirror, pull the whole thread from the origin NOW (force — bypass the receiver debounce) so
-    // any hint dropped by the debounce / a transiently-lost push is recovered on open. Fire-and-forget so
-    // opening never blocks on a slow origin; storePulledMessage SSE-fans the new messages. No-op for origin/local.
-    void this.federationService.syncGroupMessagesOnOpen(
-      req.threadAccess!.threadId,
-    );
   }
 
   @UseGuards(ThreadAccessGuard)

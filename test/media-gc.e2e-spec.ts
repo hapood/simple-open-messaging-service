@@ -20,7 +20,6 @@ import {
   user,
 } from '../src/database/schema';
 import { UploadService } from '../src/upload/upload.service';
-import { MediaAssetService } from '../src/upload/media-asset.service';
 import { MediaAssetGcService } from '../src/admin/media-asset-gc.service';
 import { makePng } from './federation-harness';
 
@@ -32,7 +31,6 @@ describe('Media asset garbage collection', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let upload: UploadService;
-  let assets: MediaAssetService;
   let gc: MediaAssetGcService;
 
   beforeAll(async () => {
@@ -45,7 +43,6 @@ describe('Media asset garbage collection', () => {
     await app.listen(0);
     database = app.get(DatabaseService);
     upload = app.get(UploadService);
-    assets = app.get(MediaAssetService);
     gc = app.get(MediaAssetGcService);
     await database.db.execute(
       sql`TRUNCATE TABLE "MediaAsset" RESTART IDENTITY`,
@@ -70,7 +67,10 @@ describe('Media asset garbage collection', () => {
       .split('/')
       .pop()!
       .replace(/\.bin$/, '');
-    const absPath = join(upload.casDir, url.slice('/uploads/msg-assets/'.length));
+    const absPath = join(
+      upload.casDir,
+      url.slice('/uploads/msg-assets/'.length),
+    );
     return { digest, absPath };
   }
 
@@ -84,7 +84,7 @@ describe('Media asset garbage collection', () => {
     const tombstone = await database.db.query.mediaAsset.findFirst({
       where: eq(mediaAsset.digest, digest),
     });
-    expect(tombstone?.status).toBe('DELETED');
+    expect(tombstone?.isDeleted).toBe(true);
   });
 
   it('keeps an asset protected by active staging', async () => {
@@ -112,7 +112,7 @@ describe('Media asset garbage collection', () => {
       where: eq(mediaAsset.digest, digest),
     });
     expect(row).not.toBeNull();
-    expect(row?.status).toBe('READY');
+    expect(row?.isDeleted).toBe(false);
     // Cleanup so repeated runs / forks stay deterministic (the file is live, so GC won't take it).
     await database.db
       .delete(mediaAsset)
@@ -143,109 +143,62 @@ describe('Media asset garbage collection', () => {
       await database.db.query.mediaAsset.findFirst({
         where: eq(mediaAsset.digest, first.digest),
       }),
-    ).toMatchObject({ status: 'READY' });
+    ).toMatchObject({ isDeleted: false });
   });
 
-  it('skips both fresh and stale PENDING assets for administrator review', async () => {
-    const freshDigest = 'a'.repeat(64);
-    const staleDigest = 'b'.repeat(64);
-    await database.db.insert(mediaAsset).values([
-      {
-        digest: freshDigest,
-        bytes: 1n,
-        status: 'PENDING',
-      },
-      {
-        digest: staleDigest,
-        bytes: 1n,
-        status: 'PENDING',
-        createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
-        stateChangedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
-      },
-    ]);
+  it('keeps assets referenced by pending and failed staging for administrator review', async () => {
+    const fresh = await seedAsset('gc-pending');
+    const failed = await seedAsset('gc-failed');
+    const { threadId, userId } = await seedThreadAndUser();
+    const now = new Date();
+    const stages = await database.db
+      .insert(pendingMedia)
+      .values([
+        {
+          threadId,
+          creatorId: userId,
+          contentType: 'FILE',
+          content: '{}',
+          digest: fresh.digest,
+          clientMessageId: randomUUID(),
+          status: 'pending',
+          updatedAt: now,
+        },
+        {
+          threadId,
+          creatorId: userId,
+          contentType: 'FILE',
+          content: '{}',
+          digest: failed.digest,
+          clientMessageId: randomUUID(),
+          status: 'failed',
+          createdAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+          updatedAt: now,
+        },
+      ])
+      .returning({ id: pendingMedia.id });
 
     await gc.gcOrphanedAssets();
 
-    expect(
-      await database.db.query.mediaAsset.findFirst({
-        where: eq(mediaAsset.digest, freshDigest),
-      }),
-    ).toBeDefined();
-    expect(
-      await database.db.query.mediaAsset.findFirst({
-        where: eq(mediaAsset.digest, staleDigest),
-      }),
-    ).toMatchObject({ status: 'PENDING' });
-    await database.db
-      .delete(mediaAsset)
-      .where(eq(mediaAsset.digest, freshDigest));
-  });
+    for (const digest of [fresh.digest, failed.digest]) {
+      await expect(
+        database.db.query.mediaAsset.findFirst({
+          where: eq(mediaAsset.digest, digest),
+        }),
+      ).resolves.toMatchObject({ isDeleted: false });
+    }
 
-  it('renews an old PENDING lease without modifying an existing READY asset', async () => {
-    const pendingDigest = 'c'.repeat(64);
-    const readyDigest = 'd'.repeat(64);
-    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    await database.db.insert(mediaAsset).values([
-      {
-        digest: pendingDigest,
-        bytes: 1n,
-        status: 'PENDING',
-        createdAt: old,
-      },
-      {
-        digest: readyDigest,
-        bytes: 7n,
-        status: 'READY',
-        createdAt: old,
-      },
-    ]);
-
-    await assets.reserve(pendingDigest, 2n);
-    await assets.reserve(readyDigest, 9n);
-
-    const pending = await database.db.query.mediaAsset.findFirst({
-      where: eq(mediaAsset.digest, pendingDigest),
-    });
-    const ready = await database.db.query.mediaAsset.findFirst({
-      where: eq(mediaAsset.digest, readyDigest),
-    });
-    expect(pending?.createdAt.getTime()).toBeGreaterThan(old.getTime());
-    expect(pending?.bytes).toBe(2n);
-    expect(ready?.createdAt).toEqual(old);
-    expect(ready?.bytes).toBe(7n);
-
-    await database.db
-      .delete(mediaAsset)
-      .where(eq(mediaAsset.digest, pendingDigest));
-    await database.db
-      .delete(mediaAsset)
-      .where(eq(mediaAsset.digest, readyDigest));
-  });
-
-  it('fails completion when the PENDING reservation is missing', async () => {
-    await expect(assets.markReady('e'.repeat(64), 1n)).rejects.toThrow(
-      'reservation is missing',
+    await database.db.delete(pendingMedia).where(
+      sql`${pendingMedia.id} IN (${sql.join(
+        stages.map(({ id }) => sql`${id}`),
+        sql`, `,
+      )})`,
     );
-  });
-
-  it('lists PENDING assets and allows an administrator to force terminate one', async () => {
-    const digest = 'f'.repeat(64);
-    await assets.reserve(digest, 123n);
-    await expect(gc.listPendingAssets()).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ digest, bytes: '123' }),
-      ]),
-    );
-
-    await expect(gc.forceTerminatePending(digest)).resolves.toMatchObject({
-      terminated: true,
-      busy: false,
-    });
-    expect(
-      await database.db.query.mediaAsset.findFirst({
-        where: eq(mediaAsset.digest, digest),
-      }),
-    ).toMatchObject({ status: 'DELETED' });
+    await database.db
+      .delete(messageThread)
+      .where(eq(messageThread.id, threadId));
+    await database.db.delete(user).where(eq(user.id, userId));
+    await Promise.all([unlink(fresh.absPath), unlink(failed.absPath)]);
   });
 
   it('serializes maintenance tasks in memory and cooperatively cancels a running task', async () => {
@@ -405,7 +358,7 @@ describe('Media asset garbage collection', () => {
       await database.db.query.mediaAsset.findFirst({
         where: eq(mediaAsset.digest, digest),
       }),
-    ).toMatchObject({ status: 'READY' });
+    ).toMatchObject({ isDeleted: false });
     expect(
       await database.db.query.pendingMedia.findFirst({
         where: eq(pendingMedia.id, stage.id),

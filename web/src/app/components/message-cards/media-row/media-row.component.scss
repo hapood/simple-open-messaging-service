@@ -328,3 +328,47 @@ app-audio-player {
     transform: translateX(300%);
   }
 }
+.msg-media-file {
+  align-items: center;
+  background: var(--mat-sys-surface-container, #eceff1);
+  color: var(--mat-sys-on-surface, #263238);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  inset: 0;
+  justify-content: center;
+  padding: 12px;
+  position: absolute;
+}
+
+.msg-media-file > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-media--gallery {
+  margin-bottom: 6px;
+  margin-right: 6px;
+  overflow: visible;
+}
+
+.msg-media--gallery::before,
+.msg-media--gallery::after {
+  background: var(--mat-sys-surface-container-high, #dfe4e7);
+  border-radius: inherit;
+  content: '';
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: -1;
+}
+
+.msg-media--gallery::before {
+  transform: translate(3px, 3px);
+}
+
+.msg-media--gallery::after {
+  opacity: 0.7;
+  transform: translate(6px, 6px);
+}

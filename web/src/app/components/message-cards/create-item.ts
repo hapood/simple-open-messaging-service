@@ -118,7 +118,8 @@ export function createMsgCbElement(
   const comp: Type<RowComponent> =
     data.contentType === 'IMAGE' ||
     data.contentType === 'VIDEO' ||
-    data.contentType === 'AUDIO'
+    data.contentType === 'AUDIO' ||
+    data.contentType === 'GALLERY'
       ? MediaRowComponent
       : data.contentType === 'INVITE'
         ? InviteRowComponent

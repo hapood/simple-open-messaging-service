@@ -146,8 +146,38 @@ export function extractDigests(content: string): string[] {
  * longer recovered from or written into the CAS URL/path. */
 export function extractDigestEntries(
   content: string,
-): Array<{ digest: string; ext: string }> {
-  return extractDigests(content).map((digest) => ({ digest, ext: '' }));
+): Array<{ digest: string; ext: string; size?: number }> {
+  const sizes = new Map<string, number>();
+  try {
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      const item = value as Record<string, unknown>;
+      if (typeof item.url === 'string') {
+        const match = CAS_UPLOAD_URL_RE.exec(item.url);
+        if (
+          match &&
+          typeof item.size === 'number' &&
+          Number.isSafeInteger(item.size) &&
+          item.size >= 0
+        ) {
+          sizes.set(match[3], Math.max(sizes.get(match[3]) ?? 0, item.size));
+        }
+      }
+      Object.values(item).forEach(visit);
+    };
+    visit(JSON.parse(content));
+  } catch {
+    // The caller separately validates message content. Keep digest extraction useful for legacy shapes.
+  }
+  return extractDigests(content).map((digest) => ({
+    digest,
+    ext: '',
+    size: sizes.get(digest),
+  }));
 }
 
 /**
@@ -320,10 +350,7 @@ export function parseLinkContent(content: string): LinkContent | null {
     (typeof siteName !== 'string' || siteName.length > MAX_LINK_SITE_NAME_LEN)
   )
     return null;
-  if (
-    image !== undefined &&
-    (typeof image !== 'string' || !isUploadUrl(image))
-  )
+  if (image !== undefined && (typeof image !== 'string' || !isUploadUrl(image)))
     return null;
   if (
     favicon !== undefined &&
@@ -405,11 +432,8 @@ export function assembleOutboundContent(
   contentType: ContentType,
   payloads: OutboundFilePayload[],
 ): string {
-  const byDigest = [...payloads].sort((a, b) =>
-    a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0,
-  );
   if (contentType === ContentType.GALLERY) {
-    const items: GalleryItem[] = byDigest.map((p) => ({
+    const items: GalleryItem[] = payloads.map((p) => ({
       kind: p.family,
       url: p.url,
       size: p.size,
@@ -421,7 +445,7 @@ export function assembleOutboundContent(
     }));
     return JSON.stringify({ items });
   }
-  const p = byDigest[0];
+  const p = payloads[0];
   switch (contentType) {
     case ContentType.IMAGE:
       return JSON.stringify({

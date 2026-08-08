@@ -158,6 +158,9 @@ export class ConfirmDialogComponent {
   }
 
   cancel(): void {
-    this.routeService.closeDlg(undefined);
+    // `false` means the user deliberately chose the secondary action. Keep `undefined` reserved for
+    // dismissing the popup (backdrop / navigation), so callers with two valid choices can distinguish
+    // "send separately" from "do nothing".
+    this.routeService.closeDlg(false);
   }
 }

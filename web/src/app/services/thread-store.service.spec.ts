@@ -741,6 +741,101 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await (await webdb.db()).get('threads', 1)).toBeUndefined();
   });
 
+  it('single-flights a revision burst and coalesces its tail to the highest target', async () => {
+    await populateViaDelta([p2p(1, 11)], 5);
+    queryThreadDeltaSpy.calls.reset();
+    const first = new Subject<{
+      code: number;
+      data: HydratedThreadDeltaOp[];
+    }>();
+    queryThreadDeltaSpy.and.returnValues(
+      first,
+      of({ code: 0, data: [addOp(p2p(2, 22))] }),
+    );
+
+    eventSubject.next({
+      event: 'THREAD_REVISION_UPDATED',
+      data: { threadRevision: 6 },
+    });
+    eventSubject.next({
+      event: 'THREAD_REVISION_UPDATED',
+      data: { threadRevision: 9 },
+    });
+    // An older frame arriving last must not regress the coalesced tail from 9 to 8.
+    eventSubject.next({
+      event: 'THREAD_REVISION_UPDATED',
+      data: { threadRevision: 8 },
+    });
+    expect(queryThreadDeltaSpy).toHaveBeenCalledTimes(1);
+
+    first.next({ code: 0, data: [] });
+    first.complete();
+    await flush(20);
+
+    expect(queryThreadDeltaSpy.calls.allArgs()).toEqual([
+      [{ fromRevision: 5, toRevision: 6 }],
+      [{ fromRevision: 6, toRevision: 9 }],
+    ]);
+    expect(cursorSignal()).toBe(9);
+  });
+
+  it('ignores a stale or replayed revision without issuing another delta request', async () => {
+    await populateViaDelta([p2p(1, 11)], 5);
+    queryThreadDeltaSpy.calls.reset();
+
+    eventSubject.next({
+      event: 'THREAD_REVISION_UPDATED',
+      data: { threadRevision: 5 },
+    });
+    eventSubject.next({
+      event: 'THREAD_REVISION_UPDATED',
+      data: { threadRevision: 4 },
+    });
+    await flush(20);
+
+    expect(queryThreadDeltaSpy).not.toHaveBeenCalled();
+    expect(cursorSignal()).toBe(5);
+  });
+
+  it('does not apply or advance the cursor for a non-success delta response', async () => {
+    await populateViaDelta([p2p(1, 11)], 5);
+    queryThreadDeltaSpy.calls.reset();
+    advanceCursorSpy.calls.reset();
+    const applySpy = spyOn(webdb, 'applyThreadDelta').and.callThrough();
+    queryThreadDeltaSpy.and.returnValue(of({ code: 1, data: [] }));
+
+    eventSubject.next({
+      event: 'THREAD_REVISION_UPDATED',
+      data: { threadRevision: 6 },
+    });
+    await flush(20);
+
+    expect(applySpy).not.toHaveBeenCalled();
+    expect(advanceCursorSpy).not.toHaveBeenCalled();
+    expect(cursorSignal()).toBe(5);
+  });
+
+  it('keeps both local state and cursor unchanged when durable delta application fails', async () => {
+    await populateViaDelta([p2p(1, 11)], 5);
+    advanceCursorSpy.calls.reset();
+    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [deleteOp(1)] }));
+    spyOn(webdb, 'applyThreadDelta').and.rejectWith(
+      new Error('IDB transaction aborted'),
+    );
+
+    await expectAsync(
+      (
+        repo as unknown as {
+          pullDelta(toRev: number): Promise<void>;
+        }
+      ).pullDelta(6),
+    ).toBeRejectedWithError('IDB transaction aborted');
+
+    expect(repo.items().map((item) => item.threadId)).toEqual([1]);
+    expect(advanceCursorSpy).not.toHaveBeenCalled();
+    expect(cursorSignal()).toBe(5);
+  });
+
   // A signal that lands before HELLO seeds the cursor is dropped — pullDelta's "cursor undefined → return"
   // guard. (onHello is the sole seeder now; there is no snapshot fetch to race against.)
   it('THREAD_REVISION_UPDATED is dropped while the cursor is unseeded (no HELLO yet)', async () => {

@@ -32,6 +32,7 @@ import { MediaAssetService } from './media-asset.service.js';
 import { detectMedia, type DetectedMedia } from './media-sig.js';
 import { AVATAR_SIZES, AVATAR_MAX } from './avatar-path.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
+import { MediaMetadataService } from './media-metadata.service.js';
 
 const writeFileAsync = promisify(writeFile);
 const readFileAsync = promisify(readFile);
@@ -173,7 +174,10 @@ export class UploadService {
   readonly casTmpDir = join(process.cwd(), 'data', 'cas', 'tmp');
   private readonly casIngestLocks = new KeyedMutex();
 
-  constructor(private readonly mediaAsset: MediaAssetService) {}
+  constructor(
+    private readonly mediaAsset: MediaAssetService,
+    private readonly mediaMetadata: MediaMetadataService,
+  ) {}
 
   /** Avatar pixel cap (decompression-bomb defense: a tiny file expanding into a huge canvas). */
   static readonly MAX_AVATAR_PIXELS = 4000 * 4000;
@@ -499,11 +503,11 @@ export class UploadService {
     opts: {
       filename?: string;
       declaredMime?: string;
-      w?: number;
-      h?: number;
-      duration?: number;
     },
-  ): Promise<{ payload: OutboundFilePayload; overrideContentType?: ContentType }> {
+  ): Promise<{
+    payload: OutboundFilePayload;
+    overrideContentType?: ContentType;
+  }> {
     if (buf.length === 0) {
       throw new Error('empty upload part');
     }
@@ -513,6 +517,7 @@ export class UploadService {
       opts.filename ?? '',
       opts.declaredMime ?? '',
     );
+    const metadata = await this.mediaMetadata.fromBuffer(buf, resolved.family);
     const { url, digest, size } = await this.saveCas(resolved.ext, buf);
     const payload: OutboundFilePayload = {
       digest,
@@ -521,9 +526,7 @@ export class UploadService {
       family: resolved.family,
       ...(resolved.name !== undefined ? { name: resolved.name } : {}),
       ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
-      ...(opts.w !== undefined ? { w: opts.w } : {}),
-      ...(opts.h !== undefined ? { h: opts.h } : {}),
-      ...(opts.duration !== undefined ? { duration: opts.duration } : {}),
+      ...metadata,
     };
     return {
       payload,
@@ -562,14 +565,9 @@ export class UploadService {
     let overrideContentType: ContentType | undefined;
     switch (intent) {
       case ContentType.IMAGE:
-        if (detected?.family === 'image') {
-          family = 'IMAGE';
-          ext = detected.ext;
-        } else {
-          family = 'FILE';
-          ext = parseFileExt(filename) || 'bin';
-          overrideContentType = ContentType.FILE;
-        }
+        if (detected?.family !== 'image') throw new Error('invalid image');
+        family = 'IMAGE';
+        ext = detected.ext;
         break;
       case ContentType.FILE:
         family = 'FILE';
@@ -725,7 +723,6 @@ export class UploadService {
     intent: ContentType,
     originalName: string,
     declaredMime: string,
-    companion: { w?: number; h?: number; duration?: number },
   ): Promise<{
     payload: OutboundFilePayload;
     overrideContentType?: ContentType;
@@ -749,6 +746,10 @@ export class UploadService {
       intent,
       originalName,
       declaredMime,
+    );
+    const metadata = await this.mediaMetadata.fromFile(
+      tmpPath,
+      resolved.family,
     );
     const digest = hash.digest('hex');
     const { abs, url } = this.casShardPath(digest);
@@ -777,11 +778,7 @@ export class UploadService {
       family: resolved.family,
       ...(resolved.name !== undefined ? { name: resolved.name } : {}),
       ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
-      ...(companion.w !== undefined ? { w: companion.w } : {}),
-      ...(companion.h !== undefined ? { h: companion.h } : {}),
-      ...(companion.duration !== undefined
-        ? { duration: companion.duration }
-        : {}),
+      ...metadata,
     };
     return {
       payload,
@@ -941,11 +938,17 @@ export class UploadService {
       const complete = join(this.casTmpDir, `${expectedDigest}.complete`);
       const completeTmp = `${complete}.tmp`;
       let offset = 0;
+      let verifiedChunks: Array<{
+        offset: number;
+        bytes: number;
+        sha256: string;
+      }> = [];
       try {
         const meta = JSON.parse(await readFileAsync(resume, 'utf8')) as {
           version?: number;
           digest?: string;
           offset?: number;
+          chunks?: Array<{ offset?: number; bytes?: number; sha256?: string }>;
         };
         const partSize = (await statAsync(part)).size;
         if (
@@ -953,26 +956,69 @@ export class UploadService {
           meta.digest !== expectedDigest ||
           !Number.isSafeInteger(meta.offset) ||
           meta.offset! < 0 ||
-          partSize < meta.offset!
+          partSize < meta.offset! ||
+          !Array.isArray(meta.chunks)
         ) {
           throw new Error('invalid resume state');
         }
-        offset = meta.offset!;
+
+        // Validate blocks strictly from byte zero. At the first missing/corrupt/non-contiguous block,
+        // discard that block and everything after it; sequential Range download resumes from the end of
+        // the last trustworthy prefix. A malformed manifest that cannot establish any boundary falls
+        // through to the full reset below.
+        let expectedOffset = 0;
+        for (const item of meta.chunks) {
+          if (
+            item.offset !== expectedOffset ||
+            !Number.isSafeInteger(item.bytes) ||
+            item.bytes! <= 0 ||
+            !/^[0-9a-f]{64}$/.test(item.sha256 ?? '') ||
+            expectedOffset + item.bytes! > partSize
+          ) {
+            break;
+          }
+          const hash = createHash('sha256');
+          for await (const piece of createReadStream(part, {
+            start: expectedOffset,
+            end: expectedOffset + item.bytes! - 1,
+          })) {
+            hash.update(piece);
+          }
+          if (hash.digest('hex') !== item.sha256) break;
+          verifiedChunks.push({
+            offset: expectedOffset,
+            bytes: item.bytes!,
+            sha256: item.sha256!,
+          });
+          expectedOffset += item.bytes!;
+        }
+        offset = expectedOffset;
         if (partSize !== offset) await truncateAsync(part, offset);
       } catch {
         await unlinkAsync(part).catch(() => {});
         await unlinkAsync(resume).catch(() => {});
         offset = 0;
+        verifiedChunks = [];
       }
 
       const persistOffset = async () => {
         await writeFileAsync(
           resumeTmp,
-          JSON.stringify({ version: 1, digest: expectedDigest, offset }),
+          JSON.stringify({
+            version: 1,
+            digest: expectedDigest,
+            offset,
+            chunks: verifiedChunks,
+          }),
         );
         await renameAsync(resumeTmp, resume);
       };
-      if (offset === 0) await persistOffset();
+      if (offset === 0) {
+        // Establish both halves of the checkpoint. A missing part is normal only before the first
+        // byte; creating it here lets the live-download checks distinguish that from later deletion.
+        await appendFileAsync(part, Buffer.alloc(0));
+        await persistOffset();
+      }
 
       // Drop the `.complete` marker (digest verified), then commit the live row and atomically land the
       // shard. GC salvage re-runs exactly these two steps from the `.part` if this process dies between
@@ -1009,20 +1055,58 @@ export class UploadService {
           }
         }
 
-        for await (const buf of chunksFromOffset(offset)) {
-          if (buf.length === 0) continue;
-          await appendFileAsync(part, buf);
-          offset += buf.length;
-          await persistOffset();
-          opts?.onProgress?.(offset);
-          if (opts?.declaredBytes !== undefined && offset > opts.declaredBytes) {
-            // The stream exceeded its declared size — abandon. The excess bytes still count toward quota;
-            // the caller (driveFileSync) charges the delta via addFileBytesDelta before this surfaces as FAILED.
-            await unlinkAsync(part).catch(() => {});
-            await unlinkAsync(resume).catch(() => {});
-            await unlinkAsync(complete).catch(() => {});
-            throw new CasOversizeError(BigInt(offset - opts.declaredBytes));
+        // GC normally excludes claimed downloads, but a stale scan, manual filesystem cleanup, or an
+        // operator can still remove/truncate a live partial. Never append at a now-invalid logical
+        // offset: abandon that response and open a fresh Range stream. TOMBSTONED cancellation is
+        // enforced by the caller's iterable and is not converted into this storage recovery path.
+        let storageRestarts = 0;
+        for (;;) {
+          let partialLost = false;
+          for await (const buf of chunksFromOffset(offset)) {
+            if (buf.length === 0) continue;
+            const actualSize = await statAsync(part)
+              .then((value) => value.size)
+              .catch(() => -1);
+            if (actualSize !== offset) {
+              partialLost = true;
+              break;
+            }
+            const chunkOffset = offset;
+            await appendFileAsync(part, buf);
+            offset += buf.length;
+            verifiedChunks.push({
+              offset: chunkOffset,
+              bytes: buf.length,
+              sha256: createHash('sha256').update(buf).digest('hex'),
+            });
+            await persistOffset();
+            opts?.onProgress?.(offset);
+            if (
+              opts?.declaredBytes !== undefined &&
+              offset > opts.declaredBytes
+            ) {
+              // The stream exceeded its declared size — abandon. The excess bytes still counts toward quota;
+              // the caller (driveFileSync) charges the delta via addFileBytesDelta before this surfaces as FAILED.
+              await unlinkAsync(part).catch(() => {});
+              await unlinkAsync(resume).catch(() => {});
+              await unlinkAsync(complete).catch(() => {});
+              throw new CasOversizeError(BigInt(offset - opts.declaredBytes));
+            }
           }
+          const finalPartSize = await statAsync(part)
+            .then((value) => value.size)
+            .catch(() => -1);
+          if (!partialLost && finalPartSize === offset) break;
+          storageRestarts += 1;
+          if (storageRestarts > 2) {
+            throw new Error('CAS partial repeatedly disappeared during download');
+          }
+          await unlinkAsync(part).catch(() => {});
+          await unlinkAsync(resume).catch(() => {});
+          offset = 0;
+          verifiedChunks = [];
+          await appendFileAsync(part, Buffer.alloc(0));
+          await persistOffset();
         }
 
         const hash = createHash('sha256');

@@ -73,7 +73,7 @@ const RECENTS_MAX = 32;
 
 /** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
  *  Chrome / Android WebView / Tauri webview2 / webkit2gtk → audio/webm (opus); Safari / iOS / macOS
- *  wkwebview → audio/mp4; Firefox → audio/ogg (opus). The backend's /upload/audio accepts all of these
+ *  wkwebview → audio/mp4; Firefox → audio/ogg (opus). The unified upload endpoint accepts all of these
  *  (EBML/ftyp are shared audio/video containers — see consumeMedia's sharedAsAudio branch). '' ⇒ the
  *  engine cannot record audio at all; the caller surfaces that and bails. */
 function pickRecorderMime(): string {

@@ -74,7 +74,7 @@ LABEL org.opencontainers.image.version="${APP_VERSION}"
 WORKDIR /app
 ENV NODE_ENV=production APP_VERSION=${APP_VERSION}
 # ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 # Secrets and runtime configuration are injected by Compose through env_file, never baked in.
 # --chown=node:node so the non-root runtime user owns every file (node:*-slim ships uid-1000 `node`).

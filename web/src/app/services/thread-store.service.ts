@@ -1106,7 +1106,9 @@ export class ThreadRepository {
    */
   onThreadRevisionUpdated(toRev: number): void {
     if (this._deltaInFlight) {
-      this._pendingTailRev = toRev;
+      // Delivery is normally ordered on one SSE stream, but reconnect/bridge buffering can surface an older
+      // signal after a newer one. Tail coalescing must therefore be monotonic or the newer target is lost.
+      this._pendingTailRev = Math.max(this._pendingTailRev ?? toRev, toRev);
       return;
     }
     void this.pullDelta(toRev);

@@ -36,7 +36,7 @@ describe('FederationMissedService', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer", "DiscoveryTarget" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "User", "FederatedPeer", "DiscoveryTarget", "MediaAsset" RESTART IDENTITY CASCADE',
     );
   });
 
@@ -127,6 +127,7 @@ describe('FederationMissedService', () => {
       threadId: thread.id,
       messageId: msg.id,
     });
+    return { audience, author, msg, target, thread };
   }
 
   it('returns bodies and asset descriptors and scans through allocation gaps', async () => {
@@ -160,6 +161,83 @@ describe('FederationMissedService', () => {
   it('enforces the hard page-size bound', async () => {
     await expect(service.serve(peerDomain, 0n, 201)).rejects.toMatchObject({
       status: 400,
+    });
+  });
+
+  it('skips deleted messages while acknowledging their allocated change ids', async () => {
+    const { msg } = await seedP2pChange();
+    await database.db
+      .update(message)
+      .set({ isDeleted: true })
+      .where(eq(message.id, msg.id));
+
+    const page = await service.serve(peerDomain, 0n);
+
+    expect(page).toEqual({
+      messages: [],
+      scannedThrough: '3',
+      allocatedThrough: '3',
+      hasMore: false,
+    });
+  });
+
+  it('paginates surviving messages by change id and advances across a final gap', async () => {
+    const { audience, author, target, thread } = await seedP2pChange();
+    const now = new Date();
+    const extraMessages = await database.db
+      .insert(message)
+      .values([
+        {
+          seq: 1,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'second' }),
+          threadId: thread.id,
+          creator: author.id,
+          updatedAt: now,
+          originSeq: 1,
+        },
+        {
+          seq: 2,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'third' }),
+          threadId: thread.id,
+          creator: author.id,
+          updatedAt: now,
+          originSeq: 2,
+        },
+      ])
+      .returning();
+    await database.db.insert(discoveryChange).values([
+      {
+        targetId: target.id,
+        changeId: 2n,
+        audienceId: audience.id,
+        threadId: thread.id,
+        messageId: extraMessages[0].id,
+      },
+      {
+        targetId: target.id,
+        changeId: 3n,
+        audienceId: audience.id,
+        threadId: thread.id,
+        messageId: extraMessages[1].id,
+      },
+    ]);
+
+    const first = await service.serve(peerDomain, 0n, 2);
+    const second = await service.serve(peerDomain, 2n, 2);
+
+    expect(first.messages.map((item) => item.changeId)).toEqual(['1', '2']);
+    expect(first).toMatchObject({
+      scannedThrough: '2',
+      allocatedThrough: '3',
+      hasMore: true,
+    });
+    expect(second.messages.map((item) => item.changeId)).toEqual(['3']);
+    expect(second).toMatchObject({
+      scannedThrough: '3',
+      allocatedThrough: '3',
+      hasMore: false,
     });
   });
 });

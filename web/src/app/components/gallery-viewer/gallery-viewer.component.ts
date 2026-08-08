@@ -366,6 +366,15 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private toSlide(image: AlbumImage, galleryIndex: number): GallerySlideData {
+    if (image.kind === 'file' || image.kind === 'audio') {
+      return {
+        html: `<div class="gv-unloaded-slide" aria-label="${escapeHtmlAttribute(image.name ?? 'file')}"><svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg></div>`,
+        width: 280,
+        height: 220,
+        galleryIndex,
+        kind: image.kind,
+      };
+    }
     if (image.kind === 'video') {
       return {
         html: this.videoSlideHtml(galleryIndex),
@@ -772,4 +781,12 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       inline: 'center',
     });
   }
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }

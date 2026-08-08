@@ -76,6 +76,16 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     expect(s.firebaseClientConfigured).toBe(false);
   });
 
+  it('defaults federation chunk digests off when the setting is absent', async () => {
+    const s = await boot();
+    await expect(s.getFederationDownloadLimits()).resolves.toEqual({
+      global: 10,
+      perPeer: 2,
+      chunkDigestEnabled: false,
+    });
+    await expect(s.isFederationChunkDigestEnabled()).resolves.toBe(false);
+  });
+
   it('is unconfigured (null) when the file is malformed', async () => {
     const p = join(dir, 'bad.json');
     writeFileSync(p, '{not json');

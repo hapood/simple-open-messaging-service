@@ -469,6 +469,12 @@
     },
     "sendPhoto": "Photo",
     "sendFile": "File",
+    "multiSend": {
+      "title": "Send multiple attachments",
+      "message": "Send these {{count}} attachments as one message?",
+      "combined": "Send as one",
+      "separate": "Send separately"
+    },
     "paste": {
       "title": "Review pasted items",
       "summary": "{{count}} attachment(s)",

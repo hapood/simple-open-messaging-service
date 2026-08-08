@@ -885,6 +885,15 @@
       "save": "保存",
       "saved": "有效期已更新"
     },
+    "federationDownload": {
+      "title": "联邦附件下载",
+      "desc": "限制后台附件下载并发，避免 NAS 的磁盘与网络被单个联邦节点占满。",
+      "global": "全局并发",
+      "perPeer": "单节点并发",
+      "chunkDigest": "发送 CAS 分块摘要（额外磁盘读取，默认关闭）",
+      "save": "保存",
+      "saved": "下载并发限制已更新"
+    },
     "vapid": {
       "title": "Web Push（VAPID）",
       "desc": "向浏览器推送服务认证本服务器的 VAPID 密钥对。存储于数据库，启用/轮换无需重新部署。",

@@ -68,13 +68,20 @@ describe('sequential resumable uploads', () => {
       'FILE' as never,
       clientMessageId,
     );
-    const initialized = await uploads.init(userId, {
+    const initRequest = {
       clientMessageId,
+      partId: randomUUID(),
+      position: 0,
+      intent: 'FILE' as const,
       originalName: 'note.txt',
       mimeType: 'text/plain',
       totalBytes: bytes.length,
-    });
+    };
+    const initialized = await uploads.init(userId, initRequest);
     expect(initialized.offset).toBe(0);
+    expect((await uploads.init(userId, initRequest)).uploadId).toBe(
+      initialized.uploadId,
+    );
 
     const first = bytes.subarray(0, 8);
     const afterFirst = await uploads.append(

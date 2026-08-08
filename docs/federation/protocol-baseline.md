@@ -19,25 +19,25 @@
 
 ## 2. 当前公开 surface
 
-| Method | Path                                  | 当前鉴权                                         | 当前用途                                            | 主要验证                  |
-| ------ | ------------------------------------- | ------------------------------------------------ | --------------------------------------------------- | ------------------------- |
-| GET    | `/.well-known/soms`                   | 无                                               | 发布软件版本和 Ed25519 公钥列表                     | controller                |
-| POST   | `/s2s/init`                           | 直接验证 RFC 9421 签名，不要求预先 trusted       | 建立或恢复 peer trust，当前实现自动接受             | controller、双节点 E2E    |
-| POST   | `/s2s/invite`                         | 签名 + trusted peer                              | FRIEND 或 GROUP 邀请                                | 双节点 E2E                |
-| POST   | `/s2s/invite-accept`                  | 签名 + trusted peer                              | FRIEND 接受或 GROUP 入组                            | 双节点 E2E                |
-| POST   | `/s2s/invite-revoke`                  | 签名 + trusted peer                              | 撤回未完成的 FRIEND 邀请                            | controller、相关 E2E 流程 |
-| POST   | `/s2s/call`                           | 签名 + trusted peer                              | 联邦 WebRTC 生命周期和 SDP/ICE relay                | calls 双节点 E2E          |
-| GET    | `/s2s/users/:account`                 | 签名 + trusted peer                              | 本地用户或 `!` group identity 的完整 profile        | 双节点 E2E                |
-| GET    | `/s2s/users/:account/revision`        | 签名 + trusted peer                              | profile revision probe                              | 双节点 E2E                |
-| GET    | `/s2s/group/:account/roster-revision` | 签名 + trusted peer                              | group roster revision probe                         | group 双节点 E2E          |
-| GET    | `/s2s/group/:account/roster`          | 签名 + trusted peer                              | origin 提供 canonical active roster                 | group 双节点 E2E          |
-| GET    | `/s2s/new-msg-map`                    | 签名 + trusted peer                              | 拉取对端 outbound hint snapshot                     | message 双节点 E2E        |
-| POST   | `/s2s/new-msg-map`                    | 签名 + trusted peer；`origin == signer`          | 推送 hint，202 后异步拉取消息                       | message 双节点 E2E        |
-| GET    | `/s2s/messages`                       | 签名 + trusted peer；`toDomain == signer`        | P2P、group all-senders 或 group per-author 前向拉取 | message/group 双节点 E2E  |
-| GET    | `/s2s/messages/before`                | 同上                                             | 三种消息形态的向后分页，SOMS 自身传输暂不消费       | 专门 E2E probe            |
-| GET    | `/s2s/ping`                           | 签名 + trusted peer                              | liveness probe，更新 peer watermark                 | controller、联邦流程      |
-| GET    | `/s2s/get_file`                       | 签名 + trusted peer；thread/roster/bundle 可见性 | digest 寻址媒体，支持单 Range、206 和 416           | media 双节点 E2E          |
-| GET    | `/s2s/forward-bundles/:bundleId`      | 签名 + trusted peer；thread visibility           | 获取 forward manifest closure                       | forward bundle E2E        |
+| Method | Path                                  | 当前鉴权                                         | 当前用途                                                    | 主要验证                  |
+| ------ | ------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------- | ------------------------- |
+| GET    | `/.well-known/soms`                   | 无                                               | 发布软件版本和 Ed25519 公钥列表                             | controller                |
+| POST   | `/s2s/init`                           | 直接验证 RFC 9421 签名，不要求预先 trusted       | 建立或恢复 peer trust，当前实现自动接受                     | controller、双节点 E2E    |
+| POST   | `/s2s/invite`                         | 签名 + trusted peer                              | FRIEND 或 GROUP 邀请                                        | 双节点 E2E                |
+| POST   | `/s2s/invite-accept`                  | 签名 + trusted peer                              | FRIEND 接受或 GROUP 入组                                    | 双节点 E2E                |
+| POST   | `/s2s/invite-revoke`                  | 签名 + trusted peer                              | 撤回未完成的 FRIEND 邀请                                    | controller、相关 E2E 流程 |
+| POST   | `/s2s/call`                           | 签名 + trusted peer                              | 联邦 WebRTC 生命周期和 SDP/ICE relay                        | calls 双节点 E2E          |
+| GET    | `/s2s/users/:account`                 | 签名 + trusted peer                              | 本地用户或 `!` group identity 的完整 profile                | 双节点 E2E                |
+| GET    | `/s2s/users/:account/revision`        | 签名 + trusted peer                              | profile revision probe                                      | 双节点 E2E                |
+| GET    | `/s2s/group/:account/roster-revision` | 签名 + trusted peer                              | group roster revision probe                                 | group 双节点 E2E          |
+| GET    | `/s2s/group/:account/roster`          | 签名 + trusted peer                              | origin 提供 canonical active roster                         | group 双节点 E2E          |
+| GET    | `/s2s/new-msg-map`                    | 签名 + trusted peer                              | 拉取对端 outbound hint snapshot                             | message 双节点 E2E        |
+| POST   | `/s2s/new-msg-map`                    | 签名 + trusted peer；`origin == signer`          | 推送 hint，202 后异步拉取消息                               | message 双节点 E2E        |
+| GET    | `/s2s/messages`                       | 签名 + trusted peer；`toDomain == signer`        | P2P、group all-senders 或 group per-author 前向拉取         | message/group 双节点 E2E  |
+| GET    | `/s2s/messages/before`                | 同上                                             | 三种消息形态的向后分页，SOMS 自身传输暂不消费               | 专门 E2E probe            |
+| GET    | `/s2s/ping`                           | 签名 + trusted peer                              | liveness probe，更新 peer watermark                         | controller、联邦流程      |
+| GET    | `/s2s/get_file`                       | 签名 + trusted peer；thread/roster/bundle 可见性 | digest 寻址媒体，支持单 Range、206 和 416；响应分块摘要可选 | media 双节点 E2E          |
+| GET    | `/s2s/forward-bundles/:bundleId`      | 签名 + trusted peer；thread visibility           | 获取 forward manifest closure                               | forward bundle E2E        |
 
 ## 3. 当前通用行为
 

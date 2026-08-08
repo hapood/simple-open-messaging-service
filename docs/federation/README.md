@@ -3,6 +3,9 @@
 本目录是 SOMS 联邦协议整理工作的唯一入口。当前阶段的目标是冻结现有实现基线，区分协议要求、
 SOMS 实现、历史设计和未来计划；这里还不是对外发布的完整互操作规范。
 
+正式 Federation v1 定版前的独立任务位于
+[v1-todos/README.md](./v1-todos/README.md)。应逐项完成并冻结，再执行最终规范生成任务。
+
 ## 当前应当相信什么
 
 当文档之间出现冲突时，按以下顺序判断当前 SOMS 节点的实际行为：
@@ -22,7 +25,7 @@ SOMS 实现、历史设计和未来计划；这里还不是对外发布的完整
 | Baseline          | 当前 SOMS 实现的审计快照，非独立协议承诺           | [protocol-baseline.md](./protocol-baseline.md)                                                                                                             |
 | API closure audit | 逐端点的生产者、消费者、参数、响应、恢复和测试闭环 | [api-closure-audit.md](./api-closure-audit.md)                                                                                                             |
 | Known conflicts   | 已确认但尚未裁决的文档或实现差异                   | [known-conflicts.md](./known-conflicts.md)                                                                                                                 |
-| Pending design    | 已裁决、等待逐步实现和审核的下一版设计             | [节点身份连续性与持久消息发现](./identity-and-durable-discovery-design.md)                                                                                  |
+| Pending design    | 已裁决、等待逐步实现和审核的下一版设计             | [节点身份连续性与持久消息发现](./identity-and-durable-discovery-design.md)、[每 Peer 状态 Feed](./per-peer-state-feed-design.md)                            |
 | Overview          | 概念、设计解释和部分部署说明                       | [旧版协议与部署指南](../overview/federation-protocol.md)                                                                                                   |
 | API reference     | 当前接口速查，仍需与 baseline 对齐                 | [旧版 S2S API reference](../api/federation-s2s-api.md)                                                                                                     |
 | Historical design | 已实施阶段的设计背景，不具现行规范效力             | [Step 2](../roadmap/federation-step2-design.md)、[Step 3](../roadmap/federation-step3-design.md)、[API review](../roadmap/federation-api-design-review.md) |

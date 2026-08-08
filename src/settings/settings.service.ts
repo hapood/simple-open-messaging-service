@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { systemSetting } from '../database/schema.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
+import { federationDownloadSettingKeys } from '../federation/federation-download-scheduler.js';
 import {
   type VapidConfig,
   type VapidHealthReport,
@@ -31,6 +32,7 @@ const OTP_TTL_KEY = 'otp:ttlMinutes';
 const OTP_TTL_DEFAULT = 10;
 const OTP_TTL_MIN = 1;
 const OTP_TTL_MAX = 1440;
+const FEDERATION_CHUNK_DIGEST_KEY = 'federation:media:chunkDigestEnabled';
 
 type VapidEntry = { value: VapidConfig | null; fetchedAt: number };
 
@@ -132,6 +134,64 @@ export class SettingsService implements OnModuleInit {
       Math.max(OTP_TTL_MIN, Math.trunc(minutes)),
     );
     await this.upsertSetting(OTP_TTL_KEY, String(clamped));
+  }
+
+  async getFederationDownloadLimits(): Promise<{
+    global: number;
+    perPeer: number;
+    chunkDigestEnabled: boolean;
+  }> {
+    const [globalRow, peerRow, chunkDigestRow] = await Promise.all([
+      this.findSetting(federationDownloadSettingKeys.globalLimit),
+      this.findSetting(federationDownloadSettingKeys.peerLimit),
+      this.findSetting(FEDERATION_CHUNK_DIGEST_KEY),
+    ]);
+    return {
+      global: this.parseBoundedInt(globalRow?.value, 10, 1, 100),
+      perPeer: this.parseBoundedInt(peerRow?.value, 2, 1, 100),
+      chunkDigestEnabled: chunkDigestRow?.value === 'true',
+    };
+  }
+
+  async isFederationChunkDigestEnabled(): Promise<boolean> {
+    return (
+      (await this.findSetting(FEDERATION_CHUNK_DIGEST_KEY))?.value === 'true'
+    );
+  }
+
+  async setFederationDownloadLimits(
+    global: number,
+    perPeer: number,
+    chunkDigestEnabled: boolean,
+  ): Promise<void> {
+    await this.database.db.transaction(async (tx) => {
+      const updatedAt = new Date();
+      for (const [key, value] of [
+        [federationDownloadSettingKeys.globalLimit, global],
+        [federationDownloadSettingKeys.peerLimit, perPeer],
+        [FEDERATION_CHUNK_DIGEST_KEY, chunkDigestEnabled],
+      ] as const) {
+        await tx
+          .insert(systemSetting)
+          .values({ key, value: String(value), updatedAt })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: String(value), updatedAt },
+          });
+      }
+    });
+  }
+
+  private parseBoundedInt(
+    value: string | undefined,
+    fallback: number,
+    min: number,
+    max: number,
+  ): number {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max
+      ? parsed
+      : fallback;
   }
 
   /** Authoritative VAPID descriptor for the admin read view — queries the row directly for the real

@@ -18,7 +18,13 @@ import { BusinessException } from '../common/business.exception.js';
 import { SettingsService } from '../settings/settings.service.js';
 import type { VapidConfig } from '../settings/vapid.js';
 import { PushService } from '../push/push.service.js';
-import { SaveVapidDto, GenerateVapidDto, OtpTtlDto } from './admin-settings.dto.js';
+import {
+  SaveVapidDto,
+  GenerateVapidDto,
+  OtpTtlDto,
+  FederationDownloadLimitsDto,
+} from './admin-settings.dto.js';
+import { FederationDownloadScheduler } from '../federation/federation-download-scheduler.js';
 
 /**
  * Admin-managed runtime settings — the DB-backed "Settings" console page. Today this is the Web Push
@@ -43,18 +49,21 @@ export class AdminSettingsController {
   constructor(
     private readonly settings: SettingsService,
     private readonly pushService: PushService,
+    private readonly downloadScheduler: FederationDownloadScheduler,
   ) {}
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/notifications')
   @ApiOperation({
-    summary: 'Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain',
+    summary:
+      'Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain',
   })
   async getNotifications() {
-    const [vapid, otpTtlMinutes] = await Promise.all([
+    const [vapid, otpTtlMinutes, federationDownloadLimits] = await Promise.all([
       this.settings.getVapidDescriptor(),
       this.settings.getOtpTtlMinutes(),
+      this.settings.getFederationDownloadLimits(),
     ]);
     return {
       vapid,
@@ -62,6 +71,26 @@ export class AdminSettingsController {
       fcmConfigured: this.pushService.fcmConfigured,
       somsDomain: this.settings.somsDomain,
       otpTtlMinutes,
+      federationDownloadLimits,
+    };
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.federation-download.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/federation-download')
+  async setFederationDownloadLimits(@Body() dto: FederationDownloadLimitsDto) {
+    await this.settings.setFederationDownloadLimits(
+      dto.global,
+      dto.perPeer,
+      dto.chunkDigestEnabled,
+    );
+    this.downloadScheduler.invalidateLimits();
+    return {
+      global: dto.global,
+      perPeer: dto.perPeer,
+      chunkDigestEnabled: dto.chunkDigestEnabled,
     };
   }
 
@@ -71,7 +100,8 @@ export class AdminSettingsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/vapid/generate')
   @ApiOperation({
-    summary: 'Generate a fresh VAPID keypair server-side and persist it (privateKey never returned)',
+    summary:
+      'Generate a fresh VAPID keypair server-side and persist it (privateKey never returned)',
   })
   async generateVapid(@Body() dto: GenerateVapidDto) {
     // WARNING surfaced by the UI: generating/rotating the keypair breaks existing Web Push subscriptions
@@ -87,7 +117,8 @@ export class AdminSettingsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/vapid/save')
   @ApiOperation({
-    summary: 'Save (paste) a VAPID keypair — validates first, rejects malformed / mismatched pairs',
+    summary:
+      'Save (paste) a VAPID keypair — validates first, rejects malformed / mismatched pairs',
   })
   async saveVapid(@Body() dto: SaveVapidDto) {
     const cfg: VapidConfig = {
@@ -95,8 +126,16 @@ export class AdminSettingsController {
       publicKey: dto.publicKey,
       privateKey: dto.privateKey,
     };
-    const report = this.settings.validateVapid(cfg, this.pushService.fcmConfigured);
-    if (!report.pairMatches || !report.publicKeyValid || !report.privateKeyValid || !report.subjectValid) {
+    const report = this.settings.validateVapid(
+      cfg,
+      this.pushService.fcmConfigured,
+    );
+    if (
+      !report.pairMatches ||
+      !report.publicKeyValid ||
+      !report.privateKeyValid ||
+      !report.subjectValid
+    ) {
       throw new BusinessException(
         BusinessCode.VAPID_INVALID,
         report.errors[0] ?? 'VAPID keypair invalid',
@@ -125,7 +164,9 @@ export class AdminSettingsController {
   @Audit('settings.otp-ttl.save')
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/otp-ttl')
-  @ApiOperation({ summary: 'Set the one-time-code validity window (minutes, clamped 1-1440)' })
+  @ApiOperation({
+    summary: 'Set the one-time-code validity window (minutes, clamped 1-1440)',
+  })
   async setOtpTtl(@Body() dto: OtpTtlDto) {
     await this.settings.setOtpTtlMinutes(dto.ttlMinutes);
     return { otpTtlMinutes: await this.settings.getOtpTtlMinutes() };
@@ -135,7 +176,8 @@ export class AdminSettingsController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/settings/health-check')
   @ApiOperation({
-    summary: 'Validate the configured VAPID keypair + transport status (deterministic, no network)',
+    summary:
+      'Validate the configured VAPID keypair + transport status (deterministic, no network)',
   })
   async healthCheck() {
     return this.settings.validateVapid(

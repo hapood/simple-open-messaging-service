@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
 import { FederationMissedPullService } from './federation-missed-pull.service.js';
@@ -7,8 +7,8 @@ import { FederationMissedPullService } from './federation-missed-pull.service.js
 const SWEEP_MS = 60_000;
 /** Max stagger across domains within one tick (avoids a thundering herd on a fleet-wide outage). */
 const JITTER_MS = 5000;
-/** Slow poll cadence (§4.4) — pulls every trusted peer's /new-msg-map to catch a lost push. */
-const SLOW_POLL_MS = 5 * 60_000;
+/** Durable reconciliation cadence for already-trusted peers; lightweight HWM reads return quickly. */
+const RECONCILE_MS = 5 * 60_000;
 
 /**
  * The 60s reconnect sweep (§4.3) — drives the self-healing the design's resilience story leans on.
@@ -17,13 +17,13 @@ const SLOW_POLL_MS = 5 * 60_000;
  *
  * Each tick, pending first contacts retry their idempotent /init; demoted established peers verify the
  * pinned identity and recover through a signed ping, never a new handshake. Recovery then exchanges the
- * ephemeral discovery HWM. Old hint-map calls remain temporarily during the staged /missed cutover.
+ * ephemeral discovery HWM and drains the durable global /missed feed.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
  * inFlight guard dedupes recoveries for one domain within a sweep.
  */
 @Injectable()
-export class FederationReconnectService {
+export class FederationReconnectService implements OnApplicationBootstrap {
   private readonly logger = new Logger(FederationReconnectService.name);
   private readonly inFlight = new Set<string>();
 
@@ -31,6 +31,12 @@ export class FederationReconnectService {
     private readonly federation: FederationService,
     private readonly missedPull: FederationMissedPullService,
   ) {}
+
+  onApplicationBootstrap(): void {
+    void this.reconcileTrustedPeers().catch((error) =>
+      this.logger.warn(`startup reconciliation failed: ${(error as Error).message}`),
+    );
+  }
 
   /** 60s reconnect sweep (§4.3). Registered with @nestjs/schedule; cleared on shutdown. */
   @Interval(SWEEP_MS)
@@ -40,30 +46,35 @@ export class FederationReconnectService {
     );
   }
 
-  /** Slow poll (§4.4): periodically pull every TRUSTED peer's /new-msg-map — catches a lost push that
-   *  neither the debounce nor the recovery sweep surfaces (a transient push failure with no follow-up),
-   *  and doubles as the one-directional fallback for trusted peers. Best-effort, fire-and-forget.
-   *  Registered with @nestjs/schedule; cleared on shutdown. */
-  @Interval(SLOW_POLL_MS)
-  periodicSlowPoll(): void {
-    void this.slowPoll().catch((e) =>
-      this.logger.warn(`slow poll failed: ${(e as Error).message}`),
+  @Interval(RECONCILE_MS)
+  periodicReconciliation(): void {
+    void this.reconcileTrustedPeers().catch((error) =>
+      this.logger.warn(`trusted-peer reconciliation failed: ${(error as Error).message}`),
     );
   }
 
-  /** Slow poll: for every TRUSTED peer, pull its /new-msg-map → our pendingPulls → drain. The inFlight
-   *  guard prevents overlap with a concurrent recovery on the same domain. */
-  private async slowPoll(): Promise<void> {
+  private async reconcileTrustedPeers(): Promise<void> {
     const domains = await this.federation.listTrustedPeerDomains();
     for (const domain of domains) {
       if (this.inFlight.has(domain)) continue;
       this.inFlight.add(domain);
-      void this.pullPeerMap(domain)
-        .catch((e) =>
-          this.logger.debug(`slow-pull ${domain}: ${(e as Error).message}`),
+      void this.reconcile(domain)
+        .catch((error) =>
+          this.logger.debug(
+            `reconcile ${domain}: ${(error as Error).message}`,
+          ),
         )
         .finally(() => this.inFlight.delete(domain));
     }
+  }
+
+  private async reconcile(domain: string): Promise<void> {
+    await this.federation.verifyPeerIdentity(domain);
+    this.missedPull.advertise(
+      domain,
+      await this.federation.pullDiscoveryHwm(domain),
+    );
+    await this.federation.pullMissedFromPeer(this.missedPull, domain);
   }
 
   private async sweep(): Promise<void> {
@@ -92,27 +103,6 @@ export class FederationReconnectService {
       domain,
       await this.federation.pullDiscoveryHwm(domain),
     );
-    // Old hint transport remains during the staged cutover. It is removed once the real /missed page
-    // applier is wired and the ephemeral wake-up can start that worker directly.
-    await this.federation.flushDomain(domain);
-    await this.pullPeerMap(domain, true);
-  }
-
-  /** Paginated pull of the peer's /new-msg-map → our pendingPulls → drain. Idempotent (originSeq dedup
-   *  absorbs any overlap with a concurrent push). */
-  private async pullPeerMap(
-    domain: string,
-    identityAlreadyVerified = false,
-  ): Promise<void> {
-    if (!identityAlreadyVerified) {
-      await this.federation.verifyPeerIdentity(domain);
-    }
-    let cursor = 0;
-    for (;;) {
-      const page = await this.federation.pullPeerNewMsgMap(domain, cursor);
-      this.federation.receiveNewMsgMapPush(domain, page.entries);
-      if (page.cursor === null || !page.hasMore) break;
-      cursor = page.cursor;
-    }
+    await this.federation.pullMissedFromPeer(this.missedPull, domain);
   }
 }

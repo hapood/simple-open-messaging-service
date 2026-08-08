@@ -469,6 +469,12 @@
     },
     "sendPhoto": "照片",
     "sendFile": "文件",
+    "multiSend": {
+      "title": "发送多个附件",
+      "message": "要将这 {{count}} 个附件合并为一条消息发送吗？",
+      "combined": "合并发送",
+      "separate": "分别发送"
+    },
     "paste": {
       "title": "确认粘贴内容",
       "summary": "{{count}} 个附件",

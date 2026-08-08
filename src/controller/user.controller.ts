@@ -623,11 +623,6 @@ export class UserController {
     // ASYNC — the response returns immediately; a re-localized stub fans a PEER_PROFILE_UPDATED signal on
     // completion, so the caller pulls then. Best-effort — a transient peer outage keeps the cached profile.
     void this.federationService.syncForeignUserIfStale(dto.userId);
-    // Message catch-up (§4.4): recover any hint dropped by the debounce / a lost push. Fire-and-forget.
-    void this.federationService.syncMessagesWithPeerByStubId(
-      dto.userId,
-      req.user.userId,
-    );
     // Local comparison: if the caller's cached profileRev is stale, push a signal so it pulls. Federated
     // stale is covered by syncForeignUserIfStale's notify above; this covers the local case (and is a
     // harmless duplicate for federated — the pull is idempotent).

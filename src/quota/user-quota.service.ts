@@ -270,7 +270,12 @@ export class UserQuotaService {
       .returning({ count: userQuotaDailyUsage.count });
     const count = rows[0]?.count ?? amount;
     const over = count > limit;
-    if (over) this.breaker.mark(String(userId), category === 'messages' ? 'msg' : 'file', today);
+    if (over)
+      this.breaker.mark(
+        String(userId),
+        category === 'messages' ? 'msg' : 'file',
+        today,
+      );
     return { count, limit, over };
   }
 
@@ -328,13 +333,15 @@ export class UserQuotaService {
     userId: number,
     addCnt: number,
     addBytes: bigint,
+    tx?: DatabaseTransaction,
   ): Promise<void> {
     const limits = this.effectiveBreakerLimits(
       normalizeOverrides(await this.getPolicy(userId)),
       await this.getAllowance(userId),
     );
     const today = utcToday();
-    const cntRow = await this.database.db.query.userQuotaDailyUsage.findFirst({
+    const runner = tx ?? this.database.db;
+    const cntRow = await runner.query.userQuotaDailyUsage.findFirst({
       where: and(
         eq(userQuotaDailyUsage.userId, userId),
         eq(userQuotaDailyUsage.date, today),
@@ -342,7 +349,7 @@ export class UserQuotaService {
       ),
       columns: { count: true },
     });
-    const bytesRow = await this.database.db.query.userQuotaFileByteUsage.findFirst({
+    const bytesRow = await runner.query.userQuotaFileByteUsage.findFirst({
       where: and(
         eq(userQuotaFileByteUsage.userId, userId),
         eq(userQuotaFileByteUsage.date, today),
@@ -362,7 +369,11 @@ export class UserQuotaService {
           curBytes + addBytes
         ).toString()}/${limits.fileBytes}`,
         HttpStatus.OK,
-        { category: 'files', limit: limits.file, retryAfter: retryAfterSeconds() },
+        {
+          category: 'files',
+          limit: limits.file,
+          retryAfter: retryAfterSeconds(),
+        },
       );
     }
   }
@@ -433,7 +444,8 @@ export class UserQuotaService {
     const over: BreakerDim[] = [];
     if ((msgRow?.count ?? 0) > limits.msg) over.push('msg');
     if ((fileRow?.count ?? 0) > limits.file) over.push('file');
-    if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes)) over.push('fileBytes');
+    if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes))
+      over.push('fileBytes');
     this.breaker.reconcile(String(userId), over, today);
   }
 
@@ -488,9 +500,7 @@ export class UserQuotaService {
   async trippedBreakers(): Promise<BreakerStatus[]> {
     const today = utcToday();
     const keys = this.breaker.trippedEntities(today);
-    return Promise.all(
-      keys.map((k) => this.breakerStatus(Number(k))),
-    );
+    return Promise.all(keys.map((k) => this.breakerStatus(Number(k))));
   }
 
   // ── internals ───────────────────────────────────────────────────────────────────────────────────────
@@ -523,11 +533,16 @@ export class UserQuotaService {
     allowance: { extraMsg: number; extraFile: number; extraFileBytes: bigint },
   ): { msg: number; file: number; fileBytes: number } {
     return {
-      msg: (overrides.dailyMsgLimit ?? this.defaults.dailyMsgLimit) + allowance.extraMsg,
-      file: (overrides.dailyFileLimit ?? this.defaults.dailyFileLimit) + allowance.extraFile,
+      msg:
+        (overrides.dailyMsgLimit ?? this.defaults.dailyMsgLimit) +
+        allowance.extraMsg,
+      file:
+        (overrides.dailyFileLimit ?? this.defaults.dailyFileLimit) +
+        allowance.extraFile,
       fileBytes:
-        Number(overrides.dailyFileBytesLimit ?? this.defaults.dailyFileBytesLimit) +
-        Number(allowance.extraFileBytes),
+        Number(
+          overrides.dailyFileBytesLimit ?? this.defaults.dailyFileBytesLimit,
+        ) + Number(allowance.extraFileBytes),
     };
   }
 

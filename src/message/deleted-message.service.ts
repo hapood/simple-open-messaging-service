@@ -378,11 +378,11 @@ export class DeletedMessageService {
         }
       }
 
-      // Download-inbox (§12.8): if the deleted message is still staged in PendingMedia (not yet
-      // promoted), abort the staging — delete the staged row and its per-file progress rows. The
-      // advisory lock above serializes this against a concurrent promote, so the two cannot both act on
-      // the same pending row. Temp files are left for the GC temp pass; the tombstone row inserted above
-      // stays as the seen marker that prevents re-staging on feed replay.
+      // Download-inbox (§12.8): if the deleted message is still staged, terminate its logical download
+      // without destroying resumable digest state. Another authorized message may reference the same
+      // digest later, so FileSyncProgress and the shared CAS partial are retained for inspection/reuse.
+      // TOMBSTONED is a protocol terminal, distinct from an operator-retryable transfer failure. The
+      // advisory lock serializes this with promotion; the message tombstone prevents replay re-staging.
       const staged = await tx.query.pendingMedia.findFirst({
         where: and(
           eq(pendingMedia.threadId, params.threadId),
@@ -393,10 +393,21 @@ export class DeletedMessageService {
       });
       if (staged) {
         await tx
-          .delete(fileSyncProgress)
+          .update(fileSyncProgress)
+          .set({
+            status: 'TOMBSTONED',
+            errorKind: 'SOURCE_MESSAGE_DELETED',
+            updatedAt: new Date(),
+          })
           .where(eq(fileSyncProgress.batchId, staged.batchId));
         await tx
-          .delete(pendingMedia)
+          .update(pendingMedia)
+          .set({
+            status: 'tombstoned',
+            anyFailed: true,
+            failReason: 'SOURCE_MESSAGE_DELETED',
+            updatedAt: new Date(),
+          })
           .where(eq(pendingMedia.batchId, staged.batchId));
       }
 

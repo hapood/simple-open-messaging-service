@@ -5,6 +5,7 @@ import {
   group,
   invite,
   messageThread,
+  threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -213,6 +214,11 @@ export class GroupService implements OnModuleInit {
             role: GroupRole.OWNER,
             updatedAt: new Date(),
           });
+          await tx.insert(threadAudience).values({
+            targetDomain: 'local',
+            localUserId: params.owner,
+            threadId: thread.id,
+          });
           // Group-exclusive state: owner + roster revision (origin group: remoteRosterRev null).
           await tx.insert(group).values({
             groupUserId: groupUser.id,
@@ -308,6 +314,17 @@ export class GroupService implements OnModuleInit {
           ),
         )
         .returning({ id: threadParticipant.id });
+      if (ended.length > 0) {
+        await tx
+          .delete(threadAudience)
+          .where(
+            and(
+              eq(threadAudience.targetDomain, 'local'),
+              eq(threadAudience.localUserId, params.userId),
+              eq(threadAudience.threadId, params.threadId),
+            ),
+          );
+      }
       if (shouldDelete) {
         await tx
           .update(threadParticipant)

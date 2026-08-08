@@ -54,6 +54,7 @@ import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
+import { DiscoveryChangeService } from './discovery-change.service.js';
 
 interface ReplyPreview {
   author: string;
@@ -162,9 +163,7 @@ export function derivePreview(type: ContentType, content: string): string {
       // A multi-asset bundle: surface the item count when the content parses.
       try {
         const c = JSON.parse(content) as { items?: unknown[] };
-        return c.items?.length
-          ? `[Gallery · ${c.items.length}]`
-          : '[Gallery]';
+        return c.items?.length ? `[Gallery · ${c.items.length}]` : '[Gallery]';
       } catch {
         return '[Gallery]';
       }
@@ -204,6 +203,7 @@ export class MessageService implements OnModuleInit {
   constructor(
     private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
+    private readonly discoveryChanges: DiscoveryChangeService = new DiscoveryChangeService(),
   ) {}
 
   private async queryRaw<T extends object[]>(
@@ -399,6 +399,7 @@ export class MessageService implements OnModuleInit {
             );
           }
         }
+        await this.discoveryChanges.recordMessageInTx(tx, msg.id);
         // Strip the internal BigInt id — a throughput side-channel that must never be serialized.
         // (msg.id is consumed above for the MediaMessage FK; the strip is the LAST use of the full row.)
         return stripMessageId(msg);
@@ -584,6 +585,8 @@ export class MessageService implements OnModuleInit {
    */
   async markOutboundFileSucceeded(
     clientMessageId: string,
+    partId: string,
+    position: number,
     digest: string,
     payload: OutboundFilePayload,
     userId: number,
@@ -597,10 +600,26 @@ export class MessageService implements OnModuleInit {
         eq(pendingMedia.clientMessageId, clientMessageId),
         eq(pendingMedia.creatorId, userId),
       ),
-      columns: { id: true, batchId: true, status: true, contentType: true },
+      columns: {
+        id: true,
+        batchId: true,
+        status: true,
+        contentType: true,
+        fileCnt: true,
+      },
     });
     // Already promoted (stage gone) or no stage / not pending → nothing to record for this caller.
     if (!stage || stage.status !== 'pending') return null;
+    if (
+      !Number.isInteger(position) ||
+      position < 0 ||
+      position >= stage.fileCnt
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid upload part position',
+      );
+    }
     if (
       overrideContentType !== undefined &&
       overrideContentType !== stage.contentType
@@ -619,6 +638,8 @@ export class MessageService implements OnModuleInit {
       .insert(fileSyncProgress)
       .values({
         batchId: stage.batchId,
+        partId,
+        position,
         digest,
         direction: 'OUTBOUND',
         kind: familyToFileSyncKind(payload.family),
@@ -629,9 +650,7 @@ export class MessageService implements OnModuleInit {
         updatedAt: new Date(),
       })
       // Same digest in the same batch is byte-identical → idempotent re-upload is a no-op.
-      .onConflictDoNothing({
-        target: [fileSyncProgress.batchId, fileSyncProgress.digest],
-      });
+      .onConflictDoNothing();
     return this.promoteOutboundBatchIfReady(clientMessageId, userId);
   }
 
@@ -687,19 +706,31 @@ export class MessageService implements OnModuleInit {
     }
     const files = await this.database.db.query.fileSyncProgress.findMany({
       where: eq(fileSyncProgress.batchId, stage.batchId),
-      columns: { digest: true, payload: true, status: true },
+      columns: {
+        digest: true,
+        payload: true,
+        status: true,
+        partId: true,
+        position: true,
+      },
     });
     const succeeded = files.filter((f) => f.status === 'SUCCEEDED');
     if (succeeded.length < stage.fileCnt) return null; // barrier not yet met
+    if (succeeded.length !== stage.fileCnt) return null;
+    const positions = new Set(succeeded.map((file) => file.position));
+    if (
+      positions.size !== stage.fileCnt ||
+      [...positions].some(
+        (position) =>
+          position === null || position < 0 || position >= stage.fileCnt,
+      )
+    ) {
+      return null;
+    }
     const payloads = succeeded
-      .map((f) => f.payload as unknown as OutboundFilePayload)
-      .sort((a, b) =>
-        a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0,
-      );
-    const unboundContent = assembleOutboundContent(
-      stage.contentType,
-      payloads,
-    );
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .map((f) => f.payload as unknown as OutboundFilePayload);
+    const unboundContent = assembleOutboundContent(stage.contentType, payloads);
     let created: Omit<Message, 'id'> | null = null;
     try {
       created = await this.database.db.transaction(async (tx) => {
@@ -802,6 +833,7 @@ export class MessageService implements OnModuleInit {
         await tx
           .delete(fileSyncProgress)
           .where(eq(fileSyncProgress.batchId, stage.batchId));
+        await this.discoveryChanges.recordMessageInTx(tx, msg.id);
         return stripMessageId(msg);
       });
     } catch (e) {

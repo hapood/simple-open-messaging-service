@@ -17,7 +17,7 @@ export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
  * the render branch; size/duration/name feed the bottom meta bar + overlay.
  */
 export interface AlbumMedia {
-  kind: 'image' | 'video' | 'audio';
+  kind: 'image' | 'video' | 'audio' | 'file';
   /** /uploads/... URL (image / video / audio). */
   src: string;
   w: number;
@@ -28,6 +28,7 @@ export interface AlbumMedia {
   duration?: number;
   /** Display name — video/audio meta bar (images usually omit). */
   name?: string;
+  mimeType?: string;
   /** Owning original msg id (differs across cells in a merged album); layout ignores it, used only
    *  for the dev badge showing the aggregation range `[min-max]`. */
   msgId?: number;
@@ -39,7 +40,7 @@ export interface AlbumMedia {
 /** Legacy alias — gallery-viewer and older call sites still reference AlbumImage. */
 export type AlbumImage = AlbumMedia;
 
-/** FILE message attachment: { url, name, size, mimeType } returned by the server's POST /upload/file (stored as JSON inside Message.content). */
+/** FILE message attachment returned by the server's unified upload endpoint (stored as JSON inside Message.content). */
 export interface FileInfo {
   /** Server-relative URL (/uploads/<name>); the FileRow download anchor's href. */
   url: string;
@@ -106,6 +107,7 @@ export interface ChatMsgData {
     | 'VIDEO'
     | 'FILE'
     | 'AUDIO'
+    | 'GALLERY'
     | 'LINK'
     | 'CALL'
     | 'FORWARD';

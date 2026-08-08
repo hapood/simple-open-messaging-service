@@ -9,9 +9,17 @@ function setup({
   clientMessageId = 'stage-1',
   intent = ContentType.IMAGE,
   files = [
-    { mimetype: 'image/png', buffer: Buffer.from('png bytes'), filename: 'a.png' },
+    {
+      mimetype: 'image/png',
+      buffer: Buffer.from('png bytes'),
+      filename: 'a.png',
+    },
   ],
-  fields = { w: '10', h: '20' },
+  fields = {
+    partId: '11111111-1111-4111-8111-111111111111',
+    position: '0',
+    intent: 'IMAGE',
+  },
 }: {
   clientMessageId?: string | undefined;
   intent?: ContentType | null;
@@ -19,9 +27,7 @@ function setup({
   fields?: Record<string, string>;
 } = {}) {
   const uploadService = {
-    consumeParts: vi
-      .fn()
-      .mockResolvedValue({ kind: 'ok', files, fields }),
+    consumeParts: vi.fn().mockResolvedValue({ kind: 'ok', files, fields }),
     savePart: vi.fn().mockResolvedValue({
       payload: {
         digest: 'd'.repeat(64),
@@ -54,9 +60,7 @@ function setup({
   );
   const req = {
     user: { userId: 7 },
-    headers: clientMessageId
-      ? { 'x-client-message-id': clientMessageId }
-      : {},
+    headers: clientMessageId ? { 'x-client-message-id': clientMessageId } : {},
   } as unknown as FastifyRequest;
   return {
     controller,
@@ -86,6 +90,8 @@ describe('UploadController type-agnostic upload (Phase 7)', () => {
     expect(uploadService.savePart).toHaveBeenCalledOnce();
     expect(messageService.markOutboundFileSucceeded).toHaveBeenCalledWith(
       'stage-1',
+      '11111111-1111-4111-8111-111111111111',
+      0,
       'd'.repeat(64),
       expect.objectContaining({ family: 'IMAGE' }),
       7,

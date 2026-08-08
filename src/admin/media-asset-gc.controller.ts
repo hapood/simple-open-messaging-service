@@ -184,7 +184,7 @@ export class MediaAssetGcController {
   @Post('admin/media/inbox/:batchId/clean')
   @ApiOperation({
     summary:
-      'Drop a staged inbound media batch (delete PendingMedia + FileSyncProgress + temp files)',
+      'Drop a staged inbound media batch (delete database rows; temp files remain for GC)',
   })
   cleanInboxBatch(@Param('batchId', new ParseUUIDPipe()) batchId: string) {
     return this.gc.cleanInboxBatch(batchId);

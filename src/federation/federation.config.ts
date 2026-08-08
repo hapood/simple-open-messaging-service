@@ -13,7 +13,7 @@ export interface FederationConfig {
   /** Per-attempt connect timeout for outbound S2S HTTP requests (seconds). §6.4 (v4/v6 racing backstop). */
   connectTimeoutSec: number;
   /** Overall timeout for an outbound S2S HTTP call — connect + transfer + response (seconds). Applies
-   *  to control traffic (friend ops, /messages, /new-msg-map, /ping); NOT to the media fetch, which
+   *  to control traffic (friend ops, /missed, /ping); NOT to the media fetch, which
    *  uses mediaChunkTimeoutSec per chunk (a large file can't cross in callTimeoutSec). */
   callTimeoutSec: number;
   /** Step 2 media fetch (GET /get_file): byte size of one Range request — the bounded per-request

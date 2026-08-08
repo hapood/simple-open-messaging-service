@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -11,12 +11,15 @@ export interface FederationMissedPullCallbacks {
   fetch(after: bigint): Promise<FederationMissedPage>;
   /** Apply the complete page in the same transaction that advances remoteHwm. */
   apply(tx: DatabaseTransaction, page: FederationMissedPage): Promise<void>;
+  /** Runs only after the page transaction (including remoteHwm) committed successfully. */
+  afterCommit?(page: FederationMissedPage): Promise<void> | void;
 }
 
 interface AppliedPage {
   requestedAfter: bigint;
   scannedThrough: bigint;
   hasMore: boolean;
+  page: FederationMissedPage;
 }
 
 /**
@@ -26,6 +29,7 @@ interface AppliedPage {
  */
 @Injectable()
 export class FederationMissedPullService {
+  private readonly logger = new Logger(FederationMissedPullService.name);
   private readonly running = new Map<string, Promise<void>>();
   private readonly pending = new Set<string>();
   private readonly advertised = new Map<string, bigint>();
@@ -57,7 +61,16 @@ export class FederationMissedPullService {
     const task = this.loop(peerDomain, callbacks).finally(() => {
       this.running.delete(peerDomain);
       if (this.pending.has(peerDomain)) {
-        queueMicrotask(() => void this.run(peerDomain, callbacks));
+        queueMicrotask(() => {
+          void this.run(peerDomain, callbacks).catch((error: unknown) => {
+            // This continuation has no external caller to observe its promise. A malformed page or
+            // transient apply failure must stop this drain, not become an unhandled rejection that
+            // terminates the API process; the next HWM push/reconnect wake-up retries durably.
+            this.logger.warn(
+              `missed drain failed for ${peerDomain}: ${(error as Error).message}`,
+            );
+          });
+        });
       }
     });
     this.running.set(peerDomain, task);
@@ -72,6 +85,8 @@ export class FederationMissedPullService {
     for (;;) {
       const applied = await this.applyOnePage(peerDomain, callbacks);
       if (!applied) return; // another process owns the NOWAIT cursor lock
+
+      await callbacks.afterCommit?.(applied.page);
 
       // A data-bearing final page is not acknowledged at the source until we request once more with
       // its scannedThrough. Continue until the source returns a stable empty/no-advance final page.
@@ -147,6 +162,7 @@ export class FederationMissedPullService {
         requestedAfter: cursor.remoteHwm,
         scannedThrough,
         hasMore: page.hasMore,
+        page,
       };
     });
   }

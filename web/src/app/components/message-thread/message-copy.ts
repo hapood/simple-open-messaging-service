@@ -39,6 +39,8 @@ export function messageCopyBody(
           : media?.name;
       return joinLabel(label, detail);
     }
+    case 'GALLERY':
+      return `${labels.photo} × ${message.images?.length ?? 0}`;
     case 'INVITE':
       return joinLabel(labels.invite, inviteGroupName(message.text));
     case 'CALL':

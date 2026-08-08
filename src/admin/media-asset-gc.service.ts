@@ -394,47 +394,24 @@ export class MediaAssetGcService {
     };
   }
 
-  /** Drop a staged inbound batch for good: delete its PendingMedia + FileSyncProgress rows (inside one
-   *  tx) and unlink the transient CAS artifacts (.part/.resume.json/.complete) for each file. Any
-   *  SUCCEEDED MediaAsset blob the batch produced is left for the normal reap pass — with its
-   *  FileSyncProgress liveness gone, it is unreachable and will be reclaimed on the next gc run. */
+  /** Drop a staged inbound batch for good by deleting PendingMedia + FileSyncProgress in one tx.
+   *  Shared CAS blobs and resumable temp artifacts are deliberately untouched: removing the task rows
+   *  makes them unclaimed, and the ordinary GC/TTL paths decide when they are safe to reclaim. */
   async cleanInboxBatch(
     batchId: string,
   ): Promise<{ clearedBatch: boolean; fileRows: number; tempFiles: number }> {
-    const files = await this.database.db.query.fileSyncProgress.findMany({
-      where: eq(fileSyncProgress.batchId, batchId),
-      columns: { digest: true },
-    });
     const clearedBatch = await this.database.db.transaction(async (tx) => {
-      await tx
+      const files = await tx
         .delete(fileSyncProgress)
-        .where(eq(fileSyncProgress.batchId, batchId));
+        .where(eq(fileSyncProgress.batchId, batchId))
+        .returning({ id: fileSyncProgress.id });
       const gone = await tx
         .delete(pendingMedia)
         .where(eq(pendingMedia.batchId, batchId))
         .returning({ id: pendingMedia.id });
-      return gone.length > 0;
+      return { clearedBatch: gone.length > 0, fileRows: files.length };
     });
-    let tempFiles = 0;
-    for (const { digest } of files) {
-      tempFiles += await this.cleanTempForDigest(digest);
-    }
-    return { clearedBatch, fileRows: files.length, tempFiles };
-  }
-
-  /** Unlink the transient CAS artifacts for one digest (.part/.resume.json/.complete). Digests come
-   *  from FileSyncProgress rows (validated 64-hex on the write path), so the filenames are safe. */
-  private async cleanTempForDigest(digest: string): Promise<number> {
-    let removed = 0;
-    for (const suffix of ['.part', '.resume.json', '.complete']) {
-      const removedFlag = await unlinkAsync(
-        join(this.upload.casTmpDir, `${digest}${suffix}`),
-      )
-        .then(() => true)
-        .catch(() => false);
-      if (removedFlag) removed++;
-    }
-    return removed;
+    return { ...clearedBatch, tempFiles: 0 };
   }
 
   /** Find immutable bundles that are not reachable from any visible ForwardMessage root. This is
@@ -557,7 +534,7 @@ export class MediaAssetGcService {
           AND NOT EXISTS (
             SELECT 1 FROM "FileSyncProgress" fsp
             WHERE fsp.digest = asset.digest
-              AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED')
+              AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED', 'TOMBSTONED')
           )
         ORDER BY asset.digest
         LIMIT 500
@@ -592,7 +569,7 @@ export class MediaAssetGcService {
             AND NOT EXISTS (
               SELECT 1 FROM "FileSyncProgress" fsp
               WHERE fsp.digest = asset.digest
-                AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED')
+                AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED', 'TOMBSTONED')
             )
           RETURNING digest
         `);
@@ -968,7 +945,7 @@ export class MediaAssetGcService {
           AND NOT EXISTS (
             SELECT 1 FROM "FileSyncProgress" fsp
             WHERE fsp.digest = asset.digest
-              AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED')
+              AND fsp.status IN ('PENDING', 'DOWNLOADING', 'SUCCEEDED', 'TOMBSTONED')
           )
       `,
         )

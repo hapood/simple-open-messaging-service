@@ -65,6 +65,141 @@ describe('ThreadRevisionService hidden-thread restoration', () => {
       threadRevision: 8,
     });
   });
+
+  it('is a no-op for an empty active-recipient set', async () => {
+    const transaction = vi.fn();
+    const sse = { onThreadRevisionUpdated: vi.fn() };
+    const svc = new ThreadRevisionService(
+      { db: { transaction } } as never,
+      sse as never,
+    );
+
+    await svc.restoreHiddenThreads(10, []);
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(sse.onThreadRevisionUpdated).not.toHaveBeenCalled();
+  });
+
+  it('does not publish any revision when restoration rolls back', async () => {
+    const rollback = new Error('revision write failed');
+    const transaction = vi.fn(async () => {
+      throw rollback;
+    });
+    const sse = { onThreadRevisionUpdated: vi.fn() };
+    const svc = new ThreadRevisionService(
+      { db: { transaction } } as never,
+      sse as never,
+    );
+
+    await expect(svc.restoreHiddenThreads(10, [2])).rejects.toBe(rollback);
+    expect(sse.onThreadRevisionUpdated).not.toHaveBeenCalled();
+  });
+});
+
+describe('ThreadRevisionService revision writes', () => {
+  function writeHarness() {
+    const returning = vi.fn().mockResolvedValue([{ threadRevision: 8 }]);
+    const userWhere = vi.fn(() => ({ returning }));
+    const setUser = vi.fn(() => ({ where: userWhere }));
+
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn(() => ({ onConflictDoUpdate }));
+
+    const revisionWhere = vi.fn().mockResolvedValue(undefined);
+    const setRevision = vi.fn(() => ({ where: revisionWhere }));
+    const update = vi
+      .fn()
+      .mockReturnValueOnce({ set: setUser })
+      .mockReturnValueOnce({ set: setRevision });
+    const insert = vi.fn(() => ({ values }));
+    const tx = { update, insert };
+    return {
+      tx,
+      update,
+      setUser,
+      values,
+      onConflictDoUpdate,
+      setRevision,
+      revisionWhere,
+    };
+  }
+
+  it('upserts an ADD at the bumped revision and reactivates its compacted row', async () => {
+    const h = writeHarness();
+    const svc = new ThreadRevisionService({} as never, {} as never);
+
+    await expect(svc.recordThreadAddInTx(h.tx as never, 2, 10)).resolves.toBe(
+      8,
+    );
+
+    expect(h.values).toHaveBeenCalledWith({
+      userId: 2,
+      threadId: 10,
+      direction: 'ADD',
+      revision: 8,
+      isDelete: false,
+    });
+    expect(h.onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ set: { revision: 8, isDelete: false } }),
+    );
+    expect(h.setRevision).not.toHaveBeenCalled();
+  });
+
+  it('upserts a DELETE and soft-deletes the compacted ADD row', async () => {
+    const h = writeHarness();
+    const svc = new ThreadRevisionService({} as never, {} as never);
+
+    await expect(
+      svc.recordThreadDeleteInTx(h.tx as never, 2, 10),
+    ).resolves.toBe(8);
+
+    expect(h.values).toHaveBeenCalledWith({
+      userId: 2,
+      threadId: 10,
+      direction: 'DELETE',
+      revision: 8,
+    });
+    expect(h.onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ set: { revision: 8 } }),
+    );
+    expect(h.setRevision).toHaveBeenCalledWith({ isDelete: true });
+    expect(h.revisionWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes only after the outer ADD transaction commits', async () => {
+    let committed = false;
+    const transaction = vi.fn(async () => {
+      committed = true;
+      return 8;
+    });
+    const sse = {
+      onThreadRevisionUpdated: vi.fn(() => expect(committed).toBe(true)),
+    };
+    const svc = new ThreadRevisionService(
+      { db: { transaction } } as never,
+      sse as never,
+    );
+    vi.spyOn(svc, 'recordThreadAddInTx').mockResolvedValue(8);
+
+    await svc.recordThreadAdd(2, 10);
+
+    expect(sse.onThreadRevisionUpdated).toHaveBeenCalledWith(2, {
+      threadRevision: 8,
+    });
+  });
+
+  it('does not publish when the outer DELETE transaction rolls back', async () => {
+    const rollback = new Error('rollback');
+    const transaction = vi.fn().mockRejectedValue(rollback);
+    const sse = { onThreadRevisionUpdated: vi.fn() };
+    const svc = new ThreadRevisionService(
+      { db: { transaction } } as never,
+      sse as never,
+    );
+
+    await expect(svc.recordThreadDelete(2, 10)).rejects.toBe(rollback);
+    expect(sse.onThreadRevisionUpdated).not.toHaveBeenCalled();
+  });
 });
 
 describe('planThreadDelta — last-op-wins net add/delete', () => {

@@ -888,6 +888,15 @@
       "save": "Save",
       "saved": "Validity updated"
     },
+    "federationDownload": {
+      "title": "Federation attachment downloads",
+      "desc": "Limit background attachment transfers so one peer cannot saturate NAS disk or network IO.",
+      "global": "Global concurrency",
+      "perPeer": "Per-peer concurrency",
+      "chunkDigest": "Send CAS chunk digests (extra disk read; off by default)",
+      "save": "Save",
+      "saved": "Download concurrency limits updated"
+    },
     "vapid": {
       "title": "Web Push (VAPID)",
       "desc": "The VAPID keypair authenticating this server to browser push services. Stored in the database; enabling/rotating requires no redeploy.",

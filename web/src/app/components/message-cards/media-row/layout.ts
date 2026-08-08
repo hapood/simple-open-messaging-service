@@ -29,7 +29,7 @@ export interface AlbumImageLike {
   h: number;
   /** Media kind — present on real AlbumMedia cells. layoutAlbum special-cases audio (a fixed slim bar that
    *  bypasses image aspect math); image/video fall through to the aspect-ratio regimes. */
-  kind?: 'image' | 'video' | 'audio';
+  kind?: 'image' | 'video' | 'audio' | 'file';
   duration?: number;
 }
 

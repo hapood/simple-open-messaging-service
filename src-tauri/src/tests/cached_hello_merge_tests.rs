@@ -71,6 +71,27 @@ fn friendreq_revisions_are_monotonic_out_of_order_dropped() {
 }
 
 #[test]
+fn thread_revision_is_monotonic_out_of_order_dropped() {
+    let c = cache();
+    merge_cached_hello(
+        &c,
+        "HELLO",
+        &serde_json::json!({"userId":1,"threadRevision":5}),
+    );
+    merge_cached_hello(
+        &c,
+        "THREAD_REVISION_UPDATED",
+        &serde_json::json!({"threadRevision":9}),
+    );
+    merge_cached_hello(
+        &c,
+        "THREAD_REVISION_UPDATED",
+        &serde_json::json!({"threadRevision":8}),
+    );
+    assert_eq!(get(&c)["threadRevision"], 9);
+}
+
+#[test]
 fn incremental_before_hello_is_dropped_no_partial_cache() {
     let c = cache();
     merge_cached_hello(

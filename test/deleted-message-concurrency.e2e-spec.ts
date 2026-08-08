@@ -6,10 +6,16 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
 import {
   deletedMessage,
+  discoveryChange,
+  discoveryTarget,
   federatedMessageTombstone,
+  federatedPeer,
   federationDeletedCursor,
+  fileSyncProgress,
   message,
   messageThread,
+  pendingMedia,
+  threadAudience,
   user,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
@@ -39,8 +45,14 @@ describe('federated message deletion transaction ordering', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await database.pool.query('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
+    await database.pool.query(
+      'TRUNCATE TABLE "User", "FederatedPeer" RESTART IDENTITY CASCADE',
+    );
     const now = new Date();
+    await database.db.insert(federatedPeer).values({
+      domain: 'peer.test',
+      trustLevel: 'trusted',
+    });
     const [creator] = await database.db
       .insert(user)
       .values({
@@ -69,6 +81,7 @@ describe('federated message deletion transaction ordering', () => {
       remoteDeletedId,
       type: MessageDeleteType.WITHDRAW,
       cursor,
+      expectedFederationVersion: 0,
     });
   }
 
@@ -200,5 +213,89 @@ describe('federated message deletion transaction ordering', () => {
     expect(state.tombstones).toHaveLength(1);
     expect(state.logs).toHaveLength(1);
     expect(state.cursor?.deletedHwm).toBe(12n);
+  });
+
+  it('terminates but retains an inbound pending download and its resumable progress', async () => {
+    const [pending] = await database.db
+      .insert(pendingMedia)
+      .values({
+        threadId,
+        creatorId,
+        contentType: 'IMAGE',
+        content: JSON.stringify({ digest: 'a'.repeat(64) }),
+        originSeq: 7,
+        direction: 'INBOUND',
+        fileCnt: 1,
+        originDomain: 'peer.test',
+        expectedFederationVersion: 0,
+        status: 'pending',
+        updatedAt: new Date(),
+      })
+      .returning({ batchId: pendingMedia.batchId });
+    await database.db.insert(fileSyncProgress).values({
+      batchId: pending.batchId,
+      digest: 'a'.repeat(64),
+      direction: 'INBOUND',
+      kind: 'IMAGE',
+      status: 'DOWNLOADING',
+      bytesTotal: 100n,
+      bytesReceived: 40n,
+      originDomain: 'peer.test',
+    });
+
+    await apply(13n);
+
+    const retained = await database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.batchId, pending.batchId),
+    });
+    const [progress] = await database.db
+      .select()
+      .from(fileSyncProgress)
+      .where(eq(fileSyncProgress.batchId, pending.batchId));
+    expect(retained).toMatchObject({
+      status: 'tombstoned',
+      anyFailed: true,
+      failReason: 'SOURCE_MESSAGE_DELETED',
+    });
+    expect(progress).toMatchObject({
+      status: 'TOMBSTONED',
+      errorKind: 'SOURCE_MESSAGE_DELETED',
+      bytesReceived: 40n,
+    });
+  });
+
+  it('retains historical discovery proof after current audience access is revoked', async () => {
+    const created = await insertIncoming();
+    const stored = await database.db.query.message.findFirst({
+      where: and(eq(message.threadId, threadId), eq(message.seq, created.seq)),
+      columns: { id: true },
+    });
+    const [audience] = await database.db
+      .insert(threadAudience)
+      .values({ targetDomain: 'peer.test', threadId })
+      .returning({ id: threadAudience.id });
+    const [target] = await database.db
+      .insert(discoveryTarget)
+      .values({ targetDomain: 'peer.test', allocatedThrough: 1n })
+      .returning({ id: discoveryTarget.id });
+    await database.db.insert(discoveryChange).values({
+      targetId: target.id,
+      changeId: 1n,
+      audienceId: audience.id,
+      threadId,
+      messageId: stored!.id,
+    });
+
+    await database.db
+      .delete(threadAudience)
+      .where(eq(threadAudience.id, audience.id));
+
+    const proof = await database.db.query.discoveryChange.findFirst({
+      where: and(
+        eq(discoveryChange.targetId, target.id),
+        eq(discoveryChange.changeId, 1n),
+      ),
+    });
+    expect(proof).toMatchObject({ messageId: stored!.id, audienceId: null });
   });
 });

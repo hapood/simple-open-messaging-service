@@ -97,6 +97,7 @@ export const fileSyncStatus = pgEnum('FileSyncStatus', [
   'DOWNLOADING',
   'SUCCEEDED',
   'FAILED',
+  'TOMBSTONED',
 ]);
 export const fileSyncKind = pgEnum('FileSyncKind', [
   'FILE',
@@ -765,7 +766,9 @@ export const discoveryChange = pgTable(
   {
     targetId: bigint({ mode: 'bigint' }).notNull(),
     changeId: bigint({ mode: 'bigint' }).notNull(),
-    audienceId: bigint({ mode: 'bigint' }).notNull(),
+    /** Audience that admitted the change. It becomes null when current access is revoked; the change
+     * itself remains durable historical proof that this target had already received the message. */
+    audienceId: bigint({ mode: 'bigint' }),
     threadId: integer().notNull(),
     messageId: bigint({ mode: 'bigint' }).notNull(),
     createdAt: timestamp({ precision: 3, mode: 'date' })
@@ -791,7 +794,7 @@ export const discoveryChange = pgTable(
       columns: [table.audienceId],
       foreignColumns: [threadAudience.id],
       name: 'DiscoveryChange_audienceId_fkey',
-    }).onDelete('cascade'),
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -1298,6 +1301,11 @@ export const uploadSession = pgTable(
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     uploadId: uuid().defaultRandom().notNull(),
     clientMessageId: varchar({ length: 36 }).notNull(),
+    // Stable logical identity inside one staged message. It is deliberately independent of digest:
+    // selecting the same bytes twice creates two parts but only one physical CAS object.
+    partId: uuid().notNull(),
+    position: integer().notNull(),
+    partIntent: contentType().notNull(),
     creatorId: integer().notNull(),
     contentType: contentType().notNull(),
     originalName: varchar({ length: 100 }).notNull(),
@@ -1320,7 +1328,22 @@ export const uploadSession = pgTable(
   },
   (table) => [
     uniqueIndex('UploadSession_uploadId_key').on(table.uploadId),
-    uniqueIndex('UploadSession_clientMessageId_key').on(table.clientMessageId),
+    uniqueIndex('UploadSession_clientMessageId_partId_key').on(
+      table.clientMessageId,
+      table.partId,
+    ),
+    uniqueIndex('UploadSession_clientMessageId_position_key').on(
+      table.clientMessageId,
+      table.position,
+    ),
+    check(
+      'UploadSession_position_check',
+      sql`${table.position} BETWEEN 0 AND 9`,
+    ),
+    check(
+      'UploadSession_partIntent_check',
+      sql`${table.partIntent} <> 'GALLERY'`,
+    ),
     index('UploadSession_creatorId_status_idx').on(
       table.creatorId,
       table.status,
@@ -1350,6 +1373,10 @@ export const fileSyncProgress = pgTable(
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     batchId: uuid().notNull(),
+    // Outbound logical identity. Nullable for inbound federation rows, whose source message payload
+    // already owns item identity. A repeated digest may therefore occupy multiple outbound positions.
+    partId: uuid(),
+    position: integer(),
     digest: varchar({ length: 64 }).notNull(),
     direction: fileSyncDirection().notNull(),
     kind: fileSyncKind().notNull(),
@@ -1367,12 +1394,18 @@ export const fileSyncProgress = pgTable(
     updatedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    // Phase 7: outbound-only per-file display payload, used by the barrier-promote to assemble message
-    // content without re-deriving metadata from CAS. Always null for inbound rows.
+    // Outbound: per-file display payload used by barrier promotion. Inbound: the authorized S2S fetch
+    // route persisted by global /missed so crash/quota recovery never depends on mutable relationships.
     payload: jsonb(),
   },
   (table) => [
-    uniqueIndex('FileSyncProgress_batchId_digest_key').on(
+    uniqueIndex('FileSyncProgress_batchId_partId_key')
+      .on(table.batchId, table.partId)
+      .where(sql`${table.partId} IS NOT NULL`),
+    uniqueIndex('FileSyncProgress_batchId_position_key')
+      .on(table.batchId, table.position)
+      .where(sql`${table.position} IS NOT NULL`),
+    index('FileSyncProgress_batchId_digest_idx').on(
       table.batchId,
       table.digest,
     ),
@@ -1380,6 +1413,14 @@ export const fileSyncProgress = pgTable(
     index('FileSyncProgress_status_updatedAt_idx').on(
       table.status,
       table.updatedAt,
+    ),
+    check(
+      'FileSyncProgress_position_check',
+      sql`${table.position} IS NULL OR ${table.position} BETWEEN 0 AND 9`,
+    ),
+    check(
+      'FileSyncProgress_outbound_part_check',
+      sql`${table.direction} <> 'OUTBOUND' OR (${table.partId} IS NOT NULL AND ${table.position} IS NOT NULL)`,
     ),
   ],
 );

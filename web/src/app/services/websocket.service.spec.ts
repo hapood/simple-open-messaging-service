@@ -1,7 +1,12 @@
 import { TestBed } from '@angular/core/testing';
-import { ApplicationRef, provideZonelessChangeDetection, signal } from '@angular/core';
+import {
+  ApplicationRef,
+  provideZonelessChangeDetection,
+  signal,
+} from '@angular/core';
 import { WebsocketService } from './websocket.service';
 import { AuthService } from './auth.service';
+import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
 /**
  * WebsocketService unit tests — the countdown-clock + state plumbing of the realtime facade.
@@ -30,8 +35,12 @@ class FakeWorker {
   constructor(_url: unknown, _opts?: unknown) {
     liveWorker = this;
   }
-  postMessage(_msg: unknown): void { /* captured: the transport posts `start`/`retry-now`/`stop` here */ }
-  terminate(): void { /* no-op */ }
+  postMessage(_msg: unknown): void {
+    /* captured: the transport posts `start`/`retry-now`/`stop` here */
+  }
+  terminate(): void {
+    /* no-op */
+  }
   /** Push a worker→main message the way `sw.postMessage` would deliver it on the real worker. */
   emit(msg: unknown): void {
     this.onmessage?.({ data: msg });
@@ -50,6 +59,7 @@ function flush(ms = 0): Promise<void> {
 
 describe('WebsocketService (reconnect countdown clock)', () => {
   let ws: WebsocketService;
+  let deletionLock: ThreadDeletionLockService;
 
   beforeEach(() => {
     realWorker = globalThis.Worker;
@@ -59,10 +69,14 @@ describe('WebsocketService (reconnect countdown clock)', () => {
       providers: [
         provideZonelessChangeDetection(),
         WebsocketService,
-        { provide: AuthService, useValue: { loggedIn: signal(true), isLoggedIn: () => true } },
+        {
+          provide: AuthService,
+          useValue: { loggedIn: signal(true), isLoggedIn: () => true },
+        },
       ],
     });
     ws = TestBed.inject(WebsocketService);
+    deletionLock = TestBed.inject(ThreadDeletionLockService);
     // Flush the ctor's apiOrigin effect's first (no-op) run so it can't fire during a test.
     TestBed.inject(ApplicationRef).tick();
   });
@@ -120,5 +134,57 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(ws.reconnectIn()).toBeNull();
     liveWorker!.emit({ type: 'reconnect-in', ms: 0 });
     expect(ws.reconnectIn()).toBeNull();
+  });
+
+  it('defers thread revisions behind a deletion lock and releases only the highest watermark', () => {
+    const received: number[] = [];
+    ws.eventSubject.subscribe((message) =>
+      received.push(
+        (message.data as { threadRevision: number }).threadRevision,
+      ),
+    );
+    deletionLock.begin(7);
+
+    for (const threadRevision of [6, 9, 8]) {
+      liveWorker!.emit({
+        type: 'event',
+        payload: {
+          event: 'THREAD_REVISION_UPDATED',
+          status: 0,
+          message: '',
+          data: { threadRevision },
+        },
+      });
+    }
+    expect(received).toEqual([]);
+
+    deletionLock.end(7);
+
+    expect(received).toEqual([9]);
+  });
+
+  it('keeps a deferred revision until every deletion lock has been released', () => {
+    const received: number[] = [];
+    ws.eventSubject.subscribe((message) =>
+      received.push(
+        (message.data as { threadRevision: number }).threadRevision,
+      ),
+    );
+    deletionLock.begin(7);
+    deletionLock.begin(8);
+    liveWorker!.emit({
+      type: 'event',
+      payload: {
+        event: 'THREAD_REVISION_UPDATED',
+        status: 0,
+        message: '',
+        data: { threadRevision: 9 },
+      },
+    });
+
+    deletionLock.end(7);
+    expect(received).toEqual([]);
+    deletionLock.end(8);
+    expect(received).toEqual([9]);
   });
 });

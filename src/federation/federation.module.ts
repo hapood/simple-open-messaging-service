@@ -5,7 +5,6 @@ import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
-import { FederationBufferService } from './federation-buffer.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sInitController } from './s2s-init.controller.js';
@@ -22,6 +21,8 @@ import { FederationCursorService } from './federation-cursor.service.js';
 import { FederationInitService } from './federation-init.service.js';
 import { FederationMissedService } from './federation-missed.service.js';
 import { FederationMissedPullService } from './federation-missed-pull.service.js';
+import { FederationDownloadScheduler } from './federation-download-scheduler.js';
+import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -55,25 +56,27 @@ import { FederationMissedPullService } from './federation-missed-pull.service.js
     DiscoveryService,
     S2sVerifyService,
     FederationService,
-    FederationBufferService,
     FederationReconnectService,
     FederationIdentityService,
     FederationCursorService,
     FederationInitService,
     FederationMissedService,
     FederationMissedPullService,
+    FederationDownloadScheduler,
+    FederationDownloadRecoveryService,
   ],
   exports: [
     KeypairService,
     SignatureService,
     DiscoveryService,
     FederationService,
-    FederationBufferService,
     FederationIdentityService,
     FederationCursorService,
     FederationInitService,
     FederationMissedService,
     FederationMissedPullService,
+    FederationDownloadScheduler,
+    FederationDownloadRecoveryService,
   ],
 })
 export class FederationModule {}

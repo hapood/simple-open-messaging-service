@@ -19,7 +19,9 @@ describe('DiscoveryChangeService', () => {
   const service = new DiscoveryChangeService();
 
   beforeAll(async () => {
-    mod = await Test.createTestingModule({ imports: [DatabaseModule] }).compile();
+    mod = await Test.createTestingModule({
+      imports: [DatabaseModule],
+    }).compile();
     database = mod.get(DatabaseService);
   });
 
@@ -76,9 +78,11 @@ describe('DiscoveryChangeService', () => {
   it('allocates gapless per-target change ids under concurrent transactions', async () => {
     const { messages } = await fixture();
     await Promise.all(
-      messages.slice(0, 2).map(({ id }) =>
-        database.db.transaction((tx) => service.recordMessageInTx(tx, id)),
-      ),
+      messages
+        .slice(0, 2)
+        .map(({ id }) =>
+          database.db.transaction((tx) => service.recordMessageInTx(tx, id)),
+        ),
     );
 
     const targets = await database.db
@@ -129,6 +133,26 @@ describe('DiscoveryChangeService', () => {
     );
   });
 
+  it('does not reflect an inbound message to its source domain', async () => {
+    const { alice, messages } = await fixture();
+    const result = await database.db.transaction((tx) =>
+      service.recordMessageInTx(tx, messages[0].id, ['peer.test']),
+    );
+
+    expect(result).toEqual([
+      {
+        targetDomain: 'local',
+        localUserId: alice.id,
+        allocatedThrough: 1n,
+      },
+    ]);
+    expect(
+      await database.db.query.discoveryTarget.findFirst({
+        where: eq(discoveryTarget.targetDomain, 'peer.test'),
+      }),
+    ).toBeUndefined();
+  });
+
   it('stops changes after revocation and resumes from a reinserted current audience', async () => {
     const { alice, thread, messages } = await fixture();
     await database.db.transaction((tx) =>
@@ -146,7 +170,14 @@ describe('DiscoveryChangeService', () => {
       .select()
       .from(discoveryChange)
       .where(eq(discoveryChange.targetId, localTarget!.id));
-    expect(revokedChanges).toEqual([]);
+    // Revocation stops future allocation but does not rewrite the immutable feed history. The FK is
+    // cleared because the audience row is gone; cursor advancement may still scan this old change.
+    expect(revokedChanges).toHaveLength(1);
+    expect(revokedChanges[0]).toMatchObject({
+      changeId: 1n,
+      audienceId: null,
+      messageId: messages[0].id,
+    });
 
     const revokedResult = await database.db.transaction((tx) =>
       service.recordMessageInTx(tx, messages[1].id),

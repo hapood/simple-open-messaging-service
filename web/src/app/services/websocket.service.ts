@@ -99,7 +99,23 @@ export class WebsocketService implements OnDestroy {
           ?.threadId;
         if (threadId !== undefined && this.deletionLock.has(threadId)) return;
         if (m.event === 'THREAD_REVISION_UPDATED' && this.deletionLock.any) {
-          this.deferredRevision = m;
+          const nextRevision = (
+            m.data as { threadRevision?: number } | undefined
+          )?.threadRevision;
+          const deferredRevision = (
+            this.deferredRevision?.data as
+              | { threadRevision?: number }
+              | undefined
+          )?.threadRevision;
+          // A bridge/reconnect may deliver an older frame after a newer one. Keep the highest watermark so
+          // releasing the deletion lock can never regress the thread-list's deferred catch-up target.
+          if (
+            this.deferredRevision === undefined ||
+            deferredRevision === undefined ||
+            (nextRevision !== undefined && nextRevision > deferredRevision)
+          ) {
+            this.deferredRevision = m;
+          }
           return;
         }
         // Dev-only: trace every realtime business event, so signal reception is visible under `ng serve`.

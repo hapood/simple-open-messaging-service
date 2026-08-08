@@ -100,15 +100,19 @@ export class MediaRowComponent {
     });
   }
 
-  private readonly layout = computed(() =>
-    layoutAlbum(this.data().images ?? []),
-  );
+  private readonly displayedImages = computed(() => {
+    const images = this.data().images ?? [];
+    if (this.data().contentType !== 'GALLERY') return images;
+    const cover = images.find((image) => image.kind === 'image') ?? images[0];
+    return cover ? [cover] : [];
+  });
+  private readonly layout = computed(() => layoutAlbum(this.displayedImages()));
   readonly totalH = computed(() => this.layout().totalH);
   readonly containerW = computed(() => this.layout().containerW);
 
   /** Per-cell render data. `kind` drives the inner content branch (background-image / <video> / placeholder). */
   readonly cells = computed(() => {
-    const imgs = this.data().images ?? [];
+    const imgs = this.displayedImages();
     const failed = this.unplayableVideos();
     const thr = this.threshold();
     this.downloads.tasks();
@@ -138,6 +142,7 @@ export class MediaRowComponent {
               : assetUrl(''),
         thumbnail,
         duration: m?.duration,
+        name: m?.name,
         unplayable: kind === 'video' && failed.has(i),
         // Federated media localize status is message-level (all cells share it). Non-media defaults ready.
         status: this.data().mediaStatus ?? MEDIA_STATUS.READY,
@@ -195,6 +200,15 @@ export class MediaRowComponent {
    *  size gate). Audio owns its interaction inside AudioPlayerComponent. */
   async onCellClick(i: number): Promise<void> {
     const cell = this.cells()[i];
+    if (cell.kind === 'file') {
+      const all = this.data().images ?? [];
+      const displayed = this.displayedImages()[i];
+      this.openImage.emit({
+        images: all,
+        index: Math.max(0, all.indexOf(displayed)),
+      });
+      return;
+    }
     if (cell.kind === 'video') {
       // Even a card whose first-frame probe failed must remain openable: the detail viewer gives the
       // user a precise playback error plus retry/download actions.
@@ -210,7 +224,12 @@ export class MediaRowComponent {
       return;
     }
     if (cell.kind !== 'image') return;
-    this.openImage.emit({ images: this.data().images ?? [], index: i });
+    const all = this.data().images ?? [];
+    const displayed = this.displayedImages()[i];
+    this.openImage.emit({
+      images: all,
+      index: Math.max(0, all.indexOf(displayed)),
+    });
   }
 
   onImageLoad(index: number): void {

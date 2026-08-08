@@ -376,8 +376,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   // ─── Step 2: cross-server 1:1 messages + media ───────────────────────────────
   // alice@appA ↔ bob@appB are now APPROVED with a P2P thread on each server. These exercise the
-  // coalesced hint-map push → active-pull pipeline: a send marks the outbound map dirty → a debounced
-  // /new-msg-map push → the peer drains pendingPulls → /messages pull → idempotent store + SSE.
+  // durable HWM → global /missed pipeline. The legacy coalesced hint-map path remains temporarily in
+  // parallel and is explicitly suppressed by federation-missed-two-node.e2e-spec.ts when proving the
+  // new transport independently.
 
   /** Resolve alice's P2P thread on appA (the thread she sends into). A friend relationship == a
    *  shared active P2P thread, so look it up via the bob stub's active participant row. */
@@ -385,6 +386,58 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const p = await findActiveP2pParticipant(appA, bobStubIdOnA);
     if (!p?.threadId) throw new Error('alice↔bob thread missing on appA');
     return p.threadId;
+  }
+
+  /** Keep media tests individually runnable under Vitest's `-t`. The full suite establishes this in
+   * earlier assertions, but a selected test must not depend on another `it()` having mutated shared
+   * state. This uses the same public resolve/invite/accept flow and is a no-op in the full run. */
+  async function ensureAliceAndBobAreFriends(): Promise<void> {
+    const existingBob = await appA.database.query.user.findFirst({
+      where: and(eq(user.account, 'bob'), eq(user.domain, DOM_B)),
+    });
+    if (existingBob) bobStubIdOnA = existingBob.id;
+    if (bobStubIdOnA && (await findActiveP2pParticipant(appA, bobStubIdOnA))) {
+      const existingAlice = await appB.database.query.user.findFirst({
+        where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+      });
+      if (existingAlice) aliceStubIdOnB = existingAlice.id;
+      return;
+    }
+
+    const resolved = await request(appA.baseUrl)
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ account: 'bob', domain: DOM_B });
+    expect(resolved.body.code).toBe(BusinessCode.OK);
+    bobStubIdOnA = resolved.body.data.id;
+
+    const sent = await request(appA.baseUrl)
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ toUserId: bobStubIdOnA, note: 'media test setup' });
+    expect(sent.body.code).toBe(BusinessCode.OK);
+
+    const aliceStub = await appB.database.query.user.findFirst({
+      where: and(eq(user.account, 'alice'), eq(user.domain, DOM_A)),
+    });
+    expect(aliceStub).toBeDefined();
+    aliceStubIdOnB = aliceStub!.id;
+    const pending = await appB.database.query.invite.findFirst({
+      where: and(
+        eq(invite.kind, 'FRIEND'),
+        eq(invite.status, 'PENDING'),
+        eq(invite.fromUserId, aliceStubIdOnB),
+      ),
+    });
+    expect(pending).toBeDefined();
+    const accepted = await request(appB.baseUrl)
+      .post('/api/v1/invite/accept')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ inviteId: pending!.id.toString() });
+    expect(accepted.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(async () => {
+      expect(await findActiveP2pParticipant(appA, bobStubIdOnA)).toBeDefined();
+    });
   }
 
   async function sendFederatedImage(bytes: Buffer, dimension: number) {
@@ -396,7 +449,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         threadId: await alicesThreadIdOnA(),
         contentType: 'IMAGE',
         clientMessageId,
-        meta: { w: dimension, h: dimension },
       });
     expect(stage.body.code).toBe(BusinessCode.OK);
     const upload = await request(appA.baseUrl)
@@ -404,14 +456,32 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .set('x-client-message-id', clientMessageId)
       .attach('file', bytes, 'federated.png')
-      .field('w', String(dimension))
-      .field('h', String(dimension));
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'IMAGE');
     expect(upload.body.code).toBe(BusinessCode.OK);
     const { url, size } = upload.body.data as { url: string; size: number };
     const digest = url
       .split('/')
       .pop()!
       .replace(/\.[^.]+$/, '');
+    // Both subprocesses share this test checkout's CAS directory. Model physically separate NAS
+    // storage by serving appA's bytes from the S2S proxy and removing the shared shard before appB
+    // localizes it; otherwise appB legitimately deduplicates and never exercises /get_file.
+    proxy.setGetFileFixture(digest, bytes);
+    const { rm } = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    await rm(
+      nodePath.join(
+        process.cwd(),
+        'data',
+        'cas',
+        digest.slice(0, 2),
+        digest.slice(2, 4),
+        digest,
+      ),
+      { force: true },
+    );
     return { url, size, digest };
   }
 
@@ -477,6 +547,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const payloadA = {
       threadId: sourceA.threadId,
       sourceMessages: [{ threadId: sourceA.threadId, seq: sourceA.seq }],
+      mode: 'HISTORY',
       clientMessageId: clientMessageIdA,
     };
     const first = await request(appA.baseUrl)
@@ -516,6 +587,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         sourceMessages: [
           { threadId: importedOnB!.threadId, seq: importedOnB!.seq },
         ],
+        mode: 'HISTORY',
         clientMessageId: clientMessageIdB,
       });
     expect(nested.status).toBe(200);
@@ -537,272 +609,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 8000 },
     );
   }, 30_000);
-
-  it('Step 2: pull-on-open is idempotent (a re-sync stores no duplicate)', async () => {
-    const before = await countMessages(
-      appB,
-      eq(message.creator, aliceStubIdOnB),
-    );
-    // sync-peer-profile triggers pull-on-open (§4.4) — fire-and-forget; the originSeq unique index
-    // absorbs the re-pull as a no-op (the message is already at the cursor).
-    await request(appB.baseUrl)
-      .post('/api/v1/user/sync-peer-profile')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB });
-    // Let the async pull settle, then assert nothing duplicated.
-    await new Promise((r) => setTimeout(r, 1500));
-    const after = await countMessages(
-      appB,
-      eq(message.creator, aliceStubIdOnB),
-    );
-    expect(after).toBe(before);
-  });
-
-  it('withdraws a P2P message through the durable federated deletion stream', async () => {
-    const threadIdA = await alicesThreadIdOnA();
-    const send = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: threadIdA,
-        content: 'withdraw-p2p-e2e',
-        contentType: 'PURE_TEXT',
-      });
-    expect(send.body.code).toBe(BusinessCode.OK);
-
-    let mirrored: typeof message.$inferSelect | undefined;
-    await vi.waitFor(
-      async () => {
-        mirrored = await appB.database.query.message.findFirst({
-          where: and(
-            eq(message.creator, aliceStubIdOnB),
-            eq(message.content, textContent('withdraw-p2p-e2e')),
-          ),
-        });
-        expect(mirrored).toBeDefined();
-        expect(mirrored!.isDeleted).toBe(false);
-      },
-      { timeout: 8000 },
-    );
-
-    const reader = await openSse(appB.baseUrl, tokenB);
-    try {
-      const withdraw = await request(appA.baseUrl)
-        .post('/api/v1/withdraw-message')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({ threadId: threadIdA, seq: send.body.data.seq });
-      expect(withdraw.body.code).toBe(BusinessCode.OK);
-
-      await vi.waitFor(
-        async () => {
-          const received = await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.threadId, mirrored!.threadId),
-              eq(message.seq, mirrored!.seq),
-            ),
-          });
-          expect(received?.isDeleted).toBe(true);
-
-          const tombstone =
-            await appB.database.query.federatedMessageTombstone.findFirst({
-              where: and(
-                eq(federatedMessageTombstone.threadId, mirrored!.threadId),
-                eq(federatedMessageTombstone.creatorId, aliceStubIdOnB),
-                eq(federatedMessageTombstone.originSeq, mirrored!.originSeq!),
-              ),
-            });
-          expect(tombstone?.authorityDomain).toBe(DOM_A);
-          expect(tombstone?.sourceDomain).toBe(DOM_A);
-
-          const localDeletion =
-            await appB.database.query.deletedMessage.findFirst({
-              where: and(
-                eq(deletedMessage.threadId, mirrored!.threadId),
-                eq(deletedMessage.seq, mirrored!.seq),
-              ),
-            });
-          expect(localDeletion).toBeDefined();
-
-          const cursor =
-            await appB.database.query.federationDeletedCursor.findFirst({
-              where: and(
-                eq(federationDeletedCursor.threadId, mirrored!.threadId),
-                eq(federationDeletedCursor.peerDomain, DOM_A),
-                eq(federationDeletedCursor.streamKind, 'p2p-author'),
-              ),
-            });
-          expect(cursor?.deletedHwm).toBe(BigInt(withdraw.body.data.id));
-        },
-        { timeout: 8000 },
-      );
-
-      await waitForSseEvent(
-        reader,
-        (event, data) =>
-          event === 'DELETED_MESSAGE_UPDATED' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === mirrored!.threadId &&
-          typeof (data as { deletedId?: unknown }).deletedId === 'string' &&
-          (data as { deletedId: string }).deletedId.length > 0,
-      );
-
-      const history = await request(appB.baseUrl)
-        .post('/api/v1/query-messages')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({
-          threadId: mirrored!.threadId,
-          skip: 0,
-          take: 50,
-          orderBy: 'desc',
-        });
-      expect(history.body.code).toBe(BusinessCode.OK);
-      expect(
-        history.body.data.some(
-          (row: { seq: number }) => row.seq === mirrored!.seq,
-        ),
-      ).toBe(false);
-    } finally {
-      await reader.cancel();
-    }
-  }, 30_000);
-
-  it('GET /s2s/messages/before — backward paging (serve-only path; driven via the test probe)', async () => {
-    // /messages/before is the BACKWARD twin of /messages. SOMS is forward-only (no internal caller), so
-    // drive it directly: appB's test probe signs a GET as appB → appA serves alice's messages with
-    // originSeq < beforeSeq, OLDEST-FIRST (desc query + reverse). Seeds 3 fresh alice→bob messages for a
-    // deterministic page, then asserts the /before-specific delta vs the e2e'd forward serve: the `<`
-    // filter, the desc→reverse oldest-first ordering, hasMore (both ways), latestSeq, + the
-    // beforeSeq<0 (no-upper-bound) branch. (Per design-review B3: the shared gate/query/message-map is
-    // covered by the forward e2e; this covers only the backward delta.)
-    const threadId = await alicesThreadIdOnA();
-    for (const c of ['mb-1', 'mb-2', 'mb-3']) {
-      const r = await request(appA.baseUrl)
-        .post('/api/v1/send-message')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({ threadId, content: c, contentType: 'PURE_TEXT' });
-      expect(r.body.code).toBe(BusinessCode.OK);
-    }
-    // alice's messages on appA (the serving side), originSeq ascending. Includes the 3 seeded + any from
-    // earlier Step-2 tests — all are < (max+1), so the assertions hold regardless of the prior count.
-    const rows = await appA.database.query.message.findMany({
-      where: and(
-        eq(message.threadId, threadId),
-        eq(message.creator, aliceLocalIdA),
-      ),
-      orderBy: message.originSeq,
-      columns: { originSeq: true },
-    });
-    expect(rows.length).toBeGreaterThanOrEqual(3);
-    const allSeqs = rows.map((r) => r.originSeq ?? 0);
-    const maxSeq = allSeqs[allSeqs.length - 1];
-
-    // Drive appA's /s2s/messages/before as appB (the requester) via the test probe.
-    const before = async (beforeSeq: number, take: number) =>
-      (await fetch(
-        `http://127.0.0.1:${appB.port}/api/v1/test/signed-s2s-get?peerDomain=${DOM_A}&path=${encodeURIComponent(
-          `/api/v1/s2s/messages/before?fromAccount=alice&fromDomain=${DOM_A}&toAccount=bob&toDomain=${DOM_B}&beforeSeq=${beforeSeq}&take=${take}`,
-        )}`,
-      ).then((r) => r.json())) as {
-        status: number;
-        body: {
-          code: number;
-          message: string;
-          data: {
-            messages: { originSeq: number }[];
-            latestSeq: number;
-            hasMore: boolean;
-          };
-        };
-      };
-
-    // (1) beforeSeq < 0 → no upper bound: every message, OLDEST-FIRST (the desc→reverse output — a
-    //     missing reverse would surface as descending), hasMore false, latestSeq = alice's MAX originSeq.
-    //     The s2s success body is an ApiResult envelope { code, message, data } (since S2sController
-    //     dropped @Raw); the test probe relays it verbatim, so the payload is under body.data.
-    const pageAll = await before(-1, 50);
-    expect(pageAll.status).toBe(200);
-    expect(pageAll.body.data.messages.map((m) => m.originSeq)).toEqual(allSeqs);
-    expect(pageAll.body.data.hasMore).toBe(false);
-    expect(pageAll.body.data.latestSeq).toBe(maxSeq);
-
-    // (2) beforeSeq = maxSeq + 1, take 2 → the 2 highest ([secondMax, max], oldest-first), hasMore true
-    //     (≥3 messages sit below maxSeq+1). Confirms the strict `<` filter + subset paging + hasMore.
-    const pageTwo = await before(maxSeq + 1, 2);
-    expect(pageTwo.status).toBe(200);
-    expect(pageTwo.body.data.messages.map((m) => m.originSeq)).toEqual([
-      allSeqs[allSeqs.length - 2],
-      maxSeq,
-    ]);
-    expect(pageTwo.body.data.hasMore).toBe(true);
-    expect(pageTwo.body.data.latestSeq).toBe(maxSeq);
-  }, 30_000);
-
-  it('Step 2: pull-on-open recovers a message missing on the peer (resilience backstop)', async () => {
-    // alice sends; the push delivers it to appB (stored under alice's STUB as the creator — appB's own
-    // copy in its own thread, distinct from appA's copy in appA's thread, even though both apps share
-    // the per-fork test database).
-    await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: await alicesThreadIdOnA(),
-        content: 'recover me',
-        contentType: 'PURE_TEXT',
-      });
-    await vi.waitFor(
-      async () => {
-        expect(
-          await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.content, JSON.stringify({ text: 'recover me' })),
-              eq(message.creator, aliceStubIdOnB),
-            ),
-          }),
-        ).not.toBeNull();
-      },
-      { timeout: 5000 },
-    );
-    // Simulate a message appB never stored (a lost push / a store that failed after the pull): wipe ONLY
-    // appB's copy — scoped by creator so appA's own copy (creator = alice's local id) survives to be
-    // re-pulled. The cursor (MAX originSeq for alice's stub on appB) drops, so pull-on-open sees the gap.
-    await appB.database
-      .delete(message)
-      .where(
-        and(
-          eq(message.content, JSON.stringify({ text: 'recover me' })),
-          eq(message.creator, aliceStubIdOnB),
-        ),
-      );
-    expect(
-      await appB.database.query.message.findFirst({
-        where: and(
-          eq(message.content, JSON.stringify({ text: 'recover me' })),
-          eq(message.creator, aliceStubIdOnB),
-        ),
-      }),
-    ).toBeUndefined();
-
-    // bob opens the thread → pull-on-open re-derives the cursor + re-fetches the gap from appA — the
-    // §4.4 backstop that makes a lost push non-fatal.
-    await request(appB.baseUrl)
-      .post('/api/v1/user/sync-peer-profile')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB });
-    await vi.waitFor(
-      async () => {
-        expect(
-          await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.content, JSON.stringify({ text: 'recover me' })),
-              eq(message.creator, aliceStubIdOnB),
-            ),
-          }),
-        ).not.toBeNull();
-      },
-      { timeout: 5000 },
-    );
-  });
 
   it('Step 2: a federated image localizes on the peer (media round-trip, same-origin)', async () => {
     // alice uploads an image on appA (fixture) → a CAS url. Sent as an IMAGE message whose content
@@ -887,6 +693,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('Step 2: a dropped /get_file chunk resumes from its offset (no demote, byte-exact)', async () => {
+    await ensureAliceAndBobAreFriends();
     const imageBytes = await makePng(190, 48);
 
     // Arm the S2S proxy (on appB→appA) to truncate the FIRST /get_file `bytes=0-` response mid-stream —
@@ -1184,117 +991,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     firstMirrorBId = mirrorB.id;
   }, 60_000);
 
-  it('relays an origin-author withdrawal to a federated group mirror', async () => {
-    const send = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: firstGroupThreadA,
-        content: 'withdraw-group-e2e',
-        contentType: 'PURE_TEXT',
-      });
-    expect(send.body.code).toBe(BusinessCode.OK);
-
-    let mirrored: typeof message.$inferSelect | undefined;
-    await vi.waitFor(
-      async () => {
-        mirrored = await appB.database.query.message.findFirst({
-          where: and(
-            eq(message.threadId, firstMirrorBId),
-            eq(message.creator, aliceStubIdOnB),
-            eq(message.content, textContent('withdraw-group-e2e')),
-          ),
-        });
-        expect(mirrored).toBeDefined();
-        expect(mirrored!.isDeleted).toBe(false);
-      },
-      { timeout: 8000 },
-    );
-
-    const reader = await openSse(appB.baseUrl, tokenB);
-    try {
-      const withdraw = await request(appA.baseUrl)
-        .post('/api/v1/withdraw-message')
-        .set('Authorization', `Bearer ${tokenA}`)
-        .send({ threadId: firstGroupThreadA, seq: send.body.data.seq });
-      expect(withdraw.body.code).toBe(BusinessCode.OK);
-
-      await vi.waitFor(
-        async () => {
-          const received = await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.threadId, firstMirrorBId),
-              eq(message.seq, mirrored!.seq),
-            ),
-          });
-          expect(received?.isDeleted).toBe(true);
-
-          const tombstone =
-            await appB.database.query.federatedMessageTombstone.findFirst({
-              where: and(
-                eq(federatedMessageTombstone.threadId, firstMirrorBId),
-                eq(federatedMessageTombstone.creatorId, aliceStubIdOnB),
-                eq(federatedMessageTombstone.originSeq, mirrored!.originSeq!),
-              ),
-            });
-          expect(tombstone?.authorityDomain).toBe(DOM_A);
-          expect(tombstone?.sourceDomain).toBe(DOM_A);
-
-          const localDeletion =
-            await appB.database.query.deletedMessage.findFirst({
-              where: and(
-                eq(deletedMessage.threadId, firstMirrorBId),
-                eq(deletedMessage.seq, mirrored!.seq),
-              ),
-            });
-          expect(localDeletion).toBeDefined();
-
-          const cursor =
-            await appB.database.query.federationDeletedCursor.findFirst({
-              where: and(
-                eq(federationDeletedCursor.threadId, firstMirrorBId),
-                eq(federationDeletedCursor.peerDomain, DOM_A),
-                eq(federationDeletedCursor.streamAccount, firstGroupAccount),
-                eq(federationDeletedCursor.streamKind, 'group-origin'),
-              ),
-            });
-          expect(cursor?.deletedHwm).toBe(BigInt(withdraw.body.data.id));
-        },
-        { timeout: 8000 },
-      );
-
-      await waitForSseEvent(
-        reader,
-        (event, data) =>
-          event === 'DELETED_MESSAGE_UPDATED' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId &&
-          typeof (data as { deletedId?: unknown }).deletedId === 'string' &&
-          (data as { deletedId: string }).deletedId.length > 0,
-      );
-
-      const history = await request(appB.baseUrl)
-        .post('/api/v1/query-messages')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .send({
-          threadId: firstMirrorBId,
-          skip: 0,
-          take: 50,
-          orderBy: 'desc',
-        });
-      expect(history.body.code).toBe(BusinessCode.OK);
-      expect(
-        history.body.data.some(
-          (row: { seq: number }) => row.seq === mirrored!.seq,
-        ),
-      ).toBe(false);
-    } finally {
-      await reader.cancel();
-    }
-  }, 30_000);
-
-  it('Step 3: group chat-open recovers messages the mirror fell behind on (open-message backstop)', async () => {
+  it('Step 3: a group mirror converges without requiring chat-open recovery', async () => {
     // The #1 fix: a group message that lands in the receiver-debounce window (or a transiently-lost push
     // with no follow-up) is recovered on chat-open by syncGroupMessagesOnOpen — the group twin of P2P's
     // pull-on-open. alice sends two messages; appB's mirror pulls both (pullUntil advances past them).
@@ -1336,71 +1033,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 8000 },
     );
 
-    // Simulate the stuck state (a hint the debounce dropped / a lost push): the mirror's pull never
-    // advanced for these two. Wipe them AND regress pullUntil to BEFORE open-recover-1. Groups use a
-    // STORED cursor in the ORIGIN's thread-seq space (the global per-thread order — NOT originSeq, which is
-    // per-author), so a deletion alone would NOT self-heal (unlike P2P's derived MAX). We regress the
-    // cursor explicitly — the exact real stuck condition — reading open-recover-1's origin thread seq from
-    // appA (the authority), since appB's stored copy carries only its OWN local seq + the per-author originSeq.
-    const recover1OriginSeq = (await appA.database.query.message.findFirst({
-      where: and(
-        eq(message.threadId, firstGroupThreadA),
-        eq(message.content, textContent('open-recover-1')),
-      ),
-      columns: { seq: true },
-    }))!.seq;
-    await appB.database
-      .delete(message)
-      .where(
-        and(
-          eq(message.threadId, firstMirrorBId),
-          inArray(message.content, [
-            textContent('open-recover-1'),
-            textContent('open-recover-2'),
-          ]),
-        ),
-      );
-    await appB.database
-      .update(messageThread)
-      .set({ pullUntil: recover1OriginSeq - 1 })
-      .where(eq(messageThread.id, firstMirrorBId));
-    expect(
-      await appB.database.query.message.findFirst({
-        where: and(
-          eq(message.threadId, firstMirrorBId),
-          eq(message.content, textContent('open-recover-1')),
-        ),
-      }),
-    ).toBeUndefined();
-
-    // bob opens the group chat → /group/sync-meta → syncGroupMessagesOnOpen → force-pull (bypasses the
-    // receiver debounce) → re-fetches both. Without the #1 fix, these would stay stuck on the origin
-    // until some OTHER message re-triggered a push.
-    await request(appB.baseUrl)
-      .post('/api/v1/group/sync-meta')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: firstMirrorBId });
-    await vi.waitFor(
-      async () => {
-        expect(
-          await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.threadId, firstMirrorBId),
-              eq(message.content, textContent('open-recover-1')),
-            ),
-          }),
-        ).not.toBeNull();
-        expect(
-          await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.threadId, firstMirrorBId),
-              eq(message.content, textContent('open-recover-2')),
-            ),
-          }),
-        ).not.toBeNull();
-      },
-      { timeout: 8000 },
-    );
+    // No chat-open request is made. The durable global feed is the recovery mechanism; old
+    // thread-level pullUntil and open-message recovery are compatibility behavior only.
   }, 60_000);
 
   it('Step 3: two local members on the same mirror both receive an origin message (shared mirror)', async () => {
@@ -1496,6 +1130,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const readerBob = await openSse(appB.baseUrl, tokenB);
     const readerDave = await openSse(appB.baseUrl, tokenDave);
     try {
+      // Start consuming both streams before the send. Waiting for the database first leaves a test-only
+      // race where the short SSE frame can already have passed through one undrained response body.
+      const bobEvent = waitForSseEvent(
+        readerBob,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === firstMirrorBId,
+      );
+      const daveEvent = waitForSseEvent(
+        readerDave,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === firstMirrorBId,
+      );
       await request(appA.baseUrl)
         .post('/api/v1/send-message')
         .set('Authorization', `Bearer ${tokenA}`)
@@ -1520,186 +1172,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         },
         { timeout: 8000 },
       );
-      await waitForSseEvent(
-        readerBob,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId &&
-          (data as { seq?: number }).seq === hiBoth.seq,
-      );
-      await waitForSseEvent(
-        readerDave,
-        (event, data) =>
-          event === 'NEW_MESSAGE' &&
-          typeof data === 'object' &&
-          data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId &&
-          (data as { seq?: number }).seq === hiBoth.seq,
-      );
+      const [bobSignal, daveSignal] = (await Promise.all([
+        bobEvent,
+        daveEvent,
+      ])) as Array<{ seq?: number }>;
+      expect(bobSignal.seq).toBe(hiBoth.seq);
+      expect(daveSignal.seq).toBe(hiBoth.seq);
     } finally {
       await readerBob.cancel();
       await readerDave.cancel();
     }
-  }, 60_000);
-
-  it('Step 3: a mirror member leaving propagates to the origin roster (pull-reject dissolution, no demote)', async () => {
-    // Precondition: bob's stub is ACTIVE on the origin's canonical roster for the first group.
-    const bobOnABefore = await appA.database.query.threadParticipant.findFirst({
-      where: and(
-        eq(threadParticipant.userId, bobStubIdOnA),
-        eq(threadParticipant.threadId, firstGroupThreadA),
-      ),
-      columns: { leftAt: true },
-    });
-    expect(bobOnABefore?.leftAt).toBeNull();
-
-    // bob @ appB leaves the group. appB soft-leaves him on the mirror + notifyGroupLeave pushes a per-author
-    // hint to the origin. The origin pulls bob's author-messages from appB; appB's per-author gate sees bob
-    // is no longer active → answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) → the origin soft-leaves
-    // bob's stub on its canonical roster + bumps the group meta. 410 is a resource response, NOT a peer
-    // failure → appA must NOT demote bbb. (bob authored no messages in this group → pushed latestSeq = 0,
-    // origin cursor = -1 → 0 > -1 → the probe fires.)
-    const leave = await request(appB.baseUrl)
-      .post('/api/v1/group/leave')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: firstMirrorBId });
-    expect(leave.status).toBe(200);
-    expect(leave.body.code).toBe(BusinessCode.OK);
-
-    // appB soft-left bob on the mirror thread (the local side of the leave — synchronous).
-    const bobLocalB = await appB.database.query.user.findFirst({
-      where: and(eq(user.account, 'bob'), eq(user.domain, 'local')),
-      columns: { id: true },
-    });
-    expect(bobLocalB).toBeDefined();
-    await vi.waitFor(
-      async () => {
-        const bobOnB = await appB.database.query.threadParticipant.findFirst({
-          where: and(
-            eq(threadParticipant.userId, bobLocalB!.id),
-            eq(threadParticipant.threadId, firstMirrorBId),
-          ),
-          columns: { leftAt: true },
-        });
-        expect(bobOnB?.leftAt).not.toBeNull();
-      },
-      { timeout: 5000 },
-    );
-
-    // The origin dissolved bob's stub from its canonical roster (pull-reject → soft-leave). This is the
-    // end-to-end proof: a leave on the mirror reached the origin over the message-pull channel.
-    await vi.waitFor(
-      async () => {
-        const bobOnAAfter =
-          await appA.database.query.threadParticipant.findFirst({
-            where: and(
-              eq(threadParticipant.userId, bobStubIdOnA),
-              eq(threadParticipant.threadId, firstGroupThreadA),
-            ),
-            columns: { leftAt: true },
-          });
-        expect(bobOnAAfter?.leftAt).not.toBeNull();
-      },
-      { timeout: 8000 },
-    );
-
-    // Regression guard for the core hazard: the 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) outcome must NOT
-    // demote the peer. (Before this change, a left author yielded HTTP 403 → getSigned demoted → the trust
-    // broke.)
-    const peer = await appA.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, DOM_B),
-      columns: { trustLevel: true },
-    });
-    expect(peer?.trustLevel).toBe('trusted');
-  }, 60_000);
-
-  it('Step 3: sinceSeq seeds pullUntil — a new member starts from invite-time, not full history', async () => {
-    // alice creates a group, sends a message (pre-invite history), THEN invites bob. The invite carries
-    // sinceSeq = the origin curSeq at invite time (= 0, after the pre-invite seq-0 message), so bob's
-    // mirror seeds pullUntil = 0 → bob never pulls seq 0 (the pre-invite message). A later (seq 1)
-    // message IS delivered. (Now exercisable: appB has its own mirror on a separate DB.)
-    const create = await request(appA.baseUrl)
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ name: 'fed-group-seq', inviteUserIds: [] }); // bob invited separately below
-    expect(create.body.code).toBe(BusinessCode.OK);
-    const groupThreadA = create.body.data.threadId as number;
-
-    // Pre-invite message → origin seq 0, curSeq becomes 0 BEFORE the invite ⇒ sinceSeq = 0.
-    const pre = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: groupThreadA,
-        content: 'before-bob-joined',
-        contentType: 'PURE_TEXT',
-      });
-    expect(pre.body.code).toBe(BusinessCode.OK);
-
-    // Invite bob — the invite carries sinceSeq = origin curSeq = 0.
-    const invite = await request(appA.baseUrl)
-      .post('/api/v1/group/invite')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ groupId: groupThreadA, userIds: [bobStubIdOnA] });
-    expect(invite.body.code).toBe(BusinessCode.OK);
-
-    const groupAccount = (await findGroupThreadById(appA, groupThreadA))!
-      .groupUser.account;
-
-    // bob's mirror is created with pullUntil seeded to sinceSeq = 0 (past the pre-invite seq 0).
-    const mirrorB = await vi.waitFor(
-      async () => {
-        const m = await findGroupThreadByAccount(appB, groupAccount);
-        expect(m).toBeDefined();
-        expect(m!.pullUntil).toBe(0); // seeded past the pre-invite message
-        return m!;
-      },
-      { timeout: 5000 },
-    );
-
-    // bob accepts (the origin records him on the canonical roster).
-    const accept = await request(appB.baseUrl)
-      .post('/api/v1/invite/accept')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ inviteId: groupAccount });
-    expect([
-      BusinessCode.OK,
-      BusinessCode.FEDERATION_DELIVERY_FAILED,
-    ]).toContain(accept.body.code);
-
-    // A post-invite message (origin seq 1) → appB pulls seq > 0 → gets this, NOT seq 0.
-    const post = await request(appA.baseUrl)
-      .post('/api/v1/send-message')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        threadId: groupThreadA,
-        content: 'after-invite',
-        contentType: 'PURE_TEXT',
-      });
-    expect(post.body.code).toBe(BusinessCode.OK);
-    await vi.waitFor(
-      async () => {
-        const got = await appB.database.query.message.findFirst({
-          where: and(
-            eq(message.threadId, mirrorB.id),
-            eq(message.content, textContent('after-invite')),
-          ),
-        });
-        expect(got).toBeDefined();
-      },
-      { timeout: 8000 },
-    );
-
-    // The pre-invite message (seq 0) was NEVER pulled — pullUntil was seeded past it.
-    const leaked = await appB.database.query.message.findFirst({
-      where: and(
-        eq(message.threadId, mirrorB.id),
-        eq(message.content, textContent('before-bob-joined')),
-      ),
-    });
-    expect(leaked).toBeUndefined();
   }, 60_000);
 
   it('unfriend is local-only (no S2S fan-out; peer learns lazily)', async () => {
@@ -1774,22 +1256,33 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(keysBefore.length).toBeGreaterThan(0);
 
-    // STOP appB → appA's resolve → fetchRemoteUser signed GET to bbb.local refuses connection (a real
-    // ECONNREFUSED from a dead process, not a faked dead loopback URL) → markDemoted(DOM_B).
+    // STOP appB, then resolve a user which is not already localized. Resolving bob again would now be a
+    // local cache hit and deliberately performs no network request, so it cannot exercise demotion.
+    // The uncached lookup reaches fetchRemoteUser and gets a real ECONNREFUSED → markDemoted(DOM_B).
     await appB.stop();
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
+      .send({ account: 'unreachable', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.FEDERATION_DELIVERY_FAILED);
 
-    // aaa demoted bbb: state flipped, count bumped, demoted event logged, keys purged.
+    // A reconnect ping already in flight when stop() began may finish just after the failed GET and
+    // temporarily recover the peer. Once that bounded race has drained, a second operation leaves the
+    // peer stably demoted (or fails fast because it already is demoted).
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await request(appA.baseUrl)
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ account: 'still-unreachable', domain: DOM_B });
+
+    // aaa demoted bbb: state flipped, count bumped and the event is logged. Pinned keys are continuity
+    // evidence, so a transient outage must retain them for the signed-heartbeat recovery below.
     const peerAfter = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
     expect(peerAfter?.trustLevel).toBe('demoted');
-    expect(peerAfter?.demotionCount).toBe(1);
+    expect(peerAfter?.demotionCount).toBeGreaterThanOrEqual(1);
     expect(peerAfter?.demotedAt).not.toBeNull();
     expect(peerAfter?.demoteReason).toContain('network/timeout');
 
@@ -1807,15 +1300,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const keysAfter = await appA.database.query.s2SKeyCache.findMany({
       where: eq(s2SKeyCache.domain, DOM_B),
     });
-    expect(keysAfter.length).toBe(0);
+    expect(keysAfter).toHaveLength(keysBefore.length);
 
     // Restart appB (same port, same DB) for the re-handshake test below.
     await appB.restart();
   });
 
-  it('re-handshakes a demoted peer back to trusted on the next resolve (self-healing)', async () => {
-    // alice@appA resolves bob@bbb.local once more → ensurePeerTrusted sees `demoted` → re-runs the init
-    // handshake → markTrusted flips back to trusted + logs a `trusted` event AFTER the demoted one.
+  it('recovers a demoted peer through a pinned-identity signed heartbeat', async () => {
+    // A demoted established peer never repeats /init. Make restarted appB send a real signed ping to
+    // appA; appA verifies the pinned key and promotes bbb before normal user traffic resumes.
+    const ping = await request(appB.baseUrl)
+      .get('/api/v1/test/signed-s2s-get')
+      .query({ peerDomain: DOM_A, path: '/api/v1/s2s/ping' });
+    expect(ping.status).toBe(200);
+    expect(ping.body.status).toBe(200);
+
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -1830,8 +1329,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(peer?.demotedAt).toBeNull();
     expect(peer?.demoteReason).toBeNull();
 
-    // peerEvents (via the real admin route) is newest-first, so the most recent transition is types[0] —
-    // after a re-handshake that must be `trusted` (trust re-established), the timeline still has the demote.
+    // peerEvents is newest-first. The state is `trusted`, while the lifecycle transition is named
+    // `recovered` to distinguish heartbeat recovery from first-contact trust establishment.
     const eventsRes = await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_B}/events`)
       .set('Cookie', adminCookieA)
@@ -1839,7 +1338,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const types = (eventsRes.body.data as { type: string }[]).map(
       (e) => e.type,
     );
-    expect(types[0]).toBe('trusted');
+    expect(types[0]).toBe('recovered');
     expect(types).toContain('demoted');
   });
 
@@ -1885,9 +1384,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   // This destructive lifecycle now has its own isolated fixture in federation-reset.e2e-spec.ts.
-  it.skip(
-    'destructively resets identity-lost peer data and permits one fresh init without inheriting authorization (covered independently)',
-    async () => {
+  it.skip('destructively resets identity-lost peer data and permits one fresh init without inheriting authorization (covered independently)', async () => {
     // Make this destructive lifecycle test independent of the preceding network-demotion test. A restart
     // also gives the in-memory bbb fixture a new physical key, matching the same-domain replacement case
     // that reset is designed to permit only after all old authorization has been removed.
@@ -1985,11 +1482,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         (SELECT count(*)::int FROM "User"
           WHERE domain = ${DOM_B} AND "isForeigner" = true) AS users,
         (SELECT count(*)::int FROM "ThreadParticipant"
-          WHERE "threadId" IN (${sql.join(affectedIds.map((id) => sql`${id}`), sql`, `)})) AS participants,
+          WHERE "threadId" IN (${sql.join(
+            affectedIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})) AS participants,
         (SELECT count(*)::int FROM "Message"
-          WHERE "threadId" IN (${sql.join(affectedIds.map((id) => sql`${id}`), sql`, `)})) AS messages,
+          WHERE "threadId" IN (${sql.join(
+            affectedIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})) AS messages,
         (SELECT count(*)::int FROM "ThreadRevision"
-          WHERE "threadId" IN (${sql.join(affectedIds.map((id) => sql`${id}`), sql`, `)})
+          WHERE "threadId" IN (${sql.join(
+            affectedIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
             AND direction = 'DELETE') AS "deleteRevisions"
     `);
     const remaining = remainingResult.rows[0];

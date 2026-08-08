@@ -7,19 +7,42 @@ export type PendingSendResource =
   | {
       type: 'web-attachment';
       file: File;
-      mediaKind: 'image' | 'file' | 'video';
+      partId: string;
+      mediaKind: 'image' | 'file' | 'video' | 'audio';
     }
   | {
       type: 'native-attachment';
       selection: NativeUploadSelection;
+      partId: string;
       release: () => void;
       discard: () => void;
     }
   | {
       type: 'voice';
       file: File;
+      partId: string;
       duration: number;
       previewUrl: string;
+    }
+  | {
+      type: 'web-gallery';
+      parts: readonly {
+        file: File;
+        partId: string;
+        position: number;
+        intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
+      }[];
+      previewUrls: readonly string[];
+    }
+  | {
+      type: 'native-gallery';
+      parts: readonly {
+        selection: NativeUploadSelection;
+        partId: string;
+        position: number;
+      }[];
+      release: () => void;
+      discard: () => void;
     };
 
 /**
@@ -51,10 +74,7 @@ export class ThreadSendOutbox {
     return this.nextPlaceholderId--;
   }
 
-  retainResource(
-    clientMessageId: string,
-    resource: PendingSendResource,
-  ): void {
+  retainResource(clientMessageId: string, resource: PendingSendResource): void {
     this.releaseResource(clientMessageId, true);
     this.resources.set(clientMessageId, resource);
   }
@@ -73,6 +93,13 @@ export class ThreadSendOutbox {
       else resource.release();
     }
     if (resource.type === 'voice') URL.revokeObjectURL(resource.previewUrl);
+    if (resource.type === 'web-gallery') {
+      for (const url of resource.previewUrls) URL.revokeObjectURL(url);
+    }
+    if (resource.type === 'native-gallery') {
+      if (discard) resource.discard();
+      else resource.release();
+    }
   }
 
   /** Drop the empty thread bucket once all optimistic sends have been confirmed or discarded. */

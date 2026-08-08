@@ -23,6 +23,8 @@ export const RESUMABLE_CHUNK_SIZE = 4 * 1024 * 1024;
 interface UploadSessionView {
   uploadId: string;
   clientMessageId: string;
+  partId: string;
+  position: number;
   originalName: string;
   mimeType: string;
   totalBytes: number;
@@ -61,6 +63,18 @@ export class ResumableUploadService {
         'media send is not pending',
       );
     }
+    const expectedMessageType =
+      stage.fileCnt === 1 ? dto.intent : ContentType.GALLERY;
+    if (
+      stage.contentType !== expectedMessageType ||
+      dto.position >= stage.fileCnt ||
+      (stage.fileCnt === 1 && dto.position !== 0)
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'upload part does not match the staged message',
+      );
+    }
     // Phase 7 type-agnostic: accept any staged media contentType (IMAGE/FILE/VIDEO/AUDIO/GALLERY).
     // The per-type size caps are dropped in favor of the global multipart ceiling (MAX_VIDEO_BYTES)
     // plus the per-account byte quota asserted below.
@@ -70,12 +84,6 @@ export class ResumableUploadService {
         'file too large',
       );
     }
-    // Charge the full file cnt + total size at session init (the claim point); chunk appends never
-    // re-charge. Type-agnostic — media family no longer affects quota.
-    await this.quota.assertCanSend(userId);
-    await this.quota.preCheckFile(userId, 1, BigInt(dto.totalBytes));
-    await this.quota.tickLax(userId, 'files');
-    await this.quota.tickFileBytes(userId, BigInt(dto.totalBytes));
     const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
     if (!originalName) {
       throw new BusinessException(
@@ -84,12 +92,17 @@ export class ResumableUploadService {
       );
     }
     const existing = await this.database.db.query.uploadSession.findFirst({
-      where: eq(uploadSession.clientMessageId, dto.clientMessageId),
+      where: and(
+        eq(uploadSession.clientMessageId, dto.clientMessageId),
+        eq(uploadSession.partId, dto.partId),
+      ),
     });
     if (existing) {
       if (
         existing.creatorId !== userId ||
         existing.contentType !== stage.contentType ||
+        existing.position !== dto.position ||
+        existing.partIntent !== dto.intent ||
         existing.originalName !== originalName ||
         existing.mimeType !== dto.mimeType ||
         existing.totalBytes !== BigInt(dto.totalBytes)
@@ -101,19 +114,47 @@ export class ResumableUploadService {
       }
       return this.view(existing);
     }
-    const [created] = await this.database.db
-      .insert(uploadSession)
-      .values({
-        clientMessageId: dto.clientMessageId,
-        creatorId: userId,
-        contentType: stage.contentType,
-        originalName,
-        mimeType: dto.mimeType || 'application/octet-stream',
-        totalBytes: BigInt(dto.totalBytes),
-      })
-      .onConflictDoNothing({ target: uploadSession.clientMessageId })
-      .returning();
-    if (!created) return this.init(userId, dto);
+    // Session creation is the quota claim point. Only the transaction that inserts this logical part
+    // charges it; an init retry observes the existing row above and is free. The position unique key
+    // also prevents two partIds from claiming the same gallery slot.
+    await this.quota.assertCanSend(userId);
+    const created = await this.database.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(uploadSession)
+        .values({
+          clientMessageId: dto.clientMessageId,
+          partId: dto.partId,
+          position: dto.position,
+          partIntent: dto.intent,
+          creatorId: userId,
+          contentType: stage.contentType,
+          originalName,
+          mimeType: dto.mimeType || 'application/octet-stream',
+          totalBytes: BigInt(dto.totalBytes),
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (!row) return null;
+      await this.quota.preCheckFile(userId, 1, BigInt(dto.totalBytes), tx);
+      await this.quota.tickLax(userId, 'files', tx);
+      await this.quota.tickFileBytes(userId, BigInt(dto.totalBytes), tx);
+      return row;
+    });
+    if (!created) {
+      const winner = await this.database.db.query.uploadSession.findFirst({
+        where: and(
+          eq(uploadSession.clientMessageId, dto.clientMessageId),
+          eq(uploadSession.position, dto.position),
+        ),
+      });
+      if (winner?.partId !== dto.partId) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'upload position is already assigned to another part',
+        );
+      }
+      return this.init(userId, dto);
+    }
     await mkdir(this.tmpDir, { recursive: true });
     return this.view(created);
   }
@@ -219,12 +260,9 @@ export class ResumableUploadService {
           .where(eq(uploadSession.id, session.id));
         const published = await this.upload.publishResumable(
           path,
-          session.contentType as ContentType,
+          session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
           session.originalName,
           session.mimeType,
-          // Resumable sessions do not yet carry client-probed w/h/duration (the DTO has no fields for
-          // them); the buffered /upload path does. assembleOutboundContent defaults missing dims to 0.
-          {},
         );
         stored = {
           payload: published.payload,
@@ -248,6 +286,8 @@ export class ResumableUploadService {
       // it (the win-guard makes a concurrent/race re-complete a no-op) — only then fire the fan-out.
       const result = await this.messages.markOutboundFileSucceeded(
         session.clientMessageId,
+        session.partId,
+        session.position,
         stored.payload!.digest,
         stored.payload!,
         userId,
@@ -345,6 +385,8 @@ export class ResumableUploadService {
     return {
       uploadId: session.uploadId,
       clientMessageId: session.clientMessageId,
+      partId: session.partId,
+      position: session.position,
       originalName: session.originalName,
       mimeType: session.mimeType,
       totalBytes: Number(session.totalBytes),

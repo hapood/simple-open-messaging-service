@@ -520,6 +520,14 @@ export class InviteService {
           GroupRole.MEMBER,
         );
         await tx
+          .insert(threadAudience)
+          .values({
+            targetDomain: 'local',
+            localUserId: byUserId,
+            threadId: inviteRow.threadId,
+          })
+          .onConflictDoNothing();
+        await tx
           .update(invite)
           .set({ status: InviteStatus.ACCEPTED, updatedAt: new Date() })
           .where(eq(invite.id, id));
@@ -533,6 +541,16 @@ export class InviteService {
           .limit(1);
         const groupAccount = thread?.account ?? null;
         const groupDomain = thread?.domain ?? null;
+        if (groupDomain && groupDomain !== 'local') {
+          await tx
+            .insert(threadAudience)
+            .values({
+              targetDomain: groupDomain,
+              localUserId: null,
+              threadId: inviteRow.threadId,
+            })
+            .onConflictDoNothing();
+        }
         return {
           kind: 'GROUP',
           threadId: inviteRow.threadId,

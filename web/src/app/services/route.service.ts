@@ -154,7 +154,7 @@ export interface PopupResult {
   [PopupType.EDIT_PROFILE]: boolean;
   // cropped File on Save; undefined on Cancel/back.
   [PopupType.AVATAR_EDITOR]: { file: File } | undefined;
-  // true on confirm; undefined on cancel / system-back (treated identically by the caller).
+  // true on confirm; false on the explicit secondary button; undefined on backdrop/system-back.
   [PopupType.CONFIRM]:
     | boolean
     | { confirmed: true; checked: boolean }

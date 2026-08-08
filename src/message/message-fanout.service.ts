@@ -85,9 +85,8 @@ export class MessageFanoutService {
       threadId,
       message.seq,
     );
-    // Federation Step 2: if the thread has a foreign (federated) participant, mark the conversation
-    // dirty — a debounced /new-msg-map push tells the peer to pull. No-op for local-only threads.
-    // message.originSeq is always set on a fresh locally-authored insert.
+    // Wake every authorized peer with the latest durable discovery HWM. The body remains pull-only via
+    // the peer-global /missed feed; this notification is ephemeral and safe to lose.
     if (message.originSeq != null) {
       void this.federation.notifyOnSend(
         senderUserId,

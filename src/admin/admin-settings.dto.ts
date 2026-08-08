@@ -1,12 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsInt,
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 /** Generate a fresh VAPID keypair server-side. The private key is never returned to the browser (write-only);
  *  only publicKey + subject come back. subject is optional and defaults to a mailto: contact. */
 export class GenerateVapidDto {
   @ApiPropertyOptional({
     example: 'mailto:admin@example.com',
-    description: 'Contact URL (mailto: or https:); optional — defaults to mailto:noreply@soms.local',
+    description:
+      'Contact URL (mailto: or https:); optional — defaults to mailto:noreply@soms.local',
   })
   @IsOptional()
   @IsString()
@@ -16,12 +25,18 @@ export class GenerateVapidDto {
 /** Save (paste) an existing VAPID keypair — used to migrate keys without forcing browsers to re-subscribe.
  *  Validated before persisting (the keypair must be a genuine P-256 pair; see SettingsService.validateVapid). */
 export class SaveVapidDto {
-  @ApiProperty({ example: 'mailto:admin@example.com', description: 'Contact URL (mailto: or https:)' })
+  @ApiProperty({
+    example: 'mailto:admin@example.com',
+    description: 'Contact URL (mailto: or https:)',
+  })
   @IsString()
   @IsNotEmpty()
   subject!: string;
 
-  @ApiProperty({ description: 'Base64url uncompressed P-256 public key (65 bytes, leading 0x04)' })
+  @ApiProperty({
+    description:
+      'Base64url uncompressed P-256 public key (65 bytes, leading 0x04)',
+  })
   @IsString()
   @IsNotEmpty()
   publicKey!: string;
@@ -46,4 +61,22 @@ export class OtpTtlDto {
   @Min(1)
   @Max(1440)
   ttlMinutes!: number;
+}
+
+export class FederationDownloadLimitsDto {
+  @ApiProperty({ example: 10, minimum: 1, maximum: 100 })
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  global!: number;
+
+  @ApiProperty({ example: 2, minimum: 1, maximum: 100 })
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  perPeer!: number;
+
+  @ApiProperty({ example: false, default: false })
+  @IsBoolean()
+  chunkDigestEnabled!: boolean;
 }

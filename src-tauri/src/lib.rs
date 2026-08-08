@@ -2921,8 +2921,11 @@ fn merge_cached_hello(
     };
     match event {
         "THREAD_REVISION_UPDATED" => {
-            if let Some(rev) = data.get("threadRevision") {
-                obj.insert("threadRevision".to_string(), rev.clone());
+            if let Some(inc) = data.get("threadRevision").and_then(|v| v.as_i64()) {
+                let cur = obj.get("threadRevision").and_then(|v| v.as_i64());
+                if cur.is_none_or(|c| inc >= c) {
+                    obj.insert("threadRevision".to_string(), serde_json::Value::from(inc));
+                }
             }
         }
         "PROFILE_REV_UPDATED" => {

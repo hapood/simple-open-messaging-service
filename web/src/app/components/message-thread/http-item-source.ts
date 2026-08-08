@@ -639,6 +639,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       } else if (m.contentType === 'AUDIO') {
         const a = parseAudioContent(m.content);
         if (a) images = [{ ...a, msgId: id, status: m.mediaStatus }];
+      } else if (m.contentType === 'GALLERY') {
+        images = parseGalleryContent(m.content).map((media) => ({
+          ...media,
+          msgId: id,
+          status: m.mediaStatus,
+        }));
       }
       // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
       const file: FileInfo | null =
@@ -903,6 +909,38 @@ function parseAudioContent(content: string): AlbumImage | null {
     };
   } catch {
     return null;
+  }
+}
+
+/** GALLERY is one atomic message containing ordered, server-derived per-part metadata. Files share
+ * the stable album grid with media so mixed selections remain one selectable/retryable message. */
+function parseGalleryContent(content: string): AlbumImage[] {
+  try {
+    const parsed = JSON.parse(content) as { items?: unknown };
+    if (!Array.isArray(parsed.items)) return [];
+    return parsed.items.flatMap((value): AlbumImage[] => {
+      if (typeof value !== 'object' || value === null) return [];
+      const item = value as Record<string, unknown>;
+      const family = String(item['kind'] ?? '').toLowerCase();
+      if (!['image', 'video', 'audio', 'file'].includes(family)) return [];
+      const src = String(item['url'] ?? '');
+      if (!src) return [];
+      return [
+        {
+          kind: family as AlbumImage['kind'],
+          src,
+          w: family === 'audio' ? VOICE_BAR_W : Number(item['w']) || 0,
+          h: family === 'audio' ? VOICE_BAR_H : Number(item['h']) || 0,
+          size: Number(item['size']) || 0,
+          duration: Number(item['duration']) || 0,
+          name: typeof item['name'] === 'string' ? item['name'] : '',
+          mimeType:
+            typeof item['mimeType'] === 'string' ? item['mimeType'] : undefined,
+        },
+      ];
+    });
+  } catch {
+    return [];
   }
 }
 

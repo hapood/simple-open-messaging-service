@@ -24,6 +24,7 @@ export class DiscoveryChangeService {
   async recordMessageInTx(
     tx: DatabaseTransaction,
     messageId: bigint,
+    excludeTargetDomains: readonly string[] = [],
   ): Promise<DiscoveryHwm[]> {
     const [messageRow] = await tx
       .select({ threadId: message.threadId, creator: message.creator })
@@ -66,7 +67,11 @@ export class DiscoveryChangeService {
     // deleted. There is still exactly one change per target/message.
     const selectedAudiences: typeof audiences = [];
     const selectedTargets = new Set<string>();
+    const excludedDomains = new Set(excludeTargetDomains);
     for (const audience of audiences) {
+      // An inbound federated message must never be reflected to the server it was fetched from. Local
+      // recipients and any other authorized group audiences still receive their own change.
+      if (excludedDomains.has(audience.targetDomain)) continue;
       const key = `${audience.targetDomain}\u0000${audience.localUserId ?? ''}`;
       if (selectedTargets.has(key)) continue;
       selectedTargets.add(key);

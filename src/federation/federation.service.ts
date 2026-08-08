@@ -62,10 +62,6 @@ import { ThreadRevisionService } from '../thread-revision/thread-revision.servic
 import { derivePreview, MessageService } from '../message/message.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
 import {
-  FederationBufferService,
-  type NewMsgMapEntry,
-} from './federation-buffer.service.js';
-import {
   extractDigestEntries,
   extractDigests,
 } from '../upload/file-content.js';
@@ -85,6 +81,9 @@ import {
 import { FederationCursorService } from './federation-cursor.service.js';
 import { FederationInitService } from './federation-init.service.js';
 import type { FederationMissedPage } from './federation-missed.service.js';
+import { FederationDownloadScheduler } from './federation-download-scheduler.js';
+import type { FederationMissedPullService } from './federation-missed-pull.service.js';
+import { DiscoveryChangeService } from '../message/discovery-change.service.js';
 
 /**
  * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
@@ -135,6 +134,22 @@ interface FederatedForwardCard {
   summaryLines: string[];
   messageCount: number;
   assetCount: number;
+}
+
+interface MissedPageEffect {
+  kind: 'message' | 'pending';
+  threadId: number;
+  creatorId: number;
+  originSeq: number;
+  recipients: number[];
+  toAccount: string;
+  author: S2SAddress;
+  batchId?: string;
+  message?: Message;
+  deletionId?: string;
+  restored: Array<{ userId: number; revision: number }>;
+  forwardClosure?: ForwardWireClosure;
+  remoteForwardBundleId?: string;
 }
 
 interface S2SDeletedMessage {
@@ -262,6 +277,34 @@ export interface S2SCallFrame extends S2SOpsBase {
   startedAt?: number;
 }
 
+function parseInboundDownloadAuth(
+  value: unknown,
+): { fromAccount: string; fromDomain: string; toAccount: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const auth = value as Record<string, unknown>;
+  if (
+    typeof auth.fromAccount !== 'string' ||
+    typeof auth.fromDomain !== 'string' ||
+    typeof auth.toAccount !== 'string' ||
+    !auth.fromAccount ||
+    !auth.fromDomain ||
+    !auth.toAccount
+  ) {
+    return;
+  }
+  return {
+    fromAccount: auth.fromAccount,
+    fromDomain: auth.fromDomain,
+    toAccount: auth.toAccount,
+  };
+}
+
+class FederationDownloadTerminatedError extends Error {
+  constructor() {
+    super('federation download task was terminated');
+  }
+}
+
 /**
  * Outbound S2S: SYNCHRONOUS inline delivery. Each send* method builds a payload, signs it
  * (SignatureService), and POSTs it to the peer's friend-op endpoint (DiscoveryService resolves the
@@ -289,12 +332,6 @@ export interface S2SCallFrame extends S2SOpsBase {
 export class FederationService implements OnModuleDestroy {
   private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationService.name);
-  /** Debounce window for outbound hint flushes (a burst collapses to one push). */
-  private static readonly FLUSH_DEBOUNCE_MS = 500;
-  /** Entries per push request (each ~100 B → ~100 KB, under the 1 MiB body limit). */
-  private static readonly FLUSH_BATCH = 1000;
-  /** One debounced flush timer per dest domain (cleared in onModuleDestroy). */
-  private readonly flushTimers = new Map<string, NodeJS.Timeout>();
   /** Receiver-side debounce window: a group thread pulled within this skips a redundant whole-thread GET. */
   private static readonly GROUP_PULL_DEBOUNCE_MS = 500;
   /** Per-group-thread last pull timestamp (the receiver debounce on pullGroupWhole). */
@@ -313,11 +350,6 @@ export class FederationService implements OnModuleDestroy {
     private readonly invite: InviteService,
     private readonly sse: SseService,
     private readonly threadRevisionService: ThreadRevisionService,
-    // ONE-WAY Fed → Buffer: the buffer is now PURE STORAGE (markDirty/snapshot/flushBatch); this class owns
-    // signalOutbound + the debounce timer + flushDomain. The old two-way edge was a forwardRef cycle whose
-    // `design:paramtypes` value references crashed ESM boot ("Cannot access 'FederationBufferService' before
-    // initialization") — breaking it is what lets `node dist/src/main.js` start.
-    private readonly buffer: FederationBufferService,
     private readonly quota: QuotaService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
@@ -330,6 +362,8 @@ export class FederationService implements OnModuleDestroy {
     private readonly federationIdentity: FederationIdentityService,
     private readonly federationCursor: FederationCursorService,
     private readonly federationInit: FederationInitService,
+    private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly discoveryChanges: DiscoveryChangeService = new DiscoveryChangeService(),
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -342,12 +376,7 @@ export class FederationService implements OnModuleDestroy {
     return this.config.domain;
   }
 
-  // ─── outbound hint routing + debounced flush (owns what used to live in FederationBufferService) ────
-  //
-  // This class is the single owner of the outbound side: it ROUTES a new message to the right dest
-  // domains (signalOutbound), WRITES the dirty hint to the pure-storage buffer, SCHEDULES a debounced
-  // flush per domain, and FLUSHES over its own signed transport (pushNewMsgMap). The buffer holds no
-  // timers + no back-reference here — a one-way Fed → Buffer edge (no cycle, no ESM TDZ).
+  // ─── durable discovery wake-up routing ─────────────────────────────────────
 
   /** Hook for the local-send path (MessageController.sendMessage) + the pulled path (storePulledMessage):
    *  after a message lands, route the outbound hint. Best-effort — never throws into the caller. */
@@ -359,9 +388,8 @@ export class FederationService implements OnModuleDestroy {
     await this.signalOutbound(threadId, senderUserId, originSeq, undefined);
   }
 
-  /** Best-effort: if a local user just left a federated GROUP MIRROR, nudge the origin so it discovers the
-   *  leave (a normal per-author hint → the origin pulls → answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) →
-   *  dissolves the leaver). No-op for a local group / when we ARE the origin. */
+  /** Best-effort wake-up after a local user leaves a federated group mirror. The durable system message
+   *  is already part of the global change feed; this method only wakes the origin. */
   async notifyGroupLeave(
     threadId: number,
     leaverUserId: number,
@@ -374,65 +402,13 @@ export class FederationService implements OnModuleDestroy {
       });
       const originDomain = trd?.user?.domain;
       if (!originDomain || originDomain === 'local') return; // origin / local group — no-op
-      const groupAccount = trd.user?.account;
-      if (!groupAccount) return;
-      const leaver = await this.database.db.query.user.findFirst({
-        where: eq(tables.user.id, leaverUserId),
-        columns: { account: true, domain: true, isForeigner: true },
-      });
-      if (!leaver) return;
-      const cursor = await this.derivedOriginSeqCursor(threadId, leaverUserId);
-      const latestSeq = Math.max(cursor + 1, 0);
-      const leaverDomain = leaver.isForeigner
-        ? leaver.domain
-        : this.config.domain;
-      // A NORMAL per-author hint (latestSeq beats the origin's derived cursor → the pull always fires).
-      // The origin pulls → this mirror answers HTTP 410 (FEDERATION_GROUP_AUTHOR_LEFT — author soft-left) → the origin
-      // softLeaveMemberAndBump's the leaver on its canonical roster. No `left` flag — the leave signal
-      // lives on the per-author pull RESPONSE (the 50010 business code), not in the hint map.
-      this.buffer.markDirty(
-        originDomain,
-        leaver.account,
-        leaverDomain,
-        groupAccount,
-        latestSeq,
-      );
-      this.scheduleFlush(originDomain);
+      void leaverUserId;
+      await this.pushDiscoveryHwm(originDomain);
     } catch (e) {
       this.logger.debug(
         `notifyGroupLeave(${threadId}) failed: ${(e as Error).message}`,
       );
     }
-  }
-
-  /** The leaver's per-author origin-seq cursor on this thread (MAX over Message ∪ PendingMedia). Used by
-   *  notifyGroupLeave so the leave hint's latestSeq beats the origin's per-author pull cursor (the origin
-   *  pulls → sees the leaver soft-left → dissolves the roster entry). */
-  private async derivedOriginSeqCursor(
-    threadId: number,
-    userId: number,
-  ): Promise<number> {
-    const [[msg], [pend]] = await Promise.all([
-      this.database.db
-        .select({ originSeq: max(tables.message.originSeq) })
-        .from(tables.message)
-        .where(
-          and(
-            eq(tables.message.threadId, threadId),
-            eq(tables.message.creator, userId),
-          ),
-        ),
-      this.database.db
-        .select({ originSeq: max(tables.pendingMedia.originSeq) })
-        .from(tables.pendingMedia)
-        .where(
-          and(
-            eq(tables.pendingMedia.threadId, threadId),
-            eq(tables.pendingMedia.creatorId, userId),
-          ),
-        ),
-    ]);
-    return Math.max(msg.originSeq ?? -1, pend.originSeq ?? -1);
   }
 
   /**
@@ -471,10 +447,6 @@ export class FederationService implements OnModuleDestroy {
       if (!trd) return;
       const author = participants.find((p) => p.userId === authorUserId);
       if (!author) return;
-      const authorDomain = author.user.isForeigner
-        ? author.user.domain
-        : this.ourDomain;
-      const authorAccount = author.user.account;
 
       const groupDomain = trd.user?.domain; // 'local' = origin; <peer> = mirror; undefined = P2P
       if (!groupDomain) {
@@ -484,21 +456,17 @@ export class FederationService implements OnModuleDestroy {
           if (p.userId === authorUserId || !p.user.isForeigner) continue;
           if (fetchedFromDomain && p.user.domain === fetchedFromDomain)
             continue;
-          this.buffer.markDirty(
-            p.user.domain,
-            authorAccount,
-            authorDomain,
-            p.user.account,
-            latestSeq,
+          void latestSeq;
+          void this.pushDiscoveryHwm(p.user.domain).catch((e) =>
+            this.logger.debug(
+              `discovery HWM push ${p.user.domain} failed: ${(e as Error).message}`,
+            ),
           );
-          this.scheduleFlush(p.user.domain);
         }
         return;
       }
       // GROUP federated. dest = (origin → all foreign member-domains; mirror → {originDomain}), minus the
       // fetch source. The `toAccount` is the group `!account` (one hint per foreign domain).
-      const groupAccount = trd.user?.account;
-      if (!groupAccount) return;
       const destDomains = new Set<string>();
       if (groupDomain === 'local') {
         for (const p of participants)
@@ -508,14 +476,11 @@ export class FederationService implements OnModuleDestroy {
       }
       if (fetchedFromDomain) destDomains.delete(fetchedFromDomain);
       for (const d of destDomains) {
-        this.buffer.markDirty(
-          d,
-          authorAccount,
-          authorDomain,
-          groupAccount,
-          latestSeq,
+        void this.pushDiscoveryHwm(d).catch((e) =>
+          this.logger.debug(
+            `discovery HWM push ${d} failed: ${(e as Error).message}`,
+          ),
         );
-        this.scheduleFlush(d);
       }
     } catch (e) {
       // Never break the caller (send/pull path) — a transient DB error just skips this notify.
@@ -525,44 +490,7 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** Schedule a debounced flush for a domain (one timer per domain; a burst collapses to one push). */
-  private scheduleFlush(domain: string): void {
-    if (this.flushTimers.has(domain)) return; // a flush is already pending
-    const t = setTimeout(() => {
-      this.flushTimers.delete(domain);
-      void this.flushDomain(domain).catch((e) =>
-        this.logger.debug(`flush ${domain} failed: ${(e as Error).message}`),
-      );
-    }, FederationService.FLUSH_DEBOUNCE_MS);
-    this.flushTimers.set(domain, t);
-  }
-
-  /**
-   * Flush ALL dirty entries for a domain to the peer, batched (FLUSH_BATCH per POST). On each batch's ack,
-   * delete those entries; on failure, keep the rest buffered (the next notifyOnSend reschedules, and the
-   * reconnect sweep retries directly). Safe to re-run — the receiver dedupes by originSeq.
-   */
-  async flushDomain(domain: string): Promise<void> {
-    for (;;) {
-      const batch = this.buffer.flushBatch(
-        domain,
-        FederationService.FLUSH_BATCH,
-      );
-      if (batch.entries.length === 0) break;
-      try {
-        await this.pushNewMsgMap(domain, batch.entries, batch.hasMore);
-        this.buffer.deleteKeys(domain, batch.keys); // acked → drop
-      } catch {
-        return; // leave the rest buffered; rescheduled on next notifyOnSend / sweep
-      }
-    }
-    this.buffer.dropDomainIfEmpty(domain);
-  }
-
-  onModuleDestroy(): void {
-    for (const t of this.flushTimers.values()) clearTimeout(t);
-    this.flushTimers.clear();
-  }
+  onModuleDestroy(): void {}
 
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
    *  The isDeleted gate matters here because S2S bypasses the token system: the local /uploads/* path is
@@ -773,7 +701,7 @@ export class FederationService implements OnModuleDestroy {
 
   /** Sign + synchronously POST an arbitrary JSON body to a peer S2S path (`${base}${path}`). The single
    *  signed-POST entry for every outbound S2S op — friend-request / friend-approve (Step 1) AND the
-   *  new-msg-map push (Step 2). Same liveness/demote wiring as getSigned. */
+   *  discovery HWM push. Same liveness/demote wiring as getSigned. */
   private async postSigned(
     path: string,
     body: string,
@@ -1315,12 +1243,26 @@ export class FederationService implements OnModuleDestroy {
       authority: url.host,
       body: '',
     });
-    const res = await fetch(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+      });
+    } catch (error) {
+      await this.markDemoted(
+        peerDomain,
+        `GET identity network/timeout: ${(error as Error).message}`,
+      );
+      throw new Error(
+        `S2S identity from ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
+      );
+    }
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403 || res.status >= 500) {
+        await this.markDemoted(peerDomain, `GET identity HTTP ${res.status}`);
+      }
       throw new Error(
         `S2S identity from ${peerDomain} rejected: HTTP ${res.status}`,
       );
@@ -1939,19 +1881,29 @@ export class FederationService implements OnModuleDestroy {
       accepter.account,
       accepter.domain,
     );
-    await this.participantService.upsertMember(
-      trd.id,
-      accepterStubId,
-      GroupRole.MEMBER,
-    );
-    // Bump the roster revision so mirrors re-pull the roster on the next chat-open (lazy meta-pull).
-    // The former bump-User.updatedAt hack is replaced by Group.rosterRev++ (identity is untouched).
-    if (trd.groupUserId != null) {
-      await this.database.db
-        .update(tables.group)
-        .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
-        .where(eq(tables.group.groupUserId, trd.groupUserId));
-    }
+    await this.database.db.transaction(async (tx) => {
+      await this.participantService.upsertMemberInTx(
+        tx,
+        trd.id,
+        accepterStubId,
+        GroupRole.MEMBER,
+      );
+      await tx
+        .insert(tables.threadAudience)
+        .values({
+          targetDomain: accepter.domain,
+          localUserId: null,
+          threadId: trd.id,
+        })
+        .onConflictDoNothing();
+      // Membership and discovery access become visible atomically.
+      if (trd.groupUserId != null) {
+        await tx
+          .update(tables.group)
+          .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
+          .where(eq(tables.group.groupUserId, trd.groupUserId));
+      }
+    });
   }
 
   // ─── roster meta-pull (lazy, on chat-open — same shape as the profile sync) ──────────
@@ -2107,44 +2059,6 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** Chat-open MESSAGE catch-up for a federated group MIRROR — the group twin of P2P's
-   *  syncMessagesWithPeerByStubId. Pulls the whole thread from the origin (force — bypass the receiver
-   *  debounce; an explicit open wants the freshest now), and storePulledMessage SSE-fans any newly-pulled
-   *  messages to local members (= the "update → SSE push" step, reused verbatim from the push path).
-   *
-   *  This is the durable recovery for a group hint dropped by the debounce, or a transiently-lost push with
-   *  no follow-up: without it, such a message sits on the origin until the NEXT message in the group
-   *  re-triggers a pull (P2P already self-heals on every open; now groups do too). No-op for the origin and
-   *  for a purely-local group — their messages are already local and were delivered via onNewMessage on
-   *  send (the "local is simple" case). Best-effort + fire-and-forget-friendly: never blocks opening; a
-   *  transient origin failure retries on the next open. */
-  async syncGroupMessagesOnOpen(threadId: number): Promise<void> {
-    const trd = await this.database.db.query.messageThread
-      .findFirst({
-        where: eq(tables.messageThread.id, threadId),
-        columns: {},
-        with: { user: { columns: { account: true, domain: true } } },
-      })
-      .then((row) => (row ? { groupUser: row.user } : null));
-    // Only a federated MIRROR pulls here (groupUser.domain is the origin's domain, not 'local'). Origin /
-    // local group: nothing to do (messages already local).
-    const gu = trd?.groupUser;
-    if (!gu || gu.domain === 'local') return;
-    try {
-      await this.pullGroupWhole(threadId, gu.domain, gu.account, true);
-    } catch (e) {
-      if (
-        e instanceof S2sResponseError &&
-        e.code === BusinessCode.GROUP_DISSOLVED &&
-        e.federationVersion !== undefined
-      ) {
-        await this.markGroupDissolved(threadId, gu.domain, e.federationVersion);
-        return;
-      }
-      // Best-effort — keep the cached thread; the next open / push retries.
-    }
-  }
-
   /** Synchronous write gate for a federated GROUP mirror. A cheap signed revision probe lets the
    * origin return GROUP_DISSOLVED before the mirror persists a new message. Local-origin groups and
    * P2P threads are no-ops; their local guards remain authoritative. */
@@ -2207,16 +2121,23 @@ export class FederationService implements OnModuleDestroy {
     }
     if (!peer.user.isForeigner) return;
     try {
-      await this.getSignedForThread(
+      const result = await this.getSignedForThread<{
+        active: boolean;
+        revision: number;
+        role: 'MEMBER' | null;
+        reason: string | null;
+      }>(
         threadId,
-        `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(peer.user.account)}` +
-          `&fromDomain=${encodeURIComponent(peer.user.domain)}` +
-          `&toAccount=${encodeURIComponent(local.user.account)}` +
-          // Message.originSeq is PostgreSQL INTEGER. Using MAX_SAFE_INTEGER here overflows the pg
-          // parameter before PostgreSQL can evaluate the comparison.
-          `&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=2147483647&take=1`,
+        `/api/v1/s2s/thread-access?localAccount=${encodeURIComponent(peer.user.account)}` +
+          `&peerAccount=${encodeURIComponent(local.user.account)}`,
         peer.user.domain,
       );
+      if (!result.data.active) {
+        throw new BusinessException(
+          BusinessCode.FRIEND_NOT_FOUND,
+          result.data.reason ?? 'not friends',
+        );
+      }
     } catch (error) {
       if (
         error instanceof S2sResponseError &&
@@ -2237,6 +2158,79 @@ export class FederationService implements OnModuleDestroy {
       }
       // Preserve offline-first behavior for transport failures. Only an authoritative business response
       // changes friendship state; the ordinary outbound hint remains retryable.
+    }
+  }
+
+  /** Serve the unified current-access query without exposing internal thread ids. */
+  async queryThreadAccess(
+    localAccount: string,
+    peerAccount: string | undefined,
+    signerDomain: string,
+  ): Promise<{
+    active: boolean;
+    revision: number;
+    role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
+    reason: string | null;
+  }> {
+    try {
+      if (!localAccount.startsWith('!')) {
+        const access = await this.resolveFriendshipThread(
+          localAccount,
+          peerAccount!,
+          signerDomain,
+        );
+        const thread = await this.database.db.query.messageThread.findFirst({
+          where: eq(tables.messageThread.id, access.threadId),
+          columns: { federationVersion: true },
+        });
+        return {
+          active: true,
+          revision: thread?.federationVersion ?? 0,
+          role: 'MEMBER',
+          reason: null,
+        };
+      }
+      const access = await this.resolveGroupThreadAccess(
+        localAccount,
+        undefined,
+        undefined,
+        signerDomain,
+      );
+      const [thread, participants] = await Promise.all([
+        this.database.db.query.messageThread.findFirst({
+          where: eq(tables.messageThread.id, access.threadId),
+          columns: { federationVersion: true },
+        }),
+        this.database.db.query.threadParticipant.findMany({
+          where: and(
+            eq(tables.threadParticipant.threadId, access.threadId),
+            isNull(tables.threadParticipant.leftAt),
+          ),
+          columns: { role: true },
+          with: {
+            user: { columns: { domain: true, isForeigner: true } },
+          },
+        }),
+      ]);
+      const participant = participants.find(
+        (item) => this.effectiveDomain(item.user) === signerDomain,
+      );
+      return {
+        active: true,
+        revision: thread?.federationVersion ?? 0,
+        role: participant?.role ?? 'MEMBER',
+        reason: null,
+      };
+    } catch (error) {
+      if (error instanceof BusinessException) {
+        return {
+          active: false,
+          revision: 0,
+          role: null,
+          reason: error.message,
+        };
+      }
+      throw error;
     }
   }
 
@@ -2654,31 +2648,6 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /**
-   * Push a batch of OUR outbound hint entries (dirty conversations) to the peer's /new-msg-map. The
-   * caller (FederationBufferService) deletes the pushed entries on success; on failure they stay
-   * buffered and the debounce / reconnect sweep retries. `origin` is carried explicitly and the
-   * receiver's guard binding-checks it === the signer domain. See §3.1.
-   */
-  async pushNewMsgMap(
-    domain: string,
-    entries: NewMsgMapEntry[],
-    hasMore: boolean,
-  ): Promise<void> {
-    await this.withTrustedPeer(domain, () =>
-      this.postSigned(
-        '/api/v1/s2s/new-msg-map',
-        JSON.stringify({
-          origin: this.config.domain,
-          entries,
-          hasMore,
-          generatedAt: Date.now(),
-        }),
-        domain,
-      ),
-    );
-  }
-
   /** Outbound signed ping (GET /api/v1/s2s/ping) — the reconnect sweep's cheap first probe
    *  (reachability + mutual-key-validity) before the heavier re-handshake. Raw getSigned (NOT
    *  withTrustedPeer): a demoted peer is pinged directly; on failure it stays demoted for the next tick. */
@@ -2741,20 +2710,525 @@ export class FederationService implements OnModuleDestroy {
     return { page, token };
   }
 
-  /** Outbound signed GET of the peer's /new-msg-map (the one-directional fallback, §4.3) — the reconnect
-   *  sweep harvests the peer's outbound hints for OUR users on recovery. Paginated by cursor. */
-  async pullPeerNewMsgMap(
+  /** Drain one peer's durable global feed. Per-page tokens/effects are kept only for the lifetime of
+   * this run; the durable cursor and staged messages remain the crash-recovery truth. */
+  pullMissedFromPeer(
+    missedPull: FederationMissedPullService,
     domain: string,
-    cursor: number,
+  ): Promise<void> {
+    const tokens = new WeakMap<FederationMissedPage, PeerResponseToken>();
+    const effects = new WeakMap<FederationMissedPage, MissedPageEffect[]>();
+    return missedPull.run(domain, {
+      fetch: async (after) => {
+        const pulled = await this.pullMissedPage(domain, after);
+        tokens.set(pulled.page, pulled.token);
+        return pulled.page;
+      },
+      apply: async (tx, page) => {
+        const token = tokens.get(page);
+        if (!token) throw new Error('missing federation response token');
+        effects.set(
+          page,
+          await this.applyMissedPageInTransaction(tx, domain, page, token),
+        );
+      },
+      afterCommit: async (page) => {
+        try {
+          await this.publishMissedPageEffects(domain, effects.get(page) ?? []);
+        } catch (error) {
+          // The page and remoteHwm are already durable. SSE is only a wake-up and pending downloads
+          // remain retryable from their database rows, so a post-commit side-effect must never stop the
+          // peer's cursor loop or cause the committed page to be requested as if it had rolled back.
+          this.logger.warn(
+            `post-commit missed effects failed for ${domain}: ${(error as Error).message}`,
+          );
+        } finally {
+          tokens.delete(page);
+          effects.delete(page);
+        }
+      },
+    });
+  }
+
+  /** Apply one global /missed page inside the caller's cursor transaction. No network-visible side
+   * effects happen here; the returned effects are published only after that transaction commits. */
+  async applyMissedPageInTransaction(
+    tx: DatabaseTransaction,
+    domain: string,
+    page: FederationMissedPage,
+    token: PeerResponseToken,
+  ): Promise<MissedPageEffect[]> {
+    await this.assertPeerResponseWritable(tx, token);
+    const effects: MissedPageEffect[] = [];
+    for (const item of page.messages) {
+      if (!Number.isSafeInteger(item.originSeq) || item.originSeq < 0) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'missed message has invalid originSeq',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const route = await this.resolveMissedThreadInTransaction(
+        tx,
+        item,
+        domain,
+      );
+      const originTime = new Date(item.createdAt);
+      if (
+        !Number.isFinite(item.createdAt) ||
+        Number.isNaN(originTime.getTime())
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'missed message has invalid createdAt',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      if (item.author.domain === this.config.domain) {
+        const localSourceMessage = await tx.query.message.findFirst({
+          where: and(
+            eq(tables.message.threadId, route.threadId),
+            eq(tables.message.creator, route.creatorId),
+            eq(tables.message.seq, item.originSeq),
+          ),
+          columns: {
+            id: true,
+            originSeq: true,
+            originServerTime: true,
+          },
+        });
+        if (localSourceMessage) {
+          if (
+            localSourceMessage.originSeq === null &&
+            localSourceMessage.originServerTime === null
+          ) {
+            await tx
+              .update(tables.message)
+              .set({
+                originSeq: item.originSeq,
+                originServerTime: originTime,
+              })
+              .where(eq(tables.message.id, localSourceMessage.id));
+          } else {
+            this.logger.error(
+              `refused to overwrite source coordinates for self-authored missed message: ` +
+                JSON.stringify({
+                  messageId: localSourceMessage.id.toString(),
+                  threadId: route.threadId,
+                  seq: item.originSeq,
+                  sourceDomain: domain,
+                  existingOriginSeq: localSourceMessage.originSeq,
+                  existingOriginServerTime:
+                    localSourceMessage.originServerTime?.toISOString() ?? null,
+                }),
+            );
+          }
+          continue;
+        }
+        this.logger.error(
+          `self-authored missed message has no matching local source message: ${JSON.stringify(
+            item,
+          )}`,
+        );
+        continue;
+      }
+      const existingMessage = await tx.query.message.findFirst({
+        where: and(
+          eq(tables.message.threadId, route.threadId),
+          eq(tables.message.creator, route.creatorId),
+          eq(tables.message.originSeq, item.originSeq),
+        ),
+        columns: { id: true },
+      });
+      const existingPending = await tx.query.pendingMedia.findFirst({
+        where: and(
+          eq(tables.pendingMedia.threadId, route.threadId),
+          eq(tables.pendingMedia.creatorId, route.creatorId),
+          eq(tables.pendingMedia.originSeq, item.originSeq),
+        ),
+        columns: { id: true },
+      });
+      if (existingMessage || existingPending) continue;
+
+      const incomingText =
+        item.contentType === ContentType.PURE_TEXT
+          ? parseTextMessageContent(item.content)
+          : null;
+      if (
+        item.contentType === ContentType.PURE_TEXT &&
+        (!incomingText ||
+          Boolean(incomingText.quote) !== Boolean(item.quoteTarget))
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid federated text quote',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      this.assertMissedAssetDescriptors(item);
+
+      let forwardCard: FederatedForwardCard | undefined;
+      let forwardClosure: ForwardWireClosure | undefined;
+      if (item.contentType === ContentType.FORWARD) {
+        try {
+          forwardCard = JSON.parse(item.content) as FederatedForwardCard;
+        } catch {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid FORWARD card JSON',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        if (
+          forwardCard.version !== 1 ||
+          typeof forwardCard.bundleId !== 'string' ||
+          !Array.isArray(forwardCard.summaryLines) ||
+          forwardCard.summaryLines.length > 3
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid FORWARD card shape',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        forwardClosure = await this.getSigned<ForwardWireClosure>(
+          `/api/v1/s2s/forward-bundles/${encodeURIComponent(forwardCard.bundleId)}`,
+          domain,
+          FORWARD_MAX_WIRE_JSON_BYTES + 64 * 1024,
+        );
+      }
+
+      const stored = await this.storePulledMessageInTransaction(tx, {
+        threadId: route.threadId,
+        creator: route.creatorId,
+        fetchedFromDomain: domain,
+        message: {
+          originSeq: item.originSeq,
+          contentType: item.contentType,
+          content: item.content,
+          ts: item.createdAt,
+          quoteTarget: item.quoteTarget,
+        },
+        expectedFederationVersion: route.federationVersion,
+        incomingText,
+        forwardCard,
+        forwardClosure,
+        originTime,
+        downloadAuth: {
+          fromAccount: item.author.account,
+          fromDomain: item.author.domain,
+          toAccount: route.toAccount,
+        },
+      });
+      if (stored.kind === 'pending') {
+        effects.push({
+          kind: 'pending',
+          threadId: route.threadId,
+          creatorId: route.creatorId,
+          originSeq: item.originSeq,
+          recipients: route.recipients,
+          toAccount: route.toAccount,
+          author: item.author,
+          batchId: stored.batchId,
+          restored: [],
+        });
+        continue;
+      }
+
+      const arrival = stored.message.createdAt;
+      await tx
+        .update(tables.messageThread)
+        .set({
+          lastMessageSeq: stored.message.seq,
+          lastMessagePreview: derivePreview(
+            item.contentType as ContentType,
+            stored.storedContent,
+          ),
+          lastMessageAt: arrival,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tables.messageThread.id, route.threadId),
+            or(
+              isNull(tables.messageThread.lastMessageAt),
+              lt(tables.messageThread.lastMessageAt, arrival),
+            ),
+          ),
+        );
+      const restored =
+        await this.threadRevisionService.restoreHiddenThreadsInTx(
+          tx,
+          route.threadId,
+          route.recipients,
+        );
+      let deletionId: string | undefined;
+      if (stored.message.isDeleted) {
+        const deletion = await tx.query.deletedMessage.findFirst({
+          where: and(
+            eq(tables.deletedMessage.threadId, route.threadId),
+            eq(tables.deletedMessage.seq, stored.message.seq),
+          ),
+          columns: { id: true },
+        });
+        deletionId = deletion?.id.toString();
+      }
+      effects.push({
+        kind: 'message',
+        threadId: route.threadId,
+        creatorId: route.creatorId,
+        originSeq: item.originSeq,
+        recipients: route.recipients,
+        toAccount: route.toAccount,
+        author: item.author,
+        message: stored.message,
+        deletionId,
+        restored,
+        forwardClosure,
+        remoteForwardBundleId: forwardCard?.bundleId,
+      });
+    }
+    return effects;
+  }
+
+  /** Publish only committed /missed work. Messages already in Message fan immediately; pending media
+   * starts its durable download and will fan from promotePendingMessage after its own commit. */
+  async publishMissedPageEffects(
+    domain: string,
+    effects: MissedPageEffect[],
+  ): Promise<void> {
+    for (const effect of effects) {
+      if (effect.kind === 'pending') {
+        void this.runFileSyncBatch(effect.batchId!, (digest, offset) =>
+          this.fetchMediaChunks(
+            domain,
+            digest,
+            effect.author.account,
+            effect.author.domain,
+            effect.toAccount,
+            effect.originSeq,
+            undefined,
+            offset,
+          ),
+        ).catch(() => undefined);
+        continue;
+      }
+      effect.restored.forEach((revision) =>
+        this.threadRevisionService.notifyThreadRevision(revision),
+      );
+      if (effect.message!.isDeleted) {
+        if (effect.deletionId) {
+          for (const userId of effect.recipients) {
+            this.sse.onDeletedMessageUpdated(
+              userId,
+              effect.threadId,
+              effect.deletionId,
+            );
+          }
+        }
+      } else {
+        for (const userId of effect.recipients) {
+          if (userId !== effect.creatorId) {
+            this.sse.onNewMessage(
+              userId,
+              effect.threadId,
+              effect.message!.seq,
+              effect.message!.createdAt.getTime(),
+            );
+          }
+        }
+      }
+      void this.signalOutbound(
+        effect.threadId,
+        effect.creatorId,
+        effect.originSeq,
+        domain,
+      ).catch(() => undefined);
+      if (
+        effect.forwardClosure &&
+        effect.remoteForwardBundleId &&
+        !effect.message!.isDeleted
+      ) {
+        await this.localizeForwardAssets(
+          effect.forwardClosure,
+          domain,
+          effect.remoteForwardBundleId,
+          await this.resolveForwardAssetAuth(effect.message!),
+        );
+      }
+    }
+  }
+
+  private assertMissedAssetDescriptors(
+    item: FederationMissedPage['messages'][number],
+  ): void {
+    const expected = new Set(extractDigests(item.content));
+    const described = new Set<string>();
+    for (const asset of item.assets) {
+      if (
+        !/^[a-f0-9]{64}$/.test(asset.digest) ||
+        !/^(0|[1-9]\d*)$/.test(asset.bytes)
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid missed asset descriptor',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (asset.status !== 'READY' || described.has(asset.digest)) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'unavailable or duplicate missed asset descriptor',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      described.add(asset.digest);
+    }
+    if (
+      expected.size !== described.size ||
+      [...expected].some((digest) => !described.has(digest))
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missed asset descriptors do not match message content',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
+
+  private async resolveMissedThreadInTransaction(
+    tx: DatabaseTransaction,
+    item: FederationMissedPage['messages'][number],
+    sourceDomain: string,
   ): Promise<{
-    entries: NewMsgMapEntry[];
-    cursor: number | null;
-    hasMore: boolean;
+    threadId: number;
+    creatorId: number;
+    federationVersion: number;
+    recipients: number[];
+    toAccount: string;
   }> {
-    return this.getSigned(
-      `/api/v1/s2s/new-msg-map?take=1000&cursor=${cursor}`,
-      domain,
-    );
+    const authorDomain =
+      item.author.domain === this.config.domain ? 'local' : item.author.domain;
+    const authorRows = await tx.execute<{ id: number }>(sql`
+      SELECT id FROM "User"
+      WHERE account = ${normalizeAccount(item.author.account)}
+        AND domain = ${authorDomain}
+      LIMIT 1
+    `);
+    const creatorId = authorRows.rows[0]?.id;
+    if (!creatorId) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missed message author is not a known thread participant',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    let threadRows: Array<{
+      threadId: number;
+      federationVersion: number;
+      toAccount: string;
+    }> = [];
+    if (item.thread.type === 'GROUP') {
+      const groupDomain =
+        item.thread.domain === this.config.domain
+          ? 'local'
+          : item.thread.domain;
+      const result = await tx.execute<{
+        threadId: number;
+        federationVersion: number;
+        toAccount: string;
+      }>(sql`
+        SELECT thread.id AS "threadId",
+               thread."federationVersion",
+               group_user.account AS "toAccount"
+        FROM "MessageThread" thread
+        JOIN "User" group_user ON group_user.id = thread."groupUserId"
+        JOIN "ThreadParticipant" author_participant
+          ON author_participant."threadId" = thread.id
+         AND author_participant."userId" = ${creatorId}
+         AND author_participant."leftAt" IS NULL
+        WHERE thread.type = 'GROUP'
+          AND thread."federationTruncated" = false
+          AND group_user.account = ${normalizeAccount(item.thread.account)}
+          AND group_user.domain = ${groupDomain}
+          AND EXISTS (
+            SELECT 1 FROM "ThreadParticipant" local_participant
+            JOIN "User" local_user ON local_user.id = local_participant."userId"
+            WHERE local_participant."threadId" = thread.id
+              AND local_participant."leftAt" IS NULL
+              AND local_user.domain = 'local'
+          )
+        LIMIT 1
+        FOR SHARE OF thread, author_participant
+      `);
+      threadRows = result.rows;
+    } else {
+      const participants = item.thread.participants;
+      const local = participants.find(
+        (participant) => participant.domain === this.config.domain,
+      );
+      if (
+        participants.length !== 2 ||
+        !local ||
+        item.author.domain === this.config.domain ||
+        sourceDomain !== item.author.domain
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid P2P missed route',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const result = await tx.execute<{
+        threadId: number;
+        federationVersion: number;
+        toAccount: string;
+      }>(sql`
+        SELECT thread.id AS "threadId",
+               thread."federationVersion",
+               local_user.account AS "toAccount"
+        FROM "MessageThread" thread
+        JOIN "ThreadParticipant" author_participant
+          ON author_participant."threadId" = thread.id
+         AND author_participant."userId" = ${creatorId}
+         AND author_participant."leftAt" IS NULL
+        JOIN "ThreadParticipant" local_participant
+          ON local_participant."threadId" = thread.id
+         AND local_participant."leftAt" IS NULL
+        JOIN "User" local_user ON local_user.id = local_participant."userId"
+        WHERE thread.type = 'P2P'
+          AND thread."federationTruncated" = false
+          AND local_user.domain = 'local'
+          AND local_user.account = ${normalizeAccount(local.account)}
+        LIMIT 1
+        FOR SHARE OF thread, author_participant, local_participant
+      `);
+      threadRows = result.rows;
+    }
+    const route = threadRows[0];
+    if (!route) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missed message has no active local thread access',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const recipientRows = await tx.execute<{ userId: number }>(sql`
+      SELECT participant."userId"
+      FROM "ThreadParticipant" participant
+      JOIN "User" member ON member.id = participant."userId"
+      WHERE participant."threadId" = ${route.threadId}
+        AND participant."leftAt" IS NULL
+        AND member.domain = 'local'
+      FOR SHARE OF participant
+    `);
+    return {
+      ...route,
+      creatorId,
+      recipients: recipientRows.rows.map((row) => row.userId),
+    };
   }
 
   /** Domains needing recovery (pending | demoted) — the reconnect sweep's work list. */
@@ -2766,258 +3240,13 @@ export class FederationService implements OnModuleDestroy {
     return rows.map((r) => r.domain);
   }
 
-  /** Trusted peer domains — the slow poll's work list (it pulls their /new-msg-map to catch lost pushes
-   *  via the one-directional fallback, §4.4). */
+  /** Trusted peers participating in startup and periodic global-HWM reconciliation. */
   async listTrustedPeerDomains(): Promise<string[]> {
     const rows = await this.database.db.query.federatedPeer.findMany({
       where: eq(tables.federatedPeer.trustLevel, 'trusted'),
       columns: { domain: true },
     });
-    return rows.map((r) => r.domain);
-  }
-
-  /**
-   * Pull-on-thread-open (§4.4): drain everything available for the conversation between a local user
-   * and a foreign stub. The restart floor for the volatile hint map — opening the chat catches up even
-   * if every push was lost (or after a process restart). Fire-and-forget (never blocks opening); one cheap
-   * GET when already current. Enqueues a MAX latestSeq hint + drains (the drain dedupes vs the local
-   * cursor, so a MAX hint pulls only the genuine gap).
-   */
-  async syncMessagesWithPeerByStubId(
-    stubUserId: number,
-    localUserId: number,
-  ): Promise<void> {
-    const [stub, local] = await Promise.all([
-      this.database.db.query.user.findFirst({
-        where: eq(tables.user.id, stubUserId),
-        columns: { account: true, domain: true, isForeigner: true },
-      }),
-      this.database.db.query.user.findFirst({
-        where: eq(tables.user.id, localUserId),
-        columns: { account: true, isForeigner: true },
-      }),
-    ]);
-    if (!stub || !stub.isForeigner || !local || local.isForeigner) return;
-    this.receiveNewMsgMapPush(stub.domain, [
-      {
-        fromAccount: stub.account,
-        fromDomain: stub.domain,
-        toAccount: local.account,
-        latestSeq: Number.MAX_SAFE_INTEGER,
-      },
-    ]);
-  }
-
-  /**
-   * Serve the SENDER's side of a 1:1 thread for a federated pull (GET /api/v1/s2s/messages). Returns
-   * messages authored by OUR local user `fromAccount` for the peer user `toAccount` (a foreign stub on
-   * signerDomain), with originSeq > `after`, ascending — the receiver stores them + advances its cursor.
-   * Pulls ONLY the sender's side (never the requester's own authored messages). Gate 2: the from↔to Friendship MUST be
-   * APPROVED (else 403 FORBIDDEN — also the lazy-unfriend signal of §9.4). Media digests are NOT
-   * surfaced separately: the receiver extracts them from `content` via the same extractDigests() helper
-   * the sender used, then fetches each via /get_file (§3.3).
-   */
-  async serveOutboundMessages(
-    fromAccount: string,
-    toAccount: string,
-    signerDomain: string,
-    after: number,
-    take: number,
-  ) {
-    const { fromId, threadId } = await this.resolveFriendshipThread(
-      fromAccount,
-      toAccount,
-      signerDomain,
-    );
-    const rows = await this.database.db.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.creator, fromId),
-        eq(tables.message.isDeleted, false),
-        gt(tables.message.originSeq, after),
-      ),
-      orderBy: asc(tables.message.originSeq),
-      limit: take + 1,
-    });
-    const hasMore = rows.length > take;
-    const page = hasMore ? rows.slice(0, take) : rows;
-    const quoteTargets = await this.quoteTargetsForWire(threadId, page);
-    const messages = await Promise.all(
-      page.map(async (m) => ({
-        seq: m.seq,
-        originSeq: m.originSeq ?? 0,
-        contentType: m.contentType,
-        // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
-        // the bytes to render. Non-LINK is a no-op pass-through.
-        content: m.content,
-        ...this.quoteTargetField(quoteTargets.get(m.seq)),
-        ts: m.createdAt.getTime(),
-      })),
-    );
-    const [latest] = await this.database.db
-      .select({ originSeq: max(tables.message.originSeq) })
-      .from(tables.message)
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.creator, fromId),
-        ),
-      );
-    return { messages, latestSeq: latest.originSeq ?? -1, hasMore }; // 0-indexed: empty → -1
-  }
-
-  /** Durable deletion stream. The cursor is this serving node's DeletedMessage.id; the target remains
-   * creator+originSeq so receivers never confuse it with their own local thread seq. */
-  async serveOutboundDeletedMessages(
-    fromAccount: string,
-    toAccount: string,
-    signerDomain: string,
-    afterId: bigint,
-    take: number,
-  ) {
-    const { fromId, threadId } = await this.resolveFriendshipThread(
-      fromAccount,
-      toAccount,
-      signerDomain,
-    );
-    return this.deletedPage(threadId, afterId, take, fromId);
-  }
-
-  async serveOutboundDeletedMessagesGroup(
-    groupAccount: string,
-    signerDomain: string,
-    afterId: bigint,
-    take: number,
-  ) {
-    const { threadId } = await this.resolveGroupThreadAccess(
-      groupAccount,
-      undefined,
-      undefined,
-      signerDomain,
-    );
-    return this.deletedPage(threadId, afterId, take);
-  }
-
-  async serveOutboundDeletedMessagesGroupFrom(
-    groupAccount: string,
-    fromAccount: string,
-    fromDomain: string,
-    signerDomain: string,
-    afterId: bigint,
-    take: number,
-  ) {
-    const { threadId } = await this.resolveGroupThreadAccess(
-      groupAccount,
-      undefined,
-      undefined,
-      signerDomain,
-    );
-    const { authorId } = await this.resolveGroupAuthorOrLeave(
-      threadId,
-      fromAccount,
-      fromDomain,
-    );
-    return this.deletedPage(threadId, afterId, take, authorId);
-  }
-
-  private async deletedPage(
-    threadId: number,
-    afterId: bigint,
-    take: number,
-    creatorId?: number,
-  ) {
-    const conditions = [
-      eq(tables.deletedMessage.threadId, threadId),
-      gt(tables.deletedMessage.id, afterId),
-      eq(tables.message.threadId, threadId),
-      eq(tables.message.seq, tables.deletedMessage.seq),
-      ...(creatorId === undefined
-        ? []
-        : [eq(tables.message.creator, creatorId)]),
-    ];
-    const rows = await this.database.db
-      .select({
-        id: tables.deletedMessage.id,
-        originSeq: tables.message.originSeq,
-        type: tables.deletedMessage.type,
-        createdAt: tables.deletedMessage.createdAt,
-        account: tables.user.account,
-        domain: tables.user.domain,
-        isForeigner: tables.user.isForeigner,
-      })
-      .from(tables.deletedMessage)
-      .innerJoin(tables.message, and(...conditions.slice(2)))
-      .innerJoin(tables.user, eq(tables.user.id, tables.message.creator))
-      .where(and(...conditions.slice(0, 2), ...conditions.slice(4)))
-      .orderBy(asc(tables.deletedMessage.id))
-      .limit(take + 1);
-    const hasMore = rows.length > take;
-    return {
-      deletions: (hasMore ? rows.slice(0, take) : rows).map((row) => ({
-        id: row.id.toString(),
-        target: {
-          creator: {
-            account: row.account,
-            domain: this.effectiveDomain(row),
-          },
-          originSeq: row.originSeq ?? 0,
-        },
-        type: row.type,
-        deletedAt: row.createdAt.getTime(),
-      })),
-      hasMore,
-    };
-  }
-
-  /** GET /api/v1/s2s/messages/before — the BACKWARD twin of serveOutboundMessages (reserved for external
-   *  federation implementations; SOMS's own transport is forward-only). Returns messages with
-   *  `seq < beforeSeq` (or, when `beforeSeq < 0`, the latest `take` with no upper bound), ordered so the
-   *  batch is OLDEST-FIRST (descending query + reverse) for direct prepend. Same friendship gate + 0-indexed seq space. */
-  async serveOutboundMessagesBefore(
-    fromAccount: string,
-    toAccount: string,
-    signerDomain: string,
-    beforeSeq: number,
-    take: number,
-  ) {
-    const { fromId, threadId } = await this.resolveFriendshipThread(
-      fromAccount,
-      toAccount,
-      signerDomain,
-    );
-    const rows = await this.database.db.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.creator, fromId),
-        ...(beforeSeq >= 0 ? [lt(tables.message.originSeq, beforeSeq)] : []),
-      ),
-      orderBy: desc(tables.message.originSeq),
-      limit: take + 1,
-    });
-    const hasMore = rows.length > take;
-    // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
-    const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
-    const quoteTargets = await this.quoteTargetsForWire(threadId, batch);
-    const messages = await Promise.all(
-      batch.map(async (m) => ({
-        seq: m.seq,
-        originSeq: m.originSeq ?? 0,
-        contentType: m.contentType,
-        content: m.content,
-        ...this.quoteTargetField(quoteTargets.get(m.seq)),
-        ts: m.createdAt.getTime(),
-      })),
-    );
-    const [latest] = await this.database.db
-      .select({ originSeq: max(tables.message.originSeq) })
-      .from(tables.message)
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.creator, fromId),
-        ),
-      );
-    return { messages, latestSeq: latest.originSeq ?? -1, hasMore };
+    return rows.map((row) => row.domain);
   }
 
   /** Effective wire domain of a participant's user: locals ("local" in DB) surface as our real
@@ -3025,62 +3254,6 @@ export class FederationService implements OnModuleDestroy {
    *  matching against wire `fromDomain`. */
   private effectiveDomain(u: { isForeigner: boolean; domain: string }): string {
     return u.isForeigner ? u.domain : this.config.domain;
-  }
-
-  /** Convert local quote seqs into stable author+originSeq coordinates for S2S only. */
-  private async quoteTargetsForWire(
-    threadId: number,
-    messages: Array<{ seq: number; contentType: ContentType; content: string }>,
-  ): Promise<Map<number, S2SQuoteTarget>> {
-    const refs = new Map<number, number>();
-    for (const message of messages) {
-      if (message.contentType !== ContentType.PURE_TEXT) continue;
-      const quoteSeq = parseTextMessageContent(message.content)?.quote?.seq;
-      if (quoteSeq !== undefined) refs.set(message.seq, quoteSeq);
-    }
-    if (refs.size === 0) return new Map();
-    const targets = await this.database.db.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        inArray(tables.message.seq, [...new Set(refs.values())]),
-      ),
-      with: {
-        user: {
-          columns: { account: true, domain: true, isForeigner: true },
-        },
-      },
-    });
-    const bySeq = new Map(
-      targets.map((target) => [
-        target.seq,
-        { ...target, creatorItem: target.user },
-      ]),
-    );
-    const result = new Map<number, S2SQuoteTarget>();
-    for (const [messageSeq, targetSeq] of refs) {
-      const target = bySeq.get(targetSeq);
-      if (!target || target.originSeq === null) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'quoted message has no federated coordinate',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      result.set(messageSeq, {
-        creator: {
-          account: target.creatorItem.account,
-          domain: this.effectiveDomain(target.creatorItem),
-        },
-        originSeq: target.originSeq,
-      });
-    }
-    return result;
-  }
-
-  private quoteTargetField(target: S2SQuoteTarget | undefined): {
-    quoteTarget?: S2SQuoteTarget;
-  } {
-    return target ? { quoteTarget: target } : {};
   }
 
   /**
@@ -3143,326 +3316,6 @@ export class FederationService implements OnModuleDestroy {
     return { threadId: trd.id, authorId };
   }
 
-  /** Resolve a per-author group pull's author membership with a LEAVE signal: an ACTIVE author → its
-   *  userId; a SOFT-LEFT (or absent) author → throws BusinessException(FEDERATION_GROUP_AUTHOR_LEFT,
-   *  HttpStatus.GONE) — the serving endpoint answers HTTP 410 GONE (body carries the business code) INSTEAD
-   *  of a message payload. Distinct from resolveGroupThreadAccess's author check (which 403s) — this is
-   *  the one path where "author no longer active" is a NORMAL outcome (the member left), not a forbidden
-   *  one, so the origin reading it dissolves the leaver. 410 is a resource response, so getSigned does NOT
-   *  demote the peer. Domain-matched via effectiveDomain (a foreign author stub on `fromDomain` matches;
-   *  locals surface as our domain). See design-review item C2. */
-  private async resolveGroupAuthorOrLeave(
-    threadId: number,
-    fromAccount: string,
-    fromDomain: string,
-  ): Promise<{ authorId: number }> {
-    const p = await this.database.db.query.threadParticipant.findFirst({
-      where: and(
-        eq(tables.threadParticipant.threadId, threadId),
-        sql`EXISTS (SELECT 1 FROM "User" u WHERE u.id = ${tables.threadParticipant.userId} AND u.account = ${normalizeAccount(fromAccount)})`,
-      ),
-      columns: {
-        userId: true,
-        leftAt: true,
-      },
-      with: { user: { columns: { isForeigner: true, domain: true } } },
-    });
-    if (
-      !p ||
-      this.effectiveDomain(p.user) !== fromDomain ||
-      p.leftAt !== null
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT,
-        `author ${fromAccount}@${fromDomain} left the group`,
-        HttpStatus.GONE,
-      );
-    }
-    return { authorId: p.userId };
-  }
-
-  /** Soft-leave a member on OUR canonical roster + bump the group-meta revision (the `!`-User.updatedAt
-   *  mirrors compare on chat-open) so mirrors reconcile. Called when the ORIGIN detects a member left a
-   *  mirror — the per-author hub-leg pull answered HTTP 410 (FEDERATION_GROUP_AUTHOR_LEFT). */
-  private async softLeaveMemberAndBump(
-    threadId: number,
-    userId: number,
-    peerDomain: string,
-    expectedFederationVersion: number,
-  ): Promise<void> {
-    await this.database.db.transaction(async (tx) => {
-      await this.assertThreadResponseWritable(
-        tx,
-        threadId,
-        peerDomain,
-        expectedFederationVersion,
-      );
-      await tx
-        .update(tables.threadParticipant)
-        .set({ leftAt: new Date(), updatedAt: new Date() })
-        .where(
-          and(
-            eq(tables.threadParticipant.threadId, threadId),
-            eq(tables.threadParticipant.userId, userId),
-            isNull(tables.threadParticipant.leftAt),
-          ),
-        );
-      const trd = await tx.query.messageThread.findFirst({
-        where: eq(tables.messageThread.id, threadId),
-        columns: { groupUserId: true },
-      });
-      if (trd?.groupUserId != null) {
-        await tx
-          .update(tables.user)
-          .set({ updatedAt: new Date() })
-          .where(eq(tables.user.id, trd.groupUserId));
-      }
-    });
-  }
-
-  /**
-   * ALL-SENDERS group pull (mirror ← origin): serve every message in the group thread with thread `seq`
-   * > `after`, ascending, across ALL creators. Each message carries its thread `seq` (the mirror's
-   * pullUntil cursor — advanced page-by-page to the last stored message's seq, NOT jumped to the thread
-   * max, so a >`take`-message catch-up fetches every page without skipping the middle) + its creator's
-   * wire address (so the mirror resolves the right stub) + the copied `originSeq` (the dedup key).
-   * Roster-gated. The one place serving is keyed by thread `seq` (a global per-thread order) rather than
-   * per-author originSeq: a multi-author stream has no single originSeq space. See plan "Cursor model". */
-  async serveOutboundMessagesGroup(
-    groupAccount: string,
-    after: number,
-    take: number,
-    signerDomain: string,
-  ) {
-    const { threadId } = await this.resolveGroupThreadAccess(
-      groupAccount,
-      undefined,
-      undefined,
-      signerDomain,
-    );
-    const rows = await this.database.db.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        gt(tables.message.seq, after),
-        eq(tables.message.isDeleted, false),
-      ),
-      orderBy: asc(tables.message.seq),
-      limit: take + 1,
-      with: {
-        user: {
-          columns: { account: true, domain: true, isForeigner: true },
-        },
-      },
-    });
-    const hasMore = rows.length > take;
-    const page = hasMore ? rows.slice(0, take) : rows;
-    const quoteTargets = await this.quoteTargetsForWire(threadId, page);
-    const messages = page.map((row) => {
-      const m = { ...row, creatorItem: row.user };
-      return {
-        seq: m.seq, // origin thread seq — the mirror advances pullUntil to this, page-by-page
-        originSeq: m.originSeq ?? 0,
-        creator: {
-          account: m.creatorItem.account,
-          domain: this.effectiveDomain(m.creatorItem),
-        },
-        contentType: m.contentType,
-        content: m.content,
-        ...this.quoteTargetField(quoteTargets.get(m.seq)),
-        ts: m.createdAt.getTime(),
-      };
-    });
-    // latestSeq = the highest seq in THIS batch (the cursor the receiver lands on after storing it), NOT
-    // the thread total — so a multi-page catch-up walks every page. -1 only when the batch is empty.
-    const latestSeq =
-      messages.length > 0 ? messages[messages.length - 1].seq : -1;
-    return { messages, latestSeq, hasMore };
-  }
-
-  /**
-   * PER-AUTHOR group pull (origin ← mirror, the hub aggregation leg): serve the author `fromAccount`'s
-   * messages in the group with originSeq > `after` (originSeq space). The origin pulls each member-server's
-   * NEW messages this way to aggregate them; the origin's cursor for a member is derived MAX(originSeq) per
-   * author. Roster-gated; the author gate carries a LEAVE signal — a soft-left (or absent) author makes resolveGroupAuthorOrLeave throw, so the controller answers HTTP 410 GONE (body carries the business code) instead of a payload. 410 is a resource response, so getSigned does NOT demote the peer. The origin reads the 410 and dissolves the leaver. */
-  async serveOutboundMessagesGroupFrom(
-    groupAccount: string,
-    fromAccount: string,
-    fromDomain: string,
-    after: number,
-    take: number,
-    signerDomain: string,
-  ) {
-    const { threadId } = await this.resolveGroupThreadAccess(
-      groupAccount,
-      undefined,
-      undefined,
-      signerDomain,
-    );
-    // Author gate with LEAVE signal: active → serve; soft-left/absent → resolveGroupAuthorOrLeave
-    // throws (→ HTTP 410 GONE) before reaching here.
-    const { authorId } = await this.resolveGroupAuthorOrLeave(
-      threadId,
-      fromAccount,
-      fromDomain,
-    );
-    const rows = await this.database.db.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.creator, authorId),
-        gt(tables.message.originSeq, after),
-        eq(tables.message.isDeleted, false),
-      ),
-      orderBy: asc(tables.message.originSeq),
-      limit: take + 1,
-    });
-    const hasMore = rows.length > take;
-    const page = hasMore ? rows.slice(0, take) : rows;
-    const quoteTargets = await this.quoteTargetsForWire(threadId, page);
-    const messages = await Promise.all(
-      page.map(async (m) => ({
-        seq: m.seq,
-        originSeq: m.originSeq ?? 0,
-        contentType: m.contentType,
-        // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
-        // the bytes to render. Non-LINK is a no-op pass-through.
-        content: m.content,
-        ...this.quoteTargetField(quoteTargets.get(m.seq)),
-        ts: m.createdAt.getTime(),
-      })),
-    );
-    const [latest] = await this.database.db
-      .select({ originSeq: max(tables.message.originSeq) })
-      .from(tables.message)
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.creator, authorId),
-        ),
-      );
-    return { messages, latestSeq: latest.originSeq ?? -1, hasMore };
-  }
-
-  /**
-   * ALL-SENDERS group pull, BACKWARD (the `seq < beforeSeq` twin of serveOutboundMessagesGroup, for
-   * `/messages/before`). Serves the batch OLDEST-FIRST (descending query + reverse) so a caller prepends
-   * it directly; the next-older page uses `messages[0].seq` as the new `beforeSeq`. Same roster gate +
-   * self-exclusion (the requester's own authors are skipped — symmetric with the forward leg) + thread-seq
-   * keying. `latestSeq` mirrors the forward leg (the NEWEST seq in this batch; -1 when empty). SOMS itself
-   * is forward-only, so this has no internal caller — it exists for symmetry + external federated impls. */
-  async serveOutboundMessagesGroupBefore(
-    groupAccount: string,
-    beforeSeq: number,
-    take: number,
-    signerDomain: string,
-  ) {
-    const { threadId } = await this.resolveGroupThreadAccess(
-      groupAccount,
-      undefined,
-      undefined,
-      signerDomain,
-    );
-    const rows = await this.database.db
-      .select({ message: tables.message, user: tables.user })
-      .from(tables.message)
-      .innerJoin(tables.user, eq(tables.user.id, tables.message.creator))
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          ne(tables.user.domain, signerDomain),
-          ...(beforeSeq >= 0 ? [lt(tables.message.seq, beforeSeq)] : []),
-        ),
-      )
-      .orderBy(desc(tables.message.seq))
-      .limit(take + 1);
-    const hasMore = rows.length > take;
-    // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
-    const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
-    const quoteTargets = await this.quoteTargetsForWire(
-      threadId,
-      batch.map((row) => row.message),
-    );
-    const messages = batch.map(({ message: row, user }) => {
-      const m = { ...row, creatorItem: user };
-      return {
-        seq: m.seq,
-        originSeq: m.originSeq ?? 0,
-        creator: {
-          account: m.creatorItem.account,
-          domain: this.effectiveDomain(m.creatorItem),
-        },
-        contentType: m.contentType,
-        content: m.content,
-        ...this.quoteTargetField(quoteTargets.get(m.seq)),
-        ts: m.createdAt.getTime(),
-      };
-    });
-    // latestSeq = the NEWEST seq in this batch (mirrors the forward leg's batch cursor); -1 when empty.
-    const latestSeq =
-      messages.length > 0 ? messages[messages.length - 1].seq : -1;
-    return { messages, latestSeq, hasMore };
-  }
-
-  /**
-   * PER-AUTHOR group pull, BACKWARD (the `originSeq < beforeSeq` twin of serveOutboundMessagesGroupFrom,
-   * for `/messages/before`). Same LEAVE signal as the forward per-author leg — a soft-left/absent author
-   * returns HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) instead of a payload. Batch OLDEST-FIRST (descending +
-   * reverse); `latestSeq` = the author's global MAX originSeq (JUMP — mirrors the forward per-author leg +
-   * the P2P backward twin). SOMS is forward-only; no internal caller. */
-  async serveOutboundMessagesGroupFromBefore(
-    groupAccount: string,
-    fromAccount: string,
-    fromDomain: string,
-    beforeSeq: number,
-    take: number,
-    signerDomain: string,
-  ) {
-    const { threadId } = await this.resolveGroupThreadAccess(
-      groupAccount,
-      undefined,
-      undefined,
-      signerDomain,
-    );
-    // Author gate with LEAVE signal: active → serve; soft-left/absent → resolveGroupAuthorOrLeave
-    // throws (→ HTTP 410 GONE) before reaching here.
-    const { authorId } = await this.resolveGroupAuthorOrLeave(
-      threadId,
-      fromAccount,
-      fromDomain,
-    );
-    const rows = await this.database.db.query.message.findMany({
-      where: and(
-        eq(tables.message.threadId, threadId),
-        eq(tables.message.creator, authorId),
-        ...(beforeSeq >= 0 ? [lt(tables.message.originSeq, beforeSeq)] : []),
-      ),
-      orderBy: desc(tables.message.originSeq),
-      limit: take + 1,
-    });
-    const hasMore = rows.length > take;
-    const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
-    const quoteTargets = await this.quoteTargetsForWire(threadId, batch);
-    const messages = await Promise.all(
-      batch.map(async (m) => ({
-        seq: m.seq,
-        originSeq: m.originSeq ?? 0,
-        contentType: m.contentType,
-        content: m.content,
-        ...this.quoteTargetField(quoteTargets.get(m.seq)),
-        ts: m.createdAt.getTime(),
-      })),
-    );
-    const [latest] = await this.database.db
-      .select({ originSeq: max(tables.message.originSeq) })
-      .from(tables.message)
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.creator, authorId),
-        ),
-      );
-    return { messages, latestSeq: latest.originSeq ?? -1, hasMore };
-  }
-
   async resolveMediaFile(
     fromAccount: string,
     toAccount: string,
@@ -3472,54 +3325,73 @@ export class FederationService implements OnModuleDestroy {
     sourceSeq: number,
     forwardBundleId?: string,
   ): Promise<{ absPath: string; bytes: number }> {
-    // Resolve the authorized conversation first, then bind the digest to one exact wire-visible
-    // message identity. `sourceSeq` is COALESCE(originSeq, seq), matching the value emitted by both the
-    // legacy thread feed and /missed. This mirrors local CAS authorization's thread + seq + digest
-    // check and prevents one digest referenced elsewhere in the thread from authorizing this request.
-    const threadId = toAccount.startsWith('!')
-      ? (
-          await this.resolveGroupThreadAccess(
-            toAccount,
-            fromAccount,
-            fromDomain,
-            signerDomain,
-          )
-        ).threadId
-      : (
-          await this.resolveFriendshipThread(
-            fromAccount,
-            toAccount,
-            signerDomain,
-          )
-        ).threadId;
-    const candidates = await this.database.db.query.user.findMany({
-      where: eq(tables.user.account, normalizeAccount(fromAccount)),
-      columns: { id: true, domain: true, isForeigner: true },
-    });
-    const author = candidates.find(
-      (candidate) => this.effectiveDomain(candidate) === fromDomain,
-    );
-    if (!author) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'message author not found',
-      );
-    }
-    const [sourceMessage] = await this.database.db
-      .select({ id: tables.message.id })
-      .from(tables.message)
+    // Authorization is historical, not derived from the current friendship/roster. DiscoveryChange is
+    // durable proof that this signer had already been allocated the exact message; leaving a group or
+    // removing a friend only stops future allocations. The request still binds the historical proof to
+    // its author, recipient/group, source sequence and digest below.
+    const candidates = await this.database.db
+      .select({
+        messageId: tables.message.id,
+        threadId: tables.message.threadId,
+        authorDomain: tables.user.domain,
+        authorIsForeigner: tables.user.isForeigner,
+        threadType: tables.messageThread.type,
+        groupUserId: tables.messageThread.groupUserId,
+      })
+      .from(tables.discoveryChange)
+      .innerJoin(
+        tables.discoveryTarget,
+        eq(tables.discoveryTarget.id, tables.discoveryChange.targetId),
+      )
+      .innerJoin(
+        tables.message,
+        eq(tables.message.id, tables.discoveryChange.messageId),
+      )
+      .innerJoin(tables.user, eq(tables.user.id, tables.message.creator))
+      .innerJoin(
+        tables.messageThread,
+        eq(tables.messageThread.id, tables.message.threadId),
+      )
       .where(
         and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.creator, author.id),
+          eq(tables.discoveryTarget.targetDomain, signerDomain),
+          isNull(tables.discoveryTarget.localUserId),
+          eq(tables.user.account, normalizeAccount(fromAccount)),
+          eq(tables.message.isDeleted, false),
           sql`COALESCE(${tables.message.originSeq}, ${tables.message.seq}) = ${sourceSeq}`,
         ),
-      )
-      .limit(1);
+      );
+    let sourceMessage: { id: bigint; threadId: number } | undefined;
+    for (const candidate of candidates) {
+      if (
+        this.effectiveDomain({
+          domain: candidate.authorDomain,
+          isForeigner: candidate.authorIsForeigner,
+        }) !== fromDomain
+      ) {
+        continue;
+      }
+      if (
+        !(await this.historicalThreadMatchesRecipient(
+          candidate.threadId,
+          candidate.threadType,
+          candidate.groupUserId,
+          toAccount,
+          signerDomain,
+        ))
+      ) {
+        continue;
+      }
+      sourceMessage = {
+        id: candidate.messageId,
+        threadId: candidate.threadId,
+      };
+      break;
+    }
     if (!sourceMessage) {
       throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'message media source not found',
+        BusinessCode.FORBIDDEN,
+        'message was not historically delivered to peer',
       );
     }
     if (forwardBundleId) {
@@ -3561,6 +3433,44 @@ export class FederationService implements OnModuleDestroy {
     return this.resolveCasFile(digest);
   }
 
+  private async historicalThreadMatchesRecipient(
+    threadId: number,
+    threadType: MessageThreadType,
+    groupUserId: number | null,
+    toAccount: string,
+    signerDomain: string,
+  ): Promise<boolean> {
+    if (threadType === MessageThreadType.GROUP) {
+      if (!toAccount.startsWith('!') || groupUserId === null) return false;
+      const groupUser = await this.database.db.query.user.findFirst({
+        where: and(
+          eq(tables.user.id, groupUserId),
+          eq(tables.user.account, normalizeAccount(toAccount)),
+        ),
+        columns: { id: true },
+      });
+      return groupUser !== undefined;
+    }
+    if (toAccount.startsWith('!')) return false;
+    const recipient = await this.database.db
+      .select({ id: tables.user.id })
+      .from(tables.threadParticipant)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, threadId),
+          eq(tables.user.account, normalizeAccount(toAccount)),
+          eq(tables.user.domain, signerDomain),
+          eq(tables.user.isForeigner, true),
+        ),
+      )
+      .limit(1);
+    return recipient.length > 0;
+  }
+
   async serveForwardBundleClosure(bundleId: string, signerDomain: string) {
     await this.requireForwardBundlePeerAccess(bundleId, signerDomain);
     return this.forwardBundles.buildClosure(bundleId);
@@ -3578,21 +3488,19 @@ export class FederationService implements OnModuleDestroy {
         eq(tables.message.id, tables.forwardMessage.messageId),
       )
       .innerJoin(
-        tables.threadParticipant,
-        eq(tables.threadParticipant.threadId, tables.message.threadId),
+        tables.discoveryChange,
+        eq(tables.discoveryChange.messageId, tables.message.id),
       )
       .innerJoin(
-        tables.user,
-        eq(tables.user.id, tables.threadParticipant.userId),
+        tables.discoveryTarget,
+        eq(tables.discoveryTarget.id, tables.discoveryChange.targetId),
       )
       .where(
         and(
           eq(tables.forwardMessage.bundleId, bundleId),
           eq(tables.message.isDeleted, false),
-          isNull(tables.threadParticipant.leftAt),
-          eq(tables.user.isForeigner, true),
-          eq(tables.user.domain, signerDomain),
-          eq(tables.user.isDeleted, false),
+          eq(tables.discoveryTarget.targetDomain, signerDomain),
+          isNull(tables.discoveryTarget.localUserId),
         ),
       )
       .limit(1);
@@ -3633,12 +3541,12 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** Shared authz prelude for every outbound S2S read (GET /messages pull + GET /get_file): proves
+  /** Shared authz prelude for authorized S2S media reads: proves
    *  `fromAccount` is a live local user (non-deleted), `toAccount` is the requester's foreign stub on
    *  signerDomain, and the from↔to Friendship is APPROVED — returning fromId + threadId. Throws NOT_FOUND
    *  (user missing) /
    *  FORBIDDEN (not friends); the 403 doubles as the §9.4 lazy-unfriend signal to the peer. Consolidates
-   *  the identical check-1/check-2 blocks serveOutboundMessages and resolveMediaFile used to inline. */
+   *  the same current P2P relationship required by message access. */
   private async resolveFriendshipThread(
     fromAccount: string,
     toAccount: string,
@@ -3677,431 +3585,7 @@ export class FederationService implements OnModuleDestroy {
     return { fromId, threadId };
   }
 
-  // ─── Step 2/3: inbound hint queue + active pull (receiver side) ──────────────
-  //
-  // pendingPulls is the RECEIVER's work queue (the dual of the outbound buffer). Populated by a
-  // /new-msg-map push (POST) or by pulling the peer's map (§4.3 one-directional fallback); drained by the
-  // pull below. Volatile (restart → pull-on-open is the floor). Latest-seq-wins + the originSeq unique
-  // index make push/pull overlap idempotent. Entries are account-based (fromAccount/fromDomain/toAccount
-  // + latestSeq): `toAccount` is a peer user account (P2P) or the group `!account` (group).
-
-  /** One queued pull hint. Mirrors the wire NewMsgMapEntry shape (fromAccount/fromDomain/toAccount/latestSeq). */
-  private readonly pendingPulls = new Map<
-    string,
-    Map<string, NewMsgMapEntry>
-  >();
-  /** Single-flight guard so only one drain runs per domain at a time (a push mid-drain just updates the map). */
-  private readonly drainingPulls = new Set<string>();
-
-  /** scopeKey for pendingPulls (internal \0 separator; accounts/domains never contain \0). */
-  private pullScopeKey(e: {
-    fromAccount: string;
-    fromDomain: string;
-    toAccount: string;
-  }): string {
-    return `${e.fromAccount}\0${e.fromDomain}\0${e.toAccount}`;
-  }
-
-  /**
-   * Inbound /new-msg-map push (or map-pull result) → enqueue hints + trigger the drainer. Each entry's
-   * `fromAccount`/`fromDomain` is the AUTHOR (a foreign stub here, or the origin re-signaling);
-   * `toAccount` is OUR local user (P2P) or the group `!account` (group). Latest-seq-wins (a leave is now
-   * signaled as a normal per-author hint whose latestSeq beats the cursor; the leave OUTCOME is the serve
-   * side's HTTP 410, not a hint type). Fire-and-forget drain. Idempotent + defensively validated.
-   */
-  receiveNewMsgMapPush(
-    signerDomain: string,
-    entries: ReadonlyArray<{
-      fromAccount?: unknown;
-      fromDomain?: unknown;
-      toAccount?: unknown;
-      latestSeq?: unknown;
-    }>,
-  ): void {
-    let byScope = this.pendingPulls.get(signerDomain);
-    if (!byScope) {
-      byScope = new Map();
-      this.pendingPulls.set(signerDomain, byScope);
-    }
-    for (const e of entries) {
-      if (
-        !e ||
-        typeof e.fromAccount !== 'string' ||
-        typeof e.fromDomain !== 'string' ||
-        typeof e.toAccount !== 'string' ||
-        typeof e.latestSeq !== 'number'
-      ) {
-        continue;
-      }
-      const entry: NewMsgMapEntry = {
-        fromAccount: e.fromAccount,
-        fromDomain: e.fromDomain,
-        toAccount: e.toAccount,
-        latestSeq: e.latestSeq,
-      };
-      const key = this.pullScopeKey(entry);
-      const prev = byScope.get(key);
-      if (!prev || e.latestSeq > prev.latestSeq) {
-        byScope.set(key, entry);
-      }
-    }
-    void this.drainPendingPulls(signerDomain);
-  }
-
-  /**
-   * Single-flight drain: process pending pulls for a domain sequentially. A push arriving mid-drain just
-   * updates the map (the running loop re-reads it); on exit we re-trigger if new work arrived. Stops on a
-   * pull failure (peer transiently down — the reconnect sweep retries). Bounded by the conversation count.
-   */
-  async drainPendingPulls(domain: string): Promise<void> {
-    // Per-peer circuit breaker: a tripped peer gets no NEW pull loops (in-flight work is allowed to finish).
-    if (this.quota.isTripped(domain)) return;
-    if (this.drainingPulls.has(domain)) return;
-    this.drainingPulls.add(domain);
-    let progressed = false; // did we clear ≥1 hint this drain? gates the re-trigger (anti-spin)
-    try {
-      for (;;) {
-        // Re-check each iteration so a breaker that trips mid-drain stops the chase after the current page
-        // (bounds the msg overshoot to ≤ one page), rather than draining every queued hint.
-        if (this.quota.isTripped(domain)) break;
-        const snap = this.snapshotPendingPulls(domain);
-        if (snap.length === 0) break;
-        // Dispatch one hint by shape: `toAccount` is a group → group pull (origin does per-author hub-leg,
-        // mirror does whole-thread); else P2P per-author. On success drop the hint; on failure leave it +
-        // stop (the sweep retries).
-        const { key, entry } = snap[0];
-        const caughtUp = await this.pullHint(domain, entry);
-        if (caughtUp) {
-          this.removePendingPullKey(domain, key);
-          progressed = true;
-        } else {
-          break;
-        }
-      }
-    } finally {
-      this.drainingPulls.delete(domain);
-      // Re-trigger ONLY if we made progress (so a push that arrived mid-drain gets drained). Without this
-      // gate a persistently-failing hint (peer down) would spin: failed → break → re-trigger → fail again.
-      // A no-progress drain leaves the hint for the reconnect sweep / the next push's own drain call.
-      if (progressed && this.snapshotPendingPulls(domain).length > 0)
-        void this.drainPendingPulls(domain);
-    }
-  }
-
-  /**
-   * Dispatch one hint by shape. Returns true if caught up OR stale/invalid (drop); false on transient
-   * failure (leave for the sweep). `domain` is the SOURCE domain that pushed the hint (the peer to pull
-   * from for P2P + the origin-hub per-author leg). `e.toAccount` distinguishes P2P (user account) from
-   * group (`!account`).
-   */
-  private async pullHint(domain: string, e: NewMsgMapEntry): Promise<boolean> {
-    if (e.toAccount.startsWith('!')) return this.pullGroup(domain, e);
-    return this.pullP2P(domain, e);
-  }
-
-  /** Pull one durable deletion stream and advance its HWM in the same transaction that persists each
-   * tombstone. `sourceDomain` may be a group origin relaying an author's authoritative tombstone; the
-   * authority itself is always target.creator.domain. A peer can therefore never delete a local author's
-   * message, and the target must already be an active participant in this local thread. */
-  private async pullDeletedStream(params: {
-    threadId: number;
-    sourceDomain: string;
-    streamAccount: string;
-    streamKind: 'p2p-author' | 'group-origin' | 'group-author';
-    path: (afterId: bigint) => string;
-    expectedCreator?: S2SAddress;
-    recipients: number[];
-  }): Promise<void> {
-    const cursorKey = {
-      peerDomain: params.sourceDomain,
-      streamAccount: params.streamAccount,
-      streamKind: params.streamKind,
-    };
-    const cursor =
-      await this.database.db.query.federationDeletedCursor.findFirst({
-        where: and(
-          eq(tables.federationDeletedCursor.threadId, params.threadId),
-          eq(tables.federationDeletedCursor.peerDomain, cursorKey.peerDomain),
-          eq(
-            tables.federationDeletedCursor.streamAccount,
-            cursorKey.streamAccount,
-          ),
-          eq(tables.federationDeletedCursor.streamKind, cursorKey.streamKind),
-        ),
-        columns: { deletedHwm: true },
-      });
-    let afterId = cursor?.deletedHwm ?? 0n;
-    for (;;) {
-      const response = await this.getSignedForThread<{
-        deletions: S2SDeletedMessage[];
-        hasMore: boolean;
-      }>(params.threadId, params.path(afterId), params.sourceDomain);
-      const page = response.data;
-      for (const deletion of page.deletions) {
-        let remoteDeletedId: bigint;
-        try {
-          remoteDeletedId = BigInt(deletion.id);
-        } catch {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'invalid federated deletion id',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        if (remoteDeletedId <= afterId || deletion.target.originSeq < 0) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'federated deletion stream is not ordered',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        if (
-          deletion.type !== MessageDeleteType.WITHDRAW &&
-          deletion.type !== MessageDeleteType.REPORT
-        ) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'invalid federated deletion type',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        const creatorAddress = deletion.target.creator;
-        if (
-          creatorAddress.domain === this.ourDomain &&
-          params.streamKind === 'group-origin'
-        ) {
-          // The group origin legitimately relays the whole subscribed stream, including our own
-          // author's event. Our server remains authoritative: consume the remote cursor only and do
-          // not create a tombstone or modify Message.isDeleted from this relay.
-          await this.deletedMessages.advanceFederatedCursor({
-            threadId: params.threadId,
-            remoteDeletedId,
-            cursor: cursorKey,
-            expectedFederationVersion: response.federationVersion,
-          });
-          afterId = remoteDeletedId;
-          continue;
-        }
-        if (
-          creatorAddress.domain === this.ourDomain ||
-          (params.expectedCreator &&
-            (normalizeAccount(creatorAddress.account) !==
-              normalizeAccount(params.expectedCreator.account) ||
-              creatorAddress.domain !== params.expectedCreator.domain))
-        ) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'peer is not authoritative for deletion target',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        const participant =
-          await this.database.db.query.threadParticipant.findFirst({
-            where: and(
-              eq(tables.threadParticipant.threadId, params.threadId),
-              isNull(tables.threadParticipant.leftAt),
-              sql`EXISTS (SELECT 1 FROM "User" u WHERE u.id = ${tables.threadParticipant.userId} AND u.account = ${normalizeAccount(creatorAddress.account)} AND u."isForeigner" = true AND u.domain = ${creatorAddress.domain})`,
-            ),
-            columns: { userId: true },
-          });
-        if (!participant) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'deletion target creator is not a thread participant',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        const applied = await this.deletedMessages.applyFederated({
-          threadId: params.threadId,
-          creatorId: participant.userId,
-          originSeq: deletion.target.originSeq,
-          authorityDomain: creatorAddress.domain,
-          sourceDomain: params.sourceDomain,
-          remoteDeletedId,
-          type: deletion.type,
-          cursor: cursorKey,
-          expectedFederationVersion: response.federationVersion,
-        });
-        afterId = remoteDeletedId;
-        if (applied) {
-          for (const userId of params.recipients) {
-            this.sse.onDeletedMessageUpdated(
-              userId,
-              params.threadId,
-              applied.id,
-            );
-          }
-          await this.signalOutbound(
-            params.threadId,
-            participant.userId,
-            deletion.target.originSeq,
-            params.sourceDomain,
-          );
-        }
-      }
-      if (!page.hasMore) return;
-      if (page.deletions.length === 0) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'empty federated deletion page has more pages',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-    }
-  }
-
-  /** P2P pull: the peer author `fromAccount`@`fromDomain`'s messages for our local user `toAccount`.
-   *  Per-author, cursor DERIVED as MAX(originSeq) per (thread, creator) — the unchanged Step-2 mechanism.
-   *  Derivation (not a stored cursor) is deliberate for P2P: it self-heals when the latest row vanishes
-   *  (a lost store / a deleted message drops MAX, so pull-on-open re-fetches the gap — the §4.4 resilience
-   *  backstop), and a fresh thread has no rows ⇒ -1 ⇒ first pull starts at seq 0. The group mirror path
-   *  uses a STORED pullUntil instead (a new member has no local rows to derive from, + the sinceSeq seed).
-   *  fetchedFromDomain = the peer (a pulled P2P message's only foreign participant is the author, so
-   *  signalOutbound signals nobody — the receiver never re-propagates a 1:1 message). */
-  private async pullP2P(domain: string, e: NewMsgMapEntry): Promise<boolean> {
-    let threadId: number | null = null;
-    let toLocalUserId: number | null = null;
-    try {
-      const creatorId = await this.ensureForeignUser(
-        e.fromAccount,
-        e.fromDomain,
-      );
-      toLocalUserId = await this.findLocalUserId(e.toAccount);
-      if (toLocalUserId === null) return true; // local user gone → drop
-      threadId = await this.participantService.findP2PThreadBetween(
-        creatorId,
-        toLocalUserId,
-      );
-      if (threadId === null) return true; // not friends (lazy-unfriend §9.4) → drop
-      await this.pullDeletedStream({
-        threadId,
-        sourceDomain: domain,
-        streamAccount: `${normalizeAccount(e.fromAccount)}@${e.fromDomain}`,
-        streamKind: 'p2p-author',
-        expectedCreator: {
-          account: normalizeAccount(e.fromAccount),
-          domain: e.fromDomain,
-        },
-        recipients: [toLocalUserId],
-        path: (afterId) =>
-          `/api/v1/s2s/message-deletions?fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toAccount=${encodeURIComponent(e.toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
-      });
-      const [cur] = await this.database.db
-        .select({ originSeq: max(tables.message.originSeq) })
-        .from(tables.message)
-        .where(
-          and(
-            eq(tables.message.threadId, threadId),
-            eq(tables.message.creator, creatorId),
-          ),
-        );
-      let after = cur.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1
-      if (e.latestSeq <= after) return true; // already current
-      for (;;) {
-        const response = await this.getSignedForThread<{
-          messages: Array<{
-            seq: number;
-            originSeq: number;
-            contentType: string;
-            content: string;
-            ts: number;
-            quoteTarget?: S2SQuoteTarget;
-          }>;
-          latestSeq: number;
-          hasMore: boolean;
-        }>(
-          threadId,
-          `/api/v1/s2s/messages?fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toAccount=${encodeURIComponent(e.toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-          domain,
-        );
-        const res = response.data;
-        for (const m of res.messages) {
-          const created = await this.storePulledMessage(
-            threadId,
-            creatorId,
-            domain,
-            [toLocalUserId],
-            m,
-            response.federationVersion,
-          );
-          if (created?.kind === 'pending') {
-            void this.runFileSyncBatch(
-              created.batchId,
-              (digest, offset) =>
-                this.fetchMediaChunks(
-                  domain,
-                  digest,
-                  e.fromAccount,
-                  e.fromDomain,
-                  e.toAccount,
-                  m.originSeq,
-                  undefined,
-                  offset,
-                ),
-            ).catch(() => undefined);
-          }
-        }
-        if (res.messages.length > 0) {
-          after = res.messages[res.messages.length - 1].originSeq;
-        }
-        if (!res.hasMore) return true;
-      }
-    } catch (error) {
-      if (
-        error instanceof S2sResponseError &&
-        (error.code === BusinessCode.FRIEND_NOT_FOUND ||
-          error.code === BusinessCode.FORBIDDEN) &&
-        error.federationVersion !== undefined
-      ) {
-        if (threadId !== null && toLocalUserId !== null) {
-          await this.markP2PFriendshipEnded(
-            threadId,
-            toLocalUserId,
-            domain,
-            error.federationVersion,
-          );
-        }
-        return true;
-      }
-      return false; // peer down — leave for the sweep
-    }
-  }
-
-  /** Group pull: route by OUR role. ORIGIN → per-author hub leg (pull the author's new messages from the
-   *  pushing mirror `domain`, then re-signal the others). MIRROR → whole-thread pull from the origin via
-   *  the stored pullUntil cursor. Non-member (no local thread) → drop. */
-  private async pullGroup(domain: string, e: NewMsgMapEntry): Promise<boolean> {
-    try {
-      const trd = await this.findGroupThread(e.toAccount);
-      if (!trd) return true; // not a member here → drop
-      // The canonical group is terminal. Do not pull/store a message authored after dissolution. A
-      // mirror converges when its next whole-thread pull receives GROUP_DISSOLVED from this origin.
-      if (trd.groupUser?.group?.dissolvedAt != null) return true;
-      if (this.isOriginThread(trd))
-        return this.pullGroupFromAuthor(domain, trd.id, e);
-      return this.pullGroupWhole(trd.id, trd.groupUser!.domain, e.toAccount);
-    } catch (error) {
-      if (
-        error instanceof S2sResponseError &&
-        error.code === BusinessCode.GROUP_DISSOLVED &&
-        error.federationVersion !== undefined
-      ) {
-        const trd = await this.findGroupThread(e.toAccount);
-        if (trd)
-          await this.markGroupDissolved(
-            trd.id,
-            domain,
-            error.federationVersion,
-          );
-        return true;
-      }
-      return false;
-    }
-  }
-
-  /** Converge a federated mirror after the origin reports GROUP_DISSOLVED from either a pull caused by
-   * a send hint or the chat-open history pull. Former members keep the thread/history; clients receive
-   * GROUP_UPDATED and remove their composer. */
+  /** Converge a federated mirror after the origin authoritatively reports that the group dissolved. */
   private async markGroupDissolved(
     threadId: number,
     peerDomain: string,
@@ -4134,241 +3618,7 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** MIRROR whole-thread pull (origin-hub): pull ALL senders' messages from the origin with thread seq >
-   *  pullUntil, store each (creator resolved from the payload), advance pullUntil to latestSeq.
-   *  fetchedFromDomain = origin → signalOutbound's exclude rule makes the mirror signal nothing.
-   *
-   *  `force` bypasses the receiver debounce — used only by the explicit chat-open path
-   *  (syncGroupMessagesOnOpen): the user just opened the chat and wants the freshest NOW, so a read is
-   *  never collapsed there (the debounce exists to collapse PUSH bursts, not user-initiated reads). A
-   *  forced pull still refreshes the debounce timestamp, so a push landing right after the open is
-   *  collapsed (the open already fetched everything). This is the durable recovery for a hint dropped by
-   *  the debounce or a transiently-lost push with no follow-up: P2P self-heals on every open
-   *  (syncMessagesWithPeerByStubId); groups self-heal the same way via this path — never relying on
-   *  another push to arrive. */
-  private async pullGroupWhole(
-    threadId: number,
-    originDomain: string,
-    toAccount: string,
-    force = false,
-  ): Promise<boolean> {
-    // Receiver-side debounce: a group mirror's whole-thread pull fetches ALL senders in one GET
-    // (seq > pullUntil), so a burst of N author-hints for one group needs only ONE pull — the first
-    // gets everything + advances pullUntil; the rest would return empty. Skip a PUSH's pull for this
-    // thread within GROUP_PULL_DEBOUNCE_MS of the last (a forced open bypasses this — see `force`).
-    // SAFE for the push path: no fetch → no failure → no demote; the first pull covered the burst, and
-    // anything inside the window is recovered on the next chat-open (force) — never lost.
-    if (!force) {
-      const last = this.recentGroupPulls.get(threadId);
-      if (
-        last !== undefined &&
-        Date.now() - last < FederationService.GROUP_PULL_DEBOUNCE_MS
-      ) {
-        return true; // recently pulled — skip the redundant empty GET
-      }
-    }
-    this.recentGroupPulls.set(threadId, Date.now());
-    const th = await this.database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, threadId),
-      columns: { pullUntil: true },
-    });
-    let after = th?.pullUntil ?? -1;
-    const recipients = await this.localActiveMemberIds(threadId);
-    await this.pullDeletedStream({
-      threadId,
-      sourceDomain: originDomain,
-      streamAccount: toAccount,
-      streamKind: 'group-origin',
-      recipients,
-      path: (afterId) =>
-        `/api/v1/s2s/message-deletions?toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
-    });
-    for (;;) {
-      const response = await this.getSignedForThread<{
-        messages: Array<{
-          seq: number; // origin thread seq (the cursor)
-          originSeq: number;
-          creator: { account: string; domain: string };
-          contentType: string;
-          content: string;
-          ts: number;
-          quoteTarget?: S2SQuoteTarget;
-        }>;
-        latestSeq: number;
-        hasMore: boolean;
-      }>(
-        threadId,
-        `/api/v1/s2s/messages?toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-        originDomain,
-      );
-      const res = response.data;
-      for (const m of res.messages) {
-        const created = await this.storePulledMessage(
-          threadId,
-          m.creator,
-          originDomain,
-          recipients,
-          m,
-          response.federationVersion,
-        );
-        if (created?.kind === 'pending') {
-          // Group media: /get_file?toAccount=<group>&fromAccount=<creator> (roster-gated). Group account is `toAccount`.
-          void this.runFileSyncBatch(
-            created.batchId,
-            (digest, offset) =>
-              this.fetchMediaChunks(
-                originDomain,
-                digest,
-                m.creator.account,
-                m.creator.domain,
-                toAccount,
-                m.originSeq,
-                undefined,
-                offset,
-              ),
-          ).catch(() => undefined);
-        }
-      }
-      // Advance the cursor page-by-page to the last STORED message's thread seq (NOT res.latestSeq/the
-      // thread total — that would skip the middle of a >`take`-message catch-up). Empty batch ⇒ no advance.
-      if (res.messages.length > 0) {
-        after = res.messages[res.messages.length - 1].seq;
-        await this.database.db.transaction(async (tx) => {
-          await this.assertThreadResponseWritable(
-            tx,
-            threadId,
-            originDomain,
-            response.federationVersion,
-          );
-          await tx
-            .update(tables.messageThread)
-            .set({ pullUntil: after, updatedAt: new Date() })
-            .where(eq(tables.messageThread.id, threadId));
-        });
-      }
-      if (!res.hasMore) return true;
-    }
-  }
-
-  /** ORIGIN per-author hub leg: pull the author `fromAccount`'s new group messages from the pushing
-   *  mirror `domain` (originSeq space), store, then signalOutbound re-signals the OTHER member-domains
-   *  (exclude `domain`). Cursor derived MAX(originSeq) per author — the origin tracks each member
-   *  separately. LEAVE: if the mirror answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT — the author
-   *  soft-left there), the origin dissolves the leaver on its canonical roster + bumps the group meta
-   *  (softLeaveMemberAndBump); mirrors reconcile on chat-open. 410 is a resource response → getSigned does
-   *  NOT demote the peer. */
-  private async pullGroupFromAuthor(
-    domain: string,
-    threadId: number,
-    e: NewMsgMapEntry,
-  ): Promise<boolean> {
-    const creatorId = await this.ensureForeignUser(e.fromAccount, e.fromDomain);
-    const [cur] = await this.database.db
-      .select({ originSeq: max(tables.message.originSeq) })
-      .from(tables.message)
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.creator, creatorId),
-        ),
-      );
-    let after = cur.originSeq ?? -1;
-    const recipients = await this.localActiveMemberIds(threadId);
-    try {
-      await this.pullDeletedStream({
-        threadId,
-        sourceDomain: domain,
-        streamAccount: `${normalizeAccount(e.fromAccount)}@${e.fromDomain}`,
-        streamKind: 'group-author',
-        expectedCreator: {
-          account: normalizeAccount(e.fromAccount),
-          domain: e.fromDomain,
-        },
-        recipients,
-        path: (afterId) =>
-          `/api/v1/s2s/message-deletions?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterId=${afterId.toString()}&take=50`,
-      });
-      if (e.latestSeq <= after) return true;
-      for (;;) {
-        const response = await this.getSignedForThread<{
-          messages?: Array<{
-            seq: number;
-            originSeq: number;
-            contentType: string;
-            content: string;
-            ts: number;
-            quoteTarget?: S2SQuoteTarget;
-          }>;
-          latestSeq?: number;
-          hasMore?: boolean;
-        }>(
-          threadId,
-          `/api/v1/s2s/messages?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-          domain,
-        );
-        const res = response.data;
-        const messages = res.messages ?? [];
-        for (const m of messages) {
-          const created = await this.storePulledMessage(
-            threadId,
-            creatorId,
-            domain,
-            recipients,
-            m,
-            response.federationVersion,
-          );
-          if (created?.kind === 'pending') {
-            void this.runFileSyncBatch(
-              created.batchId,
-              (digest, offset) =>
-                this.fetchMediaChunks(
-                  domain,
-                  digest,
-                  e.fromAccount,
-                  e.fromDomain,
-                  e.toAccount,
-                  m.originSeq,
-                  undefined,
-                  offset,
-                ),
-            ).catch(() => undefined);
-          }
-        }
-        if (messages.length > 0) {
-          after = messages[messages.length - 1].originSeq;
-        }
-        if (!res.hasMore) return true;
-      }
-    } catch (e) {
-      // LEAVE signal — the author soft-left on the pushing mirror: resolveGroupAuthorOrLeave threw on
-      // the serve side, so getSigned surfaces HTTP 410 GONE as an S2sResponseError. 410 is a resource
-      // response (NOT 401/403/5xx) → getSigned did NOT demote the peer. Dissolve the leaver on our
-      // canonical roster + bump the group meta; nothing further to pull from a leaver. See design-review
-      // item C2.
-      if (
-        e instanceof S2sResponseError &&
-        e.status === HttpStatus.GONE &&
-        e.federationVersion !== undefined
-      ) {
-        await this.softLeaveMemberAndBump(
-          threadId,
-          creatorId,
-          domain,
-          e.federationVersion,
-        );
-        return true;
-      }
-      throw e;
-    }
-  }
-
-  /**
-   * The active LOCAL member userIds of a thread (foreign stubs excluded — they hold no SSE connection
-   * here). Computed ONCE per pull batch by the caller and passed to storePulledMessage so the per-message
-   * SSE fan is a synchronous loop (no async query between the row commit and the onNewMessage call — that
-   * gap would let a DB-polling observer see the message before the SSE frame, breaking delivery atomicity
-   * from the client's view). The sender (creatorId) is excluded by storePulledMessage.
-   */
+  /** Active local recipients of a thread; foreign stubs have no SSE connection on this server. */
   private async localActiveMemberIds(threadId: number): Promise<number[]> {
     const rows = await this.database.db
       .select({ userId: tables.threadParticipant.userId })
@@ -4384,231 +3634,12 @@ export class FederationService implements OnModuleDestroy {
           eq(tables.user.isForeigner, false),
         ),
       );
-    return rows.map((r) => r.userId);
+    return rows.map((row) => row.userId);
   }
 
   /**
-   * Idempotently store one pulled message (dedup by the originSeq unique index). Advances the thread's
-   * last-message cache only when newer than the current cache, and SSE-fans to the local recipient.
-   * Returns the created Message (or null for a duplicate — no SSE, no cache rewrite). The caller runs
-   * localizeMedia for media content types so the bytes land in local CAS (same-origin render).
-   */
-  private async storePulledMessage(
-    threadId: number,
-    creator: number | S2SAddress,
-    fetchedFromDomain: string,
-    recipients: number[],
-    m: {
-      originSeq: number;
-      contentType: string;
-      content: string;
-      ts: number;
-      quoteTarget?: S2SQuoteTarget;
-    },
-    expectedFederationVersion: number,
-  ): Promise<
-    | { kind: 'message'; message: Message }
-    | { kind: 'pending'; batchId: string }
-    | null
-  > {
-    let storedContent = m.content;
-    const incomingText =
-      m.contentType === ContentType.PURE_TEXT
-        ? parseTextMessageContent(storedContent)
-        : null;
-    if (
-      m.contentType === ContentType.PURE_TEXT &&
-      (!incomingText || Boolean(incomingText.quote) !== Boolean(m.quoteTarget))
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'invalid federated text quote',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    let remoteForwardBundleId: string | undefined;
-    let forwardClosure: ForwardWireClosure | undefined;
-    let localForwardBundleId: string | undefined;
-    let forwardCard: FederatedForwardCard | undefined;
-    if (m.contentType === ContentType.FORWARD) {
-      try {
-        forwardCard = JSON.parse(m.content) as typeof forwardCard;
-      } catch {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'invalid FORWARD card JSON',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      if (
-        forwardCard?.version !== 1 ||
-        typeof forwardCard.bundleId !== 'string' ||
-        !Array.isArray(forwardCard.summaryLines) ||
-        forwardCard.summaryLines.length > 3
-      ) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'invalid FORWARD card shape',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      remoteForwardBundleId = forwardCard.bundleId;
-      forwardClosure = await this.withTrustedPeer(fetchedFromDomain, () =>
-        this.getSigned<ForwardWireClosure>(
-          `/api/v1/s2s/forward-bundles/${encodeURIComponent(forwardCard!.bundleId)}`,
-          fetchedFromDomain,
-          FORWARD_MAX_WIRE_JSON_BYTES + 64 * 1024,
-        ),
-      );
-    }
-    // The sender server's allocation time (payload `ts`) is stored as originServerTime (future use,
-    // never displayed). The receiver's own createdAt defaults to now() — the local ARRIVAL time, which
-    // is what the chatbox displays and what orders the conversation list. The protocol never trusts the
-    // peer's clock for display; arrival time is locally monotonic and clock-skew-immune.
-    const originTime = new Date(m.ts);
-    // Allocate the RECEIVER's own per-thread seq from curSeq (same atomic path as a local send) and copy
-    // the peer's originSeq verbatim — the dedup key + the value the receiver tracks as its pull cursor.
-    // Wrapped in a tx so a P2002 dup-pull (same (threadId, creator, originSeq)) rolls the curSeq increment
-    // back too (no seq gap from a deduped re-pull).
-    const stored = await this.database.db
-      .transaction(async (tx) => {
-        return this.storePulledMessageInTransaction(tx, {
-          threadId,
-          creator,
-          fetchedFromDomain,
-          message: m,
-          expectedFederationVersion,
-          incomingText,
-          forwardCard,
-          forwardClosure,
-          originTime,
-        });
-      })
-      .catch((e: unknown) => {
-        if (isUniqueViolation(e)) {
-          return null; // already pulled (push/pull race) — idempotent skip (tx rolled back → no seq gap)
-        }
-        if (
-          e instanceof BusinessException &&
-          e.bizCode === BusinessCode.FEDERATION_QUOTA_EXCEEDED
-        ) {
-          // Peer's daily message budget exhausted — drop this message (tx rolled back: no seq gap, no
-          // count burn). The drainer continues; further pulls from this peer today skip the same way.
-          return null;
-        }
-        throw e;
-      });
-    if (!stored) return null;
-    if (stored.kind === 'pending') return stored;
-    const created = stored.message;
-    storedContent = stored.storedContent;
-    localForwardBundleId = stored.localForwardBundleId;
-    const creatorId = created.creator;
-    if (created.isDeleted) {
-      const deletion = await this.database.db.query.deletedMessage.findFirst({
-        where: and(
-          eq(tables.deletedMessage.threadId, threadId),
-          eq(tables.deletedMessage.seq, created.seq),
-        ),
-        columns: { id: true },
-      });
-      if (deletion) {
-        for (const uid of recipients) {
-          this.sse.onDeletedMessageUpdated(
-            uid,
-            threadId,
-            deletion.id.toString(),
-          );
-        }
-      }
-      void this.signalOutbound(
-        threadId,
-        creatorId,
-        m.originSeq,
-        fetchedFromDomain,
-      );
-      return { kind: 'message', message: created };
-    }
-    // SSE FIRST, synchronously — fan to the pre-computed local recipients BEFORE any other await. A DB
-    // polling observer (the client's reconcile / an e2e) must not see the committed row before the SSE
-    // frame, so delivery is atomic from the client's view (no async gap between commit and onNewMessage).
-    // Excludes the sender (creatorId) — for a pulled message the creator is a foreign stub, absent from
-    // the local recipient set anyway. P2P → the single recipient; GROUP → every local member.
-    // Identity-only {threadId, seq, ts} — the body is pulled by the client (single data source). A
-    // freshly-pulled media message is mid-localize; the client learns mediaStatus from the pulled body +
-    // the MEDIA_STATUS terminal event pushed when localization completes.
-    for (const uid of recipients) {
-      if (uid !== creatorId)
-        this.sse.onNewMessage(
-          uid,
-          threadId,
-          created.seq,
-          created.createdAt.getTime(),
-        );
-    }
-    const arrival = created.createdAt;
-    // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
-    // than what's cached (a message the local user sent after this one must not be overwritten). Ordered
-    // by ARRIVAL time (what the user sees), not the origin server time.
-    const restoredRevisions = await this.database.db.transaction(async (tx) => {
-      await this.assertThreadResponseWritable(
-        tx,
-        threadId,
-        fetchedFromDomain,
-        expectedFederationVersion,
-      );
-      await tx
-        .update(tables.messageThread)
-        .set({
-          lastMessageSeq: created.seq,
-          lastMessagePreview: derivePreview(
-            m.contentType as ContentType,
-            storedContent,
-          ),
-          lastMessageAt: arrival,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(tables.messageThread.id, threadId),
-            or(
-              isNull(tables.messageThread.lastMessageAt),
-              lt(tables.messageThread.lastMessageAt, arrival),
-            ),
-          ),
-        );
-      return this.threadRevisionService.restoreHiddenThreadsInTx(
-        tx,
-        threadId,
-        recipients,
-      );
-    });
-    restoredRevisions.forEach((revision) =>
-      this.threadRevisionService.notifyThreadRevision(revision),
-    );
-    // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
-    // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
-    // the OTHER member-domains. See plan "Hub loop-safety".
-    void this.signalOutbound(
-      threadId,
-      creatorId,
-      m.originSeq,
-      fetchedFromDomain,
-    ).catch(() => undefined);
-    if (remoteForwardBundleId && forwardClosure) {
-      await this.localizeForwardAssets(
-        forwardClosure,
-        fetchedFromDomain,
-        remoteForwardBundleId,
-        await this.resolveForwardAssetAuth(created),
-      );
-    }
-    return { kind: 'message', message: created };
-  }
-
-  /**
-   * Transaction-only core shared by the legacy thread pull today and the global /missed page applier
-   * in the next stage. It performs no SSE and starts no media download; callers own post-commit work.
+   * Transaction-only core shared by the global /missed page applier and pending-media promotion.
+   * It performs no SSE and starts no media download; callers own post-commit work.
    */
   private async storePulledMessageInTransaction(
     tx: DatabaseTransaction,
@@ -4628,9 +3659,19 @@ export class FederationService implements OnModuleDestroy {
       forwardCard?: FederatedForwardCard;
       forwardClosure?: ForwardWireClosure;
       originTime: Date;
+      downloadAuth?: {
+        fromAccount: string;
+        fromDomain: string;
+        toAccount: string;
+      };
     },
   ): Promise<
-    | { kind: 'message'; message: Message; storedContent: string; localForwardBundleId?: string }
+    | {
+        kind: 'message';
+        message: Message;
+        storedContent: string;
+        localForwardBundleId?: string;
+      }
     | { kind: 'pending'; batchId: string }
   > {
     const {
@@ -4643,6 +3684,7 @@ export class FederationService implements OnModuleDestroy {
       forwardCard,
       forwardClosure,
       originTime,
+      downloadAuth,
     } = params;
     await this.assertThreadResponseWritable(
       tx,
@@ -4695,7 +3737,7 @@ export class FederationService implements OnModuleDestroy {
         expectedFederationVersion,
         updatedAt: new Date(),
       });
-      for (const { digest } of digests) {
+      for (const { digest, size } of digests) {
         await tx
           .insert(tables.fileSyncProgress)
           .values({
@@ -4704,9 +3746,9 @@ export class FederationService implements OnModuleDestroy {
             direction: 'INBOUND',
             kind: this.fileSyncKindFor(incoming.contentType as ContentType),
             status: 'PENDING',
-            // TODO(quota): populate bytesTotal from the message content's per-file size so driveFileSync can
-            // pre-check the file-total-size dimension (strict-before) and detect oversize. Until then inbound
-            // downloads charge file CNT only; outbound uploads charge cnt + bytes at admitUpload.
+            bytesTotal: BigInt(size ?? 0),
+            originDomain: fetchedFromDomain,
+            payload: downloadAuth ?? null,
           })
           .onConflictDoNothing();
       }
@@ -4769,10 +3811,7 @@ export class FederationService implements OnModuleDestroy {
           updatedAt: new Date(),
         })
         .onConflictDoNothing({
-          target: [
-            tables.deletedMessage.threadId,
-            tables.deletedMessage.seq,
-          ],
+          target: [tables.deletedMessage.threadId, tables.deletedMessage.seq],
         });
     }
     if (localForwardBundleId) {
@@ -4793,6 +3832,9 @@ export class FederationService implements OnModuleDestroy {
         forwardClosure.bundles.length,
       );
     }
+    await this.discoveryChanges.recordMessageInTx(tx, message.id, [
+      fetchedFromDomain,
+    ]);
     return { kind: 'message', message, storedContent, localForwardBundleId };
   }
 
@@ -4955,53 +3997,112 @@ export class FederationService implements OnModuleDestroy {
             .set({ quotaCounted: true })
             .where(eq(tables.fileSyncProgress.id, progressId));
         }
-        await this.database.db
+        const claimed = await this.database.db
           .update(tables.fileSyncProgress)
           .set({
             status: 'DOWNLOADING',
             bytesTotal: declaredBytes,
             updatedAt: new Date(),
           })
-          .where(eq(tables.fileSyncProgress.id, progressId));
+          .where(
+            and(
+              eq(tables.fileSyncProgress.id, progressId),
+              eq(tables.fileSyncProgress.status, 'PENDING'),
+            ),
+          )
+          .returning({ id: tables.fileSyncProgress.id });
+        if (claimed.length === 0) throw new FederationDownloadTerminatedError();
         let lastWrite = 0;
-        await this.upload.saveCasFromStream('', fetchChunks, digest, {
-          // No declaredBytes → no oversize detection (size unknown for this row); bytesTotal still tracked.
-          declaredBytes:
-            declaredBytes > 0n ? Number(declaredBytes) : undefined,
-          onProgress: (received) => {
-            // Throttle DB writes to ~every 256 KiB — progress is advisory; per-chunk writes would hammer NAS.
-            if (received - lastWrite >= 256 * 1024) {
-              lastWrite = received;
-              void this.database.db
-                .update(tables.fileSyncProgress)
-                .set({
-                  bytesReceived: BigInt(received),
-                  updatedAt: new Date(),
-                })
-                .where(eq(tables.fileSyncProgress.id, progressId));
+        const checkedChunks = async function* (
+          service: FederationService,
+          offset: number,
+        ): AsyncGenerator<Buffer> {
+          for await (const chunk of fetchChunks(offset)) {
+            const current =
+              await service.database.db.query.fileSyncProgress.findFirst({
+                where: eq(tables.fileSyncProgress.id, progressId),
+                columns: { status: true },
+              });
+            if (current?.status !== 'DOWNLOADING') {
+              throw new FederationDownloadTerminatedError();
             }
+            yield chunk;
+          }
+        };
+        await this.upload.saveCasFromStream(
+          '',
+          (offset) => checkedChunks(this, offset),
+          digest,
+          {
+            // No declaredBytes → no oversize detection (size unknown for this row); bytesTotal still tracked.
+            declaredBytes:
+              declaredBytes > 0n ? Number(declaredBytes) : undefined,
+            onProgress: (received) => {
+              // Throttle DB writes to ~every 256 KiB — progress is advisory; per-chunk writes would hammer NAS.
+              if (received - lastWrite >= 256 * 1024) {
+                lastWrite = received;
+                void this.database.db
+                  .update(tables.fileSyncProgress)
+                  .set({
+                    bytesReceived: BigInt(received),
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(tables.fileSyncProgress.id, progressId));
+              }
+            },
           },
-        });
+        );
       }
-      await this.database.db
+      const completed = await this.database.db
         .update(tables.fileSyncProgress)
         .set({ status: 'SUCCEEDED', updatedAt: new Date() })
-        .where(eq(tables.fileSyncProgress.id, progressId));
+        .where(
+          and(
+            eq(tables.fileSyncProgress.id, progressId),
+            inArray(
+              tables.fileSyncProgress.status,
+              have ? ['PENDING', 'DOWNLOADING'] : ['DOWNLOADING'],
+            ),
+          ),
+        )
+        .returning({ id: tables.fileSyncProgress.id });
+      if (completed.length === 0) {
+        throw new FederationDownloadTerminatedError();
+      }
     } catch (error) {
       // Oversize: the stream exceeded the declared size — charge the excess toward file total size so the
       // breaker reflects reality, then surface as FAILED (the file is abandoned). Conservative: never subtract.
       if (error instanceof CasOversizeError && originDomain) {
         await this.quota.addFileBytesDelta(originDomain, error.extraBytes);
       }
-      await this.database.db
-        .update(tables.fileSyncProgress)
-        .set({
-          status: 'FAILED',
-          errorKind:
-            error instanceof Error ? error.message.slice(0, 255) : 'error',
-          updatedAt: new Date(),
-        })
-        .where(eq(tables.fileSyncProgress.id, progressId));
+      const quotaPaused =
+        error instanceof BusinessException &&
+        error.bizCode === BusinessCode.FEDERATION_QUOTA_EXCEEDED;
+      if (!(error instanceof FederationDownloadTerminatedError)) {
+        await this.database.db
+          .update(tables.fileSyncProgress)
+          .set({
+            // Quota exhaustion is a pause, not a corrupt/permanent transfer failure. Keeping the task
+            // PENDING lets the admin quota continuation re-drive it without rewriting failure state.
+            status: quotaPaused ? 'PENDING' : 'FAILED',
+            errorKind: quotaPaused
+              ? 'QUOTA_PAUSED'
+              : error instanceof Error
+                ? error.message.slice(0, 255)
+                : 'error',
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(tables.fileSyncProgress.id, progressId),
+              inArray(tables.fileSyncProgress.status, [
+                'PENDING',
+                'DOWNLOADING',
+              ]),
+            ),
+          );
+      }
+      throw error;
     }
   }
 
@@ -5024,7 +4125,7 @@ export class FederationService implements OnModuleDestroy {
       const rows = await this.database.db.query.fileSyncProgress.findMany({
         where: and(
           eq(tables.fileSyncProgress.batchId, batchId),
-          inArray(tables.fileSyncProgress.status, ['PENDING', 'FAILED']),
+          eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
       });
       // Per-peer circuit breaker: if this batch's origin peer is tripped, start no new downloads for it
@@ -5032,11 +4133,33 @@ export class FederationService implements OnModuleDestroy {
       const originDomain = rows[0]?.originDomain;
       if (originDomain && this.quota.isTripped(originDomain)) return;
       await Promise.all(
-        rows.map((row) =>
-          this.driveFileSync(row.id, row.digest, (offset) =>
-            fetchChunksFor(row.digest, offset),
-          ),
-        ),
+        rows.map((row) => {
+          const peerDomain = row.originDomain ?? originDomain;
+          if (!peerDomain) {
+            return this.driveFileSync(row.id, row.digest, (offset) =>
+              fetchChunksFor(row.digest, offset),
+            );
+          }
+          return this.downloadScheduler
+            .schedule(peerDomain, row.digest, () =>
+              this.driveFileSync(row.id, row.digest, (offset) =>
+                fetchChunksFor(row.digest, offset),
+              ),
+            )
+            .then(async () => {
+              // A coalesced waiter did not run its own task. Mark its logical progress row ready now
+              // that the shared physical CAS transfer has completed.
+              await this.database.db
+                .update(tables.fileSyncProgress)
+                .set({ status: 'SUCCEEDED', updatedAt: new Date() })
+                .where(
+                  and(
+                    eq(tables.fileSyncProgress.id, row.id),
+                    eq(tables.fileSyncProgress.status, 'PENDING'),
+                  ),
+                );
+            });
+        }),
       );
       await this.promotePendingMessage(batchId);
     });
@@ -5044,16 +4167,32 @@ export class FederationService implements OnModuleDestroy {
 
   /**
    * Admin-driven retry of a stalled inbound media batch (design doc §12.7). Resets files frozen in
-   * DOWNLOADING (a crashed driver) or FAILED back to PENDING, re-derives the download routing purely
-   * from persisted state — `fromAccount`/`fromDomain` from the creator, `toAccount` from the thread
-   * (the group `!account` or the local P2P participant), `originDomain`/`originSeq` from the
-   * batch — then fire-and-forgets runFileSyncBatch. Routing is never persisted because it is fully
-   * derivable from the same creator+thread identity that determines message placement. Returns the
+   * DOWNLOADING (a crashed driver) or FAILED back to PENDING, restores the admitted download route
+   * persisted by global /missed (with a derivation fallback for legacy thread-pull batches), then
+   * fire-and-forgets runFileSyncBatch. Returns the
    * number of stuck files reset (FAILED/DOWNLOADING → PENDING); the admin observes progress via the
    * inbox list endpoint.
    */
   async retryInboundBatch(
     batchId: string,
+  ): Promise<{ batchId: string; resetFiles: number }> {
+    return this.resumeInboundBatch(batchId, ['DOWNLOADING', 'FAILED']);
+  }
+
+  /**
+   * Startup recovery is deliberately narrower than the admin retry: a process crash may strand an
+   * active transfer in DOWNLOADING, so it is reset and resumed. A clean FAILED row remains terminal
+   * until an administrator explicitly retries it.
+   */
+  async recoverInboundBatch(
+    batchId: string,
+  ): Promise<{ batchId: string; resetFiles: number }> {
+    return this.resumeInboundBatch(batchId, ['DOWNLOADING']);
+  }
+
+  private async resumeInboundBatch(
+    batchId: string,
+    resetStatuses: Array<'DOWNLOADING' | 'FAILED'>,
   ): Promise<{ batchId: string; resetFiles: number }> {
     const batch = await this.database.db.query.pendingMedia.findFirst({
       where: eq(tables.pendingMedia.batchId, batchId),
@@ -5065,24 +4204,30 @@ export class FederationService implements OnModuleDestroy {
         HttpStatus.NOT_FOUND,
       );
     }
-    // A crash freezes a file in DOWNLOADING (runFileSyncBatch only drives PENDING/FAILED); a permanent
-    // peer error leaves FAILED. Reset both so the re-drive picks them up. SUCCEEDED files are left as-is.
+    // Admin retry resets FAILED too; startup recovery resets only crash-stranded DOWNLOADING rows.
+    // SUCCEEDED and protocol-terminal TOMBSTONED files are always left as-is.
     const reset = await this.database.db
       .update(tables.fileSyncProgress)
       .set({ status: 'PENDING', errorKind: null, updatedAt: new Date() })
       .where(
         and(
           eq(tables.fileSyncProgress.batchId, batchId),
-          inArray(tables.fileSyncProgress.status, [
-            'DOWNLOADING',
-            'FAILED',
-          ]),
+          inArray(tables.fileSyncProgress.status, resetStatuses),
         ),
       )
       .returning({ id: tables.fileSyncProgress.id });
 
-    // Re-derive routing from persisted state (no routing columns are stored). `toAccount` is the
-    // recipient on the wire: the group `!account` for a group thread, or the local P2P participant.
+    // Global /missed persists the already-authorized wire route with each file. This matters when a
+    // relationship changes while a quota-paused transfer is waiting: recovery must replay the exact
+    // authorization context admitted with the change, not derive a potentially different current route.
+    const progress = await this.database.db.query.fileSyncProgress.findFirst({
+      where: eq(tables.fileSyncProgress.batchId, batchId),
+      columns: { payload: true },
+    });
+    const persistedAuth = parseInboundDownloadAuth(progress?.payload);
+
+    // Legacy thread-pull batches predate persisted route context. Keep the derivation fallback until
+    // that transport is removed; new global /missed batches never depend on it.
     const creator = await this.database.db.query.user.findFirst({
       where: eq(tables.user.id, batch.creatorId),
       columns: { account: true, domain: true },
@@ -5116,32 +4261,37 @@ export class FederationService implements OnModuleDestroy {
         .limit(1);
       toAccount = localMember?.account ?? null;
     }
-    if (!creator || !toAccount || !batch.originDomain || !batch.originSeq) {
+    const fromAccount = persistedAuth?.fromAccount ?? creator?.account;
+    const fromDomain = persistedAuth?.fromDomain ?? creator?.domain;
+    toAccount = persistedAuth?.toAccount ?? toAccount;
+    if (
+      !fromAccount ||
+      !fromDomain ||
+      !toAccount ||
+      !batch.originDomain ||
+      batch.originSeq == null
+    ) {
       throw new BusinessException(
         BusinessCode.INTERNAL,
         `cannot re-derive routing for batch ${batchId}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-    const fromAccount = creator.account;
-    const fromDomain = creator.domain;
     const originDomain = batch.originDomain;
     const originSeq = batch.originSeq;
 
     // Fire-and-forget: the per-batch mutex serializes this against any in-flight original driver.
-    void this.runFileSyncBatch(
-      batchId,
-      (digest, offset) =>
-        this.fetchMediaChunks(
-          originDomain,
-          digest,
-          fromAccount,
-          fromDomain,
-          toAccount,
-          originSeq,
-          undefined,
-          offset,
-        ),
+    void this.runFileSyncBatch(batchId, (digest, offset) =>
+      this.fetchMediaChunks(
+        originDomain,
+        digest,
+        fromAccount,
+        fromDomain,
+        toAccount,
+        originSeq,
+        undefined,
+        offset,
+      ),
     ).catch(() => undefined);
 
     return { batchId, resetFiles: reset.length };
@@ -5223,10 +4373,7 @@ export class FederationService implements OnModuleDestroy {
             updatedAt: new Date(),
           })
           .onConflictDoNothing({
-            target: [
-              tables.deletedMessage.threadId,
-              tables.deletedMessage.seq,
-            ],
+            target: [tables.deletedMessage.threadId, tables.deletedMessage.seq],
           });
       } else {
         for (const digest of extractDigests(batch.content)) {
@@ -5271,6 +4418,9 @@ export class FederationService implements OnModuleDestroy {
         .delete(tables.pendingMedia)
         .where(eq(tables.pendingMedia.id, batch.id));
       await this.quota.tickLax(batch.originDomain!, 'messages', tx, 1);
+      await this.discoveryChanges.recordMessageInTx(tx, message.id, [
+        batch.originDomain!,
+      ]);
       return {
         message,
         threadId,
@@ -5304,7 +4454,11 @@ export class FederationService implements OnModuleDestroy {
       });
       if (deletion) {
         for (const uid of recipients) {
-          this.sse.onDeletedMessageUpdated(uid, threadId, deletion.id.toString());
+          this.sse.onDeletedMessageUpdated(
+            uid,
+            threadId,
+            deletion.id.toString(),
+          );
         }
       }
     } else {
@@ -5319,9 +4473,12 @@ export class FederationService implements OnModuleDestroy {
         }
       }
     }
-    void this.signalOutbound(threadId, creatorId, originSeq, originDomain).catch(
-      () => undefined,
-    );
+    void this.signalOutbound(
+      threadId,
+      creatorId,
+      originSeq,
+      originDomain,
+    ).catch(() => undefined);
   }
 
   /**
@@ -5663,7 +4820,9 @@ export class FederationService implements OnModuleDestroy {
    * failure). A body-read error AFTER a 2xx → retry the same unit, NO demote (peer alive; lost a
    * stream). After mediaMaxChunkRetries consecutive failures → give up (throw; localizeMedia leaves it
    * inert). markContactSuccess fires ONCE per digest (after the first 2xx headers). If the peer returns
-   * 200 (no Range support) the whole body is streamed once, single-shot — never re-requested forever.
+   * A peer that ignores Range and returns 200 is rejected: federation media requires exact resumable
+   * ranges. Per-unit Content-Digest is optional, but when present it is verified before yielding; the
+   * final CAS digest remains mandatory in both cases.
    */
   private async *fetchMediaChunks(
     peerDomain: string,
@@ -5695,12 +4854,6 @@ export class FederationService implements OnModuleDestroy {
         await this.markContactSuccess(peerDomain);
         markedAlive = true;
       }
-      if (unit.fallback200) {
-        // Peer ignored Range: stream the full body once and stop (no resume, no loop). Quota for regular
-        // media is charged in driveFileSync (quotaCounted-guarded); bundle assets never charge here.
-        for await (const piece of this.webBody(unit.res)) yield piece;
-        return;
-      }
       total = unit.total;
       let unitLen = unit.end - unit.start + 1;
 
@@ -5718,6 +4871,10 @@ export class FederationService implements OnModuleDestroy {
             throw new Error(
               `unit byte mismatch (got ${buf.length}, expected ${unitLen})`,
             );
+          }
+          const actualDigest = `sha-256=${createHash('sha256').update(buf).digest('base64')}`;
+          if (unit.contentDigest && actualDigest !== unit.contentDigest) {
+            throw new Error(`unit digest mismatch at offset ${offset}`);
           }
         } catch (e) {
           if (++retries > this.config.mediaMaxChunkRetries) {
@@ -5741,8 +4898,8 @@ export class FederationService implements OnModuleDestroy {
   }
 
   /** One signed Range GET to /get_file, with status-based classification (see fetchMediaChunks). Returns
-   *  the Response + the parsed Content-Range bounds, or `fallback200` when the peer served the whole
-   *  file as 200 (Range unsupported). Throws — with markDemoted for auth/transport failures — on
+   *  the Response + parsed Content-Range bounds and optional per-unit Content-Digest. Throws — with
+   *  markDemoted for auth/transport failures — on
    *  anything that isn't 200/206. The raw query is covered by the request signature. */
   private async requestRangeUnit(
     url: URL,
@@ -5754,7 +4911,7 @@ export class FederationService implements OnModuleDestroy {
     start: number;
     end: number;
     total: number;
-    fallback200: boolean;
+    contentDigest?: string;
   }> {
     const headers = this.signature.signOutbound({
       method: 'GET',
@@ -5779,8 +4936,9 @@ export class FederationService implements OnModuleDestroy {
         `S2S get_file from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
-    if (res.status === 200)
-      return { res, start: 0, end: 0, total: 0, fallback200: true };
+    if (res.status === 200) {
+      throw new Error('S2S get_file peer ignored required Range request');
+    }
     if (res.status === 206) {
       const cr = res.headers.get('content-range') ?? '';
       const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(cr);
@@ -5796,6 +4954,7 @@ export class FederationService implements OnModuleDestroy {
       const returnedStart = Number(m[1]);
       const returnedEnd = Number(m[2]);
       const returnedTotal = Number(m[3]);
+      const contentDigestHeader = res.headers.get('content-digest');
       if (
         returnedStart !== start ||
         returnedEnd < returnedStart ||
@@ -5806,12 +4965,18 @@ export class FederationService implements OnModuleDestroy {
           `S2S get_file returned unexpected Content-Range: ${cr} for bytes=${start}-${end}`,
         );
       }
+      if (
+        contentDigestHeader !== null &&
+        !/^sha-256=[A-Za-z0-9+/]{43}=$/.test(contentDigestHeader)
+      ) {
+        throw new Error('S2S get_file 206 with an invalid Content-Digest');
+      }
       return {
         res,
         start: returnedStart,
         end: returnedEnd,
         total: returnedTotal,
-        fallback200: false,
+        contentDigest: contentDigestHeader ?? undefined,
       };
     }
     // Auth/transport failures demote (peer unreachable / rejecting our signature); other 4xx (416/400/404)
@@ -5835,23 +5000,6 @@ export class FederationService implements OnModuleDestroy {
     for await (const piece of res.body as unknown as AsyncIterable<Uint8Array>) {
       yield Buffer.from(piece);
     }
-  }
-
-  /** Snapshot a domain's pending pulls as a flat list of { key, entry } (for the drain loop). */
-  private snapshotPendingPulls(
-    domain: string,
-  ): Array<{ key: string; entry: NewMsgMapEntry }> {
-    const byScope = this.pendingPulls.get(domain);
-    if (!byScope) return [];
-    return [...byScope.entries()].map(([key, entry]) => ({ key, entry }));
-  }
-
-  /** Remove one pending-pull hint by scopeKey (+ drop the domain bucket when emptied). */
-  private removePendingPullKey(domain: string, key: string): void {
-    const byScope = this.pendingPulls.get(domain);
-    if (!byScope) return;
-    byScope.delete(key);
-    if (byScope.size === 0) this.pendingPulls.delete(domain);
   }
 
   /**

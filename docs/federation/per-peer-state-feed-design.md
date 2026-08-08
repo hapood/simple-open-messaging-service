@@ -1,0 +1,356 @@
+# 联邦每 Peer 状态 Feed 设计
+
+> **状态：已裁决，等待实现**  
+> **日期：2026-08-08**  
+> **适用范围：好友关系、用户/群资料、群成员与角色状态的联邦同步**
+
+本文是下一阶段实现依据。它把系统消息恢复为纯展示消息，并以“每个 peer 一份、按状态 key
+压缩、携带完整快照”的持久 feed 取代聊天打开时的联邦关系/profile/meta 探测。
+
+本文只替换
+[节点身份连续性与持久消息发现设计](./identity-and-durable-discovery-design.md)中由 SYSTEM 消息执行
+关系动作、删除关系后再懒查询权威状态，以及 profile/group meta revision 二次查询的部分。
+现有消息 `/missed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
+不因本设计删除或复用。状态 feed 有独立的表、seq、HWM 和 pull cursor。
+
+## 1. 最终原则
+
+1. SYSTEM 消息只是聊天时间线中的服务端生成展示记录，不是命令、状态事实或状态重放来源。
+2. 申请、接受、拒绝和删除好友等 S2S 写接口仍是业务命令；命令后的额外资料/关系同步 POST 删除。
+3. 每个 federated peer 拥有一份独立状态 feed；feed item 在写入时已经完成路由，拉取时不再连接
+   audience 表鉴权。
+4. 同一 peer、同一状态 key 只保留最新 item。中间 revision 可以压缩，最终快照不能丢。
+5. item 携带完整 JSON body，包括 profile 头像和完整群 meta；接收端不再二次查询详情。
+6. 业务状态、业务 revision、peer seq 和 feed item 必须在同一数据库事务中提交。
+7. push/SSE 只是可丢失、可重复、可乱序的唤醒；持久 feed、HWM 和 cursor 提供完整性。
+8. 删除 federated peer 时级联删除该 peer 的 feed、allocator 和 pull cursor。
+
+## 2. 权威模型
+
+### 2.1 身份
+
+User 和 Group 均由不可变 account 识别。群 account 使用现有 `!` 前缀，因此状态 key 不增加
+`entityType`。
+
+### 2.2 群聊
+
+群所在服务器是 Group PROFILE 和 Group META 的唯一权威来源。只有群 origin 可以发布：
+
+- 群名称、头像、简介；
+- active/dissolved 状态；
+- 完整成员列表；
+- 成员角色；
+- 群主。
+
+镜像服务器只按更高 revision 应用快照，不能反向声明权威群状态。
+
+### 2.3 P2P 好友关系
+
+好友关系取双方认可状态的 AND：
+
+```text
+effectiveFriend = localRecognizesRemote && remoteRecognizesLocal
+```
+
+双方分别只对自己的 `recognizesFriend` 状态负责。任意一方发布 `false`，接收方必须立即解除
+effective friendship；旧的 `true` 不能在之后复活关系。
+
+每个方向保存最后应用的 revision。只有更高 revision 可以覆盖；相同 revision 重试是 no-op，
+更低 revision 必须忽略。重复加好友、重复删除好友等没有发生真实状态迁移的命令不增长 revision。
+
+申请/接受/拒绝/删除好友仍通过已签名、幂等的 S2S command 完成。可以删除的是命令成功后为了
+建立镜像、补头像或查询最终关系而发送的额外 POST。
+
+## 3. 状态类别和 key
+
+`eventType` 表示可覆盖的状态类别，而不是不可压缩的动作日志：
+
+```text
+PROFILE
+P2P_META
+GROUP_META
+```
+
+建议显式保存 `account` 和可空的 `subjectAccount`：
+
+| eventType  | account                 | subjectAccount       | 含义                         |
+| ---------- | ----------------------- | -------------------- | ---------------------------- |
+| PROFILE    | 用户或群 account        | 空                   | 用户/群展示资料              |
+| P2P_META   | 本服务器本地用户 account | 对端用户 account     | 本地用户对该对端的认可状态   |
+| GROUP_META | 群 account              | 空                   | 群完整 meta/roster 权威快照  |
+
+P2P 必须包含双方 account。仅使用 `(peerDomain, account, P2P_META)` 会让同一用户在同一远端服务器
+上的多段好友关系互相覆盖。
+
+数据库可将 `subjectAccount` 规范化为非空字符串默认值 `''`，从而使用一个普通唯一约束：
+
+```text
+UNIQUE(peerDomain, account, eventType, subjectAccount)
+```
+
+## 4. 数据模型
+
+表名可在实现时按现有命名风格微调，语义不得改变。
+
+### 4.1 PeerStateFeed
+
+```text
+PeerStateFeed
+- peerDomain varchar FK -> FederatedPeer.domain ON DELETE CASCADE
+- account varchar
+- eventType PROFILE | P2P_META | GROUP_META
+- subjectAccount varchar NOT NULL DEFAULT ''
+- revision bigint/int
+- seq bigint
+- body jsonb
+- createdAt
+- updatedAt
+
+PRIMARY/UNIQUE(peerDomain, account, eventType, subjectAccount)
+UNIQUE(peerDomain, seq)
+CHECK(revision >= 0)
+CHECK(seq > 0)
+```
+
+同一 key 只在 incoming revision 大于现存 revision 时覆盖 `revision`、`seq` 和 `body`。相同或
+更旧 revision 完全 no-op，不能分配 seq，也不能发送 wake-up。
+
+### 4.2 PeerStateFeedTarget
+
+```text
+PeerStateFeedTarget
+- peerDomain primary key FK -> FederatedPeer.domain ON DELETE CASCADE
+- allocatedThrough bigint NOT NULL DEFAULT 0
+- updatedAt
+```
+
+每个 peer 独立分配 seq，避免所有服务器状态变更竞争一个全局 allocator。不能使用 PostgreSQL
+sequence、`MAX(seq)` 或提交顺序不受事务约束的自增值作为安全 HWM。
+
+### 4.3 Pull cursor
+
+接收端为每个 peer 保存独立于 missed message 的状态 feed cursor：
+
+```text
+PeerStateFeedPullCursor
+- peerDomain primary key FK -> FederatedPeer.domain ON DELETE CASCADE
+- remoteHwm bigint NOT NULL DEFAULT 0
+- updatedAt
+```
+
+## 5. Body 契约
+
+所有 body 必须带 schema version。字段最终落 JSON Schema；下面是最小语义。
+
+### 5.1 PROFILE
+
+```json
+{
+  "version": 1,
+  "name": "Alice",
+  "bio": "...",
+  "avatar": {
+    "digest": "sha256 hex",
+    "mimeType": "image/png",
+    "base64": "..."
+  },
+  "deleted": false
+}
+```
+
+Group PROFILE 使用相同结构，`bio` 表示群简介。头像建议同时携带 digest，以便接收端校验、去重并
+幂等落入现有 CAS；空头像使用明确的空值契约。用户删除、群删除等使用 `deleted: true` tombstone，
+不能通过物理删除 feed item 通知远端清缓存。
+
+### 5.2 P2P_META
+
+```json
+{
+  "version": 1,
+  "recognizesFriend": false
+}
+```
+
+发送方只能声明自己的认可状态。接收端把它与自己的认可状态取 AND，计算 effective friendship。
+
+### 5.3 GROUP_META
+
+```json
+{
+  "version": 1,
+  "active": true,
+  "dissolved": false,
+  "owner": { "account": "alice", "domain": "origin.example" },
+  "members": [
+    {
+      "account": "alice",
+      "domain": "origin.example",
+      "role": "OWNER"
+    }
+  ]
+}
+```
+
+完整 roster 快照覆盖加群、主动退群、被踢、设置/取消管理员、转让群主和群解散。最后一个属于
+某 peer 的成员离开时，该 peer 仍必须收到一次最终 GROUP_META；可使用 `active: false` 表示该 peer
+不再拥有活动镜像，确切 wire 字段在 JSON Schema 阶段冻结。
+
+页面和单 item 必须同时设置字节上限。完整 roster 和 base64 头像会放大 JSON、WAL 与网络流量，
+因此分页除 `take` 外必须限制总响应字节；单个合法 item 即使超过普通页预算，也必须有明确的
+单条传输上限和错误行为，不能无限大。
+
+## 6. 写入和路由事务
+
+状态变化事务按以下顺序执行：
+
+1. 锁定并校验业务实体当前状态/revision；
+2. 在修改成员关系前取得 `peersBeforeChange`；
+3. 修改好友、profile 或群状态，并只在真实变化时增长业务 revision；
+4. 取得 `peersAfterChange`；
+5. 目标为两者并集，确保删除好友、最后成员退出/被踢仍收到最终快照；
+6. 对目标 peerDomain 排序，按固定升序锁 `PeerStateFeedTarget`，避免多 peer 事务死锁；
+7. 为每个目标 peer 增长自己的 `allocatedThrough`；
+8. upsert 对应 feed item 的 revision、seq 和完整 body；
+9. 提交；
+10. 提交后才向各 peer 发送 `{ allocatedThrough }` 轻量 wake-up。
+
+PROFILE 的正常目标 peer 从当前有效跨站好友关系和共享联邦群关系推导。关系全部结束后，不再把
+未来 profile 更新写给该 peer。历史 PROFILE item 可保留，因为资料此前已经合法披露；如果产品要求
+撤回缓存，则在最后关系解除事务中写入 `deleted/visible:false` tombstone，不能静默物理删除。
+
+状态 feed 不需要 audience/refCount。它也不能复用消息 `ThreadAudience`：后者继续只决定 missed
+消息的发现与交付。
+
+## 7. 拉取 API 和分页
+
+端点名称可在实现时与现有 S2S 命名统一，协议语义如下：
+
+```text
+GET /api/v1/s2s/state-feed?after=120&take=100
+```
+
+响应：
+
+```json
+{
+  "items": [],
+  "scannedThrough": "150",
+  "allocatedThrough": "180",
+  "hasMore": true
+}
+```
+
+规则：
+
+1. 调用方只能拉取签名身份对应 peer 的 feed；peerDomain 不接受普通请求参数指定。
+2. 在事务快照内固定 `allocatedThrough` 为页面上界。
+3. 按 `seq > after AND seq <= allocatedThrough` 升序扫描。
+4. item 原地更新到更高 seq 会留下空洞；cursor 依据 `scannedThrough` 推进，不能依据最后返回 item。
+5. 达到行数或字节预算时，`scannedThrough` 为已经完整检查的最后边界；未达到预算时可直接推进到
+   固定的 `allocatedThrough`。
+6. `after` 倒退、超过源 HWM、item 无序或页面边界非法时，按 missed API 的同类错误拒绝。
+7. wake-up 丢失后，peer 初始化、进程重启、连接恢复及低频 reconciliation 必须主动查询 HWM/drain。
+
+## 8. 接收端原子性
+
+同一 peer 只允许一个状态 feed pull worker；复用 missed pull 的 peer advisory lock/NOWAIT 模式。
+一页处理必须在同一本地数据库事务内完成：
+
+1. 验证页面、seq、revision、body schema、头像 digest/base64 和群 roster；
+2. 按稳定 key 比较 remote revision；相同/更旧 revision 幂等跳过；
+3. 应用完整 profile/P2P/group 快照；
+4. 更新 `remoteProfileRev` 或对应 remote meta revision；
+5. 推进 `PeerStateFeedPullCursor.remoteHwm = scannedThrough`；
+6. 提交后向本地客户端发送轻量刷新事件。
+
+任何格式或一致性错误使整页回滚，cursor 不推进。因为 body 已经完整，页事务中不再发起 profile、
+avatar、关系或群 meta 的二次远程请求。
+
+## 9. SYSTEM 展示消息
+
+首批结构化展示类型：
+
+```text
+FRIEND_ADDED
+FRIEND_REMOVED
+GROUP_JOINED
+GROUP_LEFT
+GROUP_ADMIN_GRANTED
+GROUP_ADMIN_REVOKED
+GROUP_OWNER_TRANSFERRED
+```
+
+主动退群和被踢统一显示为 `GROUP_LEFT`。SYSTEM 消息继续走现有 Message、missed message、分页、
+删除/leave 边界和轻量消息唤醒机制，但仅用于展示：
+
+- 只能由服务器创建；
+- 接收 SYSTEM 消息不得修改 friendship、participant、role、owner 或 profile；
+- 不可由客户端伪造、转发、撤回、举报、编辑、引用或作为 action 执行；
+- 状态事实来自 command transaction 和状态 feed，不来自 SYSTEM message body。
+
+## 10. 生命周期
+
+- **建立好友/加入群：** command 事务必须写初始 P2P_META、所需 PROFILE 和 GROUP_META 完整快照，
+  不能等待下一次资料变化。
+- **删除好友：** 本地认可立即变 false，写最终 P2P_META；收到任一方 false 后 effective friendship
+  立即解除。
+- **退群/被踢：** 写给变更前后 peer 并集；群 origin 发布最终完整 GROUP_META。
+- **重新加好友/重新入群：** 使用更高业务 revision 覆盖旧 NONE/inactive item，无需 generation 或
+  audience 恢复逻辑。
+- **用户/群删除：** 写 tombstone body。
+- **peer reset/delete：** 既有 reset 安全规则继续适用；删除 `FederatedPeer` 时级联删除 feed、target、
+  pull cursor 和该 peer 的远端镜像数据。旧 peer 身份不能继承旧 feed/cursor。
+
+## 11. 被替换和保留的现有逻辑
+
+状态 feed 完成双节点和崩溃恢复验收后删除：
+
+- chat/profile 打开时的联邦 profile revision 探测与二次 profile 拉取；
+- 已加好友头像的专用联邦刷新逻辑；
+- 群打开时的 profileRev/rosterRev 探测与二次 meta 拉取；
+- 好友双方互认成功后仅用于补关系镜像、头像或资料的额外 POST；
+- 把 SYSTEM message 当作关系 action/状态修正来源的代码。
+
+继续保留：
+
+- 申请、接受、拒绝、删除好友等业务 command；
+- 消息 `/missed`、`DiscoveryChange`、`ThreadAudience`、message HWM/cursor；
+- 消息删除、`leaveId` 及现有消息交付机制；
+- federation identity、签名、trust、reset 和 quota 约束。
+
+## 12. 实施顺序
+
+1. 新增 schema、迁移、Drizzle relations 和约束。
+2. 实现 peer 内 allocator、事务 upsert service 和提交后 wake-up。
+3. 接入所有 revision 增长点：用户/群 profile、好友双方认可、入退/踢群、角色、群主、解散/删除。
+4. 实现 S2S HWM/feed API、receiver drain、cursor 和本地应用事务。
+5. 将 SYSTEM 消息改为纯展示结构，移除 action 语义。
+6. 双轨运行并对比旧查询与 feed 状态；不得先删旧兜底。
+7. 完成验收后删除旧 revision/profile/meta 查询和额外同步 POST。
+8. 更新 federation API、overview、数据库文档和最终 JSON Schema。
+
+## 13. 必须通过的测试
+
+- 同 peer、同 key 多次更新只返回最高 revision/latest body。
+- 同一用户与同一 peer 上多个账号的 P2P_META 不互相覆盖。
+- 双方都认可才成为好友；任意一方 false 立即解除。
+- 延迟旧 `true` 不能覆盖较新 `false`。
+- 重复 command/revision 不增长 seq。
+- 事务回滚不暴露 seq/HWM/item；不能发生先分配后晚提交导致 cursor 跳过。
+- wake-up 丢失、重复、乱序以及进程重启后仍能依靠 HWM 拉齐。
+- 快慢 peer 相互独立；一个 peer 不得读取另一个 peer feed。
+- 群最后一个远端成员主动退出或被踢仍收到最终 GROUP_META。
+- 多 peer 群更新按固定锁序完成且无死锁。
+- 大头像、大群 roster、坏 base64/digest、超页字节预算按契约处理。
+- 接收页任一 item 非法时整页和 cursor 回滚。
+- 用户/群 tombstone 清除远端缓存；重新建立关系以更高 revision 恢复。
+- peer 删除/reset 后 feed、allocator、cursor 及旧身份授权不可继承。
+- SYSTEM 消息可通过 missed 展示，但不会修改任何业务状态。
+- 切除旧查询和额外 POST 后，双节点加删好友、头像更新、群资料/成员/角色/群主变化仍完整收敛。
+
+## 14. 闭环结论
+
+在上述约束下，本设计闭环：命令负责改变权威业务状态；事务内的每-peer压缩 feed 持久传播完整
+最新快照；receiver 原子应用快照并推进 cursor；轻量事件只负责提速；SYSTEM 消息只负责展示；
+消息 missed 机制保持独立。不存在必须依赖聊天打开、二次联邦查询、进程内 hint 或 audience 终止
+边界才能恢复的状态变化。
