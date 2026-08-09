@@ -5,24 +5,24 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { federatedPeer, federationPullCursor } from '../src/database/schema.js';
 import {
-  FederationMissedPullService,
-  type FederationMissedPullCallbacks,
-} from '../src/federation/federation-missed-pull.service.js';
-import type { FederationMissedPage } from '../src/federation/federation-missed.service.js';
+  FederationMessageFeedPullService,
+  type FederationMessageFeedPullCallbacks,
+} from '../src/federation/federation-message-feed-pull.service.js';
+import type { FederationMessageFeedPage } from '../src/federation/federation-message-feed.service.js';
 
-describe('FederationMissedPullService', () => {
+describe('FederationMessageFeedPullService', () => {
   let mod: TestingModule;
   let database: DatabaseService;
-  let service: FederationMissedPullService;
+  let service: FederationMessageFeedPullService;
   const peerDomain = 'pull-peer.test';
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
       imports: [DatabaseModule],
-      providers: [FederationMissedPullService],
+      providers: [FederationMessageFeedPullService],
     }).compile();
     database = mod.get(DatabaseService);
-    service = mod.get(FederationMissedPullService);
+    service = mod.get(FederationMessageFeedPullService);
   });
 
   beforeEach(async () => {
@@ -43,7 +43,7 @@ describe('FederationMissedPullService', () => {
     allocatedThrough: bigint,
     changeIds: bigint[] = [],
     hasMore = false,
-  ): FederationMissedPage => ({
+  ): FederationMessageFeedPage => ({
     scannedThrough: scannedThrough.toString(),
     allocatedThrough: allocatedThrough.toString(),
     hasMore,
@@ -66,7 +66,7 @@ describe('FederationMissedPullService', () => {
   it('keeps pulling through a final empty acknowledgement page', async () => {
     const requested: bigint[] = [];
     const applied: string[][] = [];
-    const callbacks: FederationMissedPullCallbacks = {
+    const callbacks: FederationMessageFeedPullCallbacks = {
       fetch: async (after) => {
         requested.push(after);
         if (after === 0n) return page(2n, 5n, [1n, 2n], true);
@@ -91,7 +91,7 @@ describe('FederationMissedPullService', () => {
   it('observes a push arriving during the final request and continues', async () => {
     const requested: bigint[] = [];
     let pushed = false;
-    let callbacks!: FederationMissedPullCallbacks;
+    let callbacks!: FederationMessageFeedPullCallbacks;
     callbacks = {
       fetch: async (after) => {
         requested.push(after);

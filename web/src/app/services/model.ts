@@ -25,7 +25,7 @@ export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
 export type User = S['UserResponseDto'];
 export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
-  contentType: S['MessageResponseDto']['contentType'] | 'GALLERY';
+  contentType: S['MessageResponseDto']['contentType'];
   /** Federated media localize status (absent = ready). Carried on query-messages rows + NEW_MESSAGE
    *  frames; the client also sets 'downloading' optimistically on arrival / manual retry. */
   mediaStatus?: MediaStatus;

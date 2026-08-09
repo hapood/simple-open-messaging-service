@@ -22,13 +22,13 @@ const STATEMENT_TIMEOUT_MS = 10_000;
 const IDLE_TRANSACTION_TIMEOUT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
-export interface FederationMissedAsset {
+export interface FederationMessageFeedAsset {
   digest: string;
   bytes: string;
   status: 'READY' | 'DELETED';
 }
 
-export interface FederationMissedMessage {
+export interface FederationMessageFeedMessage {
   changeId: string;
   thread:
     | { type: 'GROUP'; account: string; domain: string }
@@ -49,18 +49,18 @@ export interface FederationMissedMessage {
     creator: { account: string; domain: string };
     originSeq: number;
   };
-  assets: FederationMissedAsset[];
+  assets: FederationMessageFeedAsset[];
 }
 
-export interface FederationMissedPage {
-  messages: FederationMissedMessage[];
+export interface FederationMessageFeedPage {
+  messages: FederationMessageFeedMessage[];
   scannedThrough: string;
   allocatedThrough: string;
   hasMore: boolean;
 }
 
 @Injectable()
-export class FederationMissedService {
+export class FederationMessageFeedService {
   private readonly localDomain = loadFederationConfig().domain;
 
   constructor(private readonly cursor: FederationCursorService) {}
@@ -69,7 +69,7 @@ export class FederationMissedService {
     peerDomain: string,
     after: bigint,
     requestedTake?: number,
-  ): Promise<FederationMissedPage> {
+  ): Promise<FederationMessageFeedPage> {
     const take = this.pageSize(requestedTake);
     const deadline = Date.now() + REQUEST_TIMEOUT_MS;
     const result = await this.cursor.servePage(
@@ -181,7 +181,7 @@ export class FederationMissedService {
         ]);
         this.assertBeforeDeadline(deadline);
 
-        const assets = new Map<bigint, FederationMissedAsset[]>();
+        const assets = new Map<bigint, FederationMessageFeedAsset[]>();
         for (const row of assetRows) {
           const list = assets.get(row.messageId) ?? [];
           list.push({
@@ -260,7 +260,7 @@ export class FederationMissedService {
           ]),
         );
 
-        const messages = changes.map((row): FederationMissedMessage => {
+        const messages = changes.map((row): FederationMessageFeedMessage => {
           const group = row.groupUserId
             ? groups.get(row.groupUserId)
             : undefined;

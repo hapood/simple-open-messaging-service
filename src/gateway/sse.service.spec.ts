@@ -3,13 +3,38 @@ import type { ServerResponse } from 'node:http';
 import { SseService } from './sse.service.js';
 
 /**
- * SseService registry + disconnect. Pure unit tests (no DI — SseService has no constructor deps; the raw
- * responses are mocked). Covers the per-session FORCE_LOGOUT (onSessionRevoked disconnects ONLY the
+ * SseService registry + disconnect. Pure unit tests (no DI; dependencies and raw responses are mocked).
+ * Covers the per-session FORCE_LOGOUT (onSessionRevoked disconnects ONLY the
  * matching session, including multi-tab same-credential, and leaves other devices online), the all-device
  * broadcast (onSessionsInvalidated), and the unknown-session no-op. The @OnEvent handlers are invoked
  * directly as methods (the decorator only wires the emitter; the method itself is plain).
  */
 describe('SseService', () => {
+  function makeService() {
+    const database = {
+      db: {
+        query: {
+          user: {
+            findFirst: vi.fn().mockResolvedValue({
+              threadRevision: 4,
+              readRevision: 3,
+              profileRev: 2,
+              friendReqAckRev: new Date(0),
+            }),
+          },
+        },
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ createdAt: null }]),
+          }),
+        }),
+      },
+    };
+    const messages = { findNewestForUser: vi.fn().mockResolvedValue(null) };
+    const callState = { get: vi.fn().mockReturnValue(null) };
+    return new SseService(database as never, messages as never, callState as never);
+  }
+
   /** A mock hijacked raw response that records everything written so a FORCE_LOGOUT frame is detectable. */
   function mockRes() {
     const writes: string[] = [];
@@ -32,8 +57,20 @@ describe('SseService', () => {
     return writes.some((w) => w.includes('event: FORCE_LOGOUT'));
   }
 
+  it('always includes the mandatory stateRevision in HELLO', async () => {
+    const svc = makeService();
+    const client = mockRes();
+
+    svc.register(7, 11, client.res);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const hello = client.writes.find((write) => write.includes('event: HELLO'));
+    expect(hello).toContain('"stateRevision":4');
+    svc.onModuleDestroy();
+  });
+
   it('broadcasts THREAD_READ_UPDATED to every connection of the same user', () => {
-    const svc = new SseService({} as never, {} as never, {} as never);
+    const svc = makeService();
     const a = mockRes();
     const b = mockRes();
     (svc as unknown as { clients: Record<number, unknown[]> }).clients[7] = [
@@ -65,7 +102,7 @@ describe('SseService', () => {
   });
 
   it('onSessionRevoked disconnects ONLY the matching session (other devices survive)', () => {
-    const svc = new SseService();
+    const svc = makeService();
     const a = mockRes(); // session 11
     const b = mockRes(); // session 22 — same user, different device
     svc.register(7, 11, a.res);
@@ -82,7 +119,7 @@ describe('SseService', () => {
   });
 
   it('onSessionRevoked disconnects every connection sharing the sessionId (multi-tab same credential)', () => {
-    const svc = new SseService();
+    const svc = makeService();
     const tab1 = mockRes();
     const tab2 = mockRes(); // same session 11 — two tabs, one session token
     const other = mockRes(); // session 22
@@ -100,7 +137,7 @@ describe('SseService', () => {
   });
 
   it('onSessionRevoked drops the user slot when no connections remain', () => {
-    const svc = new SseService();
+    const svc = makeService();
     const a = mockRes();
     svc.register(7, 11, a.res);
 
@@ -111,7 +148,7 @@ describe('SseService', () => {
   });
 
   it("onSessionsInvalidated kicks ALL of the user's sessions (broadcast)", () => {
-    const svc = new SseService();
+    const svc = makeService();
     const a = mockRes();
     const b = mockRes();
     svc.register(7, 11, a.res);
@@ -125,7 +162,7 @@ describe('SseService', () => {
   });
 
   it('onSessionRevoked is a no-op for an unknown sessionId', () => {
-    const svc = new SseService();
+    const svc = makeService();
     const a = mockRes();
     svc.register(7, 11, a.res);
 

@@ -5,21 +5,21 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import { federationPullCursor } from '../database/schema.js';
-import type { FederationMissedPage } from './federation-missed.service.js';
+import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
 
-export interface FederationMissedPullCallbacks {
-  fetch(after: bigint): Promise<FederationMissedPage>;
+export interface FederationMessageFeedPullCallbacks {
+  fetch(after: bigint): Promise<FederationMessageFeedPage>;
   /** Apply the complete page in the same transaction that advances remoteHwm. */
-  apply(tx: DatabaseTransaction, page: FederationMissedPage): Promise<void>;
+  apply(tx: DatabaseTransaction, page: FederationMessageFeedPage): Promise<void>;
   /** Runs only after the page transaction (including remoteHwm) committed successfully. */
-  afterCommit?(page: FederationMissedPage): Promise<void> | void;
+  afterCommit?(page: FederationMessageFeedPage): Promise<void> | void;
 }
 
 interface AppliedPage {
   requestedAfter: bigint;
   scannedThrough: bigint;
   hasMore: boolean;
-  page: FederationMissedPage;
+  page: FederationMessageFeedPage;
 }
 
 /**
@@ -28,8 +28,8 @@ interface AppliedPage {
  * so another process fails NOWAIT instead of issuing a concurrent request to the same peer.
  */
 @Injectable()
-export class FederationMissedPullService {
-  private readonly logger = new Logger(FederationMissedPullService.name);
+export class FederationMessageFeedPullService {
+  private readonly logger = new Logger(FederationMessageFeedPullService.name);
   private readonly running = new Map<string, Promise<void>>();
   private readonly pending = new Set<string>();
   private readonly advertised = new Map<string, bigint>();
@@ -52,7 +52,7 @@ export class FederationMissedPullService {
    */
   run(
     peerDomain: string,
-    callbacks: FederationMissedPullCallbacks,
+    callbacks: FederationMessageFeedPullCallbacks,
   ): Promise<void> {
     this.pending.add(peerDomain);
     const current = this.running.get(peerDomain);
@@ -79,7 +79,7 @@ export class FederationMissedPullService {
 
   private async loop(
     peerDomain: string,
-    callbacks: FederationMissedPullCallbacks,
+    callbacks: FederationMessageFeedPullCallbacks,
   ): Promise<void> {
     this.pending.delete(peerDomain);
     for (;;) {
@@ -109,7 +109,7 @@ export class FederationMissedPullService {
 
   private async applyOnePage(
     peerDomain: string,
-    callbacks: FederationMissedPullCallbacks,
+    callbacks: FederationMessageFeedPullCallbacks,
   ): Promise<AppliedPage | null> {
     return this.database.db.transaction(async (tx) => {
       const lockResult = await tx.execute<{ locked: boolean }>(

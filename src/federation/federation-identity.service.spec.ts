@@ -11,7 +11,7 @@ beforeAll(async () => {
   ({ FederationIdentityService } = await import(
     './federation-identity.service.js'
   ));
-});
+}, 30_000);
 
 function makeService(
   peer?: Record<string, unknown>,
@@ -24,12 +24,17 @@ function makeService(
   updateSet.mockReturnValue({ where: updateWhere });
   const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
   const insertValues = vi.fn().mockReturnValue({ onConflictDoUpdate });
+  const selectLimit = vi.fn().mockResolvedValue(peer ? [peer] : []);
+  const selectFor = vi.fn().mockReturnValue({ limit: selectLimit });
+  const selectWhere = vi.fn().mockReturnValue({ for: selectFor });
+  const selectFrom = vi.fn().mockReturnValue({ where: selectWhere });
   const tx = {
     query: {
       federatedPeer: { findFirst: vi.fn().mockResolvedValue(peer) },
       federatedPeerReset: { findFirst: vi.fn().mockResolvedValue(reset) },
     },
     update: vi.fn().mockReturnValue({ set: updateSet }),
+    select: vi.fn().mockReturnValue({ from: selectFrom }),
     insert: vi.fn().mockReturnValue({
       values: insertValues,
     }),

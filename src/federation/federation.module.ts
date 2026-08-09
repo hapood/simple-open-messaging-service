@@ -7,7 +7,7 @@ import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
-import { S2sInitController } from './s2s-init.controller.js';
+import { S2sIgniteController } from './s2s-ignite.controller.js';
 import { WellKnownController } from './well-known.controller.js';
 import { InviteModule } from '../invite/invite.module.js';
 import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
@@ -18,11 +18,14 @@ import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 import { FederationIdentityService } from './federation-identity.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
-import { FederationInitService } from './federation-init.service.js';
-import { FederationMissedService } from './federation-missed.service.js';
-import { FederationMissedPullService } from './federation-missed-pull.service.js';
+import { FederationIgniteService } from './federation-ignite.service.js';
+import { FederationMessageFeedService } from './federation-message-feed.service.js';
+import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
+import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -32,7 +35,7 @@ import { FederationDownloadRecoveryService } from './federation-download-recover
  * is provided globally by DatabaseModule.
  *
  * Two S2S controllers share the `s2s` prefix: S2sController (unified invite + roster + signed GETs,
- * allow-list-gated via S2sSignatureGuard) and S2sInitController (POST /s2s/init — the trust bootstrap,
+ * allow-list-gated via S2sSignatureGuard) and S2sIgniteController (POST /s2s/ignite — the trust bootstrap,
  * NOT allow-list-gated since it IS the trust step; verifies via S2sVerifyService directly).
  */
 @Global()
@@ -49,7 +52,7 @@ import { FederationDownloadRecoveryService } from './federation-download-recover
     LinkPreviewModule,
     ForwardBundleModule,
   ],
-  controllers: [WellKnownController, S2sController, S2sInitController],
+  controllers: [WellKnownController, S2sController, S2sIgniteController],
   providers: [
     KeypairService,
     SignatureService,
@@ -59,11 +62,14 @@ import { FederationDownloadRecoveryService } from './federation-download-recover
     FederationReconnectService,
     FederationIdentityService,
     FederationCursorService,
-    FederationInitService,
-    FederationMissedService,
-    FederationMissedPullService,
+    FederationIgniteService,
+    FederationMessageFeedService,
+    FederationMessageFeedPullService,
     FederationDownloadScheduler,
     FederationDownloadRecoveryService,
+    PeerStateFeedService,
+    PeerStateFeedPullService,
+    GroupMembershipStateService,
   ],
   exports: [
     KeypairService,
@@ -72,11 +78,14 @@ import { FederationDownloadRecoveryService } from './federation-download-recover
     FederationService,
     FederationIdentityService,
     FederationCursorService,
-    FederationInitService,
-    FederationMissedService,
-    FederationMissedPullService,
+    FederationIgniteService,
+    FederationMessageFeedService,
+    FederationMessageFeedPullService,
     FederationDownloadScheduler,
     FederationDownloadRecoveryService,
+    PeerStateFeedService,
+    PeerStateFeedPullService,
+    GroupMembershipStateService,
   ],
 })
 export class FederationModule {}

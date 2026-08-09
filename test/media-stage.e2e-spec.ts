@@ -11,7 +11,7 @@ import {
   messageAsset,
   message,
   messageThread,
-  invite,
+  friendRequest,
   pendingMedia,
   threadParticipant,
   user,
@@ -138,8 +138,19 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   it('charges only a newly-created friend request, not a pending duplicate', async () => {
     await userQuota.setPolicy(userId, { dailyRequestLimit: 1 });
-    const tick = (tx: Parameters<UserQuotaService['tick']>[2]) =>
-      userQuota.tick(userId, 'requests', tx);
+    const writeAndCharge = async (
+      tx: Parameters<UserQuotaService['tick']>[2],
+      created: boolean,
+    ) => {
+      if (created) await userQuota.tick(userId, 'requests', tx);
+      await invites.writeLocalFriendIntentInTx(
+        tx,
+        userId,
+        inviteTargetIds[0],
+        true,
+        '',
+      );
+    };
 
     expect(
       await invites.createFriendInvite(
@@ -148,7 +159,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         '',
         true,
         undefined,
-        tick,
+        writeAndCharge,
       ),
     ).toMatchObject({ status: 'created' });
     expect(
@@ -158,7 +169,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         'updated',
         true,
         undefined,
-        tick,
+        writeAndCharge,
       ),
     ).toMatchObject({ status: 'already-pending' });
     await expect(
@@ -168,15 +179,24 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         '',
         true,
         undefined,
-        tick,
+        async (tx, created) => {
+          if (created) await userQuota.tick(userId, 'requests', tx);
+          await invites.writeLocalFriendIntentInTx(
+            tx,
+            userId,
+            inviteTargetIds[1],
+            true,
+            '',
+          );
+        },
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
     expect(
-      await database.db.query.invite.findFirst({
+      await database.db.query.friendRequest.findFirst({
         where: and(
-          eq(invite.fromUserId, userId),
-          eq(invite.toUserId, inviteTargetIds[1]),
+          eq(friendRequest.requesterUserId, userId),
+          eq(friendRequest.targetUserId, inviteTargetIds[1]),
         ),
       }),
     ).toBeUndefined();

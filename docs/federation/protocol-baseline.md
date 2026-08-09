@@ -1,99 +1,67 @@
 # SOMS 联邦协议实现基线
 
-> **分类：Baseline（非规范性）**
->
-> 本文记录 2026-08-04 仓库代码所实现的 S2S surface，供正式规范整理和差异审计使用。
-> 它描述当前 SOMS 实现，不授权第三方把未说明的内部行为视为稳定协议承诺。
->
-> 逐端点的参数、调用方向、恢复腿和闭环缺口见
-> [api-closure-audit.md](./api-closure-audit.md)。端点出现在本基线中不等于其规范已经闭环。
+> 当前仓库 `/api/v1` 实现基线，更新于 2026-08-09。URL 前缀是协议版本；body 不重复携带
+> version。详细字段见 [S2S API](../api/federation-s2s-api.md)。
 
-## 1. 基线来源
+## 公开 surface
 
-- 路由：`src/federation/well-known.controller.ts`、`s2s-init.controller.ts`、`s2s.controller.ts`
-- wire 类型：`src/federation/federation.service.ts`
-- 签名与信任：`src/federation/s2s-signature.guard.ts`、`s2s-verify.service.ts`
-- 双节点行为：`test/federation.e2e-spec.ts`、`test/federation-calls.e2e-spec.ts`
+| Method     | Path                             | 鉴权与用途                                                             |
+| ---------- | -------------------------------- | ---------------------------------------------------------------------- |
+| `GET`      | `/.well-known/soms`              | 公开服务器身份、公钥和能力发现。                                       |
+| `POST`     | `/s2s/ignite`                    | 首次建立并固定 peer identity；不要求预先 trusted。                     |
+| `GET`      | `/s2s/identity`                  | nonce-bound 身份连续性证明。                                           |
+| `GET`      | `/s2s/ping`                      | 原 pinned key 签名的恢复/存活证明；demoted peer 仅可使用该数据面端点。 |
+| `POST/GET` | `/s2s/feed-rev`                  | 轻量 revision wake-up / 当前 state 与 message source revision。        |
+| `GET`      | `/s2s/state-feed-rev`            | 当前 per-peer state feed revision。                                    |
+| `GET`      | `/s2s/state-feed`                | PROFILE、好友方向事实、群方向事实和 origin 群快照。                    |
+| `GET`      | `/s2s/message-feed`              | durable message discovery feed。                                       |
+| `POST`     | `/s2s/call`                      | 临时 WebRTC 生命周期和 SDP/ICE relay。                                 |
+| `GET`      | `/s2s/users/:account`            | 首次用户查询所需的完整公开 profile。                                   |
+| `GET`      | `/s2s/get_file`                  | 有授权的 CAS Range 下载。                                              |
+| `GET`      | `/s2s/forward-bundles/:bundleId` | 有授权的不可变转发 closure。                                           |
 
-除 `/.well-known/soms` 外，以下路径均位于 `/api/v1` 全局前缀下。
+旧 `/init`、S2S invite/accept/revoke、thread-access、profile/meta revision probe、new-msg-map、
+thread-level messages、miss-feed 均不兼容保留。
 
-## 2. 当前公开 surface
+## 身份与信任
 
-| Method | Path                                  | 当前鉴权                                         | 当前用途                                                    | 主要验证                  |
-| ------ | ------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------- | ------------------------- |
-| GET    | `/.well-known/soms`                   | 无                                               | 发布软件版本和 Ed25519 公钥列表                             | controller                |
-| POST   | `/s2s/init`                           | 直接验证 RFC 9421 签名，不要求预先 trusted       | 建立或恢复 peer trust，当前实现自动接受                     | controller、双节点 E2E    |
-| POST   | `/s2s/invite`                         | 签名 + trusted peer                              | FRIEND 或 GROUP 邀请                                        | 双节点 E2E                |
-| POST   | `/s2s/invite-accept`                  | 签名 + trusted peer                              | FRIEND 接受或 GROUP 入组                                    | 双节点 E2E                |
-| POST   | `/s2s/invite-revoke`                  | 签名 + trusted peer                              | 撤回未完成的 FRIEND 邀请                                    | controller、相关 E2E 流程 |
-| POST   | `/s2s/call`                           | 签名 + trusted peer                              | 联邦 WebRTC 生命周期和 SDP/ICE relay                        | calls 双节点 E2E          |
-| GET    | `/s2s/users/:account`                 | 签名 + trusted peer                              | 本地用户或 `!` group identity 的完整 profile                | 双节点 E2E                |
-| GET    | `/s2s/users/:account/revision`        | 签名 + trusted peer                              | profile revision probe                                      | 双节点 E2E                |
-| GET    | `/s2s/group/:account/roster-revision` | 签名 + trusted peer                              | group roster revision probe                                 | group 双节点 E2E          |
-| GET    | `/s2s/group/:account/roster`          | 签名 + trusted peer                              | origin 提供 canonical active roster                         | group 双节点 E2E          |
-| GET    | `/s2s/new-msg-map`                    | 签名 + trusted peer                              | 拉取对端 outbound hint snapshot                             | message 双节点 E2E        |
-| POST   | `/s2s/new-msg-map`                    | 签名 + trusted peer；`origin == signer`          | 推送 hint，202 后异步拉取消息                               | message 双节点 E2E        |
-| GET    | `/s2s/messages`                       | 签名 + trusted peer；`toDomain == signer`        | P2P、group all-senders 或 group per-author 前向拉取         | message/group 双节点 E2E  |
-| GET    | `/s2s/messages/before`                | 同上                                             | 三种消息形态的向后分页，SOMS 自身传输暂不消费               | 专门 E2E probe            |
-| GET    | `/s2s/ping`                           | 签名 + trusted peer                              | liveness probe，更新 peer watermark                         | controller、联邦流程      |
-| GET    | `/s2s/get_file`                       | 签名 + trusted peer；thread/roster/bundle 可见性 | digest 寻址媒体，支持单 Range、206 和 416；响应分块摘要可选 | media 双节点 E2E          |
-| GET    | `/s2s/forward-bundles/:bundleId`      | 签名 + trusted peer；thread visibility           | 获取 forward manifest closure                               | forward bundle E2E        |
+- wire identity 固定为 `{ account, domain }`，不传数据库 id。
+- P2P 两端各有本地 thread；group 以 origin 的 `!account` 为稳定身份，每个成员服务器持有本地镜像。
+- `trusted` 可正常交换数据；`demoted` 仅表示临时不可用，保留 pinned identity。
+- 重启恢复顺序是 identity → signed ping → state feed → message feed。
+- fingerprint、root key 或 identity epoch 冲突进入 `identity_lost`，只能管理员 reset，不能重新
+  ignite 静默换身份。
+- 迟到的旧网络失败不能覆盖较新的成功心跳。
 
-## 3. 当前通用行为
+## 状态一致性
 
-### 3.1 地址与身份
+- 好友由两条有向 `FriendRequest` 事实和一个无向 `FriendPair` 锁组成。
+- `REQUESTED` 只是一封有期限的申请；只有本地方向和从对端 state feed 收到的方向都明确为
+  `FRIEND`，才允许创建/恢复 P2P thread 和发送消息。
+- 群成员由 origin 的 INVITE 和 member 的 JOIN 两个方向组成，origin `GROUP_META` 是 roster
+  的最终权威。
+- `PROFILE` 独立带 revision；群 meta JSON 不嵌头像。群成员服务器可直接应用 origin relay 的
+  成员 PROFILE。
+- 相同或更旧业务 revision 是完整 no-op：不写业务行、不刷新 `updatedAt`、不写投影、不生成
+  feed、不触发下游。
+- per-peer feed 按 key 压缩，只保留最高业务 revision。feed revision/cursor 使用 bigint，业务
+  revision 使用 int。
+- feed page 与 receiver cursor 同事务提交；任一非法 item 回滚整页。
 
-- wire address 是 `{ account, domain }`，不是 `account@domain` 字符串。
-- P2P 没有跨服务器共享 thread id；group 使用 `!account` 作为联邦稳定身份。
-- POST operation 的共同字段为 `id`、`origin`、`ts`；`(origin, id)` 用于部分持久操作去重。
-- `S2SCallFrame` 不使用同一张持久去重表，由 call state machine 和 `callSid` 提供幂等后盾。
+## 消息与媒体
 
-### 3.2 发现、签名和信任
+- wake-up 不携正文；receiver 永远先拉 state，再拉 message feed。
+- message discovery change 与 message/audience 原子提交。
+- SYSTEM 正文只含结构化事件和稳定 identity，自然语言由客户端按 locale 与时间渲染。
+- 退群先写 `GROUP_LEFT`、分配 changeId、固定 creator audience 交付边界，再关闭成员关系。
+- 同服务器仍有其他群成员时，共享镜像继续保存消息，退群者重新加入后可查看期间历史；最后一个
+  成员离开时冻结 peer audience，重新加入复用镜像并恢复后续消息，但不补无人订阅期间的历史。
+- 媒体正文提交与文件下载解耦；pending 下载可跨重启恢复。quota pause 保持可恢复状态，管理员
+  加配额后自动唤醒。
+- CAS 和 forward bundle 下载均验证消息可见性和 digest/bundle 绑定。
 
-- 服务位置当前按 SRV/fallback 逻辑解析，再读取 `/.well-known/soms` 中的 key。
-- 普通 `/s2s/*` 请求由 `S2sSignatureGuard` 验证 RFC 9421 签名及 trusted peer 状态。
-- `/s2s/init` 是例外：它通过签名中的 domain 获取对端 well-known key 并直接验签。
-- 当前 `init` 验签成功后自动进入 trusted；管理员仍可 block peer。
-- 当前签名只覆盖请求；S2S 响应体不签名。
+## 当前限制
 
-### 3.3 消息与一致性
-
-- 消息正文通过 hint + pull 传输，不通过 POST message envelope 传输。
-- `originSeq` 是每个 `(thread, sender)` 的 0 起始单调序号，用于 cursor 和 dedup。
-- P2P 在两端分别拥有本地 thread；group 采用 origin-hub，由 origin 维护 roster 和聚合历史。
-- group per-author 拉取遇到已离开的 author 时，以 HTTP 410 和业务码
-  `FEDERATION_GROUP_AUTHOR_LEFT` 通知 origin 更新 roster；该响应不应导致 peer demotion。
-- unfriend 没有 S2S 删除操作，对端通过后续操作失败惰性发现关系断开。
-
-### 3.4 媒体
-
-- 普通聊天媒体按 SHA-256 digest 获取，并验证请求者对相关 thread/group 的访问权。
-- forward bundle 资产可以用 `bundleId` 走 bundle visibility 授权。
-- 当前仅实现单 byte range；不支持或无法解析的 Range 会退化为完整 200，合法但越界的
-  Range 返回 416。
-
-## 4. 当前 wire 类型入口
-
-正式 JSON Schema 尚未建立。当前类型暂以 `federation.service.ts` 中的以下定义为审计入口：
-
-- `S2SAddress`
-- `S2SAvatar`、`S2SProfile`
-- `S2SInvite`、`S2SInviteAccept`、`S2SInviteRevoke`
-- `S2SCallFrame`
-
-消息、roster、hint 和 forward bundle 的响应目前由 service 返回值及 E2E fixture 共同定义，
-这是下一阶段需要消除的契约缺口。
-
-## 5. 基线限制
-
-本文没有把以下行为提升为稳定协议：
-
-- 未知 JSON 字段的处理规则；
-- 域名 canonicalization、IDN 和大小写规则；
-- timestamp/replay window；
-- 所有字段的长度、整数范围及条件必填规则；
-- 统一成功 envelope 和错误响应的最终选择；
-- capability negotiation 与 protocol version negotiation；
-- key rotation 的发布重叠期和缓存失效要求。
-
-这些内容必须经过明确裁决后进入正式规范，不能仅从当前实现细节推断。
+- 尚未发布独立 JSON Schema/capability negotiation 文档。
+- 完整删除、媒体并发/墓碑/GC 反例矩阵仍按
+  [重构验收清单](./refactor-followup-checklist.md)推进。

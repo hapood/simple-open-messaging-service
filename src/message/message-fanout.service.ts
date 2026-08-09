@@ -86,7 +86,7 @@ export class MessageFanoutService {
       message.seq,
     );
     // Wake every authorized peer with the latest durable discovery HWM. The body remains pull-only via
-    // the peer-global /missed feed; this notification is ephemeral and safe to lose.
+    // the peer-global /message-feed; this notification is ephemeral and safe to lose.
     if (message.originSeq != null) {
       void this.federation.notifyOnSend(
         senderUserId,

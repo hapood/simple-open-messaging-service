@@ -24,8 +24,8 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
    └──┬───────┬───────┬────┬─────────┬──────────────────────┬──────────────┐
       │ 1:N   │ 1:N   │1:N │1:N      │ 1:N                  │ 1:N          │ 1:1
       ▼       ▼       ▼    ▼         ▼                      ▼              ▼
- SessionToken PushToken LoginCode ThreadParticipant  ThreadRevision     Invite(FRIEND/GROUP)
-                                  (user↔thread)       (thread-list log)  (from/to)
+ SessionToken PushToken LoginCode ThreadParticipant  ThreadRevision   FriendRequest / GroupMembershipRequest
+                                  (user↔thread)       (state log)      (directed facts)
                                           │
                                           ▼ N:1
                                   ┌─────────────────┐  1:1   ┌────────┐
@@ -62,7 +62,7 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 | `domain`                                | VarChar(63)   | `"local"` for users on THIS server; `<peer-domain>` for a federated stub          |
 | `friendReqAckRev`                       | DateTime      | friend-request read cursor; badge = `friendReqRev > friendReqAckRev`              |
 | `profileRev` / `remoteProfileRev`       | Int / Int?    | profile revision (origin-authoritative) / mirror's last-localized revision        |
-| `threadRevision`                        | Int           | per-user thread-list revision (the delta cursor)                                  |
+| `threadRevision`                        | Int           | internal backing value exposed to clients as the unified `stateRevision` cursor   |
 | `createdAt` / `updatedAt` / `isDeleted` |               |                                                                                   |
 
 Composite unique: `@@unique([account, domain])` — account name unique within a domain (allows a foreign stub to share a local account name). One account namespace covers users **and** admins (an admin is a linked `User` row).
@@ -126,21 +126,24 @@ One row per (user, thread); P2P and GROUP share this table (`role` null for P2P)
 
 Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId, pinned]` (pinned-first list).
 
-### Invite — Friend-add + Group-invite (unified)
+### Directed relationship facts
 
-| Field                     | Type         | Description                                                      |
-| ------------------------- | ------------ | ---------------------------------------------------------------- |
-| `kind`                    | InviteKind   | `FRIEND` \| `GROUP`                                              |
-| `fromUserId` / `toUserId` | Int          | inviter / decision-maker                                         |
-| `threadId`                | Int?         | GROUP: target group; FRIEND: null (P2P thread minted on accept)  |
-| `note`                    | VarChar(255) | invite message                                                   |
-| `status`                  | InviteStatus | `PENDING → ACCEPTED \| REJECTED \| REVOKED \| EXPIRED`           |
-| `expiresAt`               | DateTime     | 7d; validated at accept time (background sweep deferred)         |
-| `origin` / `originId`     | VarChar      | minting server domain / id — `(origin, originId)` delivery dedup |
+- **FriendRequest** — one row per `(requesterUserId, targetUserId)`, with its own `note`, integer
+  business `revision`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable/acceptable
+  only before expiry but never activates a thread; only two `FRIEND` directions do. `FRIEND` and
+  `NOT_FRIEND` have no expiry. `FriendPair(userLowId,userHighId)` is the canonical unordered
+  lock/projection and points to the retained P2P thread.
+- **GroupMembershipRequest** — one row per `(groupUserId, memberUserId, direction)`, where direction is
+  `INVITE` (GROUP→USER) or `JOIN` (USER→GROUP). `GroupMembershipPair` is the local active projection;
+  for federation, only the origin's newer `GROUP_META` snapshot may activate a mirror.
+- **ThreadAudience leave boundary** — relationship removal retains the audience row and freezes
+  `deliverThroughChangeId` at an inclusive discovery boundary. Reactivation clears the boundary and
+  reuses the same thread/mirror. A group peer audience stays open while that peer has any active member;
+  after its last member leaves, messages from the no-member interval are intentionally not discovered or
+  backfilled.
 
-Rows are never hard-deleted (kept as history). The database has a unique constraint on
-`(origin, originId)`; unique-conflict handling deduplicates FRIEND on `(from, to)` and GROUP on
-`(to, thread)` regardless of inviter.
+Crossed writes lock the canonical pair row before inspecting either direction. Notes remain separate;
+there is no JSON merge and no polymorphic `Invite` table.
 
 ### Group — Group-exclusive state
 
@@ -152,9 +155,9 @@ Identity (name/avatar/bio) lives on the group's `!`-User row; this table holds o
 | `ownerId`                       | Int                   | denormalized owner (fast lookup)                                       |
 | `rosterRev` / `remoteRosterRev` | Int / Int?            | origin roster revision (authoritative) / mirror's last-pulled revision |
 
-### ThreadRevision — Thread-list operation log
+### ThreadRevision / ProfileStateRevision — Client state log
 
-Per-user ADD/DELETE log; one row per (user, thread, direction). `revision` = the user's `threadRevision` at operation time. The client pulls deltas via `query-thread(from, to]`. `@@unique([userId, threadId, direction])` — at most one ADD + one DELETE per (user, thread).
+Thread ADD/DELETE and PROFILE entries share `User.threadRevision`, exposed on the wire as `stateRevision`. The client pulls `query-thread(from,to]` and applies PROFILE before membership changes.
 
 ### UserBlock — One-way block
 
@@ -166,7 +169,7 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 | --------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `id`                                    | **BigInt** (PK)      | INTERNAL surrogate, never exposed (HTTP/SSE/federation carry `seq`)                                                     |
 | `seq`                                   | Int                  | per-thread monotonic seq (0-indexed), allocated atomically from `curSeq`; the EXTERNAL ordering key + frontend identity |
-| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL`                                                |
+| `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| CALL \| FORWARD \| GALLERY \| SYSTEM`                |
 | `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                   |
 | `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                           |
 | `originSeq`                             | Int?                 | the ORIGINATING server's per-thread seq — the cross-server value; federation dedup key + pull cursor                    |
@@ -196,7 +199,8 @@ Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([t
 - **FederatedPeer** — domain allow-list (trust data only; keys fetched from `/.well-known/soms`). `trustLevel` `pending → trusted → demoted → trusted…` (+ `blocked`); per-peer daily-quota overrides.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
-- **S2SFriendOpSeen** — inbound friend-op dedup `(origin, opId)`.
+- **PeerStateFeed / PeerStateFeedTarget / PeerStateFeedPullCursor** — compacted per-peer relationship,
+  profile and group state with transactional source and receiver cursors.
 
 ### QuotaDailyUsage — Unified daily-quota counters
 
@@ -219,7 +223,7 @@ CREATE TYPE "ThreadRevisionDirection" AS ENUM ('ADD', 'DELETE');
 
 CREATE TYPE "ContentType" AS ENUM (
   'PURE_TEXT', 'INVITE', 'IMAGE', 'VIDEO', 'FILE', 'AUDIO', 'LINK',
-  'CALL'   -- 1:1 WebRTC call record — SERVER-AUTHORED ONLY (CallsService writes the terminal bubble)
+  'CALL', 'FORWARD', 'GALLERY', 'SYSTEM'
 );
 
 CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
@@ -229,8 +233,9 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
 
 1. **One account namespace**: users and admins share `User`; an admin is a linked profile, so user/admin account names can never collide. A `!`-sigil `User` row (`isGroup`) is a group identity — `Group` holds only owner + roster revision.
 2. **Membership is `ThreadParticipant`**: P2P and GROUP share one membership table (`role` null for P2P). There is no polymorphic `UserMessageThread` and no separate `GroupMember`. Mute/pin/clear/alias/leave are per-participant columns.
-3. **Invites are unified**: friend-add and group-invite are one `Invite` table (`FRIEND`/`GROUP`); the legacy JWT-token-in-message group invite is retired. Rows are never hard-deleted.
+3. **Requests are directional facts**: friendship and group membership keep each author's direction,
+   note and revision separately; canonical pair rows serialize crossed transactions.
 4. **Per-thread seq, internal id**: `Message.id` (BigInt) is an internal storage key never exposed; `seq` is the per-thread external ordering key, allocated atomically from `curSeq` (gapless). `originSeq` carries the originating server's seq for federation dedup.
-5. **Thread-list versioning**: `ThreadRevision` is a per-user ADD/DELETE log keyed by `User.threadRevision`; clients delta-replay rather than re-fetch the whole list.
+5. **Client state versioning**: thread membership and profile cache entries share one integer cursor (`stateRevision` on the wire); clients delta-replay rather than re-fetch the whole list.
 6. **Soft-delete only**: DB rows are never purged (`isDeleted`/`revokedAt`/`leftAt`); only media-CAS blobs are hard-deleted by an explicit manual cleanup after live-message/staging reachability is checked.
 7. **BigInt serialization**: `Message.id` / `ThreadRevision.id` / `AdminActionLog.id` etc. use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).

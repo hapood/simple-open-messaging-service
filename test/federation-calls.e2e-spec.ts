@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import request from 'supertest';
@@ -19,7 +19,7 @@ import {
 import { BusinessCode } from '../src/common/business-code.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
-  invite,
+  friendRequest,
   message,
   threadParticipant,
   user,
@@ -68,26 +68,50 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       .set('Authorization', `Bearer ${tokenErin}`)
       .send({ toUserId: frankStubIdOnA, note: 'hi' });
     expect(inv.body.code).toBe(BusinessCode.OK);
-    const erinStubB = await appB.database.query.user.findFirst({
-      where: and(eq(user.account, 'erin'), eq(user.domain, DOM_A)),
-    });
-    expect(erinStubB).not.toBeNull();
-    erinStubIdOnB = erinStubB!.id;
+    const erinStubB = await vi.waitFor(
+      async () => {
+        const stub = await appB.database.query.user.findFirst({
+          where: and(eq(user.account, 'erin'), eq(user.domain, DOM_A)),
+        });
+        expect(stub).toBeDefined();
+        return stub!;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    erinStubIdOnB = erinStubB.id;
 
     // frank accepts → a live P2P thread exists on BOTH servers.
-    const pending = await appB.database.query.invite.findFirst({
-      where: and(
-        eq(invite.kind, 'FRIEND'),
-        eq(invite.status, 'PENDING'),
-        eq(invite.fromUserId, erinStubIdOnB),
-      ),
-    });
-    expect(pending).not.toBeNull();
+    const pending = await vi.waitFor(
+      async () => {
+        const request = await appB.database.query.friendRequest.findFirst({
+          where: and(
+            eq(friendRequest.status, 'REQUESTED'),
+            eq(friendRequest.requesterUserId, erinStubIdOnB),
+          ),
+        });
+        expect(request).toBeDefined();
+        return request!;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
     const acc = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenFrank}`)
-      .send({ inviteId: pending!.id.toString() });
+      .send({ inviteId: pending.id.toString() });
     expect(acc.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(
+      async () => {
+        const activeOnA =
+          await appA.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.userId, frankStubIdOnA),
+              isNull(threadParticipant.leftAt),
+            ),
+          });
+        expect(activeOnA).toBeDefined();
+      },
+      { timeout: 10_000, interval: 100 },
+    );
   }, 120_000);
 
   afterAll(async () => {

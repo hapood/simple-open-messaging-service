@@ -195,7 +195,20 @@ export async function waitForSseEvent(
   let buf = '';
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
+    const remaining = deadline - Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`SSE event not received within ${timeoutMs}ms`)),
+        remaining,
+      );
+    });
+    const { value, done } = await Promise.race([
+      reader.read(),
+      timeout,
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
     if (done) throw new Error('SSE stream closed before the expected event');
     buf += decoder.decode(value, { stream: true });
     let idx: number;

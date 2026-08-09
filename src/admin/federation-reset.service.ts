@@ -108,15 +108,18 @@ export class FederationResetService implements OnModuleInit {
           (SELECT count(*)::int FROM "ThreadParticipant" tp JOIN remote_users ru ON ru.id = tp."userId") AS "participantCount",
           (SELECT count(*)::int FROM affected_threads) AS "affectedThreadCount",
           (SELECT count(*)::int FROM "Message" m JOIN remote_users ru ON ru.id = m.creator) AS "authoredMessageCount",
-          (SELECT count(*)::int FROM "Invite" i WHERE i.origin = ${normalized}
-             OR i."fromUserId" IN (SELECT id FROM remote_users)
-             OR i."toUserId" IN (SELECT id FROM remote_users)) AS "inviteCount",
+          ((SELECT count(*)::int FROM "FriendRequest" r
+             WHERE r."requesterUserId" IN (SELECT id FROM remote_users)
+                OR r."targetUserId" IN (SELECT id FROM remote_users))
+           + (SELECT count(*)::int FROM "GroupMembershipRequest" r
+             WHERE r."groupUserId" IN (SELECT id FROM remote_users)
+                OR r."memberUserId" IN (SELECT id FROM remote_users))) AS "inviteCount",
           (SELECT count(*)::int FROM "UserBlock" b WHERE b."blockerId" IN (SELECT id FROM remote_users)
              OR b."blockedId" IN (SELECT id FROM remote_users)) AS "userBlockCount",
           (SELECT count(*)::int FROM "FederationDeletedCursor" WHERE "peerDomain" = ${normalized}) AS "deletionCursorCount",
           (SELECT count(*)::int FROM "S2SKeyCache" WHERE domain = ${normalized}) AS "keyCacheCount",
           (SELECT count(*)::int FROM "S2SIdentityNonce" WHERE "originDomain" = ${normalized}) AS "nonceCount",
-          (SELECT count(*)::int FROM "S2SFriendOpSeen" WHERE origin = ${normalized}) AS "friendOperationCount"
+          0::int AS "friendOperationCount"
       `);
       const counts = result.rows[0];
       if (!counts) throw new Error('federation reset preview returned no row');
@@ -259,9 +262,12 @@ export class FederationResetService implements OnModuleInit {
     await this.database.db.execute(
       sql`DELETE FROM "PendingMedia" WHERE "threadId" = ${threadId}`,
     );
-    await this.database.db.execute(
-      sql`DELETE FROM "Invite" WHERE "threadId" = ${threadId}`,
-    );
+    await this.database.db.execute(sql`
+      DELETE FROM "GroupMembershipRequest"
+      WHERE "groupUserId" = (
+        SELECT "groupUserId" FROM "MessageThread" WHERE id = ${threadId}
+      )
+    `);
     await this.database.db.execute(
       sql`DELETE FROM "Message" WHERE "threadId" = ${threadId}`,
     );
@@ -318,10 +324,18 @@ export class FederationResetService implements OnModuleInit {
           SELECT id FROM "User"
           WHERE domain = ${domain} AND "isForeigner" = true
         )
-        DELETE FROM "Invite"
-        WHERE origin = ${domain}
-           OR "fromUserId" IN (SELECT id FROM remote_users)
-           OR "toUserId" IN (SELECT id FROM remote_users)
+        DELETE FROM "FriendRequest"
+        WHERE "requesterUserId" IN (SELECT id FROM remote_users)
+           OR "targetUserId" IN (SELECT id FROM remote_users)
+      `);
+      await tx.execute(sql`
+        WITH remote_users AS (
+          SELECT id FROM "User"
+          WHERE domain = ${domain} AND "isForeigner" = true
+        )
+        DELETE FROM "GroupMembershipRequest"
+        WHERE "groupUserId" IN (SELECT id FROM remote_users)
+           OR "memberUserId" IN (SELECT id FROM remote_users)
       `);
       await tx.execute(sql`
         WITH remote_users AS (
@@ -367,9 +381,6 @@ export class FederationResetService implements OnModuleInit {
       );
       await tx.execute(
         sql`DELETE FROM "S2SIdentityNonce" WHERE "originDomain" = ${domain}`,
-      );
-      await tx.execute(
-        sql`DELETE FROM "S2SFriendOpSeen" WHERE origin = ${domain}`,
       );
       await tx.execute(sql`DELETE FROM "S2SKeyCache" WHERE domain = ${domain}`);
       await tx.execute(

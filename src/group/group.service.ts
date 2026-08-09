@@ -1,24 +1,31 @@
-import { Injectable, OnModuleInit, HttpStatus } from '@nestjs/common';
+import {
+  forwardRef,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Optional,
+} from '@nestjs/common';
 import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   group,
-  invite,
+  groupMembershipRequest,
+  discoveryChange,
+  discoveryTarget,
   messageThread,
   threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';
-import {
-  GroupRole,
-  InviteKind,
-  InviteStatus,
-  MessageThreadType,
-} from '../database/enums.js';
+import { GroupRole, MessageThreadType } from '../database/enums.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { FederationService } from '../federation/federation.service.js';
+import { MessageService } from '../message/message.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
+import { SystemMessageType } from '../message/system-message.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
 function roleRank(role: GroupRole | null): number {
@@ -53,13 +60,16 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  * HTTP 200 + domain code); the methods below validate TARGET-specific invariants and mutate.
  */
 @Injectable()
-export class GroupService implements OnModuleInit {
+export class GroupService {
   constructor(
     private database: DatabaseService,
     private readonly threadRevisionService: ThreadRevisionService,
+    private readonly federation: FederationService,
+    @Optional() private readonly messages?: MessageService,
+    @Optional()
+    @Inject(forwardRef(() => MessageFanoutService))
+    private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
   ) {}
-
-  async onModuleInit() {}
 
   /** Load a GROUP thread + its `!`-User (name/avatar/bio) by threadId. Returns null if missing. The read
    *  path replacing the old queryGroups/findUniqeGroup (which hit the Group table). */
@@ -70,26 +80,6 @@ export class GroupService implements OnModuleInit {
         with: { user: { with: { group: true } } },
       })
       .then((row) => (row ? { ...row, groupUser: row.user } : null));
-  }
-
-  /** Bump Group.rosterRev — the roster revision a federated mirror compares (against its remoteRosterRev)
-   *  on chat-open to decide whether to re-pull the roster. Call after any roster mutation (join/leave/
-   *  kick/role/transfer) so a roster change is detectable by the lazy meta-pull, independent of identity
-   *  (identity has its own User.profileRev, bumped by updateGroup/updateProfile/updateAvatar). */
-  async bumpRosterRev(threadId: number): Promise<void> {
-    const trd = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { groupUserId: true },
-    });
-    if (trd?.groupUserId != null) {
-      await this.database.db
-        .update(group)
-        .set({
-          rosterRev: sql`${group.rosterRev} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(eq(group.groupUserId, trd.groupUserId));
-    }
   }
 
   /** Batch-load the `!`-User (name/avatar/bio) for each of the given GROUP threads, keyed by threadId.
@@ -283,6 +273,7 @@ export class GroupService implements OnModuleInit {
             eq(threadParticipant.threadId, params.threadId),
           ),
         )
+        .for('update')
         .limit(1);
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
@@ -303,6 +294,76 @@ export class GroupService implements OnModuleInit {
           );
         }
       }
+      let systemMessage:
+        | Awaited<
+            ReturnType<MessageService['writeSystemMessageInTx']>
+          >['message']
+        | null = null;
+      if (current.leftAt === null && this.messages) {
+        const [groupIdentity] = await tx
+          .select({ domain: user.domain })
+          .from(messageThread)
+          .innerJoin(user, eq(user.id, messageThread.groupUserId))
+          .where(eq(messageThread.id, params.threadId))
+          .limit(1);
+        if (groupIdentity?.domain && groupIdentity.domain !== 'local')
+          await tx
+            .insert(threadAudience)
+            .values({
+              targetDomain: groupIdentity.domain,
+              localUserId: null,
+              threadId: params.threadId,
+              scope: 'CREATOR',
+              creatorUserId: params.userId,
+            })
+            .onConflictDoUpdate({
+              target: [
+                threadAudience.targetDomain,
+                threadAudience.threadId,
+                threadAudience.creatorUserId,
+              ],
+              targetWhere: sql`${threadAudience.scope} = 'CREATOR'`,
+              set: { deliverThroughChangeId: null },
+            });
+        const written = await this.messages.writeSystemMessageInTx(
+          tx,
+          params.userId,
+          params.threadId,
+          SystemMessageType.GROUP_LEFT,
+          params.userId,
+        );
+        systemMessage = written.message;
+        if (groupIdentity?.domain && groupIdentity.domain !== 'local') {
+          const [boundary] = await tx
+            .select({ changeId: discoveryChange.changeId })
+            .from(discoveryChange)
+            .innerJoin(
+              discoveryTarget,
+              eq(discoveryTarget.id, discoveryChange.targetId),
+            )
+            .where(
+              and(
+                eq(discoveryChange.messageId, written.messageId),
+                eq(discoveryTarget.targetDomain, groupIdentity.domain),
+                isNull(discoveryTarget.localUserId),
+              ),
+            )
+            .limit(1);
+          if (!boundary)
+            throw new Error('GROUP_LEFT discovery boundary was not allocated');
+          await tx
+            .update(threadAudience)
+            .set({ deliverThroughChangeId: boundary.changeId })
+            .where(
+              and(
+                eq(threadAudience.targetDomain, groupIdentity.domain),
+                eq(threadAudience.threadId, params.threadId),
+                eq(threadAudience.scope, 'CREATOR'),
+                eq(threadAudience.creatorUserId, params.userId),
+              ),
+            );
+        }
+      }
       const ended = await tx
         .update(threadParticipant)
         .set({ leftAt: now, updatedAt: now })
@@ -315,15 +376,20 @@ export class GroupService implements OnModuleInit {
         )
         .returning({ id: threadParticipant.id });
       if (ended.length > 0) {
-        await tx
-          .delete(threadAudience)
-          .where(
-            and(
-              eq(threadAudience.targetDomain, 'local'),
-              eq(threadAudience.localUserId, params.userId),
-              eq(threadAudience.threadId, params.threadId),
-            ),
-          );
+        await tx.execute(sql`
+          UPDATE "ThreadAudience" audience
+          SET "deliverThroughChangeId" = COALESCE((
+            SELECT target."allocatedThrough"
+            FROM "DiscoveryTarget" target
+            WHERE target."targetDomain" = 'local'
+              AND target."localUserId" = ${params.userId}
+          ), 0)
+          WHERE audience."targetDomain" = 'local'
+            AND audience."localUserId" = ${params.userId}
+            AND audience."threadId" = ${params.threadId}
+            AND audience.scope = 'THREAD'
+            AND audience."deliverThroughChangeId" IS NULL
+        `);
       }
       if (shouldDelete) {
         await tx
@@ -379,10 +445,25 @@ export class GroupService implements OnModuleInit {
               params.threadId,
             )
           : null;
+      const requestState =
+        ended.length > 0
+          ? await this.federation.writeGroupJoinIntentInTx(
+              tx,
+              params.threadId,
+              params.userId,
+              false,
+            )
+          : new Map<string, bigint>();
+      const groupState =
+        ended.length > 0
+          ? await this.federation.writeGroupStateInTx(tx, params.threadId)
+          : new Map<string, bigint>();
       return {
         transitioned: ended.length > 0,
         remainingMemberIds: remaining.map((row) => row.userId),
         revision,
+        statePeers: [...requestState.keys(), ...groupState.keys()],
+        systemMessage,
       };
     });
     if (result.revision !== null) {
@@ -391,6 +472,9 @@ export class GroupService implements OnModuleInit {
         revision: result.revision,
       });
     }
+    await this.federation.pushStateFeedDomains(result.statePeers);
+    if (result.systemMessage && this.messageFanout)
+      void this.messageFanout.dispatch(result.systemMessage);
     return {
       transitioned: result.transitioned,
       remainingMemberIds: result.remainingMemberIds,
@@ -438,13 +522,17 @@ export class GroupService implements OnModuleInit {
         .returning({ id: group.id });
       if (dissolved.length > 0) {
         await tx
-          .update(invite)
-          .set({ status: InviteStatus.REVOKED, updatedAt: now })
+          .update(groupMembershipRequest)
+          .set({
+            status: 'NOT_MEMBER',
+            revision: sql`${groupMembershipRequest.revision} + 1`,
+            updatedAt: now,
+          })
           .where(
             and(
-              eq(invite.kind, InviteKind.GROUP),
-              eq(invite.threadId, params.threadId),
-              eq(invite.status, InviteStatus.PENDING),
+              eq(groupMembershipRequest.groupUserId, thread.groupUserId),
+              eq(groupMembershipRequest.direction, 'INVITE'),
+              eq(groupMembershipRequest.status, 'REQUESTED'),
             ),
           );
       }
@@ -472,7 +560,15 @@ export class GroupService implements OnModuleInit {
               params.threadId,
             )
           : null;
-      return { transitioned: dissolved.length > 0, revision };
+      const stateItems =
+        dissolved.length > 0
+          ? await this.federation.writeGroupStateInTx(tx, params.threadId)
+          : new Map<string, bigint>();
+      return {
+        transitioned: dissolved.length > 0,
+        revision,
+        statePeers: [...stateItems.keys()],
+      };
     });
     if (result.revision !== null && params.deleteForUserId !== undefined) {
       this.threadRevisionService.notifyThreadRevision({
@@ -480,6 +576,7 @@ export class GroupService implements OnModuleInit {
         revision: result.revision,
       });
     }
+    await this.federation.pushStateFeedDomains(result.statePeers);
     return { transitioned: result.transitioned };
   }
 
@@ -524,7 +621,12 @@ export class GroupService implements OnModuleInit {
         );
       }
       if (target.leftAt !== null)
-        return { transitioned: false, revision: null };
+        return {
+          transitioned: false,
+          revision: null,
+          statePeers: [],
+          systemMessage: null,
+        };
       if (
         !operator ||
         operator.leftAt !== null ||
@@ -554,7 +656,27 @@ export class GroupService implements OnModuleInit {
           ),
         )
         .returning({ id: threadParticipant.id });
-      if (ended.length === 0) return { transitioned: false, revision: null };
+      if (ended.length === 0)
+        return {
+          transitioned: false,
+          revision: null,
+          statePeers: [],
+          systemMessage: null,
+        };
+      // The peer audience is retained until the final state snapshot is
+      // allocated below. Persist the boundary message after winning the CAS,
+      // in the same transaction as the membership mutation and state feed.
+      const systemMessage = this.messages
+        ? (
+            await this.messages.writeSystemMessageInTx(
+              tx,
+              params.operatorUserId,
+              params.threadId,
+              SystemMessageType.GROUP_LEFT,
+              params.targetUserId,
+            )
+          ).message
+        : null;
       const [thread] = await tx
         .select({ groupUserId: messageThread.groupUserId })
         .from(messageThread)
@@ -576,7 +698,29 @@ export class GroupService implements OnModuleInit {
             params.targetUserId,
             params.threadId,
           );
-      return { transitioned: true, revision };
+      const [targetIdentity] = await tx
+        .select({ domain: user.domain, isForeigner: user.isForeigner })
+        .from(user)
+        .where(eq(user.id, params.targetUserId))
+        .limit(1);
+      const requestState = await this.federation.writeGroupInviteIntentInTx(
+        tx,
+        params.threadId,
+        params.targetUserId,
+        '',
+        false,
+      );
+      const groupState = await this.federation.writeGroupStateInTx(
+        tx,
+        params.threadId,
+        targetIdentity?.isForeigner ? [targetIdentity.domain] : [],
+      );
+      return {
+        transitioned: true,
+        revision,
+        statePeers: [...requestState.keys(), ...groupState.keys()],
+        systemMessage,
+      };
     });
     if (result.revision !== null) {
       this.threadRevisionService.notifyThreadRevision({
@@ -584,6 +728,9 @@ export class GroupService implements OnModuleInit {
         revision: result.revision,
       });
     }
+    await this.federation.pushStateFeedDomains(result.statePeers);
+    if (result.systemMessage && this.messageFanout)
+      void this.messageFanout.dispatch(result.systemMessage);
     return { transitioned: result.transitioned };
   }
 
@@ -604,7 +751,7 @@ export class GroupService implements OnModuleInit {
         'cannot transfer ownership to yourself',
       );
     }
-    await this.database.db.transaction(async (tx) => {
+    const statePeers = await this.database.db.transaction(async (tx) => {
       const [target] = await tx
         .select({
           participant: threadParticipant,
@@ -667,7 +814,19 @@ export class GroupService implements OnModuleInit {
           })
           .where(eq(group.groupUserId, trd.groupUserId));
       }
+      return [
+        ...(
+          await this.federation.writeGroupStateInTx(tx, params.threadId)
+        ).keys(),
+      ];
     });
+    await this.federation.pushStateFeedDomains(statePeers);
+    await this.emitSystemMessage(
+      params.fromUserId,
+      params.threadId,
+      SystemMessageType.GROUP_OWNER_TRANSFERRED,
+      params.toUserId,
+    );
   }
 
   /**
@@ -710,11 +869,56 @@ export class GroupService implements OnModuleInit {
         "cannot change the owner's role",
       );
     }
-    await this.database.db
-      .update(threadParticipant)
-      .set({ role: params.role, updatedAt: new Date() })
-      .where(eq(threadParticipant.id, target.id));
-    await this.bumpRosterRev(params.threadId);
+    if (target.role === params.role) return;
+    const statePeers = await this.database.db.transaction(async (tx) => {
+      await tx
+        .update(threadParticipant)
+        .set({ role: params.role, updatedAt: new Date() })
+        .where(eq(threadParticipant.id, target.id));
+      const [trd] = await tx
+        .select({ groupUserId: messageThread.groupUserId })
+        .from(messageThread)
+        .where(eq(messageThread.id, params.threadId))
+        .limit(1);
+      if (trd?.groupUserId != null)
+        await tx
+          .update(group)
+          .set({
+            rosterRev: sql`${group.rosterRev} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(group.groupUserId, trd.groupUserId));
+      return [
+        ...(
+          await this.federation.writeGroupStateInTx(tx, params.threadId)
+        ).keys(),
+      ];
+    });
+    await this.federation.pushStateFeedDomains(statePeers);
+    await this.emitSystemMessage(
+      params.operatorUserId,
+      params.threadId,
+      params.role === GroupRole.ADMIN
+        ? SystemMessageType.GROUP_ADMIN_GRANTED
+        : SystemMessageType.GROUP_ADMIN_REVOKED,
+      params.targetUserId,
+    );
+  }
+
+  private async emitSystemMessage(
+    actorUserId: number,
+    threadId: number,
+    type: SystemMessageType,
+    subjectUserId?: number,
+  ): Promise<void> {
+    if (!this.messages || !this.messageFanout) return;
+    const message = await this.messages.writeSystemMessage(
+      actorUserId,
+      threadId,
+      type,
+      subjectUserId,
+    );
+    void this.messageFanout.dispatch(message);
   }
 
   /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).
@@ -740,15 +944,23 @@ export class GroupService implements OnModuleInit {
     if (params.name !== undefined) data.name = params.name;
     if (params.description !== undefined) data.bio = params.description;
     if (params.avatar !== undefined) data.avatar = params.avatar;
-    return this.database.db
-      .update(user)
-      .set({
-        ...data,
-        profileRev: sql`${user.profileRev} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(eq(user.id, trd.groupUserId))
-      .returning()
-      .then(([row]) => row);
+    const result = await this.database.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(user)
+        .set({
+          ...data,
+          profileRev: sql`${user.profileRev} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, trd.groupUserId!))
+        .returning();
+      const stateItems = await this.federation.writeGroupStateInTx(
+        tx,
+        params.threadId,
+      );
+      return { row, statePeers: [...stateItems.keys()] };
+    });
+    await this.federation.pushStateFeedDomains(result.statePeers);
+    return result.row;
   }
 }

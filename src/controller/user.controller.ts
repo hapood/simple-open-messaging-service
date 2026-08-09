@@ -6,6 +6,9 @@ import {
   UseGuards,
   HttpStatus,
   HttpCode,
+  forwardRef,
+  Inject,
+  Optional,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -17,6 +20,8 @@ import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
+import { SystemMessageType } from '../message/system-message.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
@@ -36,8 +41,6 @@ import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
   DeleteFriendDto,
-  SyncPeerProfileDto,
-  SyncSelfProfileDto,
   ThreadIdDto,
   UserResolveDto,
   UserSearchDto,
@@ -62,7 +65,8 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
  */
 type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItemDto }
-  | { threadId: number; direction: 'DELETE' };
+  | { threadId: number; direction: 'DELETE' }
+  | { direction: 'PROFILE'; user: UserResponseDto };
 
 type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
   thread: typeof messageThread.$inferSelect;
@@ -90,6 +94,9 @@ export class UserController {
     private readonly federationService: FederationService,
     private readonly threadRevisionService: ThreadRevisionService,
     private readonly userQuotaService: UserQuotaService,
+    @Optional()
+    @Inject(forwardRef(() => MessageFanoutService))
+    private readonly messageFanout?: Pick<MessageFanoutService, 'dispatch'>,
   ) {}
 
   @ApiBearerAuth()
@@ -117,25 +124,6 @@ export class UserController {
       breaker: state.breaker,
       resetAt: nextUtcMidnight().toISOString(),
     };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/sync-self-profile')
-  @ApiOperation({
-    summary:
-      'ACK-only self-profile revision probe. Pushes PROFILE_REV_UPDATED when the caller cache is stale.',
-  })
-  async syncSelfProfile(
-    @Request() req: FastifyRequest,
-    @Body() dto: SyncSelfProfileDto,
-  ): Promise<void> {
-    const data = await this.userService.findUniqueUser({ id: req.user.userId });
-    if (data && data.profileRev > dto.sinceProfileRev) {
-      this.sseService.onProfileRevUpdated(req.user.userId, {
-        profileRev: data.profileRev,
-      });
-    }
   }
 
   @ApiBearerAuth()
@@ -179,14 +167,8 @@ export class UserController {
       );
     }
     const updated = await this.userService.updateAvatar(req.user.userId, url);
-    // Fan the fresh avatar to every P2P friend so their conversation list (and open chat header)
-    // refreshes in real time. Fire-and-forget — never blocks the upload response.
-    void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     // Self-profile-rev push so the editor's OTHER tabs/devices learn their own profile changed and re-
     // fetch (multi-device self refresh); the native HELLO cache also merges it for a fresh webview replay.
-    void this.sseService.onProfileRevUpdated(req.user.userId, {
-      profileRev: updated.profileRev,
-    });
     return { avatar: url };
   }
 
@@ -203,13 +185,7 @@ export class UserController {
     @Body() dto: UpdateProfileDto,
   ) {
     const data = await this.userService.updateProfile(req.user.userId, dto);
-    // Fan the fresh profile to every P2P friend so their conversation list (and open chat header)
-    // refreshes in real time. Fire-and-forget — never blocks the edit response.
-    void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     // Self-profile-rev push (multi-device self refresh + native HELLO-cache merge). See updateAvatar.
-    void this.sseService.onProfileRevUpdated(req.user.userId, {
-      profileRev: data.profileRev,
-    });
     return data;
   }
 
@@ -358,7 +334,7 @@ export class UserController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('user/query-thread/delta')
+  @Post('user/query-state/delta')
   @ApiOperation({
     summary:
       'Fetch the thread-list delta (from excl, to incl): ADD ops returned hydrated (peer/group/unread), DELETE ops id-only',
@@ -370,11 +346,18 @@ export class UserController {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const ops = await this.threadRevisionService.queryDelta(
-      me,
-      dto.fromRevision,
-      dto.toRevision,
-    );
+    const [ops, profileOps] = await Promise.all([
+      this.threadRevisionService.queryDelta(
+        me,
+        dto.fromRevision,
+        dto.toRevision,
+      ),
+      this.threadRevisionService.queryProfileDelta(
+        me,
+        dto.fromRevision,
+        dto.toRevision,
+      ),
+    ]);
     const { addIds, removeIds } = planThreadDelta(ops);
     // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
     // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
@@ -395,7 +378,21 @@ export class UserController {
         rows,
       )) as ConversationItemDto[];
     }
+    const profiles = await this.userService.queryUsers({
+      where: {
+        id: { in: profileOps.map((op) => op.subjectUserId) },
+        isDeleted: false,
+      },
+    });
     return [
+      ...profiles.map((user) => ({
+        direction: 'PROFILE' as const,
+        user: {
+          ...user,
+          createdAt: user.createdAt.getTime(),
+          updatedAt: user.updatedAt.getTime(),
+        },
+      })),
       ...adds.map((item) => ({
         threadId: item.threadId,
         direction: 'ADD' as const,
@@ -442,13 +439,32 @@ export class UserController {
         `not friends with [${dto.userId}]`,
       );
     }
+    // Place the display-only terminal inside the old relationship's message boundary so it remains
+    // eligible for ordinary missed-message delivery. State is still changed exclusively by endP2P.
+    const systemMessage =
+      activeThreadId === null
+        ? null
+        : await this.messageService.writeSystemMessage(
+            me,
+            threadId,
+            SystemMessageType.FRIEND_REMOVED,
+            dto.userId,
+          );
     // End the friendship but retain both participant rows + the thread as a readable history item.
-    await this.participantService.endP2P(
+    const ended = await this.participantService.endP2P(
       threadId,
       me,
       dto.deleteData ?? false,
       peer?.isForeigner ? undefined : dto.userId,
     );
+    await Promise.allSettled(
+      ended.statePeers.map((domain) =>
+        this.federationService.pushDiscoveryHwm(domain),
+      ),
+    );
+    if (systemMessage && this.messageFanout) {
+      void this.messageFanout.dispatch(systemMessage);
+    }
     return envelope(undefined, { message: 'friend removed' });
   }
 
@@ -498,7 +514,7 @@ export class UserController {
   })
   async peerTrustStatus(@Body() dto: PeerTrustStatusDto) {
     // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
-    // resolve will run the init handshake (untrusted → first contact → banner) or resolve fast
+    // resolve will run the ignite handshake (untrusted → first contact → banner) or resolve fast
     // (trusted → no banner). A known server-side fact, not a latency guess: the rare
     // already-trusted-but-failing case (peer reset / broken key → re-handshake) surfaces as an error
     // from the resolve itself, not here.
@@ -517,7 +533,7 @@ export class UserController {
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
     const { domain } = dto;
-    // Federated (account + a peer domain != ours) → establish mutual trust (init handshake, if not
+    // Federated (account + a peer domain != ours) → establish mutual trust (ignite handshake, if not
     // already trusted), fetch the peer's profile (avatar inline as base64), find-or-create a stub, and
     // localize it (persist the avatar via saveAvatars + write name/bio), so the caller can address the
     // user by id in subsequent friend ops (same as a local lookup).
@@ -525,7 +541,7 @@ export class UserController {
       try {
         // Trust prerequisite: the signed profile GET below is allow-list-gated on the peer, and our
         // guard gates their reply traffic — so mutual trust must exist first. Idempotent (no-op if
-        // already trusted). The peer auto-accepts us via the init handshake.
+        // already trusted). The peer auto-accepts us via the ignite handshake.
         await this.federationService.ensurePeerTrusted(domain);
       } catch (e) {
         if (
@@ -604,39 +620,6 @@ export class UserController {
       skip: dto.skip ?? 0,
       take,
     });
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/sync-peer-profile')
-  @ApiOperation({
-    summary:
-      'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. ACK-only — returns no payload; pass sinceProfileRev so a stale local peer is pushed a PEER_PROFILE_UPDATED signal to pull.',
-  })
-  @ApiResultResponse(UserResponseDto)
-  async syncPeerProfile(
-    @Request() req: FastifyRequest,
-    @Body() dto: SyncPeerProfileDto,
-  ): Promise<void> {
-    // Chat-open / profile-panel-open staleness hook. Federated: probe the peer's /revision; if newer than
-    // the stub's remoteProfileRev, re-pull + re-localize avatar/name/bio (no-op for local users). Runs
-    // ASYNC — the response returns immediately; a re-localized stub fans a PEER_PROFILE_UPDATED signal on
-    // completion, so the caller pulls then. Best-effort — a transient peer outage keeps the cached profile.
-    void this.federationService.syncForeignUserIfStale(dto.userId);
-    // Local comparison: if the caller's cached profileRev is stale, push a signal so it pulls. Federated
-    // stale is covered by syncForeignUserIfStale's notify above; this covers the local case (and is a
-    // harmless duplicate for federated — the pull is idempotent).
-    const data = await this.userService.findUniqueUser({ id: dto.userId });
-    if (
-      data &&
-      dto.sinceProfileRev !== undefined &&
-      data.profileRev > dto.sinceProfileRev
-    ) {
-      this.sseService.onPeerProfileUpdated(req.user.userId, {
-        userId: dto.userId,
-      });
-    }
-    // ACK-only — no profile payload. The client pulls on receipt of the signal.
   }
 
   @ApiBearerAuth()

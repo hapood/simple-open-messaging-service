@@ -358,9 +358,10 @@ fn parse_json(value: String) -> Result<Value, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadDelta {
-    thread_id: i64,
+    thread_id: Option<i64>,
     direction: String,
     item: Option<Value>,
+    user: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -555,26 +556,40 @@ pub(crate) async fn native_db_apply_thread_delta(
         for op in delta {
             match op.direction.as_str() {
                 "DELETE" => {
+                    let thread_id = op.thread_id.ok_or_else(|| "DELETE delta has no threadId".to_string())?;
                     tx.execute(
                         "DELETE FROM threads WHERE user_id = ?1 AND thread_id = ?2",
-                        params![user_id, op.thread_id],
+                        params![user_id, thread_id],
                     )
                     .map_err(|e| format!("apply thread delete: {e}"))?;
                 }
                 "ADD" => {
+                    let thread_id = op.thread_id.ok_or_else(|| "ADD delta has no threadId".to_string())?;
                     let item = op.item.ok_or_else(|| "ADD delta has no item".to_string())?;
                     tx.execute(
                         "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)
                          ON CONFLICT(user_id, thread_id) DO UPDATE SET payload_json = excluded.payload_json",
-                        params![user_id, op.thread_id, json_text(&item)?],
+                        params![user_id, thread_id, json_text(&item)?],
                     )
                     .map_err(|e| format!("apply thread add: {e}"))?;
+                }
+                "PROFILE" => {
+                    let profile = op.user.ok_or_else(|| "PROFILE delta has no user".to_string())?;
+                    let id = profile.get("id").and_then(Value::as_i64).ok_or_else(|| "PROFILE user has no id".to_string())?;
+                    let profile_rev = profile.get("profileRev").and_then(Value::as_i64).ok_or_else(|| "PROFILE user has no profileRev".to_string())?;
+                    let identity = format!("u{id}");
+                    tx.execute(
+                        "INSERT INTO profiles(user_id, identity, payload_json, profile_rev) VALUES(?1, ?2, ?3, ?4)
+                         ON CONFLICT(user_id, identity) DO UPDATE SET payload_json=excluded.payload_json, profile_rev=excluded.profile_rev
+                         WHERE excluded.profile_rev >= profiles.profile_rev",
+                        params![user_id, identity, json_text(&profile)?, profile_rev],
+                    ).map_err(|e| format!("apply profile state: {e}"))?;
                 }
                 other => return Err(format!("unknown thread delta direction: {other}")),
             }
         }
         tx.execute(
-            "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'threadRevision', ?2)
+            "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'stateRevision', ?2)
              ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
             params![user_id, revision.to_string()],
         )

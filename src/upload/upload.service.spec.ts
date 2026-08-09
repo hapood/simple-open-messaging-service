@@ -116,14 +116,22 @@ describe('UploadService.savePart — family gating by staged intent', () => {
     expect(mediaAsset.publishReady).toHaveBeenCalledOnce();
   });
 
-  it('rejects bytes that cannot be decoded as the declared IMAGE intent', async () => {
+  it('falls an unsupported IMAGE intent back to a downloadable FILE', async () => {
     const heic = Buffer.from('unsupported-image-bytes');
-    await expect(
-      svc.savePart(heic, ContentType.IMAGE, {
+    const { payload, overrideContentType } = await svc.savePart(
+      heic,
+      ContentType.IMAGE,
+      {
         filename: 'phone.heic',
         declaredMime: 'image/heic',
-      }),
-    ).rejects.toThrow('invalid image');
+      },
+    );
+    expect(payload).toMatchObject({
+      family: 'FILE',
+      name: 'phone.heic',
+      mimeType: 'image/heic',
+    });
+    expect(overrideContentType).toBe(ContentType.FILE);
   });
 
   it('accepts EBML/webm under an AUDIO intent as audio/webm (recorder-emitted container)', async () => {

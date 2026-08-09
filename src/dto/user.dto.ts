@@ -39,36 +39,6 @@ export class DeleteFriendDto extends UserIdDto {
   deleteData?: boolean;
 }
 
-/** Body for /user/sync-peer-profile (chat-open + profile-panel-open staleness probe). `sinceProfileRev`
- *  is the caller's last-seen peer profileRev: when set and older than the live row, the server pushes a
- *  PEER_PROFILE_UPDATED signal so the client pulls the fresh profile. Response is always ACK-only. */
-export class SyncPeerProfileDto extends UserIdDto {
-  @ApiProperty({
-    required: false,
-    example: 3,
-    description:
-      "Caller's last-seen peer profileRev. When older than the live row, the server pushes a signal (client pulls).",
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  sinceProfileRev?: number;
-}
-
-/** Body for /user/sync-self-profile. The authenticated identity is taken from the session; the client
- *  sends only its cached revision. The endpoint is ACK-only and emits PROFILE_REV_UPDATED when stale. */
-export class SyncSelfProfileDto {
-  @ApiProperty({
-    example: 3,
-    description:
-      "Caller's cached self profileRev. When older than the live row, the server pushes PROFILE_REV_UPDATED.",
-  })
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  sinceProfileRev!: number;
-}
-
 /** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
  *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
  *  query-messages so the blocker never sees the blocked user's messages. */
@@ -93,7 +63,7 @@ export class ThreadIdDto {
 }
 
 /** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
- *  federated (runs the init handshake + signed profile GET + stub localization). The `@` separator is a
+ *  federated (runs the ignite handshake + signed profile GET + stub localization). The `@` separator is a
  *  UI input aid ONLY — the client splits a typed `alice@bbb.com` into these two fields; the API never
  *  carries an @-joined string. */
 export class UserResolveDto {

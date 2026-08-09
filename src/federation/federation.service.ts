@@ -1,8 +1,9 @@
 import {
+  forwardRef,
   Injectable,
   HttpStatus,
+  Inject,
   Logger,
-  OnModuleDestroy,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -10,7 +11,6 @@ import {
   mintUlid,
   normalizeAccount,
   isValidAccount,
-  isValidGroupAccount,
 } from '../common/account.js';
 import {
   DatabaseService,
@@ -25,7 +25,6 @@ import {
 import type { Message } from '../message/message.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import * as tables from '../database/schema.js';
-import { isUniqueViolation } from '../database/database-error.js';
 import {
   and,
   asc,
@@ -58,7 +57,10 @@ import { QuotaService } from '../quota/quota.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import {
+  ThreadRevisionService,
+  type PendingThreadRevision,
+} from '../thread-revision/thread-revision.service.js';
 import { derivePreview, MessageService } from '../message/message.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
 import {
@@ -79,11 +81,22 @@ import {
   type SignedFederationIdentity,
 } from './federation-identity.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
-import { FederationInitService } from './federation-init.service.js';
-import type { FederationMissedPage } from './federation-missed.service.js';
+import { FederationIgniteService } from './federation-ignite.service.js';
+import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
-import type { FederationMissedPullService } from './federation-missed-pull.service.js';
+import type { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 import { DiscoveryChangeService } from '../message/discovery-change.service.js';
+import {
+  PeerStateFeedService,
+  type PeerStateBody,
+  type PeerStateFeedPage,
+} from './peer-state-feed.service.js';
+import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
+import {
+  parseSystemMessageContent,
+  SystemMessageType,
+} from '../message/system-message.js';
 
 /**
  * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
@@ -106,8 +119,12 @@ export class S2sResponseError extends Error {
   }
 }
 
-/** Friend/group invite TTL (mirrors InviteService) — used for inbound friend invites. */
-const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function toIsoString(value: Date | string | null): string | null {
+  if (value === null) return null;
+  return value instanceof Date
+    ? value.toISOString()
+    : new Date(value).toISOString();
+}
 
 /** A federated user address on the wire: two separate fields (account + domain). The `@` separator
  *  is a UI input convention ONLY — the browser splits a typed `alice@bbb.com` into these two fields
@@ -152,6 +169,21 @@ interface MissedPageEffect {
   remoteForwardBundleId?: string;
 }
 
+interface StatePageEffect {
+  revisions: PendingThreadRevision[];
+  statePushDomains: string[];
+  friendRequests: Array<{
+    localUserId: number;
+    peerUserId: number;
+    inviteId: string;
+  }>;
+  formedFriendships: Array<{
+    requesterUserId: number;
+    threadId: number;
+    sourcePeerDomain: string;
+  }>;
+}
+
 interface S2SDeletedMessage {
   id: string;
   target: { creator: S2SAddress; originSeq: number };
@@ -187,57 +219,10 @@ export interface S2SProfile {
   profileRev: number;
 }
 
-/** Shared envelope for a posted S2S op (plain JSON, RFC 9421 signed). `id` is an origin-assigned ULID —
- *  the idempotent-dedup key with `origin`. The discriminator is a FIELD on the concrete payload
- *  (`kind` / `op`), NOT the path: add-friend and add-group share `/s2s/invite`, mirroring the unified
- *  local Invite model. Cross-server MESSAGES do not use these bodies — they travel in the GET /messages
- *  response. */
 interface S2SOpsBase {
   id: string; // origin-assigned ULID; dedup key with origin
   origin: string; // sending server's domain (== signer)
   ts: number; // ms since epoch
-}
-
-/** POST /api/v1/s2s/invite — deliver an invite (friend-add OR group-invite), unified. `kind`
- *  discriminates. FRIEND carries the sender's profile (stub localization); GROUP carries the group
- *  identity + a revision (the origin `!`-User.profileRev, Int) so the receiver's mirror update is
- *  revision-gated (no avatar re-localization when unchanged). The friend gate is `from`↔`to`. */
-export interface S2SInvite extends S2SOpsBase {
-  kind: 'FRIEND' | 'GROUP';
-  from: S2SAddress; // inviter (local on the sender; foreign stub on the receiver)
-  to: S2SAddress; // invitee (local on the receiver)
-  note?: string; // ≤255-char invite message
-  // FRIEND only — sender profile so the receiver creates the stub localized inline:
-  profile?: S2SProfile;
-  // GROUP only:
-  group?: string; // the group's `!account` (== fedGroupAccount; the on-wire group address)
-  groupName?: string;
-  groupAvatar?: S2SAvatar | null;
-  groupRevision?: number; // origin group !-User.profileRev (Int); gates the mirror avatar/name update
-  owner?: S2SAddress; // group owner → foreign stub on the mirror (== from for an origin-create invite)
-  sinceSeq?: number; // origin thread seq the invitee should start pulling from (-1 = full history; see below)
-}
-
-/** POST /api/v1/s2s/invite-accept — the recipient accepted an invite. FRIEND → the inviter's server
- *  creates the P2P thread (accept-wins); GROUP → the group ORIGIN adds the accepter to its roster +
- *  fans out a thread/member join. `inviteOriginId` correlates the sender's outgoing Invite. */
-export interface S2SInviteAccept extends S2SOpsBase {
-  kind: 'FRIEND' | 'GROUP';
-  accepter: S2SAddress; // the user who accepted (local on the sender of THIS op)
-  inviteOriginId?: string; // optional: the original invite's ULID (correlates the outgoing Invite)
-  // FRIEND only — target = the inviter's domain:
-  by?: S2SAddress;
-  // GROUP only — target = the group ORIGIN domain:
-  group?: string; // the group's `!account` (== fedGroupAccount)
-}
-
-/** POST /api/v1/s2s/invite-revoke — the original sender withdrew a still-pending FRIEND invite.
- * `inviteOriginId` is the shared correlation id stored on both servers. */
-export interface S2SInviteRevoke extends S2SOpsBase {
-  kind: 'FRIEND';
-  from: S2SAddress;
-  to: S2SAddress;
-  inviteOriginId: string;
 }
 
 /** POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame. Carries the EPHEMERAL realtime call
@@ -310,7 +295,7 @@ class FederationDownloadTerminatedError extends Error {
  * (SignatureService), and POSTs it to the peer's friend-op endpoint (DiscoveryService resolves the
  * base URL), all inline within the caller's request. No outbox/worker — Step 1 friend-flow is low-volume
  * and the friendship ops are idempotent, so a peer that's momentarily down just fails the action and the
- * user retries (the receiver dedupes via S2SFriendOpSeen, so retries are safe). Step 2 messages do NOT
+ * user retries (the compacted state key plus business revision makes retries safe). Step 2 messages do NOT
  * add an outbox either — they use coalesced-notify + active pull.
  *
  * Transaction note: the DB state change (e.g. Friendship PENDING) commits in its own tx BEFORE the
@@ -329,7 +314,7 @@ class FederationDownloadTerminatedError extends Error {
  * notification; the peer discovers the severed edge lazily, via a rejection-on-send in Step 2.
  */
 @Injectable()
-export class FederationService implements OnModuleDestroy {
+export class FederationService {
   private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationService.name);
   /** Receiver-side debounce window: a group thread pulled within this skips a redundant whole-thread GET. */
@@ -347,6 +332,7 @@ export class FederationService implements OnModuleDestroy {
     private readonly upload: UploadService,
     private readonly participantService: ThreadParticipantService,
     private readonly message: MessageService,
+    @Inject(forwardRef(() => InviteService))
     private readonly invite: InviteService,
     private readonly sse: SseService,
     private readonly threadRevisionService: ThreadRevisionService,
@@ -361,8 +347,11 @@ export class FederationService implements OnModuleDestroy {
     private readonly eventEmitter: EventEmitter2,
     private readonly federationIdentity: FederationIdentityService,
     private readonly federationCursor: FederationCursorService,
-    private readonly federationInit: FederationInitService,
+    private readonly federationInit: FederationIgniteService,
     private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly stateFeedPull: PeerStateFeedPullService,
+    private readonly stateFeed: PeerStateFeedService,
+    private readonly groupMembershipState: GroupMembershipStateService,
     private readonly discoveryChanges: DiscoveryChangeService = new DiscoveryChangeService(),
   ) {}
 
@@ -490,8 +479,6 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  onModuleDestroy(): void {}
-
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
    *  The isDeleted gate matters here because S2S bypasses the token system: the local /uploads/* path is
    *  protected from admin-disabled users by session-token revocation (invalidateAllSessions revokes every
@@ -553,6 +540,617 @@ export class FederationService implements OnModuleDestroy {
     };
   }
 
+  /** Transactional PROFILE writer used by profile mutations. The caller sends wake-ups only after commit. */
+  async writeProfileStateInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+  ): Promise<Map<string, bigint>> {
+    const [u] = await tx
+      .select({
+        account: tables.user.account,
+        name: tables.user.name,
+        avatar: tables.user.avatar,
+        bio: tables.user.bio,
+        profileRev: tables.user.profileRev,
+      })
+      .from(tables.user)
+      .where(
+        and(eq(tables.user.id, userId), eq(tables.user.isForeigner, false)),
+      )
+      .limit(1);
+    if (!u) return new Map();
+    const wire = u.avatar ? await this.upload.readAvatarAsWire(u.avatar) : null;
+    const avatar = wire
+      ? {
+          digest: createHash('sha256')
+            .update(Buffer.from(wire.b64, 'base64'))
+            .digest('hex'),
+          mimeType: 'image/webp',
+          base64: wire.b64,
+        }
+      : null;
+    const peers = await tx.execute<{ domain: string }>(sql`
+      SELECT DISTINCT peer_user.domain
+      FROM "ThreadParticipant" mine
+      JOIN "ThreadParticipant" peer_part ON peer_part."threadId" = mine."threadId" AND peer_part."leftAt" IS NULL
+      JOIN "User" peer_user ON peer_user.id = peer_part."userId"
+      WHERE mine."userId" = ${userId} AND mine."leftAt" IS NULL
+        AND peer_user."isForeigner" = true AND peer_user.domain <> 'local'
+    `);
+    if (!peers.rows.length) return new Map();
+    return this.stateFeed.writeManyInTx(
+      tx,
+      peers.rows.map(({ domain }) => ({
+        peerDomain: domain,
+        account: u.account,
+        eventType: 'PROFILE' as const,
+        revision: u.profileRev,
+        body: {
+          domain: this.config.domain,
+          name: u.name,
+          bio: u.bio,
+          avatar,
+          deleted: false,
+        },
+      })),
+    );
+  }
+
+  /** Publish one local user's current profile to an explicitly addressed peer. This is used for the
+   * first friendship intent, before a P2P ThreadAudience exists. */
+  private async writeProfileStateToPeerInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+    peerDomain: string,
+  ): Promise<Map<string, bigint>> {
+    const [u] = await tx
+      .select({
+        account: tables.user.account,
+        name: tables.user.name,
+        avatar: tables.user.avatar,
+        bio: tables.user.bio,
+        profileRev: tables.user.profileRev,
+      })
+      .from(tables.user)
+      .where(
+        and(eq(tables.user.id, userId), eq(tables.user.isForeigner, false)),
+      )
+      .limit(1);
+    if (!u) throw new Error(`local user ${userId} not found`);
+    const wire = u.avatar ? await this.upload.readAvatarAsWire(u.avatar) : null;
+    return this.stateFeed.writeManyInTx(tx, [
+      {
+        peerDomain,
+        account: u.account,
+        eventType: 'PROFILE',
+        revision: u.profileRev,
+        body: {
+          domain: this.config.domain,
+          name: u.name,
+          bio: u.bio,
+          avatar: wire
+            ? {
+                digest: createHash('sha256')
+                  .update(Buffer.from(wire.b64, 'base64'))
+                  .digest('hex'),
+                mimeType: 'image/webp',
+                base64: wire.b64,
+              }
+            : null,
+          deleted: false,
+        },
+      },
+    ]);
+  }
+
+  /** A federated friend request, approval, rejection and deletion are all the same local intent
+   * transition. The peer observes it through the compacted P2P_META key. */
+  async writeFriendIntentInTx(
+    tx: DatabaseTransaction,
+    localUserId: number,
+    peerUserId: number,
+    wantsFriend: boolean,
+    note = '',
+  ): Promise<Map<string, bigint>> {
+    const remote = await tx.query.user.findFirst({
+      where: and(
+        eq(tables.user.id, peerUserId),
+        eq(tables.user.isForeigner, true),
+      ),
+      columns: { account: true, domain: true },
+    });
+    const local = await tx.query.user.findFirst({
+      where: and(
+        eq(tables.user.id, localUserId),
+        eq(tables.user.isForeigner, false),
+      ),
+      columns: { account: true },
+    });
+    if (!remote || !local) throw new Error('invalid federated friend intent');
+    await this.invite.writeLocalFriendIntentInTx(
+      tx,
+      localUserId,
+      peerUserId,
+      wantsFriend,
+      note,
+    );
+    const request = await tx.execute<{
+      status: 'REQUESTED' | 'FRIEND' | 'NOT_FRIEND';
+      note: string;
+      revision: number;
+      requestedAt: Date | string | null;
+      expiresAt: Date | string | null;
+    }>(sql`
+      SELECT status, note, revision, "requestedAt", "expiresAt" FROM "FriendRequest"
+      WHERE "requesterUserId" = ${localUserId} AND "targetUserId" = ${peerUserId}
+    `);
+    const current = request.rows[0];
+    if (!current) throw new Error('friend request write disappeared');
+    const profile = await this.writeProfileStateToPeerInTx(
+      tx,
+      localUserId,
+      remote.domain,
+    );
+    const relationship = await this.stateFeed.writeManyInTx(tx, [
+      {
+        peerDomain: remote.domain,
+        account: local.account,
+        subjectAccount: remote.account,
+        eventType: 'P2P_META',
+        revision: current.revision,
+        body: {
+          status: current.status,
+          note: current.note,
+          requestedAt: toIsoString(current.requestedAt),
+          expiresAt: toIsoString(current.expiresAt),
+        },
+      },
+    ]);
+    return new Map([...profile, ...relationship]);
+  }
+
+  async writeGroupInviteIntentInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    memberUserId: number,
+    note = '',
+    requested = true,
+  ): Promise<Map<string, bigint>> {
+    const [state] = await tx
+      .select({
+        groupUserId: tables.messageThread.groupUserId,
+        groupAccount: tables.user.account,
+        curSeq: tables.messageThread.curSeq,
+        ownerId: tables.group.ownerId,
+      })
+      .from(tables.messageThread)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.messageThread.groupUserId),
+      )
+      .innerJoin(tables.group, eq(tables.group.groupUserId, tables.user.id))
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (!state?.groupUserId) throw new Error('group invite target is invalid');
+    const [member, owner] = await Promise.all([
+      tx.query.user.findFirst({
+        where: eq(tables.user.id, memberUserId),
+        columns: { account: true, domain: true, isForeigner: true },
+      }),
+      tx.query.user.findFirst({
+        where: eq(tables.user.id, state.ownerId),
+        columns: { account: true, domain: true },
+      }),
+    ]);
+    if (!member || !owner)
+      throw new Error('group invite identities are invalid');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const membership = await this.groupMembershipState.writeLocalDirectionInTx(
+      tx,
+      {
+        groupUserId: state.groupUserId,
+        memberUserId,
+        direction: 'INVITE',
+        requested,
+        note,
+        expiresAt: requested ? expiresAt : null,
+      },
+    );
+    if (!member.isForeigner) return new Map();
+    const profile = requested
+      ? await this.writeProfileStateToPeerInTx(
+          tx,
+          state.groupUserId,
+          member.domain,
+        )
+      : new Map<string, bigint>();
+    const intent = await this.stateFeed.writeManyInTx(tx, [
+      {
+        peerDomain: member.domain,
+        account: state.groupAccount,
+        subjectAccount: member.account,
+        eventType: 'GROUP_INVITE_INTENT',
+        revision: membership.request.revision,
+        body: {
+          status: membership.request.status,
+          note: membership.request.note,
+          requestedAt: membership.request.requestedAt?.toISOString() ?? null,
+          expiresAt: membership.request.expiresAt?.toISOString() ?? null,
+          owner: {
+            account: owner.account,
+            domain:
+              owner.domain === 'local' ? this.config.domain : owner.domain,
+          },
+          sinceSeq: state.curSeq,
+        },
+      },
+    ]);
+    return new Map([...profile, ...intent]);
+  }
+
+  async writeGroupJoinIntentInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    memberUserId: number,
+    requested = true,
+  ): Promise<Map<string, bigint>> {
+    const [thread] = await tx
+      .select({ groupUserId: tables.messageThread.groupUserId })
+      .from(tables.messageThread)
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (!thread?.groupUserId) throw new Error('group join target is invalid');
+    const [groupUser, member] = await Promise.all([
+      tx.query.user.findFirst({
+        where: eq(tables.user.id, thread.groupUserId),
+        columns: { account: true, domain: true },
+      }),
+      tx.query.user.findFirst({
+        where: eq(tables.user.id, memberUserId),
+        columns: { account: true, isForeigner: true },
+      }),
+    ]);
+    if (!groupUser || !member || member.isForeigner)
+      throw new Error('group join identities are invalid');
+    const membership = await this.groupMembershipState.writeLocalDirectionInTx(
+      tx,
+      {
+        groupUserId: thread.groupUserId,
+        memberUserId,
+        direction: 'JOIN',
+        requested,
+      },
+    );
+    if (groupUser.domain === 'local') {
+      if (!requested) {
+        await this.groupMembershipState.setPairActiveInTx(
+          tx,
+          thread.groupUserId,
+          memberUserId,
+          false,
+        );
+        return new Map();
+      }
+      if (!membership.shouldBeActive) return new Map();
+      const activated = await this.groupMembershipState.setPairActiveInTx(
+        tx,
+        thread.groupUserId,
+        memberUserId,
+        true,
+      );
+      if (!activated) return new Map();
+      await tx
+        .update(tables.group)
+        .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
+        .where(eq(tables.group.groupUserId, thread.groupUserId));
+      const state = await this.writeGroupStateInTx(tx, threadId);
+      const profiles = await this.writeGroupMemberProfilesInTx(tx, threadId);
+      return new Map([...state, ...profiles]);
+    }
+    const profile = requested
+      ? await this.writeProfileStateToPeerInTx(
+          tx,
+          memberUserId,
+          groupUser.domain,
+        )
+      : new Map<string, bigint>();
+    const intent = await this.stateFeed.writeManyInTx(tx, [
+      {
+        peerDomain: groupUser.domain,
+        account: groupUser.account,
+        subjectAccount: member.account,
+        eventType: 'GROUP_JOIN_INTENT',
+        revision: membership.request.revision,
+        body: {
+          status: membership.request.status,
+          note: membership.request.note,
+          requestedAt: membership.request.requestedAt?.toISOString() ?? null,
+          expiresAt: null,
+        },
+      },
+    ]);
+    return new Map([...profile, ...intent]);
+  }
+
+  /** User-facing acceptance of a stored GROUP→USER request. This authors only the local JOIN
+   * direction; a federated mirror remains inactive until the origin returns GROUP_META. */
+  async acceptGroupRequest(
+    threadId: number,
+    memberUserId: number,
+  ): Promise<void> {
+    const result = await this.database.db.transaction(async (tx) => {
+      const [thread] = await tx
+        .select({
+          groupUserId: tables.messageThread.groupUserId,
+          groupDomain: tables.user.domain,
+        })
+        .from(tables.messageThread)
+        .innerJoin(
+          tables.user,
+          eq(tables.user.id, tables.messageThread.groupUserId),
+        )
+        .where(eq(tables.messageThread.id, threadId))
+        .limit(1);
+      if (!thread?.groupUserId)
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'group request not found',
+        );
+      if (
+        !(await this.groupMembershipState.hasValidInviteInTx(
+          tx,
+          thread.groupUserId,
+          memberUserId,
+        ))
+      )
+        throw new BusinessException(
+          BusinessCode.INVITE_NOT_FOUND,
+          'group request not found',
+        );
+      if (thread.groupDomain === 'local') {
+        await this.participantService.upsertMemberInTx(
+          tx,
+          threadId,
+          memberUserId,
+          GroupRole.MEMBER,
+        );
+        await tx
+          .insert(tables.threadAudience)
+          .values({
+            targetDomain: 'local',
+            localUserId: memberUserId,
+            threadId,
+          })
+          .onConflictDoNothing();
+      }
+      const allocated = await this.writeGroupJoinIntentInTx(
+        tx,
+        threadId,
+        memberUserId,
+      );
+      const revision =
+        thread.groupDomain === 'local'
+          ? await this.threadRevisionService.recordThreadAddInTx(
+              tx,
+              memberUserId,
+              threadId,
+            )
+          : null;
+      return { allocated, revision };
+    });
+    if (result.revision !== null)
+      this.threadRevisionService.notifyThreadRevision({
+        userId: memberUserId,
+        revision: result.revision,
+      });
+    await this.pushStateFeedDomains(result.allocated.keys());
+  }
+
+  async pushStateFeedDomains(domains: Iterable<string>): Promise<void> {
+    await Promise.allSettled(
+      [...new Set(domains)].map((domain) => this.pushDiscoveryHwm(domain)),
+    );
+  }
+
+  /** Transactional authoritative GROUP_META + group PROFILE snapshot writer. */
+  async writeGroupStateInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    finalPeerDomains: readonly string[] = [],
+  ): Promise<Map<string, bigint>> {
+    const [state] = await tx
+      .select({
+        groupUserId: tables.group.groupUserId,
+        account: tables.user.account,
+        name: tables.user.name,
+        bio: tables.user.bio,
+        avatar: tables.user.avatar,
+        profileRev: tables.user.profileRev,
+        rosterRev: tables.group.rosterRev,
+        dissolvedAt: tables.group.dissolvedAt,
+        ownerId: tables.group.ownerId,
+      })
+      .from(tables.messageThread)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.messageThread.groupUserId),
+      )
+      .innerJoin(tables.group, eq(tables.group.groupUserId, tables.user.id))
+      .where(
+        and(
+          eq(tables.messageThread.id, threadId),
+          eq(tables.user.domain, 'local'),
+        ),
+      )
+      .limit(1);
+    if (!state) return new Map();
+    const roster = await tx
+      .select({
+        account: tables.user.account,
+        domain: tables.user.domain,
+        role: tables.threadParticipant.role,
+        userId: tables.user.id,
+      })
+      .from(tables.threadParticipant)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, threadId),
+          isNull(tables.threadParticipant.leftAt),
+        ),
+      );
+    const normalizeDomain = (domain: string) =>
+      domain === 'local' ? this.config.domain : domain;
+    const peerDomains = new Set([
+      ...roster.map((m) => m.domain).filter((d) => d !== 'local'),
+      ...finalPeerDomains,
+    ]);
+    if (!peerDomains.size) return new Map();
+    const owner = roster.find((m) => m.userId === state.ownerId);
+    if (!owner) throw new Error('group owner is absent from active roster');
+    const wire = state.avatar
+      ? await this.upload.readAvatarAsWire(state.avatar)
+      : null;
+    const avatar = wire
+      ? {
+          digest: createHash('sha256')
+            .update(Buffer.from(wire.b64, 'base64'))
+            .digest('hex'),
+          mimeType: 'image/webp',
+          base64: wire.b64,
+        }
+      : null;
+    return this.stateFeed.writeManyInTx(
+      tx,
+      [...peerDomains].flatMap((peerDomain) => [
+        {
+          peerDomain,
+          account: state.account,
+          eventType: 'PROFILE' as const,
+          revision: state.profileRev,
+          body: {
+            domain: this.config.domain,
+            name: state.name,
+            bio: state.bio,
+            avatar,
+            deleted: false,
+          },
+        },
+        {
+          peerDomain,
+          account: state.account,
+          eventType: 'GROUP_META' as const,
+          revision: state.rosterRev,
+          body: {
+            active:
+              state.dissolvedAt === null &&
+              roster.some((m) => m.domain === peerDomain),
+            dissolved: state.dissolvedAt !== null,
+            owner: {
+              account: owner.account,
+              domain: normalizeDomain(owner.domain),
+            },
+            members: roster.map((m) => ({
+              account: m.account,
+              domain: normalizeDomain(m.domain),
+              role: m.role ?? GroupRole.MEMBER,
+            })),
+          },
+        },
+      ]),
+    );
+  }
+
+  /** Backfill every active member's latest known profile to all member servers. */
+  private async writeGroupMemberProfilesInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+  ): Promise<Map<string, bigint>> {
+    const members = await tx
+      .select({
+        account: tables.user.account,
+        domain: tables.user.domain,
+        name: tables.user.name,
+        bio: tables.user.bio,
+        avatar: tables.user.avatar,
+        isForeigner: tables.user.isForeigner,
+        profileRev: tables.user.profileRev,
+        remoteProfileRev: tables.user.remoteProfileRev,
+      })
+      .from(tables.threadParticipant)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, threadId),
+          isNull(tables.threadParticipant.leftAt),
+        ),
+      );
+    const peerDomains = [
+      ...new Set(
+        members
+          .filter((member) => member.isForeigner)
+          .map((member) => member.domain),
+      ),
+    ];
+    if (!peerDomains.length) return new Map();
+    const snapshots = await Promise.all(
+      members.map(async (member) => {
+        const revision = member.isForeigner
+          ? member.remoteProfileRev
+          : member.profileRev;
+        if (revision == null) return null;
+        const wire = member.avatar
+          ? await this.upload.readAvatarAsWire(member.avatar)
+          : null;
+        return {
+          member,
+          revision,
+          avatar: wire
+            ? {
+                digest: createHash('sha256')
+                  .update(Buffer.from(wire.b64, 'base64'))
+                  .digest('hex'),
+                mimeType: 'image/webp',
+                base64: wire.b64,
+              }
+            : null,
+        };
+      }),
+    );
+    return this.stateFeed.writeManyInTx(
+      tx,
+      peerDomains.flatMap((peerDomain) =>
+        snapshots.flatMap((snapshot) =>
+          snapshot
+            ? [
+                {
+                  peerDomain,
+                  account: snapshot.member.account,
+                  eventType: 'PROFILE' as const,
+                  revision: snapshot.revision,
+                  body: {
+                    domain: snapshot.member.isForeigner
+                      ? snapshot.member.domain
+                      : this.config.domain,
+                    name: snapshot.member.name,
+                    bio: snapshot.member.bio,
+                    avatar: snapshot.avatar,
+                    deleted: false,
+                  },
+                },
+              ]
+            : [],
+        ),
+      ),
+    );
+  }
+
   /** Public profile of a local user (GET /api/v1/s2s/users/:account). Null if not local / not found. */
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
@@ -564,45 +1162,6 @@ export class FederationService implements OnModuleDestroy {
     });
     if (!u || u.isForeigner) return null;
     return this.toS2SProfile(u);
-  }
-
-  /** Lightweight revision probe (GET /api/v1/s2s/users/:account/revision): just the profile revision,
-   *  no avatar transfer. Receivers compare against the stub's remoteProfileRev to decide whether to
-   *  re-pull the full profile. Null if not local / not found. */
-  async getLocalUserRevision(
-    address: S2SAddress,
-  ): Promise<{ profileRev: number } | null> {
-    if (address.domain !== this.config.domain) return null;
-    const u = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(tables.user.account, normalizeAccount(address.account)),
-        eq(tables.user.domain, 'local'),
-      ),
-      columns: { profileRev: true, isForeigner: true },
-    });
-    if (!u || u.isForeigner) return null;
-    return { profileRev: u.profileRev };
-  }
-
-  /** Origin's roster revision for a group (GET /s2s/group/:account/roster-revision). Null if the group
-   *  isn't local (not the origin) or has no Group row. `groupAccount` = the group's `!account`. */
-  async getLocalGroupRosterRevision(
-    groupAccount: string,
-  ): Promise<{ rosterRev: number } | null> {
-    const trd = await this.findGroupThread(groupAccount);
-    if (!trd || !this.isOriginThread(trd) || trd.groupUserId == null)
-      return null;
-    if (trd.groupUser?.group?.dissolvedAt != null) {
-      throw new BusinessException(
-        BusinessCode.GROUP_DISSOLVED,
-        'group has been dissolved',
-      );
-    }
-    const grp = await this.database.db.query.group.findFirst({
-      where: eq(tables.group.groupUserId, trd.groupUserId),
-      columns: { rosterRev: true },
-    });
-    return grp ? { rosterRev: grp.rosterRev } : null;
   }
 
   /** Find or create a foreign User stub for account@<peer-domain>. Stubs never authenticate. */
@@ -722,6 +1281,7 @@ export class FederationService implements OnModuleDestroy {
     body: string,
     peerDomain: string,
   ): Promise<void> {
+    const operationStartedAt = new Date();
     const headers = this.signature.signOutbound({
       method: 'POST',
       path: url.pathname,
@@ -741,6 +1301,7 @@ export class FederationService implements OnModuleDestroy {
       await this.markDemoted(
         peerDomain,
         `POST network/timeout: ${(e as Error).message}`,
+        operationStartedAt,
       );
       throw new Error(
         `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
@@ -756,7 +1317,11 @@ export class FederationService implements OnModuleDestroy {
     // peer is HEALTHY and answered — do NOT demote (a quota hit must never demote; see QuotaService).
     // Mirrors getSigned; surface a typed S2sResponseError so a caller can branch on the status.
     if (status === 401 || status === 403 || status >= 500) {
-      await this.markDemoted(peerDomain, `POST HTTP ${status}`);
+      await this.markDemoted(
+        peerDomain,
+        `POST HTTP ${status}`,
+        operationStartedAt,
+      );
     }
     const errBody = await res.json().catch(() => undefined);
     throw new S2sResponseError(
@@ -773,6 +1338,7 @@ export class FederationService implements OnModuleDestroy {
     peerDomain: string,
     maxResponseBytes?: number,
   ): Promise<T> {
+    const operationStartedAt = new Date();
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}${path}`);
     const headers = this.signature.signOutbound({
@@ -793,6 +1359,7 @@ export class FederationService implements OnModuleDestroy {
       await this.markDemoted(
         peerDomain,
         `GET ${path} network/timeout: ${(e as Error).message}`,
+        operationStartedAt,
       );
       throw new Error(
         `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
@@ -805,7 +1372,11 @@ export class FederationService implements OnModuleDestroy {
       // peer is healthy and answered — do NOT demote; surface a typed error so the caller can react
       // (e.g. 410 GONE = the author left). See design-review item C2.
       if (status === 401 || status === 403 || status >= 500) {
-        await this.markDemoted(peerDomain, `GET ${path} HTTP ${status}`);
+        await this.markDemoted(
+          peerDomain,
+          `GET ${path} HTTP ${status}`,
+          operationStartedAt,
+        );
       }
       const body = await res.json().catch(() => undefined);
       throw new S2sResponseError(
@@ -861,11 +1432,11 @@ export class FederationService implements OnModuleDestroy {
     return (parsed?.data ?? parsed) as T;
   }
 
-  // ─── trust establishment (init handshake) ────────────────────────────────────
+  // ─── trust establishment (ignite handshake) ──────────────────────────────────
 
   /**
    * Ensure mutual trust with a peer domain before any resolve/friend-op traffic. Idempotent: a no-op if
-   * the domain is already trusted. Otherwise the mutual init handshake — our signed POST /init proves
+   * the domain is already trusted. Otherwise the mutual ignite handshake proves
    * we control our domain (the peer fetches OUR .well-known to verify), they auto-accept us, and we
    * trust them back so our guard accepts their inbound and our signed GETs to them succeed. Throws on
    * any failure (peer unreachable / not a SOMS peer / init rejected) — the caller surfaces
@@ -1025,36 +1596,53 @@ export class FederationService implements OnModuleDestroy {
    *  trusted→demoted transition — flip the state, bump demotionCount and log a `demoted` event.
    *  Pinned signing keys are continuity evidence and must never be purged by a transient failure.
    *  `blocked`, `identity_lost` and `reset_in_progress` are durable policy/maintenance states → no-op. */
-  async markDemoted(domain: string, reason: string): Promise<void> {
-    const existing = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+  async markDemoted(
+    domain: string,
+    reason: string,
+    operationStartedAt?: Date,
+  ): Promise<void> {
+    await this.database.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({
+          trustLevel: tables.federatedPeer.trustLevel,
+          lastSuccessAt: tables.federatedPeer.lastSuccessAt,
+        })
+        .from(tables.federatedPeer)
+        .where(eq(tables.federatedPeer.domain, domain))
+        .for('update')
+        .limit(1);
+      if (
+        !existing ||
+        existing.trustLevel === 'blocked' ||
+        existing.trustLevel === 'identity_lost' ||
+        existing.trustLevel === 'reset_in_progress' ||
+        (operationStartedAt !== undefined &&
+          existing.lastSuccessAt !== null &&
+          existing.lastSuccessAt > operationStartedAt)
+      )
+        return;
+      const transitioned =
+        existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
+      await tx
+        .update(tables.federatedPeer)
+        .set({
+          ...(transitioned
+            ? {
+                trustLevel: 'demoted' as const,
+                demotionCount: sql`${tables.federatedPeer.demotionCount} + 1`,
+              }
+            : {}),
+          demotedAt: new Date(),
+          demoteReason: reason.slice(0, 255),
+        })
+        .where(eq(tables.federatedPeer.domain, domain));
+      if (transitioned)
+        await tx.insert(tables.federatedPeerEvent).values({
+          domain,
+          type: 'demoted',
+          reason: reason.slice(0, 255),
+        });
     });
-    if (
-      !existing ||
-      existing.trustLevel === 'blocked' ||
-      existing.trustLevel === 'identity_lost' ||
-      existing.trustLevel === 'reset_in_progress'
-    )
-      return;
-    const now = new Date();
-    const transitioned =
-      existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
-    await this.database.db
-      .update(tables.federatedPeer)
-      .set({
-        ...(transitioned
-          ? {
-              trustLevel: 'demoted',
-              demotionCount: sql`${tables.federatedPeer.demotionCount} + 1`,
-            }
-          : {}),
-        demotedAt: now,
-        demoteReason: reason.slice(0, 255),
-      })
-      .where(eq(tables.federatedPeer.domain, domain));
-    if (transitioned) {
-      await this.logEvent(domain, 'demoted', reason);
-    }
   }
 
   /** Promote a demoted peer only after its pinned identity and signed heartbeat have succeeded. */
@@ -1104,7 +1692,7 @@ export class FederationService implements OnModuleDestroy {
     await this.logEvent(domain, 'blocked', note);
   }
 
-  /** Admin unblock: move the peer to `pending` so the next contact re-runs the init handshake to
+  /** Admin unblock: move the peer to `pending` so the next contact re-runs the ignite handshake to
    *  re-establish trust (it is NOT auto-re-trusted). Logs an `unblocked` event. No-op if not blocked. */
   async markUnblocked(domain: string): Promise<void> {
     const existing = await this.database.db.query.federatedPeer.findFirst({
@@ -1181,7 +1769,7 @@ export class FederationService implements OnModuleDestroy {
     const preUpgradeKeys =
       await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
     const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}/api/v1/s2s/init`);
+    const url = new URL(`${base}/api/v1/s2s/ignite`);
     const localStartChangeId =
       await this.federationCursor.prepareHandshakeStart(peerDomain);
     const claim = this.federationIdentity.createClaim(
@@ -1230,6 +1818,7 @@ export class FederationService implements OnModuleDestroy {
 
   /** Reconnect identity check. A contradictory, correctly signed response permanently locks the peer. */
   async verifyPeerIdentity(peerDomain: string): Promise<void> {
+    const operationStartedAt = new Date();
     const preUpgradeKeys =
       await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
     const nonce = randomBytes(24).toString('base64url');
@@ -1254,6 +1843,7 @@ export class FederationService implements OnModuleDestroy {
       await this.markDemoted(
         peerDomain,
         `GET identity network/timeout: ${(error as Error).message}`,
+        operationStartedAt,
       );
       throw new Error(
         `S2S identity from ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
@@ -1261,7 +1851,11 @@ export class FederationService implements OnModuleDestroy {
     }
     if (!res.ok) {
       if (res.status === 401 || res.status === 403 || res.status >= 500) {
-        await this.markDemoted(peerDomain, `GET identity HTTP ${res.status}`);
+        await this.markDemoted(
+          peerDomain,
+          `GET identity HTTP ${res.status}`,
+          operationStartedAt,
+        );
       }
       throw new Error(
         `S2S identity from ${peerDomain} rejected: HTTP ${res.status}`,
@@ -1349,127 +1943,6 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  // ─── invite flows (synchronous, unified friend + group) ─────────────────────
-
-  /** POST /api/v1/s2s/invite — deliver an invite (friend-add OR group-invite). The local Invite model
-   *  holds both kinds in one table; the S2S layer mirrors that with one endpoint + a `kind` field.
-   *  Federated delivery is synchronous + idempotent (the receiver dedupes via Invite (origin, originId)
-   *  + S2SFriendOpSeen). For GROUP, the LOCAL group thread is lazily promoted to a federated origin
-   *  (ensureOriginFederatedId mints the fedGroupAccount). */
-  async sendInvite(params: {
-    kind: 'FRIEND' | 'GROUP';
-    fromLocalUserId: number;
-    to: S2SAddress;
-    note?: string;
-    // GROUP only — caller supplies the group identity, a wire avatar, + the revision (origin
-    // !-User.profileRev, Int) so the receiver's mirror update is revision-gated:
-    threadId?: number;
-    groupName?: string;
-    groupAvatarUrl?: string; // LOCAL avatar path (/uploads/...) → converted to inline S2SAvatar here
-    groupRevision?: number;
-    owner?: S2SAddress;
-    /** FRIEND correlation id shared with the sender's local Invite row. */
-    opId?: string;
-  }): Promise<void> {
-    const from = await this.requireLocalUser(params.fromLocalUserId);
-    const payload: S2SInvite = {
-      id: params.opId ?? mintUlid(),
-      origin: this.config.domain,
-      kind: params.kind,
-      from: this.localAddress(from.account),
-      to: { account: params.to.account, domain: params.to.domain },
-      ts: Date.now(),
-      note: (params.note ?? '').slice(0, 255),
-    };
-    if (params.kind === 'FRIEND') {
-      payload.profile = await this.toS2SProfile(from);
-    } else {
-      payload.group = await this.ensureOriginFederatedId(params.threadId!);
-      // sinceSeq = the origin thread seq the invitee seeds its pullUntil with, so a new member starts
-      // from "now" (post-invite) instead of pulling the whole pre-join history (the pullUntil=-1 default).
-      // ORIGIN (us): our own curSeq (== the origin's latest). MIRROR: our pullUntil (the origin seq we've
-      // caught up to — at worst slightly behind the origin's true latest; the gap closes on the next push).
-      const trd = await this.database.db.query.messageThread
-        .findFirst({
-          where: eq(tables.messageThread.id, params.threadId!),
-          columns: { curSeq: true, pullUntil: true },
-          with: { user: { columns: { domain: true } } },
-        })
-        .then((row) => (row ? { ...row, groupUser: row.user } : null));
-      payload.sinceSeq =
-        trd == null || trd.groupUser == null
-          ? -1
-          : trd.groupUser.domain === 'local' // origin: our own curSeq; mirror: our pullUntil
-            ? trd.curSeq
-            : trd.pullUntil;
-      payload.groupName = params.groupName?.slice(0, 255);
-      payload.groupAvatar = params.groupAvatarUrl
-        ? await this.upload.readAvatarAsWire(params.groupAvatarUrl)
-        : null;
-      payload.groupRevision = params.groupRevision ?? 0;
-      payload.owner = params.owner ?? payload.from;
-    }
-    await this.postSigned(
-      '/api/v1/s2s/invite',
-      JSON.stringify(payload),
-      params.to.domain,
-    );
-  }
-
-  /** POST /api/v1/s2s/invite-accept — notify the other side that a local user accepted an invite. FRIEND
-   *  → the inviter's server creates the P2P thread (accept-wins); GROUP → the group ORIGIN adds the
-   *  accepter to its roster + fans out a thread/member join. `targetDomain` is the inviter's domain
-   *  (FRIEND) or the group origin (GROUP); `inviteOriginId` correlates the sender's outgoing Invite. */
-  async sendInviteAccept(params: {
-    kind: 'FRIEND' | 'GROUP';
-    fromLocalUserId: number; // the accepter (local)
-    targetDomain: string;
-    inviteOriginId?: string;
-    by?: S2SAddress; // FRIEND: the original inviter
-    group?: string; // GROUP: the group `!account` (== fedGroupAccount)
-  }): Promise<void> {
-    const accepter = await this.requireLocalUser(params.fromLocalUserId);
-    const payload: S2SInviteAccept = {
-      id: mintUlid(),
-      origin: this.config.domain,
-      kind: params.kind,
-      accepter: this.localAddress(accepter.account),
-      inviteOriginId: params.inviteOriginId,
-      ts: Date.now(),
-    };
-    if (params.kind === 'FRIEND') payload.by = params.by;
-    else payload.group = params.group;
-    await this.postSigned(
-      '/api/v1/s2s/invite-accept',
-      JSON.stringify(payload),
-      params.targetDomain,
-    );
-  }
-
-  /** Withdraw a federated FRIEND invite. Awaited by the consumer endpoint: local state is changed only
-   * after the peer acknowledges, so an unreachable peer cannot leave the two visible lists divergent. */
-  async sendInviteRevoke(params: {
-    fromLocalUserId: number;
-    to: S2SAddress;
-    inviteOriginId: string;
-  }): Promise<void> {
-    const from = await this.requireLocalUser(params.fromLocalUserId);
-    const payload: S2SInviteRevoke = {
-      id: mintUlid(),
-      origin: this.config.domain,
-      kind: 'FRIEND',
-      from: this.localAddress(from.account),
-      to: { account: params.to.account, domain: params.to.domain },
-      inviteOriginId: params.inviteOriginId,
-      ts: Date.now(),
-    };
-    await this.postSigned(
-      '/api/v1/s2s/invite-revoke',
-      JSON.stringify(payload),
-      params.to.domain,
-    );
-  }
-
   /** POST /api/v1/s2s/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
    *  to the peer server hosting the call's other participant. Awaitable so the caller's `initiate` can
    *  detect a ring failure (→ the `unreachable` terminal bubble). The persisted CALL record rides the
@@ -1508,28 +1981,6 @@ export class FederationService implements OnModuleDestroy {
       JSON.stringify(frame),
       peerDomain,
     );
-  }
-
-  // ─── Step 3: cross-server group threads (origin-hub) ────────────────────────
-
-  /** Ensure an origin group thread carries its federated id + originDomain (lazy, at the first
-   *  cross-server invite — group.create itself is federation-agnostic). The federated id IS the group's
-   *  `!account` (globally unique ULID) — the same value on the origin and every mirror, so it doubles as
-   *  the on-wire group address (`to` / `group`), never an internal thread id. Idempotent. Returns it. */
-  /** Return the group's federated id (its `!account`, the on-wire group address `to`/`group`). The id
-   *  IS the group !-User row's account — set at group.create, so no lazy stamping is needed (the former
-   *  fedGroupAccount/originDomain columns were folded into groupUser.account / groupUser.domain). */
-  async ensureOriginFederatedId(threadId: number): Promise<string> {
-    const trd = await this.database.db.query.messageThread
-      .findFirst({
-        where: eq(tables.messageThread.id, threadId),
-        columns: {},
-        with: { user: { columns: { account: true } } },
-      })
-      .then((row) => (row ? { groupUser: row.user } : null));
-    if (!trd) throw new Error(`thread ${threadId} not found`);
-    if (!trd.groupUser) throw new Error(`thread ${threadId} has no group user`);
-    return trd.groupUser.account;
   }
 
   /** Whether THIS server is the origin (roster + history authority) of a group thread: the group
@@ -1600,193 +2051,6 @@ export class FederationService implements OnModuleDestroy {
       .then((row) => (row ? { ...row, groupUser: row.user } : null));
   }
 
-  /** Inbound POST /s2s/invite — receive an invite (friend OR group), unified. Dispatches on `kind`.
-   *  Dedup via S2SFriendOpSeen + the Invite (origin, originId) unique. Quota: peek (reject exhausted
-   *  before dedup, so an over-limit retry burns no dedup slot) → dedup → tick on non-duplicate (replays
-   *  never burn quota — tick runs only after isOpSeen returns false). */
-  async handleInvite(body: S2SInvite): Promise<void> {
-    await this.quota.peek(body.origin, 'requests');
-    if (await this.isOpSeen(body.origin, body.id)) return;
-    await this.quota.tick(body.origin, 'requests');
-    if (body.kind === 'GROUP') return this.handleGroupInvite(body);
-    return this.handleFriendInvite(body);
-  }
-
-  /** FRIEND: the sender's profile localizes the foreign stub; an incoming FRIEND Invite arms the badge
-   *  + a live FRIEND_REQUEST NOTIFY. (was friend-op handleRequest) */
-  private async handleFriendInvite(body: S2SInvite): Promise<void> {
-    const from = this.requireS2SAddress(body.from);
-    const to = this.requireS2SAddress(body.to);
-    const foreignId = await this.ensureForeignUser(from.account, from.domain);
-    if (body.profile)
-      await this.localizeForeignProfile(foreignId, body.profile);
-    const localId = await this.findLocalUserIdByAddress(to);
-    if (localId === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `local user ${to.account} not found`,
-      );
-    }
-    const inviteId = await this.invite.receiveInboundFriendInvite({
-      fromUserId: foreignId,
-      toUserId: localId,
-      note: body.note ?? '',
-      origin: body.origin,
-      originId: body.id,
-      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
-    });
-    this.sse.onNotify(localId, {
-      event: 'NOTIFY',
-      type: 'FRIEND_REQUEST',
-      fromUserId: foreignId,
-      inviteId,
-    });
-    // friendReqRev push (the mergeable badge signal) — MAX(createdAt) over the local recipient's incoming
-    // FRIEND invites, just advanced by receiveInboundFriendInvite's PENDING create.
-    void this.invite
-      .friendReqState(localId)
-      .then((s) => this.sse.onFriendReqRevUpdated(localId, s));
-  }
-
-  /** GROUP: friend-gate → find-or-create mirror (stores the OWNER participant) → REVISION-GATED avatar/
-   *  name refresh → incoming GROUP Invite + a GROUP_INVITE card (same shape as a local invite). */
-  private async handleGroupInvite(body: S2SInvite): Promise<void> {
-    const by = this.requireS2SAddress(body.from);
-    const to = this.requireS2SAddress(body.to);
-    const owner = body.owner ? this.requireS2SAddress(body.owner) : by;
-    // The group `!account` is an untrusted inbound payload field — a bare account string, NOT an
-    // {account,domain} object, so requireS2SAddress doesn't cover it. Normalize + grammar-check it before
-    // it lands as a mirror groupUser.account: a malformed/non-`!` peer value must not violate the account
-    // invariant (case is folded — the contract is case-insensitive on write).
-    const groupAccount = body.group ? normalizeAccount(body.group) : '';
-    if (!isValidGroupAccount(groupAccount)) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'invite group account missing or malformed',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const localId = await this.findLocalUserIdByAddress(to);
-    if (localId === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `local user ${to.account} not found`,
-      );
-    }
-    // The inviter's stub must already exist (a passing friend gate ⇒ they're already friends ⇒ the stub
-    // was created when they befriended). LOOK IT UP (don't ensure/create) — missing ⇒ not friends.
-    const byStub = await this.database.db.query.user.findFirst({
-      where: and(
-        eq(tables.user.account, normalizeAccount(by.account)),
-        eq(tables.user.domain, by.domain),
-      ),
-    });
-    if (!byStub) {
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
-    }
-    const byStubId = byStub.id;
-    const p2pThreadId = await this.participantService.findP2PThreadBetween(
-      byStubId,
-      localId,
-    );
-    if (p2pThreadId === null) {
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends');
-    }
-    const ownerStubId =
-      owner.account === by.account && owner.domain === by.domain
-        ? byStubId
-        : await this.ensureForeignUser(owner.account, owner.domain);
-    const mirrorThreadId = await this.findOrCreateMirrorThread({
-      fedGroupAccount: groupAccount,
-      originDomain: body.origin,
-      name: body.groupName ?? '',
-      ownerStubId,
-      // Seed the mirror's pull cursor so the new member pulls from the invite-time latest seq, NOT the
-      // entire pre-join history. Absent (-1) ⇒ a peer that doesn't send sinceSeq gets the full history
-      // (safe default; only matters when the group already had messages at invite time).
-      sinceSeq: body.sinceSeq ?? -1,
-    });
-    // Revision-gated avatar/name refresh: skip when the peer's revision is not newer than the mirror's
-    // remoteProfileRev (no avatar re-localization / orphan files on an unchanged group).
-    const mirror = await this.database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, mirrorThreadId),
-      columns: { groupUserId: true },
-    });
-    const gu =
-      mirror?.groupUserId != null
-        ? await this.database.db.query.user.findFirst({
-            where: eq(tables.user.id, mirror.groupUserId),
-            columns: { remoteProfileRev: true, avatar: true },
-          })
-        : null;
-    const rev = body.groupRevision ?? 0;
-    const stale =
-      gu == null || gu.remoteProfileRev == null || gu.remoteProfileRev < rev;
-    let avatarUrl = gu?.avatar ?? '';
-    if (stale && mirror?.groupUserId != null) {
-      avatarUrl = body.groupAvatar
-        ? await this.upload.saveAvatarFromWire(body.groupAvatar)
-        : avatarUrl;
-      await this.database.db
-        .update(tables.user)
-        .set({
-          name: (body.groupName ?? '').slice(0, 255),
-          avatar: avatarUrl,
-          remoteProfileRev: rev,
-          updatedAt: new Date(),
-        })
-        .where(eq(tables.user.id, mirror.groupUserId));
-    }
-    // Mint the inbound Invite. NO card write — the card is the SENDER's responsibility (written into the
-    // sender's P2P mirror), delivered to this server via the Step-2 message pull in Phase B. Phase A
-    // ships the machinery (Invite + mirror + accept + roster fanout); the invitee's visible card arrives
-    // with Phase-B messaging.
-    await this.invite.createGroupInvite(
-      byStubId,
-      mirrorThreadId,
-      localId,
-      body.note ?? '',
-      {
-        origin: body.origin,
-        originId: body.id,
-      },
-    );
-  }
-
-  /** Inbound POST /s2s/invite-accept — the other side accepted an invite. FRIEND → create THIS server's
-   *  P2P thread (accept-wins); GROUP → we are the ORIGIN: add the accepter to our roster + fan out a
-   *  thread/member join so the roster is consistent on every member-server. */
-  async handleInviteAccept(body: S2SInviteAccept): Promise<void> {
-    await this.quota.peek(body.origin, 'requests');
-    if (await this.isOpSeen(body.origin, body.id)) return;
-    await this.quota.tick(body.origin, 'requests');
-    if (body.kind === 'GROUP') return this.handleGroupAccept(body);
-    return this.handleFriendAccept(body);
-  }
-
-  /** Inbound federated withdrawal. Replays and already-terminal rows are successful no-ops: revoke is
-   * idempotent, while ACCEPTED remains accepted (accept-wins for a cross-server race). */
-  async handleInviteRevoke(body: S2SInviteRevoke): Promise<void> {
-    await this.quota.peek(body.origin, 'requests');
-    if (await this.isOpSeen(body.origin, body.id)) return;
-    const from = this.requireS2SAddress(body.from);
-    const to = this.requireS2SAddress(body.to);
-    const foreignId = await this.ensureForeignUser(from.account, from.domain);
-    const localId = await this.findLocalUserIdByAddress(to);
-    if (localId === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `local user ${to.account} not found`,
-      );
-    }
-    await this.invite.revokeInboundFriendInvite({
-      fromUserId: foreignId,
-      toUserId: localId,
-      origin: body.origin,
-      originId: body.inviteOriginId,
-    });
-  }
-
   /** Inbound POST /api/v1/s2s/call — receive ONE federated call frame. Resolves the wire identities to
    *  LOCAL ids (the sender → a foreigner stub; the recipient → a local userId) + the LOCAL P2P thread,
    *  then hands the frame to CallsService via `emitAsync('call.frame.inbound')` — NOT a direct injection
@@ -1838,271 +2102,27 @@ export class FederationService implements OnModuleDestroy {
     });
   }
 
-  /** FRIEND accept (was friend-op handleApprove): the foreign approver accepted our local user's invite.
-   *  Accept-wins: form the P2P thread if not already friends. */
-  private async handleFriendAccept(body: S2SInviteAccept): Promise<void> {
-    const from = this.requireS2SAddress(body.accepter); // the approver → foreign stub here
-    const to = body.by ? this.requireS2SAddress(body.by) : null; // the local requester
-    const foreignId = await this.ensureForeignUser(from.account, from.domain);
-    const localId = to ? await this.findLocalUserIdByAddress(to) : null;
-    if (localId === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `local requester not found`,
-      );
-    }
-    const { threadId, created } = await this.invite.applyInboundFriendApprove(
-      localId,
-      foreignId,
-    );
-    if (created) {
-      // Local user's thread list gained a P2P thread — bump threadRevision + push signal (replaces the
-      // former FRIEND_APPROVED NOTIFY; the client pulls the delta).
-      await this.threadRevisionService.recordThreadAdd(localId, threadId);
-    }
-  }
-
-  /** GROUP accept — WE are the group ORIGIN. Add the accepter to OUR roster (the origin group thread),
-   *  then fan out a thread/member join to every member-server. (Accept-wins: idempotent if already a
-   *  member.) */
-  private async handleGroupAccept(body: S2SInviteAccept): Promise<void> {
-    // WE are the group ORIGIN: record the accepter on the canonical roster. Other member-servers learn
-    // of the join LAZILY via the group-meta freshness probe on chat-open (the roster is PULLED like a
-    // profile, not pushed) — see the roster-mutation design in the plan.
-    const accepter = this.requireS2SAddress(body.accepter);
-    const trd = await this.findGroupThread(body.group ?? '');
-    if (trd == null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `group ${body.group} not found`,
-      );
-    }
-    const accepterStubId = await this.ensureForeignUser(
-      accepter.account,
-      accepter.domain,
-    );
-    await this.database.db.transaction(async (tx) => {
-      await this.participantService.upsertMemberInTx(
-        tx,
-        trd.id,
-        accepterStubId,
-        GroupRole.MEMBER,
-      );
-      await tx
-        .insert(tables.threadAudience)
-        .values({
-          targetDomain: accepter.domain,
-          localUserId: null,
-          threadId: trd.id,
-        })
-        .onConflictDoNothing();
-      // Membership and discovery access become visible atomically.
-      if (trd.groupUserId != null) {
-        await tx
-          .update(tables.group)
-          .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
-          .where(eq(tables.group.groupUserId, trd.groupUserId));
-      }
-    });
-  }
-
-  // ─── roster meta-pull (lazy, on chat-open — same shape as the profile sync) ──────────
-
-  /** ORIGIN serves the canonical roster for a federated group (GET /s2s/group/:account/roster).
-   *  Members carry WIRE addresses (a local member's domain is our real domain, never the "local" sentinel)
-   *  so the pulling mirror can ensureForeignUser each. */
-  async serveGroupRoster(groupAccount: string): Promise<{
-    members: { account: string; domain: string; role: GroupRole }[];
-  } | null> {
-    const trd = await this.findGroupThread(groupAccount);
-    if (trd == null) return null;
-    const rows = await this.database.db.query.threadParticipant.findMany({
-      where: and(
-        eq(tables.threadParticipant.threadId, trd.id),
-        isNull(tables.threadParticipant.leftAt),
-      ),
-      columns: { role: true },
-      with: { user: { columns: { account: true, domain: true } } },
-    });
-    return {
-      members: rows.map((r) => ({
-        account: r.user.account,
-        domain: r.user.domain === 'local' ? this.config.domain : r.user.domain,
-        role: r.role ?? GroupRole.MEMBER,
-      })),
-    };
-  }
-
-  /** MIRROR pulls the origin's roster (signed GET /s2s/group/:account/roster). Null on peer failure. */
-  private async pullGroupRoster(
-    groupAccount: string,
-    originDomain: string,
-  ): Promise<{
-    members: { account: string; domain: string; role: GroupRole }[];
-  } | null> {
-    try {
-      return await this.getSigned<{
-        members: { account: string; domain: string; role: GroupRole }[];
-      }>(
-        `/api/v1/s2s/group/${encodeURIComponent(groupAccount)}/roster`,
-        originDomain,
-      );
-    } catch {
-      return null;
-    }
-  }
-
-  /** Chat-open hook for a FEDERATED group MIRROR: dual-probe the origin's profile revision
-   *  (User.profileRev) + roster revision (Group.rosterRev); if either is newer than the mirror's
-   *  remoteProfileRev / remoteRosterRev, re-pull just the stale half (identity via fetchRemoteUser +
-   *  localizeForeignProfile; roster via reconcile) and fan its OWN signal (GROUP_UPDATED for identity,
-   *  GROUP_ROSTER_UPDATED for roster). A local group / when we ARE the origin is a no-op. */
-  async syncGroupMetaIfStale(threadId: number): Promise<void> {
-    const trd = await this.database.db.query.messageThread
-      .findFirst({
-        where: eq(tables.messageThread.id, threadId),
-        columns: {
-          groupUserId: true,
-        },
-        with: {
-          user: {
-            columns: {
-              account: true,
-              domain: true,
-              remoteProfileRev: true,
-            },
-            with: {
-              group: { columns: { rosterRev: true, remoteRosterRev: true } },
-            },
-          },
-        },
-      })
-      .then((row) => (row ? { ...row, groupUser: row.user } : null));
-    const gu = trd?.groupUser;
-    if (!gu || gu.domain === 'local' || trd?.groupUserId == null) return;
-    const groupUserId = trd.groupUserId;
-    const grp = gu.group;
-    const address: S2SAddress = { account: gu.account, domain: gu.domain };
-    try {
-      let profileChanged = false;
-      let rosterChanged = false;
-      const revResponse = await this.getSignedForThread<{
-        profileRev: number;
-      }>(
-        threadId,
-        `/api/v1/s2s/users/${address.account}/revision`,
-        address.domain,
-      );
-      const rev = revResponse.data;
-      if (gu.remoteProfileRev == null || rev.profileRev > gu.remoteProfileRev) {
-        const profileResponse = await this.getSignedForThread<S2SProfile>(
-          threadId,
-          `/api/v1/s2s/users/${address.account}`,
-          address.domain,
-        );
-        await this.localizeForeignProfile(groupUserId, profileResponse.data, {
-          threadId,
-          peerDomain: address.domain,
-          expectedFederationVersion: profileResponse.federationVersion,
-        });
-        profileChanged = true;
-      }
-      if (grp) {
-        const rrevResponse = await this.getSignedForThread<{
-          rosterRev: number;
-        }>(
-          threadId,
-          `/api/v1/s2s/group/${address.account}/roster-revision`,
-          address.domain,
-        );
-        const rrev = rrevResponse.data;
-        if (
-          grp.remoteRosterRev == null ||
-          rrev.rosterRev > grp.remoteRosterRev
-        ) {
-          const rosterResponse = await this.getSignedForThread<{
-            members: {
-              account: string;
-              domain: string;
-              role: GroupRole;
-            }[];
-          }>(
-            threadId,
-            `/api/v1/s2s/group/${encodeURIComponent(address.account)}/roster`,
-            address.domain,
-          );
-          await this.reconcileRoster(
-            threadId,
-            rosterResponse.data.members,
-            address.domain,
-            rosterResponse.federationVersion,
-            groupUserId,
-            rrev.rosterRev,
-          );
-          rosterChanged = true;
-        }
-      }
-      if (profileChanged || rosterChanged) {
-        const members =
-          await this.participantService.getActiveParticipantUserIds(threadId);
-        members.forEach((m) => {
-          if (profileChanged)
-            this.sse.onGroupEvent(m.userId, 'GROUP_UPDATED', { threadId });
-          if (rosterChanged)
-            this.sse.onGroupEvent(m.userId, 'GROUP_ROSTER_UPDATED', {
-              threadId,
-            });
-        });
-      }
-    } catch {
-      // Best-effort — keep the cached meta; the next chat-open retries.
-    }
-  }
-
-  /** Synchronous write gate for a federated GROUP mirror. A cheap signed revision probe lets the
-   * origin return GROUP_DISSOLVED before the mirror persists a new message. Local-origin groups and
-   * P2P threads are no-ops; their local guards remain authoritative. */
+  /** Group writes are gated exclusively by locally converged state. */
   async assertGroupWritable(threadId: number): Promise<void> {
-    const trd = await this.database.db.query.messageThread
-      .findFirst({
-        where: eq(tables.messageThread.id, threadId),
-        columns: {},
-        with: { user: { columns: { account: true, domain: true } } },
-      })
-      .then((row) => (row ? { groupUser: row.user } : null));
-    const group = trd?.groupUser;
-    if (!group || group.domain === 'local') return;
-    try {
-      await this.getSignedForThread(
-        threadId,
-        `/api/v1/s2s/group/${group.account}/roster-revision`,
-        group.domain,
+    const [state] = await this.database.db
+      .select({ dissolvedAt: tables.group.dissolvedAt })
+      .from(tables.messageThread)
+      .innerJoin(
+        tables.group,
+        eq(tables.group.groupUserId, tables.messageThread.groupUserId),
+      )
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (state?.dissolvedAt) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
       );
-    } catch (error) {
-      if (
-        error instanceof S2sResponseError &&
-        error.code === BusinessCode.GROUP_DISSOLVED &&
-        error.federationVersion !== undefined
-      ) {
-        await this.markGroupDissolved(
-          threadId,
-          group.domain,
-          error.federationVersion,
-        );
-        throw new BusinessException(
-          BusinessCode.GROUP_DISSOLVED,
-          'group has been dissolved',
-        );
-      }
-      // Preserve the existing offline-first send path for transient/unreachable peers. The outbound
-      // hint remains buffered and will retry; only the authoritative terminal code blocks the write.
-      return;
     }
   }
 
-  /** Synchronous federated P2P write gate. Local friendships are already authoritative in the access
-   * guard; a foreign peer is probed through the existing messages endpoint so its normal not-friends
-   * business response converges this retained conversation to read-only before a new message is stored. */
+  /** P2P writes are gated exclusively by locally converged state. No synchronous peer query is allowed
+   * on the message-send path. */
   async assertP2PWritable(
     threadId: number,
     localUserId: number,
@@ -2119,323 +2139,7 @@ export class FederationService implements OnModuleDestroy {
     if (!local || local.leftAt !== null || !peer || peer.leftAt !== null) {
       throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
     }
-    if (!peer.user.isForeigner) return;
-    try {
-      const result = await this.getSignedForThread<{
-        active: boolean;
-        revision: number;
-        role: 'MEMBER' | null;
-        reason: string | null;
-      }>(
-        threadId,
-        `/api/v1/s2s/thread-access?localAccount=${encodeURIComponent(peer.user.account)}` +
-          `&peerAccount=${encodeURIComponent(local.user.account)}`,
-        peer.user.domain,
-      );
-      if (!result.data.active) {
-        throw new BusinessException(
-          BusinessCode.FRIEND_NOT_FOUND,
-          result.data.reason ?? 'not friends',
-        );
-      }
-    } catch (error) {
-      if (
-        error instanceof S2sResponseError &&
-        (error.code === BusinessCode.FRIEND_NOT_FOUND ||
-          error.code === BusinessCode.FORBIDDEN) &&
-        error.federationVersion !== undefined
-      ) {
-        await this.markP2PFriendshipEnded(
-          threadId,
-          localUserId,
-          peer.user.domain,
-          error.federationVersion,
-        );
-        throw new BusinessException(
-          BusinessCode.FRIEND_NOT_FOUND,
-          'not friends',
-        );
-      }
-      // Preserve offline-first behavior for transport failures. Only an authoritative business response
-      // changes friendship state; the ordinary outbound hint remains retryable.
-    }
-  }
-
-  /** Serve the unified current-access query without exposing internal thread ids. */
-  async queryThreadAccess(
-    localAccount: string,
-    peerAccount: string | undefined,
-    signerDomain: string,
-  ): Promise<{
-    active: boolean;
-    revision: number;
-    role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-    reason: string | null;
-  }> {
-    try {
-      if (!localAccount.startsWith('!')) {
-        const access = await this.resolveFriendshipThread(
-          localAccount,
-          peerAccount!,
-          signerDomain,
-        );
-        const thread = await this.database.db.query.messageThread.findFirst({
-          where: eq(tables.messageThread.id, access.threadId),
-          columns: { federationVersion: true },
-        });
-        return {
-          active: true,
-          revision: thread?.federationVersion ?? 0,
-          role: 'MEMBER',
-          reason: null,
-        };
-      }
-      const access = await this.resolveGroupThreadAccess(
-        localAccount,
-        undefined,
-        undefined,
-        signerDomain,
-      );
-      const [thread, participants] = await Promise.all([
-        this.database.db.query.messageThread.findFirst({
-          where: eq(tables.messageThread.id, access.threadId),
-          columns: { federationVersion: true },
-        }),
-        this.database.db.query.threadParticipant.findMany({
-          where: and(
-            eq(tables.threadParticipant.threadId, access.threadId),
-            isNull(tables.threadParticipant.leftAt),
-          ),
-          columns: { role: true },
-          with: {
-            user: { columns: { domain: true, isForeigner: true } },
-          },
-        }),
-      ]);
-      const participant = participants.find(
-        (item) => this.effectiveDomain(item.user) === signerDomain,
-      );
-      return {
-        active: true,
-        revision: thread?.federationVersion ?? 0,
-        role: participant?.role ?? 'MEMBER',
-        reason: null,
-      };
-    } catch (error) {
-      if (error instanceof BusinessException) {
-        return {
-          active: false,
-          revision: 0,
-          role: null,
-          reason: error.message,
-        };
-      }
-      throw error;
-    }
-  }
-
-  /** Apply the lazy cross-server unfriend result without deleting the retained conversation. The existing
-   * thread revision stream makes the caller's other devices re-hydrate friendshipActive=false. */
-  private async markP2PFriendshipEnded(
-    threadId: number,
-    localUserId: number,
-    peerDomain: string,
-    expectedFederationVersion: number,
-  ): Promise<void> {
-    const pendingRevision = await this.database.db.transaction(async (tx) => {
-      await this.assertThreadResponseWritable(
-        tx,
-        threadId,
-        peerDomain,
-        expectedFederationVersion,
-      );
-      const wasHidden = await this.threadRevisionService.isThreadHiddenInTx(
-        tx,
-        localUserId,
-        threadId,
-      );
-      await tx
-        .update(tables.threadParticipant)
-        .set({ leftAt: new Date(), updatedAt: new Date() })
-        .where(
-          and(
-            eq(tables.threadParticipant.threadId, threadId),
-            isNull(tables.threadParticipant.leftAt),
-          ),
-        );
-      if (wasHidden) return null;
-      return this.threadRevisionService.recordThreadAddInTx(
-        tx,
-        localUserId,
-        threadId,
-      );
-    });
-    if (pendingRevision !== null) {
-      this.threadRevisionService.notifyThreadRevision({
-        userId: localUserId,
-        revision: pendingRevision,
-      });
-    }
-  }
-
-  /** Reconcile a mirror's FOREIGN roster to match the origin's authoritative roster: upsert present
-   *  foreign members, soft-leave active foreign members no longer on the origin. Local members are
-   *  managed locally (a member with domain == ours IS a local user — skipped, never re-stubbed). */
-  private async reconcileRoster(
-    threadId: number,
-    members: { account: string; domain: string; role: GroupRole }[],
-    peerDomain: string,
-    expectedFederationVersion: number,
-    groupUserId: number,
-    remoteRosterRev: number,
-  ): Promise<void> {
-    await this.database.db.transaction(async (tx) => {
-      await this.assertThreadResponseWritable(
-        tx,
-        threadId,
-        peerDomain,
-        expectedFederationVersion,
-      );
-      const originForeignIds = new Set<number>();
-      for (const m of members) {
-        if (m.domain === this.config.domain) continue;
-        const stubId = await this.ensureForeignUserInTransaction(
-          tx,
-          m.account,
-          m.domain,
-        );
-        originForeignIds.add(stubId);
-        await this.participantService.upsertMemberInTx(
-          tx,
-          threadId,
-          stubId,
-          m.role,
-        );
-      }
-      const localForeign = await tx
-        .select({ userId: tables.threadParticipant.userId })
-        .from(tables.threadParticipant)
-        .innerJoin(
-          tables.user,
-          eq(tables.user.id, tables.threadParticipant.userId),
-        )
-        .where(
-          and(
-            eq(tables.threadParticipant.threadId, threadId),
-            isNull(tables.threadParticipant.leftAt),
-            eq(tables.user.isForeigner, true),
-          ),
-        );
-      const removedIds = localForeign
-        .filter((participant) => !originForeignIds.has(participant.userId))
-        .map((participant) => participant.userId);
-      if (removedIds.length > 0) {
-        await tx
-          .update(tables.threadParticipant)
-          .set({ leftAt: new Date(), updatedAt: new Date() })
-          .where(
-            and(
-              eq(tables.threadParticipant.threadId, threadId),
-              inArray(tables.threadParticipant.userId, removedIds),
-              isNull(tables.threadParticipant.leftAt),
-            ),
-          );
-      }
-      await tx
-        .update(tables.group)
-        .set({ remoteRosterRev })
-        .where(eq(tables.group.groupUserId, groupUserId));
-    });
-  }
-
-  /** Idempotent mirror-thread find-or-create keyed by fedGroupAccount (@unique → one mirror per
-   *  federated thread, even across multiple invited local users). A mirror is a `!`-User foreign stub
-   *  (carries name/avatar/bio) + the GROUP thread; the origin OWNER is recorded as a ThreadParticipant
-   *  {role:OWNER} so the mirror knows the owner. `sinceSeq` seeds the new thread's pullUntil (a re-invite
-   *  of an existing mirror does NOT regress the cursor — the early-return keeps the live pullUntil). */
-  private async findOrCreateMirrorThread(params: {
-    fedGroupAccount: string;
-    originDomain: string;
-    name: string;
-    ownerStubId: number;
-    sinceSeq?: number;
-  }): Promise<number> {
-    const existing = await this.findGroupThread(params.fedGroupAccount);
-    if (existing) return existing.id;
-    // The mirror group-user REUSES the origin's `!account` (== fedGroupAccount) under the origin's domain
-    // (account_domain uniqueness holds since the origin stores it under 'local').
-    try {
-      return await this.database.db.transaction(async (tx) => {
-        const [groupUser] = await tx
-          .insert(tables.user)
-          .values({
-            account: params.fedGroupAccount,
-            domain: params.originDomain,
-            isForeigner: true,
-            isGroup: true,
-            hashPwd: '', // empty — mirror group-user never logs in
-            name: params.name.slice(0, 255),
-            avatar: '',
-            bio: '',
-            updatedAt: new Date(),
-          })
-          .returning({ id: tables.user.id });
-        const [trd] = await tx
-          .insert(tables.messageThread)
-          .values({
-            type: MessageThreadType.GROUP,
-            groupUserId: groupUser.id,
-            // Seed pullUntil from the invite's sinceSeq so the member pulls from invite-time latest, not the
-            // full pre-join history. -1 (no sinceSeq) ⇒ pull everything (the safe default for an empty group).
-            pullUntil: params.sinceSeq ?? -1,
-            updatedAt: new Date(),
-          })
-          .returning({ id: tables.messageThread.id });
-        // Group-exclusive state: owner + roster revision. remoteRosterRev stays null until the first probe.
-        await tx.insert(tables.group).values({
-          groupUserId: groupUser.id,
-          ownerId: params.ownerStubId,
-          rosterRev: 0,
-          updatedAt: new Date(),
-        });
-        // Record the origin owner on the mirror (roster authority is the origin).
-        await tx.insert(tables.threadParticipant).values({
-          userId: params.ownerStubId,
-          threadId: trd.id,
-          role: GroupRole.OWNER,
-          updatedAt: new Date(),
-        });
-        return trd.id;
-      });
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error;
-      const winner = await this.findGroupThread(params.fedGroupAccount);
-      if (!winner) throw error;
-      return winner.id;
-    }
-  }
-
-  /** True if (origin, opId) already applied. Reuses S2SFriendOpSeen as the generic op-seen table (the
-   *  name is historical — it is just an (origin, opId) dedup index). Race-safe (P2002 = concurrent dup). */
-  private async isOpSeen(origin: string, opId: string): Promise<boolean> {
-    const existing = await this.database.db.query.s2SFriendOpSeen.findFirst({
-      where: and(
-        eq(tables.s2SFriendOpSeen.origin, origin),
-        eq(tables.s2SFriendOpSeen.opId, opId),
-      ),
-    });
-    if (existing) return true;
-    try {
-      await this.database.db
-        .insert(tables.s2SFriendOpSeen)
-        .values({ origin, opId });
-      return false;
-    } catch (e) {
-      if (isUniqueViolation(e)) {
-        return true;
-      }
-      throw e;
-    }
+    void peer;
   }
 
   /** Validate a wire address has non-empty account + domain AND a well-formed account charset (defense
@@ -2471,7 +2175,23 @@ export class FederationService implements OnModuleDestroy {
     fn: () => Promise<T>,
   ): Promise<T> {
     await this.ensurePeerTrusted(domain);
-    return fn();
+    try {
+      return await fn();
+    } catch (error) {
+      // A peer restart can make both sides demote each other: its startup pull reaches us while we
+      // still have it demoted, so it receives FEDERATION_PEER_NOT_TRUSTED and demotes us in turn.
+      // Only this explicit trust-state response is recoverable here. The pinned-identity signed
+      // heartbeat restores mutual reachability, after which the original operation is tried once.
+      // Other 401/403 responses (bad signatures, identity changes, admin policy) remain terminal.
+      if (
+        error instanceof S2sResponseError &&
+        error.code === BusinessCode.FEDERATION_PEER_NOT_TRUSTED
+      ) {
+        await this.recoverPeerTrust(domain);
+        return fn();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -2662,26 +2382,987 @@ export class FederationService implements OnModuleDestroy {
   async pushDiscoveryHwm(domain: string): Promise<void> {
     const allocatedThrough =
       await this.federationCursor.readAllocatedThrough(domain);
+    const stateFeedRev =
+      await this.database.db.query.peerStateFeedTarget.findFirst({
+        where: eq(tables.peerStateFeedTarget.peerDomain, domain),
+        columns: { allocatedThrough: true },
+      });
     await this.postSigned(
-      '/api/v1/s2s/discovery-hwm',
+      '/api/v1/s2s/feed-rev',
       JSON.stringify({
         origin: this.config.domain,
-        allocatedThrough: allocatedThrough.toString(),
+        stateFeedRev: (stateFeedRev?.allocatedThrough ?? 0n).toString(),
+        messageFeedRev: allocatedThrough.toString(),
       }),
       domain,
     );
   }
 
-  /** Query the peer's current source HWM after reconnect or during reconciliation. */
-  async pullDiscoveryHwm(domain: string): Promise<bigint> {
-    const result = await this.getSigned<{ allocatedThrough: string }>(
-      '/api/v1/s2s/discovery-hwm',
+  async pullStateFeedRev(domain: string): Promise<bigint> {
+    const result = await this.getSigned<{ stateFeedRev: string }>(
+      '/api/v1/s2s/state-feed-rev',
       domain,
     );
-    if (!/^(0|[1-9]\d*)$/.test(result.allocatedThrough)) {
+    if (!/^(0|[1-9]\d*)$/.test(result.stateFeedRev))
+      throw new Error(`peer ${domain} returned an invalid state feed rev`);
+    return BigInt(result.stateFeedRev);
+  }
+
+  async pullStateFeedPage(
+    domain: string,
+    after: bigint,
+    take = 100,
+  ): Promise<PeerStateFeedPage> {
+    if (after < 0n || !Number.isInteger(take) || take < 1 || take > 200)
+      throw new Error('invalid state feed cursor/page size');
+    return this.withTrustedPeer(domain, () =>
+      this.getSigned<PeerStateFeedPage>(
+        `/api/v1/s2s/state-feed?after=${after.toString()}&take=${take}`,
+        domain,
+        16 * 1024 * 1024,
+      ),
+    );
+  }
+
+  /** State is always drained before callers start message-feed. Each page and its cursor commit together. */
+  pullStateFromPeer(domain: string): Promise<void> {
+    const changed = new WeakMap<PeerStateFeedPage, StatePageEffect>();
+    return this.stateFeedPull.run(domain, {
+      fetch: (after) => this.pullStateFeedPage(domain, after),
+      apply: async (tx, page) => {
+        changed.set(page, await this.applyStateFeedPageInTx(tx, domain, page));
+      },
+      afterCommit: async (page) => {
+        const effect = changed.get(page) ?? {
+          revisions: [],
+          statePushDomains: [],
+          friendRequests: [],
+          formedFriendships: [],
+        };
+        for (const pending of effect.revisions)
+          this.threadRevisionService.notifyThreadRevision(pending);
+        await this.pushStateFeedDomains(effect.statePushDomains);
+        for (const request of effect.friendRequests) {
+          this.sse.onNotify(request.localUserId, {
+            event: 'NOTIFY',
+            type: 'FRIEND_REQUEST',
+            fromUserId: request.peerUserId,
+            inviteId: request.inviteId,
+          });
+          void this.invite
+            .friendReqState(request.localUserId)
+            .then((state) =>
+              this.sse.onFriendReqRevUpdated(request.localUserId, state),
+            );
+        }
+        for (const formed of effect.formedFriendships)
+          await this.invite.emitFederatedFriendRequested(
+            formed.requesterUserId,
+            formed.threadId,
+            formed.sourcePeerDomain,
+          );
+      },
+    });
+  }
+
+  private async applyStateFeedPageInTx(
+    tx: DatabaseTransaction,
+    peerDomain: string,
+    page: PeerStateFeedPage,
+  ): Promise<StatePageEffect> {
+    const changed: PendingThreadRevision[] = [];
+    const statePushDomains: string[] = [];
+    const friendRequests: StatePageEffect['friendRequests'] = [];
+    const formedFriendships: StatePageEffect['formedFriendships'] = [];
+    // GROUP_META materializes the roster stubs that relayed member PROFILE snapshots target. The pull
+    // layer already validated wire rev ordering, so snapshot application may safely use dependency order.
+    const applyPriority = {
+      GROUP_META: 0,
+      PROFILE: 1,
+      GROUP_INVITE_INTENT: 2,
+      GROUP_JOIN_INTENT: 2,
+      P2P_META: 3,
+    } as const;
+    for (const item of [...page.items].sort(
+      (a, b) => applyPriority[a.eventType] - applyPriority[b.eventType],
+    )) {
+      if (!item.body || typeof item.body !== 'object')
+        throw new Error('invalid state feed body');
+      const revision = Number(BigInt(item.revision));
+      if (!Number.isSafeInteger(revision) || revision < 0)
+        throw new Error('state revision exceeds local range');
+      if (item.eventType === 'PROFILE') {
+        if (item.subjectAccount !== '')
+          throw new Error('PROFILE subject must be empty');
+        const body = item.body as {
+          name?: unknown;
+          bio?: unknown;
+          domain?: unknown;
+          avatar?: unknown;
+          deleted?: unknown;
+        };
+        if (
+          typeof body.name !== 'string' ||
+          typeof body.bio !== 'string' ||
+          typeof body.domain !== 'string' ||
+          typeof body.deleted !== 'boolean'
+        )
+          throw new Error('invalid PROFILE body');
+        if (body.domain === this.config.domain) continue;
+        let [stub] = await tx
+          .select({
+            id: tables.user.id,
+            remoteProfileRev: tables.user.remoteProfileRev,
+          })
+          .from(tables.user)
+          .where(
+            and(
+              eq(tables.user.account, item.account),
+              eq(tables.user.domain, body.domain),
+            ),
+          )
+          .limit(1);
+        if (!stub && body.domain === peerDomain) {
+          const [created] = await tx
+            .insert(tables.user)
+            .values({
+              account: normalizeAccount(item.account),
+              name: body.name,
+              avatar: '',
+              bio: body.bio,
+              isForeigner: true,
+              isGroup: item.account.startsWith('!'),
+              domain: body.domain,
+              updatedAt: new Date(),
+            })
+            .onConflictDoNothing()
+            .returning({
+              id: tables.user.id,
+              remoteProfileRev: tables.user.remoteProfileRev,
+            });
+          stub =
+            created ??
+            (await tx.query.user.findFirst({
+              where: and(
+                eq(tables.user.account, normalizeAccount(item.account)),
+                eq(tables.user.domain, body.domain),
+              ),
+              columns: { id: true, remoteProfileRev: true },
+            }));
+        }
+        if (!stub || (stub.remoteProfileRev ?? -1) >= revision) continue;
+        if (body.domain !== peerDomain) {
+          const authorized = await tx.execute<{ allowed: boolean }>(sql`
+            SELECT EXISTS (
+              SELECT 1
+              FROM "ThreadParticipant" member
+              JOIN "MessageThread" thread ON thread.id = member."threadId" AND thread.type = 'GROUP'
+              JOIN "User" group_u ON group_u.id = thread."groupUserId"
+              WHERE member."userId" = ${stub.id} AND member."leftAt" IS NULL
+                AND group_u.domain = ${peerDomain}
+            ) AS allowed
+          `);
+          if (!authorized.rows[0]?.allowed)
+            throw new Error(
+              'PROFILE relay is not authorized by an origin group',
+            );
+        }
+        let avatar: string | undefined;
+        if (body.avatar === null) avatar = '';
+        else {
+          const wire = body.avatar as {
+            digest?: unknown;
+            mimeType?: unknown;
+            base64?: unknown;
+          };
+          if (
+            !wire ||
+            typeof wire.digest !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(wire.digest) ||
+            typeof wire.mimeType !== 'string' ||
+            typeof wire.base64 !== 'string'
+          )
+            throw new Error('invalid PROFILE avatar');
+          const bytes = Buffer.from(wire.base64, 'base64');
+          if (
+            bytes.toString('base64') !== wire.base64 ||
+            createHash('sha256').update(bytes).digest('hex') !== wire.digest
+          )
+            throw new Error('PROFILE avatar digest mismatch');
+          avatar = await this.upload.saveAvatars(bytes);
+        }
+        await tx
+          .update(tables.user)
+          .set({
+            name: body.name,
+            bio: body.bio,
+            avatar,
+            isDeleted: body.deleted,
+            remoteProfileRev: revision,
+            updatedAt: new Date(),
+          })
+          .where(eq(tables.user.id, stub.id));
+        const consumers = await tx.execute<{ userId: number }>(sql`
+          SELECT DISTINCT local_p."userId"
+          FROM "ThreadParticipant" foreign_p
+          JOIN "ThreadParticipant" local_p ON local_p."threadId" = foreign_p."threadId"
+          JOIN "User" local_u ON local_u.id = local_p."userId"
+          WHERE foreign_p."userId" = ${stub.id} AND foreign_p."leftAt" IS NULL
+            AND local_p."leftAt" IS NULL AND local_u."isForeigner" = false
+        `);
+        changed.push(
+          ...(await this.threadRevisionService.recordProfileStateInTx(
+            tx,
+            stub.id,
+            consumers.rows.map((row) => row.userId),
+          )),
+        );
+        const relayed = await this.relayGroupMemberProfileInTx(tx, {
+          sourcePeerDomain: peerDomain,
+          account: item.account,
+          domain: body.domain,
+          revision,
+          body: item.body as PeerStateBody,
+          userId: stub.id,
+        });
+        statePushDomains.push(...relayed.keys());
+      } else if (item.eventType === 'P2P_META') {
+        const body = item.body as {
+          status?: unknown;
+          note?: unknown;
+          requestedAt?: unknown;
+          expiresAt?: unknown;
+        };
+        if (
+          !item.subjectAccount ||
+          !['REQUESTED', 'FRIEND', 'NOT_FRIEND'].includes(
+            String(body.status),
+          ) ||
+          typeof body.note !== 'string' ||
+          body.note.length > 255 ||
+          (body.requestedAt !== null && typeof body.requestedAt !== 'string') ||
+          (body.expiresAt !== null && typeof body.expiresAt !== 'string') ||
+          (body.status === 'REQUESTED' &&
+            (typeof body.requestedAt !== 'string' ||
+              typeof body.expiresAt !== 'string')) ||
+          (body.status !== 'REQUESTED' && body.expiresAt !== null)
+        )
+          throw new Error('invalid P2P_META body');
+        const requestedAt =
+          typeof body.requestedAt === 'string'
+            ? new Date(body.requestedAt)
+            : null;
+        const expiresAt =
+          typeof body.expiresAt === 'string' ? new Date(body.expiresAt) : null;
+        if (
+          (requestedAt && Number.isNaN(requestedAt.getTime())) ||
+          (expiresAt && Number.isNaN(expiresAt.getTime()))
+        )
+          throw new Error('invalid P2P_META request timestamps');
+        const [localUser] = await tx
+          .select({ id: tables.user.id, account: tables.user.account })
+          .from(tables.user)
+          .where(
+            and(
+              eq(tables.user.account, normalizeAccount(item.subjectAccount)),
+              eq(tables.user.isForeigner, false),
+            ),
+          )
+          .limit(1);
+        const [remoteUser] = await tx
+          .select({ id: tables.user.id, account: tables.user.account })
+          .from(tables.user)
+          .where(
+            and(
+              eq(tables.user.account, normalizeAccount(item.account)),
+              eq(tables.user.domain, peerDomain),
+              eq(tables.user.isForeigner, true),
+            ),
+          )
+          .limit(1);
+        if (!localUser)
+          throw new Error('P2P_META local subject does not exist');
+        if (!remoteUser) throw new Error('P2P_META arrived without PROFILE');
+        const effect = await this.invite.applyRemoteFriendIntentInTx(tx, {
+          localUserId: localUser.id,
+          peerUserId: remoteUser.id,
+          status: body.status as 'REQUESTED' | 'FRIEND' | 'NOT_FRIEND',
+          note: body.note,
+          revision,
+          requestedAt,
+          expiresAt,
+          origin: peerDomain,
+        });
+        if (effect.localStateRevision !== undefined) {
+          const localDirection = await tx.query.friendRequest.findFirst({
+            where: and(
+              eq(tables.friendRequest.requesterUserId, localUser.id),
+              eq(tables.friendRequest.targetUserId, remoteUser.id),
+            ),
+            columns: {
+              status: true,
+              note: true,
+              requestedAt: true,
+              expiresAt: true,
+              revision: true,
+            },
+          });
+          if (!localDirection)
+            throw new Error('local friend state disappeared');
+          const confirmation = await this.stateFeed.writeManyInTx(tx, [
+            {
+              peerDomain,
+              account: localUser.account,
+              subjectAccount: remoteUser.account,
+              eventType: 'P2P_META',
+              revision: localDirection.revision,
+              body: {
+                status: localDirection.status,
+                note: localDirection.note,
+                requestedAt: toIsoString(localDirection.requestedAt),
+                expiresAt: toIsoString(localDirection.expiresAt),
+              },
+            },
+          ]);
+          statePushDomains.push(...confirmation.keys());
+        }
+        if (effect.requestCreated) {
+          const pending = await tx.query.friendRequest.findFirst({
+            where: and(
+              eq(tables.friendRequest.status, 'REQUESTED'),
+              eq(tables.friendRequest.requesterUserId, remoteUser.id),
+              eq(tables.friendRequest.targetUserId, localUser.id),
+            ),
+            columns: { id: true },
+          });
+          if (pending)
+            friendRequests.push({
+              localUserId: localUser.id,
+              peerUserId: remoteUser.id,
+              inviteId: pending.id.toString(),
+            });
+        }
+        if (effect.threadId !== undefined && effect.added !== undefined) {
+          changed.push({
+            userId: localUser.id,
+            revision: effect.added
+              ? await this.threadRevisionService.recordThreadAddInTx(
+                  tx,
+                  localUser.id,
+                  effect.threadId,
+                )
+              : await this.threadRevisionService.recordThreadDeleteInTx(
+                  tx,
+                  localUser.id,
+                  effect.threadId,
+                ),
+          });
+          if (effect.added)
+            formedFriendships.push({
+              requesterUserId: localUser.id,
+              threadId: effect.threadId,
+              sourcePeerDomain: peerDomain,
+            });
+        }
+      } else if (
+        item.eventType === 'GROUP_INVITE_INTENT' ||
+        item.eventType === 'GROUP_JOIN_INTENT'
+      ) {
+        if (!item.account.startsWith('!') || !item.subjectAccount)
+          throw new Error('invalid group membership state key');
+        const body = item.body as {
+          status?: unknown;
+          note?: unknown;
+          requestedAt?: unknown;
+          expiresAt?: unknown;
+          owner?: unknown;
+          sinceSeq?: unknown;
+        };
+        const owner = body.owner as
+          | { account?: unknown; domain?: unknown }
+          | undefined;
+        if (
+          !['REQUESTED', 'MEMBER', 'NOT_MEMBER'].includes(
+            String(body.status),
+          ) ||
+          typeof body.note !== 'string' ||
+          body.note.length > 255 ||
+          (body.requestedAt !== null && typeof body.requestedAt !== 'string') ||
+          (body.expiresAt !== null && typeof body.expiresAt !== 'string') ||
+          (item.eventType === 'GROUP_INVITE_INTENT' &&
+            (!owner ||
+              typeof owner.account !== 'string' ||
+              typeof owner.domain !== 'string' ||
+              !Number.isSafeInteger(body.sinceSeq) ||
+              Number(body.sinceSeq) < -1))
+        )
+          throw new Error('invalid group membership state body');
+        const inviteDirection = item.eventType === 'GROUP_INVITE_INTENT';
+        const [groupUser] = await tx
+          .select({ id: tables.user.id })
+          .from(tables.user)
+          .where(
+            and(
+              eq(tables.user.account, normalizeAccount(item.account)),
+              inviteDirection
+                ? eq(tables.user.domain, peerDomain)
+                : eq(tables.user.isForeigner, false),
+              eq(tables.user.isGroup, true),
+            ),
+          )
+          .limit(1);
+        const [member] = await tx
+          .select({ id: tables.user.id })
+          .from(tables.user)
+          .where(
+            and(
+              eq(tables.user.account, normalizeAccount(item.subjectAccount)),
+              inviteDirection
+                ? eq(tables.user.isForeigner, false)
+                : eq(tables.user.domain, peerDomain),
+              eq(tables.user.isGroup, false),
+            ),
+          )
+          .limit(1);
+        if (!groupUser || !member)
+          throw new Error('group membership state arrived before profiles');
+        const membership =
+          await this.groupMembershipState.applyRemoteDirectionInTx(tx, {
+            groupUserId: groupUser.id,
+            memberUserId: member.id,
+            direction: inviteDirection ? 'INVITE' : 'JOIN',
+            status: body.status as 'REQUESTED' | 'MEMBER' | 'NOT_MEMBER',
+            note: body.note,
+            revision,
+            requestedAt:
+              typeof body.requestedAt === 'string'
+                ? new Date(body.requestedAt)
+                : null,
+            expiresAt:
+              typeof body.expiresAt === 'string'
+                ? new Date(body.expiresAt)
+                : null,
+          });
+        if (inviteDirection && membership.changed)
+          await this.ensureGroupInviteMirrorInTx(tx, {
+            groupUserId: groupUser.id,
+            memberUserId: member.id,
+            owner: owner as { account: string; domain: string },
+            peerDomain,
+            sinceSeq: body.sinceSeq as number,
+            status: body.status as 'REQUESTED' | 'MEMBER' | 'NOT_MEMBER',
+            note: body.note,
+            expiresAt:
+              typeof body.expiresAt === 'string'
+                ? new Date(body.expiresAt)
+                : null,
+          });
+        if (
+          !inviteDirection &&
+          membership.changed &&
+          membership.shouldBeActive
+        ) {
+          const [originThread] = await tx
+            .select({ id: tables.messageThread.id })
+            .from(tables.messageThread)
+            .where(eq(tables.messageThread.groupUserId, groupUser.id))
+            .for('update')
+            .limit(1);
+          if (!originThread) throw new Error('origin group thread missing');
+          const activated = await this.groupMembershipState.setPairActiveInTx(
+            tx,
+            groupUser.id,
+            member.id,
+            true,
+          );
+          if (!activated) continue;
+          await this.participantService.upsertMemberInTx(
+            tx,
+            originThread.id,
+            member.id,
+            GroupRole.MEMBER,
+          );
+          await tx
+            .insert(tables.threadAudience)
+            .values({
+              targetDomain: peerDomain,
+              localUserId: null,
+              threadId: originThread.id,
+            })
+            .onConflictDoUpdate({
+              target: [
+                tables.threadAudience.targetDomain,
+                tables.threadAudience.threadId,
+              ],
+              targetWhere: sql`${tables.threadAudience.targetDomain} <> 'local' AND ${tables.threadAudience.scope} = 'THREAD'`,
+              set: { deliverThroughChangeId: null },
+            });
+          await tx
+            .update(tables.group)
+            .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
+            .where(eq(tables.group.groupUserId, groupUser.id));
+          const groupState = await this.writeGroupStateInTx(
+            tx,
+            originThread.id,
+          );
+          const profiles = await this.writeGroupMemberProfilesInTx(
+            tx,
+            originThread.id,
+          );
+          statePushDomains.push(...groupState.keys(), ...profiles.keys());
+        } else if (
+          !inviteDirection &&
+          membership.changed &&
+          body.status === 'NOT_MEMBER'
+        ) {
+          const [originThread] = await tx
+            .select({ id: tables.messageThread.id })
+            .from(tables.messageThread)
+            .where(eq(tables.messageThread.groupUserId, groupUser.id))
+            .for('update')
+            .limit(1);
+          if (!originThread) throw new Error('origin group thread missing');
+          const deactivated = await this.groupMembershipState.setPairActiveInTx(
+            tx,
+            groupUser.id,
+            member.id,
+            false,
+          );
+          if (!deactivated) continue;
+          await tx
+            .update(tables.threadParticipant)
+            .set({ leftAt: new Date(), updatedAt: new Date() })
+            .where(
+              and(
+                eq(tables.threadParticipant.threadId, originThread.id),
+                eq(tables.threadParticipant.userId, member.id),
+                isNull(tables.threadParticipant.leftAt),
+              ),
+            );
+          await tx
+            .update(tables.group)
+            .set({
+              rosterRev: sql`${tables.group.rosterRev} + 1`,
+              updatedAt: new Date(),
+            })
+            .where(eq(tables.group.groupUserId, groupUser.id));
+          const peerMembers = await tx.execute<{ count: number }>(sql`
+            SELECT COUNT(*)::int AS count
+            FROM "ThreadParticipant" participant
+            JOIN "User" member_u ON member_u.id = participant."userId"
+            WHERE participant."threadId" = ${originThread.id}
+              AND participant."leftAt" IS NULL
+              AND member_u."isForeigner" = true
+              AND member_u.domain = ${peerDomain}
+          `);
+          if ((peerMembers.rows[0]?.count ?? 0) === 0)
+            await tx.execute(sql`
+              UPDATE "ThreadAudience" audience
+              SET "deliverThroughChangeId" = COALESCE((
+                SELECT target."allocatedThrough"
+                FROM "DiscoveryTarget" target
+                WHERE target."targetDomain" = ${peerDomain}
+                  AND target."localUserId" IS NULL
+              ), 0)
+              WHERE audience."targetDomain" = ${peerDomain}
+                AND audience."localUserId" IS NULL
+                AND audience."threadId" = ${originThread.id}
+                AND audience.scope = 'THREAD'
+                AND audience."deliverThroughChangeId" IS NULL
+            `);
+          const groupState = await this.writeGroupStateInTx(
+            tx,
+            originThread.id,
+            [peerDomain],
+          );
+          statePushDomains.push(...groupState.keys());
+        }
+      } else if (item.eventType === 'GROUP_META') {
+        // Group application is handled only by the authoritative origin; malformed/non-origin keys fail
+        // closed. Full roster replacement is connected below through the existing roster applier.
+        if (!item.account.startsWith('!') || item.subjectAccount !== '')
+          throw new Error('invalid GROUP_META key');
+        const groupEffect = await this.applyGroupStateSnapshotInTx(
+          tx,
+          peerDomain,
+          item.account,
+          revision,
+          item.body as Record<string, unknown>,
+        );
+        for (const { userId, active } of groupEffect.users) {
+          changed.push({
+            userId,
+            revision: active
+              ? await this.threadRevisionService.recordThreadAddInTx(
+                  tx,
+                  userId,
+                  groupEffect.threadId,
+                )
+              : await this.threadRevisionService.recordThreadDeleteInTx(
+                  tx,
+                  userId,
+                  groupEffect.threadId,
+                ),
+          });
+        }
+        // A newly active local member's profile must enter the outbound state
+        // feed in the same transaction as the mirror roster. Otherwise a crash
+        // after applying GROUP_META could permanently lose the profile relay.
+        for (const userId of new Set(
+          groupEffect.users
+            .filter((effect) => effect.active)
+            .map((effect) => effect.userId),
+        )) {
+          const profiles = await this.writeProfileStateInTx(tx, userId);
+          statePushDomains.push(...profiles.keys());
+        }
+      } else throw new Error('unknown state feed event type');
+    }
+    return {
+      revisions: changed,
+      statePushDomains,
+      friendRequests,
+      formedFriendships,
+    };
+  }
+
+  /** A group origin relays a member's authoritative PROFILE snapshot to every other member server. */
+  private async relayGroupMemberProfileInTx(
+    tx: DatabaseTransaction,
+    profile: {
+      sourcePeerDomain: string;
+      account: string;
+      domain: string;
+      revision: number;
+      body: PeerStateBody;
+      userId: number;
+    },
+  ): Promise<Map<string, bigint>> {
+    const targets = await tx.execute<{ domain: string }>(sql`
+      SELECT DISTINCT target_u.domain
+      FROM "ThreadParticipant" subject_p
+      JOIN "MessageThread" thread ON thread.id = subject_p."threadId" AND thread.type = 'GROUP'
+      JOIN "User" group_u ON group_u.id = thread."groupUserId" AND group_u.domain = 'local'
+      JOIN "ThreadParticipant" target_p ON target_p."threadId" = thread.id AND target_p."leftAt" IS NULL
+      JOIN "User" target_u ON target_u.id = target_p."userId"
+      WHERE subject_p."userId" = ${profile.userId} AND subject_p."leftAt" IS NULL
+        AND target_u."isForeigner" = true AND target_u.domain <> ${profile.sourcePeerDomain}
+    `);
+    return this.stateFeed.writeManyInTx(
+      tx,
+      targets.rows.map(({ domain }) => ({
+        peerDomain: domain,
+        account: profile.account,
+        eventType: 'PROFILE' as const,
+        revision: profile.revision,
+        body: profile.body,
+      })),
+    );
+  }
+
+  /** Materialize the inert mirror required to display and accept a GROUP→USER request. The invited
+   * local user is deliberately not added to the roster here; only the origin's later GROUP_META may
+   * activate membership. */
+  private async ensureGroupInviteMirrorInTx(
+    tx: DatabaseTransaction,
+    params: {
+      groupUserId: number;
+      memberUserId: number;
+      owner: { account: string; domain: string };
+      peerDomain: string;
+      sinceSeq: number;
+      status: 'REQUESTED' | 'MEMBER' | 'NOT_MEMBER';
+      note: string;
+      expiresAt: Date | null;
+    },
+  ): Promise<number> {
+    const ownerDomain =
+      params.owner.domain === this.config.domain
+        ? 'local'
+        : params.owner.domain;
+    let ownerUser = await tx.query.user.findFirst({
+      where: and(
+        eq(tables.user.account, normalizeAccount(params.owner.account)),
+        eq(tables.user.domain, ownerDomain),
+      ),
+      columns: { id: true },
+    });
+    if (!ownerUser && ownerDomain !== 'local') {
+      const id = await this.ensureForeignUserInTransaction(
+        tx,
+        params.owner.account,
+        params.owner.domain,
+      );
+      ownerUser = { id };
+    }
+    if (!ownerUser) throw new Error('group invite owner does not exist');
+
+    let thread = await tx.query.messageThread.findFirst({
+      where: eq(tables.messageThread.groupUserId, params.groupUserId),
+      columns: { id: true },
+    });
+    if (!thread) {
+      const [created] = await tx
+        .insert(tables.messageThread)
+        .values({
+          type: MessageThreadType.GROUP,
+          groupUserId: params.groupUserId,
+          pullUntil: params.sinceSeq,
+          updatedAt: new Date(),
+        })
+        .returning({ id: tables.messageThread.id });
+      thread = created;
+      await tx.insert(tables.group).values({
+        groupUserId: params.groupUserId,
+        ownerId: ownerUser.id,
+        rosterRev: 0,
+        updatedAt: new Date(),
+      });
+      await tx
+        .insert(tables.threadParticipant)
+        .values({
+          userId: ownerUser.id,
+          threadId: thread.id,
+          role: GroupRole.OWNER,
+          updatedAt: new Date(),
+        })
+        .onConflictDoNothing();
+    }
+
+    void params.memberUserId;
+    void params.peerDomain;
+    void params.status;
+    void params.note;
+    void params.expiresAt;
+    return thread.id;
+  }
+
+  private async applyGroupStateSnapshotInTx(
+    tx: DatabaseTransaction,
+    peerDomain: string,
+    account: string,
+    revision: number,
+    body: Record<string, unknown>,
+  ): Promise<{
+    threadId: number;
+    users: Array<{ userId: number; active: boolean }>;
+  }> {
+    const active = body.active;
+    const dissolved = body.dissolved;
+    const owner = body.owner as
+      | { account?: unknown; domain?: unknown }
+      | undefined;
+    const members = body.members;
+    if (
+      typeof active !== 'boolean' ||
+      typeof dissolved !== 'boolean' ||
+      !owner ||
+      typeof owner.account !== 'string' ||
+      typeof owner.domain !== 'string' ||
+      !Array.isArray(members)
+    )
+      throw new Error('invalid GROUP_META body');
+    const [mirror] = await tx
+      .select({
+        groupUserId: tables.group.groupUserId,
+        threadId: tables.messageThread.id,
+        remoteRosterRev: tables.group.remoteRosterRev,
+      })
+      .from(tables.group)
+      .innerJoin(tables.user, eq(tables.user.id, tables.group.groupUserId))
+      .innerJoin(
+        tables.messageThread,
+        eq(tables.messageThread.groupUserId, tables.group.groupUserId),
+      )
+      .where(
+        and(
+          eq(tables.user.account, account),
+          eq(tables.user.domain, peerDomain),
+        ),
+      )
+      .limit(1);
+    if (!mirror || (mirror.remoteRosterRev ?? -1) >= revision)
+      return { threadId: mirror?.threadId ?? 0, users: [] };
+    await tx.execute(sql`
+      SELECT id FROM "MessageThread"
+      WHERE id = ${mirror.threadId}
+      FOR UPDATE
+    `);
+    const localBefore = await tx
+      .select({ userId: tables.threadParticipant.userId })
+      .from(tables.threadParticipant)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.threadParticipant.userId),
+      )
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, mirror.threadId),
+          eq(tables.user.isForeigner, false),
+        ),
+      );
+    const desired = new Map<number, GroupRole>();
+    const localDesired = new Set<number>();
+    for (const raw of members) {
+      const member = raw as {
+        account?: unknown;
+        domain?: unknown;
+        role?: unknown;
+      };
+      if (
+        typeof member.account !== 'string' ||
+        typeof member.domain !== 'string' ||
+        !Object.values(GroupRole).includes(member.role as GroupRole)
+      )
+        throw new Error('invalid GROUP_META member');
+      let userId: number;
+      if (member.domain === this.config.domain) {
+        const [local] = await tx
+          .select({ id: tables.user.id })
+          .from(tables.user)
+          .where(
+            and(
+              eq(tables.user.account, member.account),
+              eq(tables.user.isForeigner, false),
+            ),
+          )
+          .limit(1);
+        if (!local) continue;
+        userId = local.id;
+        localDesired.add(userId);
+      } else
+        userId = await this.ensureForeignUserInTransaction(
+          tx,
+          member.account,
+          member.domain,
+        );
+      if (desired.has(userId)) throw new Error('duplicate GROUP_META member');
+      desired.set(userId, member.role as GroupRole);
+      await this.participantService.upsertMemberInTx(
+        tx,
+        mirror.threadId,
+        userId,
+        member.role as GroupRole,
+      );
+    }
+    const existing = await tx
+      .select({ userId: tables.threadParticipant.userId })
+      .from(tables.threadParticipant)
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, mirror.threadId),
+          isNull(tables.threadParticipant.leftAt),
+        ),
+      );
+    const removed = existing
+      .filter((row) => !desired.has(row.userId))
+      .map((row) => row.userId);
+    if (removed.length)
+      await tx
+        .update(tables.threadParticipant)
+        .set({ leftAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.threadParticipant.threadId, mirror.threadId),
+            inArray(tables.threadParticipant.userId, removed),
+          ),
+        );
+    const ownerDomain =
+      owner.domain === this.config.domain ? 'local' : owner.domain;
+    const [ownerUser] = await tx
+      .select({ id: tables.user.id })
+      .from(tables.user)
+      .where(
+        and(
+          eq(tables.user.account, owner.account),
+          eq(tables.user.domain, ownerDomain),
+        ),
+      )
+      .limit(1);
+    if (!ownerUser) throw new Error('GROUP_META owner is missing');
+    await tx
+      .update(tables.group)
+      .set({
+        ownerId: ownerUser.id,
+        remoteRosterRev: revision,
+        dissolvedAt: dissolved ? new Date() : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tables.group.groupUserId, mirror.groupUserId));
+    if (!active)
+      await tx
+        .update(tables.threadParticipant)
+        .set({ leftAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.threadParticipant.threadId, mirror.threadId),
+            isNull(tables.threadParticipant.leftAt),
+          ),
+        );
+    const affectedLocalUsers = new Set([
+      ...localBefore.map((row) => row.userId),
+      ...localDesired,
+    ]);
+    for (const userId of affectedLocalUsers) {
+      const isActive = active && localDesired.has(userId);
+      await this.groupMembershipState.setPairActiveInTx(
+        tx,
+        mirror.groupUserId,
+        userId,
+        isActive,
+      );
+      if (isActive)
+        await tx
+          .insert(tables.threadAudience)
+          .values({
+            targetDomain: 'local',
+            localUserId: userId,
+            threadId: mirror.threadId,
+          })
+          .onConflictDoUpdate({
+            target: [
+              tables.threadAudience.targetDomain,
+              tables.threadAudience.localUserId,
+              tables.threadAudience.threadId,
+            ],
+            targetWhere: sql`${tables.threadAudience.targetDomain} = 'local' AND ${tables.threadAudience.scope} = 'THREAD'`,
+            set: { deliverThroughChangeId: null },
+          });
+      else
+        await tx.execute(sql`
+          UPDATE "ThreadAudience" audience
+          SET "deliverThroughChangeId" = COALESCE((
+            SELECT target."allocatedThrough"
+            FROM "DiscoveryTarget" target
+            WHERE target."targetDomain" = 'local'
+              AND target."localUserId" = ${userId}
+          ), 0)
+          WHERE audience."targetDomain" = 'local'
+            AND audience."localUserId" = ${userId}
+            AND audience."threadId" = ${mirror.threadId}
+            AND audience.scope = 'THREAD'
+            AND audience."deliverThroughChangeId" IS NULL
+        `);
+    }
+    return {
+      threadId: mirror.threadId,
+      users: [...affectedLocalUsers].map((userId) => ({
+        userId,
+        active: active && desired.has(userId),
+      })),
+    };
+  }
+
+  /** Query the peer's current source HWM after reconnect or during reconciliation. */
+  async pullDiscoveryHwm(domain: string): Promise<bigint> {
+    const result = await this.getSigned<{ messageFeedRev: string }>(
+      '/api/v1/s2s/feed-rev',
+      domain,
+    );
+    if (!/^(0|[1-9]\d*)$/.test(result.messageFeedRev)) {
       throw new Error(`peer ${domain} returned an invalid discovery HWM`);
     }
-    return BigInt(result.allocatedThrough);
+    return BigInt(result.messageFeedRev);
   }
 
   /**
@@ -2694,15 +3375,15 @@ export class FederationService implements OnModuleDestroy {
     domain: string,
     after: bigint,
     take = 100,
-  ): Promise<{ page: FederationMissedPage; token: PeerResponseToken }> {
+  ): Promise<{ page: FederationMessageFeedPage; token: PeerResponseToken }> {
     if (after < 0n) throw new Error('missed cursor must be non-negative');
     if (!Number.isInteger(take) || take < 1 || take > 200) {
       throw new Error('missed page size must be an integer from 1 to 200');
     }
     const token = await this.capturePeerResponseToken(domain);
     const page = await this.withTrustedPeer(domain, () =>
-      this.getSigned<FederationMissedPage>(
-        `/api/v1/s2s/missed?after=${after.toString()}&take=${take}`,
+      this.getSigned<FederationMessageFeedPage>(
+        `/api/v1/s2s/message-feed?after=${after.toString()}&take=${take}`,
         domain,
         16 * 1024 * 1024,
       ),
@@ -2713,11 +3394,14 @@ export class FederationService implements OnModuleDestroy {
   /** Drain one peer's durable global feed. Per-page tokens/effects are kept only for the lifetime of
    * this run; the durable cursor and staged messages remain the crash-recovery truth. */
   pullMissedFromPeer(
-    missedPull: FederationMissedPullService,
+    missedPull: FederationMessageFeedPullService,
     domain: string,
   ): Promise<void> {
-    const tokens = new WeakMap<FederationMissedPage, PeerResponseToken>();
-    const effects = new WeakMap<FederationMissedPage, MissedPageEffect[]>();
+    const tokens = new WeakMap<FederationMessageFeedPage, PeerResponseToken>();
+    const effects = new WeakMap<
+      FederationMessageFeedPage,
+      MissedPageEffect[]
+    >();
     return missedPull.run(domain, {
       fetch: async (after) => {
         const pulled = await this.pullMissedPage(domain, after);
@@ -2755,7 +3439,7 @@ export class FederationService implements OnModuleDestroy {
   async applyMissedPageInTransaction(
     tx: DatabaseTransaction,
     domain: string,
-    page: FederationMissedPage,
+    page: FederationMessageFeedPage,
     token: PeerResponseToken,
   ): Promise<MissedPageEffect[]> {
     await this.assertPeerResponseWritable(tx, token);
@@ -2768,10 +3452,28 @@ export class FederationService implements OnModuleDestroy {
           HttpStatus.BAD_REQUEST,
         );
       }
+      const system =
+        item.contentType === ContentType.SYSTEM
+          ? parseSystemMessageContent(item.content)
+          : null;
+      if (item.contentType === ContentType.SYSTEM && !system) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid federated system message',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const isGroupLeaveBoundary =
+        item.thread.type === 'GROUP' &&
+        system?.type === SystemMessageType.GROUP_LEFT &&
+        system.subject?.account === item.author.account &&
+        system.subject?.domain === item.author.domain &&
+        item.author.domain === domain;
       const route = await this.resolveMissedThreadInTransaction(
         tx,
         item,
         domain,
+        isGroupLeaveBoundary,
       );
       const originTime = new Date(item.createdAt);
       if (
@@ -3061,7 +3763,7 @@ export class FederationService implements OnModuleDestroy {
   }
 
   private assertMissedAssetDescriptors(
-    item: FederationMissedPage['messages'][number],
+    item: FederationMessageFeedPage['messages'][number],
   ): void {
     const expected = new Set(extractDigests(item.content));
     const described = new Set<string>();
@@ -3099,8 +3801,9 @@ export class FederationService implements OnModuleDestroy {
 
   private async resolveMissedThreadInTransaction(
     tx: DatabaseTransaction,
-    item: FederationMissedPage['messages'][number],
+    item: FederationMessageFeedPage['messages'][number],
     sourceDomain: string,
+    allowClosedGroupAuthor = false,
   ): Promise<{
     threadId: number;
     creatorId: number;
@@ -3131,6 +3834,7 @@ export class FederationService implements OnModuleDestroy {
       toAccount: string;
     }> = [];
     if (item.thread.type === 'GROUP') {
+      const isAuthoritativeOrigin = item.thread.domain === sourceDomain;
       const groupDomain =
         item.thread.domain === this.config.domain
           ? 'local'
@@ -3148,17 +3852,33 @@ export class FederationService implements OnModuleDestroy {
         JOIN "ThreadParticipant" author_participant
           ON author_participant."threadId" = thread.id
          AND author_participant."userId" = ${creatorId}
-         AND author_participant."leftAt" IS NULL
         WHERE thread.type = 'GROUP'
           AND thread."federationTruncated" = false
           AND group_user.account = ${normalizeAccount(item.thread.account)}
           AND group_user.domain = ${groupDomain}
+          AND (
+            author_participant."leftAt" IS NULL
+            OR ${isAuthoritativeOrigin}
+            OR (
+              ${allowClosedGroupAuthor}
+              AND EXISTS (
+                SELECT 1 FROM "GroupMembershipRequest" membership
+                WHERE membership."groupUserId" = thread."groupUserId"
+                  AND membership."memberUserId" = ${creatorId}
+                  AND membership.direction = 'JOIN'
+                  AND membership.status = 'NOT_MEMBER'
+              )
+            )
+          )
           AND EXISTS (
             SELECT 1 FROM "ThreadParticipant" local_participant
             JOIN "User" local_user ON local_user.id = local_participant."userId"
             WHERE local_participant."threadId" = thread.id
-              AND local_participant."leftAt" IS NULL
               AND local_user.domain = 'local'
+              AND (
+                local_participant."leftAt" IS NULL
+                OR ${isAuthoritativeOrigin}
+              )
           )
         LIMIT 1
         FOR SHARE OF thread, author_participant
@@ -3169,11 +3889,11 @@ export class FederationService implements OnModuleDestroy {
       const local = participants.find(
         (participant) => participant.domain === this.config.domain,
       );
+      const selfAuthored = item.author.domain === this.config.domain;
       if (
         participants.length !== 2 ||
         !local ||
-        item.author.domain === this.config.domain ||
-        sourceDomain !== item.author.domain
+        (!selfAuthored && sourceDomain !== item.author.domain)
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
@@ -3193,15 +3913,17 @@ export class FederationService implements OnModuleDestroy {
         JOIN "ThreadParticipant" author_participant
           ON author_participant."threadId" = thread.id
          AND author_participant."userId" = ${creatorId}
-         AND author_participant."leftAt" IS NULL
         JOIN "ThreadParticipant" local_participant
           ON local_participant."threadId" = thread.id
-         AND local_participant."leftAt" IS NULL
         JOIN "User" local_user ON local_user.id = local_participant."userId"
         WHERE thread.type = 'P2P'
           AND thread."federationTruncated" = false
           AND local_user.domain = 'local'
           AND local_user.account = ${normalizeAccount(local.account)}
+          AND EXISTS (
+            SELECT 1 FROM "FriendPair" pair
+            WHERE pair."threadId" = thread.id
+          )
         LIMIT 1
         FOR SHARE OF thread, author_participant, local_participant
       `);
@@ -3220,7 +3942,7 @@ export class FederationService implements OnModuleDestroy {
       FROM "ThreadParticipant" participant
       JOIN "User" member ON member.id = participant."userId"
       WHERE participant."threadId" = ${route.threadId}
-        AND participant."leftAt" IS NULL
+        AND (${item.thread.type === 'P2P'} OR participant."leftAt" IS NULL)
         AND member.domain = 'local'
       FOR SHARE OF participant
     `);
@@ -4913,6 +5635,7 @@ export class FederationService implements OnModuleDestroy {
     total: number;
     contentDigest?: string;
   }> {
+    const operationStartedAt = new Date();
     const headers = this.signature.signOutbound({
       method: 'GET',
       path: url.pathname,
@@ -4931,6 +5654,7 @@ export class FederationService implements OnModuleDestroy {
       await this.markDemoted(
         peerDomain,
         `GET get_file network/timeout: ${(e as Error).message}`,
+        operationStartedAt,
       );
       throw new Error(
         `S2S get_file from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
@@ -4946,6 +5670,7 @@ export class FederationService implements OnModuleDestroy {
         await this.markDemoted(
           peerDomain,
           `GET get_file 206 unparseable Content-Range: ${cr}`,
+          operationStartedAt,
         );
         throw new Error(
           `S2S get_file 206 without parseable Content-Range: ${cr}`,
@@ -4982,7 +5707,11 @@ export class FederationService implements OnModuleDestroy {
     // Auth/transport failures demote (peer unreachable / rejecting our signature); other 4xx (416/400/404)
     // fail this digest WITHOUT demoting (range/offset issue or file gone — not a trust failure).
     if (res.status === 401 || res.status === 403 || res.status >= 500) {
-      await this.markDemoted(peerDomain, `GET get_file HTTP ${res.status}`);
+      await this.markDemoted(
+        peerDomain,
+        `GET get_file HTTP ${res.status}`,
+        operationStartedAt,
+      );
       throw new Error(
         `S2S get_file from ${peerDomain} rejected: HTTP ${res.status}`,
       );
@@ -5005,33 +5734,12 @@ export class FederationService implements OnModuleDestroy {
   /**
    * Fetch a peer user's public profile (signed GET /api/v1/s2s/users/:account). Used by federated
    * resolve (the add-friend card), ensureForeignUserLocalized (send-friend-request safety net), and
-   * the chat-open staleness re-pull (syncForeignUserIfStale). Throws on any non-success (the caller
+   * initial invite/profile localization. Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
   async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
     return this.getSigned<S2SProfile>(
       `/api/v1/s2s/users/${address.account}`,
-      address.domain,
-    );
-  }
-
-  /** Fetch only the peer user's profile revision (signed GET .../revision). Cheap staleness probe. */
-  async fetchRemoteRevision(
-    address: S2SAddress,
-  ): Promise<{ profileRev: number }> {
-    return this.getSigned<{ profileRev: number }>(
-      `/api/v1/s2s/users/${address.account}/revision`,
-      address.domain,
-    );
-  }
-
-  /** Fetch only the origin's roster revision for a group (signed GET /s2s/group/:account/roster-revision).
-   *  Cheap staleness probe, symmetric with fetchRemoteRevision for profile. */
-  async fetchRemoteRosterRevision(
-    address: S2SAddress,
-  ): Promise<{ rosterRev: number }> {
-    return this.getSigned<{ rosterRev: number }>(
-      `/api/v1/s2s/group/${address.account}/roster-revision`,
       address.domain,
     );
   }
@@ -5095,12 +5803,6 @@ export class FederationService implements OnModuleDestroy {
         .where(eq(tables.user.id, userId));
     }
 
-    // Catch-up push: this federated stub just changed, so fan the fresh profile to every local friend
-    // of this user — they refresh without each having to independently probe. Fire-and-forget so a slow
-    // fan-out can't block the localization path. localizeForeignProfile's own "skip if not newer" guard
-    // above means this only fires on a genuine profile change (no spam on a redelivered payload).
-    void this.notifyPeersOfProfileUpdate(userId);
-
     // The previous localized avatar files are intentionally LEFT on disk — gcOrphanedAvatars reaps
     // them once they are no longer any User/Group's current avatar (no delete racing a render, and
     // re-localization on a transient profile-fetch hiccup no longer thrashes the disk).
@@ -5163,61 +5865,5 @@ export class FederationService implements OnModuleDestroy {
     };
     if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
     return data;
-  }
-
-  /**
-   * Fan a PEER_PROFILE_UPDATED push to every approved P2P peer of `userId`, carrying the FULL fresh
-   * profile so each recipient's conversation list (and open chat header) refreshes with no extra
-   * round-trip. Two callers: (a) local self-edits — UserController.updateProfile / updateAvatar; (b)
-   * the federated catch-up in localizeForeignProfile above. Best-effort: callers `void` it so a slow
-   * fan-out never blocks the triggering request, and a user with no friends / a missing row is a no-op.
-   */
-  async notifyPeersOfProfileUpdate(userId: number): Promise<void> {
-    const peerIds =
-      await this.participantService.getActiveP2PPeerUserIds(userId);
-    if (peerIds.length === 0) return;
-    // Signal-only: the client receives { userId } and HTTP-pulls the fresh profile itself (queryUserInfo),
-    // matching the project's SSE-signal-only convention. No profile payload on the wire.
-    peerIds.forEach((peerId) =>
-      this.sse.onPeerProfileUpdated(peerId, { userId }),
-    );
-  }
-
-  /**
-   * Chat-open staleness sync: probe the peer's /revision; if newer than the stub's remoteUpdatedAt,
-   * re-pull the full profile and re-localize. Best-effort — any failure (peer unreachable, profile
-   * fetch error) is swallowed so a transient peer outage never blocks opening the conversation; the
-   * cached profile is shown as-is and the next open retries. Local users are a no-op (their own
-   * updatedAt is authoritative; there's nothing to sync).
-   */
-  async syncForeignUserIfStale(userId: number): Promise<void> {
-    const stub = await this.database.db.query.user.findFirst({
-      where: eq(tables.user.id, userId),
-      columns: {
-        isForeigner: true,
-        account: true,
-        domain: true,
-        remoteProfileRev: true,
-      },
-    });
-    if (!stub || !stub.isForeigner) return;
-    const address: S2SAddress = {
-      account: stub.account,
-      domain: stub.domain,
-    };
-    try {
-      const peerToken = await this.capturePeerResponseToken(address.domain);
-      const rev = await this.fetchRemoteRevision(address);
-      if (
-        stub.remoteProfileRev !== null &&
-        rev.profileRev <= stub.remoteProfileRev
-      ) {
-        return; // fresh
-      }
-      const profile = await this.fetchRemoteUser(address);
-      await this.localizeForeignProfile(userId, profile, { peerToken });
-    } catch {
-      // Best-effort: keep the cached profile. The next chat-open retries.
-    }
   }
 }

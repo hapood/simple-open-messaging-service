@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
-import { FederationMissedPullService } from './federation-missed-pull.service.js';
+import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 
 /** 60s reconnect sweep cadence (§4.3). Module-scope so @Interval can read it at decoration time. */
 const SWEEP_MS = 60_000;
@@ -17,7 +17,7 @@ const RECONCILE_MS = 5 * 60_000;
  *
  * Each tick, pending first contacts retry their idempotent /init; demoted established peers verify the
  * pinned identity and recover through a signed ping, never a new handshake. Recovery then exchanges the
- * ephemeral discovery HWM and drains the durable global /missed feed.
+ * ephemeral feed revs and drains state before the durable miss feed.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
  * inFlight guard dedupes recoveries for one domain within a sweep.
@@ -29,12 +29,14 @@ export class FederationReconnectService implements OnApplicationBootstrap {
 
   constructor(
     private readonly federation: FederationService,
-    private readonly missedPull: FederationMissedPullService,
+    private readonly missedPull: FederationMessageFeedPullService,
   ) {}
 
   onApplicationBootstrap(): void {
     void this.reconcileTrustedPeers().catch((error) =>
-      this.logger.warn(`startup reconciliation failed: ${(error as Error).message}`),
+      this.logger.warn(
+        `startup reconciliation failed: ${(error as Error).message}`,
+      ),
     );
   }
 
@@ -49,7 +51,9 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   @Interval(RECONCILE_MS)
   periodicReconciliation(): void {
     void this.reconcileTrustedPeers().catch((error) =>
-      this.logger.warn(`trusted-peer reconciliation failed: ${(error as Error).message}`),
+      this.logger.warn(
+        `trusted-peer reconciliation failed: ${(error as Error).message}`,
+      ),
     );
   }
 
@@ -60,9 +64,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
       this.inFlight.add(domain);
       void this.reconcile(domain)
         .catch((error) =>
-          this.logger.debug(
-            `reconcile ${domain}: ${(error as Error).message}`,
-          ),
+          this.logger.debug(`reconcile ${domain}: ${(error as Error).message}`),
         )
         .finally(() => this.inFlight.delete(domain));
     }
@@ -70,6 +72,11 @@ export class FederationReconnectService implements OnApplicationBootstrap {
 
   private async reconcile(domain: string): Promise<void> {
     await this.federation.verifyPeerIdentity(domain);
+    // Our local row may still say trusted while the peer demoted us during this process's outage.
+    // Ping is deliberately accepted from a demoted signer and promotes that inbound trust edge before
+    // the first state request. This is a recovery barrier, not an optional liveness optimization.
+    await this.federation.pingPeer(domain);
+    await this.federation.pullStateFromPeer(domain);
     this.missedPull.advertise(
       domain,
       await this.federation.pullDiscoveryHwm(domain),
@@ -99,6 +106,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private async recover(domain: string): Promise<void> {
     await this.federation.recoverPeerTrust(domain);
     await this.federation.pushDiscoveryHwm(domain);
+    await this.federation.pullStateFromPeer(domain);
     this.missedPull.advertise(
       domain,
       await this.federation.pullDiscoveryHwm(domain),

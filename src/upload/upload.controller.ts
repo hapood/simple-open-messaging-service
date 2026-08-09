@@ -294,6 +294,18 @@ export class UploadController {
     try {
       return await operation();
     } catch (error) {
+      if (
+        error instanceof Error &&
+        /^(?:invalid (?:image|video|audio|media)|audio upload|video upload)/.test(
+          error.message,
+        )
+      ) {
+        return this.failUpload(
+          req,
+          BusinessCode.VALIDATION_FAILED,
+          error.message,
+        );
+      }
       const clientMessageId = this.clientMessageId(req);
       if (clientMessageId) {
         await this.messageService.failStaged(

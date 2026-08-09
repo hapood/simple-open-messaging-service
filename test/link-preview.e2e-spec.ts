@@ -7,7 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { invite, messageAsset, message } from '../src/database/schema';
+import { friendRequest, messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 
@@ -33,13 +33,24 @@ describe('LINK message send (single instance)', () => {
     image: `/uploads/msg-assets/aa/aa/${DIGEST}`,
     favicon: `/uploads/msg-assets/bb/bb/${'b'.repeat(64)}`,
   };
+  let generatedCard: {
+    url: string;
+    title: string;
+    description: string;
+    image?: string;
+    favicon?: string;
+  } = CARD;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(LinkPreviewService)
-      .useValue({ buildCardContent: async () => ({ ...CARD }) })
+      .useValue({
+        consumeGeneration: () => ({ ...generatedCard }),
+        buildCardContent: async () => ({ ...generatedCard }),
+        finishGeneration: () => undefined,
+      })
       .compile();
     const adapter = new FastifyAdapter();
     app = moduleFixture.createNestApplication(adapter);
@@ -74,12 +85,11 @@ describe('LINK message send (single instance)', () => {
       .expect((res) => expect(res.body.code).toBe(0));
     const [pendingInvite] = await database.db
       .select()
-      .from(invite)
+      .from(friendRequest)
       .where(
         and(
-          eq(invite.kind, 'FRIEND'),
-          eq(invite.fromUserId, alice.id),
-          eq(invite.toUserId, bob.id),
+          eq(friendRequest.requesterUserId, alice.id),
+          eq(friendRequest.targetUserId, bob.id),
         ),
       )
       .limit(1);
@@ -110,22 +120,21 @@ describe('LINK message send (single instance)', () => {
       .limit(1);
     expect(storedMessage).toBeDefined();
     expect(storedMessage.contentType).toBe('LINK');
-    expect(JSON.parse(storedMessage.content)).toEqual(CARD);
-    expect((JSON.parse(storedMessage.content) as { image: string }).image).toBe(
-      CARD.image,
-    );
+    expect(JSON.parse(storedMessage.content)).toEqual({
+      ...CARD,
+      image: `${CARD.image}?threadId=${threadId}&seq=${storedMessage.seq}`,
+      favicon: `${CARD.favicon}?threadId=${threadId}&seq=${storedMessage.seq}`,
+    });
     expect(await countMessageAssets(database, threadId)).toBe(2);
   });
 
   it('stores required empty metadata when the page has no usable metadata', async () => {
     // Missing metadata is valid, but required fields remain present as empty strings.
-    (
-      app.get(LinkPreviewService) as { buildCardContent: unknown }
-    ).buildCardContent = async () => ({
+    generatedCard = {
       url: 'https://example.com/bare',
       title: '',
       description: '',
-    });
+    };
 
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice2', 'Alice2');
@@ -137,12 +146,11 @@ describe('LINK message send (single instance)', () => {
       .expect((res) => expect(res.body.code).toBe(0));
     const [pendingInvite] = await database.db
       .select()
-      .from(invite)
+      .from(friendRequest)
       .where(
         and(
-          eq(invite.kind, 'FRIEND'),
-          eq(invite.fromUserId, alice.id),
-          eq(invite.toUserId, bob.id),
+          eq(friendRequest.requesterUserId, alice.id),
+          eq(friendRequest.targetUserId, bob.id),
         ),
       )
       .limit(1);

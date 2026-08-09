@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
@@ -23,6 +23,7 @@ import {
 import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
 import { seedUserWithSession } from './seed';
+import { MediaMetadataService } from '../src/upload/media-metadata.service';
 
 // Verifies the surfaces rewritten for the Express→Fastify migration that the auth e2e does
 // not cover: Swagger UI on Fastify, the @fastify/multipart upload path (UploadService.consumeImage)
@@ -120,7 +121,21 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(MediaMetadataService)
+      .useValue({
+        fromBuffer: vi.fn(
+          async (_input: Buffer, intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE') =>
+            intent === 'IMAGE'
+              ? { w: 1, h: 1 }
+              : intent === 'VIDEO'
+                ? { w: 1, h: 1, duration: 1 }
+                : intent === 'AUDIO'
+                  ? { duration: 1 }
+                  : {},
+        ),
+      })
+      .compile();
     const adapter = new FastifyAdapter();
     app = moduleFixture.createNestApplication(adapter);
     // configureApp before listen(): it sets the global prefix (must precede route registration,
@@ -156,23 +171,39 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     await app.close();
   });
 
+  async function stageMedia(contentType: 'IMAGE' | 'VIDEO' | 'AUDIO') {
+    const thread = await createThread(database.db, userAId);
+    const clientMessageId = randomUUID();
+    const staged = await request(app.getHttpServer())
+      .post('/api/v1/send-media')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ threadId: thread.id, contentType, clientMessageId });
+    expect(staged.body.code).toBe(0);
+    return { thread, clientMessageId };
+  }
+
   it('serves Swagger UI on Fastify', async () => {
     const res = await request(app.getHttpServer()).get('/api/v1/docs');
     expect(res.status).toBe(200);
   });
 
   it('accepts a multipart image upload and serves it back at /uploads/', async () => {
+    const { clientMessageId } = await stageMedia('IMAGE');
     const res = await request(app.getHttpServer())
       .post('/api/v1/upload')
       .set('Authorization', `Bearer ${token}`)
+      .set('x-client-message-id', clientMessageId)
       .attach('file', PNG_1X1, 'x.png')
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'IMAGE')
       .field('w', '1')
       .field('h', '1');
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     // CAS path contains only the sha256 identity; presentation metadata stays in the message.
     expect(res.body.data.url).toMatch(
-      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
+      /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
     expect(res.body.data.w).toBe(1);
     expect(res.body.data.h).toBe(1);
@@ -200,17 +231,29 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   it('dedupes concurrent identical uploads and atomically counts both references', async () => {
     // Two uploads of byte-identical content (different client filenames) must land on the same
     // sha256-keyed path — that is the whole point of content-addressed storage.
+    const [firstStage, secondStage] = await Promise.all([
+      stageMedia('IMAGE'),
+      stageMedia('IMAGE'),
+    ]);
     const [first, second] = await Promise.all([
       request(app.getHttpServer())
         .post('/api/v1/upload')
         .set('Authorization', `Bearer ${token}`)
+        .set('x-client-message-id', firstStage.clientMessageId)
         .attach('file', PNG_1X1, 'a.png')
+        .field('partId', randomUUID())
+        .field('position', '0')
+        .field('intent', 'IMAGE')
         .field('w', '1')
         .field('h', '1'),
       request(app.getHttpServer())
         .post('/api/v1/upload')
         .set('Authorization', `Bearer ${token}`)
+        .set('x-client-message-id', secondStage.clientMessageId)
         .attach('file', PNG_1X1, 'b.png')
+        .field('partId', randomUUID())
+        .field('position', '0')
+        .field('intent', 'IMAGE')
         .field('w', '1')
         .field('h', '1'),
     ]);
@@ -255,6 +298,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .set('Authorization', `Bearer ${token}`)
       .set('x-client-message-id', cid)
       .attach('file', PNG_1X1, 'promote.png')
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'IMAGE')
       .field('w', '2')
       .field('h', '2');
     expect(up.status).toBe(200);
@@ -271,8 +317,8 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(content.url).toBe(
       `${up.body.data.url}?threadId=${thread.id}&seq=${msg!.seq}`,
     );
-    expect(content.w).toBe(2);
-    expect(content.h).toBe(2);
+    expect(content.w).toBe(1);
+    expect(content.h).toBe(1);
     // The regression: size was omitted from the promote payload, so the persisted content lacked it.
     expect(content.size).toBe(PNG_1X1.length);
   });
@@ -300,6 +346,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
         filename: 'phone.heic',
         contentType: 'image/heic',
       })
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'IMAGE')
       .field('w', '4032')
       .field('h', '3024');
     expect(up.status).toBe(200);
@@ -308,7 +357,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(up.body.data.mimeType).toBe('image/heic');
     expect(up.body.data.size).toBe(heic.length);
     expect(up.body.data.url).toMatch(
-      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
+      /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
 
     const [msg] = await database.db
@@ -318,7 +367,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .limit(1);
     expect(msg?.contentType).toBe('FILE');
     expect(JSON.parse(msg!.content)).toMatchObject({
-      ...up.body.data,
+      name: up.body.data.name,
+      mimeType: up.body.data.mimeType,
+      size: up.body.data.size,
       url: expect.stringContaining(`?threadId=${thread.id}&seq=${msg!.seq}`),
     });
 
@@ -352,7 +403,10 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .attach('file', corrupt, {
         filename: 'broken.png',
         contentType: 'image/png',
-      });
+      })
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'IMAGE');
 
     expect(up.status).toBe(200);
     expect(up.body.code).toBe(0);
@@ -365,20 +419,27 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .limit(1);
     expect(msg?.contentType).toBe('FILE');
     expect(JSON.parse(msg!.content)).toMatchObject({
-      ...up.body.data,
+      name: up.body.data.name,
+      mimeType: up.body.data.mimeType,
+      size: up.body.data.size,
       url: expect.stringContaining(`?threadId=${thread.id}&seq=${msg!.seq}`),
     });
   });
 
   it('accepts a video upload (magic-byte container check) and serves it inline', async () => {
+    const { clientMessageId } = await stageMedia('VIDEO');
     const res = await request(app.getHttpServer())
-      .post('/api/v1/upload/video')
+      .post('/api/v1/upload')
       .set('Authorization', `Bearer ${token}`)
-      .attach('file', MP4_MIN, 'clip.mp4');
+      .set('x-client-message-id', clientMessageId)
+      .attach('file', MP4_MIN, 'clip.mp4')
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'VIDEO');
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     expect(res.body.data.url).toMatch(
-      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
+      /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
     expect(res.body.data.mimeType).toBe('video/mp4');
     expect(res.body.data.size).toBe(MP4_MIN.length);
@@ -399,34 +460,49 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(file.headers['content-disposition']).toBeUndefined();
   });
 
-  it('rejects a forged video upload (non-video bytes under /upload/video)', async () => {
+  it('rejects forged video bytes for a staged VIDEO intent', async () => {
+    const { clientMessageId } = await stageMedia('VIDEO');
     const res = await request(app.getHttpServer())
-      .post('/api/v1/upload/video')
+      .post('/api/v1/upload')
       .set('Authorization', `Bearer ${token}`)
-      .attach('file', Buffer.from('not a video, just text'), 'fake.mp4');
+      .set('x-client-message-id', clientMessageId)
+      .attach('file', Buffer.from('not a video, just text'), 'fake.mp4')
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'VIDEO');
     expect(res.status).toBe(200);
     expect(res.body.code).not.toBe(0); // VALIDATION_FAILED — magic-byte gate rejected it
   });
 
   it('accepts an audio upload (ogg container)', async () => {
+    const { clientMessageId } = await stageMedia('AUDIO');
     const res = await request(app.getHttpServer())
-      .post('/api/v1/upload/audio')
+      .post('/api/v1/upload')
       .set('Authorization', `Bearer ${token}`)
-      .attach('file', OGG_MIN, 'voice.ogg');
+      .set('x-client-message-id', clientMessageId)
+      .attach('file', OGG_MIN, 'voice.ogg')
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'AUDIO');
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     expect(res.body.data.url).toMatch(
-      /^\/uploads\/cas\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
+      /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/,
     );
     expect(res.body.data.mimeType).toBe('audio/ogg');
   });
 
-  it('authorizes /uploads/cas/ by thread membership (member 200, non-member 403)', async () => {
+  it('authorizes /uploads/msg-assets/ by thread membership (member 200, non-member 404)', async () => {
     // A uploads an image → a CAS shard url embedding the digest.
+    const { thread, clientMessageId } = await stageMedia('IMAGE');
     const up = await request(app.getHttpServer())
       .post('/api/v1/upload')
       .set('Authorization', `Bearer ${token}`)
+      .set('x-client-message-id', clientMessageId)
       .attach('file', authzPng, 'authz.png')
+      .field('partId', randomUUID())
+      .field('position', '0')
+      .field('intent', 'IMAGE')
       .field('w', '1')
       .field('h', '1');
     expect(up.body.code).toBe(0);
@@ -444,10 +520,12 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .set('Authorization', `Bearer ${token}`);
     expect(preA.status).toBe(404);
 
-    // Direct IMAGE sends are intentionally rejected; seed the same Message + MediaMessage linkage
-    // produced by the staged upload promotion path. User B remains outside that thread.
-    const context = await authorizeDigest(database.db, userAId, digest);
-    const contextualUrl = `${url}?threadId=${context.threadId}&seq=${context.seq}`;
+    const [promoted] = await database.db
+      .select({ seq: message.seq })
+      .from(message)
+      .where(eq(message.clientMessageId, clientMessageId))
+      .limit(1);
+    const contextualUrl = `${url}?threadId=${thread.id}&seq=${promoted.seq}`;
 
     // The MediaMessage row now links digest → this thread.
     const [mm] = await database.db

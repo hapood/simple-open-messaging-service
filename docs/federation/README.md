@@ -25,9 +25,9 @@ SOMS 实现、历史设计和未来计划；这里还不是对外发布的完整
 | Baseline          | 当前 SOMS 实现的审计快照，非独立协议承诺           | [protocol-baseline.md](./protocol-baseline.md)                                                                                                             |
 | API closure audit | 逐端点的生产者、消费者、参数、响应、恢复和测试闭环 | [api-closure-audit.md](./api-closure-audit.md)                                                                                                             |
 | Known conflicts   | 已确认但尚未裁决的文档或实现差异                   | [known-conflicts.md](./known-conflicts.md)                                                                                                                 |
-| Pending design    | 已裁决、等待逐步实现和审核的下一版设计             | [节点身份连续性与持久消息发现](./identity-and-durable-discovery-design.md)、[每 Peer 状态 Feed](./per-peer-state-feed-design.md)                            |
-| Overview          | 概念、设计解释和部分部署说明                       | [旧版协议与部署指南](../overview/federation-protocol.md)                                                                                                   |
-| API reference     | 当前接口速查，仍需与 baseline 对齐                 | [旧版 S2S API reference](../api/federation-s2s-api.md)                                                                                                     |
+| Implemented design | 已落地设计与事务/恢复约束                          | [节点身份连续性与持久消息发现](./identity-and-durable-discovery-design.md)、[每 Peer 状态 Feed](./per-peer-state-feed-design.md)                            |
+| Overview          | 当前协议与部署概览                                 | [联邦协议概览](../overview/federation-protocol.md)                                                                                                         |
+| API reference     | 当前 S2S 接口速查                                  | [S2S API reference](../api/federation-s2s-api.md)                                                                                                          |
 | Historical design | 已实施阶段的设计背景，不具现行规范效力             | [Step 2](../roadmap/federation-step2-design.md)、[Step 3](../roadmap/federation-step3-design.md)、[API review](../roadmap/federation-api-design-review.md) |
 | Roadmap           | 尚未形成协议承诺的未来工作                         | `docs/roadmap/` 中明确标为 planned/deferred 的内容                                                                                                         |
 
@@ -40,7 +40,7 @@ SOMS 实现、历史设计和未来计划；这里还不是对外发布的完整
 - 尚未裁决的差异进入冲突清单，不通过悄悄改文档来改变协议。
 - 任一 API 只有在请求、响应、错误、恢复和测试全部闭合后，才能标记为 `CLOSED`。
 
-## 下一阶段
+## 后续规范化
 
-基线通过维护者确认后，下一步是建立 `specification/v0.1/`，先定义术语、版本、发现、签名、
-通用数据类型和错误模型，再逐项迁移端点。迁移完成前，现有文档保留，不批量删除历史信息。
+当前实现以 `/api/v1`、机器生成的 OpenAPI 和 E2E 为基线。若建立独立互操作规范，应从当前
+`ignite → state-feed → message-feed` 顺序与签名测试向量生成，不再迁移或兼容已删除的旧端点。

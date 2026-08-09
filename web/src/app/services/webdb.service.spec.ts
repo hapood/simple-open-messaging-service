@@ -296,11 +296,11 @@ describe('WebdbService', () => {
       expect(
         (await webdb.getThreads()).map((thread) => thread.threadId),
       ).toEqual([7]);
-      expect(await webdb.getMeta('threadRevision')).toBe(12);
+      expect(await webdb.getMeta('stateRevision')).toBe(12);
 
       await webdb.applyThreadDelta([{ threadId: 7, direction: 'DELETE' }], 13);
       expect(await webdb.getThreads()).toEqual([]);
-      expect(await webdb.getMeta('threadRevision')).toBe(13);
+      expect(await webdb.getMeta('stateRevision')).toBe(13);
     });
 
     it('recreates only the message DB and preserves the core cache', async () => {

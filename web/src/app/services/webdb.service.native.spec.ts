@@ -119,8 +119,8 @@ describe('WebdbService native SQLite routing', () => {
 
     expect(await service.putProfile(profile)).toBe(true);
     expect(await service.getProfile('u8')).toEqual(profile);
-    await service.putMeta('threadRevision', 12);
-    expect(await service.getMeta('threadRevision')).toBe(12);
+    await service.putMeta('stateRevision', 12);
+    expect(await service.getMeta('stateRevision')).toBe(12);
 
     expect(
       calls.find((call) => call.cmd === 'native_db_put_profile')?.args,

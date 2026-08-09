@@ -37,14 +37,16 @@
         >
           <span>{{ 'chat.selection.copy' | transloco }}</span>
         </button>
-        <button
-          type="button"
-          role="menuitem"
-          (click)="quoteContextMessage()"
-          [attr.title]="'chat.selection.quote' | transloco"
-        >
-          <span>{{ 'chat.selection.quote' | transloco }}</span>
-        </button>
+        @if (canQuote(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            (click)="quoteContextMessage()"
+            [attr.title]="'chat.selection.quote' | transloco"
+          >
+            <span>{{ 'chat.selection.quote' | transloco }}</span>
+          </button>
+        }
         @if (canDirectForward(menu.targetItem.data)) {
           <button
             type="button"

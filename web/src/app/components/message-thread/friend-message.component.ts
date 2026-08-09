@@ -1235,7 +1235,8 @@ export class MessageThreadComponent implements OnDestroy {
       const contextItem =
         memberId === undefined ? item : albumMemberItem(item, memberId);
       const menuItemCount =
-        4 +
+        3 +
+        (this.canQuote(contextItem.data) ? 1 : 0) +
         (this.canDirectForward(contextItem.data) ? 1 : 0) +
         (this.canWithdrawOrReport(contextItem.data) ? 1 : 0);
       const menuHeight =
@@ -1321,7 +1322,12 @@ export class MessageThreadComponent implements OnDestroy {
 
   quoteContextMessage(): void {
     const context = this.messageContextMenu();
-    if (!context || context.targetSeq < 0) return;
+    if (
+      !context ||
+      context.targetSeq < 0 ||
+      !this.canQuote(context.targetItem.data)
+    )
+      return;
     const data = context.targetItem.data;
     const visual = this.replyVisual(data);
     this.composingQuote.set({
@@ -1442,7 +1448,8 @@ export class MessageThreadComponent implements OnDestroy {
       message.status !== 'sending' &&
       message.status !== 'failed' &&
       message.contentType !== 'INVITE' &&
-      message.contentType !== 'CALL'
+      message.contentType !== 'CALL' &&
+      message.contentType !== 'SYSTEM'
     );
   }
 
@@ -1515,6 +1522,10 @@ export class MessageThreadComponent implements OnDestroy {
       message.contentType === 'LINK' ||
       message.contentType === 'FORWARD'
     );
+  }
+
+  canQuote(message: ChatMsgData): boolean {
+    return message.contentType !== 'SYSTEM';
   }
 
   openSelectedForwardDialog(): void {

@@ -2649,7 +2649,7 @@ enum StreamOutcome {
 /// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android), the
 /// backoff/online `wake` Notify, the offline flag the webview's navigator online/offline drives, and the
 /// cached HELLO — the last HELLO frame merged with every incremental revision frame
-/// (THREAD_REVISION_UPDATED / PROFILE_REV_UPDATED / FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) so a re-attached
+/// (STATE_REV_UPDATED / FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) so a re-attached
 /// webview can be handed a FRESH handshake via `sse_replay_hello` without a reconnect (a retained open
 /// stream does not re-push HELLO on its own).
 #[cfg(desktop)]
@@ -2920,17 +2920,12 @@ fn merge_cached_hello(
         return;
     };
     match event {
-        "THREAD_REVISION_UPDATED" => {
-            if let Some(inc) = data.get("threadRevision").and_then(|v| v.as_i64()) {
-                let cur = obj.get("threadRevision").and_then(|v| v.as_i64());
+        "STATE_REV_UPDATED" => {
+            if let Some(inc) = data.get("stateRevision").and_then(|v| v.as_i64()) {
+                let cur = obj.get("stateRevision").and_then(|v| v.as_i64());
                 if cur.is_none_or(|c| inc >= c) {
-                    obj.insert("threadRevision".to_string(), serde_json::Value::from(inc));
+                    obj.insert("stateRevision".to_string(), serde_json::Value::from(inc));
                 }
-            }
-        }
-        "PROFILE_REV_UPDATED" => {
-            if let Some(rev) = data.get("profileRev") {
-                obj.insert("profileRev".to_string(), rev.clone());
             }
         }
         // friendReqRev is a monotonic epoch-ms timestamp — advance forward only (out-of-order guard).

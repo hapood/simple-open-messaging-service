@@ -10,7 +10,6 @@ import {
   fileSyncProgress,
   federatedPeer,
   federationPullCursor,
-  invite,
   mediaAsset,
   message,
   messageAsset,
@@ -67,6 +66,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'missedbob', domain: FED_DOMAIN_B });
     expect(resolved.body.code).toBe(BusinessCode.OK);
+    const bobStubIdA = resolved.body.data.id as number;
 
     const requested = await request(appA.baseUrl)
       .post('/api/v1/invite/friend')
@@ -74,28 +74,46 @@ describe('federation durable missed transport (two nodes)', () => {
       .send({ toUserId: resolved.body.data.id, note: 'durable missed e2e' });
     expect(requested.body.code).toBe(BusinessCode.OK);
 
-    const aliceStub = await appB.database.query.user.findFirst({
-      where: and(
-        eq(user.account, 'missedalice'),
-        eq(user.domain, FED_DOMAIN_A),
-      ),
-    });
-    expect(aliceStub).toBeDefined();
+    const aliceStub = await vi.waitFor(
+      async () => {
+        const stub = await appB.database.query.user.findFirst({
+          where: and(
+            eq(user.account, 'missedalice'),
+            eq(user.domain, FED_DOMAIN_A),
+          ),
+        });
+        expect(stub).toBeDefined();
+        return stub;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
     aliceStubIdB = aliceStub!.id;
-    const incoming = await appB.database.query.invite.findFirst({
-      where: and(
-        eq(invite.kind, 'FRIEND'),
-        eq(invite.fromUserId, aliceStubIdB),
-        eq(invite.toUserId, bobIdB),
-        eq(invite.status, 'PENDING'),
-      ),
-    });
-    expect(incoming).toBeDefined();
-    const accepted = await request(appB.baseUrl)
-      .post('/api/v1/invite/accept')
+    const replied = await request(appB.baseUrl)
+      .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ inviteId: incoming!.id.toString() });
-    expect(accepted.body.code).toBe(BusinessCode.OK);
+      .send({ toUserId: aliceStubIdB, note: 'durable missed reply' });
+    expect(replied.body.code).toBe(BusinessCode.OK);
+    await vi.waitFor(
+      async () => {
+        const active = await appB.database.query.threadParticipant.findFirst({
+          where: and(
+            eq(threadParticipant.userId, aliceStubIdB),
+            isNull(threadParticipant.leftAt),
+          ),
+        });
+        expect(active).toBeDefined();
+        const activeOnA = await appA.database.query.threadParticipant.findFirst(
+          {
+            where: and(
+              eq(threadParticipant.userId, bobStubIdA),
+              isNull(threadParticipant.leftAt),
+            ),
+          },
+        );
+        expect(activeOnA).toBeDefined();
+      },
+      { timeout: 10_000, interval: 100 },
+    );
   }, 120_000);
 
   afterAll(async () => {
@@ -104,7 +122,7 @@ describe('federation durable missed transport (two nodes)', () => {
     await proxy?.close();
   });
 
-  it('delivers through the HWM + /missed pipeline', async () => {
+  it('delivers through the HWM + /message-feed pipeline', async () => {
     const bobThread = await appB.database.query.threadParticipant.findFirst({
       where: and(
         eq(threadParticipant.userId, aliceStubIdB),
@@ -229,7 +247,44 @@ describe('federation durable missed transport (two nodes)', () => {
       .update(federatedPeer)
       .set({ trustLevel: 'trusted', demotedAt: null, demoteReason: null })
       .where(eq(federatedPeer.domain, FED_DOMAIN_B));
+    proxy.clearRequestLog();
     await appB.start();
+    await vi.waitFor(
+      () => {
+        const signedGets = proxy
+          .requestLog()
+          .filter(
+            (entry) =>
+              entry.method === 'GET' &&
+              entry.path.startsWith('/api/v1/s2s/') &&
+              !entry.path.startsWith('/api/v1/s2s/identity'),
+          );
+        expect(signedGets[0]).toMatchObject({
+          path: '/api/v1/s2s/ping',
+          status: 200,
+        });
+        const dataGets = signedGets.filter(
+          (entry) => entry.path !== '/api/v1/s2s/ping',
+        );
+        expect(dataGets[0]?.path).toMatch(
+          /^\/api\/v1\/s2s\/state-feed(?:-rev|\?)/,
+        );
+        expect(
+          dataGets[0]?.status,
+          `first signed data GET: ${JSON.stringify(dataGets[0])}`,
+        ).toBe(200);
+        expect(
+          dataGets.some(
+            (entry) =>
+              (entry.path === '/api/v1/s2s/feed-rev' ||
+                entry.path.startsWith('/api/v1/s2s/message-feed?')) &&
+              entry.status === 200,
+          ),
+        ).toBe(true);
+        expect(signedGets.some((entry) => entry.status === 401)).toBe(false);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
 
     let batchId = '';
     await vi.waitFor(

@@ -27,6 +27,10 @@ describe('OTP login e2e', () => {
   let otp: OtpLoginService;
 
   beforeAll(async () => {
+    // This suite exercises the OTP state machine, not throttling. Its many
+    // intentional attempts share supertest's loopback IP and would otherwise
+    // consume one production-sized bucket across independent test cases.
+    process.env.RATE_LIMIT_AUTH_OTP_LOGIN_MODE = 'disabled';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -134,7 +138,7 @@ describe('OTP login e2e', () => {
     expect(r.body.code).toBe(BusinessCode.OTP_INVALID);
   });
 
-  it("a 'web' client gets a 14-day sliding session (untrusted); the default 'app' stays permanent", async () => {
+  it("a 'web' client gets a sliding session with its platform recorded", async () => {
     const userId = await seedOtpAccount('otpweb');
     const { code } = await otp.issueCode(userId, userId);
 
@@ -145,17 +149,16 @@ describe('OTP login e2e', () => {
     const token: string = login.body.data.session_token;
     expect(await guardedOk(token)).toBe(true);
 
-    // The web-issued session is untrusted → finite (14-day) expiry. (Default 'app' would be trusted/null.)
+    // Client kind is metadata only; every issued session has a sliding expiry.
     const [row] = await database.db
       .select({
         client: sessionToken.client,
-        trusted: sessionToken.trusted,
         expiresAt: sessionToken.expiresAt,
       })
       .from(sessionToken)
       .where(eq(sessionToken.userId, userId))
       .limit(1);
-    expect(row).toMatchObject({ client: 'web', trusted: false });
+    expect(row).toMatchObject({ client: 'web' });
     expect(row!.expiresAt).not.toBeNull();
   });
 });

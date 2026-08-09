@@ -126,7 +126,7 @@ epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 
 1. 普通本地功能可以启动；
 2. 联邦模块进入 `local_identity_lost`，停止所有 S2S 入站和出站；
 3. 管理界面要求从备份恢复原密钥；
-4. 不得静默生成新 key，也不得调用 `/s2s/init` 自动恢复同一 domain。
+4. 不得静默生成新 key，也不得调用 `/s2s/ignite` 自动恢复同一 domain。
 
 ### 3.3 单密钥约束
 
@@ -187,7 +187,7 @@ signing key。它不返回 pairwise server ID，因为公开请求没有可靠�
 
 ### 5.2 首次 init
 
-`POST /api/v1/s2s/init` 请求体至少为：
+`POST /api/v1/s2s/ignite` 请求体至少为：
 
 ```json
 {
@@ -903,11 +903,11 @@ account、消息 origin seq，以及 bundle 请求中的 bundle id。
 4. download inbox、统一上传、GALLERY、并发下载调度：已实现主链；
 5. 启动恢复下载任务、quota 提额自动唤醒：已实现；
 6. 源端 PostgreSQL E2E 已覆盖正文与附件描述、分页、change ID 空洞，以及删除消息跳过后推进
-   `scannedThrough`；双节点 E2E 已在主动屏蔽旧 `/new-msg-map` POST 的条件下验证轻量 HWM、
-   `/missed` 落库、`remoteHwm` 推进与本地 SSE；双节点 E2E 也已验证接收端在文件下载处于
+   `scannedThrough`；双节点 E2E 已验证轻量 `feed-rev`、`message-feed` 落库、`remoteHwm`
+   推进与本地 SSE；双节点 E2E 也已验证接收端在文件下载处于
    `DOWNLOADING` 时进程退出，重启扫描后恢复下载、promote 正式消息并发送 SSE；也已验证 quota
    暂停期间不生成正式消息，管理员追加当日一次性额度后自动唤醒下载、promote 并发送 SSE；
-7. **兼容窗口**：旧 `/new-msg-map` 与 thread 级拉取尚未删除，待新链路 E2E 稳定后清理。
+7. 旧 `/new-msg-map`、thread 级消息拉取、`/miss-feed` 和 `/init` 已删除，不提供兼容路径。
 
 本功能至少通过以下场景才算闭环：
 
@@ -928,11 +928,10 @@ account、消息 origin seq，以及 bundle 请求中的 bundle id。
 - tombstone 命中 `PendingMessage` 时中止下载并清理，且 tombstone 行阻止该消息被重复入库；
 - 媒体下载失败或冻住不阻塞 `remoteHwm`，也不造成游标穿洞。
 
-## 14. 兼容窗口与剩余差异
+## 14. 当前实现与剩余差异
 
-旧 `/new-msg-map` 与 thread 级消息拉取目前只作为兼容/回退路径存在，不承担重启后的完整性保证；新的
-持久发现正确性来自 `DiscoveryChange + /missed + FederationPullCursor`。新链路完成双节点和崩溃恢复
-E2E 后，应删除旧 buffer、controller endpoint、reconnect poll 和对应文档。
+持久发现正确性来自 per-peer message feed、轻量 `feed-rev` 与持久 pull cursor。旧 buffer、
+`/new-msg-map`、thread 级消息拉取和 reconnect poll 已删除；节点之间不保留回退协议。
 
 当前下载调度队列是进程内状态，数据库中的 `PendingMedia/FileSyncProgress` 才是权威状态；服务启动后
 会据此重建队列。管理员提高一次性 quota 并解除该 peer 全部 breaker 后，系统自动重新调度

@@ -1,7 +1,9 @@
 # 联邦每 Peer 状态 Feed 设计
 
-> **状态：已裁决，等待实现**  
-> **日期：2026-08-08**  
+> **状态：已实现**
+>
+> **日期：2026-08-08**
+>
 > **适用范围：好友关系、用户/群资料、群成员与角色状态的联邦同步**
 
 本文是下一阶段实现依据。它把系统消息恢复为纯展示消息，并以“每个 peer 一份、按状态 key
@@ -10,8 +12,8 @@
 本文只替换
 [节点身份连续性与持久消息发现设计](./identity-and-durable-discovery-design.md)中由 SYSTEM 消息执行
 关系动作、删除关系后再懒查询权威状态，以及 profile/group meta revision 二次查询的部分。
-现有消息 `/missed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
-不因本设计删除或复用。状态 feed 有独立的表、seq、HWM 和 pull cursor。
+现有消息 `/message-feed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
+不因本设计删除或复用。状态 feed 有独立的表、rev、HWM 和 pull cursor。
 
 ## 1. 最终原则
 
@@ -20,8 +22,8 @@
 3. 每个 federated peer 拥有一份独立状态 feed；feed item 在写入时已经完成路由，拉取时不再连接
    audience 表鉴权。
 4. 同一 peer、同一状态 key 只保留最新 item。中间 revision 可以压缩，最终快照不能丢。
-5. item 携带完整 JSON body，包括 profile 头像和完整群 meta；接收端不再二次查询详情。
-6. 业务状态、业务 revision、peer seq 和 feed item 必须在同一数据库事务中提交。
+5. PROFILE item 携带头像；GROUP_META 只携带完整 roster/role/owner/active 快照，不重复头像。
+6. 业务状态、业务 revision、peer rev 和 feed item 必须在同一数据库事务中提交。
 7. push/SSE 只是可丢失、可重复、可乱序的唤醒；持久 feed、HWM 和 cursor 提供完整性。
 8. 删除 federated peer 时级联删除该 peer 的 feed、allocator 和 pull cursor。
 
@@ -73,11 +75,11 @@ GROUP_META
 
 建议显式保存 `account` 和可空的 `subjectAccount`：
 
-| eventType  | account                 | subjectAccount       | 含义                         |
-| ---------- | ----------------------- | -------------------- | ---------------------------- |
-| PROFILE    | 用户或群 account        | 空                   | 用户/群展示资料              |
-| P2P_META   | 本服务器本地用户 account | 对端用户 account     | 本地用户对该对端的认可状态   |
-| GROUP_META | 群 account              | 空                   | 群完整 meta/roster 权威快照  |
+| eventType  | account                  | subjectAccount   | 含义                        |
+| ---------- | ------------------------ | ---------------- | --------------------------- |
+| PROFILE    | 用户或群 account         | 空               | 用户/群展示资料             |
+| P2P_META   | 本服务器本地用户 account | 对端用户 account | 本地用户对该对端的认可状态  |
+| GROUP_META | 群 account               | 空               | 群完整 meta/roster 权威快照 |
 
 P2P 必须包含双方 account。仅使用 `(peerDomain, account, P2P_META)` 会让同一用户在同一远端服务器
 上的多段好友关系互相覆盖。
@@ -100,20 +102,26 @@ PeerStateFeed
 - account varchar
 - eventType PROFILE | P2P_META | GROUP_META
 - subjectAccount varchar NOT NULL DEFAULT ''
-- revision bigint/int
-- seq bigint
+- revision int（对象自身的业务 revision）
+- rev bigint
 - body jsonb
 - createdAt
 - updatedAt
 
 PRIMARY/UNIQUE(peerDomain, account, eventType, subjectAccount)
-UNIQUE(peerDomain, seq)
+UNIQUE(peerDomain, rev)
 CHECK(revision >= 0)
-CHECK(seq > 0)
+CHECK(rev > 0)
 ```
 
-同一 key 只在 incoming revision 大于现存 revision 时覆盖 `revision`、`seq` 和 `body`。相同或
-更旧 revision 完全 no-op，不能分配 seq，也不能发送 wake-up。
+业务 `revision` 使用 int：它只在单个 profile、好友方向或群快照发生真实变化时增长，并且应用层
+需要安全转换为 JavaScript number。peer feed 的 `rev`、allocator 和 cursor 使用 bigint：它们汇总
+该 peer 的所有状态 key，长期增长速度和寿命都显著更大。两者不能混用；压缩只会跳过 feed rev，
+不会改变对象业务 revision 的含义。
+
+同一 key 只在 incoming revision 大于现存 revision 时覆盖 `revision`、`rev` 和 `body`。相同或
+更旧 revision 完全 no-op，不能分配 rev，也不能发送 wake-up。重复入群补 PROFILE 时，相同
+profile revision 因此不会产生 feed rev 或接收端数据库写入。
 
 ### 4.2 PeerStateFeedTarget
 
@@ -124,8 +132,8 @@ PeerStateFeedTarget
 - updatedAt
 ```
 
-每个 peer 独立分配 seq，避免所有服务器状态变更竞争一个全局 allocator。不能使用 PostgreSQL
-sequence、`MAX(seq)` 或提交顺序不受事务约束的自增值作为安全 HWM。
+每个 peer 独立分配 rev，避免所有服务器状态变更竞争一个全局 allocator。不能使用 PostgreSQL
+sequence、`MAX(rev)` 或提交顺序不受事务约束的自增值作为安全 HWM。
 
 ### 4.3 Pull cursor
 
@@ -146,7 +154,7 @@ PeerStateFeedPullCursor
 
 ```json
 {
-  "version": 1,
+  "domain": "home.example",
   "name": "Alice",
   "bio": "...",
   "avatar": {
@@ -158,6 +166,7 @@ PeerStateFeedPullCursor
 }
 ```
 
+`domain` 是资料归属服务器；当群 origin 中继第三方成员资料时不等于 feed 发送 peer。
 Group PROFILE 使用相同结构，`bio` 表示群简介。头像建议同时携带 digest，以便接收端校验、去重并
 幂等落入现有 CAS；空头像使用明确的空值契约。用户删除、群删除等使用 `deleted: true` tombstone，
 不能通过物理删除 feed item 通知远端清缓存。
@@ -166,18 +175,22 @@ Group PROFILE 使用相同结构，`bio` 表示群简介。头像建议同时携
 
 ```json
 {
-  "version": 1,
-  "recognizesFriend": false
+  "status": "REQUESTED",
+  "note": "hello",
+  "requestedAt": "2026-08-09T10:00:00.000Z",
+  "expiresAt": "2026-08-16T10:00:00.000Z"
 }
 ```
 
-发送方只能声明自己的认可状态。接收端把它与自己的认可状态取 AND，计算 effective friendship。
+状态为 `REQUESTED | FRIEND | NOT_FRIEND`。发送方只能声明自己的方向；`REQUESTED` 只表示一封
+未过期申请，绝不创建 thread 或开放消息权限。接收方只有在本地方向已经是 `FRIEND`，且从对端
+state feed 明确收到对方方向的 `FRIEND` 后，才能激活 `FriendPair` 和 P2P thread。交叉申请或同意
+申请会先把本地方向推进为 `FRIEND` 并产生反向 feed，用这次往返完成双方确认。
 
 ### 5.3 GROUP_META
 
 ```json
 {
-  "version": 1,
   "active": true,
   "dissolved": false,
   "owner": { "account": "alice", "domain": "origin.example" },
@@ -195,6 +208,12 @@ Group PROFILE 使用相同结构，`bio` 表示群简介。头像建议同时携
 某 peer 的成员离开时，该 peer 仍必须收到一次最终 GROUP_META；可使用 `active: false` 表示该 peer
 不再拥有活动镜像，确切 wire 字段在 JSON Schema 阶段冻结。
 
+群消息历史采用明确的 member-server tradeoff：只要某服务器仍有至少一个活动群成员，origin 的
+peer THREAD audience 就保持打开，共享镜像继续接收并保存消息；该服务器上已退群的用户再次加入
+同一镜像后，可以看到这段期间的历史。最后一个属于该服务器的成员离开时，origin 将 peer
+audience 冻结到当前 inclusive changeId，之后不再为该服务器生成消息 discovery change；再次加入
+只清空边界并恢复后续消息，不补发无人订阅期间的历史。
+
 页面和单 item 必须同时设置字节上限。完整 roster 和 base64 头像会放大 JSON、WAL 与网络流量，
 因此分页除 `take` 外必须限制总响应字节；单个合法 item 即使超过普通页预算，也必须有明确的
 单条传输上限和错误行为，不能无限大。
@@ -210,7 +229,7 @@ Group PROFILE 使用相同结构，`bio` 表示群简介。头像建议同时携
 5. 目标为两者并集，确保删除好友、最后成员退出/被踢仍收到最终快照；
 6. 对目标 peerDomain 排序，按固定升序锁 `PeerStateFeedTarget`，避免多 peer 事务死锁；
 7. 为每个目标 peer 增长自己的 `allocatedThrough`；
-8. upsert 对应 feed item 的 revision、seq 和完整 body；
+8. upsert 对应 feed item 的 revision、rev 和完整 body；
 9. 提交；
 10. 提交后才向各 peer 发送 `{ allocatedThrough }` 轻量 wake-up。
 
@@ -235,7 +254,7 @@ GET /api/v1/s2s/state-feed?after=120&take=100
 {
   "items": [],
   "scannedThrough": "150",
-  "allocatedThrough": "180",
+  "stateFeedRev": "180",
   "hasMore": true
 }
 ```
@@ -244,8 +263,8 @@ GET /api/v1/s2s/state-feed?after=120&take=100
 
 1. 调用方只能拉取签名身份对应 peer 的 feed；peerDomain 不接受普通请求参数指定。
 2. 在事务快照内固定 `allocatedThrough` 为页面上界。
-3. 按 `seq > after AND seq <= allocatedThrough` 升序扫描。
-4. item 原地更新到更高 seq 会留下空洞；cursor 依据 `scannedThrough` 推进，不能依据最后返回 item。
+3. 按 `rev > after AND rev <= stateFeedRev` 升序扫描。
+4. item 原地更新到更高 rev 会留下空洞；cursor 依据 `scannedThrough` 推进，不能依据最后返回 item。
 5. 达到行数或字节预算时，`scannedThrough` 为已经完整检查的最后边界；未达到预算时可直接推进到
    固定的 `allocatedThrough`。
 6. `after` 倒退、超过源 HWM、item 无序或页面边界非法时，按 missed API 的同类错误拒绝。
@@ -256,7 +275,7 @@ GET /api/v1/s2s/state-feed?after=120&take=100
 同一 peer 只允许一个状态 feed pull worker；复用 missed pull 的 peer advisory lock/NOWAIT 模式。
 一页处理必须在同一本地数据库事务内完成：
 
-1. 验证页面、seq、revision、body schema、头像 digest/base64 和群 roster；
+1. 验证页面、rev、revision、body schema、头像 digest/base64 和群 roster；
 2. 按稳定 key 比较 remote revision；相同/更旧 revision 幂等跳过；
 3. 应用完整 profile/P2P/group 快照；
 4. 更新 `remoteProfileRev` 或对应 remote meta revision；
@@ -291,12 +310,16 @@ GROUP_OWNER_TRANSFERRED
 ## 10. 生命周期
 
 - **建立好友/加入群：** command 事务必须写初始 P2P_META、所需 PROFILE 和 GROUP_META 完整快照，
-  不能等待下一次资料变化。
+  不能等待下一次资料变化。好友 thread 只能在双向 `FRIEND` 后建立，不能把双向或未过期
+  `REQUESTED` 当作确认。
 - **删除好友：** 本地认可立即变 false，写最终 P2P_META；收到任一方 false 后 effective friendship
   立即解除。
-- **退群/被踢：** 写给变更前后 peer 并集；群 origin 发布最终完整 GROUP_META。
+- **退群/被踢：** 写给变更前后 peer 并集；群 origin 发布最终完整 GROUP_META。个人 audience
+  保留并冻结；某 peer 最后一名成员离开时，其 peer audience 也保留并冻结到消息 feed 的 inclusive
+  边界。
 - **重新加好友/重新入群：** 使用更高业务 revision 覆盖旧 NONE/inactive item，无需 generation 或
-  audience 恢复逻辑。
+  新建镜像；复用原 thread/mirror，并清空对应 audience 的交付边界。群聊是否拥有离开期间历史
+  取决于该服务器在期间是否仍有其他活动成员。
 - **用户/群删除：** 写 tombstone body。
 - **peer reset/delete：** 既有 reset 安全规则继续适用；删除 `FederatedPeer` 时级联删除 feed、target、
   pull cursor 和该 peer 的远端镜像数据。旧 peer 身份不能继承旧 feed/cursor。
@@ -314,7 +337,7 @@ GROUP_OWNER_TRANSFERRED
 继续保留：
 
 - 申请、接受、拒绝、删除好友等业务 command；
-- 消息 `/missed`、`DiscoveryChange`、`ThreadAudience`、message HWM/cursor；
+- 消息 `/message-feed`、`DiscoveryChange`、`ThreadAudience`、message HWM/cursor；
 - 消息删除、`leaveId` 及现有消息交付机制；
 - federation identity、签名、trust、reset 和 quota 约束。
 
@@ -335,8 +358,8 @@ GROUP_OWNER_TRANSFERRED
 - 同一用户与同一 peer 上多个账号的 P2P_META 不互相覆盖。
 - 双方都认可才成为好友；任意一方 false 立即解除。
 - 延迟旧 `true` 不能覆盖较新 `false`。
-- 重复 command/revision 不增长 seq。
-- 事务回滚不暴露 seq/HWM/item；不能发生先分配后晚提交导致 cursor 跳过。
+- 重复 command/revision 不增长 rev。
+- 事务回滚不暴露 rev/HWM/item；不能发生先分配后晚提交导致 cursor 跳过。
 - wake-up 丢失、重复、乱序以及进程重启后仍能依靠 HWM 拉齐。
 - 快慢 peer 相互独立；一个 peer 不得读取另一个 peer feed。
 - 群最后一个远端成员主动退出或被踢仍收到最终 GROUP_META。

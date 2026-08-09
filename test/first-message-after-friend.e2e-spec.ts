@@ -8,7 +8,8 @@ import { configureApp } from '../src/bootstrap';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
-  invite,
+  friendPair,
+  friendRequest,
   message,
   threadAudience,
   user,
@@ -82,13 +83,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
     const [pendingInvite] = await database.db
       .select()
-      .from(invite)
+      .from(friendRequest)
       .where(
         and(
-          eq(invite.kind, 'FRIEND'),
-          eq(invite.status, 'PENDING'),
-          eq(invite.fromUserId, alice.id),
-          eq(invite.toUserId, bob.id),
+          eq(friendRequest.status, 'REQUESTED'),
+          eq(friendRequest.requesterUserId, alice.id),
+          eq(friendRequest.targetUserId, bob.id),
         ),
       )
       .limit(1);
@@ -124,12 +124,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
     );
     expect(audiences).toHaveLength(2);
 
-    // Sanity: the thread truly has NO messages yet (this is the "empty chatbox" precondition).
+    // The relationship transition writes two structured SYSTEM messages; no user-authored message exists yet.
     const [emptyCount] = await database.db
       .select({ count: sql<number>`count(*)::int` })
       .from(message)
       .where(eq(message.threadId, threadId));
-    expect(emptyCount.count).toBe(0);
+    expect(emptyCount.count).toBe(2);
 
     // 2. Open Bob's SSE stream BEFORE the send so the NEW_MESSAGE frame is captured on the real wire.
     const reader = await openSse(baseUrl, bob.token);
@@ -144,28 +144,33 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
       // 4. The fan-out wrote a NEW_MESSAGE signal to Bob's stream. The frame is identity-only
       //    { threadId, seq, ts } — the rendered body is never carried on the wire (single data source:
-      //    the client pulls it). Assert the signal targets this thread at seq 0 (the first message).
+      //    the client pulls it). Assert the signal targets this thread.
       const delivered = await waitForSseEvent(
         reader,
         (event, data) =>
           event === 'NEW_MESSAGE' &&
           typeof data === 'object' &&
           data !== null &&
-          (data as { threadId?: number }).threadId === threadId &&
-          (data as { seq?: number }).seq === 0,
-      );
+          (data as { threadId?: number }).threadId === threadId,
+      ) as { seq: number };
       expect(delivered).toBeDefined();
 
-      // 5. The row is committed and it is genuinely the first message (seq/originSeq 0 — curSeq starts at -1).
+      // 5. The row is committed as the first user-authored message after the two SYSTEM records.
       const [storedMessage] = await database.db
         .select()
         .from(message)
-        .where(eq(message.threadId, threadId))
+        .where(
+          and(
+            eq(message.threadId, threadId),
+            eq(message.content, JSON.stringify({ text: 'first!' })),
+          ),
+        )
         .limit(1);
       expect(storedMessage).toBeDefined();
       expect(JSON.parse(storedMessage.content)).toEqual({ text: 'first!' });
-      expect(Number(storedMessage.seq)).toBe(0);
-      expect(Number(storedMessage.originSeq)).toBe(0);
+      expect(delivered.seq).toBe(storedMessage.seq);
+      expect(Number(storedMessage.seq)).toBe(2);
+      expect(Number(storedMessage.originSeq)).toBe(2);
     } finally {
       await reader.cancel();
     }
@@ -199,16 +204,35 @@ describe('First message after friend-add is delivered (single instance)', () => 
       })
       .returning({ id: user.id });
 
-    const friendship = await app
-      .get(InviteService)
-      .applyInboundFriendApprove(alice.id, foreignBob.id);
+    const inviteService = app.get(InviteService);
+    await database.db.transaction(async (tx) => {
+      await inviteService.writeLocalFriendIntentInTx(
+        tx,
+        alice.id,
+        foreignBob.id,
+        true,
+      );
+      await inviteService.writeLocalFriendIntentInTx(
+        tx,
+        foreignBob.id,
+        alice.id,
+        true,
+      );
+    });
+    const friendship = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(alice.id, foreignBob.id)),
+        eq(friendPair.userHighId, Math.max(alice.id, foreignBob.id)),
+      ),
+    });
+    expect(friendship?.threadId).not.toBeNull();
     const audiences = await database.db
       .select({
         targetDomain: threadAudience.targetDomain,
         localUserId: threadAudience.localUserId,
       })
       .from(threadAudience)
-      .where(eq(threadAudience.threadId, friendship.threadId));
+      .where(eq(threadAudience.threadId, friendship!.threadId!));
 
     expect(audiences).toEqual(
       expect.arrayContaining([
@@ -223,5 +247,69 @@ describe('First message after friend-add is delivered (single instance)', () => 
       ]),
     );
     expect(audiences).toHaveLength(2);
+  });
+
+  it('does not create a federated thread until the peer confirms FRIEND', async () => {
+    const appLike = { baseUrl, database: database.db };
+    const alice = await registerAndLogin(appLike, 'strict-alice', 'Alice');
+    const [foreignBob] = await database.db
+      .insert(user)
+      .values({
+        account: 'strict-bob',
+        name: 'Bob',
+        isForeigner: true,
+        domain: 'strict-peer.test',
+        updatedAt: new Date(),
+      })
+      .returning({ id: user.id });
+    const inviteService = app.get(InviteService);
+    const pairWhere = and(
+      eq(friendPair.userLowId, Math.min(alice.id, foreignBob.id)),
+      eq(friendPair.userHighId, Math.max(alice.id, foreignBob.id)),
+    );
+
+    await database.db.transaction((tx) =>
+      inviteService.writeLocalFriendIntentInTx(
+        tx,
+        alice.id,
+        foreignBob.id,
+        true,
+      ),
+    );
+    await database.db.transaction((tx) =>
+      inviteService.applyRemoteFriendIntentInTx(tx, {
+        localUserId: alice.id,
+        peerUserId: foreignBob.id,
+        status: 'REQUESTED',
+        note: 'crossed request',
+        revision: 1,
+        requestedAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        origin: 'strict-peer.test',
+      }),
+    );
+
+    const beforeConfirmation =
+      await database.db.query.friendPair.findFirst({ where: pairWhere });
+    expect(beforeConfirmation?.active).toBe(false);
+    expect(beforeConfirmation?.threadId).toBeNull();
+
+    await database.db.transaction((tx) =>
+      inviteService.applyRemoteFriendIntentInTx(tx, {
+        localUserId: alice.id,
+        peerUserId: foreignBob.id,
+        status: 'FRIEND',
+        note: 'crossed request',
+        revision: 2,
+        requestedAt: new Date(),
+        expiresAt: null,
+        origin: 'strict-peer.test',
+      }),
+    );
+
+    const afterConfirmation =
+      await database.db.query.friendPair.findFirst({ where: pairWhere });
+    expect(afterConfirmation?.active).toBe(true);
+    expect(afterConfirmation?.threadId).not.toBeNull();
   });
 });

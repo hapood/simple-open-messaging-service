@@ -583,8 +583,8 @@ class RealtimeService : Service() {
          *  only fires on transitions). Volatile: written on the SSE thread, read on the JS bridge thread. */
         @Volatile
         var connState: String = "closed"
-        /** The last HELLO frame merged with every incremental revision frame (THREAD_REVISION_UPDATED /
-         *  PROFILE_REV_UPDATED / FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) — the FRESH handshake a re-attached
+        /** The last HELLO frame merged with every incremental revision frame (STATE_REV_UPDATED /
+         *  FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) — the FRESH handshake a re-attached
          *  WebView needs, since a retained open `/events` stream does NOT re-push HELLO on its own (it is
          *  sent once per register). Stored as a NATIVE JSONObject (deserialized once on HELLO, mutated in
          *  place by [cacheHelloFrame], serialized once by [replayCachedHello]) — no per-frame parse/reserialize.

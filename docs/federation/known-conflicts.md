@@ -46,7 +46,7 @@
 ## C-005：allow-list 与 auto-accept 的术语容易互相矛盾
 
 - overview 使用 “allow-list federation” 和 “explicitly trusted”。
-- 当前 `/s2s/init` 对能通过 well-known key 验签的 peer 自动标记 trusted，不要求管理员预批准。
+- 当前 `/s2s/ignite` 对能通过 well-known key 验签的 peer 自动标记 trusted，不要求管理员预批准。
 - 管理员 block 是独立的拒绝机制。
 
 **处理方向：** 分开定义“必须完成可信握手”“管理员审批策略”和“开放注册/开放联邦”；避免把

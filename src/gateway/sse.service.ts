@@ -2,9 +2,9 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
-import { and, eq, max } from 'drizzle-orm';
+import { eq, max } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { invite, user as userTable } from '../database/schema.js';
+import { friendRequest, user as userTable } from '../database/schema.js';
 import { MessageService } from '../message/message.service.js';
 import { CallStateRegistry } from './call-state.registry.js';
 
@@ -109,9 +109,9 @@ export class SseService implements OnModuleDestroy {
         // badge arms ONLY on a NEW request (accept/decline flip status/updatedAt but don't re-arm). Null
         // when the user has never received one.
         this.database.db
-          .select({ createdAt: max(invite.createdAt) })
-          .from(invite)
-          .where(and(eq(invite.kind, 'FRIEND'), eq(invite.toUserId, userId)))
+          .select({ createdAt: max(friendRequest.requestedAt) })
+          .from(friendRequest)
+          .where(eq(friendRequest.targetUserId, userId))
           .then(([row]) => row),
       ]);
       const friendReqRev = friendReqAgg.createdAt
@@ -132,14 +132,13 @@ export class SseService implements OnModuleDestroy {
         // { threadId, seq, ts } | null — the missed-summary walk's pinned upper bound `to` (null when the
         // user has no messages yet → the client does not walk until the first live NEW_MESSAGE).
         latestMessage,
-        // The thread-list delta cursor. The client delta-replays (0, this] on first HELLO, then
-        // (cursor, this] on each subsequent THREAD_REVISION_UPDATED — the SOLE revision source now that
-        // the snapshot endpoint is gone.
-        threadRevision: user?.threadRevision ?? 0,
+        // The state delta cursor. The client delta-replays (0, this] on first HELLO, then
+        // (cursor, this] on each subsequent STATE_REV_UPDATED — the sole state revision source.
+        stateRevision: user?.threadRevision ?? 0,
         readRevision: user?.readRevision ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
-        // cache) or a changed rev still fetches. PROFILE_REV_UPDATED advances it live (multi-device).
+        // cache) or a changed rev still fetches. PROFILE deltas advance the same state revision.
         profileRev: user?.profileRev ?? 0,
         // The friend-request revision (epoch-ms | null) = MAX(createdAt) over incoming FRIEND invites. The
         // client derives the unread badge as `friendReqRev > friendReqAckRev`; FRIEND_REQ_REV_UPDATED
@@ -156,7 +155,7 @@ export class SseService implements OnModuleDestroy {
       });
       if (!entry.res.writableEnded) entry.res.write(frame);
     } catch (e) {
-      // HELLO is load-bearing: the threadlist cannot build without its threadRevision (delta-replay from
+      // HELLO is load-bearing: the thread list cannot build without its stateRevision (delta replay from
       // 0..rev). A send failure must therefore be OBSERVABLE, not silently swallowed — the connection still
       // establishes, and the client's HELLO-timeout will force a reconnect that re-pushes HELLO.
       this.logger.error(`HELLO handshake failed for user ${userId}`, e);
@@ -315,24 +314,18 @@ export class SseService implements OnModuleDestroy {
    * too — the only way federated peers benefit from the push, since there is no S2S profile-push and
    * federation is pull-based by design).
    */
-  onPeerProfileUpdated(userId: number, data: unknown) {
-    this.pushToUser(userId, 'PEER_PROFILE_UPDATED', data);
-  }
-
   /** Thread-list revision bumped (thread added or deleted). Signal-only: the client receives the new
    *  revision and pulls ADD/DELETE deltas via query-thread(from, to]. */
-  onThreadRevisionUpdated(userId: number, data: unknown) {
-    this.pushToUser(userId, 'THREAD_REVISION_UPDATED', data);
+  onThreadRevisionUpdated(userId: number, data: { threadRevision: number }) {
+    this.pushToUser(userId, 'STATE_REV_UPDATED', {
+      stateRevision: data.threadRevision,
+    });
   }
 
   /** Self-profile revision bumped (avatar / name / bio edit on this account). The client invalidates its
    *  IDB-cached selfProfile (whose profileRev it compared at HELLO) and re-fetches /user/my-profile — this
    *  is the multi-device self-profile refresh (the editor's OTHER tabs/devices learn of their own edit's
    *  effect). Carried on the wire as `{ profileRev }`, advanced in HELLO too. */
-  onProfileRevUpdated(userId: number, data: { profileRev: number }) {
-    this.pushToUser(userId, 'PROFILE_REV_UPDATED', data);
-  }
-
   /** Friend-request badge state changed (a FRIEND invite to this user was created / accepted / declined —
    *  any mutation of an incoming FRIEND row bumps its `updatedAt` — OR the user markRead'd, advancing the
    *  ack cursor). Carries the FULL current state `{ friendReqRev, friendReqAckRev }` (epoch-ms); the client

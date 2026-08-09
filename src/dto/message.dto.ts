@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -204,8 +204,7 @@ export class SendMediaDto {
   @Max(10)
   fileCnt?: number;
 
-  @ApiProperty({
-    required: false,
+  @ApiPropertyOptional({
     default: false,
     description:
       'Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.',
@@ -260,9 +259,7 @@ export class QueryMessagesDto {
   @IsInt()
   lastSeq?: number;
 
-  @ApiProperty({
-    required: false,
-    default: false,
+  @ApiPropertyOptional({
     description:
       'Whether to stop this page before truncateSeq. The cached boundary row itself is excluded.',
   })

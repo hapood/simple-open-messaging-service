@@ -10,19 +10,22 @@ import {
   federatedPeer,
   federationPullCursor,
   federationServeCursor,
+  peerStateFeedPullCursor,
+  peerStateFeedTarget,
   s2SIdentityNonce,
 } from '../src/database/schema.js';
 import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
-import { FederationInitService } from '../src/federation/federation-init.service.js';
+import { FederationIgniteService } from '../src/federation/federation-ignite.service.js';
 import type {
   FederationIdentityClaim,
   FederationIdentityService,
 } from '../src/federation/federation-identity.service.js';
+import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 
-describe('FederationInitService atomic commit', () => {
+describe('FederationIgniteService atomic commit', () => {
   let mod: TestingModule;
   let database: DatabaseService;
-  let service: FederationInitService;
+  let service: FederationIgniteService;
   const domain = 'atomic-init.test';
   const claim: FederationIdentityClaim = {
     protocolVersion: 1,
@@ -67,7 +70,12 @@ describe('FederationInitService atomic commit', () => {
         throw new Error('nonce replay');
       },
     } as unknown as FederationIdentityService;
-    service = new FederationInitService(database, identity, cursor);
+    service = new FederationIgniteService(
+      database,
+      identity,
+      cursor,
+      new PeerStateFeedService(database),
+    );
   });
 
   beforeEach(async () => {
@@ -97,6 +105,12 @@ describe('FederationInitService atomic commit', () => {
     expect(await database.db.select().from(federationPullCursor)).toHaveLength(
       1,
     );
+    expect(await database.db.select().from(peerStateFeedTarget)).toHaveLength(
+      1,
+    );
+    expect(
+      await database.db.select().from(peerStateFeedPullCursor),
+    ).toHaveLength(1);
   });
 
   it('rolls every init write back when cursor initialization fails', async () => {
@@ -112,5 +126,9 @@ describe('FederationInitService atomic commit', () => {
     expect(await database.db.select().from(s2SIdentityNonce)).toEqual([]);
     expect(await database.db.select().from(federationServeCursor)).toEqual([]);
     expect(await database.db.select().from(federationPullCursor)).toEqual([]);
+    expect(await database.db.select().from(peerStateFeedTarget)).toEqual([]);
+    expect(await database.db.select().from(peerStateFeedPullCursor)).toEqual(
+      [],
+    );
   });
 });

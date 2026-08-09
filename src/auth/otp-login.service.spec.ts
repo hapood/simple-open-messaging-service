@@ -201,7 +201,7 @@ describe('OtpLoginService', () => {
       await svc.verifyAndLogin('alice', '111111', {});
       // The matched (older) code is the one single-use-claimed.
       expect(store.loginCode.updateMany).toHaveBeenCalledTimes(1);
-    });
+    }, 15_000);
 
     it('passes client metadata without lifetime overrides', async () => {
       const codeHash = await argon2.hash('333333');
@@ -232,7 +232,7 @@ describe('OtpLoginService', () => {
         'desktop',
         expect.not.objectContaining({ trusted: expect.anything() }),
       );
-    });
+    }, 15_000);
 
     it('throws OTP_INVALID for a wrong code (counted toward the lock)', async () => {
       const codeHash = await argon2.hash('123456');

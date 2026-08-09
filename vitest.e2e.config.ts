@@ -9,6 +9,9 @@ export default defineConfig({
     include: ['test/**/*.e2e-spec.ts'],
     globalSetup: ['./test/global-setup.ts'],
     setupFiles: ['./test/setup-env.ts'],
+    // Each worker resets/migrates its own PostgreSQL database. Bounding the
+    // pool keeps full-suite runs from starving double-node process bootstraps.
+    maxWorkers: 4,
     hookTimeout: 30_000,
     testTimeout: 30_000,
   },

@@ -262,23 +262,7 @@ export class PeerProfileComponent {
   private readonly convList = inject(ConversationListService);
   private readonly deletionLock = inject(ThreadDeletionLockService);
 
-  constructor() {
-    // Revision catch-up at view time for every peer. The server compares this cached profileRev with its
-    // authoritative row; when stale it pushes PEER_PROFILE_UPDATED and the normal repository pull writes
-    // the new profile/avatar into IDB, whose refresh signal updates every mounted avatar. Federated peers
-    // additionally run the server-side remote revision probe/re-localization through the same endpoint.
-    effect(() => {
-      const p = this.peer();
-      if (!p) return;
-      this.userService
-        .syncPeerProfile({ userId: p.id, sinceProfileRev: p.profileRev })
-        .subscribe({
-          error: () => {
-            /* best-effort — keep the cached profile on a transient peer outage */
-          },
-        });
-    });
-  }
+  constructor() {}
 
   readonly busy = signal(false);
   /** Two-step destructive confirm gate for Unfriend. */

@@ -194,14 +194,18 @@ export class FederationIdentityService {
     legacyContinuityProven = false,
   ): Promise<string | undefined> {
     const normalized = normalizeDomain(domain);
-    const [peer, reset] = await Promise.all([
-      tx.query.federatedPeer.findFirst({
-        where: eq(tables.federatedPeer.domain, normalized),
-      }),
-      tx.query.federatedPeerReset.findFirst({
-        where: eq(tables.federatedPeerReset.domain, normalized),
-      }),
-    ]);
+    // Serialize identity promotion with admin block/reset. Without this row lock an ignite transaction
+    // can read `trusted`, an admin can commit `blocked`, and the stale ignite UPSERT can then overwrite
+    // the durable policy decision back to `trusted`.
+    const [peer] = await tx
+      .select()
+      .from(tables.federatedPeer)
+      .where(eq(tables.federatedPeer.domain, normalized))
+      .for('update')
+      .limit(1);
+    const reset = await tx.query.federatedPeerReset.findFirst({
+      where: eq(tables.federatedPeerReset.domain, normalized),
+    });
     if (!peer && reset && !reset.reinitPending) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,

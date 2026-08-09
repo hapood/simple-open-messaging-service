@@ -973,15 +973,33 @@ export class WebdbService implements OnDestroy {
       return;
     }
     const db = await this.db();
-    const tx = db.transaction(['threads', 'settings'], 'readwrite');
+    const tx = db.transaction(['threads', 'profiles', 'settings'], 'readwrite');
     for (const op of delta) {
+      if (op.direction === 'PROFILE') {
+        const u = op.user;
+        const identity = `u${u.id}`;
+        const previous = await tx.objectStore('profiles').get(identity);
+        if (!previous || u.profileRev >= previous.profileRev) {
+          await tx.objectStore('profiles').put({
+            identity,
+            id: u.id,
+            kind: 'user',
+            name: u.name,
+            avatar: u.avatar,
+            bio: u.bio ?? '',
+            domain: u.domain ?? '',
+            profileRev: u.profileRev,
+          });
+        }
+        continue;
+      }
       if (op.direction === 'DELETE')
         await tx.objectStore('threads').delete(op.threadId);
       else await tx.objectStore('threads').put(op.item);
     }
     await tx
       .objectStore('settings')
-      .put({ key: 'threadRevision', value: revision });
+      .put({ key: 'stateRevision', value: revision });
     await tx.done;
   }
 

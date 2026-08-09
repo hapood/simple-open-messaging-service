@@ -29,8 +29,9 @@ describe('Federated peer QuotaService (DB-backed)', () => {
 
   beforeEach(async () => {
     await database.pool.query('DELETE FROM "QuotaDailyUsage"');
+    await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
     await database.pool.query(
-      'UPDATE "FederatedPeer" SET "dailyMsgLimit" = NULL, "dailyImageLimit" = NULL, "dailyLargeFileLimit" = NULL, "dailyRequestLimit" = NULL, "maxImageBytes" = NULL, "maxLargeFileBytes" = NULL WHERE domain = $1',
+      'UPDATE "FederatedPeer" SET "dailyMsgLimit" = NULL, "dailyRequestLimit" = NULL, "dailyFileLimit" = NULL, "dailyFileBytesLimit" = NULL WHERE domain = $1',
       [PEER],
     );
   });
@@ -40,6 +41,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
       PEER,
     ]);
     await database.pool.query('DELETE FROM "QuotaDailyUsage"');
+    await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
     await mod.close();
   });
 
@@ -75,27 +77,21 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     expect((await quota.usageToday(PEER)).requests.count).toBe(0);
   });
 
-  it('enforces the peer media byte cap', async () => {
-    await quota.setLimits(PEER, { maxImageBytes: 100 });
-    await expect(
-      quota.assertUnderCap(PEER, 'images', 101),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+  it('enforces the consolidated peer file-byte cap', async () => {
+    await quota.setLimits(PEER, { dailyFileBytesLimit: 100n });
+    await expect(quota.preCheckFile(PEER, 0, 101n)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
     });
-    await expect(
-      quota.assertUnderCap(PEER, 'images', 100),
-    ).resolves.toBeUndefined();
+    await expect(quota.preCheckFile(PEER, 0, 100n)).resolves.toBeUndefined();
   });
 
   it('treats a zero media cap as a disabled capability', async () => {
-    await quota.setLimits(PEER, { maxImageBytes: 0 });
-    await expect(quota.assertUnderCap(PEER, 'images', 1)).rejects.toMatchObject(
-      {
-        bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-        status: 403,
-        data: { category: 'images' },
-      },
-    );
+    await quota.setLimits(PEER, { dailyFileLimit: 0 });
+    await expect(quota.peek(PEER, 'files')).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
+      status: 403,
+      data: { category: 'files' },
+    });
   });
 
   it('falls back to the global peer default when an override is null', async () => {
@@ -109,8 +105,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     expect(nodes).toHaveLength(1);
     expect(nodes[0]).toMatchObject({ domain: PEER, trustLevel: 'trusted' });
     expect(nodes[0].usage?.messages.count).toBe(1);
-    expect(nodes[0].effectiveCaps.images).toBeGreaterThan(0);
-    expect(nodes[0].effectiveCaps.largeFiles).toBeGreaterThan(0);
+    expect(nodes[0].usage?.files.limit).toBeGreaterThan(0);
   });
 });
 
@@ -141,6 +136,7 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
 
   beforeEach(async () => {
     await database.pool.query('DELETE FROM "UserQuotaDailyUsage"');
+    await database.pool.query('DELETE FROM "UserQuotaFileByteUsage"');
     await database.pool.query('DELETE FROM "UserQuotaPolicy"');
   });
 
@@ -166,16 +162,12 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
   });
 
   it('enforces the effective per-user media byte cap', async () => {
-    await quota.setPolicy(localUserId, { maxImageBytes: 4 });
-    await expect(
-      quota.assertWithinByteCap(localUserId, 'images', 5),
-    ).rejects.toMatchObject({
+    await quota.setPolicy(localUserId, { dailyFileBytesLimit: 4n });
+    await expect(quota.preCheckFile(localUserId, 0, 5n)).rejects.toMatchObject({
       bizCode: BusinessCode.QUOTA_EXCEEDED,
-      data: { category: 'images', limit: 4, actual: 5 },
+      data: { category: 'files' },
     });
-    await expect(
-      quota.assertWithinByteCap(localUserId, 'images', 4),
-    ).resolves.toBeUndefined();
+    await expect(quota.preCheckFile(localUserId, 0, 4n)).resolves.toBeUndefined();
   });
 
   it('does not expose personal quota for a federated user stub', async () => {

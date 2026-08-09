@@ -45,6 +45,8 @@ export function messageCopyBody(
       return joinLabel(labels.invite, inviteGroupName(message.text));
     case 'CALL':
       return labels.call;
+    case 'SYSTEM':
+      return '[System message]';
     case 'FORWARD': {
       const card = parseForwardCard(message.text);
       return joinLabel(

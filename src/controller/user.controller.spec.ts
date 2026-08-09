@@ -5,8 +5,9 @@ import { UserController } from './user.controller.js';
 function setup() {
   const queryParticipants = vi.fn();
   const queryDelta = vi.fn();
+  const queryProfileDelta = vi.fn().mockResolvedValue([]);
   const controller = new UserController(
-    {} as never,
+    { queryUsers: vi.fn().mockResolvedValue([]) } as never,
     { queryParticipants } as never,
     {} as never,
     {} as never,
@@ -15,7 +16,7 @@ function setup() {
     {} as never,
     {} as never,
     {} as never,
-    { queryDelta } as never,
+    { queryDelta, queryProfileDelta } as never,
     {} as never,
   );
   const req = { user: { userId: 7 } } as unknown as FastifyRequest;

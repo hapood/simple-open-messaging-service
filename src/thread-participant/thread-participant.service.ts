@@ -17,6 +17,7 @@ import {
   PendingThreadRevision,
   ThreadRevisionService,
 } from '../thread-revision/thread-revision.service.js';
+import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
 
 /**
  * ThreadParticipant data layer.
@@ -33,6 +34,7 @@ export class ThreadParticipantService {
   constructor(
     private database: DatabaseService,
     private readonly threadRevisionService: ThreadRevisionService,
+    private readonly stateFeed: PeerStateFeedService,
   ) {}
 
   /** The caller's participant row, regardless of leftAt. */
@@ -317,10 +319,35 @@ export class ThreadParticipantService {
     callerUserId: number,
     deleteData: boolean,
     localPeerUserId?: number,
-  ): Promise<{ transitioned: boolean }> {
+  ): Promise<{ transitioned: boolean; statePeers: string[] }> {
     const now = new Date();
     const result = await this.database.db.transaction(async (tx) => {
-      // Message writes lock this same row while allocating seq. Taking the lock first makes the
+      const identities = await tx
+        .select({
+          id: threadParticipant.id,
+          userId: user.id,
+          account: user.account,
+          domain: user.domain,
+          relationshipRev: threadParticipant.relationshipRev,
+        })
+        .from(threadParticipant)
+        .innerJoin(user, eq(user.id, threadParticipant.userId))
+        .where(eq(threadParticipant.threadId, threadId));
+      const mine = identities.find((row) => row.userId === callerUserId);
+      const peer = identities.find((row) => row.userId !== callerUserId);
+      if (mine && peer) {
+        const low = Math.min(callerUserId, peer.userId);
+        const high = Math.max(callerUserId, peer.userId);
+        await tx.execute(sql`
+          INSERT INTO "FriendPair" ("userLowId", "userHighId") VALUES (${low}, ${high})
+          ON CONFLICT DO NOTHING
+        `);
+        await tx.execute(sql`
+          SELECT 1 FROM "FriendPair" WHERE "userLowId" = ${low} AND "userHighId" = ${high}
+          FOR UPDATE
+        `);
+      }
+      // Message writes lock this same row while allocating seq. Taking the lock before mutation makes the
       // audience boundary an exact cut: prior writes commit before MAX(id), later writes wait and
       // receive ids outside the closed access epoch.
       await tx.execute(sql`
@@ -370,10 +397,73 @@ export class ThreadParticipantService {
           );
       }
       const transitioned = ended.length > 0;
+      const statePeers: string[] = [];
       if (transitioned) {
-        await tx
-          .delete(threadAudience)
-          .where(eq(threadAudience.threadId, threadId));
+        if (mine && peer) {
+          const low = Math.min(callerUserId, peer.userId);
+          const high = Math.max(callerUserId, peer.userId);
+          const request = await tx.execute<{ revision: number }>(sql`
+            INSERT INTO "FriendRequest" (
+              "requesterUserId", "targetUserId", status, note, revision, "updatedAt"
+            ) VALUES (${callerUserId}, ${peer.userId}, 'NOT_FRIEND', '', 1, CURRENT_TIMESTAMP)
+            ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
+              status = 'NOT_FRIEND', note = '', revision = "FriendRequest".revision + 1,
+              "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+            WHERE "FriendRequest".status <> 'NOT_FRIEND'
+            RETURNING revision
+          `);
+          const relationshipRev = request.rows[0]?.revision;
+          await tx.execute(sql`
+            UPDATE "FriendPair" SET active = false, revision = revision + 1,
+              "updatedAt" = CURRENT_TIMESTAMP
+            WHERE "userLowId" = ${low} AND "userHighId" = ${high} AND active = true
+          `);
+          await tx
+            .update(threadParticipant)
+            .set({
+              recognizesFriend: false,
+              ...(relationshipRev === undefined
+                ? {}
+                : { relationshipRev }),
+              updatedAt: now,
+            })
+            .where(eq(threadParticipant.id, mine.id));
+          if (relationshipRev !== undefined && peer.domain !== 'local') {
+            await this.stateFeed.writeManyInTx(tx, [
+              {
+                peerDomain: peer.domain,
+                account: mine.account,
+                subjectAccount: peer.account,
+                eventType: 'P2P_META',
+                revision: relationshipRev,
+                body: {
+                  status: 'NOT_FRIEND',
+                  note: '',
+                  requestedAt: null,
+                  expiresAt: null,
+                },
+              },
+            ]);
+            statePeers.push(peer.domain);
+          }
+        }
+      }
+      if (transitioned) {
+        // Keep the audience rows as an inclusive leave boundary. Changes
+        // already allocated for each target remain drainable, while the
+        // non-null boundary prevents any later message from being discovered.
+        await tx.execute(sql`
+          UPDATE "ThreadAudience" audience
+          SET "deliverThroughChangeId" = COALESCE((
+            SELECT target."allocatedThrough"
+            FROM "DiscoveryTarget" target
+            WHERE target."targetDomain" = audience."targetDomain"
+              AND target."localUserId" IS NOT DISTINCT FROM audience."localUserId"
+          ), 0)
+          WHERE audience."threadId" = ${threadId}
+            AND audience.scope = 'THREAD'
+            AND audience."deliverThroughChangeId" IS NULL
+        `);
       }
       const revisions: PendingThreadRevision[] = [];
       if (shouldDelete) {
@@ -405,12 +495,12 @@ export class ThreadParticipantService {
           ),
         });
       }
-      return { transitioned, revisions };
+      return { transitioned, revisions, statePeers };
     });
     result.revisions.forEach((revision) =>
       this.threadRevisionService.notifyThreadRevision(revision),
     );
-    return { transitioned: result.transitioned };
+    return { transitioned: result.transitioned, statePeers: result.statePeers };
   }
 
   // ─── raw roster mutators (federation inbound) ─────────────────────────────────

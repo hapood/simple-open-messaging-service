@@ -98,10 +98,6 @@ export class ProfileEditorComponent {
     let renderedName = p?.name ?? '';
     let renderedBio = p?.bio ?? '';
 
-    // Both hosts create this component only when the self-profile surface opens. Send an ACK-only revision
-    // probe; when stale the server emits PROFILE_REV_UPDATED and the existing SSE path pulls the full
-    // profile through sessionProfile → ProfileRepository → IndexedDB/avatar notification.
-    if (p) this.userService.syncSelfProfile(p.profileRev);
     this.userService.getMyQuota().subscribe({
       next: (res) => {
         this.quota.set(res.data ?? null);

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { InviteService } from './invite.service.js';
 import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
+import { MessageModule } from '../message/message.module.js';
 
 /**
  * Invite domain module. InviteService owns invite DB state + the friend-request badge; it delegates
@@ -8,7 +9,7 @@ import { ThreadParticipantModule } from '../thread-participant/thread-participan
  * the federation roster fanout share ONE implementation. Declared in AppModule alongside the controller.
  */
 @Module({
-  imports: [ThreadParticipantModule],
+  imports: [ThreadParticipantModule, MessageModule],
   providers: [InviteService],
   exports: [InviteService],
 })

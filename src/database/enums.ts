@@ -24,6 +24,7 @@ export const ContentType = {
   FORWARD: 'FORWARD',
   // Phase 7: multi-asset bundle (N files share one batchId).
   GALLERY: 'GALLERY',
+  SYSTEM: 'SYSTEM',
 } as const;
 export type ContentType = (typeof ContentType)[keyof typeof ContentType];
 
@@ -33,18 +34,6 @@ export const GroupRole = {
   MEMBER: 'MEMBER',
 } as const;
 export type GroupRole = (typeof GroupRole)[keyof typeof GroupRole];
-
-export const InviteKind = { FRIEND: 'FRIEND', GROUP: 'GROUP' } as const;
-export type InviteKind = (typeof InviteKind)[keyof typeof InviteKind];
-
-export const InviteStatus = {
-  PENDING: 'PENDING',
-  ACCEPTED: 'ACCEPTED',
-  REJECTED: 'REJECTED',
-  REVOKED: 'REVOKED',
-  EXPIRED: 'EXPIRED',
-} as const;
-export type InviteStatus = (typeof InviteStatus)[keyof typeof InviteStatus];
 
 export const MessageThreadType = { P2P: 'P2P', GROUP: 'GROUP' } as const;
 export type MessageThreadType =

@@ -5,7 +5,11 @@ import {
   type Database,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { threadRevision, user } from '../database/schema.js';
+import {
+  profileStateRevision,
+  threadRevision,
+  user,
+} from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 
 export interface PendingThreadRevision {
@@ -74,6 +78,54 @@ export class ThreadRevisionService {
     this.sse.onThreadRevisionUpdated(pending.userId, {
       threadRevision: pending.revision,
     });
+  }
+
+  async recordProfileStateInTx(
+    tx: DatabaseTransaction,
+    subjectUserId: number,
+    consumerUserIds: readonly number[],
+  ): Promise<PendingThreadRevision[]> {
+    const pending: PendingThreadRevision[] = [];
+    for (const userId of [...new Set(consumerUserIds)].sort((a, b) => a - b)) {
+      const [owner] = await tx
+        .update(user)
+        .set({
+          threadRevision: sql`${user.threadRevision} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, userId))
+        .returning({ revision: user.threadRevision });
+      if (!owner) continue;
+      await tx
+        .insert(profileStateRevision)
+        .values({ userId, subjectUserId, revision: owner.revision })
+        .onConflictDoUpdate({
+          target: [
+            profileStateRevision.userId,
+            profileStateRevision.subjectUserId,
+          ],
+          set: { revision: owner.revision, createdAt: new Date() },
+        });
+      pending.push({ userId, revision: owner.revision });
+    }
+    return pending;
+  }
+
+  queryProfileDelta(userId: number, fromRevision: number, toRevision: number) {
+    return this.database.db
+      .select({
+        subjectUserId: profileStateRevision.subjectUserId,
+        revision: profileStateRevision.revision,
+      })
+      .from(profileStateRevision)
+      .where(
+        and(
+          eq(profileStateRevision.userId, userId),
+          gt(profileStateRevision.revision, fromRevision),
+          lte(profileStateRevision.revision, toRevision),
+        ),
+      )
+      .orderBy(asc(profileStateRevision.revision));
   }
 
   /** Record a thread DELETE: bump threadRevision, upsert the DELETE row, mark the ADD row soft-deleted,

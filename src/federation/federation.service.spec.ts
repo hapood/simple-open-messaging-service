@@ -278,7 +278,7 @@ describe('FederationService global missed transport', () => {
     });
     expect(order).toEqual(['token', 'request']);
     expect(target.getSigned).toHaveBeenCalledWith(
-      '/api/v1/s2s/missed?after=7&take=100',
+      '/api/v1/s2s/message-feed?after=7&take=100',
       'peer.test',
       16 * 1024 * 1024,
     );
@@ -578,81 +578,5 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
     ]);
     await svc.signalOutbound(10, 1, 5, undefined); // author 1 is not in the roster
     expect(push).not.toHaveBeenCalled();
-  });
-});
-
-describe('FederationService federated friend-invite revoke', () => {
-  it('sends the required shared invite id to the recipient server', async () => {
-    const { svc } = makeStubs();
-    vi.spyOn(svc as never, 'requireLocalUser' as never).mockResolvedValue({
-      account: 'alice',
-    } as never);
-    const postSigned = vi
-      .spyOn(svc as never, 'postSigned' as never)
-      .mockResolvedValue(undefined as never);
-
-    await svc.sendInviteRevoke({
-      fromLocalUserId: 1,
-      to: { account: 'bob', domain: 'peer.test' },
-      inviteOriginId: 'shared-op-id',
-    });
-
-    expect(postSigned).toHaveBeenCalledOnce();
-    const [path, rawBody, domain] = postSigned.mock.calls[0] as unknown as [
-      string,
-      string,
-      string,
-    ];
-    expect(path).toBe('/api/v1/s2s/invite-revoke');
-    expect(domain).toBe('peer.test');
-    expect(JSON.parse(rawBody)).toMatchObject({
-      origin: OUR,
-      kind: 'FRIEND',
-      from: { account: 'alice', domain: OUR },
-      to: { account: 'bob', domain: 'peer.test' },
-      inviteOriginId: 'shared-op-id',
-    });
-  });
-
-  it('applies an inbound signed revoke once and ignores an operation replay', async () => {
-    const { svc } = makeStubs();
-    const peek = vi.fn().mockResolvedValue(undefined);
-    const revokeInboundFriendInvite = vi.fn().mockResolvedValue(undefined);
-    (svc as unknown as { quota: unknown }).quota = { peek };
-    (svc as unknown as { invite: unknown }).invite = {
-      revokeInboundFriendInvite,
-    };
-    vi.spyOn(svc as never, 'ensureForeignUser' as never).mockResolvedValue(
-      2 as never,
-    );
-    vi.spyOn(
-      svc as never,
-      'findLocalUserIdByAddress' as never,
-    ).mockResolvedValue(1 as never);
-    const seen = vi.spyOn(svc as never, 'isOpSeen' as never);
-    seen
-      .mockResolvedValueOnce(false as never)
-      .mockResolvedValueOnce(true as never);
-    const body = {
-      id: 'revoke-op',
-      origin: 'peer.test',
-      ts: Date.now(),
-      kind: 'FRIEND' as const,
-      from: { account: 'bob', domain: 'peer.test' },
-      to: { account: 'alice', domain: OUR },
-      inviteOriginId: 'shared-op-id',
-    };
-
-    await svc.handleInviteRevoke(body);
-    await svc.handleInviteRevoke(body);
-
-    expect(peek).toHaveBeenCalledTimes(2);
-    expect(revokeInboundFriendInvite).toHaveBeenCalledOnce();
-    expect(revokeInboundFriendInvite).toHaveBeenCalledWith({
-      fromUserId: 2,
-      toUserId: 1,
-      origin: 'peer.test',
-      originId: 'shared-op-id',
-    });
   });
 });

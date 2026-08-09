@@ -110,7 +110,8 @@ export interface ChatMsgData {
     | 'GALLERY'
     | 'LINK'
     | 'CALL'
-    | 'FORWARD';
+    | 'FORWARD'
+    | 'SYSTEM';
   /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
   images: AlbumMedia[] | null;
   /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */

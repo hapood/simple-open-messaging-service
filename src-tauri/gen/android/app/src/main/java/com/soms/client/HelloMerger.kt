@@ -24,14 +24,12 @@ object HelloMerger {
     else {
       val c = cached ?: return null
       when (type) {
-        "THREAD_REVISION_UPDATED" -> {
-          val inc = JSONObject(data).optLong("threadRevision", Long.MIN_VALUE)
-          if (inc != Long.MIN_VALUE && inc >= c.optLong("threadRevision", Long.MIN_VALUE)) {
-            c.put("threadRevision", inc)
+        "STATE_REV_UPDATED" -> {
+          val inc = JSONObject(data).optLong("stateRevision", Long.MIN_VALUE)
+          if (inc != Long.MIN_VALUE && inc >= c.optLong("stateRevision", Long.MIN_VALUE)) {
+            c.put("stateRevision", inc)
           }
         }
-        "PROFILE_REV_UPDATED" ->
-          c.put("profileRev", JSONObject(data).opt("profileRev"))
         "FRIEND_REQ_REV_UPDATED" -> {
           val inc = JSONObject(data).optLong("friendReqRev", Long.MIN_VALUE)
           if (inc != Long.MIN_VALUE && inc >= c.optLong("friendReqRev", Long.MIN_VALUE)) c.put("friendReqRev", inc)

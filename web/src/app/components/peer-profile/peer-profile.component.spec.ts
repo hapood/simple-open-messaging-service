@@ -46,7 +46,6 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
   // Service spies — re-armed per test via .and.returnValue.
   let deleteFriend: jasmine.Spy;
   let setBlock: jasmine.Spy;
-  let syncPeerProfile: jasmine.Spy;
   let applyThreadMeta: jasmine.Spy;
   let removeThread: jasmine.Spy;
   let closeChat: jasmine.Spy;
@@ -62,9 +61,6 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
 
     deleteFriend = jasmine.createSpy('deleteFriend');
     setBlock = jasmine.createSpy('setBlock');
-    syncPeerProfile = jasmine
-      .createSpy('syncPeerProfile')
-      .and.returnValue(of({ code: 0, data: null }));
     applyThreadMeta = jasmine.createSpy('applyThreadMeta');
     removeThread = jasmine.createSpy('removeThread');
     closeChat = jasmine.createSpy('closeChat');
@@ -89,7 +85,6 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
           useValue: {
             deleteFriend,
             setBlock,
-            syncPeerProfile,
           } as unknown as UserService,
         },
         {
@@ -134,13 +129,6 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
       } as unknown as ConversationItem,
     ]);
     expect(comp.blocked()).toBe(true);
-  });
-
-  it('probes the cached profile revision when the profile panel opens', () => {
-    expect(syncPeerProfile).toHaveBeenCalledWith({
-      userId: 42,
-      sinceProfileRev: 7,
-    });
   });
 
   it('askBlock enters the block confirm and cancels an open unfriend confirm (mutually exclusive)', () => {

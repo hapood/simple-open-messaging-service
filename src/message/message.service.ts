@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import {
   and,
   asc,
@@ -55,6 +55,12 @@ import {
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
 import { DiscoveryChangeService } from './discovery-change.service.js';
+import {
+  parseSystemMessageContent,
+  stringifySystemMessageContent,
+  type SystemMessageType,
+} from './system-message.js';
+import { loadFederationConfig } from '../federation/federation.config.js';
 
 interface ReplyPreview {
   author: string;
@@ -153,6 +159,8 @@ export function derivePreview(type: ContentType, content: string): string {
       return '[Photo]';
     case ContentType.INVITE:
       return '[Group invite]';
+    case ContentType.SYSTEM:
+      return '[System message]';
     case ContentType.VIDEO:
       return '[Video]';
     case ContentType.FILE:
@@ -199,7 +207,7 @@ export function derivePreview(type: ContentType, content: string): string {
  * is handled by ThreadParticipantService in the controllers before write/query is called.
  */
 @Injectable()
-export class MessageService implements OnModuleInit {
+export class MessageService {
   constructor(
     private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
@@ -219,8 +227,6 @@ export class MessageService implements OnModuleInit {
       sql`, `,
     );
   }
-
-  async onModuleInit() {}
 
   findByClientMessageId(clientMessageId: string) {
     return this.database.db.query.message
@@ -281,6 +287,32 @@ export class MessageService implements OnModuleInit {
           .set({ curSeq: sql`${messageThread.curSeq} + 1` })
           .where(eq(messageThread.id, threadId))
           .returning({ curSeq: messageThread.curSeq });
+        // The thread-row update above is also the relationship leave lock.
+        // Re-check membership after acquiring it so a concurrent unfriend can
+        // never commit between the HTTP guard and the actual message insert.
+        const [writeAccess] = await tx
+          .select({
+            type: messageThread.type,
+            leftAt: threadParticipant.leftAt,
+          })
+          .from(messageThread)
+          .innerJoin(
+            threadParticipant,
+            and(
+              eq(threadParticipant.threadId, messageThread.id),
+              eq(threadParticipant.userId, userId),
+            ),
+          )
+          .where(eq(messageThread.id, threadId))
+          .limit(1);
+        if (!writeAccess || writeAccess.leftAt !== null) {
+          throw new BusinessException(
+            writeAccess?.type === MessageThreadType.GROUP
+              ? BusinessCode.GROUP_FORBIDDEN
+              : BusinessCode.FRIEND_NOT_FOUND,
+            'conversation is read-only',
+          );
+        }
         // originSeq == seq: a locally-authored message's per-thread seq IS the value a federation
         // receiver copies verbatim (the dedup key + per-(thread, sender) pull cursor).
         const textContent =
@@ -291,6 +323,15 @@ export class MessageService implements OnModuleInit {
           throw new BusinessException(
             BusinessCode.VALIDATION_FAILED,
             'invalid text message content',
+          );
+        }
+        if (
+          type === ContentType.SYSTEM &&
+          !parseSystemMessageContent(content)
+        ) {
+          throw new BusinessException(
+            BusinessCode.VALIDATION_FAILED,
+            'invalid system message content',
           );
         }
         const quoteSeq = textContent?.quote?.seq;
@@ -317,6 +358,7 @@ export class MessageService implements OnModuleInit {
         if (
           quoteTarget &&
           (quoteTarget.isDeleted ||
+            quoteTarget.contentType === ContentType.SYSTEM ||
             (quoteVisibility?.clearedThroughSeq !== null &&
               quoteVisibility?.clearedThroughSeq !== undefined &&
               quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
@@ -415,6 +457,102 @@ export class MessageService implements OnModuleInit {
       }
       throw e;
     }
+  }
+
+  /** Server-only structured timeline notice. It is persisted and federated like a message, but its
+   * body is never interpreted as a relationship or roster action. */
+  async writeSystemMessageInTx(
+    tx: DatabaseTransaction,
+    actorUserId: number,
+    threadId: number,
+    type: SystemMessageType,
+    subjectUserId?: number,
+    excludeTargetDomains: readonly string[] = [],
+  ): Promise<{ message: Omit<Message, 'id'>; messageId: bigint }> {
+    const subject =
+      subjectUserId === undefined
+        ? undefined
+        : await tx.query.user.findFirst({
+            where: eq(user.id, subjectUserId),
+            columns: { account: true, domain: true },
+          });
+    if (subjectUserId !== undefined && !subject)
+      throw new Error('system message subject does not exist');
+    const content = stringifySystemMessageContent({
+      type,
+      ...(subject
+        ? {
+            subject: {
+              account: subject.account,
+              domain:
+                subject.domain === 'local'
+                  ? loadFederationConfig().domain
+                  : subject.domain,
+            },
+          }
+        : {}),
+    });
+    const [{ curSeq: seq }] = await tx
+      .update(messageThread)
+      .set({ curSeq: sql`${messageThread.curSeq} + 1` })
+      .where(eq(messageThread.id, threadId))
+      .returning({ curSeq: messageThread.curSeq });
+    const [stored] = await tx
+      .insert(message)
+      .values({
+        content,
+        contentType: ContentType.SYSTEM,
+        threadId,
+        creator: actorUserId,
+        seq,
+        originSeq: seq,
+        updatedAt: new Date(),
+      })
+      .returning();
+    await tx
+      .update(messageThread)
+      .set({
+        lastMessageSeq: seq,
+        lastMessagePreview: derivePreview(ContentType.SYSTEM, content),
+        lastMessageAt: stored.createdAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(messageThread.id, threadId));
+    await tx
+      .update(threadParticipant)
+      .set({ lastReadSeq: seq, updatedAt: new Date() })
+      .where(
+        and(
+          eq(threadParticipant.userId, actorUserId),
+          eq(threadParticipant.threadId, threadId),
+        ),
+      );
+    await this.discoveryChanges.recordMessageInTx(
+      tx,
+      stored.id,
+      excludeTargetDomains,
+    );
+    return { message: stripMessageId(stored), messageId: stored.id };
+  }
+
+  async writeSystemMessage(
+    actorUserId: number,
+    threadId: number,
+    type: SystemMessageType,
+    subjectUserId?: number,
+    excludeTargetDomains: readonly string[] = [],
+  ): Promise<Omit<Message, 'id'>> {
+    const result = await this.database.db.transaction((tx) =>
+      this.writeSystemMessageInTx(
+        tx,
+        actorUserId,
+        threadId,
+        type,
+        subjectUserId,
+        excludeTargetDomains,
+      ),
+    );
+    return result.message;
   }
 
   /**
@@ -782,6 +920,23 @@ export class MessageService implements OnModuleInit {
           .set({ curSeq: sql`${messageThread.curSeq} + 1` })
           .where(eq(messageThread.id, stage.threadId))
           .returning({ curSeq: messageThread.curSeq });
+        const activeAfterThreadLock =
+          await tx.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.userId, stage.creatorId),
+              eq(threadParticipant.threadId, stage.threadId),
+              isNull(threadParticipant.leftAt),
+            ),
+            columns: { id: true },
+          });
+        if (!activeAfterThreadLock) {
+          throw new BusinessException(
+            participant.messageThread.type === MessageThreadType.P2P
+              ? BusinessCode.FRIEND_NOT_FOUND
+              : BusinessCode.GROUP_FORBIDDEN,
+            'conversation is read-only',
+          );
+        }
         const content = contextualizeCasUrls(
           unboundContent,
           stage.threadId,

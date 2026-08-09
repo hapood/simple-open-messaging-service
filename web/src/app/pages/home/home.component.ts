@@ -34,7 +34,7 @@ export class HomeComponent implements OnInit {
   private readonly wsService = inject(WebsocketService);
   // Injected to instantiate the DB-layer root singletons that self-subscribe to the SSE stream in their
   // constructors: ThreadRepository routes the thread-list data events (NEW_MESSAGE / THREAD_META /
-  // THREAD_REVISION_UPDATED / PEER_PROFILE_UPDATED / PROFILE_REV_UPDATED / FRIEND_REQ_REV_UPDATED +
+  // STATE_REV_UPDATED / FRIEND_REQ_REV_UPDATED +
   // reconnect refresh); GroupEventService routes the GROUP_* control events (toasts / roster reload).
   // Injecting them here guarantees their subscriptions are alive for the whole home-route session
   // regardless of which child panes are mounted.
@@ -51,6 +51,6 @@ export class HomeComponent implements OnInit {
     // Friend-lifecycle signals no longer need a NOTIFY subscription here:
     //  - FRIEND_REQUEST badge: armed by the FRIEND_REQ_REV_UPDATED handler (ThreadRepository) driving the
     //    friendReqRev > IDB-ack-cursor derivation on UserService.
-    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by THREAD_REVISION_UPDATED.
+    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by STATE_REV_UPDATED.
   }
 }

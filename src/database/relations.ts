@@ -12,7 +12,6 @@ import {
   messageAsset,
   userBlock,
   pushToken,
-  invite,
   adminActionLog,
   pendingMedia,
   group,
@@ -25,7 +24,66 @@ import {
   diagnosticsReport,
   forwardBundleDependency,
   forwardBundleAsset,
+  federatedPeer,
+  peerStateFeed,
+  peerStateFeedTarget,
+  peerStateFeedPullCursor,
+  profileStateRevision,
+  friendRequest,
+  groupMembershipRequest,
 } from './schema.js';
+
+export const federatedPeerRelations = relations(
+  federatedPeer,
+  ({ many, one }) => ({
+    stateFeed: many(peerStateFeed),
+    stateFeedTarget: one(peerStateFeedTarget),
+    stateFeedPullCursor: one(peerStateFeedPullCursor),
+  }),
+);
+
+export const peerStateFeedRelations = relations(peerStateFeed, ({ one }) => ({
+  peer: one(federatedPeer, {
+    fields: [peerStateFeed.peerDomain],
+    references: [federatedPeer.domain],
+  }),
+}));
+
+export const peerStateFeedTargetRelations = relations(
+  peerStateFeedTarget,
+  ({ one }) => ({
+    peer: one(federatedPeer, {
+      fields: [peerStateFeedTarget.peerDomain],
+      references: [federatedPeer.domain],
+    }),
+  }),
+);
+
+export const peerStateFeedPullCursorRelations = relations(
+  peerStateFeedPullCursor,
+  ({ one }) => ({
+    peer: one(federatedPeer, {
+      fields: [peerStateFeedPullCursor.peerDomain],
+      references: [federatedPeer.domain],
+    }),
+  }),
+);
+
+export const profileStateRevisionRelations = relations(
+  profileStateRevision,
+  ({ one }) => ({
+    user: one(user, {
+      fields: [profileStateRevision.userId],
+      references: [user.id],
+      relationName: 'profileStateOwner',
+    }),
+    subject: one(user, {
+      fields: [profileStateRevision.subjectUserId],
+      references: [user.id],
+      relationName: 'profileStateSubject',
+    }),
+  }),
+);
 
 export const adminSessionRelations = relations(adminSession, ({ one }) => ({
   admin: one(admin, {
@@ -105,7 +163,6 @@ export const messageThreadRelations = relations(
     }),
     messageAssets: many(messageAsset),
     messages: many(message),
-    invites: many(invite),
     pendingMedias: many(pendingMedia),
     threadRevisions: many(threadRevision),
   }),
@@ -123,11 +180,17 @@ export const userRelations = relations(user, ({ one, many }) => ({
   messages: many(message),
   admins: many(admin),
   pushTokens: many(pushToken),
-  invites_fromUserId: many(invite, {
-    relationName: 'invite_fromUserId_user_id',
+  sentFriendRequests: many(friendRequest, {
+    relationName: 'friendRequest_requester',
   }),
-  invites_toUserId: many(invite, {
-    relationName: 'invite_toUserId_user_id',
+  receivedFriendRequests: many(friendRequest, {
+    relationName: 'friendRequest_target',
+  }),
+  groupMembershipRequests: many(groupMembershipRequest, {
+    relationName: 'groupMembershipRequest_member',
+  }),
+  issuedGroupMembershipRequests: many(groupMembershipRequest, {
+    relationName: 'groupMembershipRequest_group',
   }),
   group: one(group, {
     fields: [user.id],
@@ -178,22 +241,34 @@ export const pushTokenRelations = relations(pushToken, ({ one }) => ({
   }),
 }));
 
-export const inviteRelations = relations(invite, ({ one }) => ({
-  user_fromUserId: one(user, {
-    fields: [invite.fromUserId],
+export const friendRequestRelations = relations(friendRequest, ({ one }) => ({
+  requester: one(user, {
+    fields: [friendRequest.requesterUserId],
     references: [user.id],
-    relationName: 'invite_fromUserId_user_id',
+    relationName: 'friendRequest_requester',
   }),
-  messageThread: one(messageThread, {
-    fields: [invite.threadId],
-    references: [messageThread.id],
-  }),
-  user_toUserId: one(user, {
-    fields: [invite.toUserId],
+  target: one(user, {
+    fields: [friendRequest.targetUserId],
     references: [user.id],
-    relationName: 'invite_toUserId_user_id',
+    relationName: 'friendRequest_target',
   }),
 }));
+
+export const groupMembershipRequestRelations = relations(
+  groupMembershipRequest,
+  ({ one }) => ({
+    groupUser: one(user, {
+      fields: [groupMembershipRequest.groupUserId],
+      references: [user.id],
+      relationName: 'groupMembershipRequest_group',
+    }),
+    member: one(user, {
+      fields: [groupMembershipRequest.memberUserId],
+      references: [user.id],
+      relationName: 'groupMembershipRequest_member',
+    }),
+  }),
+);
 
 export const adminActionLogRelations = relations(adminActionLog, ({ one }) => ({
   admin: one(admin, {

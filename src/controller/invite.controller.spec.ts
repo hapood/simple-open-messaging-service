@@ -1,13 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InviteController } from './invite.controller.js';
 
-function makeController() {
+function makeController(isForeigner: boolean) {
+  const tx = {
+    query: {
+      user: {
+        findFirst: vi.fn().mockResolvedValue({ isForeigner }),
+      },
+    },
+  };
   const inviteService = {
-    getOutgoingRevokeContext: vi.fn(),
-    revokeInvite: vi.fn(),
+    revokeInvite: vi.fn(
+      async (
+        _inviteId: string,
+        _userId: number,
+        applyState: (transaction: typeof tx, toUserId: number) => Promise<void>,
+      ) => applyState(tx, 9),
+    ),
+    closeLocalFriendIntentInTx: vi.fn(),
   };
   const federationService = {
-    sendInviteRevoke: vi.fn(),
+    writeFriendIntentInTx: vi
+      .fn()
+      .mockResolvedValue(new Map([['peer.test', 3n]])),
+    pushStateFeedDomains: vi.fn(),
   };
   const controller = new InviteController(
     {} as never,
@@ -18,74 +34,49 @@ function makeController() {
     {} as never,
   );
   const request = { user: { userId: 7 } } as never;
-  return { controller, inviteService, federationService, request };
+  return { controller, inviteService, federationService, request, tx };
 }
 
 describe('InviteController.revokeInvite', () => {
-  it('waits for a federated peer acknowledgement before revoking locally', async () => {
-    const { controller, inviteService, federationService, request } =
-      makeController();
-    inviteService.getOutgoingRevokeContext.mockResolvedValue({
-      originId: 'shared-op-id',
-      toUser: {
-        account: 'bob',
-        domain: 'peer.test',
-        isForeigner: true,
-      },
-    });
-    federationService.sendInviteRevoke.mockResolvedValue(undefined);
-    inviteService.revokeInvite.mockResolvedValue(undefined);
+  it('closes the federated direction transactionally and wakes the state feed', async () => {
+    const { controller, inviteService, federationService, request, tx } =
+      makeController(true);
 
     await controller.revokeInvite(request, { inviteId: '42' });
 
-    expect(federationService.sendInviteRevoke).toHaveBeenCalledWith({
-      fromLocalUserId: 7,
-      to: { account: 'bob', domain: 'peer.test' },
-      inviteOriginId: 'shared-op-id',
-    });
-    expect(inviteService.revokeInvite).toHaveBeenCalledWith('42', 7);
-    expect(
-      federationService.sendInviteRevoke.mock.invocationCallOrder[0],
-    ).toBeLessThan(inviteService.revokeInvite.mock.invocationCallOrder[0]);
+    expect(inviteService.revokeInvite).toHaveBeenCalledWith(
+      '42',
+      7,
+      expect.any(Function),
+    );
+    expect(federationService.writeFriendIntentInTx).toHaveBeenCalledWith(
+      tx,
+      7,
+      9,
+      false,
+    );
+    expect(federationService.pushStateFeedDomains).toHaveBeenCalledWith(
+      expect.anything(),
+    );
+    expect([
+      ...federationService.pushStateFeedDomains.mock.calls[0][0],
+    ]).toEqual(['peer.test']);
   });
 
-  it('keeps the local invite pending when federated delivery fails', async () => {
-    const { controller, inviteService, federationService, request } =
-      makeController();
-    inviteService.getOutgoingRevokeContext.mockResolvedValue({
-      originId: 'shared-op-id',
-      toUser: {
-        account: 'bob',
-        domain: 'peer.test',
-        isForeigner: true,
-      },
-    });
-    federationService.sendInviteRevoke.mockRejectedValue(new Error('offline'));
-
-    await expect(
-      controller.revokeInvite(request, { inviteId: '42' }),
-    ).rejects.toMatchObject({
-      message: expect.stringContaining('could not reach peer.test'),
-    });
-    expect(inviteService.revokeInvite).not.toHaveBeenCalled();
-  });
-
-  it('revokes a local invite without making an S2S call', async () => {
-    const { controller, inviteService, federationService, request } =
-      makeController();
-    inviteService.getOutgoingRevokeContext.mockResolvedValue({
-      originId: 'local-op-id',
-      toUser: {
-        account: 'bob',
-        domain: 'local',
-        isForeigner: false,
-      },
-    });
-    inviteService.revokeInvite.mockResolvedValue(undefined);
+  it('uses the same directed fact state machine for a local friend', async () => {
+    const { controller, inviteService, federationService, request, tx } =
+      makeController(false);
 
     await controller.revokeInvite(request, { inviteId: '42' });
 
-    expect(federationService.sendInviteRevoke).not.toHaveBeenCalled();
-    expect(inviteService.revokeInvite).toHaveBeenCalledWith('42', 7);
+    expect(inviteService.closeLocalFriendIntentInTx).toHaveBeenCalledWith(
+      tx,
+      7,
+      9,
+    );
+    expect(federationService.writeFriendIntentInTx).not.toHaveBeenCalled();
+    expect([
+      ...federationService.pushStateFeedDomains.mock.calls[0][0],
+    ]).toEqual([]);
   });
 });

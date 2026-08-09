@@ -29,7 +29,7 @@ export type ConversationLoadStatus =
  * The DB-layer repository for the conversation list — the read + SSE half of the strict 3-tier
  * (UI ↔ repositories ↔ backend) for the thread-list domain. It is the ONLY service that issues the
  * list READ (`/user/query-thread/delta`) and the ONLY consumer of the thread-list DATA SSE events
- * (`NEW_MESSAGE`, `THREAD_META`, `THREAD_REVISION_UPDATED`, `PEER_PROFILE_UPDATED`). UI-facing services
+ * (`NEW_MESSAGE`, `THREAD_META`, `STATE_REV_UPDATED`). UI-facing services
  * read its signals; they never fetch or mutate from SSE.
  *
  * NO write operations live here — `markRead` (a write) stays in the UI layer ({@link ConversationListService}
@@ -93,7 +93,7 @@ export class ThreadRepository {
   /** Explicit thread to force-top on the next applyItems (set by {@link markTopOnNextUpdate}). */
   private _pendingTopId: number | null = null;
 
-  /** Single-flight + tail-coalesce for THREAD_REVISION_UPDATED (mirrors onmessagesignal-single-flight):
+  /** Single-flight + tail-coalesce for STATE_REV_UPDATED (mirrors onmessagesignal-single-flight):
    *  while a delta pull is in-flight, the latest incoming revision is stashed as the tail; on completion
    *  the tail is pulled `(cursor, tail]`, collapsing a signal burst into ranged pulls. */
   private _deltaInFlight = false;
@@ -191,7 +191,7 @@ export class ThreadRepository {
         ?.threadId;
       if (
         (eventThreadId !== undefined && this.deletionLock.has(eventThreadId)) ||
-        (m.event === 'THREAD_REVISION_UPDATED' && this.deletionLock.any)
+        (m.event === 'STATE_REV_UPDATED' && this.deletionLock.any)
       )
         return;
       switch (m.event) {
@@ -210,18 +210,10 @@ export class ThreadRepository {
         case 'THREAD_READ_UPDATED':
           this.onThreadReadUpdated(m.data as ThreadReadState);
           break;
-        case 'THREAD_REVISION_UPDATED':
+        case 'STATE_REV_UPDATED':
           if (m.data !== undefined)
-            this.onThreadRevisionUpdated(
-              (m.data as { threadRevision: number }).threadRevision,
-            );
-          break;
-        case 'PROFILE_REV_UPDATED':
-          // Self-profile changed (another device/tab's edit — this device's own edit echoes back too, but
-          // invalidateSelfProfile skips the echo since updateSessionProfile already applied it).
-          if (m.data !== undefined)
-            this.userService.invalidateSelfProfile(
-              (m.data as { profileRev: number }).profileRev,
+            this.onStateRevisionUpdated(
+              (m.data as { stateRevision: number }).stateRevision,
             );
           break;
         case 'FRIEND_REQ_REV_UPDATED':
@@ -238,10 +230,6 @@ export class ThreadRepository {
               d.friendReqAckRev,
             );
           }
-          break;
-        case 'PEER_PROFILE_UPDATED':
-          if (m.data !== undefined)
-            this.onPeerProfileUpdated(m.data as { userId?: number } | User);
           break;
       }
     });
@@ -429,28 +417,6 @@ export class ThreadRepository {
       void this.persistThread(changed);
       this.writePeerProfile(changed.peerUser);
     }
-  }
-
-  /** A background peer-profile refresh on chat-open: re-pull the peer's avatar/name/bio if stale and patch
-   *  the item. Fire-and-forget — chat-open is never blocked. The pull backstop behind the
-   *  PEER_PROFILE_UPDATED push (covers reconnects / missed pushes / federated laziness). */
-  refreshPeerOnOpen(threadId: number): void {
-    const item = this._items().find((t) => t.threadId === threadId);
-    if (!item || item.type !== 'P2P' || !item.peerUser) return;
-    this.userService
-      .syncPeerProfile({
-        userId: item.peerUser.id,
-        sinceProfileRev: item.peerUser.profileRev,
-      })
-      .subscribe({
-        next: (res) => {
-          if (res.code === 0 && res.data)
-            this.updatePeerUser(threadId, res.data);
-        },
-        error: () => {
-          /* best-effort — keep the cached profile on a transient outage */
-        },
-      });
   }
 
   /** Apply a rename / avatar / description change from a GROUP_UPDATED event (live list refresh). */
@@ -712,27 +678,6 @@ export class ThreadRepository {
     });
   }
 
-  /** PEER_PROFILE_UPDATED is a signal-only `{ userId }` frame. Pull the authoritative profile, then
-   * patch the matching P2P row. Accepting a full User as well keeps replay compatibility with older
-   * servers that briefly sent the hydrated payload. */
-  private onPeerProfileUpdated(d: { userId?: number } | User): void {
-    if ('id' in d && typeof d.id === 'number') {
-      this.applyPeerProfile(d);
-      return;
-    }
-    const userId = 'userId' in d ? d.userId : undefined;
-    if (typeof userId !== 'number') return;
-    this.userService.queryUserInfo({ userIds: [userId] }).subscribe({
-      next: (res) => {
-        const user = res.code === 0 ? res.data?.[0] : undefined;
-        if (user) this.applyPeerProfile(user);
-      },
-      error: () => {
-        /* best-effort — reconnect / the next profile signal retries */
-      },
-    });
-  }
-
   private applyPeerProfile(u: User): void {
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
@@ -909,7 +854,13 @@ export class ThreadRepository {
    *  `(0, rev]` on first connect, incremental `(cursor, rev]` on reconnect), and kicks off the missed-
    *  summary walk. Fire-and-forget from the SSE switch. */
   private async onHello(d: HelloPayload | undefined): Promise<void> {
-    if (!d || typeof d.userId !== 'number') return;
+    if (
+      !d ||
+      typeof d.userId !== 'number' ||
+      !Number.isSafeInteger(d.stateRevision) ||
+      d.stateRevision < 0
+    )
+      return;
     // 1. Establish the session — opens the per-user IDB on HELLO's userId (cold start: first open; warm
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
@@ -936,15 +887,13 @@ export class ThreadRepository {
       await this.syncReadDelta(d.readRevision);
     // 3. Delta-replay the thread list: full `(0, rev]` on first connect (cursor unseeded → seed 0),
     //    incremental `(cursor, rev]` on reconnect. The server plans (last-op-wins) + hydrates.
-    if (typeof d.threadRevision === 'number') {
-      if (this.userService.threadRevCursor() === undefined) {
-        const persisted = await this.webdb.getMeta('threadRevision');
-        this.userService.seedThreadRevCursor(
-          typeof persisted === 'number' && persisted >= 0 ? persisted : 0,
-        );
-      }
-      this.onThreadRevisionUpdated(d.threadRevision);
+    if (this.userService.stateRevCursor() === undefined) {
+      const persisted = await this.webdb.getMeta('stateRevision');
+      this.userService.seedStateRevCursor(
+        typeof persisted === 'number' && persisted >= 0 ? persisted : 0,
+      );
     }
+    await this.pullDelta(d.stateRevision);
     // 4. Missed-summary walk toward HELLO's newest message (debounced).
     const lm = d.latestMessage;
     if (lm && typeof lm.threadId === 'number' && typeof lm.seq === 'number') {
@@ -1099,12 +1048,12 @@ export class ThreadRepository {
   }
 
   /**
-   * Apply a THREAD_REVISION_UPDATED { revision } signal: pull the ranged delta (cursor, revision] and
+   * Apply a STATE_REV_UPDATED { stateRevision } signal: pull the ranged delta (cursor, revision] and
    * apply the server's hydrated response — DELETE drops the thread locally, ADD carries the hydrated thread
    * inline + inserts with a FLIP. Single-flight + tail-coalesce: a burst of signals collapses into one
    * ranged pull per in-flight window. The server plans (last-op-wins) + hydrates; the client only applies.
    */
-  onThreadRevisionUpdated(toRev: number): void {
+  onStateRevisionUpdated(toRev: number): void {
     if (this._deltaInFlight) {
       // Delivery is normally ordered on one SSE stream, but reconnect/bridge buffering can surface an older
       // signal after a newer one. Tail coalescing must therefore be monotonic or the newer target is lost.
@@ -1115,7 +1064,7 @@ export class ThreadRepository {
   }
 
   private async pullDelta(toRev: number): Promise<void> {
-    const cursor = this.userService.threadRevCursor();
+    const cursor = this.userService.stateRevCursor();
     // Cursor undefined = boot hasn't seeded yet. Drop the signal — the HELLO replay reflects current state,
     // and the cursor advances past this signal once seeded.
     if (cursor === undefined) return;
@@ -1143,13 +1092,16 @@ export class ThreadRepository {
         // reload would then carry cursor > 0 too.)
         const bulkHydrate = cursor === 0;
         for (const op of delta) {
-          if (op.direction === 'DELETE') this.removeThread(op.threadId);
+          if (op.direction === 'PROFILE') {
+            this.userService.applyStateProfile(op.user);
+            this.applyPeerProfile(op.user);
+          } else if (op.direction === 'DELETE') this.removeThread(op.threadId);
           else {
             if (!bulkHydrate) this.markTopOnNextUpdate(op.threadId); // FLIP only on an incremental ADD
             this.upsertThread(op.item);
           }
         }
-        this.userService.advanceThreadRevCursor(toRev);
+        this.userService.advanceStateRevCursor(toRev);
       }
     } finally {
       this._deltaInFlight = false;
@@ -1157,7 +1109,7 @@ export class ThreadRepository {
       this._pendingTailRev = undefined;
       if (
         tail !== undefined &&
-        tail > (this.userService.threadRevCursor() ?? -Infinity)
+        tail > (this.userService.stateRevCursor() ?? -Infinity)
       ) {
         void this.pullDelta(tail);
       }
@@ -1291,7 +1243,7 @@ export class ThreadRepository {
 interface HelloPayload {
   userId?: number;
   latestMessage?: { threadId: number; seq: number; ts: number } | null;
-  threadRevision?: number;
+  stateRevision: number;
   readRevision?: number;
   profileRev?: number;
   friendReqRev?: number | null;
@@ -1348,6 +1300,8 @@ export function rawPreview(contentType: string, content: string): string {
       return '[Photo]';
     case 'INVITE':
       return '[Group invite]';
+    case 'SYSTEM':
+      return '[System message]';
     case 'VIDEO':
       return '[Video]';
     case 'FILE':

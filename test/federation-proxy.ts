@@ -22,10 +22,21 @@ export interface S2sProxy {
   firstRangeGetFileCount: () => number;
   /** Total requests the proxy has relayed (debug: confirms appB's traffic is routing through it at all). */
   totalRequestCount: () => number;
+  requestLog: () => Array<{
+    method: string;
+    path: string;
+    status: number;
+    responseBody?: string;
+  }>;
+  clearRequestLog: () => void;
   /** Hold `/get_file` requests open until released. Used to leave a durable DOWNLOADING row across a
    *  real receiver-process restart without adding test branches to production code. */
   blockGetFile: (blocked: boolean) => void;
   blockedGetFileCount: () => number;
+  /** Hold message-feed requests while state-feed continues normally. This lets tests prove that a
+   * relationship-closing state snapshot is applied before its inclusive final message boundary. */
+  blockMessageFeed: (blocked: boolean) => void;
+  blockedMessageFeedCount: () => number;
   /** Serve one digest from proxy memory so the two test processes can model physically separate CAS roots. */
   setGetFileFixture: (digest: string, bytes: Buffer | null) => void;
   close: () => Promise<void>;
@@ -39,8 +50,16 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     let firstRangeCount = 0;
     // Total requests relayed (debug).
     let totalCount = 0;
+    const requests: Array<{
+      method: string;
+      path: string;
+      status: number;
+      responseBody?: string;
+    }> = [];
     let getFileBlocked = false;
     const blockedGetFiles = new Set<() => void>();
+    let messageFeedBlocked = false;
+    const blockedMessageFeeds = new Set<() => void>();
     const getFileFixtures = new Map<string, Buffer>();
 
     const server = http.createServer((req, res) => {
@@ -53,6 +72,8 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         range.startsWith('bytes=0-');
       if (isGetFileFirstRange) firstRangeCount++;
       const shouldTruncate = isGetFileFirstRange && truncateNextGetFile;
+      const isMessageFeed =
+        typeof req.url === 'string' && req.url.includes('/s2s/message-feed');
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
 
       const relay = (): void => {
@@ -67,16 +88,31 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         if (fixture && typeof range === 'string') {
           const match = /^bytes=(\d+)-(\d+)$/.exec(range);
           if (!match) {
+            requests.push({
+              method: req.method ?? 'GET',
+              path: req.url ?? '/',
+              status: 416,
+            });
             res.writeHead(416).end();
             return;
           }
           const start = Number(match[1]);
           const end = Math.min(Number(match[2]), fixture.length - 1);
           if (start > end || start >= fixture.length) {
+            requests.push({
+              method: req.method ?? 'GET',
+              path: req.url ?? '/',
+              status: 416,
+            });
             res.writeHead(416).end();
             return;
           }
           const body = fixture.subarray(start, end + 1);
+          requests.push({
+            method: req.method ?? 'GET',
+            path: req.url ?? '/',
+            status: 206,
+          });
           res.writeHead(206, {
             'content-length': body.length,
             'content-range': `bytes ${start}-${end}/${fixture.length}`,
@@ -102,6 +138,19 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
             headers: { ...req.headers, host: req.headers['host'] },
           },
           (upRes) => {
+            const requestEntry = {
+              method: req.method ?? 'GET',
+              path: req.url ?? '/',
+              status: upRes.statusCode ?? 500,
+              responseBody: '',
+            };
+            requests.push(requestEntry);
+            upRes.on('data', (chunk: Buffer) => {
+              if (requestEntry.responseBody.length < 4096)
+                requestEntry.responseBody = (
+                  requestEntry.responseBody + chunk.toString('utf8')
+                ).slice(0, 4096);
+            });
             if (shouldTruncate) {
               // Send the 206 HEADERS (appA's Content-Range advertises the full unit), relay only a FEW body
               // bytes, then END cleanly (a FIN — NOT a socket destroy). appB's fetch RESOLVES (2xx) so it is
@@ -133,7 +182,11 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
             /* already gone */
           }
         });
-        req.pipe(upstream);
+        // A fault-injected GET may be resumed after IncomingMessage already
+        // emitted `end`. Piping an ended readable does not end a newly-created
+        // ClientRequest, so finish the bodyless upstream request explicitly.
+        if (req.readableEnded) upstream.end();
+        else req.pipe(upstream);
       };
 
       if (isGetFileFirstRange && getFileBlocked) {
@@ -143,6 +196,18 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         };
         blockedGetFiles.add(resume);
         req.once('close', () => blockedGetFiles.delete(resume));
+        return;
+      }
+      if (isMessageFeed && messageFeedBlocked) {
+        const resume = (): void => {
+          blockedMessageFeeds.delete(resume);
+          relay();
+        };
+        blockedMessageFeeds.add(resume);
+        // IncomingMessage emits `close` after a normally completed GET request
+        // body too; removing on that event would silently discard the held
+        // request. Only an actual client abort cancels its queued relay.
+        req.once('aborted', () => blockedMessageFeeds.delete(resume));
         return;
       }
       relay();
@@ -158,6 +223,10 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         },
         firstRangeGetFileCount: () => firstRangeCount,
         totalRequestCount: () => totalCount,
+        requestLog: () => [...requests],
+        clearRequestLog: () => {
+          requests.length = 0;
+        },
         blockGetFile: (blocked: boolean) => {
           getFileBlocked = blocked;
           if (!blocked) {
@@ -165,6 +234,13 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
           }
         },
         blockedGetFileCount: () => blockedGetFiles.size,
+        blockMessageFeed: (blocked: boolean) => {
+          messageFeedBlocked = blocked;
+          if (!blocked) {
+            for (const resume of [...blockedMessageFeeds]) resume();
+          }
+        },
+        blockedMessageFeedCount: () => blockedMessageFeeds.size,
         setGetFileFixture: (digest: string, bytes: Buffer | null) => {
           if (bytes) getFileFixtures.set(digest, bytes);
           else getFileFixtures.delete(digest);

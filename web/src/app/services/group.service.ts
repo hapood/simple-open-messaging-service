@@ -83,18 +83,6 @@ export class GroupService {
       );
   }
 
-  /** Chat-open hook for a (possibly federated mirror) group: the backend lazily pulls the roster +
-   *  message history from the origin if the mirror is stale, then SSE-fans GROUP_UPDATED /
-   *  GROUP_ROSTER_UPDATED (already routed by GroupEventService → re-pulls /group/info + /group/members).
-   *  The GROUP twin of ThreadRepository.refreshPeerOnOpen (P2P). Fire-and-forget; a local / origin group
-   *  is a server-side no-op. Never blocks chat-open. */
-  syncMeta(params: { groupId: number }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/group/sync-meta`,
-      params,
-    );
-  }
-
   leaveGroup(params: { groupId: number; deleteData?: boolean }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/leave`,

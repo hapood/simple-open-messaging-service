@@ -7,6 +7,8 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
+import { friendPair, friendRequest } from '../src/database/schema';
+import { and, eq } from 'drizzle-orm';
 import { seedUserWithSession } from './seed';
 
 /**
@@ -94,5 +96,164 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
       .set(authB);
     expect(mark.body.code).toBe(0);
     expect(await invites.findLatestFriendReqUpdate(inviteeId)).toBe(armed);
+  });
+
+  it('does not activate two expired directions; newer revisions must renew both sides first', async () => {
+    const a = await seedUserWithSession(app, 'expired-a', { name: 'A' });
+    const b = await seedUserWithSession(app, 'expired-b', { name: 'B' });
+    const pastRequestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const pastExpiresAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    await database.db.transaction(async (tx) => {
+      await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
+      await tx
+        .update(friendRequest)
+        .set({ requestedAt: pastRequestedAt, expiresAt: pastExpiresAt })
+        .where(
+          and(
+            eq(friendRequest.requesterUserId, a.id),
+            eq(friendRequest.targetUserId, b.id),
+          ),
+        );
+      await invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: a.id,
+        peerUserId: b.id,
+        status: 'REQUESTED',
+        note: 'arrived too late',
+        revision: 1,
+        requestedAt: pastRequestedAt,
+        expiresAt: pastExpiresAt,
+        origin: 'peer.test',
+      });
+    });
+
+    let pair = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(a.id, b.id)),
+        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+      ),
+    });
+    expect(pair?.active).toBe(false);
+    expect(pair?.threadId).toBeNull();
+
+    await database.db.transaction(async (tx) => {
+      // The same explicit request must renew an expired direction even when status and note are
+      // unchanged. It gets a new revision, but cannot activate while the peer direction is expired.
+      await invites.writeLocalFriendIntentInTx(tx, a.id, b.id, true);
+    });
+    const renewedLocal = await database.db.query.friendRequest.findFirst({
+      where: and(
+        eq(friendRequest.requesterUserId, a.id),
+        eq(friendRequest.targetUserId, b.id),
+      ),
+    });
+    expect(renewedLocal?.revision).toBe(2);
+    expect(renewedLocal?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
+
+    pair = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(a.id, b.id)),
+        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+      ),
+    });
+    expect(pair?.active).toBe(false);
+
+    await database.db.transaction(async (tx) => {
+      const now = new Date();
+      await invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: a.id,
+        peerUserId: b.id,
+        status: 'REQUESTED',
+        note: 'renewed',
+        revision: 2,
+        requestedAt: now,
+        expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+        origin: 'peer.test',
+      });
+    });
+
+    pair = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(a.id, b.id)),
+        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+      ),
+    });
+    expect(pair?.active).toBe(true);
+    expect(pair?.threadId).not.toBeNull();
+  });
+
+  it('shows a new reverse request after my old direction expired and acceptance renews it atomically', async () => {
+    const a = await seedUserWithSession(app, 'reverse-expired-a', { name: 'A' });
+    const b = await seedUserWithSession(app, 'reverse-expired-b', { name: 'B' });
+    const authA = { Authorization: `Bearer ${a.token}` };
+    const authB = { Authorization: `Bearer ${b.token}` };
+
+    const old = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set(authA)
+      .send({ toUserId: b.id, note: 'old A to B' });
+    expect(old.body.code).toBe(0);
+    await database.db
+      .update(friendRequest)
+      .set({
+        requestedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      })
+      .where(
+        and(
+          eq(friendRequest.requesterUserId, a.id),
+          eq(friendRequest.targetUserId, b.id),
+        ),
+      );
+
+    const reverse = await request(app.getHttpServer())
+      .post('/api/v1/invite/friend')
+      .set(authB)
+      .send({ toUserId: a.id, note: 'new B to A' });
+    expect(reverse.body.code).toBe(0);
+    let pair = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(a.id, b.id)),
+        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+      ),
+    });
+    expect(pair?.active).toBe(false);
+
+    const incoming = await request(app.getHttpServer())
+      .post('/api/v1/invite/incoming')
+      .set(authA);
+    expect(incoming.body.code).toBe(0);
+    expect(incoming.body.data).toHaveLength(1);
+    expect(incoming.body.data[0]).toMatchObject({
+      fromUserId: b.id,
+      toUserId: a.id,
+      note: 'new B to A',
+      status: 'PENDING',
+    });
+
+    const accepted = await request(app.getHttpServer())
+      .post('/api/v1/invite/accept')
+      .set(authA)
+      .send({ inviteId: incoming.body.data[0].id });
+    expect(accepted.body.code).toBe(0);
+    expect(accepted.body.data.threadId).toBeTypeOf('number');
+
+    const directions = await database.db.query.friendRequest.findMany({
+      where: and(
+        // This pair is isolated in the test, so either direction is sufficient here.
+        eq(friendRequest.requesterUserId, a.id),
+        eq(friendRequest.targetUserId, b.id),
+      ),
+    });
+    expect(directions[0]?.revision).toBe(2);
+    expect(directions[0]?.status).toBe('FRIEND');
+    pair = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(a.id, b.id)),
+        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+      ),
+    });
+    expect(pair?.active).toBe(true);
+    expect(pair?.threadId).toBe(accepted.body.data.threadId);
   });
 });

@@ -96,6 +96,7 @@ export class DeletedMessageService {
         !target ||
         target.creator !== userId ||
         target.contentType === 'INVITE' ||
+        target.contentType === 'SYSTEM' ||
         target.contentType === 'CALL'
       ) {
         throw new BusinessException(
@@ -260,27 +261,28 @@ export class DeletedMessageService {
         params.cursor.peerDomain,
         params.expectedFederationVersion,
       );
-      await tx.insert(federationDeletedCursor)
-      .values({
-        threadId: params.threadId,
-        peerDomain: params.cursor.peerDomain,
-        streamAccount: params.cursor.streamAccount,
-        streamKind: params.cursor.streamKind,
-        deletedHwm: params.remoteDeletedId,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [
-          federationDeletedCursor.threadId,
-          federationDeletedCursor.peerDomain,
-          federationDeletedCursor.streamAccount,
-          federationDeletedCursor.streamKind,
-        ],
-        set: {
-          deletedHwm: sql`GREATEST(${federationDeletedCursor.deletedHwm}, ${params.remoteDeletedId})`,
+      await tx
+        .insert(federationDeletedCursor)
+        .values({
+          threadId: params.threadId,
+          peerDomain: params.cursor.peerDomain,
+          streamAccount: params.cursor.streamAccount,
+          streamKind: params.cursor.streamKind,
+          deletedHwm: params.remoteDeletedId,
           updatedAt: new Date(),
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: [
+            federationDeletedCursor.threadId,
+            federationDeletedCursor.peerDomain,
+            federationDeletedCursor.streamAccount,
+            federationDeletedCursor.streamKind,
+          ],
+          set: {
+            deletedHwm: sql`GREATEST(${federationDeletedCursor.deletedHwm}, ${params.remoteDeletedId})`,
+            updatedAt: new Date(),
+          },
+        });
     });
   }
 

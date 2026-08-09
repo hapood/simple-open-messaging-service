@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
@@ -14,15 +14,13 @@ import { BusinessException } from '../common/business.exception.js';
 import { randomInt } from 'node:crypto';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 @Injectable()
-export class UserManageService implements OnModuleInit {
+export class UserManageService {
   constructor(
     private database: DatabaseService,
     private auth: AuthService,
     private userService: UserService,
     private userQuotaService: UserQuotaService,
   ) {}
-
-  async onModuleInit() {}
 
   /** 360° view of one user: profile + group memberships + active sessions + push devices.
    *  One round-trip via Promise.all. Returns null when the user does not exist. */

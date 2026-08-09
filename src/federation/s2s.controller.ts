@@ -18,31 +18,26 @@ import { createHash } from 'node:crypto';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import {
   FederationService,
-  type S2SInvite,
-  type S2SInviteAccept,
-  type S2SInviteRevoke,
   type S2SCallFrame,
   type S2SAddress,
 } from './federation.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { FederationMissedService } from './federation-missed.service.js';
-import { FederationMissedPullService } from './federation-missed-pull.service.js';
+import { FederationMessageFeedService } from './federation-message-feed.service.js';
+import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
  * FederatedPeer trust + from.domain==signer binding + captures req.rawBody, then sets req.peer.
  *
- * - POST /api/v1/s2s/invite — receive an invite (friend OR group, unified); FederationService.handleInvite.
- * - POST /api/v1/s2s/invite-accept — the peer accepted an invite (friend→P2P thread; group→origin records the join).
  * - POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
- * - GET  /api/v1/s2s/users/:account — return a local user's public profile (avatar inline as base64).
- * - GET  /api/v1/s2s/users/:account/revision — lightweight profile-revision probe (no avatar transfer).
- *
- * NOTE: there is no unfriend/member-delete endpoint — those are LOCAL-ONLY. A severed edge / left member
- * is discovered lazily via rejection-on-send in Step 2.
+ * - GET  /api/v1/s2s/state-feed — compacted profile/relationship/group state for the signed peer.
+ * - GET  /api/v1/s2s/message-feed — durable message-discovery changes for the signed peer.
+ * - GET/POST /api/v1/s2s/feed-rev — durable feed HWMs and an ephemeral wake-up hint.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -58,20 +53,23 @@ import { SettingsService } from '../settings/settings.service.js';
 export class S2sController {
   constructor(
     private readonly federation: FederationService,
-    private readonly federationMissed: FederationMissedService,
-    private readonly federationMissedPull: FederationMissedPullService,
+    private readonly messageFeed: FederationMessageFeedService,
+    private readonly messageFeedPull: FederationMessageFeedPullService,
     private readonly federationCursor: FederationCursorService,
     private readonly settings: SettingsService,
+    private readonly peerStateFeed: PeerStateFeedService,
+    private readonly peerStateFeedPull: PeerStateFeedPullService,
   ) {}
 
-  /** Receive an ephemeral source HWM. Actual data remains pull-only through GET /missed. */
-  @Post('discovery-hwm')
+  /** Receive ephemeral state/miss source HWMs; actual data remains pull-only. */
+  @Post('feed-rev')
   @HttpCode(HttpStatus.ACCEPTED)
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
     const body = req.body as {
       origin?: unknown;
-      allocatedThrough?: unknown;
+      stateFeedRev?: unknown;
+      messageFeedRev?: unknown;
     };
     if (body.origin !== signer) {
       throw new BusinessException(
@@ -81,34 +79,45 @@ export class S2sController {
       );
     }
     if (
-      typeof body.allocatedThrough !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.allocatedThrough)
+      typeof body.stateFeedRev !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(body.stateFeedRev) ||
+      typeof body.messageFeedRev !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(body.messageFeedRev)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'allocatedThrough must be an unsigned decimal string',
+        'stateFeedRev and messageFeedRev must be unsigned decimal strings',
         HttpStatus.BAD_REQUEST,
       );
     }
-    this.federationMissedPull.advertise(signer, BigInt(body.allocatedThrough));
+    this.peerStateFeedPull.advertise(signer, BigInt(body.stateFeedRev));
+    this.messageFeedPull.advertise(signer, BigInt(body.messageFeedRev));
     // Wake-up is intentionally fire-and-forget: the durable cursor/page transaction owns recovery,
     // while this lightweight push returns promptly even when the peer has a large backlog.
     void this.federation
-      .pullMissedFromPeer(this.federationMissedPull, signer)
+      .pullStateFromPeer(signer)
+      .then(() =>
+        this.federation.pullMissedFromPeer(this.messageFeedPull, signer),
+      )
       .catch(() => undefined);
   }
 
   /** Read our current source HWM for the signed peer; used after heartbeat recovery. */
-  @Get('discovery-hwm')
+  @Get('feed-rev')
   async getDiscoveryHwm(@Req() req: FastifyRequest) {
     const allocatedThrough = await this.federationCursor.readAllocatedThrough(
       this.signerDomain(req),
     );
-    return { allocatedThrough: allocatedThrough.toString() };
+    return {
+      stateFeedRev: (
+        await this.peerStateFeed.readRev(this.signerDomain(req))
+      ).toString(),
+      messageFeedRev: allocatedThrough.toString(),
+    };
   }
 
   /** Durable cross-thread feed. changeId values stay decimal strings on the JSON wire. */
-  @Get('missed')
+  @Get('message-feed')
   async getMissed(
     @Req() req: FastifyRequest,
     @Query('after') afterParam?: string,
@@ -116,25 +125,27 @@ export class S2sController {
   ) {
     const after = this.parseUnsignedBigInt(afterParam, 'after');
     const take = takeParam === undefined ? undefined : Number(takeParam);
-    return this.federationMissed.serve(this.signerDomain(req), after, take);
+    return this.messageFeed.serve(this.signerDomain(req), after, take);
   }
 
-  @Post('invite')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async postInvite(@Req() req: FastifyRequest): Promise<void> {
-    await this.federation.handleInvite(req.body as S2SInvite);
+  @Get('state-feed')
+  async getStateFeed(
+    @Req() req: FastifyRequest,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+  ) {
+    const after = this.parseUnsignedBigInt(afterParam, 'after');
+    const take = takeParam === undefined ? undefined : Number(takeParam);
+    return this.peerStateFeed.serve(this.signerDomain(req), after, take);
   }
 
-  @Post('invite-accept')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async postInviteAccept(@Req() req: FastifyRequest): Promise<void> {
-    await this.federation.handleInviteAccept(req.body as S2SInviteAccept);
-  }
-
-  @Post('invite-revoke')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async postInviteRevoke(@Req() req: FastifyRequest): Promise<void> {
-    await this.federation.handleInviteRevoke(req.body as S2SInviteRevoke);
+  @Get('state-feed-rev')
+  async getStateFeedRev(@Req() req: FastifyRequest) {
+    return {
+      stateFeedRev: (
+        await this.peerStateFeed.readRev(this.signerDomain(req))
+      ).toString(),
+    };
   }
 
   @Post('call')
@@ -161,85 +172,6 @@ export class S2sController {
       );
     }
     return profile;
-  }
-
-  @Get('users/:account/revision')
-  async getUserRevision(@Param('account') account: string) {
-    const address: S2SAddress = { account, domain: this.federation.ourDomain };
-    const rev = await this.federation.getLocalUserRevision(address);
-    if (!rev) {
-      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
-      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `user ${account} not found`,
-      );
-    }
-    return rev;
-  }
-
-  /** GET /api/v1/s2s/group/:account/roster-revision — a member-server probes the origin's roster
-   *  revision for a federated group (the lazy roster meta-pull on chat-open). Symmetric with the profile
-   *  /users/:account/revision probe. The group is addressed by its `!account`. */
-  @Get('group/:account/roster-revision')
-  async getGroupRosterRevision(@Param('account') account: string) {
-    const rev = await this.federation.getLocalGroupRosterRevision(account);
-    if (!rev) {
-      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
-      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `group ${account} not found`,
-      );
-    }
-    return rev;
-  }
-
-  /** GET /api/v1/s2s/group/:account/roster — a member-server pulls the canonical roster for a
-   *  federated group (the lazy meta-pull on chat-open). The group is addressed by its `!account` path
-   *  param (no internal thread id on the wire) — a sibling of /group/:account/roster-revision. The
-   *  signer is a trusted peer (S2sSignatureGuard). */
-  @Get('group/:account/roster')
-  async getGroupRoster(@Param('account') account: string) {
-    const roster = await this.federation.serveGroupRoster(account);
-    if (roster === null) {
-      // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
-      // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `group ${account} not found`,
-      );
-    }
-    return roster;
-  }
-
-  /** Authoritative current relationship check. `localAccount` beginning with `!` addresses a group;
-   * otherwise it addresses this server's user in a P2P relationship with `peerAccount` on the signer. */
-  @Get('thread-access')
-  async getThreadAccess(
-    @Req() req: FastifyRequest,
-    @Query('localAccount') localAccount?: string,
-    @Query('peerAccount') peerAccount?: string,
-  ) {
-    if (!localAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing localAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (!localAccount.startsWith('!') && !peerAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing peerAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    return this.federation.queryThreadAccess(
-      localAccount,
-      peerAccount,
-      this.signerDomain(req),
-    );
   }
 
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */
@@ -280,7 +212,7 @@ export class S2sController {
   }
 
   /** GET /api/v1/s2s/ping — signed liveness probe (reconnect sweep + quiet-peer lastSuccessAt, §3.4).
-   *  Distinct from the init handshake (which establishes trust); a successful signed ping proves the
+   *  Distinct from the ignite handshake (which establishes trust); a successful signed ping proves the
    *  peer is reachable + the mutual keys still verify. Advances the requester's liveness watermark. */
   @Get('ping')
   async ping(@Req() req: FastifyRequest) {

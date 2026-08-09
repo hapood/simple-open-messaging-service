@@ -16,16 +16,13 @@ class HelloMergerTest {
     fun hello_seeds_then_incremental_frames_patch_their_fields() {
         var c = HelloMerger.merge(
             null, "HELLO",
-            """{"userId":1,"threadRevision":5,"profileRev":2,"friendReqRev":1000,"friendReqAckRev":0}""",
+            """{"userId":1,"stateRevision":5,"profileRev":2,"friendReqRev":1000,"friendReqAckRev":0}""",
         )
         assertEquals(1, c!!.getInt("userId"))
-        assertEquals(5, c.getInt("threadRevision"))
+        assertEquals(5, c.getInt("stateRevision"))
 
-        c = HelloMerger.merge(c, "THREAD_REVISION_UPDATED", """{"threadRevision":6}""")
-        assertEquals(6, c!!.getInt("threadRevision"))
-
-        c = HelloMerger.merge(c, "PROFILE_REV_UPDATED", """{"profileRev":3}""")
-        assertEquals(3, c!!.getInt("profileRev"))
+        c = HelloMerger.merge(c, "STATE_REV_UPDATED", """{"stateRevision":6}""")
+        assertEquals(6, c!!.getInt("stateRevision"))
 
         // A newer state pair advances both friendReqRev + friendReqAckRev.
         c = HelloMerger.merge(c, "FRIEND_REQ_REV_UPDATED", """{"friendReqRev":2000,"friendReqAckRev":1500}""")
@@ -47,24 +44,24 @@ class HelloMergerTest {
     }
 
     @Test
-    fun thread_revision_is_monotonic_out_of_order_dropped() {
-        var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"threadRevision":5}""")
-        c = HelloMerger.merge(c, "THREAD_REVISION_UPDATED", """{"threadRevision":9}""")
-        c = HelloMerger.merge(c, "THREAD_REVISION_UPDATED", """{"threadRevision":8}""")
-        assertEquals(9L, c!!.getLong("threadRevision"))
+    fun state_revision_is_monotonic_out_of_order_dropped() {
+        var c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateRevision":5}""")
+        c = HelloMerger.merge(c, "STATE_REV_UPDATED", """{"stateRevision":9}""")
+        c = HelloMerger.merge(c, "STATE_REV_UPDATED", """{"stateRevision":8}""")
+        assertEquals(9L, c!!.getLong("stateRevision"))
     }
 
     @Test
     fun incremental_before_hello_is_dropped_no_partial_cache() {
-        assertNull(HelloMerger.merge(null, "THREAD_REVISION_UPDATED", """{"threadRevision":6}"""))
+        assertNull(HelloMerger.merge(null, "STATE_REV_UPDATED", """{"stateRevision":6}"""))
     }
 
     @Test
     fun malformed_frame_leaves_cache_untouched() {
-        val c = HelloMerger.merge(null, "HELLO", """{"userId":1,"threadRevision":5}""")
+        val c = HelloMerger.merge(null, "HELLO", """{"userId":1,"stateRevision":5}""")
         // Malformed JSON on an incremental → cache unchanged (not nulled, not corrupted).
-        val c2 = HelloMerger.merge(c, "PROFILE_REV_UPDATED", "{not json")
+        val c2 = HelloMerger.merge(c, "STATE_REV_UPDATED", "{not json")
         assertEquals(1, c2!!.getInt("userId"))
-        assertEquals(5, c2.getInt("threadRevision"))
+        assertEquals(5, c2.getInt("stateRevision"))
     }
 }

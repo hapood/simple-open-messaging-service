@@ -6,14 +6,17 @@ import {
   FederationIdentityService,
   type FederationIdentityClaim,
 } from './federation-identity.service.js';
+import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { peerStateFeedPullCursor } from '../database/schema.js';
 
 /** Atomically commits every durable database effect of the one-time /init exchange. */
 @Injectable()
-export class FederationInitService {
+export class FederationIgniteService {
   constructor(
     private readonly database: DatabaseService,
     private readonly identity: FederationIdentityService,
     private readonly cursor: FederationCursorService,
+    private readonly stateFeed: PeerStateFeedService,
   ) {}
 
   async accept(params: {
@@ -39,6 +42,11 @@ export class FederationInitService {
           params.domain,
           BigInt(params.claim.startChangeId!),
         );
+        await this.stateFeed.initializePeerInTx(tx, params.domain);
+        await tx
+          .insert(peerStateFeedPullCursor)
+          .values({ peerDomain: params.domain })
+          .onConflictDoNothing();
         return { localStartChangeId: cursors.localStartChangeId };
       });
     } catch (error) {
@@ -71,6 +79,11 @@ export class FederationInitService {
         params.domain,
         BigInt(params.claim.startChangeId!),
       );
+      await this.stateFeed.initializePeerInTx(tx, params.domain);
+      await tx
+        .insert(peerStateFeedPullCursor)
+        .values({ peerDomain: params.domain })
+        .onConflictDoNothing();
       return undefined;
     });
     if (mismatchReason) this.identity.throwIdentityMismatch(mismatchReason);

@@ -26,6 +26,13 @@ describe('QR login e2e', () => {
   let sessionTokens: SessionTokenService;
 
   beforeAll(async () => {
+    // Rate-limit behavior has dedicated coverage. This suite intentionally
+    // polls and recreates QR sessions from one loopback address, so isolate the
+    // state-machine assertions from production-sized in-memory buckets.
+    process.env.RATE_LIMIT_AUTH_QR_CREATE_MODE = 'disabled';
+    process.env.RATE_LIMIT_AUTH_QR_POLL_MODE = 'disabled';
+    process.env.RATE_LIMIT_AUTH_QR_SCAN_MODE = 'disabled';
+    process.env.RATE_LIMIT_AUTH_QR_CONFIRM_MODE = 'disabled';
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -133,13 +140,13 @@ describe('QR login e2e', () => {
     expect(again.body.data.status).toBe('expired');
   });
 
-  it('a trusted desktop QR issues a permanent session; web ignores trusted (stays sliding)', async () => {
+  it('desktop and web QR sessions retain their platform and use sliding expiry', async () => {
     const { userId, token: scannerToken } = await seedScanner('qrtrusted');
 
-    // Trusted desktop: create with trusted → scan → confirm → poll claims a permanent session.
+    // Desktop: create → scan → confirm → poll claims a sliding session.
     const created = await request(app.getHttpServer())
       .post('/api/v1/auth/qr/create')
-      .send({ client: 'desktop', trusted: true });
+      .send({ client: 'desktop' });
     const qrToken: string = created.body.data.qrToken;
     await request(app.getHttpServer())
       .post('/api/v1/auth/qr/scan')
@@ -155,12 +162,11 @@ describe('QR login e2e', () => {
     expect(claimed.body.data.status).toBe('confirmed');
     const desktopToken: string = claimed.body.data.session_token;
 
-    // The issued desktop session is trusted + permanent (expiresAt null), bound to the scanner.
+    // The issued desktop session is bound to the scanner and has a sliding expiry.
     const desktopId = await sessionTokens.idOfToken(desktopToken);
     const [desktopRow] = await database.db
       .select({
         client: sessionToken.client,
-        trusted: sessionToken.trusted,
         expiresAt: sessionToken.expiresAt,
         userId: sessionToken.userId,
       })
@@ -169,16 +175,15 @@ describe('QR login e2e', () => {
       .limit(1);
     expect(desktopRow).toMatchObject({
       client: 'desktop',
-      trusted: true,
-      expiresAt: null,
       userId,
     });
+    expect(desktopRow!.expiresAt).not.toBeNull();
 
-    // Web can't be trusted: trusted:true is silently ignored for client 'web' → untrusted, sliding 14d.
+    // Web follows the same lifetime policy while retaining its own platform label.
     const webQr = (
       await request(app.getHttpServer())
         .post('/api/v1/auth/qr/create')
-        .send({ client: 'web', trusted: true })
+        .send({ client: 'web' })
     ).body.data.qrToken;
     await request(app.getHttpServer())
       .post('/api/v1/auth/qr/scan')
@@ -196,20 +201,19 @@ describe('QR login e2e', () => {
     const [webRow] = await database.db
       .select({
         client: sessionToken.client,
-        trusted: sessionToken.trusted,
         expiresAt: sessionToken.expiresAt,
       })
       .from(sessionToken)
       .where(eq(sessionToken.id, (await sessionTokens.idOfToken(webToken))!))
       .limit(1);
-    expect(webRow).toMatchObject({ client: 'web', trusted: false });
+    expect(webRow).toMatchObject({ client: 'web' });
     expect(webRow!.expiresAt).not.toBeNull();
   });
 
-  it("an 'app' (Android) QR is always trusted → issues a permanent session bound to the scanner", async () => {
+  it("an 'app' (Android) QR issues a sliding session bound to the scanner", async () => {
     const { userId, token: scannerToken } = await seedScanner('qrapp');
 
-    // 'app' needs no trusted opt-in (Android is a trusted platform) → permanent session.
+    // Client kind is metadata only; Android follows the same sliding lifetime.
     const created = await request(app.getHttpServer())
       .post('/api/v1/auth/qr/create')
       .send({ client: 'app' });
@@ -231,7 +235,6 @@ describe('QR login e2e', () => {
     const [appRow] = await database.db
       .select({
         client: sessionToken.client,
-        trusted: sessionToken.trusted,
         expiresAt: sessionToken.expiresAt,
         userId: sessionToken.userId,
       })
@@ -240,10 +243,9 @@ describe('QR login e2e', () => {
       .limit(1);
     expect(appRow).toMatchObject({
       client: 'app',
-      trusted: true,
-      expiresAt: null,
       userId,
     });
+    expect(appRow!.expiresAt).not.toBeNull();
   });
 
   it('scan requires an authenticated session (the phone is already logged in)', async () => {

@@ -86,8 +86,6 @@ export enum BusinessCode {
   GROUP_DISSOLVED = 40007, // terminal group state: history remains readable, sending/membership changes stop
 
   // 50xxx federation (S2S) — protocol/system-tier; HTTP status drives sender retry, code is detail.
-  //       Exception: GET /s2s/messages returns business outcomes at HTTP 200 (the pull itself succeeded; the
-  //       body IS the result), so a 200 + code there is a normal outcome, not a retryable failure.
   FEDERATION_PEER_NOT_TRUSTED = 50001, // signer domain not in FederatedPeer trusted (401, no retry)
   FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
   FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
@@ -96,16 +94,11 @@ export enum BusinessCode {
   FEDERATION_MALFORMED = 50007, // malformed Signature-Input / friend-op payload (401, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
   FEDERATION_PEER_BLOCKED = 50009, // an admin blocked this peer domain — federation refused (403, no retry)
-  FEDERATION_GROUP_AUTHOR_LEFT = 50010, // per-author group pull: the author is no longer an active member → thrown
-  // as HTTP 410 GONE on /s2s/messages?fromAccount=... so the origin dissolves its
-  // roster entry (softLeaveMember + bump group meta). The pulling side detects it
-  // via S2sResponseError.status === 410 (NOT by the body code); 410 is a resource-
-  // state signal, not a peer failure, so getSigned does NOT demote.
+  FEDERATION_GROUP_AUTHOR_LEFT = 50010, // retained business code for a remote group author that has left
   FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 429 (transient; the
   // body carries {category, limit, retryAfter = seconds to 00:00 UTC}). Returned on
-  // the synchronous POST /s2s/invite leg; the pull-based messages/media legs refuse
-  // internally (no peer-visible status). NEVER demotes the peer — 429 is outside the
-  // demote set in getSigned/sendSignedPost. See src/quota/.
+  // state/message/media ingestion refuses internally (no peer-visible status). NEVER demotes the peer —
+  // 429 is outside the demote set in getSigned/sendSignedPost. See src/quota/.
   FEDERATION_PAYLOAD_TOO_LARGE = 50012, // an inbound federated media item exceeds the single-item byte cap → HTTP 413
   // (permanent for that item; the body carries {category, limit, received}). Refused
   // at ingest before any disk write. NEVER demotes the peer.

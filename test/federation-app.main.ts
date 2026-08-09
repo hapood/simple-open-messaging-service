@@ -33,7 +33,7 @@ import {
  * Test-only probe (NOT in prod — this is the test subprocess entry): drive a signed S2S GET as THIS app
  * using its OWN SignatureService + DiscoveryService (the framework's real signing machinery — no
  * reinvented signing, no key exposure). Lets the e2e exercise SERVE-only endpoints SOMS has no internal
- * caller for, e.g. GET /s2s/messages/before (backward twin — SOMS is forward-only). The e2e hits
+ * caller for a backward-only legacy route (SOMS is forward-only). The e2e hits
  * /api/v1/test/signed-s2s-get?peerDomain=...&path=... and this app signs + fetches + relays the upstream
  * {status, body}. Registered as a proper Nest controller (NOT a raw Fastify route — the raw form raced
  * Nest's listen-time route finalization + caused intermittent boot failures). SignatureService +

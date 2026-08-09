@@ -17,8 +17,8 @@ import { KeypairService } from './keypair.service.js';
  * Inbound S2S signature guard for the friend-op + signed GET endpoints — Gate 1 (server allow-list +
  * valid signature). Verifies the request was signed by a TRUSTED peer's CURRENT key and that the
  * asserted sender's domain matches the signer's domain (binding rule — each server vouches only for
- * its own users). The trust-establishment endpoint POST /api/v1/s2s/init does NOT use this guard (it
- * IS the trust step) — see S2sInitController, which calls S2sVerifyService directly.
+ * its own users). The trust-establishment endpoint POST /api/v1/s2s/ignite does NOT use this guard (it
+ * IS the trust step) — see S2sIgniteController, which calls S2sVerifyService directly.
  *
  * Verification (keyId parse + .well-known key fetch + sig verify) is delegated to S2sVerifyService,
  * shared with the init bootstrap. This guard adds the allow-list gate (before any network fetch) and

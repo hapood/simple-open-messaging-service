@@ -18,6 +18,7 @@ function createTx(options: {
     const query = {
       from: vi.fn(() => query),
       where: vi.fn(() => query),
+      for: vi.fn(() => query),
       limit: vi.fn(() => Promise.resolve(result)),
       then: (resolve: (value: unknown[]) => unknown) =>
         Promise.resolve(result).then(resolve),
@@ -41,11 +42,30 @@ function createTx(options: {
   return { select, update, sets };
 }
 
-function createService(tx: ReturnType<typeof createTx>, revisions: object) {
+function createService(
+  tx: ReturnType<typeof createTx>,
+  revisions: object,
+  messages?: object,
+  messageFanout?: object,
+) {
   const database = {
-    db: { transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)) },
+    db: {
+      transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+    },
   };
-  return new GroupService(database as never, revisions as never);
+  const federation = {
+    writeGroupStateInTx: vi.fn().mockResolvedValue(new Map()),
+    writeGroupJoinIntentInTx: vi.fn().mockResolvedValue(new Map()),
+    writeGroupInviteIntentInTx: vi.fn().mockResolvedValue(new Map()),
+    pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
+  };
+  return new GroupService(
+    database as never,
+    revisions as never,
+    federation as never,
+    messages as never,
+    messageFanout as never,
+  );
 }
 
 describe('GroupService membership lifecycle', () => {
@@ -90,7 +110,10 @@ describe('GroupService membership lifecycle', () => {
   });
 
   it('treats dissolving an already dissolved group as an idempotent success', async () => {
-    const tx = createTx({ selects: [[{ groupUserId: 99 }]], updateResults: [[]] });
+    const tx = createTx({
+      selects: [[{ groupUserId: 99 }]],
+      updateResults: [[]],
+    });
     const service = createService(tx, {});
 
     await expect(service.dissolveGroup({ threadId: 10 })).resolves.toEqual({
@@ -100,12 +123,17 @@ describe('GroupService membership lifecycle', () => {
   });
 
   it('keeps a kicked member history-visible and makes a repeat a no-op', async () => {
-    const target = { id: 8, role: GroupRole.MEMBER, leftAt: null as Date | null };
+    const target = {
+      id: 8,
+      role: GroupRole.MEMBER,
+      leftAt: null as Date | null,
+    };
     const tx = createTx({
       selects: [
         [{ id: 7, role: GroupRole.OWNER, leftAt: null }],
         [target],
         [{ groupUserId: 99 }],
+        [],
         [{ id: 7, role: GroupRole.OWNER, leftAt: null }],
         [target],
       ],
@@ -116,18 +144,37 @@ describe('GroupService membership lifecycle', () => {
       recordThreadAddInTx: vi.fn().mockResolvedValue(5),
       notifyThreadRevision: vi.fn(),
     };
-    const service = createService(tx, revisions);
+    const systemMessage = { id: 'kick-boundary' };
+    const messages = {
+      writeSystemMessageInTx: vi
+        .fn()
+        .mockResolvedValue({ message: systemMessage }),
+    };
+    const messageFanout = { dispatch: vi.fn() };
+    const service = createService(tx, revisions, messages, messageFanout);
 
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: true });
     expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
-    expect(revisions.notifyThreadRevision).toHaveBeenCalledWith({ userId: 2, revision: 5 });
+    expect(revisions.notifyThreadRevision).toHaveBeenCalledWith({
+      userId: 2,
+      revision: 5,
+    });
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
+      tx,
+      1,
+      10,
+      'GROUP_LEFT',
+      2,
+    );
+    expect(messageFanout.dispatch).toHaveBeenCalledWith(systemMessage);
 
     target.leftAt = new Date();
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: false });
+    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(1);
     expect(tx.update).toHaveBeenCalledTimes(2);
   });
 

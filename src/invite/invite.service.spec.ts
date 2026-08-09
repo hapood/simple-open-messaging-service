@@ -1,26 +1,14 @@
-import { InviteKind, InviteStatus } from '../database/enums.js';
 import { InviteService } from './invite.service.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('InviteService.friendRelationshipStatuses', () => {
   process.env.SOMS_DOMAIN = 'local.test';
   const findMany = vi.fn();
-  const findUnique = vi.fn();
-  const findFirst = vi.fn();
-  const update = vi.fn();
   const getActiveP2PPeerUserIds = vi.fn();
   const database = {
     db: {
       select: vi.fn(() => ({
         from: vi.fn(() => ({ where: vi.fn(() => findMany()) })),
-      })),
-      query: {
-        invite: { findFirst: (...args: unknown[]) => findUnique(...args) },
-      },
-      update: vi.fn(() => ({
-        set: vi.fn((data: unknown) => ({
-          where: vi.fn(() => update({ data })),
-        })),
       })),
     },
   };
@@ -60,46 +48,5 @@ describe('InviteService.friendRelationshipStatuses', () => {
     ).resolves.toEqual([]);
     expect(findMany).not.toHaveBeenCalled();
     expect(getActiveP2PPeerUserIds).not.toHaveBeenCalled();
-  });
-
-  it('revokes a matching inbound federated pending invite by origin id', async () => {
-    findUnique.mockResolvedValue({
-      id: 9n,
-      kind: InviteKind.FRIEND,
-      status: InviteStatus.PENDING,
-      fromUserId: 2,
-      toUserId: 1,
-    });
-
-    await service.revokeInboundFriendInvite({
-      fromUserId: 2,
-      toUserId: 1,
-      origin: 'peer.test',
-      originId: 'op-1',
-    });
-
-    expect(findUnique).toHaveBeenCalledTimes(1);
-    expect(update).toHaveBeenCalledWith({
-      data: expect.objectContaining({ status: InviteStatus.REVOKED }),
-    });
-  });
-
-  it('keeps an already accepted inbound invite unchanged (accept wins)', async () => {
-    findUnique.mockResolvedValue({
-      id: 9n,
-      kind: InviteKind.FRIEND,
-      status: InviteStatus.ACCEPTED,
-      fromUserId: 2,
-      toUserId: 1,
-    });
-
-    await service.revokeInboundFriendInvite({
-      fromUserId: 2,
-      toUserId: 1,
-      origin: 'peer.test',
-      originId: 'op-1',
-    });
-
-    expect(update).not.toHaveBeenCalled();
   });
 });

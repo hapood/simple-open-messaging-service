@@ -1,10 +1,26 @@
-import { Component, ElementRef, EventEmitter, OnDestroy, OnInit, Output, computed, effect, inject, input, signal, viewChild } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  EventEmitter,
+  OnDestroy,
+  OnInit,
+  Output,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { AppIconType, IconComponent } from '../icon/icon.component';
-import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../user-avatar/user-avatar.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { UserService } from '../../services/user.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -30,7 +46,14 @@ type ViewState = 'loading' | 'valid' | 'joined' | 'expired' | 'invalid';
  */
 @Component({
   selector: 'app-invite-detail',
-  imports: [MatButtonModule, MatProgressSpinnerModule, UserAvatarComponent, FederatedBadgeComponent, IconComponent, TranslocoPipe],
+  imports: [
+    MatButtonModule,
+    MatProgressSpinnerModule,
+    UserAvatarComponent,
+    FederatedBadgeComponent,
+    IconComponent,
+    TranslocoPipe,
+  ],
   templateUrl: './invite-detail.component.html',
   styleUrl: './invite-detail.component.scss',
 })
@@ -47,7 +70,9 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   private readonly transloco = inject(TranslocoService);
 
   /** Fallback identity parsed from the card message (shown instantly while the detail loads). */
-  readonly fallback = signal<{ groupName: string; groupAvatar?: string }>({ groupName: '' });
+  readonly fallback = signal<{ groupName: string; groupAvatar?: string }>({
+    groupName: '',
+  });
   /** The invite-resolution key — the group `!account` parsed from the card (a BigInt id is NOT carried). */
   readonly inviteId = signal<string>('');
   readonly detail = signal<InviteDetail | null>(null);
@@ -66,8 +91,12 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
     return 'valid';
   });
 
-  readonly groupName = computed(() => this.detail()?.groupName || this.fallback().groupName || '');
-  readonly groupAvatar = computed(() => this.detail()?.groupAvatar || this.fallback().groupAvatar);
+  readonly groupName = computed(
+    () => this.detail()?.groupName || this.fallback().groupName || '',
+  );
+  readonly groupAvatar = computed(
+    () => this.detail()?.groupAvatar || this.fallback().groupAvatar,
+  );
 
   /** Inviter display name — authoritative from /invite/detail (hidden while loading). */
   readonly inviterName = computed(() => this.detail()?.fromUser?.name ?? '');
@@ -88,7 +117,10 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     const parsed = this.parseRaw(this.raw());
-    this.fallback.set({ groupName: parsed.groupName, groupAvatar: parsed.groupAvatar });
+    this.fallback.set({
+      groupName: parsed.groupName,
+      groupAvatar: parsed.groupAvatar,
+    });
     this.inviteId.set(parsed.group ?? ''); // the group `!account` is the resolve key for /invite/detail + /invite/accept
     void this.loadDetail();
   }
@@ -103,7 +135,9 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
       this.notFound.set(true);
       return;
     }
-    const res = await firstValueFrom(this.userService.getInviteDetail({ inviteId: id }));
+    const res = await firstValueFrom(
+      this.userService.getInviteDetail({ inviteId: id }),
+    );
     if (res.code === 0 && res.data) {
       this.detail.set(res.data);
       this.notFound.set(false);
@@ -120,7 +154,9 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
 
   private positionFrame(frame: HTMLElement): void {
     const slot = document.querySelector<HTMLElement>('.chat-slot');
-    const r = slot ? slot.getBoundingClientRect() : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+    const r = slot
+      ? slot.getBoundingClientRect()
+      : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
     frame.style.top = `${r.top}px`;
     frame.style.left = `${r.left}px`;
     frame.style.width = `${r.width}px`;
@@ -145,7 +181,12 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
 
   /** Parse the GROUP_INVITE card body. `group` (the `!account`) is the resolve key; `from` is the inviter
    *  account; groupName/groupAvatar are inline display fallbacks. No internal ids on the card. */
-  private parseRaw(raw: string): { groupName: string; groupAvatar?: string; from?: string; group?: string } {
+  private parseRaw(raw: string): {
+    groupName: string;
+    groupAvatar?: string;
+    from?: string;
+    group?: string;
+  } {
     try {
       const o = JSON.parse(raw) as Record<string, unknown>;
       return {
@@ -167,15 +208,25 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
     if (this.busy() || this.viewState() !== 'valid') return;
     this.busy.set(true);
     this.errorMsg.set('');
-    const res = await firstValueFrom(this.userService.acceptInvite({ inviteId: this.inviteId() }));
+    const threadId = this.detail()?.threadId;
+    if (threadId == null) {
+      this.busy.set(false);
+      this.notFound.set(true);
+      return;
+    }
+    const res = await firstValueFrom(
+      this.userService.joinGroupRequest({ groupId: threadId }),
+    );
     if (res.code !== 0) {
       this.busy.set(false);
-      this.errorMsg.set(res.message || this.transloco.translate('chat.failedToJoin'));
+      this.errorMsg.set(
+        res.message || this.transloco.translate('chat.failedToJoin'),
+      );
       // Re-fetch — the invite may now be expired/invalid.
       void this.loadDetail();
       return;
     }
-    const tid = (res.data as { threadId?: number } | undefined)?.threadId ?? this.detail()?.threadId ?? null;
+    const tid = threadId;
     // openChat clears the pane stack → the invite-detail entry is removed → the overlay is disposed.
     if (tid != null) this.nav.openChat(tid, 'group-joined');
   }

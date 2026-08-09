@@ -15,24 +15,17 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
     merge_cached_hello(
         &c,
         "HELLO",
-        &serde_json::json!({"userId":1,"threadRevision":5,"profileRev":2,"friendReqRev":1000,"friendReqAckRev":0,"latestMessage":null}),
+        &serde_json::json!({"userId":1,"stateRevision":5,"profileRev":2,"friendReqRev":1000,"friendReqAckRev":0,"latestMessage":null}),
     );
     assert_eq!(get(&c)["userId"], 1);
-    assert_eq!(get(&c)["threadRevision"], 5);
+    assert_eq!(get(&c)["stateRevision"], 5);
 
     merge_cached_hello(
         &c,
-        "THREAD_REVISION_UPDATED",
-        &serde_json::json!({"threadRevision":6}),
+        "STATE_REV_UPDATED",
+        &serde_json::json!({"stateRevision":6}),
     );
-    assert_eq!(get(&c)["threadRevision"], 6);
-
-    merge_cached_hello(
-        &c,
-        "PROFILE_REV_UPDATED",
-        &serde_json::json!({"profileRev":3}),
-    );
-    assert_eq!(get(&c)["profileRev"], 3);
+    assert_eq!(get(&c)["stateRevision"], 6);
 
     // A newer state pair advances both friendReqRev + friendReqAckRev.
     merge_cached_hello(
@@ -71,24 +64,24 @@ fn friendreq_revisions_are_monotonic_out_of_order_dropped() {
 }
 
 #[test]
-fn thread_revision_is_monotonic_out_of_order_dropped() {
+fn state_revision_is_monotonic_out_of_order_dropped() {
     let c = cache();
     merge_cached_hello(
         &c,
         "HELLO",
-        &serde_json::json!({"userId":1,"threadRevision":5}),
+        &serde_json::json!({"userId":1,"stateRevision":5}),
     );
     merge_cached_hello(
         &c,
-        "THREAD_REVISION_UPDATED",
-        &serde_json::json!({"threadRevision":9}),
+        "STATE_REV_UPDATED",
+        &serde_json::json!({"stateRevision":9}),
     );
     merge_cached_hello(
         &c,
-        "THREAD_REVISION_UPDATED",
-        &serde_json::json!({"threadRevision":8}),
+        "STATE_REV_UPDATED",
+        &serde_json::json!({"stateRevision":8}),
     );
-    assert_eq!(get(&c)["threadRevision"], 9);
+    assert_eq!(get(&c)["stateRevision"], 9);
 }
 
 #[test]
@@ -96,8 +89,8 @@ fn incremental_before_hello_is_dropped_no_partial_cache() {
     let c = cache();
     merge_cached_hello(
         &c,
-        "THREAD_REVISION_UPDATED",
-        &serde_json::json!({"threadRevision":6}),
+        "STATE_REV_UPDATED",
+        &serde_json::json!({"stateRevision":6}),
     );
     assert!(c.lock().unwrap().is_none());
 }

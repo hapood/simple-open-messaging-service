@@ -30,6 +30,8 @@ import {
 } from '../dto/invite.dto.js';
 import { mintUlid } from '../common/account.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
+import { eq } from 'drizzle-orm';
+import * as tables from '../database/schema.js';
 
 function rethrowFederationPolicy(error: unknown): void {
   if (
@@ -111,18 +113,38 @@ export class InviteController {
 
     // Mutual auto-accept is LOCAL-only (a federated target needs an S2S round-trip on accept).
     const federatedOriginId = target.isForeigner ? mintUlid() : undefined;
+    let statePeers = new Map<string, bigint>();
     const res = await this.inviteService.createFriendInvite(
       me,
       target.id,
       dto.note ?? '',
       !target.isForeigner,
       federatedOriginId,
-      (tx) => this.userQuota.tick(me, 'requests', tx),
+      async (tx, created) => {
+        if (created) await this.userQuota.tick(me, 'requests', tx);
+        if (target.isForeigner) {
+          statePeers = await this.federationService.writeFriendIntentInTx(
+            tx,
+            me,
+            target.id,
+            true,
+            dto.note ?? '',
+          );
+        } else
+          await this.inviteService.writeLocalFriendIntentInTx(
+            tx,
+            me,
+            target.id,
+            true,
+            dto.note ?? '',
+          );
+      },
     );
+    await this.federationService.pushStateFeedDomains(statePeers.keys());
 
     if (res.status === 'auto-accepted') {
       // Local mutual → friends immediately. Both sides' thread-list adds are driven by the
-      // THREAD_REVISION_UPDATED delta (recordThreadAdd fires for both users in createFriendInvite);
+      // STATE_REV_UPDATED delta (recordThreadAdd fires for both users in createFriendInvite);
       // no NOTIFY — the former FRIEND_APPROVED push is dropped (the delta subsumes it, aligning local
       // with the federated path which already dropped it).
       return envelope(
@@ -134,26 +156,9 @@ export class InviteController {
       );
     }
 
-    // created | already-pending → deliver to the target.
-    if (target.isForeigner) {
-      // Federated target → synchronous S2S friend-request (the peer creates the incoming invite +
-      // arms its user's badge). Idempotent on the receiver (overwrite on P2002), so retries are safe.
-      try {
-        await this.federationService.sendInvite({
-          kind: 'FRIEND',
-          fromLocalUserId: me,
-          to: { account: target.account, domain: target.domain },
-          note: dto.note ?? '',
-          opId: federatedOriginId,
-        });
-      } catch (e) {
-        rethrowFederationPolicy(e);
-        throw new BusinessException(
-          BusinessCode.FEDERATION_DELIVERY_FAILED,
-          `could not reach ${target.domain}: ${(e as Error).message}`,
-        );
-      }
-    } else {
+    // Federated delivery is the durable state feed written in the Invite transaction above. Local
+    // targets still receive an immediate UI notification.
+    if (!target.isForeigner) {
       // Local target → live NOTIFY (the notification popup + fromUserId/inviteId) AND the friendReqRev
       // push (the mergeable badge signal). friendReqRev = MAX(createdAt) over the target's incoming FRIEND
       // invites, just advanced by the PENDING invite createFriendInvite wrote; the client arms the badge when
@@ -186,36 +191,50 @@ export class InviteController {
   })
   async acceptInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto) {
     // acceptInvite throws BusinessException (INVITE_EXPIRED / NOT_FOUND / …) → the global filter renders it.
+    let friendStatePeers = new Map<string, bigint>();
+    let groupStatePeers = new Map<string, bigint>();
     const res = await this.inviteService.acceptInvite(
       dto.inviteId,
       req.user.userId,
+      async (tx, fromUserId) => {
+        const from = await tx.query.user.findFirst({
+          where: eq(tables.user.id, fromUserId),
+          columns: { isForeigner: true },
+        });
+        if (from?.isForeigner) {
+          friendStatePeers =
+            await this.federationService.writeFriendIntentInTx(
+              tx,
+              req.user.userId,
+              fromUserId,
+              true,
+            );
+        } else
+          await this.inviteService.writeLocalFriendIntentInTx(
+            tx,
+            req.user.userId,
+            fromUserId,
+            true,
+          );
+      },
+      async (tx, threadId) => {
+        groupStatePeers = await this.federationService.writeGroupJoinIntentInTx(
+          tx,
+          threadId,
+          req.user.userId,
+        );
+      },
     );
+    await this.federationService.pushStateFeedDomains(friendStatePeers.keys());
+    await this.federationService.pushStateFeedDomains(groupStatePeers.keys());
 
     if (res.kind === 'FRIEND') {
       const fromUser = await this.userService.findUniqueUser({
         id: res.fromUserId,
       });
-      if (fromUser?.isForeigner) {
-        // Federated inviter → S2S friend-approve so the peer creates its own thread + marks its
-        // outgoing invite ACCEPTED. Both sides' thread-list adds are driven by THREAD_REVISION_UPDATED
-        // (recordThreadAdd fires for the approver here, and for the inviter via the S2S accept path).
-        try {
-          await this.federationService.sendInviteAccept({
-            kind: 'FRIEND',
-            fromLocalUserId: req.user.userId,
-            targetDomain: fromUser.domain,
-            by: { account: fromUser.account, domain: fromUser.domain },
-          });
-        } catch (e) {
-          rethrowFederationPolicy(e);
-          throw new BusinessException(
-            BusinessCode.FEDERATION_DELIVERY_FAILED,
-            `could not reach ${fromUser.domain}: ${(e as Error).message}`,
-          );
-        }
-      }
+      void fromUser;
       // Local inviter: recordThreadAdd fired for both users in acceptInvite's tx → both sides get
-      // THREAD_REVISION_UPDATED; no NOTIFY (the former FRIEND_APPROVED push is dropped — the delta
+      // STATE_REV_UPDATED; no NOTIFY (the former FRIEND_APPROVED push is dropped — the delta
       // subsumes it, aligning local with the federated path which already dropped it). No FRIEND_REQ_REV
       // push either — friendReqRev is creation-based (MAX createdAt), so accept/decline don't advance it
       // (the badge arms only on a NEW request); it refreshes on the next HELLO regardless.
@@ -238,27 +257,7 @@ export class InviteController {
       }),
     );
 
-    // Federated mirror (a cross-server group): tell the ORIGIN this user joined, so the origin adds them
-    // to the canonical roster + fans out a thread/member join to every member-server (roster consistency).
-    // A local group (no fedGroupAccount) needs no propagation.
-    const fed = res.fedGroupAccount;
-    const origin = res.originDomain;
-    if (fed && origin && origin !== this.federationService.ourDomain) {
-      try {
-        await this.federationService.sendInviteAccept({
-          kind: 'GROUP',
-          fromLocalUserId: req.user.userId,
-          targetDomain: origin,
-          group: fed,
-        });
-      } catch (e) {
-        rethrowFederationPolicy(e);
-        throw new BusinessException(
-          BusinessCode.FEDERATION_DELIVERY_FAILED,
-          `could not reach ${origin}: ${(e as Error).message}`,
-        );
-      }
-    }
+    // Federated join delivery is the GROUP_JOIN_INTENT written in the accept transaction above.
     return { threadId: res.threadId };
   }
 
@@ -270,8 +269,31 @@ export class InviteController {
     @Request() req: FastifyRequest,
     @Body() dto: InviteIdDto,
   ): Promise<void> {
-    // rejectInvite throws BusinessException → the global filter renders it.
-    await this.inviteService.rejectInvite(dto.inviteId, req.user.userId);
+    let statePeers = new Map<string, bigint>();
+    await this.inviteService.rejectInvite(
+      dto.inviteId,
+      req.user.userId,
+      async (tx, fromUserId) => {
+        const from = await tx.query.user.findFirst({
+          where: eq(tables.user.id, fromUserId),
+          columns: { isForeigner: true },
+        });
+        if (from?.isForeigner)
+          statePeers = await this.federationService.writeFriendIntentInTx(
+            tx,
+            req.user.userId,
+            fromUserId,
+            false,
+          );
+        else
+          await this.inviteService.closeLocalFriendIntentInTx(
+            tx,
+            req.user.userId,
+            fromUserId,
+          );
+      },
+    );
+    await this.federationService.pushStateFeedDomains(statePeers.keys());
     // No FRIEND_REQ_REV push — friendReqRev is creation-based (MAX createdAt), so rejecting an incoming
     // invite doesn't advance it (the badge arms only on a NEW request).
   }
@@ -285,30 +307,31 @@ export class InviteController {
     @Body() dto: InviteIdDto,
   ): Promise<void> {
     const me = req.user.userId;
-    const context = await this.inviteService.getOutgoingRevokeContext(
+    let statePeers = new Map<string, bigint>();
+    await this.inviteService.revokeInvite(
       dto.inviteId,
       me,
-    );
-    if (context.toUser.isForeigner) {
-      try {
-        await this.federationService.sendInviteRevoke({
-          fromLocalUserId: me,
-          to: {
-            account: context.toUser.account,
-            domain: context.toUser.domain,
-          },
-          inviteOriginId: context.originId,
+      async (tx, toUserId) => {
+        const to = await tx.query.user.findFirst({
+          where: eq(tables.user.id, toUserId),
+          columns: { isForeigner: true },
         });
-      } catch (e) {
-        rethrowFederationPolicy(e);
-        throw new BusinessException(
-          BusinessCode.FEDERATION_DELIVERY_FAILED,
-          `could not reach ${context.toUser.domain}: ${(e as Error).message}`,
-        );
-      }
-    }
-    // Federated peer acknowledged first; only now hide the local outgoing row.
-    await this.inviteService.revokeInvite(dto.inviteId, me);
+        if (to?.isForeigner)
+          statePeers = await this.federationService.writeFriendIntentInTx(
+            tx,
+            me,
+            toUserId,
+            false,
+          );
+        else
+          await this.inviteService.closeLocalFriendIntentInTx(
+            tx,
+            me,
+            toUserId,
+          );
+      },
+    );
+    await this.federationService.pushStateFeedDomains(statePeers.keys());
   }
 
   @ApiBearerAuth()

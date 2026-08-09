@@ -1,16 +1,20 @@
-import { Injectable, OnModuleInit, HttpStatus } from '@nestjs/common';
+import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { user } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { FederationService } from '../federation/federation.service.js';
 
 @Injectable()
-export class UserService implements OnModuleInit {
-  constructor(private readonly database: DatabaseService) {}
-
-  async onModuleInit() {}
+export class UserService {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly stateRevision: ThreadRevisionService,
+    private readonly federation: FederationService,
+  ) {}
 
   // Sensitive columns are omitted at the query layer (never loaded → can't leak into responses),
   // so there are no per-site `delete` lines. hashPwd is omitted by default; the opt-in read below
@@ -33,7 +37,7 @@ export class UserService implements OnModuleInit {
       .then((row) => row ?? null);
   }
 
-  /** Self-profile only: omits hashPwd. (threadRevision rides the SSE HELLO handshake; the friend-request
+  /** Self-profile only: omits hashPwd. (stateRevision rides the SSE HELLO handshake; the friend-request
    *  badge is derived client-side from the HELLO/push-carried friendReqRev = MAX(createdAt) over incoming
    *  FRIEND invites — no denormalized badge column.) */
   findSelfProfile(userId: number) {
@@ -54,34 +58,59 @@ export class UserService implements OnModuleInit {
   }
 
   /** Update the current user's avatar (inline User.avatar). */
-  updateAvatar(userId: number, avatar: string) {
-    return this.database.db
-      .update(user)
-      .set({
-        avatar,
-        profileRev: sql`${user.profileRev} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(eq(user.id, userId))
-      .returning()
-      .then(([row]) => row);
+  async updateAvatar(userId: number, avatar: string) {
+    const result = await this.updateProfileState(userId, { avatar });
+    result.pending.forEach((p) => this.stateRevision.notifyThreadRevision(p));
+    await this.federation.pushStateFeedDomains(result.statePeers);
+    return result.row;
   }
 
   /** Update the current user's display name / bio (inline User columns). */
-  updateProfile(userId: number, data: { name?: string; bio?: string }) {
+  async updateProfile(userId: number, data: { name?: string; bio?: string }) {
     const update: Partial<typeof user.$inferInsert> = {};
     if (data.name !== undefined) update.name = data.name;
     if (data.bio !== undefined) update.bio = data.bio;
-    return this.database.db
-      .update(user)
-      .set({
-        ...update,
-        profileRev: sql`${user.profileRev} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(eq(user.id, userId))
-      .returning(publicUserColumns)
-      .then(([row]) => row);
+    const result = await this.updateProfileState(userId, update);
+    result.pending.forEach((p) => this.stateRevision.notifyThreadRevision(p));
+    await this.federation.pushStateFeedDomains(result.statePeers);
+    return result.row;
+  }
+
+  private async updateProfileState(
+    userId: number,
+    update: Partial<typeof user.$inferInsert>,
+  ) {
+    return this.database.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(user)
+        .set({
+          ...update,
+          profileRev: sql`${user.profileRev} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, userId))
+        .returning(publicUserColumns);
+      const consumers = await tx.execute<{ userId: number }>(sql`
+        SELECT ${userId}::integer AS "userId"
+        UNION
+        SELECT peer."userId"
+        FROM "ThreadParticipant" mine
+        JOIN "ThreadParticipant" peer ON peer."threadId" = mine."threadId"
+        JOIN "User" consumer ON consumer.id = peer."userId"
+        WHERE mine."userId" = ${userId} AND mine."leftAt" IS NULL AND peer."leftAt" IS NULL
+          AND consumer."isForeigner" = false
+      `);
+      const pending = await this.stateRevision.recordProfileStateInTx(
+        tx,
+        userId,
+        consumers.rows.map((x) => x.userId),
+      );
+      const stateItems = await this.federation.writeProfileStateInTx(
+        tx,
+        userId,
+      );
+      return { row, pending, statePeers: [...stateItems.keys()] };
+    });
   }
 
   queryUsers(params: {

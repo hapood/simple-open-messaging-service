@@ -21,12 +21,12 @@ import {
 import { KeypairService } from './keypair.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
-import { FederationInitService } from './federation-init.service.js';
+import { FederationIgniteService } from './federation-ignite.service.js';
 
 @Public()
 @Raw()
 @Controller('s2s')
-export class S2sInitController {
+export class S2sIgniteController {
   private readonly config = loadFederationConfig();
 
   constructor(
@@ -34,10 +34,10 @@ export class S2sInitController {
     private readonly discovery: DiscoveryService,
     private readonly identity: FederationIdentityService,
     private readonly keypair: KeypairService,
-    private readonly federationInit: FederationInitService,
+    private readonly federationInit: FederationIgniteService,
   ) {}
 
-  @Post('init')
+  @Post('ignite')
   @HttpCode(HttpStatus.ACCEPTED)
   async postInit(@Req() req: FastifyRequest) {
     this.keypair.assertAvailable();

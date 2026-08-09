@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FederationMissedPullService } from './federation-missed-pull.service.js';
-import type { FederationMissedPage } from './federation-missed.service.js';
+import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
+import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
 
-function page(scannedThrough: string, hasMore = false): FederationMissedPage {
+function page(scannedThrough: string, hasMore = false): FederationMessageFeedPage {
   return {
     messages: [],
     scannedThrough,
@@ -45,13 +45,13 @@ function harness(remoteHwm = 0n) {
     },
   };
   return {
-    service: new FederationMissedPullService(database as never),
+    service: new FederationMessageFeedPullService(database as never),
     order,
     whereUpdate,
   };
 }
 
-describe('FederationMissedPullService commit boundary', () => {
+describe('FederationMessageFeedPullService commit boundary', () => {
   it('publishes a page only after apply and cursor advancement complete', async () => {
     const { service, order } = harness();
     const fetch = vi.fn().mockResolvedValue(page('0'));

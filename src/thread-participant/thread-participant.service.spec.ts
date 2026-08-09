@@ -6,8 +6,25 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
     const returning = vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
     const where = vi.fn(() => ({ returning }));
     const set = vi.fn(() => ({ where }));
+    const identities = [
+      {
+        id: 1,
+        userId: 1,
+        account: 'alice',
+        domain: 'local',
+        relationshipRev: 0,
+      },
+      { id: 2, userId: 2, account: 'bob', domain: 'local', relationshipRev: 0 },
+    ];
     const tx = {
-      execute: vi.fn().mockResolvedValue({ rows: [{ id: 10 }] }),
+      execute: vi.fn().mockResolvedValue({ rows: [{ id: 10, revision: 1 }] }),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          innerJoin: vi.fn(() => ({
+            where: vi.fn().mockResolvedValue(identities),
+          })),
+        })),
+      })),
       update: vi.fn(() => ({ set })),
       delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     };
@@ -34,10 +51,16 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
 
     await expect(service.endP2P(10, 1, true, 2)).resolves.toEqual({
       transitioned: true,
+      statePeers: [],
     });
-    expect(tx.execute).toHaveBeenCalledTimes(1);
-    expect(tx.update).toHaveBeenCalledTimes(2);
-    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(tx.execute).toHaveBeenCalledTimes(6);
+    // FriendPair is locked first, then MessageThread (the third execute), and
+    // only afterwards may participant/audience mutation begin.
+    expect(tx.execute.mock.invocationCallOrder[2]).toBeLessThan(
+      tx.update.mock.invocationCallOrder[0],
+    );
+    expect(tx.update).toHaveBeenCalledTimes(3);
+    expect(tx.delete).not.toHaveBeenCalled();
     expect(revisions.recordThreadDeleteInTx).toHaveBeenCalledWith(tx, 1, 10);
     expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
     expect(revisions.notifyThreadRevision).toHaveBeenCalledTimes(2);
@@ -45,8 +68,25 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
 
   it('publishes no SSE if either revision write aborts the transaction', async () => {
     const returning = vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    const identities = [
+      {
+        id: 1,
+        userId: 1,
+        account: 'alice',
+        domain: 'local',
+        relationshipRev: 0,
+      },
+      { id: 2, userId: 2, account: 'bob', domain: 'local', relationshipRev: 0 },
+    ];
     const tx = {
-      execute: vi.fn().mockResolvedValue({ rows: [{ id: 10 }] }),
+      execute: vi.fn().mockResolvedValue({ rows: [{ id: 10, revision: 1 }] }),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          innerJoin: vi.fn(() => ({
+            where: vi.fn().mockResolvedValue(identities),
+          })),
+        })),
+      })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })),
       })),

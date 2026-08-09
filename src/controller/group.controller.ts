@@ -211,26 +211,23 @@ export class GroupController {
         continue;
       }
       try {
-        if (target.isForeigner) {
-          // Federated: deliver the cross-server invite first (peer creates mirror + Invite), then write
-          // the card into the inviter's mirror so it flows to the invitee via Step-2 P2P pull.
-          await this.federationService.sendInvite({
-            kind: 'GROUP',
-            fromLocalUserId: inviter,
-            to: { account: target.account, domain: target.domain },
-            threadId: group.threadId,
-            groupName: group.name,
-            groupAvatarUrl: group.avatar || undefined,
-            groupRevision: group.profileRev,
-          });
-        } else {
-          // Local: the Invite row the invitee will accept.
-          await this.inviteService.createGroupInvite(
-            inviter,
-            group.threadId,
-            userId,
-          );
-        }
+        let statePeers = new Map<string, bigint>();
+        await this.inviteService.createGroupInvite(
+          inviter,
+          group.threadId,
+          userId,
+          '',
+          undefined,
+          async (tx) => {
+            statePeers =
+              await this.federationService.writeGroupInviteIntentInTx(
+                tx,
+                group.threadId,
+                userId,
+              );
+          },
+        );
+        await this.federationService.pushStateFeedDomains(statePeers.keys());
         // Card identity = accounts only (`from` = inviter account, `group` = the `!account`); the invitee
         // resolves + accepts by `group` (/invite/detail + /invite/accept take a group account). The display
         // fields are carried inline so the row renders instantly on both sides with no per-row fetch and no
@@ -298,23 +295,6 @@ export class GroupController {
       dto.userIds,
     );
     return { invited, skipped };
-  }
-
-  @UseGuards(ThreadAccessGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ResourceId<GroupIdDto>('groupId')
-  @Post('group/sync-meta')
-  @ApiOperation({
-    summary:
-      'Refresh a federated group meta (roster + identity) if stale (chat-open hook)',
-  })
-  async syncGroupMeta(@Request() req: FastifyRequest): Promise<void> {
-    // Chat-open hook: lazily pull the group meta from the origin when the mirror's revision is stale
-    // (same shape as sync-peer-profile). A local group / when we are the origin is a no-op.
-    void this.federationService.syncGroupMetaIfStale(
-      req.threadAccess!.threadId,
-    );
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -398,6 +378,24 @@ export class GroupController {
       });
   }
 
+  @UseGuards(ThrottleGuard)
+  @Throttle(20, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/join-request')
+  @ApiOperation({
+    summary: 'Author the local USER→GROUP request for an existing invitation',
+  })
+  async joinRequestedGroup(
+    @Request() req: FastifyRequest,
+    @Body() dto: GroupIdDto,
+  ): Promise<void> {
+    await this.federationService.acceptGroupRequest(
+      dto.groupId,
+      req.user.userId,
+    );
+  }
+
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @Throttle(20, 60)
   @ApiBearerAuth()
@@ -426,13 +424,6 @@ export class GroupController {
     // Fans to all still-active members (= remaining after the soft-leave); the leaver is excluded.
     if (result.transitioned) {
       await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
-    }
-    // Federation: if this is a MIRROR thread, nudge the origin so it discovers the leave (a normal per-author
-    // hint → the origin pulls → this server answers HTTP 200 FEDERATION_GROUP_AUTHOR_LEFT → the origin
-    // dissolves the leaver from its canonical roster). No-op for a local group / when we ARE the origin.
-    // Best-effort + fire-and-forget (mirrors notifyOnSend on the send path).
-    if (result.transitioned) {
-      void this.federationService.notifyGroupLeave(threadId, req.user.userId);
     }
   }
 

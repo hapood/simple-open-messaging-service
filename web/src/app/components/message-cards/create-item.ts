@@ -19,6 +19,7 @@ import { CallRowComponent } from './call-row/call-row.component';
 import { ForwardRowComponent } from './forward-row/forward-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
+import { SystemRowComponent } from './system-row/system-row.component';
 import { MessagePressGesture } from './message-press-gesture';
 import { parseForwardCard } from './forward-row/forward-card';
 
@@ -116,22 +117,24 @@ export function createMsgCbElement(
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
   const comp: Type<RowComponent> =
-    data.contentType === 'IMAGE' ||
-    data.contentType === 'VIDEO' ||
-    data.contentType === 'AUDIO' ||
-    data.contentType === 'GALLERY'
-      ? MediaRowComponent
-      : data.contentType === 'INVITE'
-        ? InviteRowComponent
-        : data.contentType === 'LINK'
-          ? LinkRowComponent
-          : data.contentType === 'FILE'
-            ? FileRowComponent
-            : data.contentType === 'CALL'
-              ? CallRowComponent
-              : data.contentType === 'FORWARD'
-                ? ForwardRowComponent
-                : TextRowComponent;
+    data.contentType === 'SYSTEM'
+      ? SystemRowComponent
+      : data.contentType === 'IMAGE' ||
+          data.contentType === 'VIDEO' ||
+          data.contentType === 'AUDIO' ||
+          data.contentType === 'GALLERY'
+        ? MediaRowComponent
+        : data.contentType === 'INVITE'
+          ? InviteRowComponent
+          : data.contentType === 'LINK'
+            ? LinkRowComponent
+            : data.contentType === 'FILE'
+              ? FileRowComponent
+              : data.contentType === 'CALL'
+                ? CallRowComponent
+                : data.contentType === 'FORWARD'
+                  ? ForwardRowComponent
+                  : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   // createComponent() only constructs the view; it does not enroll it in Angular's application view

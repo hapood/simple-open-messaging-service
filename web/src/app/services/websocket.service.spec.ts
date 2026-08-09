@@ -5,6 +5,7 @@ import {
   signal,
 } from '@angular/core';
 import { WebsocketService } from './websocket.service';
+import type { StandardMessage } from './realtime-transport';
 import { AuthService } from './auth.service';
 import { ThreadDeletionLockService } from './thread-deletion-lock.service';
 
@@ -140,19 +141,19 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     const received: number[] = [];
     ws.eventSubject.subscribe((message) =>
       received.push(
-        (message.data as { threadRevision: number }).threadRevision,
+        (message.data as { stateRevision: number }).stateRevision,
       ),
     );
     deletionLock.begin(7);
 
-    for (const threadRevision of [6, 9, 8]) {
+    for (const stateRevision of [6, 9, 8]) {
       liveWorker!.emit({
         type: 'event',
         payload: {
-          event: 'THREAD_REVISION_UPDATED',
+          event: 'STATE_REV_UPDATED',
           status: 0,
           message: '',
-          data: { threadRevision },
+          data: { stateRevision },
         },
       });
     }
@@ -167,7 +168,7 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     const received: number[] = [];
     ws.eventSubject.subscribe((message) =>
       received.push(
-        (message.data as { threadRevision: number }).threadRevision,
+        (message.data as { stateRevision: number }).stateRevision,
       ),
     );
     deletionLock.begin(7);
@@ -175,10 +176,10 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     liveWorker!.emit({
       type: 'event',
       payload: {
-        event: 'THREAD_REVISION_UPDATED',
+        event: 'STATE_REV_UPDATED',
         status: 0,
         message: '',
-        data: { threadRevision: 9 },
+        data: { stateRevision: 9 },
       },
     });
 
@@ -186,5 +187,41 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(received).toEqual([]);
     deletionLock.end(8);
     expect(received).toEqual([9]);
+  });
+
+  it('rejects HELLO without the mandatory stateRevision', () => {
+    const received: StandardMessage[] = [];
+    ws.eventSubject.subscribe((message) => received.push(message));
+    liveWorker!.emit({ type: 'state', state: 'open' });
+    liveWorker!.emit({
+      type: 'event',
+      payload: {
+        event: 'HELLO',
+        status: 0,
+        message: '',
+        data: { userId: 1 },
+      },
+    });
+    // forceReconnect tears down and immediately starts the replacement transport,
+    // whose first observable state is `connecting`.
+    expect(ws.state()).toBe('connecting');
+    expect(received).toEqual([]);
+  });
+
+  it('rejects STATE_REV_UPDATED without the mandatory stateRevision', () => {
+    const received: StandardMessage[] = [];
+    ws.eventSubject.subscribe((message) => received.push(message));
+    liveWorker!.emit({ type: 'state', state: 'open' });
+    liveWorker!.emit({
+      type: 'event',
+      payload: {
+        event: 'STATE_REV_UPDATED',
+        status: 0,
+        message: '',
+        data: {},
+      },
+    });
+    expect(ws.state()).toBe('connecting');
+    expect(received).toEqual([]);
   });
 });

@@ -565,9 +565,17 @@ export class UploadService {
     let overrideContentType: ContentType | undefined;
     switch (intent) {
       case ContentType.IMAGE:
-        if (detected?.family !== 'image') throw new Error('invalid image');
-        family = 'IMAGE';
-        ext = detected.ext;
+        if (detected?.family === 'image') {
+          family = 'IMAGE';
+          ext = detected.ext;
+        } else {
+          // Unsupported/corrupt image formats are still safe as attachment downloads. Keep the
+          // original display metadata, store them as FILE, and atomically override the staged
+          // message type at promotion so no client tries to render unverified bytes inline.
+          family = 'FILE';
+          ext = parseFileExt(filename) || 'bin';
+          overrideContentType = ContentType.FILE;
+        }
         break;
       case ContentType.FILE:
         family = 'FILE';

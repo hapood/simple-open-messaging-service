@@ -551,7 +551,7 @@ export class FederationSelfCheckService {
     }
     const req: SignedRequest = {
       method: 'POST',
-      path: '/api/v1/s2s/init',
+      path: '/api/v1/s2s/ignite',
       query: '?',
       authority,
       body: '{"probe":"self-check"}',

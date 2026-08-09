@@ -44,9 +44,9 @@ const GROUP_EVENTS = new Set<string>([
  * - GROUP_UPDATED → {@link ThreadRepository.applyGroupUpdate} so the rename / new avatar land in the
  *   conversation list (and any view reading the shared store) in real time.
  * - A membership/role event targeting THIS user → self effect only:
- *     • my JOIN  → no list work (the thread-add is driven by THREAD_REVISION_UPDATED)
+ *     • my JOIN  → no list work (the thread-add is driven by STATE_REV_UPDATED)
  *     • my ROLE  → update my role on the item + toast ("You are now …")
- *     • my KICK  → toast ("You were removed …") (the thread-drop is driven by THREAD_REVISION_UPDATED)
+ *     • my KICK  → toast ("You were removed …") (the thread-drop is driven by STATE_REV_UPDATED)
  * - A membership/role event targeting SOMEONE ELSE → re-emit on {@link rosterChanged$} so any open
  *   GroupInfoComponent for that group reloads its roster. The conversation-list item itself is
  *   unaffected (it shows the thread, not its members).
@@ -96,9 +96,9 @@ export class GroupEventService implements OnDestroy {
       this.threadRepo.items().find((t) => t.threadId === p.threadId)?.group
         ?.name ?? this.transloco.translate('errors.theGroup');
     if (targetsMe) {
-      // Thread-list add/delete on MY list is driven by the THREAD_REVISION_UPDATED delta
+      // Thread-list add/delete on MY list is driven by the STATE_REV_UPDATED delta
       // (recordThreadAdd on join, recordThreadDelete on kick/leave) — NOT here. The cases below are
-      // the non-list effects only: a self-kick toast, and a role patch (THREAD_REVISION_UPDATED does
+      // the non-list effects only: a self-kick toast, and a role patch (STATE_REV_UPDATED does
       // not fire for a role change, so the role still rides this event).
       switch (event) {
         case 'GROUP_MEMBER_KICKED':

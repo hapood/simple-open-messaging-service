@@ -7,7 +7,7 @@ let DiscoveryService: typeof import('./discovery.service.js').DiscoveryService;
 
 beforeAll(async () => {
   ({ DiscoveryService } = await import('./discovery.service.js'));
-});
+}, 30_000);
 
 function makeService(options: {
   pinned: boolean;

@@ -16,13 +16,13 @@ import {
   user,
 } from '../src/database/schema.js';
 import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
-import { FederationMissedService } from '../src/federation/federation-missed.service.js';
+import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 
-describe('FederationMissedService', () => {
+describe('FederationMessageFeedService', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let cursor: FederationCursorService;
-  let service: FederationMissedService;
+  let service: FederationMessageFeedService;
   const peerDomain = 'missed-peer.test';
 
   beforeAll(async () => {
@@ -31,7 +31,7 @@ describe('FederationMissedService', () => {
     }).compile();
     database = mod.get(DatabaseService);
     cursor = new FederationCursorService(database);
-    service = new FederationMissedService(cursor);
+    service = new FederationMessageFeedService(cursor);
   });
 
   beforeEach(async () => {

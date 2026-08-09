@@ -23,7 +23,8 @@ export type { User } from './model';
  *  client-side planning, no second batch-hydrate round-trip. */
 export type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItem }
-  | { threadId: number; direction: 'DELETE' };
+  | { threadId: number; direction: 'DELETE' }
+  | { direction: 'PROFILE'; user: User };
 
 /** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
  *  userId (the session token is opaque, server-side-lookup only). Set on establishSession, cleared on
@@ -45,12 +46,11 @@ export class UserService {
    *  Other services' session-end effects key off this signal to reset their in-memory caches on logout. */
   readonly sessionUserId = signal<number | null>(null);
 
-  /** The client's applied thread-list revision cursor — seeded from the HELLO connect handshake's
-   *  threadRevision (the SOLE revision source now that the snapshot endpoint is gone), advanced after each
-   *  THREAD_REVISION_UPDATED delta is applied. Lives here so ConversationListService (which injects this
+  /** The client's applied state revision cursor — seeded from HELLO's stateRevision and advanced after
+   *  each STATE_REV_UPDATED delta is applied. Lives here so ConversationListService (which injects this
    *  service) can read/advance it without a circular DI. In-memory only — seeded fresh each connect. */
-  private readonly _threadRevCursor = signal<number | undefined>(undefined);
-  readonly threadRevCursor = this._threadRevCursor.asReadonly();
+  private readonly _stateRevCursor = signal<number | undefined>(undefined);
+  readonly stateRevCursor = this._stateRevCursor.asReadonly();
 
   /** The latest friend-request revision (epoch ms | null) = MAX(createdAt) over incoming FRIEND invites
    *  (creation-based — arms ONLY on a new request), sourced from the HELLO handshake +
@@ -95,7 +95,7 @@ export class UserService {
     this.freshCachePending = false;
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
-    this._threadRevCursor.set(undefined);
+    this._stateRevCursor.set(undefined);
     this.friendReqRev.set(null);
     this.friendReqAckRev.set(null);
     this.profileFetch = undefined;
@@ -201,18 +201,21 @@ export class UserService {
     });
   }
 
-  /** A live PROFILE_REV_UPDATED arrived. Skip the echo of THIS device's own edit: the edit component calls
-   *  updateSessionProfile() (force re-fetch) right after every avatar/name/bio edit, so sessionProfile
-   *  already carries the fresh profileRev by the time the backend's PROFILE_REV_UPDATED echo of that same
-   *  edit arrives — a re-fetch would be redundant. Only a NEWER rev (another device/tab's edit) refetches.
-   *  (The native layer also merges this into its cached HELLO, so a webview reclaim replays a fresh rev.) */
-  invalidateSelfProfile(pushedRev: number): void {
-    const cur = this.sessionProfile()?.profileRev;
-    if (cur !== undefined && pushedRev <= cur) return; // our own edit echoing back — already applied
-    void this.ensureProfile({ force: true }).subscribe({
-      error: () => {
-        /* best-effort — the next HELLO/gate re-fetches */
-      },
+  applyStateProfile(u: User): void {
+    if (u.id === this.sessionUserId()) {
+      const current = this.sessionProfile();
+      if (!current || u.profileRev >= current.profileRev) {
+        this.sessionProfile.set(u);
+        void this.webdb.putMeta('selfProfile', u);
+      }
+    }
+    void this.profileRepo.putProfile(`u${u.id}`, 'user', {
+      id: u.id,
+      name: u.name,
+      avatar: u.avatar,
+      bio: u.bio,
+      domain: u.domain,
+      profileRev: u.profileRev,
     });
   }
 
@@ -316,7 +319,7 @@ export class UserService {
    *  already-set sessionProfile (`ensureProfile` returns `of(cached)`) and serve stale data — which is
    *  why a live friend request didn't surface the badge, and an avatar/name edit didn't refresh the
    *  rail/drawer, until a full reload. Use ensureProfile() (no force) for the idempotent get-or-load at
-   *  boot. threadRevision is unchanged by all these triggers, so re-seeding the cursor is a no-op. */
+   *  boot. stateRevision is unchanged by all these triggers, so re-seeding the cursor is a no-op. */
   updateSessionProfile() {
     this.ensureProfile({ force: true }).subscribe({
       error: (err) => {
@@ -326,14 +329,14 @@ export class UserService {
   }
 
   /** Seed the thread-revision cursor (from /user/my-profile). */
-  seedThreadRevCursor(rev: number): void {
-    this._threadRevCursor.set(rev);
+  seedStateRevCursor(rev: number): void {
+    this._stateRevCursor.set(rev);
   }
 
   /** Advance the cursor after applying a delta (monotonic — ignore a non-advancing/stale revision). */
-  advanceThreadRevCursor(rev: number): void {
-    const cur = this._threadRevCursor();
-    if (cur === undefined || rev > cur) this._threadRevCursor.set(rev);
+  advanceStateRevCursor(rev: number): void {
+    const cur = this._stateRevCursor();
+    if (cur === undefined || rev > cur) this._stateRevCursor.set(rev);
   }
 
   register(params: { account: string; name: string; password: string }) {
@@ -384,7 +387,7 @@ export class UserService {
    *  no client-side planning, no second batch-hydrate round-trip. */
   queryThreadDelta(params: { fromRevision: number; toRevision: number }) {
     return this.http.post<StandardResponse<HydratedThreadDeltaOp[]>>(
-      `${apiPrefix()}/user/query-thread/delta`,
+      `${apiPrefix()}/user/query-state/delta`,
       params,
     );
   }
@@ -449,30 +452,6 @@ export class UserService {
     >(`${apiPrefix()}/invite/friend-status`, params);
   }
 
-  /** Refresh a peer's avatar/name/bio if stale (chat-open + profile-panel-open hook). Federated: cheap
-   *  server-side /revision probe, re-pull + re-localize only when newer; local: authoritative in-DB. Pass
-   *  the caller's last-seen `profileRev` for a lightweight ACK-only short-circuit when unchanged. */
-  syncPeerProfile(params: { userId: number; sinceProfileRev?: number }) {
-    return this.http.post<StandardResponse<User>>(
-      `${apiPrefix()}/user/sync-peer-profile`,
-      params,
-    );
-  }
-
-  /** ACK-only self-profile revision probe used when the profile surface opens. A stale revision causes
-   *  PROFILE_REV_UPDATED; the existing SSE handler then pulls /user/my-profile and writes it through IDB. */
-  syncSelfProfile(sinceProfileRev: number): void {
-    this.http
-      .post<
-        StandardResponse<never>
-      >(`${apiPrefix()}/user/sync-self-profile`, { sinceProfileRev })
-      .subscribe({
-        error: () => {
-          /* best-effort — HELLO/reconnect remains the backstop */
-        },
-      });
-  }
-
   /** Incoming pending friend invites (no params — backend hardcodes last-7-days, ≤200, friends filtered
    *  out). The inviter profile is embedded on each row (fromUser). */
   listIncomingInvites() {
@@ -494,6 +473,13 @@ export class UserService {
   acceptInvite(params: { inviteId: string }) {
     return this.http.post<StandardResponse<{ threadId?: number }>>(
       `${apiPrefix()}/invite/accept`,
+      params,
+    );
+  }
+
+  joinGroupRequest(params: { groupId: number }) {
+    return this.http.post<StandardResponse<void>>(
+      `${apiPrefix()}/group/join-request`,
       params,
     );
   }

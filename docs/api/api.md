@@ -120,9 +120,9 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - `update-profile`: `{ name?, bio? }` (handle cannot change; bumps `profileRev`).
 - `update-avatar`: `multipart/form-data` `file` → `sharp` multi-size webp (32/64/128/256/512, EXIF-oriented, cover-cropped, bomb-guarded); returns `{ avatar }` (the 512px URL).
 
-### POST `/user/query-thread/delta` — Thread-list delta
+### POST `/user/query-thread/delta` — Client state delta
 
-- **Body**: `{ from: number, to: number }` (revision range). Returns ADD/DELETE deltas from `ThreadRevision` since the client's `threadRevision` cursor — the client delta-replays rather than re-fetching the whole list.
+- **Body**: `{ from: number, to: number }` (revision range). Returns thread ADD/DELETE and PROFILE entries since the client's `stateRevision` cursor. The client applies PROFILE entries first and then thread membership changes.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -134,9 +134,9 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - `delete-friend`: `{ threadId }` unfriend (drops the P2P `ThreadParticipant` rows; `20002` if not friends).
 - `block`: `{ userId }` one-way block (creates a `UserBlock`).
 
-### POST `/user/sync-peer-profile` · `/user/peer-trust-status` · `/user/thread-info`
+### POST `/user/peer-trust-status` · `/user/thread-info`
 
-- federated profile freshness pull, peer-trust status, and per-thread details respectively.
+- Peer-trust status and per-thread details respectively. Federated profiles and group metadata arrive through the server state feed; there is no client-triggered freshness probe.
 
 ---
 
@@ -144,17 +144,25 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 > Controller: [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) · Service: [src/invite/invite.service.ts](../../src/invite/invite.service.ts)
 
-Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP`). Invites are addressed by `inviteId` (string); rows are never hard-deleted.
+Friend and group requests use directed facts. `FriendRequest(A,B)` and `FriendRequest(B,A)` are independent
+rows with independent notes and revisions; group invitation and join intent are likewise separate
+`GroupMembershipRequest` directions. The former polymorphic `Invite` table has been removed. REST
+`inviteId` values are stringified ids of the corresponding directed fact.
 
 ### POST `/invite/friend` — Send friend invite
 
-- **Body**: `{ userId: number, note?: string(≤255) }`. Upserts a `PENDING` FRIEND invite (`(from,to)` dedup). `20001` friending self · `20004` invalid target.
+- **Body**: `{ toUserId: number, note?: string(≤255) }`. Upserts the caller's directed request. A new
+  request expires after seven days; an explicit resend after expiry grows its revision and renews the
+  absolute expiry. `20001` friending self · `20004` invalid target.
 
 ### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
 
 - **Body**: `{ inviteId }`.
-- `accept`: FRIEND → mints the `MessageThread(P2P)` + both `ThreadParticipant` rows; GROUP → adds the invitee to the group thread. `20010/20011/20013` not-found / expired / already-handled · `20012` not yours.
-- `revoke`: local invites are terminated directly; federated FRIEND invites synchronously call the peer's signed `/s2s/invite-revoke` first. If the peer is unreachable, the local invite remains pending so both servers stay consistent.
+- `accept`: authors the caller's reverse direction. A P2P thread becomes active only when both friend
+  directions are effective in the same transaction; a federated group mirror becomes active only after
+  the origin's state snapshot confirms membership.
+- `reject` / `revoke`: close only the caller-owned direction. Federation convergence is asynchronous
+  through the state feed; there are no S2S invite command endpoints.
 
 ### POST `/invite/incoming` · `/invite/outgoing`
 
@@ -218,15 +226,17 @@ Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP
 
 ### POST `/group/create`
 
-- **Body**: `{ name, avatar?, bio?, inviteUserIds?: number[] }`. Creates `MessageThread(GROUP)` + the `!`-User group identity + `Group`; mints a `PENDING` GROUP `Invite` per listed friend (each must accept via `/invite/accept`). Returns `{ threadId }`.
+- **Body**: `{ name, avatar?, bio?, inviteUserIds?: number[] }`. Creates `MessageThread(GROUP)` + the
+  `!`-User group identity + `Group`; writes a GROUP→USER invitation direction for every selected friend.
+  Returns `{ threadId }`.
 
 ### POST `/group/invite`
 
 - **Body**: `{ groupId, userIds: number[] }` — mint GROUP invites for existing friends. `40002` non-friend.
 
-### POST `/group/info` · `/group/members` · `/group/sync-meta`
+### POST `/group/info` · `/group/members`
 
-- `info` / `members` (`{ groupId }`): group profile / roster (members rosters are returned only for groups the caller is in). `sync-meta`: federated group-identity freshness pull.
+- `info` / `members` (`{ groupId }`): group profile / roster. Federated freshness arrives through state revisions; there is no client-triggered sync endpoint.
 
 ### POST `/group/{leave, kick, transfer, set-role, update}`
 
@@ -305,7 +315,7 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor, `threadRevision`, `profileRev`, `friendReqRev`, and `activeCall` (so a reconnecting/freshly-booted callee re-derives an in-flight incoming call). HELLO is load-bearing — the thread list is delta-replayed from its `threadRevision`. Heartbeat: a `: ping` comment frame every 25s.
+On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor, `stateRevision`, `friendReqRev`, and `activeCall`. `stateRevision` covers both the thread list and cached profile changes; the client applies profile state before thread deltas. Heartbeat: a `: ping` comment frame every 25s.
 
 ### Frame format
 
@@ -317,15 +327,16 @@ data: <json>
 
 ### Event list (backend → frontend)
 
-| Event          | Trigger                                   | `data`                                                                      | Client handling                                 |
-| -------------- | ----------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------- |
-| `HELLO`        | connect                                   | cursors (message / threadRevision / profileRev / friendReqRev / activeCall) | delta-replay thread list; re-derive active call |
-| `NEW_MESSAGE`  | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render         |
-| `NOTIFY`       | friend request / system notice            | notification descriptor                                                     | update badge                                    |
-| `THREAD_META`  | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                        |
-| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login                     |
+| Event               | Trigger                                   | `data`                                                                      | Client handling                         |
+| ------------------- | ----------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------- |
+| `HELLO`             | connect                                   | cursors (message / stateRevision / friendReqRev / activeCall)               | apply profile state, then thread delta  |
+| `STATE_REV_UPDATED` | local state cursor advances               | `{ stateRevision }`                                                         | pull and apply the next state range     |
+| `NEW_MESSAGE`       | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
+| `NOTIFY`            | friend request / system notice            | notification descriptor                                                     | update badge                            |
+| `THREAD_META`       | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                |
+| `FORCE_LOGOUT`      | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login             |
 
-> Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; messages missed during a disconnect are caught up after reconnect via the threadRevision delta + per-thread message cursors (the stream does not replay history — no `Last-Event-ID`).
+> Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; state missed during a disconnect is caught up from `stateRevision`, and messages are caught up from the per-thread message cursors (the stream does not replay history — no `Last-Event-ID`).
 
 ### Client → Server
 

@@ -72,6 +72,7 @@ export class MessageReportService {
             target.creator === userId ||
             target.isDeleted ||
             target.contentType === 'INVITE' ||
+            target.contentType === 'SYSTEM' ||
             target.contentType === 'CALL',
         )
       ) {
