@@ -358,10 +358,15 @@ export class FederationIdentityService {
       columns: { trustLevel: true },
       where: eq(tables.federatedPeer.domain, normalizeDomain(domain)),
     });
-    if (!peer || !['trusted', 'demoted'].includes(peer.trustLevel)) {
-      const locked =
-        peer?.trustLevel === 'identity_lost' ||
-        peer?.trustLevel === 'reset_in_progress';
+    // An identity-lost peer may read only this nonce-bound proof with its original cached signing
+    // key. Serving the proof does not recover our local trust edge (markIdentityEndpointRecovered
+    // promotes demoted only); it merely prevents two peers that both saw poisoned DNS from deadlocking
+    // their explicit administrator recovery probes.
+    if (
+      !peer ||
+      !['trusted', 'demoted', 'identity_lost'].includes(peer.trustLevel)
+    ) {
+      const locked = peer?.trustLevel === 'reset_in_progress';
       throw new BusinessException(
         locked
           ? BusinessCode.FEDERATION_PEER_IDENTITY_LOST

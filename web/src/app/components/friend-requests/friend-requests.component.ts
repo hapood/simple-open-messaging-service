@@ -3,11 +3,15 @@ import { Subject, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { PopupType, RouteService } from '../../services/route.service';
+import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
-import { displayUserName, Invite } from '../../services/model';
+import {
+  displayUserAccount,
+  displayUserName,
+  Invite,
+} from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -16,6 +20,7 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
 import { translateBizResult } from '../../services/biz-code';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import dayjs from 'dayjs';
+import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invite-dialog.component';
 
 export enum AddTabStatus {
   INIT,
@@ -57,12 +62,15 @@ type RelationshipState =
     FitDialogDirective,
     TranslocoPipe,
     FederatedBadgeComponent,
+    FriendInviteDialogComponent,
   ],
   templateUrl: './friend-requests.component.html',
   styleUrl: './friend-requests.component.scss',
 })
 export class FriendRequestsComponent implements OnDestroy {
-  readonly fitOpts = { minHeight: 420 } as const;
+  readonly fitOpts = {
+    minHeight: 560,
+  } as const;
   readonly searchText = signal('');
   /** When set, the in-flight federated resolve is a FIRST-CONTACT handshake with this peer domain. The
    *  server's peer-trust-status pre-check reported the domain untrusted (no FederatedPeer 'trusted'
@@ -73,9 +81,9 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly connectingDomain = signal<string | null>(null);
   private trustSub: Subscription | undefined;
   private searchSub: Subscription | undefined;
-  /** Local fuzzy discovery results (Add tab). When non-empty, the Add tab renders this list instead of
-   *  the single resolved-user card. Cleared when a result is picked (→ single card) or on a new search. */
+  /** Exact account resolution always yields zero or one row. */
   readonly localResults = signal<User[]>([]);
+  readonly inviteUser = signal<User | null>(null);
   readonly errMsg = signal('');
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT);
   readonly relationshipStates = signal<ReadonlyMap<number, RelationshipState>>(
@@ -98,6 +106,7 @@ export class FriendRequestsComponent implements OnDestroy {
   AddTabStatus = AddTabStatus;
   AppIconType = AppIconType;
   displayUserName = displayUserName;
+  displayUserAccount = displayUserAccount;
 
   constructor(
     private routeService: RouteService,
@@ -108,9 +117,14 @@ export class FriendRequestsComponent implements OnDestroy {
   setTab(tab: number) {
     this.activeTab.set(tab);
     this.loadTab(tab);
+    if (tab === 1) this.userService.markFriendReqRead();
   }
 
   goBack() {
+    if (this.inviteUser()) {
+      this.inviteUser.set(null);
+      return;
+    }
     this.routeService.closeDlg();
   }
 
@@ -121,21 +135,29 @@ export class FriendRequestsComponent implements OnDestroy {
     this.cancelInFlight();
     this.localResults.set([]);
 
-    // Branch on shape: a federated address (account@domain) resolves EXACTLY (you can't enumerate a
-    // remote user table — only resolve a known handle via S2S); anything else is LOCAL fuzzy discovery
-    // (POST /user/search, matches account OR display name). The first-contact handshake banner only
-    // applies to the federated path.
+    // All friend search is exact. A local account resolves by account alone; a federated address resolves
+    // by account + domain. This deliberately never calls fuzzy user discovery, so the UI can show at most
+    // one result and cannot be used to enumerate accounts or display names.
     // The `@` is a UI input aid ONLY — split the typed `account@domain` into two fields here, at the
     // input boundary, so the API never carries an @-joined string. A bare account (no `@`) is a local
     // lookup (domain omitted).
     const at = curSearchText.lastIndexOf('@');
+    const firstAt = curSearchText.indexOf('@');
+    if (
+      firstAt !== -1 &&
+      (at <= 0 || at === curSearchText.length - 1 || firstAt !== at)
+    ) {
+      this.curSearchText.set(curSearchText);
+      this.addTabStatus.set(AddTabStatus.EMPTY);
+      return;
+    }
     const domain =
       at > 0 && at < curSearchText.length - 1
         ? curSearchText.slice(at + 1)
         : null;
     const account = at > 0 ? curSearchText.slice(0, at) : curSearchText;
 
-    // Federated: exact resolve → establish trust (if needed) → fetch peer profile → single card.
+    // Exact resolve → establish trust when federated (if needed) → fetch profile → one card.
     const runResolve = () => {
       this.searchSub = this.userService
         .resolveUser({ account, ...(domain ? { domain } : {}) })
@@ -151,35 +173,6 @@ export class FriendRequestsComponent implements OnDestroy {
           },
           error: () => {
             this.connectingDomain.set(null);
-            this.errMsg.set(
-              this.transloco.translate('friend.error.unknownError'),
-            );
-            this.addTabStatus.set(AddTabStatus.ERROR);
-          },
-        });
-    };
-
-    // Local: fuzzy discovery → result list (each row picks → single card via applySelectedUser).
-    const runLocalSearch = () => {
-      this.searchSub = this.userService
-        .searchUsers({ q: curSearchText })
-        .subscribe({
-          next: (res) => {
-            if (res.code === 0 && res.data) {
-              const myId = this.userService.sessionProfile()!.id;
-              const list = res.data.list.filter((u) => u.id !== myId);
-              if (list.length > 0) {
-                this.showResults(list);
-              } else {
-                this.curSearchText.set(curSearchText);
-                this.addTabStatus.set(AddTabStatus.EMPTY);
-              }
-            } else {
-              this.curSearchText.set(curSearchText);
-              this.addTabStatus.set(AddTabStatus.EMPTY);
-            }
-          },
-          error: () => {
             this.errMsg.set(
               this.transloco.translate('friend.error.unknownError'),
             );
@@ -207,11 +200,11 @@ export class FriendRequestsComponent implements OnDestroy {
         },
       });
     } else {
-      runLocalSearch();
+      runResolve();
     }
   }
 
-  /** A single user has been resolved (federated) or picked (local list): check the P2P relationship
+  /** A single exact account has been resolved: check the P2P relationship
    *  state to decide can-add / already-friends / request-already-sent / they-sent-you-one, then show
    *  the single-user card. Shared by both search paths so the post-select UX is identical. */
   private applySelectedUser(user: User) {
@@ -248,8 +241,7 @@ export class FriendRequestsComponent implements OnDestroy {
       });
   }
 
-  /** A local discovery result was clicked: drop the list and show that user's single card. */
-  pickLocalUser(user: User) {
+  activateResult(user: User) {
     const status = this.relationshipStates().get(user.id) ?? 'NONE';
     if (status === 'INCOMING_PENDING') {
       this.setTab(1);
@@ -259,12 +251,17 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   openInviteDialog(user: User) {
-    this.routeService.popupDlg(PopupType.FRIEND_INVITE, { user }, (result) => {
-      if (!result) return;
-      this.relationshipStates.update((states) =>
-        new Map(states).set(result.userId, result.status),
-      );
-    });
+    this.inviteUser.set(user);
+  }
+
+  completeInvite(result: {
+    userId: number;
+    status: 'OUTGOING_PENDING' | 'FRIEND';
+  }) {
+    this.relationshipStates.update((states) =>
+      new Map(states).set(result.userId, result.status),
+    );
+    this.inviteUser.set(null);
   }
 
   relationshipLabel(userId: number): string {
@@ -494,11 +491,6 @@ export class FriendRequestsComponent implements OnDestroy {
     const initialTab = this.initialTab() === 'pending' ? 1 : 0;
     this.activeTab.set(initialTab);
     this.loadTab(initialTab);
-
-    // Opening the panel counts as "seen" → acknowledge the current friend-request revision. markFriendReqRead
-    // optimistically clears the badge locally (friendReqAckRev → friendReqRev) AND POSTs /invite/mark-read,
-    // which advances the SERVER-side friendReqAckRev + pushes FRIEND_REQ_REV_UPDATED → clears the badge on ALL
-    // of the user's devices. A later create re-arms it.
-    this.userService.markFriendReqRead();
+    if (initialTab === 1) this.userService.markFriendReqRead();
   }
 }

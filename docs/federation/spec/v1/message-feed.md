@@ -3,7 +3,7 @@
 状态：`FINAL`
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
-本文定义 `GET /s2s/v1/message-feed` 的完整 page、message、content、SYSTEM event、media 与
+本文定义 `GET /s2s/v1/message-feed` 的完整 page、message、content、media 与
 forward closure schema。通用身份、签名、错误和 cursor 规则见 [主协议](./protocol.md)。
 
 ## 1. 请求与 Page
@@ -20,7 +20,10 @@ interface MessageFeedPage {
 ```
 
 `allocatedThrough` 是本页冻结的 source HWM；`scannedThrough` 是本页成功提交后可确认的 cursor。
-`hasMore: false` 时两者 MUST 相等。page/cursor、空页、重放与错误回滚规则与 state-feed 相同。
+`hasMore: false` 时两者 MUST 相等。空页与重放规则和 state-feed 相同。message item 必须逐条用
+savepoint 隔离：单条失败回滚该条、记录 error 并继续，不能阻止同页其他消息或 cursor 推进。
+publisher 可以按主协议的 retained-floor 规则删除旧 change；因此 `changeId` 与 `scannedThrough`
+可以跨越很大的空洞，consumer 不得要求连续。
 
 ## 2. 外层 Message
 
@@ -74,8 +77,8 @@ interface FederatedMessage {
   是不可恢复 tombstone。非媒体消息 MUST 使用空数组。
 - 只有 PURE_TEXT reply 可以出现 `quoteTarget`；它是 quote 的跨 server 稳定 identity。
 
-publisher MUST 只发出本文列出的 content 字段。SYSTEM 等具权限/生命周期含义的 closed schema 出现
-未知字段时 consumer MUST 拒绝；普通展示类型的 consumer MAY 忽略未知纯展示字段，但不得据此改变
+publisher MUST 只发出本文列出的 content 字段。closed schema 出现未知字段时 consumer MUST 拒绝；
+普通展示类型的 consumer MAY 忽略未知纯展示字段，但不得据此改变
 权限、identity、media ownership 或 cursor。
 
 ## 3. `ContentType`
@@ -91,11 +94,10 @@ type ContentType =
   | 'LINK'
   | 'CALL'
   | 'FORWARD'
-  | 'GALLERY'
-  | 'SYSTEM';
+  | 'GALLERY';
 ```
 
-这 11 个值是 v1 完整集合。未知值 MUST 拒绝，不能降级成普通文本。
+这 10 个值是 v1 完整集合。未知值 MUST 统一拒绝该条并记录 error，不能降级成普通文本。
 
 ## 4. `PURE_TEXT`
 
@@ -120,13 +122,17 @@ interface TextContent {
 外层 `quoteTarget` MUST 同时出现，consumer 必须用后者定位引用，再把本地展示 `seq` 投影到自己的
 存储。其余 quote 字段都是可选的非权威 preview，consumer MAY 重新生成或丢弃。
 
-SYSTEM message 不可被 quote；preview 字段不得授予 media 或消息可见性。
+非 `PURE_TEXT` message 不可被 quote；preview 字段不得授予 media 或消息可见性。
 
 ## 5. 单资源媒体
 
 所有 `url` 是 publisher 的 CAS 展示路径，其中 64 位 digest MUST 与对应 `assets[].digest` 相同。
 consumer 下载并验证 bytes 后 MAY 重写为自己的本地路径。URL/query 不是资源 identity，也不得替代
 `GET /media/:digest` 的精确消息授权参数。
+
+publisher 必须通过 signer 的 thread audience 授权资源访问，并验证 digest 与精确消息的绑定；
+不得使用 `DiscoveryChange` 或其他 message-feed allocation 作为下载授权，因为 change 可以在消息
+确认后被物理清理。
 
 ```ts
 interface ImageContent {
@@ -271,6 +277,8 @@ interface ForwardCardContent {
 
 `summaryLines` 最多三项，仅用于展示。完整、不可变 closure 通过
 `GET /s2s/v1/forward-bundles/:bundleId` 获取；卡片计数不得替代 closure 验证。
+closure 下载同样必须 join signer 的 thread audience 并验证 bundle 与可见 FORWARD message 的绑定，
+不得依赖 message-feed change 是否仍保留。
 
 ```ts
 interface ForwardWireClosure {
@@ -323,48 +331,10 @@ interface ForwardAsset {
 ```
 
 `manifestDigest` MUST 是 canonical manifest JSON 的 SHA-256。所有 child 必须闭合、无环、受实现公布的
-有界资源限制约束。forward 内层 INVITE、CALL 和 SYSTEM 不得赋予当前关系/群权限；接收端必须把整个
+有界资源限制约束。forward 内层 INVITE 和 CALL 不得赋予当前关系/群权限；接收端必须把整个
 bundle 当作不可变历史展示。`accessContext` 若出现，只是 publisher 返回的诊断/授权上下文。
 
-## 11. `SYSTEM`
-
-```ts
-type SystemMessageType =
-  | 'FRIEND_REQUESTED'
-  | 'FRIEND_ACCEPTED'
-  | 'FRIEND_ADDED'
-  | 'FRIEND_REMOVED'
-  | 'GROUP_JOINED'
-  | 'GROUP_LEFT'
-  | 'GROUP_ADMIN_GRANTED'
-  | 'GROUP_ADMIN_REVOKED'
-  | 'GROUP_OWNER_TRANSFERRED';
-
-interface SystemContent {
-  type: SystemMessageType;
-  subject?: Address;
-}
-```
-
-SYSTEM 是 closed schema：除 `type`、`subject` 外不得包含字段。自然语言、昵称和本地 user id 不得放入
-content；客户端依据 type、outer author 和 stable subject 本地化渲染。
-
-| type                      | `subject` | 展示含义                                                             |
-| ------------------------- | --------- | -------------------------------------------------------------------- |
-| `FRIEND_REQUESTED`        | 省略      | outer author 发起好友请求。                                          |
-| `FRIEND_ACCEPTED`         | 省略      | outer author 接受好友关系。                                          |
-| `FRIEND_ADDED`            | 省略      | v1 legacy display event；新 publisher MUST NOT 产生。                |
-| `FRIEND_REMOVED`          | 必选      | outer author 移除 subject 对应的好友关系。                           |
-| `GROUP_JOINED`            | 必选      | subject 已由 origin roster 确认加入群。                              |
-| `GROUP_LEFT`              | 必选      | subject 主动离开或被 operator 移出；outer author 是 actor/operator。 |
-| `GROUP_ADMIN_GRANTED`     | 必选      | subject 被授予管理员展示事件。                                       |
-| `GROUP_ADMIN_REVOKED`     | 必选      | subject 被撤销管理员展示事件。                                       |
-| `GROUP_OWNER_TRANSFERRED` | 必选      | owner 转移给 subject。                                               |
-
-SYSTEM 永远是结构化、durable 的 timeline notice，但它本身不替代 state-feed authority：好友成立看双方
-`P2P_META`，群成员/角色/owner 看 origin `GROUP_META`。consumer 不得仅凭 SYSTEM 修改授权状态。
-
-## 12. Self-authored Receipt、Relay 与幂等
+## 11. Self-authored Receipt、Relay 与幂等
 
 publisher 收到并持久化 peer 自己 authored 的消息后，必须把该副本分配回 author peer。consumer 用
 `(thread, author, originSeq)` 找到原发布，记录 `createdAt` 作为对方持久化回执时间，不得插入重复
@@ -373,5 +343,6 @@ timeline message。publisher-local `seq` 只用于诊断和精确 media ownershi
 relay 收到第三方 authored 消息时保留 `author/originSeq`；不得把同一 allocation 直接反射回刚拉取的
 relay source。重复 change/page、重复 receipt 和重复 clientMessageId 必须幂等。
 
-任何 media digest、quoteTarget、thread participant 或 author identity 不一致都必须使整个 page 与
-cursor 回滚；consumer 不得保存“部分可信”的普通消息后跳过失败项。
+任何 media digest、quoteTarget、thread participant、author identity 或 content schema 不一致都必须
+回滚并跳过该条，同时保留同页其他合法消息。consumer 必须在推进 cursor 前完成每条 savepoint 的
+提交或回滚，不能留下部分写入的坏消息。

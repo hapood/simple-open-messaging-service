@@ -158,6 +158,9 @@ describe('Federation destructive reset', () => {
         messages: number;
         deleteRevisions: number;
         liveAddRevisions: number;
+        peerAudiences: number;
+        discoveryTargets: number;
+        discoveryChanges: number;
       }>(
         sql`
       SELECT
@@ -172,7 +175,15 @@ describe('Federation destructive reset', () => {
             AND direction = 'DELETE') AS "deleteRevisions",
         (SELECT count(*)::int FROM "ThreadRevision"
           WHERE "threadId" = ${affectedThreadId}
-            AND direction = 'ADD' AND "isDelete" = false) AS "liveAddRevisions"
+            AND direction = 'ADD' AND "isDelete" = false) AS "liveAddRevisions",
+        (SELECT count(*)::int FROM "ThreadAudience"
+          WHERE "targetDomain" = ${FED_DOMAIN_B}) AS "peerAudiences",
+        (SELECT count(*)::int FROM "DiscoveryTarget"
+          WHERE "targetDomain" = ${FED_DOMAIN_B}
+            AND "localUserId" IS NULL) AS "discoveryTargets",
+        (SELECT count(*)::int FROM "DiscoveryChange" change
+          JOIN "DiscoveryTarget" target ON target.id = change."targetId"
+          WHERE target."targetDomain" = ${FED_DOMAIN_B}) AS "discoveryChanges"
     `,
       )
       .then((result) => result.rows);
@@ -182,6 +193,9 @@ describe('Federation destructive reset', () => {
       messages: 0,
       deleteRevisions: 1,
       liveAddRevisions: 0,
+      peerAudiences: 0,
+      discoveryTargets: 0,
+      discoveryChanges: 0,
     });
 
     const rejoin = await request(appA.baseUrl)

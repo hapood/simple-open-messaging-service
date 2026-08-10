@@ -60,6 +60,10 @@ export interface NotificationDescriptor {
    *  "thread"-grouped descriptor (one per conversation): "X sent you N messages" (same template, single
    *  sender). Empty for a `clear` descriptor. */
   body: string;
+  /** Number of new messages represented by this notification, measured from the client's frozen foreground
+   *  HWM (or its later per-thread dismiss HWM). Android feeds this directly to `Notification.setNumber`, so
+   *  the launcher badge and notification copy share one server-authored count. `clear` always carries 0. */
+  count: number;
   /** The locale the copy was rendered in (echoes the negotiated Accept-Language). */
   lang: SupportedLocale;
   /** URL to the server-composited stacked-avatar PNG; null → client uses its app icon. */

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
   discoveryChange,
@@ -40,31 +40,23 @@ export class DiscoveryChangeService {
         id: threadAudience.id,
         targetDomain: threadAudience.targetDomain,
         localUserId: threadAudience.localUserId,
-        scope: threadAudience.scope,
       })
       .from(threadAudience)
       .where(
         and(
           eq(threadAudience.threadId, messageRow.threadId),
           isNull(threadAudience.deliverThroughChangeId),
-          or(
-            eq(threadAudience.scope, 'THREAD'),
-            and(
-              eq(threadAudience.scope, 'CREATOR'),
-              eq(threadAudience.creatorUserId, messageRow.creator),
-            ),
-          ),
         ),
       )
       .orderBy(
         asc(threadAudience.targetDomain),
         asc(threadAudience.localUserId),
-        desc(threadAudience.scope),
-      );
+      )
+      // Serialize allocation with audience freeze/revocation. If allocation wins, the closing
+      // transaction includes its new change in the boundary; if closing wins, PostgreSQL rechecks
+      // the active-row predicate after the lock wait and this message is not allocated.
+      .for('update');
 
-    // CREATOR sorts before THREAD and wins when both authorize the same target/message. This keeps
-    // the change attached to the drainable creator grant if the current THREAD subscription is later
-    // deleted. There is still exactly one change per target/message.
     const selectedAudiences: typeof audiences = [];
     const selectedTargets = new Set<string>();
     const excludedDomains = new Set(excludeTargetDomains);

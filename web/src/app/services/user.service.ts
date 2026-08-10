@@ -24,7 +24,8 @@ export type { User } from './model';
 export type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItem }
   | { threadId: number; direction: 'DELETE' }
-  | { direction: 'PROFILE'; user: User };
+  | { direction: 'PROFILE'; user: User }
+  | { direction: 'FRIEND_REQUEST'; revision: number };
 
 /** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
  *  userId (the session token is opaque, server-side-lookup only). Set on establishSession, cleared on
@@ -52,18 +53,12 @@ export class UserService {
   private readonly _stateRevCursor = signal<number | undefined>(undefined);
   readonly stateRevCursor = this._stateRevCursor.asReadonly();
 
-  /** The latest friend-request revision (epoch ms | null) = MAX(createdAt) over incoming FRIEND invites
-   *  (creation-based — arms ONLY on a new request), sourced from the HELLO handshake +
-   *  FRIEND_REQ_REV_UPDATED pushes. Server-state (multi-device consistent). */
-  readonly friendReqRev = signal<number | null>(null);
-  /** The acknowledged friend-request revision (server-state, epoch ms) — the read cursor. Sourced from
-   *  HELLO + FRIEND_REQ_REV_UPDATED; advanced server-side by markFriendReqRead (POST /invite/mark-read → the
-   *  server bumps it + pushes, clearing the badge on ALL devices). NOT persisted to IDB — it is server-state. */
-  readonly friendReqAckRev = signal<number | null>(null);
-  /** The unread-friend-request badge: true while friendReqRev > friendReqAckRev. Read by the icon-rail +
-   *  nav-drawer templates. */
+  /** Latest incoming friend-request state revision discovered through the unified state delta. */
+  readonly friendRequestStateRevision = signal(0);
+  /** Per-device read cursor. It intentionally never leaves this account's local database. */
+  readonly friendRequestSeenRevision = signal(0);
   readonly friendReqBadge = computed(
-    () => (this.friendReqRev() ?? 0) > (this.friendReqAckRev() ?? 0),
+    () => this.friendRequestStateRevision() > this.friendRequestSeenRevision(),
   );
 
   private readonly webdb = inject(WebdbService);
@@ -96,8 +91,8 @@ export class UserService {
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
     this._stateRevCursor.set(undefined);
-    this.friendReqRev.set(null);
-    this.friendReqAckRev.set(null);
+    this.friendRequestStateRevision.set(0);
+    this.friendRequestSeenRevision.set(0);
     this.profileFetch = undefined;
   }
 
@@ -106,24 +101,15 @@ export class UserService {
    *  returns once it is open, so the caller (the threadlist) can read IDB without waiting on the profile.
    *  The profile gate ({@link gateSelfProfile}) runs async: if the IDB-cached self profile's `profileRev`
    *  matches HELLO's, the cached profile is fresh and the fetch is skipped; otherwise (first boot / stale)
-   *  the full profile is fetched + cached. The friend-request badge is derived from HELLO's `friendReqRev`
-   *  vs `friendReqAckRev` (both server-state, multi-device consistent). Idempotent for the same user across
-   *  reconnects (re-applies both). */
-  async establishSession(
-    userId: number,
-    profileRev: number,
-    friendReqRev: number | null,
-    friendReqAckRev: number,
-  ): Promise<void> {
+   *  the full profile is fetched + cached. Friend-request notification state is restored from this device's
+   *  per-account database and subsequently advanced by the unified state delta. */
+  async establishSession(userId: number, profileRev: number): Promise<void> {
     if (this.freshCachePending) {
       this.freshCachePending = false;
       await this.webdb.recreateForUser(String(userId));
       this.webdbUserKey = null;
     }
     if (this.sessionUserId() === userId) {
-      // Re-establish on reconnect (same user): the webdb is already open — re-apply the server-state badge
-      // pair (the badge re-derives friendReqRev > friendReqAckRev).
-      this.applyFriendReqRev(friendReqRev, friendReqAckRev);
       return;
     }
     // Account switch without a logout (defensive): tear down the previous user's DB first.
@@ -140,9 +126,16 @@ export class UserService {
       // recreation from publishing handles if logout/account-switch wins while it is in flight.
       await this.webdb.recreateForUser(String(userId));
     }
-    // Apply HELLO's server-state badge pair. Profile gate runs async — the threadlist needs only the open
-    // webdb, not the profile.
-    this.applyFriendReqRev(friendReqRev, friendReqAckRev);
+    const [latest, seen] = await Promise.all([
+      this.webdb.getMeta('friendRequestStateRevision'),
+      this.webdb.getMeta('friendRequestSeenRevision'),
+    ]);
+    this.friendRequestStateRevision.set(
+      typeof latest === 'number' && latest >= 0 ? latest : 0,
+    );
+    this.friendRequestSeenRevision.set(
+      typeof seen === 'number' && seen >= 0 ? seen : 0,
+    );
     void this.gateSelfProfile(userId, profileRev);
   }
 
@@ -181,24 +174,18 @@ export class UserService {
     }
   }
 
-  /** Apply the friend-request badge state (from HELLO or a live FRIEND_REQ_REV_UPDATED push). Sets both
-   *  server-state signals; the badge re-derives via the `friendReqBadge` computed (friendReqRev > ack). */
-  applyFriendReqRev(rev: number | null, ackRev: number): void {
-    this.friendReqRev.set(rev);
-    this.friendReqAckRev.set(ackRev);
+  /** Publish a friend-request revision after the state delta and its cursor committed atomically. */
+  applyFriendRequestStateRevision(revision: number): void {
+    if (revision > this.friendRequestStateRevision())
+      this.friendRequestStateRevision.set(revision);
   }
 
-  /** Acknowledge the current friend-request state — the user opened the friend-requests panel. POSTs
-   *  /invite/mark-read, which advances the SERVER-side `friendReqAckRev` to the current friendReqRev + pushes
-   *  FRIEND_REQ_REV_UPDATED → this client (and every other device) clears the badge. Optimistically clears
-   *  locally for snappy UX (the push confirms; on POST failure the next HELLO re-arms it). */
+  /** Mark requests seen on this device only. */
   markFriendReqRead(): void {
-    this.friendReqAckRev.set(this.friendReqRev()); // optimistic clear
-    this.markInvitesRead().subscribe({
-      error: () => {
-        /* best-effort — the next HELLO/push re-derives the truth */
-      },
-    });
+    const revision = this.friendRequestStateRevision();
+    if (revision <= this.friendRequestSeenRevision()) return;
+    this.friendRequestSeenRevision.set(revision);
+    void this.webdb.putMeta('friendRequestSeenRevision', revision);
   }
 
   applyStateProfile(u: User): void {
@@ -281,7 +268,7 @@ export class UserService {
 
   /** Idempotent self-profile get-or-load: returns the cached sessionProfile if already loaded (set by
    *  {@link establishSession} from HELLO, or a prior fetch), else fetches /user/my-profile. `force:true`
-   *  re-fetches for live refresh (the NOTIFY FRIEND_REQUEST badge, post-edit re-read, markInvitesRead).
+   *  re-fetches for live refresh (the friend-request state delta and post-edit re-read).
    *  The thread-revision cursor is NOT seeded here — HELLO owns the sole revision source now. */
   ensureProfile(opts?: { force?: boolean }): Observable<User> {
     if (!opts?.force && this.sessionProfile() !== undefined) {
@@ -314,8 +301,8 @@ export class UserService {
   }
 
   /** Fire-and-forget profile refresh — ALWAYS hits the network (`force: true`), because every caller
-   *  wants FRESH data: the NOTIFY FRIEND_REQUEST badge arming, the post-avatar / post-name-bio edit
-   *  re-read, and markInvitesRead clearing the badge. A non-force call would short-circuit on the
+   *  wants FRESH data: friend-request badge arming, the post-avatar / post-name-bio edit
+   *  re-read. A non-force call would short-circuit on the
    *  already-set sessionProfile (`ensureProfile` returns `of(cached)`) and serve stale data — which is
    *  why a live friend request didn't surface the badge, and an avatar/name edit didn't refresh the
    *  rail/drawer, until a full reload. Use ensureProfile() (no force) for the idempotent get-or-load at
@@ -517,14 +504,6 @@ export class UserService {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/user/delete-friend`,
       params,
-    );
-  }
-
-  /** Clear the friend-invite unread badge (the user has viewed the friend-requests panel). */
-  markInvitesRead() {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/invite/mark-read`,
-      {},
     );
   }
 

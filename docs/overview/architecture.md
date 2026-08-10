@@ -48,7 +48,7 @@ The application root module [src/app.module.ts](../../src/app.module.ts) imports
 | ------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **AuthModule**                       | [src/auth/](../../src/auth/)                                               | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
 | **UserModule**                       | [src/user/](../../src/user/)                                               | `UserService` — profile, register, friend/block helpers, and peer-trust status                                                                                                                                                                                            |
-| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, `: ping` heartbeat, `HELLO` handshake, `NEW_MESSAGE`/`NOTIFY`/`THREAD_META` push, `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for the HELLO                                      |
+| **GatewayModule**                    | [src/gateway/](../../src/gateway/)                                         | SSE downlink (`EventsController` + `SseService`): connection registry, `: ping` heartbeat, `HELLO` handshake, `STATE_REV_UPDATED`/`NEW_MESSAGE`/`THREAD_META` push, `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for the HELLO                           |
 | **MessageModule**                    | [src/message/](../../src/message/)                                         | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out                                                                                                               |
 | **GroupModule**                      | [src/group/](../../src/group/)                                             | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update                                                                                                                                                                               |
 | **ThreadParticipantModule**          | [src/thread-participant/](../../src/thread-participant/)                   | `ThreadParticipantService` (raw thread-roster mutator) + `ThreadAccessGuard` (membership guard reused by message/group routes)                                                                                                                                            |
@@ -184,7 +184,7 @@ Authentication reuses the same credential as HTTP — the global `SessionAuthGua
 
 ### HELLO handshake
 
-On connect, `SseService` pushes a `HELLO` frame carrying the newest-message cursor, `stateRevision`, `friendReqRev`, and `activeCall`. The state range includes PROFILE plus thread ADD/DELETE entries; clients apply PROFILE first. HELLO is load-bearing because state catch-up starts from this durable cursor.
+On connect, `SseService` pushes a `HELLO` frame carrying the newest-message cursor, `stateRevision`, and `activeCall`. The state range includes PROFILE, FRIEND_REQUEST, and thread ADD/DELETE entries. HELLO is load-bearing because state catch-up and missed-summary recovery start from durable local cursors.
 
 ### Heartbeat and Liveness
 
@@ -200,10 +200,9 @@ data: <json>
 
 | Event               | Trigger                                   | `data`                                                                      | Client handling                          |
 | ------------------- | ----------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------- |
-| `HELLO`             | connect                                   | cursors (message/stateRevision/friendReqRev/activeCall)                     | apply profile state, then thread changes |
+| `HELLO`             | connect                                   | cursors (message/stateRevision/activeCall)                                  | pull state delta and missed summary      |
 | `STATE_REV_UPDATED` | state cursor advances                     | `{ stateRevision }`                                                         | pull the next client-state range         |
 | `NEW_MESSAGE`       | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render  |
-| `NOTIFY`            | friend request / system notice            | notification descriptor                                                     | update badge                             |
 | `THREAD_META`       | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                 |
 | `FORCE_LOGOUT`      | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login              |
 
@@ -226,11 +225,11 @@ Friend and group requests are stored as independent directed facts:
 - **GROUP**: `GroupMembershipRequest` stores GROUP→USER invitation and USER→GROUP join directions. The
   group origin remains authoritative and activates mirrors through `GROUP_META`.
 
-The friend-request badge is derived client-side from `friendReqRev > friendReqAckRev` (carried on HELLO); `POST /invite/mark-read` advances the ack.
+The friend-request badge is derived from the latest FRIEND_REQUEST operation in the unified state delta versus a per-device seen revision stored in the local account database.
 
 ### Thread-list versioning
 
-Profile changes and roster mutations share the public `stateRevision` cursor. The backing log contains PROFILE and thread ADD/DELETE entries; `POST /user/query-thread/delta` returns a range and the client applies profile entries first.
+Profile changes, incoming friend requests, and roster mutations share the public `stateRevision` cursor. `POST /user/query-state/delta` returns a range. The client commits state data plus its cursor atomically; missed-summary rows and their cursor are committed in a separate atomic transaction.
 
 ### Message Sending
 
@@ -259,6 +258,17 @@ Two consistency boundaries are deliberate:
 3. `MessageFanoutService` pushes `NEW_MESSAGE` to all participants via SSE (full body) + fires push for offline recipients.
 4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
 
+### Local System Messages
+
+After an authoritative friend or group-state transaction commits, the server may best-effort append a
+local `SYSTEM` message for client display. Supported events are `FRIEND_ADDED`, `FRIEND_REMOVED`,
+`GROUP_JOINED`, `GROUP_LEFT`, `GROUP_ADMIN_GRANTED`, `GROUP_ADMIN_REVOKED`, and
+`GROUP_OWNER_TRANSFERRED`; voluntary leave and removal both render as `GROUP_LEFT`.
+
+These rows are server-authored presentation records, not business-state facts. They cannot be sent by a
+client or used as commands. Generation failures are logged without rolling back the committed state, and
+client parsing/rendering failures are logged and replaced with a generic localized fallback.
+
 ### 1:1 Calls
 
 `CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` authors a terminal `ContentType.CALL` chat bubble (bilateral). Federated calls relay over signed S2S `/s2s/v1/call`. See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap/android-calls-followup.md](../roadmap/android-calls-followup.md).
@@ -273,7 +283,7 @@ Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`Feder
 
 1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): secrets externalized; auto-generated at first startup under `./data/` when unset. (The subsequent SessionToken rewrite removed the access/refresh secrets entirely for users.)
 2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): persisted as a sha256 hash, revocable, rotating. (Later superseded: the dual access/refresh pair was replaced by the single opaque `SessionToken`.)
-3. ~~**`NotifyModule` not wired up**~~ ✅ Resolved: `Notify` / `userNotiBox` were folded into the `User` table as inline columns (`friendReqAckRev`, etc.); there is no `NotifyModule` to wire up.
+3. ~~**`NotifyModule` not wired up**~~ ✅ Resolved: notification state uses unified revisions plus device-local read cursors; there is no `NotifyModule` to wire up.
 4. ~~**File upload**~~ ✅ Implemented: `UploadModule` provides `/upload` + `/send-media` through the content-addressed (sha256 CAS, refcounted `MediaAsset`) pipeline, and `/user/update-avatar` (sharp multi-size webp). Per-user rate limiting / orphan cleanup remain a deferred hardening item.
 5. ~~**Frontend authGuard not in effect**~~ ✅ Fixed: route guards are mounted (auth/guest).
 6. **`/user/query` privacy**: allows batch queries of any non-deleted user's information with no relationship-level visibility isolation. (Open.)

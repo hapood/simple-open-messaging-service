@@ -52,7 +52,9 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   feed、不触发下游。
 - per-peer feed 按 key 压缩，只保留最高业务 revision。feed revision/cursor 使用 bigint，业务
   revision 使用 int。
-- feed page 与 receiver cursor 同事务提交；任一非法 item 回滚整页。
+- state feed page 与 receiver cursor 同事务提交；任一非法 state item 回滚整页。
+- message feed 逐条使用 savepoint 隔离；非法 message item 记 error 并跳过，页面内其余消息继续提交，
+  cursor 仍推进到 `scannedThrough`。
 
 ## 消息与媒体
 
@@ -65,13 +67,16 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   已授权 audience。
 - SOMS 当前用 nullable `Message.originSeq/originServerTime` 记录上述回执只是本地实现，不是联邦
   协议要求的数据库模型。
-- SYSTEM 正文只含结构化事件和稳定 identity，自然语言由客户端按 locale 与时间渲染。
-- 退群先写 `GROUP_LEFT`、分配 changeId、固定 creator audience 交付边界，再关闭成员关系。
+- message-feed 未知 content type 统一按非法 item 处理。
+- 退群成员关系通过 state feed 收敛；最后一个本地成员离开时固定 peer audience 交付边界。
 - 同服务器仍有其他群成员时，共享镜像继续保存消息，退群者重新加入后可查看期间历史；最后一个
   成员离开时冻结 peer audience，重新加入复用镜像并恢复后续消息，但不补无人订阅期间的历史。
 - 媒体正文提交与文件下载解耦；pending 下载可跨重启恢复。quota pause 保持可恢复状态，管理员
   加配额后自动唤醒。
 - CAS 和 forward bundle 下载均验证精确消息/thread 所有权和 digest/bundle 绑定。
+- 资源授权实时 join signer 的 thread audience，不依赖可被 GC 的 message change。
+- 已确认 change 可物理清理；长期不消费的 peer 可按本地策略被强制推进 retained floor，旧 cursor
+  通过 `FEDERATION_MISSED_CURSOR_INVALID` 携带的新起点恢复。
 
 ## 当前限制
 

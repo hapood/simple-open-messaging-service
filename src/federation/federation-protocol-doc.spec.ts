@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ContentType } from '../database/enums.js';
 import { peerStateEventType } from '../database/schema.js';
-import { SystemMessageType } from '../message/system-message.js';
+import { FEDERATED_MESSAGE_CONTENT_TYPES } from './federation-message-feed.service.js';
 import {
   CALL_SIGNAL_KINDS,
   S2S_CALL_OPS,
@@ -42,14 +41,8 @@ describe('Federation v1 protocol documentation', () => {
 
   it('lists every message content type exactly once', () => {
     expect(documentedUnion(readSpec('message-feed.md'), 'ContentType')).toEqual(
-      Object.values(ContentType),
+      FEDERATED_MESSAGE_CONTENT_TYPES,
     );
-  });
-
-  it('lists every SYSTEM message type exactly once', () => {
-    expect(
-      documentedUnion(readSpec('message-feed.md'), 'SystemMessageType'),
-    ).toEqual(Object.values(SystemMessageType));
   });
 
   it('lists every call operation and signaling kind exactly once', () => {
@@ -71,7 +64,6 @@ describe('Federation v1 protocol documentation', () => {
     }>('message-feed.schema.json');
     const content = readSchema<{
       properties: { contentType: { enum: string[] } };
-      $defs: { system: { properties: { type: { enum: string[] } } } };
     }>('message-content.schema.json');
     const call = readSchema<{
       $defs: { base: { properties: { kind: { enum: string[] } } } };
@@ -86,13 +78,10 @@ describe('Federation v1 protocol documentation', () => {
         .sort(),
     ).toEqual([...peerStateEventType.enumValues].sort());
     expect(message.$defs.message.properties.contentType.enum).toEqual(
-      Object.values(ContentType),
+      FEDERATED_MESSAGE_CONTENT_TYPES,
     );
     expect(content.properties.contentType.enum).toEqual(
-      Object.values(ContentType),
-    );
-    expect(content.$defs.system.properties.type.enum).toEqual(
-      Object.values(SystemMessageType),
+      FEDERATED_MESSAGE_CONTENT_TYPES,
     );
     expect(call.$defs.base.properties.kind.enum).toEqual(CALL_SIGNAL_KINDS);
     expect(

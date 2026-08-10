@@ -32,16 +32,14 @@ describe('ThreadAudience schema', () => {
       result.rows.map((row) => [row.conname, row.definition]),
     );
 
-    expect(constraints.get('ThreadAudience_target_check')).toContain(
-      'local',
-    );
+    expect(constraints.get('ThreadAudience_target_check')).toContain('local');
     expect(constraints.get('ThreadAudience_target_check')).toContain('<>');
     expect(constraints.has('ThreadAudience_accessEpoch_check')).toBe(false);
     expect(constraints.has('ThreadAudience_visibleRange_check')).toBe(false);
-    expect(constraints.get('ThreadAudience_scope_check')).toContain('CREATOR');
+    expect(constraints.has('ThreadAudience_scope_check')).toBe(false);
     expect(
       constraints.get('ThreadAudience_deliverThroughChangeId_check'),
-    ).toContain('> 0');
+    ).toContain('>= 0');
 
     const columns = await database.pool.query<{ column_name: string }>(
       `SELECT column_name
@@ -55,6 +53,8 @@ describe('ThreadAudience schema', () => {
         'startAfterOriginSeq',
         'visibleThroughOriginSeq',
         'endedAt',
+        'scope',
+        'creatorUserId',
       ]),
     );
   });
@@ -68,10 +68,8 @@ describe('ThreadAudience schema', () => {
         [
           'ThreadAudience_local_key',
           'ThreadAudience_peer_key',
-          'ThreadAudience_peer_creator_key',
           'ThreadAudience_local_access_idx',
           'ThreadAudience_peer_access_idx',
-          'ThreadAudience_creator_access_idx',
           'Message_threadId_id_idx',
         ],
       ],
@@ -81,10 +79,8 @@ describe('ThreadAudience schema', () => {
       [
         'ThreadAudience_local_key',
         'ThreadAudience_peer_key',
-        'ThreadAudience_peer_creator_key',
         'ThreadAudience_local_access_idx',
         'ThreadAudience_peer_access_idx',
-        'ThreadAudience_creator_access_idx',
         'Message_threadId_id_idx',
       ].sort(),
     );

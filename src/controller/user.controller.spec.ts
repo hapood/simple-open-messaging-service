@@ -6,6 +6,7 @@ function setup() {
   const queryParticipants = vi.fn();
   const queryDelta = vi.fn();
   const queryProfileDelta = vi.fn().mockResolvedValue([]);
+  const queryFriendRequestStateDelta = vi.fn().mockResolvedValue(null);
   const controller = new UserController(
     { queryUsers: vi.fn().mockResolvedValue([]) } as never,
     { queryParticipants } as never,
@@ -16,11 +17,17 @@ function setup() {
     {} as never,
     {} as never,
     {} as never,
-    { queryDelta, queryProfileDelta } as never,
+    { queryDelta, queryProfileDelta, queryFriendRequestStateDelta } as never,
     {} as never,
   );
   const req = { user: { userId: 7 } } as unknown as FastifyRequest;
-  return { controller, queryDelta, queryParticipants, req };
+  return {
+    controller,
+    queryDelta,
+    queryFriendRequestStateDelta,
+    queryParticipants,
+    req,
+  };
 }
 
 describe('UserController.queryThreadDelta', () => {
@@ -85,5 +92,22 @@ describe('UserController.queryThreadDelta', () => {
     await expect(
       controller.queryThreadDelta(req, { fromRevision: 1, toRevision: 2 }),
     ).resolves.toEqual([]);
+  });
+
+  it('returns friend-request changes in the unified state delta', async () => {
+    const { controller, queryDelta, queryFriendRequestStateDelta, req } =
+      setup();
+    queryDelta.mockResolvedValue([]);
+    queryFriendRequestStateDelta.mockResolvedValue(8);
+
+    await expect(
+      controller.queryThreadDelta(req, {
+        fromRevision: 4,
+        toRevision: 8,
+      }),
+    ).resolves.toContainEqual({
+      direction: 'FRIEND_REQUEST',
+      revision: 8,
+    });
   });
 });

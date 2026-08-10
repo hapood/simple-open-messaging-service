@@ -197,6 +197,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
       kind: 'thread-message',
       title: 'Alice',
       body: 'Alice sent you 2 messages',
+      count: 2,
       lang: 'en',
       previewMode: 'message',
       data: { threadId: tAlice, seq: 2 },

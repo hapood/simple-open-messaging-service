@@ -13,7 +13,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Handles a notification ACTION button tap (dismiss / reply) — the Android half of the descriptor
+ * Handles a notification dismissal (action button or shade swipe) and reply taps — the Android half of the descriptor
  * `actions[]` round-trip. Each action's `PendingIntent` (built in [SomsMessagingService.renderDescriptor])
  * targets this receiver, carrying the action id + the descriptor's routing data + the notification id the
  * action lives on; an inline-reply action (`type:"text"`) carries the typed text via a [RemoteInput] result.

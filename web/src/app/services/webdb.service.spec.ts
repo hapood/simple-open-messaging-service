@@ -303,6 +303,28 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateRevision')).toBe(13);
     });
 
+    it('commits friend-request state in the same transaction as stateRevision', async () => {
+      await webdb.openForUser('1');
+      await webdb.applyThreadDelta(
+        [{ direction: 'FRIEND_REQUEST', revision: 17 }],
+        17,
+      );
+
+      expect(await webdb.getMeta('friendRequestStateRevision')).toBe(17);
+      expect(await webdb.getMeta('stateRevision')).toBe(17);
+    });
+
+    it('commits missed-summary threads and cursor together', async () => {
+      await webdb.openForUser('1');
+      const item = { threadId: 9, type: 'P2P' } as never;
+      const cursor = { threadId: 9, seq: 4 };
+
+      await webdb.applyMissedSummary([item], cursor);
+
+      expect(await webdb.getThreads()).toEqual([item]);
+      expect(await webdb.getMeta('missedCursor')).toEqual(cursor);
+    });
+
     it('recreates only the message DB and preserves the core cache', async () => {
       await webdb.openForUser('1');
       await webdb.putMeta('sentinel', 'core');

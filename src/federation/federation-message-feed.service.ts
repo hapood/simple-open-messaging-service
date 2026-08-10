@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, ne, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -22,6 +22,9 @@ import {
 
 export const FEDERATION_MISSED_DEFAULT_PAGE_SIZE = 100;
 export const FEDERATION_MISSED_MAX_PAGE_SIZE = 200;
+export const FEDERATED_MESSAGE_CONTENT_TYPES: ContentType[] = Object.values(
+  ContentType,
+).filter((type) => type !== ContentType.SYSTEM);
 const STATEMENT_TIMEOUT_MS = 10_000;
 const IDLE_TRANSACTION_TIMEOUT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -122,6 +125,7 @@ export class FederationMessageFeedService {
               gt(discoveryChange.changeId, after),
               lte(discoveryChange.changeId, allocatedThrough),
               eq(message.isDeleted, false),
+              ne(message.contentType, ContentType.SYSTEM),
             ),
           )
           .orderBy(asc(discoveryChange.changeId))

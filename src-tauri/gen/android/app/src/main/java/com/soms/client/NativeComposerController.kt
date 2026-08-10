@@ -47,6 +47,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicLong
 
+/** MIME families accepted from clipboard/IME content commits. Android 12 rejects a leading wildcard. */
+internal val COMPOSER_RECEIVE_MIME_TYPES = arrayOf(
+    "application/*",
+    "audio/*",
+    "image/*",
+    "text/*",
+    "video/*",
+)
+
 /**
  * Activity-owned Material floating composer. It is a sibling overlay above the WebView; Angular renders
  * no Android input surface. The native EditText remains the single draft/selection authority.
@@ -123,7 +132,7 @@ class NativeComposerController(
     init {
         // Android clipboard and modern IMEs expose pasted files as content:// URI grants, not filesystem
         // paths. Consume only URI items here; any text portion is returned to EditText's normal paste path.
-        ViewCompat.setOnReceiveContentListener(input, arrayOf("*/*")) { _, payload ->
+        ViewCompat.setOnReceiveContentListener(input, COMPOSER_RECEIVE_MIME_TYPES) { _, payload ->
             val split = payload.partition { item -> item.uri != null }
             val uriContent = split.first
             val remaining = split.second

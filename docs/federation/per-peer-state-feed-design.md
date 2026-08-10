@@ -6,26 +6,25 @@
 >
 > **适用范围：好友关系、用户/群资料、群成员与角色状态的联邦同步**
 
-本文是下一阶段实现依据。它把系统消息恢复为纯展示消息，并以“每个 peer 一份、按状态 key
-压缩、携带完整快照”的持久 feed 取代聊天打开时的联邦关系/profile/meta 探测。
+本文以“每个 peer 一份、按状态 key 压缩、携带完整快照”的持久 feed 取代聊天打开时的联邦
+关系/profile/meta 探测。
 
 本文只替换
-[节点身份连续性与持久消息发现设计](./identity-and-durable-discovery-design.md)中由 SYSTEM 消息执行
+[节点身份连续性与持久消息发现设计](./identity-and-durable-discovery-design.md)中由聊天消息承担
 关系动作、删除关系后再懒查询权威状态，以及 profile/group meta revision 二次查询的部分。
 现有消息 `/message-feed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
 不因本设计删除或复用。状态 feed 有独立的表、rev、HWM 和 pull cursor。
 
 ## 1. 最终原则
 
-1. SYSTEM 消息只是聊天时间线中的服务端生成展示记录，不是命令、状态事实或状态重放来源。
-2. 申请、接受、拒绝和删除好友等 S2S 写接口仍是业务命令；命令后的额外资料/关系同步 POST 删除。
-3. 每个 federated peer 拥有一份独立状态 feed；feed item 在写入时已经完成路由，拉取时不再连接
+1. 申请、接受、拒绝和删除好友等 S2S 写接口仍是业务命令；命令后的额外资料/关系同步 POST 删除。
+2. 每个 federated peer 拥有一份独立状态 feed；feed item 在写入时已经完成路由，拉取时不再连接
    audience 表鉴权。
-4. 同一 peer、同一状态 key 只保留最新 item。中间 revision 可以压缩，最终快照不能丢。
-5. PROFILE item 携带头像；GROUP_META 只携带完整 roster/role/owner/active 快照，不重复头像。
-6. 业务状态、业务 revision、peer rev 和 feed item 必须在同一数据库事务中提交。
-7. push/SSE 只是可丢失、可重复、可乱序的唤醒；持久 feed、HWM 和 cursor 提供完整性。
-8. 删除 federated peer 时级联删除该 peer 的 feed、allocator 和 pull cursor。
+3. 同一 peer、同一状态 key 只保留最新 item。中间 revision 可以压缩，最终快照不能丢。
+4. PROFILE item 携带头像；GROUP_META 只携带完整 roster/role/owner/active 快照，不重复头像。
+5. 业务状态、业务 revision、peer rev 和 feed item 必须在同一数据库事务中提交。
+6. push/SSE 只是可丢失、可重复、可乱序的唤醒；持久 feed、HWM 和 cursor 提供完整性。
+7. 删除 federated peer 时级联删除该 peer 的 feed、allocator 和 pull cursor。
 
 ## 2. 权威模型
 
@@ -226,8 +225,7 @@ audience 冻结到当前 inclusive changeId，之后不再为该服务器生成�
 
 群邀请的 `REQUESTED` 同样有绝对有效期；过期后视为不存在并允许重新创建。确认成为 `MEMBER`
 时必须清空邀请 `expiresAt`，已成立成员状态没有 TTL。镜像加入联邦群后不能立即开放 thread：只有
-origin 的新 `GROUP_META` 才能激活 participant/audience，origin 同时写一条可持久化、可联邦拉取的
-`GROUP_JOINED` status 消息。
+origin 的新 `GROUP_META` 才能激活 participant/audience。
 
 `GROUP_INVITE_INTENT.note` 同样复用：`REQUESTED` 时是邀请理由，`NOT_MEMBER` 时是拒绝/踢出
 原因，无原因发空字符串。服务器本地 999 人上限拒绝使用英文原因
@@ -310,29 +308,7 @@ GET /s2s/v1/state-feed?after=120&take=100
 任何格式或一致性错误使整页回滚，cursor 不推进。因为 body 已经完整，页事务中不再发起 profile、
 avatar、关系或群 meta 的二次远程请求。
 
-## 9. SYSTEM 展示消息
-
-首批结构化展示类型：
-
-```text
-FRIEND_ADDED
-FRIEND_REMOVED
-GROUP_JOINED
-GROUP_LEFT
-GROUP_ADMIN_GRANTED
-GROUP_ADMIN_REVOKED
-GROUP_OWNER_TRANSFERRED
-```
-
-主动退群和被踢统一显示为 `GROUP_LEFT`。SYSTEM 消息继续走现有 Message、missed message、分页、
-删除/leave 边界和轻量消息唤醒机制，但仅用于展示：
-
-- 只能由服务器创建；
-- 接收 SYSTEM 消息不得修改 friendship、participant、role、owner 或 profile；
-- 不可由客户端伪造、转发、撤回、举报、编辑、引用或作为 action 执行；
-- 状态事实来自 command transaction 和状态 feed，不来自 SYSTEM message body。
-
-## 10. 生命周期
+## 9. 生命周期
 
 - **建立好友/加入群：** command 事务必须写初始 P2P_META、所需 PROFILE 和 GROUP_META 完整快照，
   不能等待下一次资料变化。好友 thread 只能在双向 `FRIEND` 后建立，不能把双向或未过期
@@ -349,7 +325,7 @@ GROUP_OWNER_TRANSFERRED
 - **peer reset/delete：** 既有 reset 安全规则继续适用；删除 `FederatedPeer` 时级联删除 feed、target、
   pull cursor 和该 peer 的远端镜像数据。旧 peer 身份不能继承旧 feed/cursor。
 
-## 11. 被替换和保留的现有逻辑
+## 10. 被替换和保留的现有逻辑
 
 状态 feed 完成双节点和崩溃恢复验收后删除：
 
@@ -357,7 +333,7 @@ GROUP_OWNER_TRANSFERRED
 - 已加好友头像的专用联邦刷新逻辑；
 - 群打开时的 profileRev/rosterRev 探测与二次 meta 拉取；
 - 好友双方互认成功后仅用于补关系镜像、头像或资料的额外 POST；
-- 把 SYSTEM message 当作关系 action/状态修正来源的代码。
+- 把普通聊天消息当作关系 action/状态修正来源的代码。
 
 继续保留：
 
@@ -366,18 +342,17 @@ GROUP_OWNER_TRANSFERRED
 - 消息删除、`leaveId` 及现有消息交付机制；
 - federation identity、签名、trust、reset 和 quota 约束。
 
-## 12. 实施顺序
+## 11. 实施顺序
 
 1. 新增 schema、迁移、Drizzle relations 和约束。
 2. 实现 peer 内 allocator、事务 upsert service 和提交后 wake-up。
 3. 接入所有 revision 增长点：用户/群 profile、好友双方认可、入退/踢群、角色、群主、解散/删除。
 4. 实现 S2S HWM/feed API、receiver drain、cursor 和本地应用事务。
-5. 将 SYSTEM 消息改为纯展示结构，移除 action 语义。
-6. 双轨运行并对比旧查询与 feed 状态；不得先删旧兜底。
-7. 完成验收后删除旧 revision/profile/meta 查询和额外同步 POST。
-8. 更新 federation API、overview、数据库文档和最终 JSON Schema。
+5. 双轨运行并对比旧查询与 feed 状态；不得先删旧兜底。
+6. 完成验收后删除旧 revision/profile/meta 查询和额外同步 POST。
+7. 更新 federation API、overview、数据库文档和最终 JSON Schema。
 
-## 13. 必须通过的测试
+## 12. 必须通过的测试
 
 - 同 peer、同 key 多次更新只返回最高 revision/latest body。
 - 同一用户与同一 peer 上多个账号的 P2P_META 不互相覆盖。
@@ -393,12 +368,11 @@ GROUP_OWNER_TRANSFERRED
 - 接收页任一 item 非法时整页和 cursor 回滚。
 - 用户/群 tombstone 清除远端缓存；重新建立关系以更高 revision 恢复。
 - peer 删除/reset 后 feed、allocator、cursor 及旧身份授权不可继承。
-- SYSTEM 消息可通过 missed 展示，但不会修改任何业务状态。
 - 切除旧查询和额外 POST 后，双节点加删好友、头像更新、群资料/成员/角色/群主变化仍完整收敛。
 
-## 14. 闭环结论
+## 13. 闭环结论
 
 在上述约束下，本设计闭环：命令负责改变权威业务状态；事务内的每-peer压缩 feed 持久传播完整
-最新快照；receiver 原子应用快照并推进 cursor；轻量事件只负责提速；SYSTEM 消息只负责展示；
-消息 missed 机制保持独立。不存在必须依赖聊天打开、二次联邦查询、进程内 hint 或 audience 终止
+最新快照；receiver 原子应用快照并推进 cursor；轻量事件只负责提速；消息 missed 机制保持独立。
+不存在必须依赖聊天打开、二次联邦查询、进程内 hint 或 audience 终止
 边界才能恢复的状态变化。

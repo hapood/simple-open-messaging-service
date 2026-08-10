@@ -278,6 +278,24 @@ $app-gray-900: #111827;
   --chat-meta-on-media: #ffffff;
   --chat-date-bg: var(--im-date-pill-bg);
   --chat-date-text: var(--im-date-pill-text);
+  // Timeline events are quieter than message bubbles but remain opaque so the
+  // wallpaper cannot visually merge with their text.
+  --chat-system-bg: color-mix(
+    in srgb,
+    var(--app-surface) 88%,
+    var(--app-brand) 12%
+  );
+  --chat-system-text: color-mix(
+    in srgb,
+    var(--app-text) 78%,
+    var(--app-text-muted)
+  );
+  --chat-system-border: color-mix(
+    in srgb,
+    var(--app-border-strong) 65%,
+    transparent
+  );
+  --chat-system-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
   --chat-media-meta-bg: rgba(0, 0, 0, 0.45);
   --chat-card-bg: var(--im-bubble-other);
   --chat-card-text: var(--im-bubble-text);

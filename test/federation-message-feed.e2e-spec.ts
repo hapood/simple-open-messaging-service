@@ -164,6 +164,29 @@ describe('FederationMessageFeedService', () => {
     });
   });
 
+  it('binds each signed peer to only its own discovery target', async () => {
+    await seedP2pChange();
+    const otherPeer = 'other-peer.test';
+    await database.db.insert(federatedPeer).values({
+      domain: otherPeer,
+      trustLevel: 'trusted',
+    });
+    await cursor.initializePeer(otherPeer, 0n);
+
+    const [allocated, isolated] = await Promise.all([
+      service.serve(peerDomain, 0n),
+      service.serve(otherPeer, 0n),
+    ]);
+
+    expect(allocated.messages).toHaveLength(1);
+    expect(isolated).toEqual({
+      messages: [],
+      scannedThrough: '0',
+      allocatedThrough: '0',
+      hasMore: false,
+    });
+  });
+
   it('skips deleted messages while acknowledging their allocated change ids', async () => {
     const { msg } = await seedP2pChange();
     await database.db

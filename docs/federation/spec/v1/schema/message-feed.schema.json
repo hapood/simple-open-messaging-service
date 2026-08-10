@@ -97,8 +97,7 @@
             "LINK",
             "CALL",
             "FORWARD",
-            "GALLERY",
-            "SYSTEM"
+            "GALLERY"
           ]
         },
         "content": { "type": "string", "minLength": 2 },

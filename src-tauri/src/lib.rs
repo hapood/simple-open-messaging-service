@@ -634,6 +634,7 @@ pub fn run() {
                     native_db::native_db_replace_threads,
                     native_db::native_db_delete_thread,
                     native_db::native_db_apply_thread_delta,
+                    native_db::native_db_apply_missed_summary,
                     native_db::native_db_get_profile,
                     native_db::native_db_put_profile,
                     native_db::native_db_get_meta,
@@ -701,6 +702,7 @@ pub fn run() {
                     native_db::native_db_replace_threads,
                     native_db::native_db_delete_thread,
                     native_db::native_db_apply_thread_delta,
+                    native_db::native_db_apply_missed_summary,
                     native_db::native_db_get_profile,
                     native_db::native_db_put_profile,
                     native_db::native_db_get_meta,
@@ -2649,7 +2651,7 @@ enum StreamOutcome {
 /// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android), the
 /// backoff/online `wake` Notify, the offline flag the webview's navigator online/offline drives, and the
 /// cached HELLO — the last HELLO frame merged with every incremental revision frame
-/// (STATE_REV_UPDATED / FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) so a re-attached
+/// (STATE_REV_UPDATED / NEW_MESSAGE) so a re-attached
 /// webview can be handed a FRESH handshake via `sse_replay_hello` without a reconnect (a retained open
 /// stream does not re-push HELLO on its own).
 #[cfg(desktop)]
@@ -2767,7 +2769,7 @@ fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), Str
 /// Hand a freshly-attached webview the cached HELLO. A retained open stream does NOT re-push HELLO (it is
 /// sent once per `register`), yet a re-attached webview (renderer reclaim, or an Android cold start where the
 /// FGS opened `/events` before the webview mounted) needs one to bootstrap (userId / threadRevision /
-/// profileRev / friendReqRev / latestMessage). The supervisor caches the last HELLO and merges every
+/// profileRev / latestMessage). The supervisor caches the last HELLO and merges every
 /// incremental revision frame into it (see `open_one_stream`), so this replays the CURRENT merged HELLO down
 /// the same `soms-sse-event` channel the original used — no reconnect, no connection churn, no event gap.
 /// `app.emit` broadcasts to all webviews (a live webview receiving a second HELLO just re-runs its idempotent
@@ -2925,24 +2927,6 @@ fn merge_cached_hello(
                 let cur = obj.get("stateRevision").and_then(|v| v.as_i64());
                 if cur.is_none_or(|c| inc >= c) {
                     obj.insert("stateRevision".to_string(), serde_json::Value::from(inc));
-                }
-            }
-        }
-        // friendReqRev is a monotonic epoch-ms timestamp — advance forward only (out-of-order guard).
-        // friendReqAckRev is the read cursor (advances on markRead); set it as pushed (server-authoritative).
-        "FRIEND_REQ_REV_UPDATED" => {
-            if let Some(inc) = data.get("friendReqRev").and_then(|v| v.as_i64()) {
-                let cur = obj.get("friendReqRev").and_then(|v| v.as_i64());
-                if cur.is_none_or(|c| inc >= c) {
-                    obj.insert("friendReqRev".to_string(), serde_json::Value::from(inc));
-                }
-            }
-            if let Some(ack) = data.get("friendReqAckRev").and_then(|v| v.as_i64()) {
-                // Monotonic (markRead only advances) — an out-of-order older ack must not regress (would
-                // re-show a badge the user cleared).
-                let cur_ack = obj.get("friendReqAckRev").and_then(|v| v.as_i64());
-                if cur_ack.is_none_or(|c| ack >= c) {
-                    obj.insert("friendReqAckRev".to_string(), serde_json::Value::from(ack));
                 }
             }
         }

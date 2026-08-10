@@ -64,17 +64,14 @@ Messages allocate a durable per-peer discovery change in the same transaction as
 audience. `/s2s/v1/message-feed` carries ordered changes and advances with `scannedThrough`, including across
 compaction or deletion gaps. Pulled messages are idempotent by stable author identity and `originSeq`.
 
-For group leave, the leaving server first writes a structured `GROUP_LEFT` SYSTEM message, allocates its
-change id, freezes the creator audience through that boundary, and only then closes membership. The
-origin can therefore apply the final state snapshot first and still pull the boundary message afterward.
-The origin keeps a member-server's thread audience open while that server has any active member, so a
+For group leave, membership converges only through the state feed. The origin keeps a member-server's
+thread audience open while that server has any active member, so a
 rejoining local user sees history retained by the shared mirror. When its last member leaves, the origin
 freezes that peer audience at the inclusive current change id. Rejoining reuses the mirror and resumes
 future delivery, but deliberately does not backfill messages from the no-member interval.
 
-SYSTEM messages contain only a structured event type and optional stable subject identity. Clients
-render locale-specific text and time. Client-authored SYSTEM messages and message operations such as
-forward, quote, report, or withdraw are rejected.
+The federation message feed accepts only its documented content-type whitelist. Unknown values are
+rejected uniformly.
 
 Media message persistence is independent from byte localization. Authorized CAS range downloads and
 forward-bundle closure downloads validate the message/bundle binding. Durable pending-media rows survive

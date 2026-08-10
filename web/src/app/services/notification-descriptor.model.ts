@@ -27,6 +27,8 @@ export interface NotificationDescriptor {
   kind: string;
   title: string;
   body: string;
+  /** New messages represented by this card since the frozen foreground/per-thread dismiss HWM. */
+  count: number;
   /** The locale the copy was rendered in (echoes the negotiated Accept-Language). */
   lang: string;
   /** URL to the server-composited stacked-avatar PNG; null → use the app icon. */

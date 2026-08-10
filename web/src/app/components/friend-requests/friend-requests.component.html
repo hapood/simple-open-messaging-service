@@ -1,39 +1,81 @@
 <div class="friend-requests" [appFitDialog]="fitOpts">
   <div class="popup-header">
-    @if(isShowBackBtn()){
-    <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
-        [style]="{width:'32px',height:'32px'}"></app-icon></button>}
-    <div class="popup-title">{{ 'friend.title' | transloco }}</div>
+    @if (isShowBackBtn()) {
+      <button
+        class="icon-btn"
+        (click)="goBack()"
+        [attr.aria-label]="'common.back' | transloco"
+      >
+        <app-icon
+          [type]="AppIconType.BACK"
+          [style]="{ width: '32px', height: '32px' }"
+        ></app-icon>
+      </button>
+    }
+    <div class="popup-title">
+      {{
+        (inviteUser() ? 'friend.inviteDialogTitle' : 'friend.title') | transloco
+      }}
+    </div>
   </div>
 
-  <div class="tabs" role="tablist">
-    <button class="tab-item" type="button" role="tab" id="friend-tab-add"
-      aria-controls="friend-panel-add" [attr.aria-selected]="activeTab()===0"
-      [class.active]="activeTab()===0" (click)="setTab(0)">
+  @if (inviteUser(); as selectedUser) {
+    <app-friend-invite-dialog
+      class="invite-view"
+      [user]="selectedUser"
+      (completed)="completeInvite($event)"
+    />
+  }
+
+  <div class="tabs" role="tablist" [hidden]="inviteUser()">
+    <button
+      class="tab-item"
+      type="button"
+      role="tab"
+      id="friend-tab-add"
+      aria-controls="friend-panel-add"
+      [attr.aria-selected]="activeTab() === 0"
+      [class.active]="activeTab() === 0"
+      (click)="setTab(0)"
+    >
       <span class="tab-label">
         <span class="tab-text">{{ 'friend.tab.add' | transloco }}</span>
       </span>
     </button>
-    <button class="tab-item" type="button" role="tab" id="friend-tab-pending"
-      aria-controls="friend-panel-pending" [attr.aria-selected]="activeTab()===1"
-      [class.active]="activeTab()===1" (click)="setTab(1)">
+    <button
+      class="tab-item"
+      type="button"
+      role="tab"
+      id="friend-tab-pending"
+      aria-controls="friend-panel-pending"
+      [attr.aria-selected]="activeTab() === 1"
+      [class.active]="activeTab() === 1"
+      (click)="setTab(1)"
+    >
       <span class="tab-label">
         <span class="tab-text">{{ 'friend.tab.pending' | transloco }}</span>
-        @if(pendingReqList().length > 0){
+        @if (pendingReqList().length > 0) {
           <span class="tab-badge" [attr.title]="pendingReqList().length">
-            {{pendingReqList().length > 9 ? '9+' : pendingReqList().length}}
+            {{ pendingReqList().length > 9 ? '9+' : pendingReqList().length }}
           </span>
         }
       </span>
     </button>
-    <button class="tab-item" type="button" role="tab" id="friend-tab-sent"
-      aria-controls="friend-panel-sent" [attr.aria-selected]="activeTab()===2"
-      [class.active]="activeTab()===2" (click)="setTab(2)">
+    <button
+      class="tab-item"
+      type="button"
+      role="tab"
+      id="friend-tab-sent"
+      aria-controls="friend-panel-sent"
+      [attr.aria-selected]="activeTab() === 2"
+      [class.active]="activeTab() === 2"
+      (click)="setTab(2)"
+    >
       <span class="tab-label">
         <span class="tab-text">{{ 'friend.tab.sent' | transloco }}</span>
-        @if(sentReqList().length > 0){
+        @if (sentReqList().length > 0) {
           <span class="tab-badge" [attr.title]="sentReqList().length">
-            {{sentReqList().length > 9 ? '9+' : sentReqList().length}}
+            {{ sentReqList().length > 9 ? '9+' : sentReqList().length }}
           </span>
         }
       </span>
@@ -41,67 +83,142 @@
   </div>
 
   <!-- Add tab -->
-  <div class="tab-pane" id="friend-panel-add" role="tabpanel"
-    aria-labelledby="friend-tab-add" [hidden]="activeTab()!==0">
+  <div
+    class="tab-pane"
+    id="friend-panel-add"
+    role="tabpanel"
+    aria-labelledby="friend-tab-add"
+    [hidden]="inviteUser() || activeTab() !== 0"
+  >
     <form class="search-bar" (ngSubmit)="searchUser()" role="search">
-      <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
-      <input class="search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
-        [placeholder]="'friend.searchPlaceholder' | transloco" autocomplete="off"
-        [disabled]="addTabStatus()===AddTabStatus.SEARCHING">
-      <button mat-flat-button class="search-btn" type="submit"
-        [disabled]="addTabStatus()===AddTabStatus.SEARCHING || !searchText().trim()">
-        @if(addTabStatus()===AddTabStatus.SEARCHING){{{ 'common.searching' | transloco }}}@else{ {{ 'common.search' | transloco }} }
+      <app-icon
+        class="search-icon"
+        [type]="AppIconType.SEARCH"
+        [style]="{ width: '18px', height: '18px' }"
+      ></app-icon>
+      <input
+        class="search-input"
+        [ngModelOptions]="{ standalone: true }"
+        [(ngModel)]="searchText"
+        type="text"
+        [placeholder]="'friend.searchPlaceholder' | transloco"
+        autocomplete="off"
+        [disabled]="addTabStatus() === AddTabStatus.SEARCHING"
+      />
+      <button
+        mat-flat-button
+        class="search-btn"
+        type="submit"
+        [disabled]="
+          addTabStatus() === AddTabStatus.SEARCHING || !searchText().trim()
+        "
+      >
+        @if (addTabStatus() === AddTabStatus.SEARCHING) {
+          {{ 'common.searching' | transloco }}
+        } @else {
+          {{ 'common.search' | transloco }}
+        }
       </button>
     </form>
 
     <div class="result-area">
-      @switch(addTabStatus()){
-        @case(AddTabStatus.INIT){
-        <div class="state-hint">
-          <app-icon [type]="AppIconType.SEARCH" [style]="{width:'40px',height:'40px'}"></app-icon>
-          <div class="state-title">{{ 'friend.findTitle' | transloco }}</div>
-          <div class="state-sub">{{ 'friend.findSub' | transloco }}</div>
-        </div>
+      @switch (addTabStatus()) {
+        @case (AddTabStatus.INIT) {
+          <div class="state-hint">
+            <app-icon
+              [type]="AppIconType.SEARCH"
+              [style]="{ width: '40px', height: '40px' }"
+            ></app-icon>
+            <div class="state-title">{{ 'friend.findTitle' | transloco }}</div>
+            <div class="state-sub">{{ 'friend.findSub' | transloco }}</div>
+          </div>
         }
-        @case(AddTabStatus.SEARCHING){
-        @if(connectingDomain(); as dom){
-        <div class="connecting-banner">
-          <app-icon [type]="AppIconType.GLOBE" [style]="{width:'18px',height:'18px'}"></app-icon>
-          <span class="connecting-text">{{ 'friend.connecting' | transloco: { domain: dom } }}</span>
-          <button mat-button class="connecting-cancel" (click)="cancelSearch()">{{ 'common.cancel' | transloco }}</button>
-        </div>
-        }@else {
-        <div class="state-hint"><div class="state-title">{{ 'common.searching' | transloco }}</div></div>
+        @case (AddTabStatus.SEARCHING) {
+          @if (connectingDomain(); as dom) {
+            <div class="connecting-banner">
+              <app-icon
+                [type]="AppIconType.GLOBE"
+                [style]="{ width: '18px', height: '18px' }"
+              ></app-icon>
+              <span class="connecting-text">{{
+                'friend.connecting' | transloco: { domain: dom }
+              }}</span>
+              <button
+                mat-button
+                class="connecting-cancel"
+                (click)="cancelSearch()"
+              >
+                {{ 'common.cancel' | transloco }}
+              </button>
+            </div>
+          } @else {
+            <div class="state-hint">
+              <div class="state-title">
+                {{ 'common.searching' | transloco }}
+              </div>
+            </div>
+          }
         }
+        @case (AddTabStatus.EMPTY) {
+          <div class="state-hint">
+            <div class="state-title">
+              {{ 'friend.noUserTitle' | transloco }}
+            </div>
+            <div class="state-sub">
+              {{
+                'friend.noUserSub' | transloco: { q: curSearchText().trim() }
+              }}
+            </div>
+          </div>
         }
-        @case(AddTabStatus.EMPTY){
-        <div class="state-hint">
-          <div class="state-title">{{ 'friend.noUserTitle' | transloco }}</div>
-          <div class="state-sub">{{ 'friend.noUserSub' | transloco:{ q: curSearchText().trim() } }}</div>
-        </div>
+        @case (AddTabStatus.ERROR) {
+          <div class="state-hint">
+            <div class="state-title state-error">{{ errMsg() }}</div>
+            <button mat-button type="button" (click)="searchUser()">
+              {{ 'friend.retry' | transloco }}
+            </button>
+          </div>
         }
-        @case(AddTabStatus.ERROR){
-        <div class="state-hint">
-          <div class="state-title state-error">{{errMsg()}}</div>
-          <button mat-button type="button" (click)="searchUser()">{{ 'friend.retry' | transloco }}</button>
-        </div>
-        }
-        @case(AddTabStatus.SUCCESS){
+        @case (AddTabStatus.SUCCESS) {
           <div class="search-results">
             @for (u of localResults(); track u.id) {
-              <button class="result-row" type="button" (click)="pickLocalUser(u)"
-                [disabled]="relationshipStates().get(u.id)==='FRIEND' || relationshipStates().get(u.id)==='OUTGOING_PENDING'">
-                <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="u.name"
-                    [identityId]="u.id" [src]="u.avatar"></app-user-avatar></div>
-                <div class="result-meta">
-                  <div class="user-name">{{displayUserName(u)}}</div>
-                  <div class="user-account">&#64;{{u.account}}</div>
-                  @if(u.isForeigner){<app-federated-badge class="card-fed" [domain]="u.domain"></app-federated-badge>}
+              <div class="result-row">
+                <div class="user-avatar">
+                  <app-user-avatar
+                    [type]="UserAvatarType.OTHER"
+                    [name]="u.name"
+                    [identityId]="u.id"
+                    [src]="u.avatar"
+                  ></app-user-avatar>
                 </div>
-                <span class="result-action" [class.sent]="relationshipStates().get(u.id)!=='NONE'">
-                  {{ relationshipLabel(u.id) | transloco }}
-                </span>
-              </button>
+                <div class="result-meta">
+                  <div class="user-name">{{ displayUserName(u) }}</div>
+                  <div class="user-account">{{ displayUserAccount(u) }}</div>
+                  @if (u.isForeigner) {
+                    <app-federated-badge
+                      class="card-fed"
+                      [domain]="u.domain"
+                    ></app-federated-badge>
+                  }
+                </div>
+                @if (
+                  relationshipStates().get(u.id) === 'NONE' ||
+                  relationshipStates().get(u.id) === 'INCOMING_PENDING'
+                ) {
+                  <button
+                    mat-button
+                    class="result-action"
+                    type="button"
+                    (click)="activateResult(u)"
+                  >
+                    {{ relationshipLabel(u.id) | transloco }}
+                  </button>
+                } @else {
+                  <span class="result-status">
+                    {{ relationshipLabel(u.id) | transloco }}
+                  </span>
+                }
+              </div>
             }
           </div>
         }
@@ -110,89 +227,171 @@
   </div>
 
   <!-- Pending tab -->
-  <div class="tab-pane" id="friend-panel-pending" role="tabpanel"
-    aria-labelledby="friend-tab-pending" [hidden]="activeTab()!==1">
+  <div
+    class="tab-pane"
+    id="friend-panel-pending"
+    role="tabpanel"
+    aria-labelledby="friend-tab-pending"
+    [hidden]="inviteUser() || activeTab() !== 1"
+  >
     <div class="pending-area">
-      @if(pendingLoading()){
-        <div class="state-hint"><div class="state-title">{{ 'common.loading' | transloco }}</div></div>
-      } @else if(toPendingErrTxt().length>0){
-        <div class="state-hint"><div class="state-title state-error">{{toPendingErrTxt()}}</div></div>
-      } @else if(pendingReqList().length===0){
+      @if (pendingLoading()) {
         <div class="state-hint">
-          <div class="state-title">{{ 'friend.noPendingTitle' | transloco }}</div>
+          <div class="state-title">{{ 'common.loading' | transloco }}</div>
+        </div>
+      } @else if (toPendingErrTxt().length > 0) {
+        <div class="state-hint">
+          <div class="state-title state-error">{{ toPendingErrTxt() }}</div>
+        </div>
+      } @else if (pendingReqList().length === 0) {
+        <div class="state-hint">
+          <div class="state-title">
+            {{ 'friend.noPendingTitle' | transloco }}
+          </div>
           <div class="state-sub">{{ 'friend.noPendingSub' | transloco }}</div>
         </div>
       } @else {
-        @for(req of pendingReqList();track req.id){
-        <div class="pending-row">
-          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
-              [identityId]="req.peerId" [src]="req.avatar"></app-user-avatar></div>
-          <div class="pending-meta">
-            <div class="pending-heading">
-              <div class="user-name">{{displayUserName(req)}}</div>
-              <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
+        @for (req of pendingReqList(); track req.id) {
+          <div class="pending-row">
+            <div class="user-avatar">
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="req.name ?? ''"
+                [identityId]="req.peerId"
+                [src]="req.avatar"
+              ></app-user-avatar>
             </div>
-            @if(req.account){<div class="user-account">&#64;{{req.account}}</div>}
-            @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
-            @if(req.reqMessage){
-              <div class="pending-reason">
-                <div class="reason-label">{{ 'friend.requestMessage' | transloco }}</div>
-                <div class="reason-text">{{req.reqMessage}}</div>
+            <div class="pending-meta">
+              <div class="pending-heading">
+                <div class="user-name">{{ displayUserName(req) }}</div>
+                <div class="pending-date" [title]="absoluteDate(req.date)">
+                  {{ relativeDate(req.date) }}
+                </div>
               </div>
-            }
+              @if (req.account) {
+                <div class="user-account">{{ displayUserAccount(req) }}</div>
+              }
+              @if (req.isForeigner) {
+                <app-federated-badge
+                  class="pending-fed"
+                  [domain]="req.domain"
+                ></app-federated-badge>
+              }
+              @if (req.reqMessage) {
+                <div class="pending-reason">
+                  <div class="reason-label">
+                    {{ 'friend.requestMessage' | transloco }}
+                  </div>
+                  <div class="reason-text">{{ req.reqMessage }}</div>
+                </div>
+              }
+            </div>
+            <div class="pending-actions">
+              @if (req.status === 0) {
+                <button
+                  mat-flat-button
+                  color="primary"
+                  (click)="approve($index)"
+                >
+                  {{ 'friend.approve' | transloco }}
+                </button>
+                <button
+                  mat-button
+                  class="decline-btn"
+                  (click)="decline($index)"
+                >
+                  {{ 'friend.decline' | transloco }}
+                </button>
+              } @else {
+                <button mat-button [disabled]="true">
+                  @if (req.status === -1) {
+                    {{ 'friend.invalidUser' | transloco }}
+                  } @else {
+                    {{ 'friend.approved' | transloco }}
+                  }
+                </button>
+              }
+            </div>
           </div>
-          <div class="pending-actions">
-            @if(req.status===0){
-            <button mat-flat-button color="primary" (click)="approve($index)">{{ 'friend.approve' | transloco }}</button>
-            <button mat-button class="decline-btn" (click)="decline($index)">{{ 'friend.decline' | transloco }}</button>
-            }@else {
-            <button mat-button [disabled]="true">@if(req.status===-1){ {{ 'friend.invalidUser' | transloco }} }@else{ {{ 'friend.approved' | transloco }} }</button>
-            }
-          </div>
-        </div>
-        @if(req.errText){<div class="row-err">{{req.errText}}</div>}
+          @if (req.errText) {
+            <div class="row-err">{{ req.errText }}</div>
+          }
         }
       }
     </div>
   </div>
 
   <!-- Sent tab -->
-  <div class="tab-pane" id="friend-panel-sent" role="tabpanel"
-    aria-labelledby="friend-tab-sent" [hidden]="activeTab()!==2">
+  <div
+    class="tab-pane"
+    id="friend-panel-sent"
+    role="tabpanel"
+    aria-labelledby="friend-tab-sent"
+    [hidden]="inviteUser() || activeTab() !== 2"
+  >
     <div class="pending-area">
-      @if(sentLoading()){
-        <div class="state-hint"><div class="state-title">{{ 'common.loading' | transloco }}</div></div>
-      } @else if(sentErrTxt().length>0){
-        <div class="state-hint"><div class="state-title state-error">{{sentErrTxt()}}</div></div>
-      } @else if(sentReqList().length===0){
+      @if (sentLoading()) {
+        <div class="state-hint">
+          <div class="state-title">{{ 'common.loading' | transloco }}</div>
+        </div>
+      } @else if (sentErrTxt().length > 0) {
+        <div class="state-hint">
+          <div class="state-title state-error">{{ sentErrTxt() }}</div>
+        </div>
+      } @else if (sentReqList().length === 0) {
         <div class="state-hint">
           <div class="state-title">{{ 'friend.noSentTitle' | transloco }}</div>
           <div class="state-sub">{{ 'friend.noSentSub' | transloco }}</div>
         </div>
       } @else {
-        @for(req of sentReqList();track req.id){
-        <div class="pending-row">
-          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
-              [identityId]="req.peerId" [src]="req.avatar"></app-user-avatar></div>
-          <div class="pending-meta">
-            <div class="pending-heading">
-              <div class="user-name">{{displayUserName(req)}}</div>
-              <div class="pending-date" [title]="absoluteDate(req.date)">{{relativeDate(req.date)}}</div>
+        @for (req of sentReqList(); track req.id) {
+          <div class="pending-row">
+            <div class="user-avatar">
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="req.name ?? ''"
+                [identityId]="req.peerId"
+                [src]="req.avatar"
+              ></app-user-avatar>
             </div>
-            @if(req.account){<div class="user-account">&#64;{{req.account}}</div>}
-            @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
-            @if(req.reqMessage){
-              <div class="pending-reason">
-                <div class="reason-label">{{ 'friend.requestMessage' | transloco }}</div>
-                <div class="reason-text">{{req.reqMessage}}</div>
+            <div class="pending-meta">
+              <div class="pending-heading">
+                <div class="user-name">{{ displayUserName(req) }}</div>
+                <div class="pending-date" [title]="absoluteDate(req.date)">
+                  {{ relativeDate(req.date) }}
+                </div>
               </div>
-            }
+              @if (req.account) {
+                <div class="user-account">{{ displayUserAccount(req) }}</div>
+              }
+              @if (req.isForeigner) {
+                <app-federated-badge
+                  class="pending-fed"
+                  [domain]="req.domain"
+                ></app-federated-badge>
+              }
+              @if (req.reqMessage) {
+                <div class="pending-reason">
+                  <div class="reason-label">
+                    {{ 'friend.requestMessage' | transloco }}
+                  </div>
+                  <div class="reason-text">{{ req.reqMessage }}</div>
+                </div>
+              }
+            </div>
+            <div class="pending-actions">
+              <button
+                mat-button
+                class="revoke-btn"
+                (click)="cancelSent($index)"
+              >
+                {{ 'friend.revoke' | transloco }}
+              </button>
+            </div>
           </div>
-          <div class="pending-actions">
-            <button mat-button class="revoke-btn" (click)="cancelSent($index)">{{ 'friend.revoke' | transloco }}</button>
-          </div>
-        </div>
-        @if(req.errText){<div class="row-err">{{req.errText}}</div>}
+          @if (req.errText) {
+            <div class="row-err">{{ req.errText }}</div>
+          }
         }
       }
     </div>

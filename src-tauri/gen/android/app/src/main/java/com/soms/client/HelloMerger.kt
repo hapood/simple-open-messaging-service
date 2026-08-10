@@ -9,9 +9,9 @@ import org.json.JSONObject
  * test in src-tauri/src/lib.rs) WITHOUT instantiating the Android `Service`.
  *
  * HELLO replaces the cache wholesale; each incremental revision frame patches its matching field IN PLACE
- * (cheap — one deserialize on HELLO + one serialize at replay). `threadRevision`, `friendReqRev`, and
- * `friendReqAckRev` are monotonic — an out-of-order (older) value is dropped so a stale push can't regress
- * replay state. A frame before the first HELLO yields null (no partial cached handshake). Best-effort: a
+ * (cheap — one deserialize on HELLO + one serialize at replay). `stateRevision` is monotonic — an
+ * out-of-order (older) value is dropped so a stale push can't regress replay state. A frame before the
+ * first HELLO yields null (no partial cached handshake). Best-effort: a
  * malformed frame leaves the cache untouched.
  */
 object HelloMerger {
@@ -29,12 +29,6 @@ object HelloMerger {
           if (inc != Long.MIN_VALUE && inc >= c.optLong("stateRevision", Long.MIN_VALUE)) {
             c.put("stateRevision", inc)
           }
-        }
-        "FRIEND_REQ_REV_UPDATED" -> {
-          val inc = JSONObject(data).optLong("friendReqRev", Long.MIN_VALUE)
-          if (inc != Long.MIN_VALUE && inc >= c.optLong("friendReqRev", Long.MIN_VALUE)) c.put("friendReqRev", inc)
-          val ack = JSONObject(data).optLong("friendReqAckRev", Long.MIN_VALUE)
-          if (ack != Long.MIN_VALUE && ack >= c.optLong("friendReqAckRev", Long.MIN_VALUE)) c.put("friendReqAckRev", ack)
         }
         "NEW_MESSAGE" -> {
           val d = JSONObject(data)

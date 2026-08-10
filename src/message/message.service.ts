@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   and,
   asc,
@@ -58,7 +58,7 @@ import { DiscoveryChangeService } from './discovery-change.service.js';
 import {
   parseSystemMessageContent,
   stringifySystemMessageContent,
-  type SystemMessageType,
+  SystemMessageType,
 } from './system-message.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 
@@ -208,6 +208,8 @@ export function derivePreview(type: ContentType, content: string): string {
  */
 @Injectable()
 export class MessageService {
+  private readonly logger = new Logger(MessageService.name);
+
   constructor(
     private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
@@ -457,16 +459,19 @@ export class MessageService {
     }
   }
 
-  /** Server-only structured timeline notice. It is persisted and federated like a message, but its
-   * body is never interpreted as a relationship or roster action. */
+  /** Server-only structured timeline notice. It is persisted for this server's clients only and is
+   * never allocated to the federation message feed. Relationship/roster state remains authoritative. */
   async writeSystemMessageInTx(
     tx: DatabaseTransaction,
     actorUserId: number,
     threadId: number,
     type: SystemMessageType,
     subjectUserId?: number,
-    excludeTargetDomains: readonly string[] = [],
   ): Promise<{ message: Omit<Message, 'id'>; messageId: bigint }> {
+    if (type !== SystemMessageType.FRIEND_ADDED && subjectUserId === undefined)
+      throw new Error('system message subject is required');
+    if (type === SystemMessageType.FRIEND_ADDED && subjectUserId !== undefined)
+      throw new Error('FRIEND_ADDED does not accept a subject');
     const subject =
       subjectUserId === undefined
         ? undefined
@@ -524,11 +529,6 @@ export class MessageService {
           eq(threadParticipant.threadId, threadId),
         ),
       );
-    await this.discoveryChanges.recordMessageInTx(
-      tx,
-      stored.id,
-      excludeTargetDomains,
-    );
     return { message: stripMessageId(stored), messageId: stored.id };
   }
 
@@ -537,7 +537,6 @@ export class MessageService {
     threadId: number,
     type: SystemMessageType,
     subjectUserId?: number,
-    excludeTargetDomains: readonly string[] = [],
   ): Promise<Omit<Message, 'id'>> {
     const result = await this.database.db.transaction((tx) =>
       this.writeSystemMessageInTx(
@@ -546,10 +545,33 @@ export class MessageService {
         threadId,
         type,
         subjectUserId,
-        excludeTargetDomains,
       ),
     );
     return result.message;
+  }
+
+  /** Best-effort local timeline decoration. State/meta callers invoke this only after their authoritative
+   * transaction commits; a bad payload, missing subject or storage failure must never roll state back. */
+  async tryWriteSystemMessage(
+    actorUserId: number,
+    threadId: number,
+    type: SystemMessageType,
+    subjectUserId?: number,
+  ): Promise<Omit<Message, 'id'> | null> {
+    try {
+      return await this.writeSystemMessage(
+        actorUserId,
+        threadId,
+        type,
+        subjectUserId,
+      );
+    } catch (error) {
+      this.logger.error(
+        `failed to write local system message ${type} for thread ${threadId}: ${(error as Error).message}`,
+        (error as Error).stack,
+      );
+      return null;
+    }
   }
 
   /**

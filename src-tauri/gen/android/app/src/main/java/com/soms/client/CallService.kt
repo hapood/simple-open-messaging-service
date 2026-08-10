@@ -383,6 +383,7 @@ class CallService : Service() {
             mgr.createNotificationChannel(
                 NotificationChannel(CHANNEL_ONGOING, getString(R.string.call_channel_ongoing), NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Ongoing call anchor"
+                    setShowBadge(false)
                 },
             )
         }
@@ -390,6 +391,8 @@ class CallService : Service() {
             mgr.createNotificationChannel(
                 NotificationChannel(CHANNEL_INCOMING, getString(R.string.call_channel_incoming), NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "Incoming call ring"
+                    // Calls have their own full-screen/heads-up surface and must not affect the message count.
+                    setShowBadge(false)
                     // The channel carries the ringtone: an AUDIBLE sound is what makes the heads-up banner
                     // actually pop on OEMs like Huawei EMUI (a no-sound IMPORTANCE_HIGH channel lands silently
                     // in the shade). The system plays it when the incoming notification posts; CallRinger is
@@ -412,8 +415,10 @@ class CallService : Service() {
         /** Stable notification id for the call (the ringing card + the ongoing card share it — one replaces
          *  the other; distinct from RealtimeService's 0x6). */
         private const val NOTIF_ID = 0x7
-        private const val CHANNEL_ONGOING = "soms_calls"
-        private const val CHANNEL_INCOMING = "soms_calls_incoming"
+        // v2 is intentional: older channels used Android's badge-enabled default, and setShowBadge cannot
+        // be changed after a channel has been submitted to NotificationManager.
+        private const val CHANNEL_ONGOING = "soms_calls_v2"
+        private const val CHANNEL_INCOMING = "soms_calls_incoming_v2"
 
         /** Start the service in the incoming-ring mode (from the CALL_INCOMING FCM push). */
         private const val ACTION_INCOMING = "soms.action.CALL_INCOMING"

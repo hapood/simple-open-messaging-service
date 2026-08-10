@@ -58,7 +58,7 @@ import {
 import { UserQuotaService } from '../quota/user-quota.service.js';
 
 /**
- * One entry of the hydrated thread-list delta (`POST /user/query-thread/delta`). ADD entries carry the fully
+ * One entry of the unified client-state delta (`POST /user/query-state/delta`). ADD entries carry the fully
  * hydrated {@link ConversationItemDto} inline (peer/group/unread) so the client applies a single response —
  * no second batch-hydrate round-trip. DELETE entries carry the threadId only: the thread is leaving the
  * caller's roster, so there is nothing to render. The `direction` field discriminates the two.
@@ -66,7 +66,8 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 type HydratedThreadDeltaOp =
   | { threadId: number; direction: 'ADD'; item: ConversationItemDto }
   | { threadId: number; direction: 'DELETE' }
-  | { direction: 'PROFILE'; user: UserResponseDto };
+  | { direction: 'PROFILE'; user: UserResponseDto }
+  | { direction: 'FRIEND_REQUEST'; revision: number };
 
 type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
   thread: typeof messageThread.$inferSelect;
@@ -105,8 +106,8 @@ export class UserController {
   @ApiOperation({ summary: 'Get the current user profile' })
   @ApiResultResponse(UserResponseDto)
   async getMyProfile(@Request() req: FastifyRequest) {
-    // findSelfProfile omits hashPwd. The friend-request badge is no longer a self-profile field — it is
-    // derived client-side from the HELLO/push-carried `friendReqRev` vs friendReqAckRev (server-state).
+    // findSelfProfile omits hashPwd. Friend-request notification state travels in the unified state delta;
+    // its seen cursor is local to each device.
     return this.userService.findSelfProfile(req.user.userId);
   }
 
@@ -346,13 +347,18 @@ export class UserController {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const [ops, profileOps] = await Promise.all([
+    const [ops, profileOps, friendRequestRevision] = await Promise.all([
       this.threadRevisionService.queryDelta(
         me,
         dto.fromRevision,
         dto.toRevision,
       ),
       this.threadRevisionService.queryProfileDelta(
+        me,
+        dto.fromRevision,
+        dto.toRevision,
+      ),
+      this.threadRevisionService.queryFriendRequestStateDelta(
         me,
         dto.fromRevision,
         dto.toRevision,
@@ -385,6 +391,14 @@ export class UserController {
       },
     });
     return [
+      ...(friendRequestRevision === null
+        ? []
+        : [
+            {
+              direction: 'FRIEND_REQUEST' as const,
+              revision: friendRequestRevision,
+            },
+          ]),
       ...profiles.map((user) => ({
         direction: 'PROFILE' as const,
         user: {
@@ -439,17 +453,6 @@ export class UserController {
         `not friends with [${dto.userId}]`,
       );
     }
-    // Place the display-only terminal inside the old relationship's message boundary so it remains
-    // eligible for ordinary missed-message delivery. State is still changed exclusively by endP2P.
-    const systemMessage =
-      activeThreadId === null
-        ? null
-        : await this.messageService.writeSystemMessage(
-            me,
-            threadId,
-            SystemMessageType.FRIEND_REMOVED,
-            dto.userId,
-          );
     // End the friendship but retain both participant rows + the thread as a readable history item.
     const ended = await this.participantService.endP2P(
       threadId,
@@ -462,6 +465,15 @@ export class UserController {
         this.federationService.pushDiscoveryHwm(domain),
       ),
     );
+    const systemMessage =
+      ended.transitioned && activeThreadId !== null
+        ? await this.messageService.tryWriteSystemMessage(
+            me,
+            threadId,
+            SystemMessageType.FRIEND_REMOVED,
+            dto.userId,
+          )
+        : null;
     if (systemMessage && this.messageFanout) {
       void this.messageFanout.dispatch(systemMessage);
     }

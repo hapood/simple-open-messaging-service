@@ -103,6 +103,10 @@ server ID 与 identity-loss 前固定的全部证据精确相同时，才可恢�
 `trustedAt`、cursor、mirror 与既有 authorization；任一身份字段不同都必须继续 fail closed。采用新
 身份只能使用第 10 节的 destructive reset。
 
+为避免双方同时 identity loss 时互相等待，节点 MUST 允许已固定且能以原 signing key 签名的
+`identity_lost` peer 请求 nonce-bound `identity` proof；返回 proof 本身不得恢复服务端对请求方的
+trust，也不得开放其他 S2S endpoint。双方管理员可据此分别验证并恢复各自的 trust edge。
+
 生产通信 MUST 使用 HTTPS 并验证连接目标的 TLS hostname；明确启用的 insecure HTTP 只适用于
 隔离开发/测试环境。节点采用何种 DNS resolver、IP 分类、连接器或出站网络策略属于本地实现，
 不得改变 v1 的 identity 与 signature 验证语义。
@@ -149,8 +153,8 @@ revision 是完整 no-op。P2P 只有双方方向均为 `FRIEND` 才成立；群
 `GROUP_META` 为准。
 
 `state-feed` 的完整 page、五种 event body、字段约束与合并语义由
-[Federation v1 State Feed](./state-feed.md) 定义；`message-feed` 的完整 page、11 种 content type、
-媒体、转发与全部 SYSTEM event 由 [Federation v1 Message Feed](./message-feed.md) 定义。二者与本文
+[Federation v1 State Feed](./state-feed.md) 定义；`message-feed` 的完整 page、10 种 content type、
+媒体与转发由 [Federation v1 Message Feed](./message-feed.md) 定义。二者与本文
 共同构成 v1 规范性正文，概要不能覆盖其字段级要求。
 
 一对一实时通话采用 WebRTC media/JSEP，并以签名 `/s2s/v1/call` frame 承载 SOMS 联邦信令。完整 frame、
@@ -158,12 +162,12 @@ revision 是完整 no-op。P2P 只有双方方向均为 `FRIEND` 才成立；群
 [Federation v1 语音与视频通话](./calls.md) 定义。实时 frame 不进入 feed；终态历史是普通 `CALL`
 message。
 
-关系撤销、退群、踢出、解散和 profile/roster 更新必须通过 durable state 或 structured SYSTEM
-message 收敛，不能依赖 revision hint。SYSTEM message 只携结构化 event 与 stable identity，自然
-语言由客户端渲染。普通消息 payload 不得获得 system-event authority。
+关系撤销、退群、踢出、解散和 profile/roster 更新必须通过 durable state 收敛，不能依赖 revision
+hint 或普通消息 payload。
 
 权限撤销停止未来 allocation，但不删除已经分配给 peer 的历史 proof。历史读取和 media 授权按
-durable allocation 验证；服务器本地的群容量、quota 和保留策略不是 wire 常量。
+各自的 thread audience 验证；message-feed allocation 不能替代媒体或 forward bundle 的资源授权。
+服务器本地的群容量、quota 和保留策略不是 wire 常量。
 
 ## 9. Feed、投递、Cursor 与媒体恢复
 
@@ -185,14 +189,25 @@ durable allocation 验证；服务器本地的群容量、quota 和保留策略�
 `state-feed` 与 `message-feed` query 均包含必选 `after` 和可选 `take`。page 返回 source HWM、
 `scannedThrough` 和 `hasMore`；consumer 从已提交 cursor 开始，先完整排空 state，再拉 message。
 page 与 cursor 必须在一个事务中提交。重复 page 必须幂等；空 page 也可确认并推进到 source HWM。
+同一 `after` MAY 用于重试；低于 source 已确认 cursor 或 retained floor 的回溯 MUST 被拒绝。高于已
+确认 cursor 且不超过 `allocatedThrough` 的请求表示 caller 主动确认跳过该区间。change ID 只要求
+严格递增，不要求连续；`scannedThrough` 和下一条 item ID 都 MAY 跨越任意大的已删除或未分配空洞。
+
+publisher MAY 物理删除已确认 cursor 之前的 message-feed change。若 peer 长期不消费，publisher
+也 MAY 按本地保留策略丢弃仍未确认的旧 allocation；这不删除 publisher 的 Message 正文。强制截断
+MUST 原子抬高 retained floor、acknowledged cursor 和 served cursor。旧 `after` MUST 返回
+`FEDERATION_MISSED_CURSOR_INVALID`，其 `data.startChangeId` 与 `data.availableCursor` 指向新的
+可用起点。consumer 验证新 floor 单调前进且不超过 `allocatedThrough` 后，MUST 原子更新本地 cursor
+并从 `availableCursor` 继续；不得要求 source 恢复已被策略删除的 change。
 
 `feed-revisions` 只携带 `origin`、`stateFeedRev` 和 `messageFeedRev`。提示可以丢失、重复、乱序；
 consumer 对 revision 取 max，并通过启动和周期 reconciliation 主动拉取两个 feed。进程恢复顺序为
 `identity → state-feed → message-feed`。
 
-媒体消息可先作为 durable pending work 提交，再通过 `media/:digest` Range 下载。下载失败或 quota
-pause 不得回滚已经提交的 feed cursor；任务必须可由持久状态恢复。forward bundle 是有界、不可变、
-按 digest 验证的 closure。
+媒体消息可先作为 durable pending work 提交，再通过 `media/:digest` Range 下载。下载授权 MUST
+实时 join signer 对应的 thread audience，并验证 digest 与精确 Message 或其 forward closure 的绑定；
+不得依赖可能已被 GC 的 message-feed change。下载失败或 quota pause 不得回滚已经提交的 feed
+cursor；任务必须可由持久状态恢复。forward bundle 是有界、不可变、按 digest 验证的 closure。
 
 ## 10. 身份丢失与 Reset
 

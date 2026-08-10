@@ -263,9 +263,9 @@
   },
   "friend": {
     "title": "Add Friends",
-    "searchPlaceholder": "Name, account, or full federated account",
+    "searchPlaceholder": "Exact account or federated account",
     "findTitle": "Find your friends",
-    "findSub": "Search by name or account. For another server, use account@domain.",
+    "findSub": "Enter an exact account. For another server, use account@domain.",
     "noUserTitle": "No user found",
     "noUserSub": "We couldn't find \"{{q}}\".",
     "sendRequest": "Send Request",
@@ -412,6 +412,19 @@
     "loading": "Loading…",
     "inputPlaceholder": "Type a message…",
     "mentionAll": "Everyone",
+    "systemMessage": {
+      "friendAdded": "You are now friends",
+      "friendRemoved": "The friendship ended",
+      "friendRemovedSelf": "You ended your friendship with {{name}}",
+      "friendRemovedOther": "{{name}} ended the friendship with you",
+      "groupJoined": "{{name}} joined the group",
+      "groupLeft": "{{name}} is no longer in the group",
+      "groupLeftSelf": "You are no longer in this group",
+      "groupAdminGranted": "{{name}} became an administrator",
+      "groupAdminRevoked": "{{name}} is no longer an administrator",
+      "groupOwnerTransferred": "{{name}} became the group owner",
+      "updated": "Conversation updated"
+    },
     "selection": {
       "toolbar": "Selected message actions",
       "copy": "Copy",

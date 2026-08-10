@@ -43,7 +43,10 @@ GET /identity → state feed → message feed
 
 The nonce-bound identity request succeeds only with the previously pinned signing key and restores an
 existing demoted trust edge. It never establishes a new identity. A fingerprint conflict enters
-`identity_lost` and requires an administrator reset.
+`identity_lost` and stops all automatic traffic. After DNS is repaired, a SUPER_ADMIN may explicitly
+probe and restore the trust edge only when root fingerprint, signing key and pairwise ID all match the
+original pin; this preserves `trustedAt`, cursors, mirrors and authorization. A genuinely new identity
+still requires destructive reset.
 
 ## State feed
 
@@ -108,14 +111,17 @@ receiving publisher's persistence time. The author matches it to its original me
 a duplicate. For a relayed message whose author differs from the immediate source peer, SOMS excludes
 that source peer from the new allocation to prevent a direct reflection loop.
 
-Messages carry stable author identity and source `originSeq`; receiver-local `seq` remains local. SYSTEM
-messages contain only structured event data and stable identities, never pre-rendered natural language.
-Clients render them using local translations and the message timestamp.
+Messages carry stable author identity and source `originSeq`; receiver-local `seq` remains local. The feed
+accepts only the content types defined by the federation schema and uniformly rejects unknown values.
+Group membership changes converge through `GROUP_META` and membership state.
 
-For a leaving group member, the sender writes `GROUP_LEFT` first, allocates its discovery change, fixes a
-creator-scoped audience's `deliverThroughChangeId` to that exact change, and only then closes membership.
-The receiver processes `NOT_MEMBER` state first and admits only the matching structured `GROUP_LEFT`
-boundary from that now-closed author.
+`after` may repeat the current acknowledged cursor for retry but cannot move behind the retained floor.
+Change IDs are strictly increasing, not contiguous. A server may prune acknowledged changes and may apply
+its own bounded-retention policy to an abandoned backlog; `FEDERATION_MISSED_CURSOR_INVALID` returns the
+new `startChangeId`/`availableCursor`, which the receiver adopts atomically before continuing.
+
+Media and forward-bundle authorization joins the signed peer's thread audience and then verifies the exact
+message-to-digest/bundle binding. It does not depend on a message-feed change remaining after acknowledgement.
 
 ### SOMS receipt storage example
 

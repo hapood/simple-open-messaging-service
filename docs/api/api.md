@@ -168,10 +168,10 @@ rows with independent notes and revisions; group invitation and join intent are 
 
 - Lists received / sent invites (`{ status?, kind? }` filters).
 
-### POST `/invite/detail` · `/invite/mark-read`
+### POST `/invite/detail`
 
 - `detail`: `{ inviteId }` full invite + resolution to accounts.
-- `mark-read`: advances `friendReqAckRev` to clear the friend-request badge on **all** devices.
+- Reading an incoming request is client-local; each device stores its own seen state revision.
 
 ---
 
@@ -315,7 +315,7 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor, `stateRevision`, `friendReqRev`, and `activeCall`. `stateRevision` covers both the thread list and cached profile changes; the client applies profile state before thread deltas. Heartbeat: a `: ping` comment frame every 25s.
+On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor, `stateRevision`, and `activeCall`. `stateRevision` covers the thread list, cached profile changes, and incoming friend requests. Heartbeat: a `: ping` comment frame every 25s.
 
 ### Frame format
 
@@ -329,10 +329,9 @@ data: <json>
 
 | Event               | Trigger                                   | `data`                                                                      | Client handling                         |
 | ------------------- | ----------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------- |
-| `HELLO`             | connect                                   | cursors (message / stateRevision / friendReqRev / activeCall)               | apply profile state, then thread delta  |
+| `HELLO`             | connect                                   | cursors (message / stateRevision / activeCall)                              | pull state delta and missed summary     |
 | `STATE_REV_UPDATED` | local state cursor advances               | `{ stateRevision }`                                                         | pull and apply the next state range     |
 | `NEW_MESSAGE`       | a message is sent to the user             | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
-| `NOTIFY`            | friend request / system notice            | notification descriptor                                                     | update badge                            |
 | `THREAD_META`       | thread mute/pin/clear/revision change     | `{ threadId, ... }`                                                         | update conversation list                |
 | `FORCE_LOGOUT`      | logout-all / password change / admin kick | reason                                                                      | disconnect + force re-login             |
 

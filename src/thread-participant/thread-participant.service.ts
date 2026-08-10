@@ -422,9 +422,7 @@ export class ThreadParticipantService {
             .update(threadParticipant)
             .set({
               recognizesFriend: false,
-              ...(relationshipRev === undefined
-                ? {}
-                : { relationshipRev }),
+              ...(relationshipRev === undefined ? {} : { relationshipRev }),
               updatedAt: now,
             })
             .where(eq(threadParticipant.id, mine.id));
@@ -461,7 +459,6 @@ export class ThreadParticipantService {
               AND target."localUserId" IS NOT DISTINCT FROM audience."localUserId"
           ), 0)
           WHERE audience."threadId" = ${threadId}
-            AND audience.scope = 'THREAD'
             AND audience."deliverThroughChangeId" IS NULL
         `);
       }

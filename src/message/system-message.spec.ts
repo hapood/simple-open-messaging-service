@@ -22,6 +22,19 @@ describe('system message content', () => {
     ).toBeNull();
     expect(
       parseSystemMessageContent(
+        JSON.stringify({ type: SystemMessageType.GROUP_LEFT }),
+      ),
+    ).toBeNull();
+    expect(
+      parseSystemMessageContent(
+        JSON.stringify({
+          type: SystemMessageType.FRIEND_ADDED,
+          subject: { account: 'bob', domain: 'chat.example' },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseSystemMessageContent(
         JSON.stringify({
           type: SystemMessageType.GROUP_LEFT,
           subject: { account: 'bob', domain: '' },

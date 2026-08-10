@@ -19,20 +19,18 @@ describe('SseService', () => {
               threadRevision: 4,
               readRevision: 3,
               profileRev: 2,
-              friendReqAckRev: new Date(0),
             }),
           },
         },
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ createdAt: null }]),
-          }),
-        }),
       },
     };
     const messages = { findNewestForUser: vi.fn().mockResolvedValue(null) };
     const callState = { get: vi.fn().mockReturnValue(null) };
-    return new SseService(database as never, messages as never, callState as never);
+    return new SseService(
+      database as never,
+      messages as never,
+      callState as never,
+    );
   }
 
   /** A mock hijacked raw response that records everything written so a FORCE_LOGOUT frame is detectable. */

@@ -26,6 +26,7 @@ import { FederationDownloadRecoveryService } from './federation-download-recover
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
+import { FederationMessageFeedGcService } from './federation-message-feed-gc.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -65,6 +66,7 @@ import { GroupMembershipStateService } from '../group/group-membership-state.ser
     FederationIgniteService,
     FederationMessageFeedService,
     FederationMessageFeedPullService,
+    FederationMessageFeedGcService,
     FederationDownloadScheduler,
     FederationDownloadRecoveryService,
     PeerStateFeedService,
@@ -81,6 +83,7 @@ import { GroupMembershipStateService } from '../group/group-membership-state.ser
     FederationIgniteService,
     FederationMessageFeedService,
     FederationMessageFeedPullService,
+    FederationMessageFeedGcService,
     FederationDownloadScheduler,
     FederationDownloadRecoveryService,
     PeerStateFeedService,

@@ -1,4 +1,5 @@
 @use '@angular/material' as mat;
+@use 'sass:map';
 @use 'photoswipe/dist/photoswipe.css';
 @use './app/assets/tokens';
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
@@ -60,11 +61,33 @@
   }
 }
 
-/* === M3 foundation. Semantic overrides below keep product chrome graphite. === */
+/* === M3 foundation. Semantic overrides below keep product chrome graphite. ===
+ * Material still needs a complete tonal palette even though product controls consume the
+ * semantic --app-* roles below. Use a true graphite primary palette here so component-local
+ * Material tokens never fall back to a saturated brand red. Red remains the error/danger role. */
+$graphite-palette: map.merge(mat.$azure-palette, (
+  0: #000000,
+  10: #17191c,
+  20: #25282c,
+  25: #303438,
+  30: #3b3f43,
+  35: #474b4f,
+  40: #53575b,
+  50: #6c7175,
+  60: #868b90,
+  70: #a1a6ab,
+  80: #bdc2c7,
+  90: #d9dde1,
+  95: #e8ebed,
+  98: #f4f5f6,
+  99: #f9fafb,
+  100: #ffffff,
+));
+
 $theme: mat.define-theme((
   color: (
-    primary: mat.$red-palette,
-    tertiary: mat.$orange-palette,
+    primary: $graphite-palette,
+    tertiary: $graphite-palette,
   ),
   typography: (
     plain-family: ('-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto',
@@ -86,21 +109,13 @@ $theme: mat.define-theme((
 $dark-theme: mat.define-theme((
   color: (
     theme-type: dark,
-    primary: mat.$red-palette,
-    tertiary: mat.$orange-palette,
+    primary: $graphite-palette,
+    tertiary: $graphite-palette,
   ),
 ));
 
 :root {
   @include mat.all-component-themes($theme);
-  --mat-sys-primary: var(--app-brand);
-  --mat-sys-on-primary: var(--app-on-brand);
-  --mat-sys-primary-container: var(--app-brand-soft);
-  --mat-sys-on-primary-container: var(--app-on-brand-soft);
-  --mat-sys-secondary: var(--app-text-muted);
-  --mat-sys-on-secondary: var(--app-text-inverse);
-  --mat-sys-secondary-container: var(--app-hover);
-  --mat-sys-on-secondary-container: var(--app-text);
   /* Keep the existing error color so login/register .error / .err-hint do not drift with the M3 error palette. */
   --mat-form-field-error-text-color: #ba1a1a;
 }
@@ -109,9 +124,24 @@ $dark-theme: mat.define-theme((
   @include mat.all-component-colors($dark-theme);
 }
 
+/* Re-apply the product semantic roles after both Material theme emissions. The dark-theme mixin
+ * writes its own system colors, so without this later binding dark auth controls would bypass the
+ * graphite product tokens and use the generated palette directly. */
+:root,
+[data-theme="dark"] {
+  --mat-sys-primary: var(--app-brand);
+  --mat-sys-on-primary: var(--app-on-brand);
+  --mat-sys-primary-container: var(--app-brand-soft);
+  --mat-sys-on-primary-container: var(--app-on-brand-soft);
+  --mat-sys-secondary: var(--app-text-muted);
+  --mat-sys-on-secondary: var(--app-text-inverse);
+  --mat-sys-secondary-container: var(--app-hover);
+  --mat-sys-on-secondary-container: var(--app-text);
+}
+
 /* === Rebind Material button colors to the app's brand/danger tokens ===
- * Angular Material's generated tonal role is not the exact accessible SOMS
- * interactive vermilion, and `color="warn"` renders nothing distinct
+ * Angular Material's generated tonal role is not the exact SOMS graphite control color,
+ * and `color="warn"` renders nothing distinct
  * because the theme above defines no error palette. Rather than fight M3 tonal palettes, rebind the
  * emitted button component tokens — scoped to the `.mat-primary` / `.mat-warn` classes the `color`
  * input adds — to the app's existing design-system tokens. `--mat-button-*` tokens are read only by

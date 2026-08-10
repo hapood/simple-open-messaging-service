@@ -263,9 +263,9 @@
   },
   "friend": {
     "title": "添加好友",
-    "searchPlaceholder": "输入昵称、账号或完整跨站账号",
+    "searchPlaceholder": "输入完整账号或跨站账号",
     "findTitle": "查找你的好友",
-    "findSub": "搜索昵称或账号；跨站好友请使用“账号@域名”。",
+    "findSub": "精确输入账号；跨站好友请使用“账号@域名”。",
     "noUserTitle": "未找到用户",
     "noUserSub": "找不到“{{q}}”。",
     "sendRequest": "发送请求",
@@ -412,6 +412,19 @@
     "loading": "加载中…",
     "inputPlaceholder": "输入消息…",
     "mentionAll": "所有人",
+    "systemMessage": {
+      "friendAdded": "你们已成为好友",
+      "friendRemoved": "好友关系已解除",
+      "friendRemovedSelf": "你已解除与 {{name}} 的好友关系",
+      "friendRemovedOther": "{{name}} 已解除与你的好友关系",
+      "groupJoined": "{{name}} 加入了群聊",
+      "groupLeft": "{{name}} 已离开群聊",
+      "groupLeftSelf": "你已不在该群聊中",
+      "groupAdminGranted": "{{name}} 已成为管理员",
+      "groupAdminRevoked": "{{name}} 已不再是管理员",
+      "groupOwnerTransferred": "{{name}} 已成为群主",
+      "updated": "会话已更新"
+    },
     "selection": {
       "toolbar": "已选消息操作",
       "copy": "复制",

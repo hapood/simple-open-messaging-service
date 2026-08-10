@@ -97,9 +97,15 @@ import {
 } from './federation-identity.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
 import { FederationIgniteService } from './federation-ignite.service.js';
-import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
+import {
+  FEDERATED_MESSAGE_CONTENT_TYPES,
+  type FederationMessageFeedPage,
+} from './federation-message-feed.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
-import type { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
+import {
+  FederationMessageFeedPullService,
+  RemoteMessageFeedCursorResetError,
+} from './federation-message-feed-pull.service.js';
 import { DiscoveryChangeService } from '../message/discovery-change.service.js';
 import {
   PeerStateFeedService,
@@ -108,10 +114,7 @@ import {
 } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
-import {
-  parseSystemMessageContent,
-  SystemMessageType,
-} from '../message/system-message.js';
+import { SystemMessageType } from '../message/system-message.js';
 import {
   assertServerGroupCapacityInTx,
   SERVER_GROUP_FULL_REASON,
@@ -154,6 +157,61 @@ export class FederationMessageContextError extends Error {
  * that boundary; PeerStateFeedService owns the shared Date -> epoch-ms wire serialization. */
 function fromRawTimestamp(value: Date | string | null): Date | null {
   return value === null || value instanceof Date ? value : new Date(value);
+}
+
+export interface LocalGroupSystemEvent {
+  actorUserId: number;
+  subjectUserId: number;
+  type: SystemMessageType;
+}
+
+/** Pure roster diff used only to decorate the local timeline after GROUP_META commits. */
+export function deriveLocalGroupSystemEvents(
+  before: ReadonlyArray<{ userId: number; role: GroupRole | null }>,
+  after: ReadonlyArray<{ userId: number; role: GroupRole }>,
+  previousOwnerId: number,
+  nextOwnerId: number,
+): LocalGroupSystemEvent[] {
+  const previousRoles = new Map(before.map((row) => [row.userId, row.role]));
+  const nextIds = new Set(after.map((row) => row.userId));
+  const events: LocalGroupSystemEvent[] = [];
+  for (const { userId, role } of after) {
+    const previousRole = previousRoles.get(userId);
+    if (previousRole === undefined) {
+      events.push({
+        actorUserId: userId,
+        subjectUserId: userId,
+        type: SystemMessageType.GROUP_JOINED,
+      });
+    } else if (role === GroupRole.ADMIN && previousRole === GroupRole.MEMBER) {
+      events.push({
+        actorUserId: nextOwnerId,
+        subjectUserId: userId,
+        type: SystemMessageType.GROUP_ADMIN_GRANTED,
+      });
+    } else if (role === GroupRole.MEMBER && previousRole === GroupRole.ADMIN) {
+      events.push({
+        actorUserId: nextOwnerId,
+        subjectUserId: userId,
+        type: SystemMessageType.GROUP_ADMIN_REVOKED,
+      });
+    }
+  }
+  for (const { userId } of before) {
+    if (!nextIds.has(userId))
+      events.push({
+        actorUserId: userId,
+        subjectUserId: userId,
+        type: SystemMessageType.GROUP_LEFT,
+      });
+  }
+  if (previousOwnerId !== nextOwnerId)
+    events.push({
+      actorUserId: nextOwnerId,
+      subjectUserId: nextOwnerId,
+      type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
+    });
+  return events;
 }
 
 /** A federated user address on the wire: two separate fields (account + domain). The `@` separator
@@ -202,20 +260,11 @@ interface MissedPageEffect {
 interface StatePageEffect {
   revisions: PendingThreadRevision[];
   statePushDomains: string[];
-  friendRequests: Array<{
-    localUserId: number;
-    peerUserId: number;
-    inviteId: string;
-  }>;
-  formedFriendships: Array<{
-    requesterUserId: number;
-    threadId: number;
-    sourcePeerDomain: string;
-  }>;
-  groupStatusMessages: Array<{
+  localSystemMessages: Array<{
     actorUserId: number;
     threadId: number;
-    message: Omit<Message, 'id'>;
+    type: SystemMessageType;
+    subjectUserId?: number;
   }>;
 }
 
@@ -906,7 +955,6 @@ export class FederationService {
           BusinessCode.INVITE_NOT_FOUND,
           'group request not found',
         );
-      let statusMessage: Omit<Message, 'id'> | null = null;
       let alreadyActive = false;
       if (thread.groupDomain === 'local') {
         await assertServerGroupCapacityInTx(tx, threadId, memberUserId);
@@ -939,17 +987,6 @@ export class FederationService {
         threadId,
         memberUserId,
       );
-      if (thread.groupDomain === 'local' && !alreadyActive) {
-        statusMessage = (
-          await this.message.writeSystemMessageInTx(
-            tx,
-            memberUserId,
-            threadId,
-            SystemMessageType.GROUP_JOINED,
-            memberUserId,
-          )
-        ).message;
-      }
       const revision =
         thread.groupDomain === 'local'
           ? await this.threadRevisionService.recordThreadAddInTx(
@@ -958,18 +995,23 @@ export class FederationService {
               threadId,
             )
           : null;
-      return { allocated, revision, statusMessage };
+      return {
+        allocated,
+        revision,
+        shouldWriteStatus: thread.groupDomain === 'local' && !alreadyActive,
+      };
     });
     if (result.revision !== null)
       this.threadRevisionService.notifyThreadRevision({
         userId: memberUserId,
         revision: result.revision,
       });
-    if (result.statusMessage)
-      await this.publishConfirmedGroupStatus({
+    if (result.shouldWriteStatus)
+      await this.publishLocalSystemMessage({
         actorUserId: memberUserId,
         threadId,
-        message: result.statusMessage,
+        type: SystemMessageType.GROUP_JOINED,
+        subjectUserId: memberUserId,
       });
     await this.pushStateFeedDomains(result.allocated.keys());
   }
@@ -2597,34 +2639,13 @@ export class FederationService {
         const effect = changed.get(page) ?? {
           revisions: [],
           statePushDomains: [],
-          friendRequests: [],
-          formedFriendships: [],
-          groupStatusMessages: [],
+          localSystemMessages: [],
         };
         for (const pending of effect.revisions)
           this.threadRevisionService.notifyThreadRevision(pending);
         await this.pushStateFeedDomains(effect.statePushDomains);
-        for (const request of effect.friendRequests) {
-          this.sse.onNotify(request.localUserId, {
-            event: 'NOTIFY',
-            type: 'FRIEND_REQUEST',
-            fromUserId: request.peerUserId,
-            inviteId: request.inviteId,
-          });
-          void this.invite
-            .friendReqState(request.localUserId)
-            .then((state) =>
-              this.sse.onFriendReqRevUpdated(request.localUserId, state),
-            );
-        }
-        for (const formed of effect.formedFriendships)
-          await this.invite.emitFederatedFriendRequested(
-            formed.requesterUserId,
-            formed.threadId,
-            formed.sourcePeerDomain,
-          );
-        for (const status of effect.groupStatusMessages)
-          await this.publishConfirmedGroupStatus(status);
+        for (const status of effect.localSystemMessages)
+          await this.publishLocalSystemMessage(status);
       },
     });
   }
@@ -2636,9 +2657,7 @@ export class FederationService {
   ): Promise<StatePageEffect> {
     const changed: PendingThreadRevision[] = [];
     const statePushDomains: string[] = [];
-    const friendRequests: StatePageEffect['friendRequests'] = [];
-    const formedFriendships: StatePageEffect['formedFriendships'] = [];
-    const groupStatusMessages: StatePageEffect['groupStatusMessages'] = [];
+    const localSystemMessages: StatePageEffect['localSystemMessages'] = [];
     // GROUP_META materializes the roster stubs that relayed member PROFILE snapshots target. The pull
     // layer already validated wire rev ordering, so snapshot application may safely use dependency order.
     const applyPriority = {
@@ -2896,20 +2915,14 @@ export class FederationService {
           statePushDomains.push(...confirmation.keys());
         }
         if (effect.requestCreated) {
-          const pending = await tx.query.friendRequest.findFirst({
-            where: and(
-              eq(tables.friendRequest.status, 'REQUESTED'),
-              eq(tables.friendRequest.requesterUserId, remoteUser.id),
-              eq(tables.friendRequest.targetUserId, localUser.id),
-            ),
-            columns: { id: true },
+          changed.push({
+            userId: localUser.id,
+            revision:
+              await this.threadRevisionService.recordFriendRequestStateInTx(
+                tx,
+                localUser.id,
+              ),
           });
-          if (pending)
-            friendRequests.push({
-              localUserId: localUser.id,
-              peerUserId: remoteUser.id,
-              inviteId: pending.id.toString(),
-            });
         }
         if (effect.threadId !== undefined && effect.added !== undefined) {
           changed.push({
@@ -2926,12 +2939,20 @@ export class FederationService {
                   effect.threadId,
                 ),
           });
-          if (effect.added)
-            formedFriendships.push({
-              requesterUserId: localUser.id,
-              threadId: effect.threadId,
-              sourcePeerDomain: peerDomain,
-            });
+        }
+        if (effect.threadId !== undefined && effect.added === true) {
+          localSystemMessages.push({
+            actorUserId: localUser.id,
+            threadId: effect.threadId,
+            type: SystemMessageType.FRIEND_ADDED,
+          });
+        } else if (effect.threadId !== undefined && effect.removed === true) {
+          localSystemMessages.push({
+            actorUserId: remoteUser.id,
+            threadId: effect.threadId,
+            type: SystemMessageType.FRIEND_REMOVED,
+            subjectUserId: localUser.id,
+          });
         }
       } else if (
         item.eventType === 'GROUP_INVITE_INTENT' ||
@@ -3119,20 +3140,14 @@ export class FederationService {
                 tables.threadAudience.targetDomain,
                 tables.threadAudience.threadId,
               ],
-              targetWhere: sql`${tables.threadAudience.targetDomain} <> 'local' AND ${tables.threadAudience.scope} = 'THREAD'`,
+              targetWhere: sql`${tables.threadAudience.targetDomain} <> 'local'`,
               set: { deliverThroughChangeId: null },
             });
-          const status = await this.message.writeSystemMessageInTx(
-            tx,
-            originThread.ownerId,
-            originThread.id,
-            SystemMessageType.GROUP_JOINED,
-            member.id,
-          );
-          groupStatusMessages.push({
+          localSystemMessages.push({
             actorUserId: originThread.ownerId,
             threadId: originThread.id,
-            message: status.message,
+            type: SystemMessageType.GROUP_JOINED,
+            subjectUserId: member.id,
           });
           await tx
             .update(tables.group)
@@ -3166,6 +3181,12 @@ export class FederationService {
             false,
           );
           if (!deactivated) continue;
+          localSystemMessages.push({
+            actorUserId: member.id,
+            threadId: originThread.id,
+            type: SystemMessageType.GROUP_LEFT,
+            subjectUserId: member.id,
+          });
           await tx
             .update(tables.threadParticipant)
             .set({ leftAt: new Date(), updatedAt: new Date() })
@@ -3204,7 +3225,6 @@ export class FederationService {
               WHERE audience."targetDomain" = ${peerDomain}
                 AND audience."localUserId" IS NULL
                 AND audience."threadId" = ${originThread.id}
-                AND audience.scope = 'THREAD'
                 AND audience."deliverThroughChangeId" IS NULL
             `);
           const groupState = await this.writeGroupStateInTx(
@@ -3227,6 +3247,7 @@ export class FederationService {
           item.body as Record<string, unknown>,
         );
         statePushDomains.push(...groupEffect.statePushDomains);
+        localSystemMessages.push(...groupEffect.systemMessages);
         for (const { userId, active } of groupEffect.users) {
           changed.push({
             userId,
@@ -3259,36 +3280,44 @@ export class FederationService {
     return {
       revisions: changed,
       statePushDomains,
-      friendRequests,
-      formedFriendships,
-      groupStatusMessages,
+      localSystemMessages,
     };
   }
 
-  /** Publish an origin-authored membership confirmation only after its state transaction commits. */
-  private async publishConfirmedGroupStatus(status: {
+  /** Publish a server-local timeline notice only after its state transaction commits. */
+  private async publishLocalSystemMessage(status: {
     actorUserId: number;
     threadId: number;
-    message: Omit<Message, 'id'>;
+    type: SystemMessageType;
+    subjectUserId?: number;
   }): Promise<void> {
-    const recipients =
-      await this.participantService.getActiveParticipantUserIds(
-        status.threadId,
-      );
-    for (const recipient of recipients) {
-      if (recipient.userId !== status.actorUserId)
-        this.sse.onNewMessage(
-          recipient.userId,
-          status.threadId,
-          status.message.seq,
-          status.message.createdAt.getTime(),
-        );
-    }
-    await this.notifyOnSend(
+    const message = await this.message.tryWriteSystemMessage(
       status.actorUserId,
       status.threadId,
-      status.message.originSeq ?? status.message.seq,
+      status.type,
+      status.subjectUserId,
     );
+    if (!message) return;
+    try {
+      const recipients =
+        await this.participantService.getActiveParticipantUserIds(
+          status.threadId,
+        );
+      for (const recipient of recipients) {
+        if (recipient.userId !== status.actorUserId)
+          this.sse.onNewMessage(
+            recipient.userId,
+            status.threadId,
+            message.seq,
+            message.createdAt.getTime(),
+          );
+      }
+    } catch (error) {
+      this.logger.error(
+        `failed to publish local system message ${status.type} for thread ${status.threadId}: ${(error as Error).message}`,
+        (error as Error).stack,
+      );
+    }
   }
 
   /** A group origin relays a member's authoritative PROFILE snapshot to every other member server. */
@@ -3412,6 +3441,7 @@ export class FederationService {
     threadId: number;
     users: Array<{ userId: number; active: boolean }>;
     statePushDomains: string[];
+    systemMessages: StatePageEffect['localSystemMessages'];
   }> {
     const active = body.active;
     const dissolved = body.dissolved;
@@ -3433,6 +3463,7 @@ export class FederationService {
         groupUserId: tables.group.groupUserId,
         threadId: tables.messageThread.id,
         remoteRosterRev: tables.group.remoteRosterRev,
+        ownerId: tables.group.ownerId,
       })
       .from(tables.group)
       .innerJoin(tables.user, eq(tables.user.id, tables.group.groupUserId))
@@ -3452,12 +3483,25 @@ export class FederationService {
         threadId: mirror?.threadId ?? 0,
         users: [],
         statePushDomains: [],
+        systemMessages: [],
       };
     await tx.execute(sql`
       SELECT id FROM "MessageThread"
       WHERE id = ${mirror.threadId}
       FOR UPDATE
     `);
+    const activeBefore = await tx
+      .select({
+        userId: tables.threadParticipant.userId,
+        role: tables.threadParticipant.role,
+      })
+      .from(tables.threadParticipant)
+      .where(
+        and(
+          eq(tables.threadParticipant.threadId, mirror.threadId),
+          isNull(tables.threadParticipant.leftAt),
+        ),
+      );
     const localBefore = await tx
       .select({ userId: tables.threadParticipant.userId })
       .from(tables.threadParticipant)
@@ -3533,16 +3577,7 @@ export class FederationService {
         member.role as GroupRole,
       );
     }
-    const existing = await tx
-      .select({ userId: tables.threadParticipant.userId })
-      .from(tables.threadParticipant)
-      .where(
-        and(
-          eq(tables.threadParticipant.threadId, mirror.threadId),
-          isNull(tables.threadParticipant.leftAt),
-        ),
-      );
-    const removed = existing
+    const removed = activeBefore
       .filter((row) => !desired.has(row.userId))
       .map((row) => row.userId);
     if (removed.length)
@@ -3592,6 +3627,15 @@ export class FederationService {
       ...localDesired,
       ...localJoinDirections.map((row) => row.userId),
     ]);
+    const systemMessages = deriveLocalGroupSystemEvents(
+      activeBefore,
+      [...desired].map(([userId, role]) => ({ userId, role })),
+      mirror.ownerId,
+      ownerUser.id,
+    ).map((event) => ({
+      ...event,
+      threadId: mirror.threadId,
+    }));
     const statePushDomains: string[] = [];
     for (const userId of affectedLocalUsers) {
       const localDirection = localJoinDirections.find(
@@ -3666,7 +3710,7 @@ export class FederationService {
               tables.threadAudience.localUserId,
               tables.threadAudience.threadId,
             ],
-            targetWhere: sql`${tables.threadAudience.targetDomain} = 'local' AND ${tables.threadAudience.scope} = 'THREAD'`,
+            targetWhere: sql`${tables.threadAudience.targetDomain} = 'local'`,
             set: { deliverThroughChangeId: null },
           });
       else
@@ -3692,7 +3736,6 @@ export class FederationService {
           WHERE audience."targetDomain" = 'local'
             AND audience."localUserId" = ${userId}
             AND audience."threadId" = ${mirror.threadId}
-            AND audience.scope = 'THREAD'
             AND audience."deliverThroughChangeId" IS NULL
         `);
     }
@@ -3707,6 +3750,7 @@ export class FederationService {
             'NOT_MEMBER',
       })),
       statePushDomains,
+      systemMessages,
     };
   }
 
@@ -3726,13 +3770,48 @@ export class FederationService {
       throw new Error('missed page size must be an integer from 1 to 200');
     }
     const token = await this.capturePeerResponseToken(domain);
-    const page = await this.withTrustedPeer(domain, () =>
-      this.getSigned<FederationMessageFeedPage>(
-        `/s2s/v1/message-feed?after=${after.toString()}&take=${take}`,
-        domain,
-        16 * 1024 * 1024,
-      ),
-    );
+    let page: FederationMessageFeedPage;
+    try {
+      page = await this.withTrustedPeer(domain, () =>
+        this.getSigned<FederationMessageFeedPage>(
+          `/s2s/v1/message-feed?after=${after.toString()}&take=${take}`,
+          domain,
+          16 * 1024 * 1024,
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof S2sResponseError &&
+        error.code === BusinessCode.FEDERATION_MISSED_CURSOR_INVALID
+      ) {
+        const data = error.data as
+          | {
+              startChangeId?: unknown;
+              availableCursor?: unknown;
+              allocatedThrough?: unknown;
+            }
+          | undefined;
+        const parse = (value: unknown): bigint | null =>
+          typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value)
+            ? BigInt(value)
+            : null;
+        const startChangeId = parse(data?.startChangeId);
+        const availableCursor = parse(data?.availableCursor);
+        const allocatedThrough = parse(data?.allocatedThrough);
+        if (
+          startChangeId !== null &&
+          availableCursor !== null &&
+          allocatedThrough !== null
+        ) {
+          throw new RemoteMessageFeedCursorResetError(
+            startChangeId,
+            availableCursor,
+            allocatedThrough,
+          );
+        }
+      }
+      throw error;
+    }
     return { page, token };
   }
 
@@ -3789,8 +3868,20 @@ export class FederationService {
   ): Promise<MissedPageEffect[]> {
     await this.assertPeerResponseWritable(tx, token);
     const effects: MissedPageEffect[] = [];
-    for (const item of page.messages) {
+    for (const [itemIndex, item] of page.messages.entries()) {
+      const savepoint = `federation_message_${itemIndex}`;
+      await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
       try {
+        if (
+          !FEDERATED_MESSAGE_CONTENT_TYPES.includes(
+            item.contentType as ContentType,
+          )
+        )
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'unknown federated message content type',
+            HttpStatus.BAD_REQUEST,
+          );
         if (
           !Number.isSafeInteger(item.originSeq) ||
           item.originSeq < 0 ||
@@ -3803,28 +3894,11 @@ export class FederationService {
             HttpStatus.BAD_REQUEST,
           );
         }
-        const system =
-          item.contentType === ContentType.SYSTEM
-            ? parseSystemMessageContent(item.content)
-            : null;
-        if (item.contentType === ContentType.SYSTEM && !system) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'invalid federated system message',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        const isGroupLeaveBoundary =
-          item.thread.type === 'GROUP' &&
-          system?.type === SystemMessageType.GROUP_LEFT &&
-          system.subject?.account === item.author.account &&
-          system.subject?.domain === item.author.domain &&
-          item.author.domain === domain;
         const route = await this.resolveMissedThreadInTransaction(
           tx,
           item,
           domain,
-          isGroupLeaveBoundary,
+          false,
         );
         const originTime = new Date(item.createdAt);
         if (
@@ -4091,22 +4165,19 @@ export class FederationService {
           remoteForwardBundleId: forwardCard?.bundleId,
         });
       } catch (error) {
-        if (!(error instanceof FederationMessageContextError)) throw error;
-        // State is deliberately drained first, so a missing author/friend/thread
-        // here is an unauthorized or stale item, not a dependency to retry.
-        // Acknowledge just this change id, retain the rest of the page, and leave
-        // enough structured context for operators to diagnose the peer.
+        await tx.execute(sql.raw(`ROLLBACK TO SAVEPOINT ${savepoint}`));
         this.logger.error(
-          `ignored federated message without local relationship context: ${JSON.stringify(
-            {
-              peerDomain: domain,
-              changeId: item.changeId,
-              author: item.author,
-              thread: item.thread,
-              reason: error.message,
-            },
-          )}`,
+          `ignored invalid federated message: ${JSON.stringify({
+            peerDomain: domain,
+            changeId: item.changeId,
+            author: item.author,
+            thread: item.thread,
+            reason: (error as Error).message,
+          })}`,
+          (error as Error).stack,
         );
+      } finally {
+        await tx.execute(sql.raw(`RELEASE SAVEPOINT ${savepoint}`));
       }
     }
     return effects;
@@ -4461,10 +4532,9 @@ export class FederationService {
     sourceSeq: number,
     forwardBundleId?: string,
   ): Promise<{ absPath: string; bytes: number }> {
-    // Authorization is historical, not derived from the current friendship/roster. DiscoveryChange is
-    // durable proof that this signer had already been allocated the exact message; leaving a group or
-    // removing a friend only stops future allocations. Bind that proof to the stable author, thread,
-    // source sequence and digest supplied by the message-feed descriptor.
+    // Resource authorization is thread-audience based and deliberately independent from the ephemeral
+    // lifetime of a DiscoveryChange row. A retained/frozen audience may finish downloading resources
+    // referenced by history after its feed changes have been acknowledged and garbage-collected.
     const candidates = await this.database.db
       .select({
         messageId: tables.message.id,
@@ -4474,24 +4544,22 @@ export class FederationService {
         threadType: tables.messageThread.type,
         groupUserId: tables.messageThread.groupUserId,
       })
-      .from(tables.discoveryChange)
-      .innerJoin(
-        tables.discoveryTarget,
-        eq(tables.discoveryTarget.id, tables.discoveryChange.targetId),
-      )
-      .innerJoin(
-        tables.message,
-        eq(tables.message.id, tables.discoveryChange.messageId),
-      )
+      .from(tables.message)
       .innerJoin(tables.user, eq(tables.user.id, tables.message.creator))
       .innerJoin(
         tables.messageThread,
         eq(tables.messageThread.id, tables.message.threadId),
       )
+      .innerJoin(
+        tables.threadAudience,
+        and(
+          eq(tables.threadAudience.threadId, tables.message.threadId),
+          eq(tables.threadAudience.targetDomain, signerDomain),
+          isNull(tables.threadAudience.localUserId),
+        ),
+      )
       .where(
         and(
-          eq(tables.discoveryTarget.targetDomain, signerDomain),
-          isNull(tables.discoveryTarget.localUserId),
           eq(tables.user.account, normalizeAccount(fromAccount)),
           eq(tables.message.isDeleted, false),
           sql`COALESCE(${tables.message.originSeq}, ${tables.message.seq}) = ${sourceSeq}`,
@@ -4621,19 +4689,17 @@ export class FederationService {
         eq(tables.message.id, tables.forwardMessage.messageId),
       )
       .innerJoin(
-        tables.discoveryChange,
-        eq(tables.discoveryChange.messageId, tables.message.id),
-      )
-      .innerJoin(
-        tables.discoveryTarget,
-        eq(tables.discoveryTarget.id, tables.discoveryChange.targetId),
+        tables.threadAudience,
+        and(
+          eq(tables.threadAudience.threadId, tables.message.threadId),
+          eq(tables.threadAudience.targetDomain, signerDomain),
+          isNull(tables.threadAudience.localUserId),
+        ),
       )
       .where(
         and(
           eq(tables.forwardMessage.bundleId, bundleId),
           eq(tables.message.isDeleted, false),
-          eq(tables.discoveryTarget.targetDomain, signerDomain),
-          isNull(tables.discoveryTarget.localUserId),
         ),
       )
       .limit(1);

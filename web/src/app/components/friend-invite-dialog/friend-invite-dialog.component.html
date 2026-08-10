@@ -1,8 +1,4 @@
-<div class="invite-dialog" [appFitDialog]="fitOpts">
-  <div class="dialog-header">
-    <h2>{{ 'friend.inviteDialogTitle' | transloco }}</h2>
-  </div>
-
+<div class="invite-dialog">
   <div class="dialog-body">
     <div class="user-summary">
       <div class="avatar">
@@ -15,7 +11,7 @@
       </div>
       <div class="user-meta">
         <div class="user-name">{{ displayUserName(user()) }}</div>
-        <div class="user-account">&#64;{{ user().account }}</div>
+        <div class="user-account">{{ displayUserAccount(user()) }}</div>
         @if (user().isForeigner) {
           <app-federated-badge [domain]="user().domain"></app-federated-badge>
         }
@@ -41,9 +37,6 @@
   </div>
 
   <div class="dialog-actions">
-    <button mat-button type="button" (click)="cancel()" [disabled]="sending()">
-      {{ 'common.cancel' | transloco }}
-    </button>
     <button
       mat-flat-button
       color="primary"

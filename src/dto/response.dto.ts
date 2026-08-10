@@ -1,5 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ContentType, GroupRole, MessageThreadType } from '../database/enums.js';
+import {
+  ContentType,
+  GroupRole,
+  MessageThreadType,
+} from '../database/enums.js';
 import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
 
 /**
@@ -63,8 +67,8 @@ export class UserResponseDto {
 
   // Note: hashPwd never appears in responses. threadRevision is NOT here either — it is pushed via the
   // SSE HELLO connect handshake (the threadlist's sole delta-replay cursor), never the profile response.
-  // The friend-request badge is likewise NOT here — it is derived client-side from the HELLO/push-carried
-  // `friendReqRev` (MAX(createdAt) over incoming FRIEND invites) vs friendReqAckRev (server-state).
+  // Friend-request notification state is delivered through the unified state delta; its seen cursor is
+  // device-local and never appears in an API response.
 }
 
 /** Server-authoritative read state returned after committing a viewport read HWM. */
@@ -163,7 +167,8 @@ export class GroupResponseDto {
 
   @ApiProperty({
     example: '!01JABCDEFGHJKMNPQRSTVWXYZ',
-    description: 'Globally stable group account used to identify the group across servers',
+    description:
+      'Globally stable group account used to identify the group across servers',
   })
   account!: string;
 

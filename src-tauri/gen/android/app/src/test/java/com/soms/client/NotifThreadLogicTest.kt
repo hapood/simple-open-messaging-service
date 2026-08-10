@@ -17,4 +17,12 @@ class NotifThreadLogicTest {
         assertEquals(0x10000 + 7, NotifThreadLogic.notifId(0x10000, 7))
         assertEquals(0x10000, NotifThreadLogic.notifId(0x10000, 0)) // seq 0 is legitimate
     }
+
+    @Test
+    fun badgeNumber_preserves_the_exact_count_for_launcher_owned_formatting() {
+        assertEquals(0, NotifThreadLogic.badgeNumber(-1))
+        assertEquals(0, NotifThreadLogic.badgeNumber(0))
+        assertEquals(42, NotifThreadLogic.badgeNumber(42))
+        assertEquals(1_000, NotifThreadLogic.badgeNumber(1_000))
+    }
 }

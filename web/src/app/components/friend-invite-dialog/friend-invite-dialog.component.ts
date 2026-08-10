@@ -1,11 +1,9 @@
-import { Component, inject, input, signal } from '@angular/core';
+import { Component, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { translateBizResult } from '../../services/biz-code';
-import { displayUserName } from '../../services/model';
-import { RouteService } from '../../services/route.service';
+import { displayUserAccount, displayUserName } from '../../services/model';
 import { User, UserService } from '../../services/user.service';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import {
@@ -19,7 +17,6 @@ import {
     FormsModule,
     MatButtonModule,
     TranslocoPipe,
-    FitDialogDirective,
     UserAvatarComponent,
     FederatedBadgeComponent,
   ],
@@ -27,21 +24,20 @@ import {
   styleUrl: './friend-invite-dialog.component.scss',
 })
 export class FriendInviteDialogComponent {
-  private readonly routeService = inject(RouteService);
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
 
   readonly user = input.required<User>();
+  readonly completed = output<{
+    userId: number;
+    status: 'OUTGOING_PENDING' | 'FRIEND';
+  }>();
   readonly note = signal('');
   readonly sending = signal(false);
   readonly errorText = signal('');
-  readonly fitOpts = { minHeight: 300 } as const;
   readonly UserAvatarType = UserAvatarType;
   readonly displayUserName = displayUserName;
-
-  cancel() {
-    if (!this.sending()) this.routeService.closeDlg();
-  }
+  readonly displayUserAccount = displayUserAccount;
 
   send() {
     if (this.sending()) return;
@@ -55,7 +51,7 @@ export class FriendInviteDialogComponent {
       .subscribe({
         next: (res) => {
           if (res.code === 0) {
-            this.routeService.closeDlg({
+            this.completed.emit({
               userId: this.user().id,
               status:
                 res.data?.threadId ||

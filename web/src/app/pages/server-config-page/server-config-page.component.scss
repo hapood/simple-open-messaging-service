@@ -1,3 +1,5 @@
+@use '../../assets/utils.scss' as *;
+
 // Server-config page styles. The centered form (`.cfg-shell`) is the ONLY in-flow element; the progress
 // bar, step label, and footnote are position:fixed overlays so the connect flow appearing/disappearing
 // never reflows the form. Integer-px vertical metrics per the project CSS rule (line-height + gaps).
@@ -34,6 +36,7 @@
 }
 
 .cfg-viewport {
+  @include neutral-form-controls;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -69,7 +72,7 @@
   background: var(--app-surface);
   border: 1px solid color-mix(in srgb, var(--app-text) 8%, transparent);
   border-radius: var(--app-radius-lg);
-  box-shadow: 0 12px 40px rgba(15, 40, 80, 0.10);
+  box-shadow: 0 12px 40px rgba(20, 22, 24, 0.10);
 }
 
 .cfg-logo {

@@ -21,6 +21,28 @@
   --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
 }
 
+// Neutral Material control treatment for authentication and server setup. Material emits several
+// component-level color tokens in addition to --mat-sys-primary, so bind the visible form states here
+// as well. Error tokens are intentionally untouched and remain semantic red.
+@mixin neutral-form-controls {
+  --mat-form-field-filled-caret-color: var(--app-brand);
+  --mat-form-field-filled-focus-active-indicator-color: var(--app-brand);
+  --mat-form-field-filled-focus-label-text-color: var(--app-brand);
+  --mat-form-field-focus-select-arrow-color: var(--app-brand);
+  --mat-form-field-outlined-caret-color: var(--app-brand);
+  --mat-form-field-outlined-focus-label-text-color: var(--app-brand);
+  --mat-form-field-outlined-focus-outline-color: var(--app-brand);
+  --mat-checkbox-selected-icon-color: var(--app-brand);
+  --mat-checkbox-selected-focus-icon-color: var(--app-brand);
+  --mat-checkbox-selected-hover-icon-color: var(--app-brand-hover);
+  --mat-checkbox-selected-pressed-icon-color: var(--app-brand-pressed);
+  --mat-checkbox-selected-focus-state-layer-color: var(--app-brand);
+  --mat-checkbox-selected-hover-state-layer-color: var(--app-brand);
+  --mat-checkbox-selected-pressed-state-layer-color: var(--app-brand);
+  --mat-progress-bar-active-indicator-color: var(--app-brand);
+  --mat-progress-bar-track-color: var(--app-brand-soft);
+}
+
 // Shared auth split-screen shell. Include inside the `.auth-shell` selector.
 // Left column = <app-auth-brand> (decorative, hides itself below the breakpoint),
 // right column = `.form-pane` that centers the form card. Below 900px the grid
@@ -41,6 +63,7 @@
   transition: height 160ms ease-out;
 
   .form-pane {
+    @include neutral-form-controls;
     // Anchor for <app-auth-toolbar>'s absolute top-right placement.
     position: relative;
     display: flex;
@@ -51,7 +74,7 @@
     padding: 32px 24px;
     background:
       radial-gradient(circle at 88% 10%, color-mix(in srgb, var(--app-brand) 7%, transparent), transparent 30%),
-      radial-gradient(circle at 12% 90%, color-mix(in srgb, var(--app-brand-accent) 6%, transparent), transparent 32%),
+      radial-gradient(circle at 12% 90%, color-mix(in srgb, var(--app-text-muted) 5%, transparent), transparent 32%),
       var(--app-bg);
   }
 
@@ -100,7 +123,7 @@
   background: var(--app-surface);
   border: 1px solid color-mix(in srgb, var(--app-brand) 10%, var(--app-border));
   border-radius: var(--app-radius-lg);
-  box-shadow: 0 20px 56px rgba(15, 40, 80, 0.12), 0 2px 8px rgba(15, 40, 80, 0.04);
+  box-shadow: 0 20px 56px rgba(20, 22, 24, 0.10), 0 2px 8px rgba(20, 22, 24, 0.04);
 
   @media (max-width: 479px) {
     padding: 32px 24px 24px;

@@ -7,25 +7,17 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import { InviteService } from '../src/invite/invite.service';
-import { friendPair, friendRequest } from '../src/database/schema';
+import { friendPair, friendRequest, user } from '../src/database/schema';
 import { and, eq } from 'drizzle-orm';
 import { seedUserWithSession } from './seed';
 
 /**
  * Friend-request badge — the BACKEND half of the data contract.
  *
- * The badge is now DERIVED: the client compares the SSE HELLO/push-carried `friendReqRev` (= MAX(updatedAt)
- * over the user's incoming FRIEND invites — a monotonic, data-derived revision) to its IDB cursor, mirroring
- * the threadRevision delta model. There is no denormalized boolean column; a FRIEND invite advances
- * friendReqRev simply by being created (its own `updatedAt`). This spec pins the server side of that
- * contract: a FRIEND invite advances the recipient's derived friendReqRev, and markRead is a client-side
- * concern (a no-op server-side — the badge clears by advancing the client cursor, not by mutating state).
- *
- * Scope note: this guards the derived revision the client reads, NOT the client's cursor/badge derivation
- * (that lives in web/src/app/services/user.service.spec.ts) nor the live FRIEND_REQ_REV_UPDATED push (an SSE
- * integration, asserted separately). Keep all three: this anchors the derivation + markRead no-op.
+ * A new incoming request advances the recipient's unified stateRevision and appears as a FRIEND_REQUEST
+ * state-delta operation. Reading is a device-local client cursor and has no server endpoint/state.
  */
-describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-read is a no-op)', () => {
+describe('Friend-request client state e2e', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let invites: InviteService;
@@ -53,7 +45,7 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
     await app.close();
   });
 
-  it('a FRIEND invite advances the recipient derived friendReqRev, and markRead is a server no-op', async () => {
+  it('a FRIEND invite advances unified stateRevision and emits a FRIEND_REQUEST delta', async () => {
     const http = app.getHttpServer();
 
     // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
@@ -73,8 +65,11 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
       await request(http).post('/api/v1/user/my-profile').set(authB)
     ).body.data.id;
 
-    // 3. baseline: B has no incoming FRIEND invites → friendReqRev is null
-    expect(await invites.findLatestFriendReqUpdate(inviteeId)).toBeNull();
+    const before = await database.db.query.user.findFirst({
+      where: eq(user.id, inviteeId),
+      columns: { threadRevision: true },
+    });
+    expect(before).toBeDefined();
 
     // 4. A invites B → the PENDING row's creation advances MAX(updatedAt) over B's incoming FRIEND invites
     const invite = await request(http)
@@ -83,19 +78,24 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
       .send({ toUserId: inviteeId });
     expect(invite.body.code).toBe(0);
 
-    // 5. B's derived friendReqRev is now a positive epoch-ms timestamp
-    const armed = await invites.findLatestFriendReqUpdate(inviteeId);
-    expect(typeof armed).toBe('number');
-    expect(armed!).toBeGreaterThan(0);
+    const after = await database.db.query.user.findFirst({
+      where: eq(user.id, inviteeId),
+      columns: { threadRevision: true },
+    });
+    expect(after!.threadRevision).toBe(before!.threadRevision + 1);
 
-    // 6. markRead is a CLIENT-side cursor advance — a server no-op (no state to clear). friendReqRev is
-    //    unchanged after it; the badge clears because the client advances its own cursor, not because the
-    //    server mutated anything.
-    const mark = await request(http)
-      .post('/api/v1/invite/mark-read')
-      .set(authB);
-    expect(mark.body.code).toBe(0);
-    expect(await invites.findLatestFriendReqUpdate(inviteeId)).toBe(armed);
+    const delta = await request(http)
+      .post('/api/v1/user/query-state/delta')
+      .set(authB)
+      .send({
+        fromRevision: before!.threadRevision,
+        toRevision: after!.threadRevision,
+      });
+    expect(delta.body.code).toBe(0);
+    expect(delta.body.data).toContainEqual({
+      direction: 'FRIEND_REQUEST',
+      revision: after!.threadRevision,
+    });
   });
 
   it('does not activate two expired directions; newer revisions must renew both sides first', async () => {
@@ -183,8 +183,12 @@ describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-r
   });
 
   it('shows a new reverse request after my old direction expired and acceptance renews it atomically', async () => {
-    const a = await seedUserWithSession(app, 'reverse-expired-a', { name: 'A' });
-    const b = await seedUserWithSession(app, 'reverse-expired-b', { name: 'B' });
+    const a = await seedUserWithSession(app, 'reverse-expired-a', {
+      name: 'A',
+    });
+    const b = await seedUserWithSession(app, 'reverse-expired-b', {
+      name: 'B',
+    });
     const authA = { Authorization: `Bearer ${a.token}` };
     const authB = { Authorization: `Bearer ${b.token}` };
 

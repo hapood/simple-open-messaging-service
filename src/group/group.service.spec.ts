@@ -146,9 +146,7 @@ describe('GroupService membership lifecycle', () => {
     };
     const systemMessage = { id: 'kick-boundary' };
     const messages = {
-      writeSystemMessageInTx: vi
-        .fn()
-        .mockResolvedValue({ message: systemMessage }),
+      tryWriteSystemMessage: vi.fn().mockResolvedValue(systemMessage),
     };
     const messageFanout = { dispatch: vi.fn() };
     const service = createService(tx, revisions, messages, messageFanout);
@@ -161,8 +159,7 @@ describe('GroupService membership lifecycle', () => {
       userId: 2,
       revision: 5,
     });
-    expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(
-      tx,
+    expect(messages.tryWriteSystemMessage).toHaveBeenCalledWith(
       1,
       10,
       'GROUP_LEFT',
@@ -174,7 +171,7 @@ describe('GroupService membership lifecycle', () => {
     await expect(
       service.kickMember({ threadId: 10, operatorUserId: 1, targetUserId: 2 }),
     ).resolves.toEqual({ transitioned: false });
-    expect(messages.writeSystemMessageInTx).toHaveBeenCalledTimes(1);
+    expect(messages.tryWriteSystemMessage).toHaveBeenCalledTimes(1);
     expect(tx.update).toHaveBeenCalledTimes(2);
   });
 

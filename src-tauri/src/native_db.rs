@@ -362,6 +362,7 @@ pub(crate) struct ThreadDelta {
     direction: String,
     item: Option<Value>,
     user: Option<Value>,
+    revision: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -585,6 +586,15 @@ pub(crate) async fn native_db_apply_thread_delta(
                         params![user_id, identity, json_text(&profile)?, profile_rev],
                     ).map_err(|e| format!("apply profile state: {e}"))?;
                 }
+                "FRIEND_REQUEST" => {
+                    let friend_revision = op.revision.ok_or_else(|| "FRIEND_REQUEST delta has no revision".to_string())?;
+                    tx.execute(
+                        "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'friendRequestStateRevision', ?2)
+                         ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
+                        params![user_id, friend_revision.to_string()],
+                    )
+                    .map_err(|e| format!("save friend-request state revision: {e}"))?;
+                }
                 other => return Err(format!("unknown thread delta direction: {other}")),
             }
         }
@@ -598,6 +608,44 @@ pub(crate) async fn native_db_apply_thread_delta(
     })
     .await
     .map_err(|e| format!("join thread delta: {e}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_apply_missed_summary(
+    app: tauri::AppHandle,
+    user_id: i64,
+    items: Vec<Value>,
+    cursor: Value,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open(&app)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("begin missed summary: {e}"))?;
+        tx.execute("DELETE FROM threads WHERE user_id = ?1", params![user_id])
+            .map_err(|e| format!("clear missed-summary threads: {e}"))?;
+        for item in items {
+            let thread_id = item
+                .get("threadId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "missed-summary item has no threadId".to_string())?;
+            tx.execute(
+                "INSERT INTO threads(user_id, thread_id, payload_json) VALUES(?1, ?2, ?3)",
+                params![user_id, thread_id, json_text(&item)?],
+            )
+            .map_err(|e| format!("save missed-summary thread: {e}"))?;
+        }
+        tx.execute(
+            "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'missedCursor', ?2)
+             ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
+            params![user_id, json_text(&cursor)?],
+        )
+        .map_err(|e| format!("save missed-summary cursor: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("commit missed summary: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join missed summary: {e}"))?
 }
 
 #[tauri::command]

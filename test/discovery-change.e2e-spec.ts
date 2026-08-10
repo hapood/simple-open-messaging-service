@@ -214,65 +214,39 @@ describe('DiscoveryChangeService', () => {
     );
   });
 
-  it('keeps a creator leave boundary consumable but produces no later changes', async () => {
-    const { alice, thread, messages } = await fixture();
-    const [creatorAudience] = await database.db
-      .insert(threadAudience)
-      .values({
-        targetDomain: 'group-origin.test',
-        localUserId: null,
-        threadId: thread.id,
-        scope: 'CREATOR',
-        creatorUserId: alice.id,
-      })
-      .returning({ id: threadAudience.id });
-    await database.db.insert(threadAudience).values({
-      targetDomain: 'group-origin.test',
-      localUserId: null,
-      threadId: thread.id,
-      scope: 'THREAD',
-    });
-
-    const first = await database.db.transaction((tx) =>
+  it('retains already allocated messages after an audience is frozen', async () => {
+    const { thread, messages } = await fixture();
+    await database.db.transaction((tx) =>
       service.recordMessageInTx(tx, messages[0].id),
     );
-    const boundary = first.find(
-      (item) => item.targetDomain === 'group-origin.test',
-    );
-    expect(boundary?.allocatedThrough).toBe(1n);
+    const peerTarget = await database.db.query.discoveryTarget.findFirst({
+      where: eq(discoveryTarget.targetDomain, 'peer.test'),
+    });
+    expect(peerTarget?.allocatedThrough).toBe(1n);
+
     await database.db
       .update(threadAudience)
-      .set({ deliverThroughChangeId: boundary!.allocatedThrough })
-      .where(eq(threadAudience.id, creatorAudience.id));
-    await database.db
-      .delete(threadAudience)
+      .set({ deliverThroughChangeId: peerTarget!.allocatedThrough })
       .where(
         and(
-          eq(threadAudience.targetDomain, 'group-origin.test'),
-          eq(threadAudience.scope, 'THREAD'),
+          eq(threadAudience.targetDomain, 'peer.test'),
+          eq(threadAudience.threadId, thread.id),
         ),
       );
 
-    const second = await database.db.transaction((tx) =>
+    const afterLeave = await database.db.transaction((tx) =>
       service.recordMessageInTx(tx, messages[1].id),
     );
-    expect(
-      second.some((item) => item.targetDomain === 'group-origin.test'),
-    ).toBe(false);
-
-    const creatorTarget = await database.db.query.discoveryTarget.findFirst({
-      where: eq(discoveryTarget.targetDomain, 'group-origin.test'),
-    });
-    expect(creatorTarget?.allocatedThrough).toBe(1n);
+    expect(afterLeave.some((item) => item.targetDomain === 'peer.test')).toBe(
+      false,
+    );
     const retained = await database.db
       .select({
         changeId: discoveryChange.changeId,
-        audienceId: discoveryChange.audienceId,
+        messageId: discoveryChange.messageId,
       })
       .from(discoveryChange)
-      .where(eq(discoveryChange.targetId, creatorTarget!.id));
-    expect(retained).toEqual([
-      { changeId: 1n, audienceId: creatorAudience.id },
-    ]);
+      .where(eq(discoveryChange.targetId, peerTarget!.id));
+    expect(retained).toEqual([{ changeId: 1n, messageId: messages[0].id }]);
   });
 });

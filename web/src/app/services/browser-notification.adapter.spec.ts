@@ -1,5 +1,11 @@
-import { BrowserNotificationAdapter, mapActions } from './browser-notification.adapter';
-import type { NotificationDescriptor, NotifAction } from './notification-descriptor.model';
+import {
+  BrowserNotificationAdapter,
+  mapActions,
+} from './browser-notification.adapter';
+import type {
+  NotificationDescriptor,
+  NotifAction,
+} from './notification-descriptor.model';
 
 /** `mapActions` is a pure transform (the only piece of the SW-render path that is cleanly unit-testable in
  *  Karma — the live `registration.showNotification` + `notificationclick` flow is verified manually). Pins
@@ -26,9 +32,10 @@ describe('mapActions (NotifAction → NotificationAction)', () => {
  *  `notificationclick` fires. These tests stub the registration + the `Notification` global (the permission
  *  gate + the fallback constructor); the live SW click flow is verified manually. */
 describe('BrowserNotificationAdapter (SW registration path)', () => {
-  const prefs = { enabled: () => true, sound: () => true } as unknown as ConstructorParameters<
-    typeof BrowserNotificationAdapter
-  >[0];
+  const prefs = {
+    enabled: () => true,
+    sound: () => true,
+  } as unknown as ConstructorParameters<typeof BrowserNotificationAdapter>[0];
   let showNotification: jasmine.Spy;
   let getRegistration: jasmine.Spy;
   let notificationCreates: number;
@@ -37,7 +44,9 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   const RealNotification = g.Notification;
 
   /** A fake SW registration carrying spied show/getNotifications. */
-  function fakeReg(notifs: Array<{ tag: string; close: jasmine.Spy }> = []): ServiceWorkerRegistration {
+  function fakeReg(
+    notifs: Array<{ tag: string; close: jasmine.Spy }> = [],
+  ): ServiceWorkerRegistration {
     return {
       showNotification,
       getNotifications: () => Promise.resolve(notifs),
@@ -53,14 +62,19 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
       static permission = 'granted';
       public onclick: (() => void) | null = null;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars
-      constructor(public title: string, public options?: any) {
+      constructor(
+        public title: string,
+        public options?: any,
+      ) {
         notificationCreates++;
       }
       addEventListener() {}
       close() {}
     };
     if ('serviceWorker' in navigator) {
-      spyOn(navigator.serviceWorker, 'getRegistration').and.callFake(getRegistration);
+      spyOn(navigator.serviceWorker, 'getRegistration').and.callFake(
+        getRegistration,
+      );
     } else {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (navigator as any).serviceWorker = { getRegistration };
@@ -76,6 +90,7 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
     kind: 'thread-message',
     title: 'Alice',
     body: 'sent you 3 messages',
+    count: 3,
     lang: 'en',
     icon: null,
     renotify: true,
@@ -103,7 +118,10 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
 
   it('clear() closes every soms-* notification on the registration, leaving foreign tags alone', async () => {
     const soms = { tag: 'soms-thread-7', close: jasmine.createSpy('close7') };
-    const foreign = { tag: 'other-app', close: jasmine.createSpy('closeOther') };
+    const foreign = {
+      tag: 'other-app',
+      close: jasmine.createSpy('closeOther'),
+    };
     getRegistration.and.resolveTo(fakeReg([soms, foreign]));
     const adapter = new BrowserNotificationAdapter(prefs);
     await adapter.clear();
@@ -115,7 +133,11 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
     const same = { tag: 'soms-away', close: jasmine.createSpy('closeAway') };
     getRegistration.and.resolveTo(fakeReg([same]));
     const adapter = new BrowserNotificationAdapter(prefs);
-    await adapter.showDescriptor({ ...threadDescriptor, kind: 'clear', tag: 'soms-away' });
+    await adapter.showDescriptor({
+      ...threadDescriptor,
+      kind: 'clear',
+      tag: 'soms-away',
+    });
     expect(same.close).toHaveBeenCalledTimes(1);
     expect(showNotification).not.toHaveBeenCalled();
   });
@@ -131,7 +153,9 @@ describe('BrowserNotificationAdapter (SW registration path)', () => {
   it('clear() awaits an in-flight showNotification before closing (no stray card)', async () => {
     // Hold showNotification open so the render stays in-flight while clear() runs.
     let resolveShow: () => void = () => {};
-    showNotification.and.returnValue(new Promise<void>((r) => (resolveShow = r)));
+    showNotification.and.returnValue(
+      new Promise<void>((r) => (resolveShow = r)),
+    );
     getRegistration.and.resolveTo(fakeReg());
     const adapter = new BrowserNotificationAdapter(prefs);
     const showed = adapter.showDescriptor(threadDescriptor); // pending — show not resolved

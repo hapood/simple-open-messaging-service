@@ -386,6 +386,16 @@ export class FederationResetService implements OnModuleInit {
       await tx.execute(
         sql`DELETE FROM "QuotaDailyUsage" WHERE domain = ${domain}`,
       );
+      // Authorization and the peer's delivery index are removed before its identity anchor.
+      // DiscoveryTarget owns DiscoveryChange and FederationServeCursor through ON DELETE CASCADE.
+      // The GC worker uses row-level SKIP LOCKED on the same target/cursor, so it cannot race this
+      // destructive reset into deleting another peer's rows.
+      await tx.execute(
+        sql`DELETE FROM "ThreadAudience" WHERE "targetDomain" = ${domain}`,
+      );
+      await tx.execute(
+        sql`DELETE FROM "DiscoveryTarget" WHERE "targetDomain" = ${domain} AND "localUserId" IS NULL`,
+      );
       await tx.execute(sql`
         DELETE FROM "User"
         WHERE domain = ${domain} AND "isForeigner" = true

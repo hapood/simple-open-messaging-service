@@ -15,7 +15,7 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
     merge_cached_hello(
         &c,
         "HELLO",
-        &serde_json::json!({"userId":1,"stateRevision":5,"profileRev":2,"friendReqRev":1000,"friendReqAckRev":0,"latestMessage":null}),
+        &serde_json::json!({"userId":1,"stateRevision":5,"profileRev":2,"latestMessage":null}),
     );
     assert_eq!(get(&c)["userId"], 1);
     assert_eq!(get(&c)["stateRevision"], 5);
@@ -27,15 +27,6 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
     );
     assert_eq!(get(&c)["stateRevision"], 6);
 
-    // A newer state pair advances both friendReqRev + friendReqAckRev.
-    merge_cached_hello(
-        &c,
-        "FRIEND_REQ_REV_UPDATED",
-        &serde_json::json!({"friendReqRev":2000,"friendReqAckRev":1500}),
-    );
-    assert_eq!(get(&c)["friendReqRev"], 2000);
-    assert_eq!(get(&c)["friendReqAckRev"], 1500);
-
     merge_cached_hello(
         &c,
         "NEW_MESSAGE",
@@ -43,24 +34,6 @@ fn hello_seeds_then_incremental_frames_patch_their_fields() {
     );
     assert_eq!(get(&c)["latestMessage"]["threadId"], 7);
     assert_eq!(get(&c)["latestMessage"]["seq"], 9);
-}
-
-#[test]
-fn friendreq_revisions_are_monotonic_out_of_order_dropped() {
-    let c = cache();
-    merge_cached_hello(
-        &c,
-        "HELLO",
-        &serde_json::json!({"userId":1,"friendReqRev":2000,"friendReqAckRev":1500}),
-    );
-    // An OLDER pair (stale/out-of-order) must not regress either cursor.
-    merge_cached_hello(
-        &c,
-        "FRIEND_REQ_REV_UPDATED",
-        &serde_json::json!({"friendReqRev":1000,"friendReqAckRev":1000}),
-    );
-    assert_eq!(get(&c)["friendReqRev"], 2000);
-    assert_eq!(get(&c)["friendReqAckRev"], 1500);
 }
 
 #[test]

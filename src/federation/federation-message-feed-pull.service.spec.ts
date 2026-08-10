@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
+import {
+  FederationMessageFeedPullService,
+  RemoteMessageFeedCursorResetError,
+} from './federation-message-feed-pull.service.js';
 import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
 
-function page(scannedThrough: string, hasMore = false): FederationMessageFeedPage {
+function page(
+  scannedThrough: string,
+  hasMore = false,
+): FederationMessageFeedPage {
   return {
     messages: [],
     scannedThrough,
@@ -13,22 +19,31 @@ function page(scannedThrough: string, hasMore = false): FederationMessageFeedPag
 
 function harness(remoteHwm = 0n) {
   const order: string[] = [];
+  const state = { startChangeId: 0n, remoteHwm };
   const execute = vi.fn().mockResolvedValue({ rows: [{ locked: true }] });
-  const limit = vi.fn().mockResolvedValue([
+  const limit = vi.fn(async () => [
     {
       peerDomain: 'peer.test',
-      startChangeId: 0n,
-      remoteHwm,
+      startChangeId: state.startChangeId,
+      remoteHwm: state.remoteHwm,
       updatedAt: new Date(),
     },
   ]);
   const whereSelect = vi.fn(() => ({ limit }));
   const from = vi.fn(() => ({ where: whereSelect }));
   const select = vi.fn(() => ({ from }));
+  let nextUpdate: { startChangeId?: bigint; remoteHwm?: bigint } = {};
   const whereUpdate = vi.fn(async () => {
+    if (nextUpdate.startChangeId !== undefined)
+      state.startChangeId = nextUpdate.startChangeId;
+    if (nextUpdate.remoteHwm !== undefined)
+      state.remoteHwm = nextUpdate.remoteHwm;
     order.push('cursor');
   });
-  const set = vi.fn(() => ({ where: whereUpdate }));
+  const set = vi.fn((value: typeof nextUpdate) => {
+    nextUpdate = value;
+    return { where: whereUpdate };
+  });
   const update = vi.fn(() => ({ set }));
   const tx = { execute, select, update };
   const transaction = vi.fn(
@@ -39,7 +54,7 @@ function harness(remoteHwm = 0n) {
       transaction,
       query: {
         federationPullCursor: {
-          findFirst: vi.fn().mockResolvedValue({ remoteHwm }),
+          findFirst: vi.fn(async () => ({ remoteHwm: state.remoteHwm })),
         },
       },
     },
@@ -48,6 +63,7 @@ function harness(remoteHwm = 0n) {
     service: new FederationMessageFeedPullService(database as never),
     order,
     whereUpdate,
+    state,
   };
 }
 
@@ -88,5 +104,23 @@ describe('FederationMessageFeedPullService commit boundary', () => {
 
     expect(order).toEqual(['apply']);
     expect(whereUpdate).not.toHaveBeenCalled();
+  });
+
+  it('atomically adopts a monotonic remote retention floor and continues draining', async () => {
+    const { service, state } = harness();
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new RemoteMessageFeedCursorResetError(5n, 5n, 8n))
+      .mockResolvedValueOnce(page('8'))
+      .mockResolvedValueOnce(page('8'));
+    const apply = vi.fn();
+    const afterCommit = vi.fn();
+
+    await service.run('peer.test', { fetch, apply, afterCommit });
+
+    expect(fetch.mock.calls.map(([after]) => after)).toEqual([0n, 5n, 8n]);
+    expect(state).toEqual({ startChangeId: 5n, remoteHwm: 8n });
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(afterCommit).toHaveBeenCalledTimes(2);
   });
 });

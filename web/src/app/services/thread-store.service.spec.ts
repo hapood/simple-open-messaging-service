@@ -78,6 +78,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let queryReadDeltaSpy: jasmine.Spy;
   let queryUserInfoSpy: jasmine.Spy;
   let advanceCursorSpy: jasmine.Spy;
+  let applyFriendRequestStateRevisionSpy: jasmine.Spy;
   let cursorSignal: ReturnType<typeof signal<number | undefined>>;
   let putProfileSpy: jasmine.Spy;
 
@@ -157,6 +158,10 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               if (profile.id === sessionProfile()?.id)
                 sessionProfile.set(profile);
             },
+            applyFriendRequestStateRevision:
+              (applyFriendRequestStateRevisionSpy = jasmine.createSpy(
+                'applyFriendRequestStateRevision',
+              )),
             markRead: () => of({ code: 0 }),
           },
         },
@@ -211,8 +216,6 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     latestMessage?: { threadId: number; seq: number; ts: number } | null;
     stateRevision: number;
     profileRev?: number;
-    friendReqRev?: number | null;
-    friendReqAckRev?: number;
     readRevision?: number;
   }): void {
     eventSubject.next({
@@ -499,7 +502,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     emitHello({ userId: 1, stateRevision: 6 });
     await flush(20);
 
-    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0, null, 0);
+    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0);
     expect(queryThreadDeltaSpy).toHaveBeenCalledWith({
       fromRevision: 5,
       toRevision: 6,
@@ -747,6 +750,26 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await (await webdb.db()).get('threads', 1)).toBeUndefined();
   });
 
+  it('applies a FRIEND_REQUEST op from the unified state delta', async () => {
+    await populateViaDelta([p2p(1, 11)], 5);
+    queryThreadDeltaSpy.and.returnValue(
+      of({
+        code: 0,
+        data: [{ direction: 'FRIEND_REQUEST', revision: 6 }],
+      }),
+    );
+
+    eventSubject.next({
+      event: 'STATE_REV_UPDATED',
+      data: { stateRevision: 6 },
+    });
+    await flush(20);
+
+    expect(applyFriendRequestStateRevisionSpy).toHaveBeenCalledOnceWith(6);
+    expect(await webdb.getMeta('friendRequestStateRevision')).toBe(6);
+    expect(cursorSignal()).toBe(6);
+  });
+
   it('single-flights a revision burst and coalesces its tail to the highest target', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
     queryThreadDeltaSpy.calls.reset();
@@ -858,22 +881,25 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   // ── PEER_PROFILE_UPDATED (a friend changed avatar/name/bio) ───────────────────────────────────
 
   it('STATE_REV_UPDATED applies an inline PROFILE op without a profile request', async () => {
-    await populateViaDelta([
-      p2p(1, 11, {
-        peerUser: {
-          id: 11,
-          name: 'Old',
-          account: 'u11',
-          avatar: '/old.webp',
-          bio: '',
-          isForeigner: false,
-          domain: '',
-          createdAt: 0,
-          updatedAt: 0,
-          isDeleted: false,
-        } as User,
-      }),
-    ], 5);
+    await populateViaDelta(
+      [
+        p2p(1, 11, {
+          peerUser: {
+            id: 11,
+            name: 'Old',
+            account: 'u11',
+            avatar: '/old.webp',
+            bio: '',
+            isForeigner: false,
+            domain: '',
+            createdAt: 0,
+            updatedAt: 0,
+            isDeleted: false,
+          } as User,
+        }),
+      ],
+      5,
+    );
 
     queryThreadDeltaSpy.and.returnValue(
       of({

@@ -1,4 +1,7 @@
-import { NotificationDescriptor, NotifAction } from './notification-descriptor.model';
+import {
+  NotificationDescriptor,
+  NotifAction,
+} from './notification-descriptor.model';
 
 /**
  * Shape-lock for the hand-mirrored NotificationDescriptor model.
@@ -20,6 +23,7 @@ type DescriptorContract = {
   kind: string;
   title: string;
   body: string;
+  count: number;
   lang: string;
   icon: string | null;
   renotify: boolean;
@@ -32,8 +36,12 @@ type DescriptorContract = {
 // Compile-time assertion (purely type-level — no runtime value reference): the web model must be
 // bidirectionally assignable with the contract. If either direction drifts, the conditional resolves to
 // `never` and the `= true` assignment fails to type-check.
-type _ModelExtendsContract = NotificationDescriptor extends DescriptorContract ? true : never;
-type _ContractExtendsModel = DescriptorContract extends NotificationDescriptor ? true : never;
+type _ModelExtendsContract = NotificationDescriptor extends DescriptorContract
+  ? true
+  : never;
+type _ContractExtendsModel = DescriptorContract extends NotificationDescriptor
+  ? true
+  : never;
 const _assertModelExtendsContract: _ModelExtendsContract = true;
 const _assertContractExtendsModel: _ContractExtendsModel = true;
 void _assertModelExtendsContract;

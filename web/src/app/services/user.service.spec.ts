@@ -147,27 +147,18 @@ describe('UserService profile refresh', () => {
     await preferences.remove('device', 'theme');
   });
 
-  // The friend-request badge is derived from SERVER-state: friendReqRev (latest incoming-FRIEND-invite
-  // update epoch-ms, from HELLO/FRIEND_REQ_REV_UPDATED) > friendReqAckRev (the read cursor). No client IDB —
-  // both signals are fed by the server, so the badge is multi-device consistent.
-  it('friendReqBadge = friendReqRev > friendReqAckRev, cleared by markFriendReqRead (optimistic + POST)', () => {
-    expect(svc.friendReqBadge()).toBe(false); // both 0/null initially → 0 > 0 false
+  it('derives the friend-request badge from a device-local seen revision', () => {
+    const webdb = TestBed.inject(WebdbService);
+    expect(svc.friendReqBadge()).toBe(false);
 
-    // HELLO/push carries the server-state pair: rev ahead of ack → badge.
-    svc.applyFriendReqRev(2000, 0);
+    svc.applyFriendRequestStateRevision(20);
     expect(svc.friendReqBadge()).toBe(true);
 
-    // Opening the panel: optimistic local clear (ack → rev) + POSTs /invite/mark-read (server bumps + pushes).
     svc.markFriendReqRead();
-    expect(svc.friendReqBadge()).toBe(false); // optimistic clear
-    httpMock
-      .expectOne(
-        (r) => r.method === 'POST' && r.url.endsWith('/invite/mark-read'),
-      )
-      .flush({ code: 0, message: 'ok' });
+    expect(svc.friendReqBadge()).toBe(false);
+    expect(webdb.putMeta).toHaveBeenCalledWith('friendRequestSeenRevision', 20);
 
-    // A later FRIEND_REQ_REV_UPDATED (new request, ack unchanged) re-arms it.
-    svc.applyFriendReqRev(3000, 2000);
+    svc.applyFriendRequestStateRevision(21);
     expect(svc.friendReqBadge()).toBe(true);
   });
 });
@@ -243,7 +234,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
-    await svc.establishSession(1, 0, null, 0);
+    await svc.establishSession(1, 0);
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
     expect(
@@ -251,10 +242,31 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     ).toBe(1);
   });
 
+  it('restores the friend-request latest and seen revisions from this device', async () => {
+    webdb.getMeta.and.callFake(async (key: string) => {
+      if (key === 'friendRequestStateRevision') return 12;
+      if (key === 'friendRequestSeenRevision') return 9;
+      return {
+        id: 1,
+        profileRev: 0,
+        name: 'A',
+        avatar: '',
+        bio: '',
+        domain: '',
+      };
+    });
+
+    await svc.establishSession(1, 0);
+
+    expect(svc.friendRequestStateRevision()).toBe(12);
+    expect(svc.friendRequestSeenRevision()).toBe(9);
+    expect(svc.friendReqBadge()).toBe(true);
+  });
+
   it('fresh login drops and initializes the cache before strictly opening it', async () => {
     svc.prepareFreshCache();
 
-    await svc.establishSession(1, 0, null, 0);
+    await svc.establishSession(1, 0);
 
     expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('1');
     expect(webdb.openExistingForUser).toHaveBeenCalledOnceWith('1');
@@ -263,27 +275,26 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   it('rebuilds an unreadable cache discovered when HELLO establishes the session', async () => {
     webdb.openExistingForUser.and.rejectWith(new Error('unreadable cache'));
 
-    await expectAsync(svc.establishSession(1, 0, null, 0)).toBeResolved();
+    await expectAsync(svc.establishSession(1, 0)).toBeResolved();
 
     expect(webdb.recreateForUser).toHaveBeenCalledOnceWith('1');
   });
 
-  it('establishSession is idempotent for the same user (reconnect: no re-open, badge refreshed)', async () => {
-    await svc.establishSession(1, 0, null, 0);
+  it('establishSession is idempotent for the same user on reconnect', async () => {
+    await svc.establishSession(1, 0);
     webdb.openExistingForUser.calls.reset();
-    // Same user (a reconnect) → short-circuit: the webdb is already open, just refresh the badge.
-    await svc.establishSession(1, 0, 1000, 0);
+    await svc.establishSession(1, 0);
     expect(webdb.openExistingForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBe(1);
   });
 
   it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
-    await svc.establishSession(1, 0, null, 0);
+    await svc.establishSession(1, 0);
     webdb.closeAndDelete.calls.reset();
     webdb.openExistingForUser.calls.reset();
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
-    const done = svc.establishSession(2, 0, null, 0);
+    const done = svc.establishSession(2, 0);
     await flush();
     httpMock.expectOne(isMyProfile).flush(profile({ id: 2 }));
     await done;
@@ -297,7 +308,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
-    await svc.establishSession(1, 0, null, 0);
+    await svc.establishSession(1, 0);
     webdb.closeAndDelete.calls.reset();
 
     await svc.clearSession();
@@ -310,7 +321,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('keeps the session retryable when durable cache deletion fails', async () => {
-    await svc.establishSession(1, 0, null, 0);
+    await svc.establishSession(1, 0);
     webdb.closeAndDelete.and.rejectWith(new Error('cache busy'));
 
     await expectAsync(svc.clearSession()).toBeRejectedWithError('cache busy');

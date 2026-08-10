@@ -37,9 +37,8 @@ export class UserService {
       .then((row) => row ?? null);
   }
 
-  /** Self-profile only: omits hashPwd. (stateRevision rides the SSE HELLO handshake; the friend-request
-   *  badge is derived client-side from the HELLO/push-carried friendReqRev = MAX(createdAt) over incoming
-   *  FRIEND invites — no denormalized badge column.) */
+  /** Self-profile only: omits hashPwd. Client state is synchronized through the unified state revision;
+   *  the friend-request seen cursor is device-local. */
   findSelfProfile(userId: number) {
     return this.findUniqueUser({ id: userId });
   }

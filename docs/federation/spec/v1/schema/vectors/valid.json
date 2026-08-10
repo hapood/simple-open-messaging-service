@@ -242,8 +242,7 @@
               { "kind": "IMAGE", "url": "/asset/0", "size": 1, "w": 1, "h": 1 }
             ]
           }
-        },
-        { "contentType": "SYSTEM", "content": { "type": "FRIEND_REQUESTED" } }
+        }
       ]
     },
     {

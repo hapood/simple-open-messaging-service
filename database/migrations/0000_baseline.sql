@@ -1,6 +1,6 @@
--- Consolidated baseline produced by squashing database/migrations/0000~0031.
--- Equivalent to applying the 32 incremental migrations in order; each section is the verbatim
--- original file. Verified against a clean replay (schemaSignature parity).
+-- Consolidated baseline containing all schema changes through
+-- 0018_friend_request_client_state.sql. Verified against a clean replay
+-- (schemaSignature parity).
 
 
 -- ═══════════════════════ Source: 0000_baseline.sql ═══════════════════════
@@ -22,7 +22,7 @@ CREATE TYPE "GroupRole" AS ENUM ('OWNER', 'ADMIN', 'MEMBER');
 CREATE TYPE "FriendshipStatus" AS ENUM ('PENDING', 'APPROVED', 'BLOCKED', 'DELETED');
 
 -- CreateEnum
-CREATE TYPE "ContentType" AS ENUM ('PURE_TEXT', 'INVITE', 'IMAGE', 'VIDEO', 'FILE', 'AUDIO');
+CREATE TYPE "ContentType" AS ENUM ('PURE_TEXT', 'INVITE', 'IMAGE', 'VIDEO', 'FILE', 'AUDIO', 'LINK', 'CALL', 'FORWARD', 'GALLERY', 'SYSTEM');
 
 -- CreateEnum
 CREATE TYPE "NotifyType" AS ENUM ('FRIEND_REQUEST');
@@ -1047,7 +1047,6 @@ ALTER TABLE "ThreadRevision" ADD CONSTRAINT "ThreadRevision_threadId_fkey" FOREI
 -- Add LINK to the ContentType enum (web link card / OpenGraph preview message kind).
 -- Non-breaking: existing rows keep their values; new value defaults are not changed.
 -- ADD VALUE is permitted inside a transaction block since PostgreSQL 12.
-ALTER TYPE "ContentType" ADD VALUE IF NOT EXISTS 'LINK';
 
 -- Source: 20260723130000_drop_has_ur_friend_req/migration.sql
 
@@ -1144,7 +1143,6 @@ DROP TYPE IF EXISTS "CallStatus";
 DROP TYPE IF EXISTS "CallType";
 
 -- ADD VALUE is permitted inside a transaction block since PostgreSQL 12 (this server is PG 16).
-ALTER TYPE "ContentType" ADD VALUE IF NOT EXISTS 'CALL';
 
 -- Source: 20260726120000_admin_opaque_session/migration.sql
 
@@ -1225,7 +1223,6 @@ ALTER TABLE "PendingMedia" ADD COLUMN "failReason" VARCHAR(255);
 
 -- Source: 20260731160000_forward_bundles/migration.sql
 
-ALTER TYPE "ContentType" ADD VALUE 'FORWARD';
 
 CREATE TABLE "ForwardBundle" (
     "id" VARCHAR(26) NOT NULL,
@@ -1378,7 +1375,7 @@ DELETE FROM "MediaMessage";
 DELETE FROM "PendingMedia" WHERE digest IS NOT NULL;
 DELETE FROM "MediaAsset";
 
-CREATE TYPE "MediaAssetStatus" AS ENUM ('PENDING', 'READY', 'DELETING', 'DELETED');
+CREATE TYPE "MediaAssetStatus" AS ENUM ('PENDING', 'READY', 'DELETING', 'DELETED', 'FAILED');
 
 ALTER TABLE "MediaAsset"
   ADD COLUMN "status" "MediaAssetStatus" NOT NULL DEFAULT 'READY',
@@ -1428,9 +1425,6 @@ CREATE TABLE "UserQuotaDailyUsage" (
 );
 
 CREATE INDEX "UserQuotaDailyUsage_date_idx" ON "UserQuotaDailyUsage" USING btree ("date");
-
--- ═══════════════════════ Source: 0007_media_asset_failed.sql ═══════════════════════
-ALTER TYPE "MediaAssetStatus" ADD VALUE IF NOT EXISTS 'FAILED';
 
 -- ═══════════════════════ Source: 0008_resumable_upload.sql ═══════════════════════
 CREATE TYPE "UploadSessionStatus" AS ENUM (
@@ -1584,24 +1578,19 @@ CREATE UNIQUE INDEX "FederationDeletedCursor_stream_key"
 -- ═══════════════════════ Source: 0014_local_federation_identity.sql ═══════════════════════
 CREATE TABLE "LocalFederationIdentity" (
     "domain" VARCHAR(63) PRIMARY KEY,
-    "identityEpoch" INTEGER NOT NULL DEFAULT 1,
     "rootKeyFingerprint" VARCHAR(80) NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "LocalFederationIdentity_identityEpoch_check" CHECK ("identityEpoch" > 0)
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ═══════════════════════ Source: 0015_federated_peer_identity.sql ═══════════════════════
 ALTER TABLE "FederatedPeer"
     ADD COLUMN "pairwiseServerId" VARCHAR(64),
     ADD COLUMN "rootKeyFingerprint" VARCHAR(80),
-    ADD COLUMN "identityEpoch" INTEGER,
     ADD COLUMN "identityPinnedAt" TIMESTAMP(3),
     ADD COLUMN "identityLostAt" TIMESTAMP(3),
     ADD COLUMN "identityLostReason" VARCHAR(255),
     ADD COLUMN "resetGeneration" INTEGER NOT NULL DEFAULT 0,
-    ADD COLUMN "resetAt" TIMESTAMP(3),
-    ADD CONSTRAINT "FederatedPeer_identityEpoch_check"
-      CHECK ("identityEpoch" IS NULL OR "identityEpoch" > 0);
+    ADD COLUMN "resetAt" TIMESTAMP(3);
 
 CREATE TABLE "S2SIdentityNonce" (
     "originDomain" VARCHAR(63) NOT NULL,
@@ -1911,51 +1900,11 @@ ALTER TABLE "DiscoveryTarget"
 ALTER TABLE "DiscoveryTarget"
   ADD CONSTRAINT "DiscoveryTarget_allocatedThrough_check" CHECK ("allocatedThrough" >= 0);
 
--- ═══════════════════════ Source: 0026_creator_audience_delivery_boundary.sql ═══════════════════════
-CREATE TYPE "ThreadAudienceScope" AS ENUM ('THREAD', 'CREATOR');
-
 ALTER TABLE "ThreadAudience"
-  ADD COLUMN "scope" "ThreadAudienceScope" NOT NULL DEFAULT 'THREAD',
-  ADD COLUMN "creatorUserId" INTEGER,
   ADD COLUMN "deliverThroughChangeId" BIGINT,
-  ADD CONSTRAINT "ThreadAudience_creatorUserId_fkey"
-    FOREIGN KEY ("creatorUserId") REFERENCES "User"("id") ON UPDATE CASCADE ON DELETE CASCADE,
-  ADD CONSTRAINT "ThreadAudience_scope_check" CHECK (
-    (
-      "scope" = 'THREAD'
-      AND "creatorUserId" IS NULL
-      AND "deliverThroughChangeId" IS NULL
-    )
-    OR
-    (
-      "scope" = 'CREATOR'
-      AND "targetDomain" <> 'local'
-      AND "localUserId" IS NULL
-      AND "creatorUserId" IS NOT NULL
-    )
-  ),
   ADD CONSTRAINT "ThreadAudience_deliverThroughChangeId_check" CHECK (
     "deliverThroughChangeId" IS NULL OR "deliverThroughChangeId" > 0
   );
-
-DROP INDEX "ThreadAudience_local_key";
-DROP INDEX "ThreadAudience_peer_key";
-
-CREATE UNIQUE INDEX "ThreadAudience_local_key"
-  ON "ThreadAudience" ("targetDomain", "localUserId", "threadId")
-  WHERE "targetDomain" = 'local' AND "scope" = 'THREAD';
-
-CREATE UNIQUE INDEX "ThreadAudience_peer_key"
-  ON "ThreadAudience" ("targetDomain", "threadId")
-  WHERE "targetDomain" <> 'local' AND "scope" = 'THREAD';
-
-CREATE UNIQUE INDEX "ThreadAudience_peer_creator_key"
-  ON "ThreadAudience" ("targetDomain", "threadId", "creatorUserId")
-  WHERE "scope" = 'CREATOR';
-
-CREATE INDEX "ThreadAudience_creator_access_idx"
-  ON "ThreadAudience" ("creatorUserId", "threadId", "deliverThroughChangeId")
-  WHERE "scope" = 'CREATOR';
 
 -- ═══════════════════════ Source: 0027_federation_sequential_cursors.sql ═══════════════════════
 ALTER TABLE "FederationPullCursor"
@@ -2002,7 +1951,7 @@ ALTER TABLE "FederationPullCursor"
 -- MediaAsset will be simplified to only verified blobs in a later migration.
 
 CREATE TYPE "FileSyncDirection" AS ENUM ('OUTBOUND', 'INBOUND');
-CREATE TYPE "FileSyncStatus" AS ENUM ('PENDING', 'DOWNLOADING', 'SUCCEEDED', 'FAILED');
+CREATE TYPE "FileSyncStatus" AS ENUM ('PENDING', 'DOWNLOADING', 'SUCCEEDED', 'FAILED', 'TOMBSTONED');
 CREATE TYPE "FileSyncKind" AS ENUM ('FILE', 'IMAGE', 'VIDEO', 'AUDIO', 'BUNDLE');
 
 CREATE TABLE "FileSyncProgress" (
@@ -2063,3 +2012,478 @@ ALTER TABLE "PendingMedia"
   ADD COLUMN "expectedFederationVersion" INTEGER;
 
 CREATE INDEX "PendingMedia_batchId_idx" ON "PendingMedia" ("batchId");
+
+-- Squashed from 0001_gallery_and_upload.sql
+-- ═══════════════════════ Phase 7: GALLERY multi-file + type-agnostic upload ═══════════════════════
+-- GALLERY is a multi-asset bundle contentType (federation design doc §12.3 "outbound/inbound
+-- unification"). Single-file sends keep their existing type (IMAGE/VIDEO/FILE/AUDIO) and single-object
+-- content shape; GALLERY carries N items whose order is digest-sorted, because upload arrival order is
+-- unreliable across parallel requests.
+--
+-- FileSyncProgress.payload (outbound-only, nullable) carries each uploaded file's display payload
+-- {digest,url,size,family,name?,mimeType?,w?,h?,duration?} so the barrier-promote can assemble message
+-- content without re-deriving display metadata from CAS. Inbound rows never set it (their content
+-- arrives fully formed from the peer).
+
+-- ADD VALUE is permitted inside a transaction block since PostgreSQL 12 (this server is PG 16).
+
+ALTER TABLE "FileSyncProgress" ADD COLUMN "payload" jsonb;
+
+-- Squashed from 0002_quota_breaker.sql
+-- Quota circuit breaker: two independent 3-dimension breakers (per-peer federation, per-user local).
+-- Dimensions: msg cnt (reuses QuotaDailyUsage category 'messages'), file cnt (new category 'files' on the
+-- existing count tables — no DDL needed, category is varchar), file total size (new bigint accumulators below,
+-- because byte totals exceed INTEGER range). In-memory tripped flags are derived from these persisted counters.
+-- See docs plan + src/quota/{quota,user-quota}.service.ts.
+
+-- The squashed baseline retains the original local-user category check. Extend it before the new
+-- unified file counter is used.
+ALTER TABLE "UserQuotaDailyUsage"
+    DROP CONSTRAINT "UserQuotaDailyUsage_category_check",
+    ADD CONSTRAINT "UserQuotaDailyUsage_category_check" CHECK (
+        "category" IN ('messages', 'images', 'largeFiles', 'requests', 'files')
+    );
+
+-- Daily file-total-size accumulator for a federated peer (bigint). One row per (domain, UTC day).
+CREATE TABLE "QuotaFileByteUsage" (
+    "domain" VARCHAR(63) NOT NULL,
+    "date" DATE NOT NULL,
+    "bytes" BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT "QuotaFileByteUsage_pkey" PRIMARY KEY ("domain", "date")
+);
+
+CREATE INDEX "QuotaFileByteUsage_date_idx" ON "QuotaFileByteUsage" ("date");
+
+-- Daily file-total-size accumulator for a local user (bigint). One row per (userId, UTC day).
+CREATE TABLE "UserQuotaFileByteUsage" (
+    "userId" INTEGER NOT NULL,
+    "date" DATE NOT NULL,
+    "bytes" BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT "UserQuotaFileByteUsage_pkey" PRIMARY KEY ("userId", "date")
+);
+
+CREATE INDEX "UserQuotaFileByteUsage_date_idx" ON "UserQuotaFileByteUsage" ("date");
+
+ALTER TABLE "UserQuotaFileByteUsage"
+    ADD CONSTRAINT "UserQuotaFileByteUsage_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE;
+
+-- Tick-once guard: once a file's file-cnt/file-bytes quota is charged, admin retry or crash-resume must not
+-- re-charge it. Default false; set true after the first successful claim.
+ALTER TABLE "FileSyncProgress"
+    ADD COLUMN "quotaCounted" BOOLEAN NOT NULL DEFAULT false;
+
+-- Per-entity breaker override columns (NULL = use the global default).
+ALTER TABLE "FederatedPeer"
+    ADD COLUMN "dailyFileLimit" INTEGER,
+    ADD COLUMN "dailyFileBytesLimit" BIGINT;
+
+ALTER TABLE "UserQuotaPolicy"
+    ADD COLUMN "dailyFileLimit" INTEGER,
+    ADD COLUMN "dailyFileBytesLimit" BIGINT;
+
+-- The old per-category file limits (images/largeFiles daily counts) + per-item byte caps (maxImageBytes/
+-- maxLargeFileBytes) are replaced by the unified file-cnt + file-total-size breaker dimensions. Drop the legacy
+-- columns from both override tables. msg + request limits remain.
+ALTER TABLE "FederatedPeer"
+    DROP COLUMN "dailyImageLimit",
+    DROP COLUMN "dailyLargeFileLimit",
+    DROP COLUMN "maxImageBytes",
+    DROP COLUMN "maxLargeFileBytes";
+
+ALTER TABLE "UserQuotaPolicy"
+    DROP COLUMN "dailyImageLimit",
+    DROP COLUMN "dailyLargeFileLimit",
+    DROP COLUMN "maxImageBytes",
+    DROP COLUMN "maxLargeFileBytes";
+
+-- Admin "continue / add quota": a per-(entity, UTC-day) ADDITIVE allowance on top of the base limit. The
+-- effective breaker limit for today = base (override ?? default) + these extras. Persisted so a restart does
+-- not lose an admin-granted bonus; auto-resets via the date key. See QuotaService.addQuota.
+CREATE TABLE "QuotaDailyAllowance" (
+    "domain" VARCHAR(63) NOT NULL,
+    "date" DATE NOT NULL,
+    "extraMsg" INTEGER NOT NULL DEFAULT 0,
+    "extraFile" INTEGER NOT NULL DEFAULT 0,
+    "extraFileBytes" BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT "QuotaDailyAllowance_pkey" PRIMARY KEY ("domain", "date")
+);
+
+CREATE TABLE "UserQuotaDailyAllowance" (
+    "userId" INTEGER NOT NULL,
+    "date" DATE NOT NULL,
+    "extraMsg" INTEGER NOT NULL DEFAULT 0,
+    "extraFile" INTEGER NOT NULL DEFAULT 0,
+    "extraFileBytes" BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT "UserQuotaDailyAllowance_pkey" PRIMARY KEY ("userId", "date")
+);
+
+ALTER TABLE "UserQuotaDailyAllowance"
+    ADD CONSTRAINT "UserQuotaDailyAllowance_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE;
+
+-- Squashed from 0003_upload_parts.sql
+-- Stable logical file identity for single-file and GALLERY uploads. A digest identifies physical
+-- bytes and may repeat; partId + position identify each user-selected item in the staged message.
+ALTER TABLE "UploadSession"
+  ADD COLUMN "partId" uuid,
+  ADD COLUMN "position" integer,
+  ADD COLUMN "partIntent" "ContentType";
+
+-- The project has not shipped yet, but keep the migration safe for local development databases that
+-- already contain single-file sessions.
+UPDATE "UploadSession"
+SET "partId" = "uploadId", "position" = 0, "partIntent" = "contentType"
+WHERE "partId" IS NULL;
+
+ALTER TABLE "UploadSession"
+  ALTER COLUMN "partId" SET NOT NULL,
+  ALTER COLUMN "position" SET NOT NULL,
+  ALTER COLUMN "partIntent" SET NOT NULL,
+  ADD CONSTRAINT "UploadSession_position_check" CHECK ("position" BETWEEN 0 AND 9),
+  ADD CONSTRAINT "UploadSession_partIntent_check" CHECK ("partIntent" <> 'GALLERY');
+
+DROP INDEX "UploadSession_clientMessageId_key";
+CREATE UNIQUE INDEX "UploadSession_clientMessageId_partId_key"
+  ON "UploadSession"("clientMessageId", "partId");
+CREATE UNIQUE INDEX "UploadSession_clientMessageId_position_key"
+  ON "UploadSession"("clientMessageId", "position");
+
+ALTER TABLE "FileSyncProgress"
+  ADD COLUMN "partId" uuid,
+  ADD COLUMN "position" integer;
+
+-- Existing outbound rows predate logical parts and are all single-file staging rows.
+UPDATE "FileSyncProgress"
+SET "partId" = gen_random_uuid(), "position" = 0
+WHERE "direction" = 'OUTBOUND' AND "partId" IS NULL;
+
+ALTER TABLE "FileSyncProgress"
+  ADD CONSTRAINT "FileSyncProgress_position_check"
+    CHECK ("position" IS NULL OR "position" BETWEEN 0 AND 9),
+  ADD CONSTRAINT "FileSyncProgress_outbound_part_check"
+    CHECK ("direction" <> 'OUTBOUND' OR ("partId" IS NOT NULL AND "position" IS NOT NULL));
+
+DROP INDEX "FileSyncProgress_batchId_digest_key";
+CREATE UNIQUE INDEX "FileSyncProgress_batchId_partId_key"
+  ON "FileSyncProgress"("batchId", "partId") WHERE "partId" IS NOT NULL;
+CREATE UNIQUE INDEX "FileSyncProgress_batchId_position_key"
+  ON "FileSyncProgress"("batchId", "position") WHERE "position" IS NOT NULL;
+CREATE INDEX "FileSyncProgress_batchId_digest_idx"
+  ON "FileSyncProgress"("batchId", "digest");
+
+-- Squashed from 0004_discovery_change_history.sql
+-- Revoking current thread access must not erase proof that a message was already allocated to a peer.
+-- Historical DiscoveryChange rows authorize interrupted CAS/bundle downloads after an unfriend/leave.
+ALTER TABLE "DiscoveryChange"
+  DROP CONSTRAINT "DiscoveryChange_audienceId_fkey";
+
+ALTER TABLE "DiscoveryChange"
+  ALTER COLUMN "audienceId" DROP NOT NULL,
+  ADD CONSTRAINT "DiscoveryChange_audienceId_fkey"
+    FOREIGN KEY ("audienceId") REFERENCES "ThreadAudience"("id") ON DELETE SET NULL;
+
+-- Squashed from 0005_file_sync_tombstone.sql
+-- A source-message deletion is a protocol terminal, not an operator-retryable transfer failure.
+
+-- Squashed from 0006_peer_state_feed.sql
+CREATE TYPE "PeerStateEventType" AS ENUM ('PROFILE', 'P2P_META', 'GROUP_META', 'GROUP_INVITE_INTENT', 'GROUP_JOIN_INTENT');
+
+CREATE TABLE "PeerStateFeedTarget" (
+  "peerDomain" varchar(63) PRIMARY KEY NOT NULL REFERENCES "FederatedPeer"("domain") ON DELETE CASCADE,
+  "allocatedThrough" bigint DEFAULT 0 NOT NULL,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "PeerStateFeedTarget_allocatedThrough_check" CHECK ("allocatedThrough" >= 0)
+);
+
+CREATE TABLE "PeerStateFeedPullCursor" (
+  "peerDomain" varchar(63) PRIMARY KEY NOT NULL REFERENCES "FederatedPeer"("domain") ON DELETE CASCADE,
+  "remoteHwm" bigint DEFAULT 0 NOT NULL,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "PeerStateFeedPullCursor_remoteHwm_check" CHECK ("remoteHwm" >= 0)
+);
+
+CREATE TABLE "PeerStateFeed" (
+  "peerDomain" varchar(63) NOT NULL REFERENCES "FederatedPeer"("domain") ON DELETE CASCADE,
+  "account" varchar(31) NOT NULL,
+  "eventType" "PeerStateEventType" NOT NULL,
+  "subjectAccount" varchar(31) DEFAULT '' NOT NULL,
+  "revision" bigint NOT NULL,
+  "rev" bigint NOT NULL,
+  "body" jsonb NOT NULL,
+  "createdAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "PeerStateFeed_pkey" PRIMARY KEY ("peerDomain", "account", "eventType", "subjectAccount"),
+  CONSTRAINT "PeerStateFeed_revision_check" CHECK ("revision" >= 0),
+  CONSTRAINT "PeerStateFeed_rev_check" CHECK ("rev" > 0),
+  CONSTRAINT "PeerStateFeed_subject_check" CHECK (("eventType" = 'P2P_META' AND "subjectAccount" <> '') OR ("eventType" <> 'P2P_META' AND "subjectAccount" = ''))
+);
+
+CREATE UNIQUE INDEX "PeerStateFeed_peerDomain_rev_key" ON "PeerStateFeed" ("peerDomain", "rev");
+
+-- Squashed from 0007_friend_recognition_state.sql
+ALTER TABLE "ThreadParticipant"
+  ADD COLUMN "recognizesFriend" boolean DEFAULT true NOT NULL,
+  ADD COLUMN "relationshipRev" integer DEFAULT 0 NOT NULL,
+  ADD COLUMN "remoteRelationshipRev" integer,
+  ADD CONSTRAINT "ThreadParticipant_relationship_rev_check"
+    CHECK ("relationshipRev" >= 0 AND ("remoteRelationshipRev" IS NULL OR "remoteRelationshipRev" >= 0));
+
+-- Squashed from 0008_state_business_revision_int.sql
+ALTER TABLE "PeerStateFeed"
+  ALTER COLUMN "revision" TYPE integer
+  USING "revision"::integer;
+
+-- Squashed from 0009_profile_state_revision.sql
+CREATE TABLE "ProfileStateRevision" (
+  "userId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "subjectUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "revision" integer NOT NULL,
+  "createdAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "ProfileStateRevision_pkey" PRIMARY KEY ("userId", "subjectUserId"),
+  CONSTRAINT "ProfileStateRevision_revision_check" CHECK ("revision" > 0)
+);
+CREATE INDEX "ProfileStateRevision_userId_revision_idx" ON "ProfileStateRevision" ("userId", "revision");
+
+-- Squashed from 0010_state_feed_serve_cursor.sql
+ALTER TABLE "PeerStateFeedTarget"
+  ADD COLUMN "startRev" bigint DEFAULT 0 NOT NULL,
+  ADD COLUMN "acknowledgedThrough" bigint DEFAULT 0 NOT NULL,
+  ADD COLUMN "lastServedThrough" bigint DEFAULT 0 NOT NULL,
+  ADD CONSTRAINT "PeerStateFeedTarget_cursor_check"
+    CHECK ("startRev" >= 0 AND "acknowledgedThrough" >= "startRev"
+      AND "lastServedThrough" >= "acknowledgedThrough"
+      AND "allocatedThrough" >= "lastServedThrough");
+
+-- Squashed from 0011_system_display_message.sql
+
+-- Squashed from 0012_friend_request_pair.sql
+CREATE TYPE "FriendRequestStatus" AS ENUM ('REQUESTED', 'FRIEND', 'NOT_FRIEND');
+
+CREATE TABLE "FriendRequest" (
+  "requesterUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "targetUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "status" "FriendRequestStatus" NOT NULL,
+  "note" varchar(255) DEFAULT '' NOT NULL,
+  "revision" integer DEFAULT 0 NOT NULL,
+  "requestedAt" timestamp(3),
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "FriendRequest_pkey" PRIMARY KEY ("requesterUserId", "targetUserId"),
+  CONSTRAINT "FriendRequest_revision_check"
+    CHECK ("revision" >= 0 AND "requesterUserId" <> "targetUserId")
+);
+
+CREATE TABLE "FriendPair" (
+  "userLowId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "userHighId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "threadId" integer REFERENCES "MessageThread"("id") ON DELETE SET NULL,
+  "active" boolean DEFAULT false NOT NULL,
+  "revision" integer DEFAULT 0 NOT NULL,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "FriendPair_pkey" PRIMARY KEY ("userLowId", "userHighId"),
+  CONSTRAINT "FriendPair_order_check" CHECK ("userLowId" < "userHighId"),
+  CONSTRAINT "FriendPair_revision_check" CHECK ("revision" >= 0)
+);
+
+INSERT INTO "FriendRequest" (
+  "requesterUserId", "targetUserId", "status", "note", "revision", "requestedAt", "updatedAt"
+)
+SELECT DISTINCT ON (i."fromUserId", i."toUserId")
+  i."fromUserId", i."toUserId",
+  CASE WHEN i.status = 'PENDING' THEN 'REQUESTED'::"FriendRequestStatus"
+       WHEN i.status = 'ACCEPTED' THEN 'FRIEND'::"FriendRequestStatus"
+       ELSE 'NOT_FRIEND'::"FriendRequestStatus" END,
+  i.note, 1, i."createdAt", i."updatedAt"
+FROM "Invite" i
+WHERE i.kind = 'FRIEND'
+ORDER BY i."fromUserId", i."toUserId", i."updatedAt" DESC, i.id DESC;
+
+INSERT INTO "FriendRequest" (
+  "requesterUserId", "targetUserId", "status", "note", "revision", "requestedAt", "updatedAt"
+)
+SELECT p."userId", peer."userId", 'FRIEND', '', GREATEST(p."relationshipRev", 1), NULL,
+       GREATEST(p."updatedAt", peer."updatedAt")
+FROM "ThreadParticipant" p
+JOIN "MessageThread" t ON t.id = p."threadId" AND t.type = 'P2P'
+JOIN "ThreadParticipant" peer ON peer."threadId" = t.id AND peer.id <> p.id
+WHERE p."leftAt" IS NULL AND peer."leftAt" IS NULL
+ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
+  status = 'FRIEND', revision = GREATEST("FriendRequest".revision, EXCLUDED.revision),
+  "updatedAt" = GREATEST("FriendRequest"."updatedAt", EXCLUDED."updatedAt");
+
+INSERT INTO "FriendPair" ("userLowId", "userHighId", "threadId", active, revision, "updatedAt")
+SELECT DISTINCT ON (LEAST(a."userId", b."userId"), GREATEST(a."userId", b."userId"))
+  LEAST(a."userId", b."userId"), GREATEST(a."userId", b."userId"), t.id,
+  a."leftAt" IS NULL AND b."leftAt" IS NULL, 1, GREATEST(a."updatedAt", b."updatedAt")
+FROM "MessageThread" t
+JOIN "ThreadParticipant" a ON a."threadId" = t.id
+JOIN "ThreadParticipant" b ON b."threadId" = t.id AND a.id < b.id
+WHERE t.type = 'P2P'
+ORDER BY LEAST(a."userId", b."userId"), GREATEST(a."userId", b."userId"),
+         (a."leftAt" IS NULL AND b."leftAt" IS NULL) DESC, t.id DESC;
+
+-- Squashed from 0013_group_membership_event_types.sql
+
+-- Squashed from 0014_group_membership_intent.sql
+ALTER TABLE "PeerStateFeed" DROP CONSTRAINT "PeerStateFeed_subject_check";
+ALTER TABLE "PeerStateFeed" ADD CONSTRAINT "PeerStateFeed_subject_check" CHECK (
+  ("eventType" IN ('P2P_META', 'GROUP_INVITE_INTENT', 'GROUP_JOIN_INTENT') AND "subjectAccount" <> '')
+  OR ("eventType" IN ('PROFILE', 'GROUP_META') AND "subjectAccount" = '')
+);
+
+CREATE TYPE "GroupMembershipDirection" AS ENUM ('INVITE', 'JOIN');
+CREATE TYPE "GroupMembershipRequestStatus" AS ENUM ('REQUESTED', 'MEMBER', 'NOT_MEMBER');
+
+CREATE TABLE "GroupMembershipRequest" (
+  "groupUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "memberUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  direction "GroupMembershipDirection" NOT NULL,
+  status "GroupMembershipRequestStatus" NOT NULL,
+  note varchar(255) DEFAULT '' NOT NULL,
+  revision integer DEFAULT 0 NOT NULL,
+  "requestedAt" timestamp(3),
+  "expiresAt" timestamp(3),
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "GroupMembershipRequest_pkey" PRIMARY KEY ("groupUserId", "memberUserId", direction),
+  CONSTRAINT "GroupMembershipRequest_revision_check" CHECK (revision >= 0 AND "groupUserId" <> "memberUserId")
+);
+
+CREATE TABLE "GroupMembershipPair" (
+  "groupUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "memberUserId" integer NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  active boolean DEFAULT false NOT NULL,
+  role "GroupRole" DEFAULT 'MEMBER' NOT NULL,
+  revision integer DEFAULT 0 NOT NULL,
+  "updatedAt" timestamp(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "GroupMembershipPair_pkey" PRIMARY KEY ("groupUserId", "memberUserId"),
+  CONSTRAINT "GroupMembershipPair_revision_check" CHECK (revision >= 0)
+);
+
+INSERT INTO "GroupMembershipPair" ("groupUserId", "memberUserId", active, role, revision, "updatedAt")
+SELECT t."groupUserId", p."userId", p."leftAt" IS NULL, p.role, 1, p."updatedAt"
+FROM "MessageThread" t JOIN "ThreadParticipant" p ON p."threadId" = t.id
+WHERE t.type = 'GROUP' AND t."groupUserId" IS NOT NULL
+ON CONFLICT ("groupUserId", "memberUserId") DO UPDATE SET
+  active = EXCLUDED.active, role = EXCLUDED.role,
+  revision = GREATEST("GroupMembershipPair".revision, EXCLUDED.revision),
+  "updatedAt" = GREATEST("GroupMembershipPair"."updatedAt", EXCLUDED."updatedAt");
+
+INSERT INTO "GroupMembershipRequest" (
+  "groupUserId", "memberUserId", direction, status, note, revision, "requestedAt", "expiresAt", "updatedAt"
+)
+SELECT t."groupUserId", i."toUserId", 'INVITE',
+  CASE WHEN i.status = 'PENDING' THEN 'REQUESTED'::"GroupMembershipRequestStatus"
+       WHEN i.status = 'ACCEPTED' THEN 'MEMBER'::"GroupMembershipRequestStatus"
+       ELSE 'NOT_MEMBER'::"GroupMembershipRequestStatus" END,
+  i.note, 1, i."createdAt", i."expiresAt", i."updatedAt"
+FROM "Invite" i JOIN "MessageThread" t ON t.id = i."threadId"
+WHERE i.kind = 'GROUP' AND t."groupUserId" IS NOT NULL
+ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
+  status = EXCLUDED.status, note = EXCLUDED.note, "expiresAt" = EXCLUDED."expiresAt",
+  "updatedAt" = GREATEST("GroupMembershipRequest"."updatedAt", EXCLUDED."updatedAt");
+
+INSERT INTO "GroupMembershipRequest" (
+  "groupUserId", "memberUserId", direction, status, revision, "updatedAt"
+)
+SELECT "groupUserId", "memberUserId", 'JOIN', 'MEMBER', 1, "updatedAt"
+FROM "GroupMembershipPair" WHERE active
+ON CONFLICT DO NOTHING;
+
+-- Squashed from 0015_remove_legacy_invite.sql
+ALTER TABLE "FriendRequest"
+  ADD COLUMN id bigserial NOT NULL,
+  ADD COLUMN "expiresAt" timestamp(3);
+CREATE UNIQUE INDEX "FriendRequest_id_key" ON "FriendRequest" (id);
+
+ALTER TABLE "GroupMembershipRequest"
+  ADD COLUMN id bigserial NOT NULL;
+CREATE UNIQUE INDEX "GroupMembershipRequest_id_key" ON "GroupMembershipRequest" (id);
+
+-- Capture any request rows written after the earlier fact-table backfills but before this deployment.
+INSERT INTO "FriendRequest" (
+  "requesterUserId", "targetUserId", status, note, revision,
+  "requestedAt", "expiresAt", "updatedAt"
+)
+SELECT DISTINCT ON (i."fromUserId", i."toUserId")
+  i."fromUserId", i."toUserId",
+  CASE WHEN i.status = 'PENDING' THEN 'REQUESTED'::"FriendRequestStatus"
+       WHEN i.status = 'ACCEPTED' THEN 'FRIEND'::"FriendRequestStatus"
+       ELSE 'NOT_FRIEND'::"FriendRequestStatus" END,
+  i.note, 1, i."createdAt", i."expiresAt", i."updatedAt"
+FROM "Invite" i
+WHERE i.kind = 'FRIEND'
+ORDER BY i."fromUserId", i."toUserId", i."updatedAt" DESC, i.id DESC
+ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
+  status = EXCLUDED.status,
+  note = EXCLUDED.note,
+  "requestedAt" = EXCLUDED."requestedAt",
+  "expiresAt" = EXCLUDED."expiresAt",
+  "updatedAt" = GREATEST("FriendRequest"."updatedAt", EXCLUDED."updatedAt");
+
+INSERT INTO "GroupMembershipRequest" (
+  "groupUserId", "memberUserId", direction, status, note, revision,
+  "requestedAt", "expiresAt", "updatedAt"
+)
+SELECT DISTINCT ON (t."groupUserId", i."toUserId")
+  t."groupUserId", i."toUserId", 'INVITE',
+  CASE WHEN i.status = 'PENDING' THEN 'REQUESTED'::"GroupMembershipRequestStatus"
+       WHEN i.status = 'ACCEPTED' THEN 'MEMBER'::"GroupMembershipRequestStatus"
+       ELSE 'NOT_MEMBER'::"GroupMembershipRequestStatus" END,
+  i.note, 1, i."createdAt", i."expiresAt", i."updatedAt"
+FROM "Invite" i
+JOIN "MessageThread" t ON t.id = i."threadId"
+WHERE i.kind = 'GROUP' AND t."groupUserId" IS NOT NULL
+ORDER BY t."groupUserId", i."toUserId", i."updatedAt" DESC, i.id DESC
+ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
+  status = EXCLUDED.status,
+  note = EXCLUDED.note,
+  "requestedAt" = EXCLUDED."requestedAt",
+  "expiresAt" = EXCLUDED."expiresAt",
+  "updatedAt" = GREATEST("GroupMembershipRequest"."updatedAt", EXCLUDED."updatedAt");
+
+DROP TABLE "Invite";
+DROP TYPE "InviteKind";
+DROP TYPE "InviteStatus";
+
+-- Command-style friend operations no longer exist; state-feed revision gating is the deduplicator.
+DROP TABLE "S2SFriendOpSeen";
+
+-- Squashed from 0016_friend_leave_boundary.sql
+-- A closed friendship or group subscription retains its audience row so
+-- already allocated discovery changes remain drainable. The inclusive
+-- boundary is zero when no message has ever been allocated for that target.
+ALTER TABLE "ThreadAudience"
+  DROP CONSTRAINT "ThreadAudience_deliverThroughChangeId_check";
+
+ALTER TABLE "ThreadAudience"
+  ADD CONSTRAINT "ThreadAudience_deliverThroughChangeId_check" CHECK (
+    "deliverThroughChangeId" IS NULL OR "deliverThroughChangeId" >= 0
+  );
+
+-- Squashed from 0018_friend_request_client_state.sql
+ALTER TABLE "User" DROP COLUMN IF EXISTS "friendReqAckRev";
+
+CREATE TABLE "FriendRequestStateRevision" (
+  "userId" INTEGER PRIMARY KEY NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+  "revision" INTEGER NOT NULL,
+  CONSTRAINT "FriendRequestStateRevision_revision_check" CHECK ("revision" > 0)
+);
+
+-- Existing pending requests must appear in the first unified state-delta replay after upgrading.
+WITH bumped AS (
+  UPDATE "User" AS u
+  SET
+    "threadRevision" = u."threadRevision" + 1,
+    "updatedAt" = CURRENT_TIMESTAMP
+  WHERE EXISTS (
+    SELECT 1
+    FROM "FriendRequest" AS f
+    WHERE f."targetUserId" = u."id"
+      AND f."status" = 'REQUESTED'
+      AND f."expiresAt" > CURRENT_TIMESTAMP
+  )
+  RETURNING u."id", u."threadRevision"
+)
+INSERT INTO "FriendRequestStateRevision" ("userId", "revision")
+SELECT "id", "threadRevision"
+FROM bumped;

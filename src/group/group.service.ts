@@ -10,8 +10,6 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   group,
   groupMembershipRequest,
-  discoveryChange,
-  discoveryTarget,
   messageThread,
   threadAudience,
   threadParticipant,
@@ -294,76 +292,6 @@ export class GroupService {
           );
         }
       }
-      let systemMessage:
-        | Awaited<
-            ReturnType<MessageService['writeSystemMessageInTx']>
-          >['message']
-        | null = null;
-      if (current.leftAt === null && this.messages) {
-        const [groupIdentity] = await tx
-          .select({ domain: user.domain })
-          .from(messageThread)
-          .innerJoin(user, eq(user.id, messageThread.groupUserId))
-          .where(eq(messageThread.id, params.threadId))
-          .limit(1);
-        if (groupIdentity?.domain && groupIdentity.domain !== 'local')
-          await tx
-            .insert(threadAudience)
-            .values({
-              targetDomain: groupIdentity.domain,
-              localUserId: null,
-              threadId: params.threadId,
-              scope: 'CREATOR',
-              creatorUserId: params.userId,
-            })
-            .onConflictDoUpdate({
-              target: [
-                threadAudience.targetDomain,
-                threadAudience.threadId,
-                threadAudience.creatorUserId,
-              ],
-              targetWhere: sql`${threadAudience.scope} = 'CREATOR'`,
-              set: { deliverThroughChangeId: null },
-            });
-        const written = await this.messages.writeSystemMessageInTx(
-          tx,
-          params.userId,
-          params.threadId,
-          SystemMessageType.GROUP_LEFT,
-          params.userId,
-        );
-        systemMessage = written.message;
-        if (groupIdentity?.domain && groupIdentity.domain !== 'local') {
-          const [boundary] = await tx
-            .select({ changeId: discoveryChange.changeId })
-            .from(discoveryChange)
-            .innerJoin(
-              discoveryTarget,
-              eq(discoveryTarget.id, discoveryChange.targetId),
-            )
-            .where(
-              and(
-                eq(discoveryChange.messageId, written.messageId),
-                eq(discoveryTarget.targetDomain, groupIdentity.domain),
-                isNull(discoveryTarget.localUserId),
-              ),
-            )
-            .limit(1);
-          if (!boundary)
-            throw new Error('GROUP_LEFT discovery boundary was not allocated');
-          await tx
-            .update(threadAudience)
-            .set({ deliverThroughChangeId: boundary.changeId })
-            .where(
-              and(
-                eq(threadAudience.targetDomain, groupIdentity.domain),
-                eq(threadAudience.threadId, params.threadId),
-                eq(threadAudience.scope, 'CREATOR'),
-                eq(threadAudience.creatorUserId, params.userId),
-              ),
-            );
-        }
-      }
       const ended = await tx
         .update(threadParticipant)
         .set({ leftAt: now, updatedAt: now })
@@ -387,7 +315,6 @@ export class GroupService {
           WHERE audience."targetDomain" = 'local'
             AND audience."localUserId" = ${params.userId}
             AND audience."threadId" = ${params.threadId}
-            AND audience.scope = 'THREAD'
             AND audience."deliverThroughChangeId" IS NULL
         `);
       }
@@ -463,7 +390,6 @@ export class GroupService {
         remainingMemberIds: remaining.map((row) => row.userId),
         revision,
         statePeers: [...requestState.keys(), ...groupState.keys()],
-        systemMessage,
       };
     });
     if (result.revision !== null) {
@@ -476,8 +402,13 @@ export class GroupService {
     if (result.transitioned) {
       await this.federation.notifyGroupLeave(params.threadId, params.userId);
     }
-    if (result.systemMessage && this.messageFanout)
-      void this.messageFanout.dispatch(result.systemMessage);
+    if (result.transitioned)
+      await this.emitSystemMessage(
+        params.userId,
+        params.threadId,
+        SystemMessageType.GROUP_LEFT,
+        params.userId,
+      );
     return {
       transitioned: result.transitioned,
       remainingMemberIds: result.remainingMemberIds,
@@ -629,7 +560,6 @@ export class GroupService {
           transitioned: false,
           revision: null,
           statePeers: [],
-          systemMessage: null,
         };
       if (
         !operator ||
@@ -665,22 +595,7 @@ export class GroupService {
           transitioned: false,
           revision: null,
           statePeers: [],
-          systemMessage: null,
         };
-      // The peer audience is retained until the final state snapshot is
-      // allocated below. Persist the boundary message after winning the CAS,
-      // in the same transaction as the membership mutation and state feed.
-      const systemMessage = this.messages
-        ? (
-            await this.messages.writeSystemMessageInTx(
-              tx,
-              params.operatorUserId,
-              params.threadId,
-              SystemMessageType.GROUP_LEFT,
-              params.targetUserId,
-            )
-          ).message
-        : null;
       const [thread] = await tx
         .select({ groupUserId: messageThread.groupUserId })
         .from(messageThread)
@@ -723,7 +638,6 @@ export class GroupService {
         transitioned: true,
         revision,
         statePeers: [...requestState.keys(), ...groupState.keys()],
-        systemMessage,
       };
     });
     if (result.revision !== null) {
@@ -733,8 +647,13 @@ export class GroupService {
       });
     }
     await this.federation.pushStateFeedDomains(result.statePeers);
-    if (result.systemMessage && this.messageFanout)
-      void this.messageFanout.dispatch(result.systemMessage);
+    if (result.transitioned)
+      await this.emitSystemMessage(
+        params.operatorUserId,
+        params.threadId,
+        SystemMessageType.GROUP_LEFT,
+        params.targetUserId,
+      );
     return { transitioned: result.transitioned };
   }
 
@@ -915,14 +834,15 @@ export class GroupService {
     type: SystemMessageType,
     subjectUserId?: number,
   ): Promise<void> {
-    if (!this.messages || !this.messageFanout) return;
-    const message = await this.messages.writeSystemMessage(
+    if (!this.messages) return;
+    const message = await this.messages.tryWriteSystemMessage(
       actorUserId,
       threadId,
       type,
       subjectUserId,
     );
-    void this.messageFanout.dispatch(message);
+    if (message && this.messageFanout)
+      void this.messageFanout.dispatch(message);
   }
 
   /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).

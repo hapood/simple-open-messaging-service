@@ -6,6 +6,7 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
+  friendRequestStateRevision,
   profileStateRevision,
   threadRevision,
   user,
@@ -78,6 +79,48 @@ export class ThreadRevisionService {
     this.sse.onThreadRevisionUpdated(pending.userId, {
       threadRevision: pending.revision,
     });
+  }
+
+  /** Record a newly-created incoming friend request in the same client-state revision space used by
+   * thread and profile state. Read acknowledgement is intentionally device-local and never written here. */
+  async recordFriendRequestStateInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+  ): Promise<number> {
+    const [owner] = await tx
+      .update(user)
+      .set({
+        threadRevision: sql`${user.threadRevision} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(user.id, userId))
+      .returning({ revision: user.threadRevision });
+    if (!owner) throw new Error('friend-request state owner missing');
+    await tx
+      .insert(friendRequestStateRevision)
+      .values({ userId, revision: owner.revision })
+      .onConflictDoUpdate({
+        target: friendRequestStateRevision.userId,
+        set: { revision: owner.revision },
+      });
+    return owner.revision;
+  }
+
+  async queryFriendRequestStateDelta(
+    userId: number,
+    fromRevision: number,
+    toRevision: number,
+  ): Promise<number | null> {
+    const row =
+      await this.database.db.query.friendRequestStateRevision.findFirst({
+        where: and(
+          eq(friendRequestStateRevision.userId, userId),
+          gt(friendRequestStateRevision.revision, fromRevision),
+          lte(friendRequestStateRevision.revision, toRevision),
+        ),
+        columns: { revision: true },
+      });
+    return row?.revision ?? null;
   }
 
   async recordProfileStateInTx(

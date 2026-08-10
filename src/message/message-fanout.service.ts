@@ -6,6 +6,7 @@ import { UserBlockService } from '../user-block/user-block.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { ContentType } from '../database/enums.js';
 
 /**
  * Unified NEW_MESSAGE fan-out for every locally-authored message, shared by the text send path
@@ -89,6 +90,7 @@ export class MessageFanoutService {
     // the peer-global /message-feed; this notification is ephemeral and safe to lose.
     // This service handles locally-authored rows. Their local seq is the wire originSeq until the
     // self-authored delivery receipt returns and fills the nullable receipt columns.
-    void this.federation.notifyOnSend(senderUserId, threadId, message.seq);
+    if (message.contentType !== ContentType.SYSTEM)
+      void this.federation.notifyOnSend(senderUserId, threadId, message.seq);
   }
 }

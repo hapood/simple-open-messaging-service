@@ -8,6 +8,7 @@ import {
 } from 'idb';
 import type { ConversationItem, DeletedMessageItem, Message } from './model';
 import type { HydratedThreadDeltaOp } from './user.service';
+import type { MissedCursor } from './notification-descriptor.model';
 import { isTauri, tauriInvoke } from './runtime';
 
 /**
@@ -975,6 +976,13 @@ export class WebdbService implements OnDestroy {
     const db = await this.db();
     const tx = db.transaction(['threads', 'profiles', 'settings'], 'readwrite');
     for (const op of delta) {
+      if (op.direction === 'FRIEND_REQUEST') {
+        await tx.objectStore('settings').put({
+          key: 'friendRequestStateRevision',
+          value: op.revision,
+        });
+        continue;
+      }
       if (op.direction === 'PROFILE') {
         const u = op.user;
         const identity = `u${u.id}`;
@@ -1001,6 +1009,31 @@ export class WebdbService implements OnDestroy {
       .objectStore('settings')
       .put({ key: 'stateRevision', value: revision });
     await tx.done;
+  }
+
+  /** Commit the refreshed thread-list snapshot and its missed-message cursor as one durable unit. */
+  async applyMissedSummary(
+    items: ConversationItem[],
+    cursor: MissedCursor,
+  ): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_apply_missed_summary', {
+          userId: Number(this.currentUserId),
+          items,
+          cursor,
+        });
+        return;
+      }
+      const db = await this.db();
+      const tx = db.transaction(['threads', 'settings'], 'readwrite');
+      await tx.objectStore('threads').clear();
+      for (const item of items) await tx.objectStore('threads').put(item);
+      await tx
+        .objectStore('settings')
+        .put({ key: 'missedCursor', value: cursor });
+      await tx.done;
+    });
   }
 
   async getProfile(identity: string): Promise<ProfileRecord | undefined> {

@@ -1042,23 +1042,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/invite/mark-read": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Clear the friend-request unread badge */
-        post: operations["InviteController_markRead"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/devices/register": {
         parameters: {
             query?: never;
@@ -6551,23 +6534,6 @@ export interface operations {
                         data?: components["schemas"]["InviteDetailDto"];
                     };
                 };
-            };
-        };
-    };
-    InviteController_markRead: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

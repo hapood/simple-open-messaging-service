@@ -20,7 +20,6 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
    │              User               │   identity (account/name/avatar/bio inline;
    │  account · hashPwd · domain     │    isGroup flags "!"-sigil group-identity rows)
    │  profileRev · threadRevision    │
-   │  friendReqAckRev                │
    └──┬───────┬───────┬────┬─────────┬──────────────────────┬──────────────┐
       │ 1:N   │ 1:N   │1:N │1:N      │ 1:N                  │ 1:N          │ 1:1
       ▼       ▼       ▼    ▼         ▼                      ▼              ▼
@@ -60,12 +59,14 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 | `isForeigner`                           | Boolean       | cross-domain (federated) user                                                     |
 | `isGroup`                               | Boolean       | true iff a `!`-sigil group-identity row (mirrors account grammar)                 |
 | `domain`                                | VarChar(63)   | `"local"` for users on THIS server; `<peer-domain>` for a federated stub          |
-| `friendReqAckRev`                       | DateTime      | friend-request read cursor; badge = `friendReqRev > friendReqAckRev`              |
 | `profileRev` / `remoteProfileRev`       | Int / Int?    | profile revision (origin-authoritative) / mirror's last-localized revision        |
 | `threadRevision`                        | Int           | internal backing value exposed to clients as the unified `stateRevision` cursor   |
 | `createdAt` / `updatedAt` / `isDeleted` |               |                                                                                   |
 
 Composite unique: `@@unique([account, domain])` — account name unique within a domain (allows a foreign stub to share a local account name). One account namespace covers users **and** admins (an admin is a linked `User` row).
+
+`FriendRequestStateRevision` stores only the latest incoming-request revision per user. The read/seen
+cursor is intentionally per-device client state and is not stored by the server.
 
 ### SessionToken — the single session credential
 

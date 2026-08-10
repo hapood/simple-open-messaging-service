@@ -17,7 +17,10 @@ import {
   buildMentionTitle,
   actionLabel,
 } from './notif-i18n.js';
-import { AWAY_SUMMARY_TAG, type NotificationDescriptor } from './notification-descriptor.js';
+import {
+  AWAY_SUMMARY_TAG,
+  type NotificationDescriptor,
+} from './notification-descriptor.js';
 
 /**
  * One thread's missed-summary row — the data view consumed by the threadlist pre-warm (body hydration). The
@@ -40,18 +43,16 @@ export interface MissedThreadItem {
   senderAvatarUrl: string;
   /** The sender's stable id (P2P peer id / GROUP group id). */
   senderUserId: number;
-  latestMessage:
-    | {
-        threadId: number;
-        seq: number;
-        contentType: string;
-        content: string;
-        creator: number;
-        createdAt: Date;
-        mediaStatus: 'ready' | 'failed';
-        sv: number;
-      }
-    | null;
+  latestMessage: {
+    threadId: number;
+    seq: number;
+    contentType: string;
+    content: string;
+    creator: number;
+    createdAt: Date;
+    mediaStatus: 'ready' | 'failed';
+    sv: number;
+  } | null;
 }
 
 /** A message identified by its per-thread `(threadId, seq)` (the backend resolves it to the internal BigInt
@@ -99,12 +100,17 @@ export class NotificationQueryService {
   async buildSummary(
     userId: number,
     opts: { from?: MissedCursor | null; to: MissedCursor; take: number },
-  ): Promise<{ items: MissedThreadItem[]; hasMore: boolean; nextCursor: MissedCursor | null }> {
+  ): Promise<{
+    items: MissedThreadItem[];
+    hasMore: boolean;
+    nextCursor: MissedCursor | null;
+  }> {
     const toId = await this.resolveId(opts.to);
     if (toId === null) return { items: [], hasMore: false, nextCursor: null }; // `to` unresolvable → no-op
     const fromId = opts.from ? await this.resolveId(opts.from) : null;
     // `to ≤ from`: SSE delivered a stale/out-of-order message → empty no-op (HWM unchanged).
-    if (fromId !== null && toId <= fromId) return { items: [], hasMore: false, nextCursor: null };
+    if (fromId !== null && toId <= fromId)
+      return { items: [], hasMore: false, nextCursor: null };
 
     const ctx = await this.loadThreadContext(userId);
     // Threads whose latest-message id sits in the half-open range (fromId, toId].
@@ -144,9 +150,15 @@ export class NotificationQueryService {
     let nextCursor: MissedCursor | null = null;
     if (hasMore && page.length > 0) {
       const maxRow = page.reduce((mx, p) =>
-        ctx.latestIdByThread.get(p.threadId)! > ctx.latestIdByThread.get(mx.threadId)! ? p : mx,
+        ctx.latestIdByThread.get(p.threadId)! >
+        ctx.latestIdByThread.get(mx.threadId)!
+          ? p
+          : mx,
       );
-      nextCursor = { threadId: maxRow.threadId, seq: maxRow.thread.lastMessageSeq ?? 0 };
+      nextCursor = {
+        threadId: maxRow.threadId,
+        seq: maxRow.thread.lastMessageSeq ?? 0,
+      };
     }
     return { items, hasMore, nextCursor };
   }
@@ -171,7 +183,8 @@ export class NotificationQueryService {
     // First-ever (no HWM yet) or unresolvable since → no baseline → clear (don't disturb).
     if (!opts.since) return { notifications: [this.clearDescriptor(locale)] };
     const sinceId = await this.resolveId(opts.since);
-    if (sinceId === null) return { notifications: [this.clearDescriptor(locale)] };
+    if (sinceId === null)
+      return { notifications: [this.clearDescriptor(locale)] };
 
     return {
       notifications: await this.threadDescriptors(
@@ -223,15 +236,24 @@ export class NotificationQueryService {
 
     // Query B (ONE batched query): for each thread the client dismissed (in threadHwms), count since its HWM.
     // Threads not dismissed keep Query A's cumulative-since-foreground count.
-    const counts = new Map([...buckets].map(([tid, state]) => [tid, state.count]));
+    const counts = new Map(
+      [...buckets].map(([tid, state]) => [tid, state.count]),
+    );
 
     // Drop count-0 (dismissed with no new) BEFORE hydrating, then hydrate names SCOPED to the visible threads
     // only (not all the user's threads — loadThreadContext takes the id list).
-    const visibleIds = [...counts.entries()].filter(([, c]) => c > 0).map(([tid]) => tid);
+    const visibleIds = [...counts.entries()]
+      .filter(([, c]) => c > 0)
+      .map(([tid]) => tid);
     if (visibleIds.length === 0) return [];
     const ctx = await this.loadThreadContext(userId, visibleIds);
     const rows = ctx.active.sort((a, b) => ctx.cmpByIdAsc(b, a)); // newest conversation first
-    const items = await this.hydrateItems(userId, rows, counts, ctx.attachedByThread);
+    const items = await this.hydrateItems(
+      userId,
+      rows,
+      counts,
+      ctx.attachedByThread,
+    );
     const previews: Map<number, AwayNotificationMessage[]> =
       previewMode === 'message'
         ? await this.messageService.awayNotificationMessages(
@@ -245,7 +267,8 @@ export class NotificationQueryService {
         : new Map();
     return items.map((it) => {
       const count = counts.get(it.threadId) ?? 0;
-      const latestSeq = buckets.get(it.threadId)?.latestSeq ?? it.latestMessage?.seq ?? 0;
+      const latestSeq =
+        buckets.get(it.threadId)?.latestSeq ?? it.latestMessage?.seq ?? 0;
       const hasMention = (buckets.get(it.threadId)?.mention.length ?? 0) > 0;
       return {
         tag: `soms-thread-${it.threadId}`,
@@ -264,6 +287,7 @@ export class NotificationQueryService {
                 locale,
                 count >= 1000,
               ),
+        count,
         lang: locale,
         icon: null,
         renotify: true,
@@ -299,6 +323,7 @@ export class NotificationQueryService {
       kind: 'clear',
       title: '',
       body: '',
+      count: 0,
       lang: locale,
       icon: null,
       renotify: false,
@@ -314,27 +339,44 @@ export class NotificationQueryService {
    * to SCOPE every query to just those threads (the away-descriptor path hydrates only the ≤30 bucket threads,
    * not all of the user's threads).
    */
-  private async loadThreadContext(userId: number, threadIds?: number[]): Promise<{
+  private async loadThreadContext(
+    userId: number,
+    threadIds?: number[],
+  ): Promise<{
     active: Array<{
       threadId: number;
       muted: boolean;
       lastReadSeq: number | null;
-      thread: { type: 'P2P' | 'GROUP'; lastMessageSeq: number | null; lastMessageAt: Date | null };
+      thread: {
+        type: 'P2P' | 'GROUP';
+        lastMessageSeq: number | null;
+        lastMessageAt: Date | null;
+      };
     }>;
     latestIdByThread: Map<number, bigint>;
     attachedByThread: Map<number, AttachedMessage>;
     cmpByIdAsc: (a: { threadId: number }, b: { threadId: number }) => number;
   }> {
     const list = await this.participantService.queryParticipants({
-      where: { userId, leftAt: null, ...(threadIds ? { threadId: { in: threadIds } } : {}) },
+      where: {
+        userId,
+        leftAt: null,
+        ...(threadIds ? { threadId: { in: threadIds } } : {}),
+      },
       orderBy: { id: 'asc' },
       include: { thread: true },
     });
     // Latest message per thread (BigInt id intact — the strict-total-order key).
     const pairs = list
       .map((p) => ({ threadId: p.threadId, seq: p.thread.lastMessageSeq }))
-      .filter((p): p is { threadId: number; seq: number } => p.seq != null && p.seq >= 0);
-    const latestMsgs = pairs.length > 0 ? await this.messageService.findMessagesBySeqPairs(pairs) : [];
+      .filter(
+        (p): p is { threadId: number; seq: number } =>
+          p.seq != null && p.seq >= 0,
+      );
+    const latestMsgs =
+      pairs.length > 0
+        ? await this.messageService.findMessagesBySeqPairs(pairs)
+        : [];
     const attached = await this.messageService.attachMediaStatus(latestMsgs);
     const latestIdByThread = new Map<number, bigint>();
     const creatorByThread = new Map<number, number>();
@@ -348,7 +390,10 @@ export class NotificationQueryService {
     const active = list.filter(
       (p) =>
         latestIdByThread.has(p.threadId) &&
-        !(p.thread.type === 'P2P' && blocked.has(creatorByThread.get(p.threadId) ?? -1)),
+        !(
+          p.thread.type === 'P2P' &&
+          blocked.has(creatorByThread.get(p.threadId) ?? -1)
+        ),
     );
     const cmpByIdAsc = (a: { threadId: number }, b: { threadId: number }) => {
       const ai = latestIdByThread.get(a.threadId)!;
@@ -376,23 +421,39 @@ export class NotificationQueryService {
     mentions: Map<number, UnreadMentionState> = new Map(),
   ): Promise<MissedThreadItem[]> {
     // P2P display name + sender = the peer user (id carries for the icon color hash + cache key).
-    const p2pThreadIds = rows.filter((p) => p.thread.type === 'P2P').map((p) => p.threadId);
-    const peers = await this.participantService.findP2PPeers(p2pThreadIds, userId);
+    const p2pThreadIds = rows
+      .filter((p) => p.thread.type === 'P2P')
+      .map((p) => p.threadId);
+    const peers = await this.participantService.findP2PPeers(
+      p2pThreadIds,
+      userId,
+    );
     const peerUsers =
       p2pThreadIds.length > 0
         ? await this.userService.queryUsers({
             where: { id: { in: peers.map((p) => p.userId) }, isDeleted: false },
           })
         : [];
-    const peerByThread = new Map<number, { name: string; avatar: string; id: number }>();
+    const peerByThread = new Map<
+      number,
+      { name: string; avatar: string; id: number }
+    >();
     peers.forEach((p) => {
       const u = peerUsers.find((u) => u.id === p.userId);
-      if (u) peerByThread.set(p.threadId, { name: u.name || 'Unknown', avatar: u.avatar ?? '', id: u.id });
+      if (u)
+        peerByThread.set(p.threadId, {
+          name: u.name || 'Unknown',
+          avatar: u.avatar ?? '',
+          id: u.id,
+        });
     });
 
     // GROUP display name + sender = the group identity row (id = the group's user id).
-    const groupThreadIds = rows.filter((p) => p.thread.type === 'GROUP').map((p) => p.threadId);
-    const groupByThread = await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
+    const groupThreadIds = rows
+      .filter((p) => p.thread.type === 'GROUP')
+      .map((p) => p.threadId);
+    const groupByThread =
+      await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
 
     return rows.map((p) => {
       const m = attachedByThread.get(p.threadId);
@@ -404,9 +465,17 @@ export class NotificationQueryService {
         muted: p.muted,
         lastReadSeq: p.lastReadSeq ?? null,
         displayName:
-          p.thread.type === 'P2P' ? (peer?.name ?? 'Unknown') : (group?.name ?? 'Unknown'),
-        senderAvatarUrl: p.thread.type === 'P2P' ? (peer?.avatar ?? '') : (group?.avatar ?? ''),
-        senderUserId: p.thread.type === 'P2P' ? (peer?.id ?? p.threadId) : (group?.id ?? p.threadId),
+          p.thread.type === 'P2P'
+            ? (peer?.name ?? 'Unknown')
+            : (group?.name ?? 'Unknown'),
+        senderAvatarUrl:
+          p.thread.type === 'P2P'
+            ? (peer?.avatar ?? '')
+            : (group?.avatar ?? ''),
+        senderUserId:
+          p.thread.type === 'P2P'
+            ? (peer?.id ?? p.threadId)
+            : (group?.id ?? p.threadId),
         unreadCount: unread.get(p.threadId) ?? 0,
         mentionUnread: mentions.get(p.threadId) ?? [],
         latestMessage: m

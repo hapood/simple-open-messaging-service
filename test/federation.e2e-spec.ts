@@ -27,6 +27,7 @@ import {
 import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   deletedMessage,
+  discoveryChange,
   discoveryTarget,
   federatedPeer,
   federatedPeerEvent,
@@ -85,6 +86,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let tokenDave: string; // dave @ appB — a SECOND local member of the same mirror (shared-mirror fan-out test)
   let daveLocalIdB: number;
   let daveStubIdOnA: number;
+  let adminCookieB: string;
 
   async function findActiveP2pParticipant(app: FedApp, userId: number) {
     return app.database.query.threadParticipant.findFirst({
@@ -272,6 +274,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // A super-admin on appA — the trust-lifecycle tests block a peer + read the event timeline via the
     // REAL admin routes (which call markBlocked/peerEvents), not direct database shortcuts.
     adminCookieA = await getAdminCookie(appA);
+    adminCookieB = await getAdminCookie(appB);
   }, 120_000);
 
   afterAll(async () => {
@@ -806,6 +809,26 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await assertRejectedBinding((url) => {
       url.searchParams.set('toAccount', 'not-the-delivered-thread');
     });
+
+    // Feed retention and resource authorization are intentionally independent. Once appB has consumed
+    // the carrier message, physically remove appA's per-peer delivery record and disable the proxy's
+    // byte fixture so this probe reaches appA's real /media authorization path. The exact historical
+    // message/digest binding plus the retained ThreadAudience must still authorize the download.
+    const sourceBinding = await appA.database.query.messageAsset.findFirst({
+      where: eq(messageAsset.digest, digest),
+      columns: { messageId: true },
+    });
+    expect(sourceBinding).toBeDefined();
+    const deleted = await appA.database
+      .delete(discoveryChange)
+      .where(eq(discoveryChange.messageId, sourceBinding!.messageId))
+      .returning({ changeId: discoveryChange.changeId });
+    expect(deleted.length).toBeGreaterThan(0);
+    proxy.setGetFileFixture(digest, null);
+    const afterFeedGc = await request(appB.baseUrl)
+      .get('/api/v1/test/signed-s2s-get')
+      .query({ peerDomain: DOM_A, path: servedPath });
+    expect(afterFeedGc.body.status).toBe(200);
   });
 
   it('Step 2: a dropped media chunk resumes from its offset (no demote, byte-exact)', async () => {
@@ -1619,7 +1642,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               where: and(
                 eq(threadAudience.targetDomain, DOM_B),
                 eq(threadAudience.threadId, firstGroupThreadA),
-                eq(threadAudience.scope, 'THREAD'),
               ),
             }),
             appB.database.query.threadParticipant.findFirst({
@@ -1725,7 +1747,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(threadAudience.targetDomain, DOM_B),
               eq(threadAudience.threadId, firstGroupThreadA),
-              eq(threadAudience.scope, 'THREAD'),
             ),
           }),
           appB.database.query.threadAudience.findFirst({
@@ -1733,7 +1754,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               eq(threadAudience.targetDomain, 'local'),
               eq(threadAudience.localUserId, bobLocalIdB),
               eq(threadAudience.threadId, firstMirrorBId),
-              eq(threadAudience.scope, 'THREAD'),
             ),
           }),
           appB.database.query.threadParticipant.findFirst({
@@ -2292,6 +2312,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const before = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
+    const beforeOnB = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
+    });
     expect(before?.trustLevel).toBe('trusted');
     expect(before?.identityPinnedAt).toBeInstanceOf(Date);
     expect(before?.pairwiseServerId).toBeTruthy();
@@ -2308,6 +2331,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           'e2e simulated transient DNS identity contradiction',
       })
       .where(eq(federatedPeer.domain, DOM_B));
+    // Both sides may have observed poisoned DNS. A lost peer can still obtain the signed proof with
+    // its original key, but serving that proof must not silently restore the responder's trust edge.
+    await appB.database
+      .update(federatedPeer)
+      .set({
+        trustLevel: 'identity_lost',
+        identityLostAt: new Date(),
+        identityLostReason: 'e2e simulated reciprocal identity contradiction',
+      })
+      .where(eq(federatedPeer.domain, DOM_A));
 
     const wrongConfirmation = await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_B}/recover-identity`)
@@ -2335,6 +2368,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(after?.trustedAt?.getTime()).toBe(before?.trustedAt?.getTime());
     expect(after?.pairwiseServerId).toBe(before?.pairwiseServerId);
     expect(after?.rootKeyFingerprint).toBe(before?.rootKeyFingerprint);
+
+    const stillLostOnB = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
+    });
+    expect(stillLostOnB?.trustLevel).toBe('identity_lost');
+
+    const recoveredOnB = await request(appB.baseUrl)
+      .post(`/api/v1/admin/federation/peers/${DOM_A}/recover-identity`)
+      .set('Cookie', adminCookieB)
+      .send({ confirmDomain: DOM_A });
+    expect(recoveredOnB.status).toBe(200);
+    const afterOnB = await appB.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_A),
+    });
+    expect(afterOnB?.trustLevel).toBe('trusted');
+    expect(afterOnB?.trustedAt?.getTime()).toBe(
+      beforeOnB?.trustedAt?.getTime(),
+    );
 
     const newestEvent = await appA.database.query.federatedPeerEvent.findFirst({
       where: eq(federatedPeerEvent.domain, DOM_B),

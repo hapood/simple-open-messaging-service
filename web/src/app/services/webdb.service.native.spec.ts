@@ -102,6 +102,18 @@ describe('WebdbService native SQLite routing', () => {
     });
   });
 
+  it('sends missed-summary rows and cursor through one atomic native command', async () => {
+    const items = [{ threadId: 7, type: 'GROUP' }] as ConversationItem[];
+    const cursor = { threadId: 7, seq: 9 };
+
+    await service.applyMissedSummary(items, cursor);
+
+    expect(calls.at(-1)).toEqual({
+      cmd: 'native_db_apply_missed_summary',
+      args: { userId: 42, items, cursor },
+    });
+  });
+
   it('routes revisioned profiles and meta state without falling back to IndexedDB', async () => {
     const profile: ProfileRecord = {
       identity: 'u8',

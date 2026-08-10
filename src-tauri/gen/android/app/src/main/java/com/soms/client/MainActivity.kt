@@ -1607,7 +1607,7 @@ class MainActivity : TauriActivity() {
          *  freshly-booted WebView the cached+merged HELLO. A retained open `/events` stream does NOT re-push
          *  HELLO on its own (it is sent once per register), so this cache (kept fresh by
          *  [RealtimeService.cacheHelloFrame]) is how the WebView bootstraps (userId / threadRevision /
-         *  profileRev / friendReqRev / latestMessage) without a reconnect. No-op when the cache is empty
+         *  profileRev / latestMessage) without a reconnect. No-op when the cache is empty
          *  (the facade's HELLO-timeout backstop then force-reconnects for a fresh one). */
         @JavascriptInterface
         fun replayHello() {

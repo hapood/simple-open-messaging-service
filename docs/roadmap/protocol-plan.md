@@ -106,7 +106,7 @@ SOMS's core flows (registration/login, friends, P2P/group threads, message send/
 5. **Ordering and integrity**: While a single SSE connection stays alive, messages arrive **strictly ordered and intact** — guaranteed by the underlying TCP (the server's `write` order is the client's receipt order; the byte stream is reliably reassembled). The SSE layer needs no self-added `seq`; this is exactly the complexity saved by the migration.
 6. **Reconnection and resumption**: The SSE stream itself does not replay history (the server does not consume `Last-Event-ID`). Messages during a disconnect (including the ≤25s false-dead window) will be lost; after a successful reconnect the frontend emits a `reconnect$` signal, and each thread does an HTTP incremental catch-up by the `newestMsgId` cursor (`refillNewer`). Multiple connections of the same user are each individually ordered; ordering across connections is not guaranteed.
 7. **Forced logout**: All-device logout / password change / admin kick-out triggers the `auth.sessions-invalidated` event → `SseService` pushes `FORCE_LOGOUT` to all of that user's connections and immediately disconnects.
-8. **Extended events** (all downstream): `NOTIFY` (**implemented**: a friend request triggers `NotifyService.recordFriendRequest` to atomically write a row + light up the badge, and `SseService.onNotify` pushes it in real time; the frontend `home` lights up the unread badge upon receipt; see [§Six P2](#p2--real-time-experience-and-reliability)). `USER_PRESENCE` / `USER_TYPING` were **removed from the roadmap** on 2026-07-12 (see P2) — not a committed feature.
+8. **Extended events** (all downstream): friend-request notification was folded into `STATE_REV_UPDATED`; there is no dedicated `NOTIFY` event. `USER_PRESENCE` / `USER_TYPING` were **removed from the roadmap** on 2026-07-12 (see P2) — not a committed feature.
 
 ### 4.6 Frontend-Backend Coordination
 
@@ -211,7 +211,7 @@ Authentication is not in the frame — it goes through HTTP: if `JwtAuthGuard` f
 | --- | --- | --- | --- |
 | `NEW_MESSAGE` | S→C | `{ threadId, id, content, contentType, createdAt, ... }` (full message body, already serialized) | The other party / a group member sent a new message; the frontend can render directly upon receipt, no secondary fetch needed. Frame `id` = message id |
 | `FORCE_LOGOUT` | S→C | `{ event:'FORCE_LOGOUT', status:0, message:<reason> }` | All-device logout / password change / admin kick-out; the frontend disconnects + forces re-login |
-| `NOTIFY` | S→C (implemented) | `{ event:'NOTIFY', type:'FRIEND_REQUEST', fromUserId }` | Triggered by a friend request: atomically writes the `Notify` row + lights up the `hasUrFriendReq` badge + real-time SSE push (`SseService.onNotify`) |
+| `STATE_REV_UPDATED` | S→C | `{ stateRevision }` | Covers thread, profile, and incoming friend-request client state; the client pulls the durable delta |
 
 > **Upstream constraint**: SSE is unidirectional; the client does not send business messages to the server. Any future upstream traffic goes through HTTP `POST` — the WS-era `@SubscribeMessage` upstream channel was deleted with the migration. (`USER_TYPING` / `USER_PRESENCE` were removed from the roadmap on 2026-07-12 — see P2.)
 
@@ -242,7 +242,7 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 | --- | --- | --- | --- |
 | Heartbeat and liveness detection | ✅ SSE landed | `src/gateway/sse.service.ts` | `: ping @25s` + `write` failure for liveness; false-dead connections cleaned within ≤25s (exceeds the original 90s target) |
 | Reconnect catch-up | ✅ SSE landed | Frontend `websocket.service.ts` (`reconnect$` + `refillNewer`) | After reconnect, the messages missed during the outage are caught up via HTTP by the `newestMsgId` cursor |
-| Notify integration | ✅ Landed | `notify.service.ts` (`recordFriendRequest` atomically writes a row + lights the badge), `controller/notify.controller.ts` (`mark-friend-req-read` clears the badge), `gateway/sse.service.ts` (`onNotify` real-time push), frontend `home.component.ts` (clears the badge on `NOTIFY`) | New friend request: atomically writes the `Notify` row + lights up the `hasUrFriendReq` badge + real-time SSE push of `NOTIFY`; after the user views it, `mark-friend-req-read` clears the badge |
+| Friend-request notification | ✅ Landed | unified state delta + device-local seen revision | New requests advance `stateRevision`; each device clears only its own badge locally |
 
 > With typing/presence removed, all P2 items are landed. **Next roadmap work** = P2+ (friend-domain feature gaps) and P3 (engineering/production readiness) below.
 
@@ -265,8 +265,8 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 >   `UserBlock` table; the message path drops delivery and hides the blocked creator's messages
 >   (`blockedByMe`). Independent of friendship (survives unfriend); UI in the chat-header MORE menu + the
 >   blocked banner.
-> - **Real-time notification** — friend requests ride the SSE `NOTIFY` event (landed with P2 "Notify
->   integration"); no polling.
+> - **Real-time notification** — friend requests ride the unified `STATE_REV_UPDATED` event; the client
+>   pulls the durable delta, with no polling or dedicated friend-request SSE type.
 >
 > The earlier "TODO" rows (delete/block endpoints, `reqMessage` unused) reflected the pre-migration schema
 > and are removed. P2+ is complete.

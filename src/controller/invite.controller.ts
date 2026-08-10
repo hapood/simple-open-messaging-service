@@ -51,9 +51,8 @@ function rethrowFederationPolicy(error: unknown): void {
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns
- * invite DB state + the derived `friendReqRev` (MAX(createdAt) over incoming FRIEND invites); this
- * controller orchestrates S2S delivery (federated targets) and the live NOTIFY + FRIEND_REQ_REV_UPDATED
- * frames, mirroring how UserController orchestrated the old friend flow.
+ * invite DB state + unified client-state revisions; this controller orchestrates S2S delivery
+ * (federated targets) and live signals after commit.
  *
  * The friend-pending lists are parameterless (backend hardcodes FRIEND / PENDING / last-7-days / ≤200)
  * and additionally filter out any invite whose peer is already a friend, so a stale row never offers
@@ -145,7 +144,7 @@ export class InviteController {
     if (res.status === 'auto-accepted') {
       // Local mutual → friends immediately. Both sides' thread-list adds are driven by the
       // STATE_REV_UPDATED delta (recordThreadAdd fires for both users in createFriendInvite);
-      // no NOTIFY — the former FRIEND_APPROVED push is dropped (the delta subsumes it, aligning local
+      // no dedicated friend event — the delta subsumes it, aligning local
       // with the federated path which already dropped it).
       return envelope(
         { threadId: res.threadId } as { threadId: number | undefined },
@@ -156,23 +155,7 @@ export class InviteController {
       );
     }
 
-    // Federated delivery is the durable state feed written in the Invite transaction above. Local
-    // targets still receive an immediate UI notification.
-    if (!target.isForeigner) {
-      // Local target → live NOTIFY (the notification popup + fromUserId/inviteId) AND the friendReqRev
-      // push (the mergeable badge signal). friendReqRev = MAX(createdAt) over the target's incoming FRIEND
-      // invites, just advanced by the PENDING invite createFriendInvite wrote; the client arms the badge when
-      // friendReqRev > friendReqAckRev, and the native layer merges it into its cached HELLO.
-      this.sseService.onNotify(target.id, {
-        event: 'NOTIFY',
-        type: 'FRIEND_REQUEST',
-        fromUserId: me,
-        inviteId: res.inviteId,
-      });
-      void this.inviteService
-        .friendReqState(target.id)
-        .then((s) => this.sseService.onFriendReqRevUpdated(target.id, s));
-    }
+    // Local recipients learn through STATE_REV_UPDATED; federated delivery uses the durable state feed.
     return envelope(
       { inviteId: res.inviteId },
       {
@@ -202,13 +185,12 @@ export class InviteController {
           columns: { isForeigner: true },
         });
         if (from?.isForeigner) {
-          friendStatePeers =
-            await this.federationService.writeFriendIntentInTx(
-              tx,
-              req.user.userId,
-              fromUserId,
-              true,
-            );
+          friendStatePeers = await this.federationService.writeFriendIntentInTx(
+            tx,
+            req.user.userId,
+            fromUserId,
+            true,
+          );
         } else
           await this.inviteService.writeLocalFriendIntentInTx(
             tx,
@@ -234,10 +216,9 @@ export class InviteController {
       });
       void fromUser;
       // Local inviter: recordThreadAdd fired for both users in acceptInvite's tx → both sides get
-      // STATE_REV_UPDATED; no NOTIFY (the former FRIEND_APPROVED push is dropped — the delta
-      // subsumes it, aligning local with the federated path which already dropped it). No FRIEND_REQ_REV
-      // push either — friendReqRev is creation-based (MAX createdAt), so accept/decline don't advance it
-      // (the badge arms only on a NEW request); it refreshes on the next HELLO regardless.
+      // STATE_REV_UPDATED; no dedicated friend event (the delta
+      // subsumes it, aligning local with the federated path which already dropped it). Accepting does not
+      // create another unread incoming request, so no extra revision is needed.
       return { threadId: res.threadId };
     }
 
@@ -294,8 +275,7 @@ export class InviteController {
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
-    // No FRIEND_REQ_REV push — friendReqRev is creation-based (MAX createdAt), so rejecting an incoming
-    // invite doesn't advance it (the badge arms only on a NEW request).
+    // Rejecting does not create another unread incoming request, so no extra state revision is needed.
   }
 
   @ApiBearerAuth()
@@ -324,11 +304,7 @@ export class InviteController {
             false,
           );
         else
-          await this.inviteService.closeLocalFriendIntentInTx(
-            tx,
-            me,
-            toUserId,
-          );
+          await this.inviteService.closeLocalFriendIntentInTx(tx, me, toUserId);
       },
     );
     await this.federationService.pushStateFeedDomains(statePeers.keys());
@@ -402,16 +378,5 @@ export class InviteController {
   ) {
     // getInviteDetail throws BusinessException → the global filter renders it.
     return this.inviteService.getInviteDetail(dto.inviteId, req.user.userId);
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('invite/mark-read')
-  @ApiOperation({ summary: 'Clear the friend-request unread badge' })
-  async markRead(@Request() req: FastifyRequest): Promise<void> {
-    // Advance the server-side read cursor friendReqAckRev → the current friendReqRev (MAX updatedAt),
-    // then push the new state so the badge clears on ALL of the user's devices (multi-device consistent).
-    const state = await this.inviteService.markRead(req.user.userId);
-    this.sseService.onFriendReqRevUpdated(req.user.userId, state);
   }
 }

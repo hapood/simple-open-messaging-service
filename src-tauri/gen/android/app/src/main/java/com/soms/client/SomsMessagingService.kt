@@ -99,7 +99,10 @@ class SomsMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val CHANNEL_MESSAGES = "messages"
-        const val CHANNEL_BACKGROUND = "background"
+        // v2 is intentional: setShowBadge() is immutable after channel creation, and older builds created
+        // "background" with the badge-enabled default.
+        const val CHANNEL_BACKGROUND = "background_sync_v2"
+        const val CHANNEL_DIAGNOSTICS = "diagnostics"
         const val EXTRA_THREAD_ID = "soms_thread_id"
 
         /** Stable id for the coalesced away-notification — `notify(sameId, …)` replaces, never stacks. */
@@ -356,6 +359,11 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
                 .setContentText(d.body)
+                // Standard Android launcher badging: each active conversation card contributes the exact
+                // server-authored new-message count measured from the frozen foreground HWM. Supporting
+                // launchers aggregate these numbers; unsupported launchers may show only a dot.
+                .setNumber(NotifThreadLogic.badgeNumber(d.count))
+                .setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(onlyAlertOnce)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -363,6 +371,27 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setContentIntent(pendingIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(buildPublicVersion(ctx, pendingIntent))
+            // A shade swipe is semantically identical to the descriptor's Dismiss button: persist this
+            // thread's latest covered seq so a later wake-up counts only messages newer than the dismissal.
+            // Without a deleteIntent the badge drops briefly, then the next FCM/SSE wake reposts the old count.
+            builder.setDeleteIntent(
+                PendingIntent.getBroadcast(
+                    ctx,
+                    id,
+                    Intent(ctx, SomsActionReceiver::class.java).apply {
+                        // PendingIntent identity ignores extras. Include the notification id in the action so
+                        // this delete callback cannot alias an adjacent card's action-button PendingIntent.
+                        action = "${ctx.packageName}.NOTIFICATION_DELETE.$id"
+                        putExtra(SomsActionReceiver.EXTRA_ACTION_ID, "dismiss")
+                        putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
+                        putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
+                        putExtra(SomsActionReceiver.EXTRA_IS_THREAD, true)
+                        if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
+                    },
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                ),
+            )
             if (d.previewMode == "private") {
                 builder.setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
             } else {
@@ -385,6 +414,8 @@ class SomsMessagingService : FirebaseMessagingService() {
                     ctx,
                     id + 1 + idx, // unique requestCode per (card, action slot)
                     Intent(ctx, SomsActionReceiver::class.java).apply {
+                        // Extras do not participate in PendingIntent identity; encode card + slot here too.
+                        action = "${ctx.packageName}.NOTIFICATION_ACTION.$id.$idx.${a.id}"
                         putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
                         putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
                         putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
@@ -472,6 +503,8 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
                 .setContentText(d.body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
+                .setNumber(NotifThreadLogic.badgeNumber(d.count))
+                .setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(!d.renotify)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -579,7 +612,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 intent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+            val notif = NotificationCompat.Builder(ctx, CHANNEL_DIAGNOSTICS)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(body)
@@ -592,7 +625,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             nm.notify(ADMIN_TEST_NOTIF_ID, notif)
         }
 
-        /** Create the "messages" (HIGH) + "background" (LOW) channels (required on Android 8+) if absent.
+        /** Create the message, background-sync and diagnostics channels (required on Android 8+) if absent.
          *  Idempotent — getNotificationChannel returns null until a channel exists. Called eagerly at
          *  process start (SomsApplication.onCreate) so the app is registered as notification-capable before
          *  any post, and re-called lazily by every render path below as a cheap safety net.
@@ -608,6 +641,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 nm.createNotificationChannel(
                     NotificationChannel(CHANNEL_MESSAGES, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
                         description = "Incoming chat messages"
+                        setShowBadge(true)
                         // IMPORTANCE_HIGH alerts by default (sound + heads-up banner). Vibration is enabled
                         // EXPLICITLY with a distinct message pattern (double pulse) so a new message is felt
                         // even on silent. Channel-level — the authoritative setting on Android 8+ (notification-
@@ -621,6 +655,17 @@ class SomsMessagingService : FirebaseMessagingService() {
                 nm.createNotificationChannel(
                     NotificationChannel(CHANNEL_BACKGROUND, "Background sync", NotificationManager.IMPORTANCE_LOW).apply {
                         description = "Keeps message sync running in the background"
+                        // The FGS anchor is transport state, never unread-message state.
+                        setShowBadge(false)
+                    },
+                )
+            }
+            if (nm.getNotificationChannel(CHANNEL_DIAGNOSTICS) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CHANNEL_DIAGNOSTICS, "Notification diagnostics", NotificationManager.IMPORTANCE_HIGH).apply {
+                        description = "Administrator notification delivery tests"
+                        // An admin delivery probe must not change the user's message badge.
+                        setShowBadge(false)
                     },
                 )
             }

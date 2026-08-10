@@ -1,6 +1,4 @@
 export const SystemMessageType = {
-  FRIEND_REQUESTED: 'FRIEND_REQUESTED',
-  FRIEND_ACCEPTED: 'FRIEND_ACCEPTED',
   FRIEND_ADDED: 'FRIEND_ADDED',
   FRIEND_REMOVED: 'FRIEND_REMOVED',
   GROUP_JOINED: 'GROUP_JOINED',
@@ -27,9 +25,13 @@ export function parseSystemMessageContent(
     const body = JSON.parse(value) as Record<string, unknown>;
     const keys = Object.keys(body);
     const subject = body['subject'] as Record<string, unknown> | undefined;
+    const type = String(body['type']);
+    const subjectRequired = type !== SystemMessageType.FRIEND_ADDED;
     if (
       keys.some((key) => key !== 'type' && key !== 'subject') ||
-      !TYPES.has(String(body['type'])) ||
+      !TYPES.has(type) ||
+      (subjectRequired && subject === undefined) ||
+      (!subjectRequired && subject !== undefined) ||
       (subject !== undefined &&
         (typeof subject !== 'object' ||
           Array.isArray(subject) ||
@@ -52,5 +54,7 @@ export function parseSystemMessageContent(
 export function stringifySystemMessageContent(
   body: SystemMessageContent,
 ): string {
+  if (!parseSystemMessageContent(JSON.stringify(body)))
+    throw new Error('invalid system message content');
   return JSON.stringify(body);
 }

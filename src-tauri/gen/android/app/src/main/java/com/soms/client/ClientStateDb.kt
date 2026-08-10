@@ -9,8 +9,16 @@ object ClientStateDb {
     private const val ACTIVE_ACCOUNT = 0
 
     private fun open(ctx: Context): SQLiteDatabase {
-        val db = SQLiteDatabase.openOrCreateDatabase(File(ctx.filesDir, "soms-local.sqlite3"), null)
-        db.execSQL("PRAGMA journal_mode=WAL")
+        val dbFile = File(ctx.filesDir, "soms-local.sqlite3")
+        // Configure WAL through SQLiteDatabase so Android applies it consistently to every connection in
+        // its pool. PRAGMA journal_mode returns a row and therefore must not be sent through execSQL().
+        val db = SQLiteDatabase.openDatabase(
+            dbFile.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READWRITE or
+                SQLiteDatabase.CREATE_IF_NECESSARY or
+                SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
+        )
         db.execSQL(
             """CREATE TABLE IF NOT EXISTS client_preferences (
                 scope TEXT NOT NULL,

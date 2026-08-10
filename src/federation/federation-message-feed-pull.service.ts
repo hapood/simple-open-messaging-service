@@ -10,7 +10,10 @@ import type { FederationMessageFeedPage } from './federation-message-feed.servic
 export interface FederationMessageFeedPullCallbacks {
   fetch(after: bigint): Promise<FederationMessageFeedPage>;
   /** Apply the complete page in the same transaction that advances remoteHwm. */
-  apply(tx: DatabaseTransaction, page: FederationMessageFeedPage): Promise<void>;
+  apply(
+    tx: DatabaseTransaction,
+    page: FederationMessageFeedPage,
+  ): Promise<void>;
   /** Runs only after the page transaction (including remoteHwm) committed successfully. */
   afterCommit?(page: FederationMessageFeedPage): Promise<void> | void;
 }
@@ -19,7 +22,18 @@ interface AppliedPage {
   requestedAfter: bigint;
   scannedThrough: bigint;
   hasMore: boolean;
-  page: FederationMessageFeedPage;
+  page: FederationMessageFeedPage | null;
+}
+
+export class RemoteMessageFeedCursorResetError extends Error {
+  constructor(
+    public readonly startChangeId: bigint,
+    public readonly availableCursor: bigint,
+    public readonly allocatedThrough: bigint,
+  ) {
+    super('remote message-feed cursor floor advanced');
+    this.name = 'RemoteMessageFeedCursorResetError';
+  }
 }
 
 /**
@@ -86,7 +100,11 @@ export class FederationMessageFeedPullService {
       const applied = await this.applyOnePage(peerDomain, callbacks);
       if (!applied) return; // another process owns the NOWAIT cursor lock
 
-      await callbacks.afterCommit?.(applied.page);
+      if (applied.page) await callbacks.afterCommit?.(applied.page);
+
+      // The source discarded an over-limit backlog and supplied a new floor. The local cursor reset
+      // committed atomically below; immediately retry from that floor without publishing page effects.
+      if (!applied.page) continue;
 
       // A data-bearing final page is not acknowledged at the source until we request once more with
       // its scannedThrough. Continue until the source returns a stable empty/no-advance final page.
@@ -124,7 +142,37 @@ export class FederationMessageFeedPullService {
         .limit(1);
       if (!cursor) return null;
 
-      const page = await callbacks.fetch(cursor.remoteHwm);
+      let page: FederationMessageFeedPage;
+      try {
+        page = await callbacks.fetch(cursor.remoteHwm);
+      } catch (error) {
+        if (!(error instanceof RemoteMessageFeedCursorResetError)) throw error;
+        if (
+          error.startChangeId < cursor.startChangeId ||
+          error.availableCursor < error.startChangeId ||
+          error.availableCursor <= cursor.remoteHwm ||
+          error.availableCursor > error.allocatedThrough
+        ) {
+          throw new Error('peer returned an invalid message-feed cursor reset');
+        }
+        await tx
+          .update(federationPullCursor)
+          .set({
+            startChangeId: error.startChangeId,
+            remoteHwm: error.availableCursor,
+            updatedAt: new Date(),
+          })
+          .where(eq(federationPullCursor.peerDomain, peerDomain));
+        this.logger.warn(
+          `message-feed history for ${peerDomain} was truncated; resumed at ${error.availableCursor.toString()}`,
+        );
+        return {
+          requestedAfter: cursor.remoteHwm,
+          scannedThrough: error.availableCursor,
+          hasMore: true,
+          page: null,
+        };
+      }
       const scannedThrough = this.parseCursor(
         page.scannedThrough,
         'scannedThrough',

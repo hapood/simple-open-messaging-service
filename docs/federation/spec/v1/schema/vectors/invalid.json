@@ -81,14 +81,6 @@
       "value": { "contentType": "STICKER", "content": {} }
     },
     {
-      "name": "system message is closed",
-      "schema": "urn:soms:federation:v1:message-content",
-      "value": {
-        "contentType": "SYSTEM",
-        "content": { "type": "FRIEND_REQUESTED", "text": "rendered" }
-      }
-    },
-    {
       "name": "connected call requires startedAt",
       "schema": "urn:soms:federation:v1:call",
       "value": {

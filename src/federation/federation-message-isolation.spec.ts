@@ -49,6 +49,7 @@ describe('federation message context isolation', () => {
       }),
     });
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
       query: {
         message: {
           findFirst: vi.fn().mockResolvedValue({
@@ -106,6 +107,7 @@ describe('federation message context isolation', () => {
       });
     Object.assign(service, { resolveMissedThreadInTransaction: resolve });
     const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
       query: {
         message: {
           findFirst: vi.fn().mockResolvedValue({
@@ -137,24 +139,27 @@ describe('federation message context isolation', () => {
     expect(resolve).toHaveBeenCalledTimes(2);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('friend/thread is absent'),
+      expect.anything(),
     );
   });
 
-  it('still rejects malformed wire data instead of acknowledging it', async () => {
+  it('logs and skips malformed wire data instead of aborting the page', async () => {
     const service = Object.create(
       FederationService.prototype,
     ) as FederationService & Record<string, unknown>;
+    const logger = { error: vi.fn() };
     Object.assign(service, {
       config: { domain: 'local.test' },
-      logger: { error: vi.fn() },
+      logger,
       assertPeerResponseWritable: vi.fn(),
     });
     const malformed = item('1');
     malformed.originSeq = -1;
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
       service.applyMissedPageInTransaction(
-        {} as never,
+        tx as never,
         'peer.test',
         {
           scannedThrough: '1',
@@ -164,6 +169,46 @@ describe('federation message context isolation', () => {
         },
         {} as never,
       ),
-    ).rejects.toMatchObject({ bizCode: expect.any(Number) });
+    ).resolves.toEqual([]);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('ignored invalid federated message'),
+      expect.anything(),
+    );
   });
+
+  it.each(['SYSTEM', 'STICKER'])(
+    'uniformly logs and skips unknown content type %s',
+    async (contentType) => {
+      const service = Object.create(
+        FederationService.prototype,
+      ) as FederationService & Record<string, unknown>;
+      const logger = { error: vi.fn() };
+      Object.assign(service, {
+        config: { domain: 'local.test' },
+        logger,
+        assertPeerResponseWritable: vi.fn(),
+      });
+      const unknown = item('1');
+      unknown.contentType = contentType;
+      const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
+
+      await expect(
+        service.applyMissedPageInTransaction(
+          tx as never,
+          'peer.test',
+          {
+            scannedThrough: '1',
+            allocatedThrough: '1',
+            hasMore: false,
+            messages: [unknown],
+          },
+          {} as never,
+        ),
+      ).resolves.toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('unknown federated message content type'),
+        expect.anything(),
+      );
+    },
+  );
 });

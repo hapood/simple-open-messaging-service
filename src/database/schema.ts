@@ -57,10 +57,6 @@ export const contentType = pgEnum('ContentType', [
 ]);
 export const groupRole = pgEnum('GroupRole', ['OWNER', 'ADMIN', 'MEMBER']);
 export const messageThreadType = pgEnum('MessageThreadType', ['P2P', 'GROUP']);
-export const threadAudienceScope = pgEnum('ThreadAudienceScope', [
-  'THREAD',
-  'CREATOR',
-]);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
 export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
   'UPLOADING',
@@ -256,9 +252,6 @@ export const user = pgTable(
     threadRevision: integer().default(0).notNull(),
     readRevision: integer().default(0).notNull(),
     mustChangePassword: boolean().default(false).notNull(),
-    friendReqAckRev: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`'1970-01-01 00:00:00'`)
-      .notNull(),
   },
   (table) => [
     uniqueIndex('User_account_domain_key').using(
@@ -437,8 +430,6 @@ export const threadAudience = pgTable(
     targetDomain: varchar({ length: 63 }).notNull(),
     localUserId: integer(),
     threadId: integer().notNull(),
-    scope: threadAudienceScope().default('THREAD').notNull(),
-    creatorUserId: integer(),
     /** Inclusive per-target change boundary. Null means this audience may still produce changes. */
     deliverThroughChangeId: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
@@ -453,26 +444,14 @@ export const threadAudience = pgTable(
         table.localUserId.asc().nullsLast().op('int4_ops'),
         table.threadId.asc().nullsLast().op('int4_ops'),
       )
-      .where(
-        sql`${table.targetDomain} = 'local' AND ${table.scope} = 'THREAD'`,
-      ),
+      .where(sql`${table.targetDomain} = 'local'`),
     uniqueIndex('ThreadAudience_peer_key')
       .using(
         'btree',
         table.targetDomain.asc().nullsLast().op('text_ops'),
         table.threadId.asc().nullsLast().op('int4_ops'),
       )
-      .where(
-        sql`${table.targetDomain} <> 'local' AND ${table.scope} = 'THREAD'`,
-      ),
-    uniqueIndex('ThreadAudience_peer_creator_key')
-      .using(
-        'btree',
-        table.targetDomain.asc().nullsLast().op('text_ops'),
-        table.threadId.asc().nullsLast().op('int4_ops'),
-        table.creatorUserId.asc().nullsLast().op('int4_ops'),
-      )
-      .where(sql`${table.scope} = 'CREATOR'`),
+      .where(sql`${table.targetDomain} <> 'local'`),
     index('ThreadAudience_local_access_idx')
       .using(
         'btree',
@@ -487,14 +466,6 @@ export const threadAudience = pgTable(
         table.threadId.asc().nullsLast().op('int4_ops'),
       )
       .where(sql`${table.targetDomain} <> 'local'`),
-    index('ThreadAudience_creator_access_idx')
-      .using(
-        'btree',
-        table.creatorUserId.asc().nullsLast().op('int4_ops'),
-        table.threadId.asc().nullsLast().op('int4_ops'),
-        table.deliverThroughChangeId.asc().nullsLast().op('int8_ops'),
-      )
-      .where(sql`${table.scope} = 'CREATOR'`),
     foreignKey({
       columns: [table.localUserId],
       foreignColumns: [user.id],
@@ -509,20 +480,9 @@ export const threadAudience = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('cascade'),
-    foreignKey({
-      columns: [table.creatorUserId],
-      foreignColumns: [user.id],
-      name: 'ThreadAudience_creatorUserId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
     check(
       'ThreadAudience_target_check',
       sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL)`,
-    ),
-    check(
-      'ThreadAudience_scope_check',
-      sql`(${table.scope} = 'THREAD' AND ${table.creatorUserId} IS NULL) OR (${table.scope} = 'CREATOR' AND ${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL AND ${table.creatorUserId} IS NOT NULL)`,
     ),
     check(
       'ThreadAudience_deliverThroughChangeId_check',
@@ -780,15 +740,15 @@ export const message = pgTable(
   ],
 );
 
-/** Lightweight persistent discovery entry. Message bodies remain in Message and are pulled through
- * the thread endpoint; this row only makes their existence durable across restart/SSE loss. */
+/** Lightweight per-target message-feed entry. Message bodies remain in Message; this row makes their
+ * allocation durable across restart/SSE loss until acknowledgement or retention GC removes it. */
 export const discoveryChange = pgTable(
   'DiscoveryChange',
   {
     targetId: bigint({ mode: 'bigint' }).notNull(),
     changeId: bigint({ mode: 'bigint' }).notNull(),
-    /** Audience that admitted the change. It becomes null when current access is revoked; the change
-     * itself remains durable historical proof that this target had already received the message. */
+    /** Audience that admitted the change. It becomes null when current access is revoked; targetId
+     * remains the delivery proof until acknowledgement or retention GC physically deletes the row. */
     audienceId: bigint({ mode: 'bigint' }),
     threadId: integer().notNull(),
     messageId: bigint({ mode: 'bigint' }).notNull(),
@@ -1452,6 +1412,28 @@ export const profileStateRevision = pgTable(
   ],
 );
 
+/** Latest incoming friend-request creation in the unified per-user client-state revision space.
+ *  The row is compacted because clients only need the newest creation watermark; each device keeps its
+ *  own acknowledged watermark locally. */
+export const friendRequestStateRevision = pgTable(
+  'FriendRequestStateRevision',
+  {
+    userId: integer().primaryKey().notNull(),
+    revision: integer().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'FriendRequestStateRevision_userId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FriendRequestStateRevision_revision_check',
+      sql`${table.revision} > 0`,
+    ),
+  ],
+);
+
 export const systemSetting = pgTable('SystemSetting', {
   key: varchar({ length: 63 }).primaryKey().notNull(),
   value: text().notNull(),
@@ -1771,7 +1753,7 @@ export const federationPullCursor = pgTable(
   'FederationPullCursor',
   {
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    /** Immutable floor received during the current peer identity's first trusted handshake. */
+    /** Retained-history floor, initialized by handshake and raised only by a valid remote reset. */
     startChangeId: bigint({ mode: 'bigint' }).default(0n).notNull(),
     remoteHwm: bigint({ mode: 'bigint' }).default(0n).notNull(),
     updatedAt: timestamp({ precision: 3, mode: 'date' })
@@ -1795,8 +1777,9 @@ export const federationPullCursor = pgTable(
   ],
 );
 
-/** Source-side missed protocol state. startChangeId is the immutable pre-trust history floor.
- * acknowledgedThrough never moves backwards; lastServedThrough records the latest scanned page.
+/** Source-side missed protocol state. startChangeId is the current retained-history floor and may
+ * advance when local retention policy prunes confirmed or abandoned backlog. acknowledgedThrough
+ * never moves backwards; lastServedThrough records the latest scanned page.
  * A NOWAIT row lock rejects overlapping requests from the same peer without blocking. */
 export const federationServeCursor = pgTable(
   'FederationServeCursor',

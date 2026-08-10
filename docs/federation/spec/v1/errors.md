@@ -29,7 +29,7 @@ consumer MUST NOT 解析其文本决定行为。HTTP status 给出大类，`code
 | 50016 | `FEDERATION_PEER_IDENTITY_LOST`     |       423 | 停止自动流量；等待管理员原 pin 恢复或 destructive reset。 |
 | 50017 | `FEDERATION_IDENTITY_PROOF_INVALID` |       401 | 丢弃 proof；不得用其恢复 trust，修正后重新开始 nonce 流程。 |
 | 50018 | `FEDERATION_MISSED_CONCURRENT`      |       409 | 保持 cursor，短暂退避后从同一 `after` 重试。 |
-| 50019 | `FEDERATION_MISSED_CURSOR_INVALID`  |       409 | 不应用 page；使用 `data` 中服务器给出的可用 cursor 重新协调。 |
+| 50019 | `FEDERATION_MISSED_CURSOR_INVALID`  |       409 | 不应用 page；验证 `startChangeId <= availableCursor <= allocatedThrough` 且 floor 单调前进后，原子采用 `data.availableCursor` 继续。 |
 | 70001 | `CALL_NOT_ALLOWED`                  |       200 | 当前参与者关系不允许该 call frame；终止本次呼叫，不得 demote peer。 |
 | 70004 | `CALL_BUSY`                         |       422 | 对端参与者正忙；终止或稍后发起新呼叫，不得重放同一 incoming frame。 |
 

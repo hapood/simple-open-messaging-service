@@ -1,15 +1,5 @@
 import { forwardRef, Inject, Injectable, Optional } from '@nestjs/common';
-import {
-  and,
-  desc,
-  eq,
-  gt,
-  inArray,
-  max,
-  or,
-  sql,
-  type SQL,
-} from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, or, sql, type SQL } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -83,10 +73,8 @@ const USER_SELECT = {
  * erroring. Rows are never hard-deleted (kept as history; a future GC sweep flips stale PENDING →
  * EXPIRED). Expiry is validated at accept time only.
  *
- * The service owns DB + the derived `friendReqRev` (MAX(createdAt) over incoming FRIEND invites — the
- * friend-request badge the client derives from HELLO/push; creation-based so it arms ONLY on a NEW request).
- * It is deliberately decoupled from federation + SSE — the controller orchestrates S2S delivery and the live
- * NOTIFY / FRIEND_REQ_REV_UPDATED frames based on the structured results returned here.
+ * New incoming requests are recorded in the recipient's unified client-state revision. The service remains
+ * decoupled from federation + SSE; the controller owns S2S delivery and live signals after commit.
  */
 @Injectable()
 export class InviteService {
@@ -178,13 +166,7 @@ export class InviteService {
     userBId: number,
     reason = '',
   ): Promise<void> {
-    await this.writeLocalFriendIntentInTx(
-      tx,
-      userAId,
-      userBId,
-      false,
-      reason,
-    );
+    await this.writeLocalFriendIntentInTx(tx, userAId, userBId, false, reason);
   }
 
   /**
@@ -298,14 +280,30 @@ export class InviteService {
             true,
             trimmed,
           );
-        const request = await tx.query.friendRequest.findFirst({
-          where: and(
-            eq(friendRequest.requesterUserId, fromUserId),
-            eq(friendRequest.targetUserId, toUserId),
-          ),
-          columns: { id: true },
-        });
+        const [request, target] = await Promise.all([
+          tx.query.friendRequest.findFirst({
+            where: and(
+              eq(friendRequest.requesterUserId, fromUserId),
+              eq(friendRequest.targetUserId, toUserId),
+            ),
+            columns: { id: true, status: true },
+          }),
+          tx.query.user.findFirst({
+            where: eq(user.id, toUserId),
+            columns: { isForeigner: true },
+          }),
+        ]);
         if (!request) throw new Error('friend request write disappeared');
+        if (created && request.status === 'REQUESTED' && !target?.isForeigner) {
+          pendingRevisions.push({
+            userId: toUserId,
+            revision:
+              await this.threadRevisionService.recordFriendRequestStateInTx(
+                tx,
+                toUserId,
+              ),
+          });
+        }
         const low = Math.min(fromUserId, toUserId);
         const high = Math.max(fromUserId, toUserId);
         const pair = await tx.query.friendPair.findFirst({
@@ -344,24 +342,20 @@ export class InviteService {
     // Record the thread add AFTER the tx commits (bump threadRevision + push signal). Auto-accept
     // creates the P2P thread for BOTH users — mirrors acceptInvite's recordThreadAdd for both
     // (inviter + accepter). The 'created'/'already-pending' paths create no thread, so no signal.
-    if (result.status === 'auto-accepted') {
-      pendingRevisions.forEach((pending) =>
-        this.threadRevisionService.notifyThreadRevision(pending),
+    pendingRevisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
+    if (
+      result.status === 'auto-accepted' &&
+      this.messages &&
+      this.messageFanout
+    ) {
+      const system = await this.messages.tryWriteSystemMessage(
+        fromUserId,
+        result.threadId,
+        SystemMessageType.FRIEND_ADDED,
       );
-      if (this.messages && this.messageFanout) {
-        const requested = await this.messages.writeSystemMessage(
-          toUserId,
-          result.threadId,
-          SystemMessageType.FRIEND_REQUESTED,
-        );
-        const accepted = await this.messages.writeSystemMessage(
-          fromUserId,
-          result.threadId,
-          SystemMessageType.FRIEND_ACCEPTED,
-        );
-        void this.messageFanout.dispatch(requested);
-        void this.messageFanout.dispatch(accepted);
-      }
+      if (system) void this.messageFanout.dispatch(system);
     }
     return result;
   }
@@ -757,39 +751,31 @@ export class InviteService {
     pendingRevisions.forEach((pending) =>
       this.threadRevisionService.notifyThreadRevision(pending),
     );
+    if (
+      result.kind === 'FRIEND' &&
+      result.threadId !== undefined &&
+      this.messages &&
+      this.messageFanout
+    ) {
+      const system = await this.messages.tryWriteSystemMessage(
+        byUserId,
+        result.threadId,
+        SystemMessageType.FRIEND_ADDED,
+      );
+      if (system) void this.messageFanout.dispatch(system);
+    }
     if (this.messages && this.messageFanout) {
-      if (result.kind === 'FRIEND') {
-        if (result.threadId !== undefined) {
-          const from = await this.database.db.query.user.findFirst({
-            where: eq(user.id, result.fromUserId),
-            columns: { isForeigner: true },
-          });
-          if (!from?.isForeigner) {
-            const requested = await this.messages.writeSystemMessage(
-              result.fromUserId,
-              result.threadId,
-              SystemMessageType.FRIEND_REQUESTED,
-            );
-            void this.messageFanout.dispatch(requested);
-          }
-          const accepted = await this.messages.writeSystemMessage(
-            byUserId,
-            result.threadId,
-            SystemMessageType.FRIEND_ACCEPTED,
-          );
-          void this.messageFanout.dispatch(accepted);
-        }
-      } else if (result.originDomain === null) {
+      if (result.kind === 'GROUP' && result.originDomain === null) {
         // A mirror only authored a JOIN intent. Its origin server will emit
         // GROUP_JOINED after GROUP_META confirms membership; never announce
         // success optimistically on the requesting mirror.
-        const joined = await this.messages.writeSystemMessage(
+        const joined = await this.messages.tryWriteSystemMessage(
           byUserId,
           result.threadId,
           SystemMessageType.GROUP_JOINED,
           byUserId,
         );
-        void this.messageFanout.dispatch(joined);
+        if (joined) void this.messageFanout.dispatch(joined);
       }
     }
     return result;
@@ -923,64 +909,6 @@ export class InviteService {
     }));
   }
 
-  /** Acknowledge the friend-request badge (the panel was opened): advance the server-side read cursor
-   *  `friendReqAckRev` (a Date) to the current `friendReqRev` (MAX(createdAt)), clearing the badge on ALL
-   *  devices (the caller pushes the returned state via FRIEND_REQ_REV_UPDATED). Returns the post-ack wire
-   *  state (epoch-ms) so the caller can push without a re-read. */
-  async markRead(
-    userId: number,
-  ): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
-    const d = await this.latestFriendReqDate(userId);
-    const ackDate = d ?? new Date(0); // no incoming FRIEND invites → ack epoch (no badge either way)
-    await this.database.db
-      .update(user)
-      .set({ friendReqAckRev: ackDate, updatedAt: new Date() })
-      .where(eq(user.id, userId));
-    return {
-      friendReqRev: d ? d.getTime() : null,
-      friendReqAckRev: ackDate.getTime(),
-    };
-  }
-
-  /** The `createdAt` of the most-recently-CREATED incoming FRIEND invite (the raw, Date-typed derivation),
-   *  or null when the user has none. Creation-based (NOT updatedAt): the badge must arm ONLY on a NEW
-   *  request, so the derivation advances ONLY on create — accept/decline/expiry flip status (bumping
-   *  updatedAt) but must NOT re-arm the badge, hence createdAt. Monotonic + DATA-DERIVED (no counter). */
-  private async latestFriendReqDate(userId: number): Promise<Date | null> {
-    const [res] = await this.database.db
-      .select({ createdAt: max(friendRequest.requestedAt) })
-      .from(friendRequest)
-      .where(eq(friendRequest.targetUserId, userId));
-    return res.createdAt ?? null;
-  }
-
-  /** The friend-request revision as epoch-ms (the wire form), or null. */
-  async findLatestFriendReqUpdate(userId: number): Promise<number | null> {
-    const d = await this.latestFriendReqDate(userId);
-    return d ? d.getTime() : null;
-  }
-
-  /** The full friend-request badge state — `{ friendReqRev, friendReqAckRev }` (epoch-ms) — what HELLO +
-   *  the FRIEND_REQ_REV_UPDATED push carry (so the native layer merges both + the client derives
-   *  `friendReqRev > friendReqAckRev`). */
-  async friendReqState(
-    userId: number,
-  ): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
-    const [d, userRow] = await Promise.all([
-      this.latestFriendReqDate(userId),
-      this.database.db.query.user.findFirst({
-        where: eq(user.id, userId),
-        columns: { friendReqAckRev: true },
-      }),
-    ]);
-    return {
-      friendReqRev: d ? d.getTime() : null,
-      friendReqAckRev: userRow?.friendReqAckRev
-        ? userRow.friendReqAckRev.getTime()
-        : 0,
-    };
-  }
-
   /** Revision-gated remote intent application. This runs inside the state-feed page transaction;
    * the pair row is also the lock that serializes crossed requests. */
   async applyRemoteFriendIntentInTx(
@@ -1001,6 +929,7 @@ export class InviteService {
     localStateRevision?: number;
     threadId?: number;
     added?: boolean;
+    removed?: boolean;
   }> {
     await this.lockFriendPairInTx(tx, params.localUserId, params.peerUserId);
     const desired = params.status;
@@ -1098,25 +1027,12 @@ export class InviteService {
       ...(localStateRevision === undefined ? {} : { localStateRevision }),
       ...(pairEffect.threadId === undefined
         ? {}
-        : { threadId: pairEffect.threadId, added: false }),
+        : {
+            threadId: pairEffect.threadId,
+            added: false,
+            removed: pairEffect.transitioned,
+          }),
     };
-  }
-
-  /** Post-commit display record for the requester side of a newly converged federated friendship. */
-  async emitFederatedFriendRequested(
-    requesterUserId: number,
-    threadId: number,
-    sourcePeerDomain: string,
-  ): Promise<void> {
-    if (!this.messages || !this.messageFanout) return;
-    const message = await this.messages.writeSystemMessage(
-      requesterUserId,
-      threadId,
-      SystemMessageType.FRIEND_REQUESTED,
-      undefined,
-      [sourcePeerDomain],
-    );
-    void this.messageFanout.dispatch(message);
   }
 
   // ─── internals ────────────────────────────────────────────────────────────────
@@ -1242,7 +1158,6 @@ export class InviteService {
           AND target."localUserId" IS NOT DISTINCT FROM audience."localUserId"
       ), 0)
       WHERE audience."threadId" = ${threadId}
-        AND audience.scope = 'THREAD'
         AND audience."deliverThroughChangeId" IS NULL
     `);
   }
@@ -1282,12 +1197,7 @@ export class InviteService {
     await tx
       .update(threadAudience)
       .set({ deliverThroughChangeId: null })
-      .where(
-        and(
-          eq(threadAudience.threadId, threadId),
-          eq(threadAudience.scope, 'THREAD'),
-        ),
-      );
+      .where(eq(threadAudience.threadId, threadId));
     return threadId;
   }
 

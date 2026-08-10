@@ -18,8 +18,9 @@
 - 消息正文仍采用 pull，不通过轻量 push 发送；
 - push/SSE 仅用于唤醒，持久数据库状态才提供完整性；
 - S2S 和客户端增量游标均使用各自服务端 `Message.id`，wire 上一律编码为十进制字符串；
-- 关系终止以持久 SYSTEM 消息为准，不能从一次普通拉取失败推断；
-- 身份连续性丢失后不自动恢复，只允许管理员执行破坏性的 reset。
+- 关系终止以 state-feed 的持久 meta 为准，不能从普通消息或一次拉取失败推断；
+- 身份连续性丢失后不自动恢复；DNS 修复且原身份全部重新出现时，最高权限管理员可执行非破坏性
+  原 pin 恢复。身份确实改变时仍只允许破坏性的 reset。
 
 本次不提供：
 
@@ -168,7 +169,7 @@ pending --首次 /init--> trusted --传输失败--> demoted --固定身份 + 签
 - 拒绝该 domain 的所有 S2S 入站；
 - 不再向该 domain 发起 init、ping、push、miss 或业务请求；
 - 本地其他 peer 和纯本地聊天继续工作；
-- 与该 peer 相关的 thread 变为只读/不可发送，等待管理员 reset；
+- 与该 peer 相关的 thread 变为只读/不可发送，等待管理员验证原 pin 或执行 reset；
 - 不自动删除任何数据。
 
 ## 5. 身份协议
@@ -223,7 +224,7 @@ cursor 必然已经存在；任一步失败则全部回滚，不使用额外 ini
 新增：
 
 ```text
-GET /s2s/v1/identity?recipientDomain=<caller-domain>&nonce=<nonce>
+GET /s2s/v1/identity?nonce=<nonce>
 ```
 
 请求必须签名。响应包含 `domain`、`recipientDomain`、`pairwiseServerId`、
@@ -237,8 +238,11 @@ GET /s2s/v1/identity?recipientDomain=<caller-domain>&nonce=<nonce>
 4. 只有成功后才发 ping/miss/业务请求；
 5. 身份矛盾时原子设置 `identity_lost`。
 
-身份 endpoint 允许已知但处于 `demoted` 的 peer 调用；`identity_lost` 和 `blocked` peer 不允许用
-该接口自动解锁。
+身份 endpoint 允许已知且处于 `trusted`、`demoted` 或 `identity_lost` 的 peer 用原 signing key 调用。
+`demoted` 可因有效 proof 自动恢复；向 `identity_lost` peer 返回 proof 不改变服务端本地 trust 状态，
+只用于避免双方同时 identity loss 时的人工恢复死锁。`identity_lost` 的管理员恢复必须由最高权限管理
+动作显式触发，绕过 discovery cache，并额外逐项比对事故前的 root fingerprint、唯一 signing key 与
+pairwise ID。`blocked` 与 `reset_in_progress` 不允许调用。
 
 ## 6. 数据模型草案
 
@@ -278,8 +282,6 @@ id                       bigserial primary key
 targetDomain              varchar(63) not null (`local` 或远端 domain)
 localUserId               integer null（仅 targetDomain=`local`）
 threadId                  integer not null
-scope                     THREAD | CREATOR
-creatorUserId             integer null
 deliverThroughChangeId    bigint null
 createdAt                 timestamp not null
 ```
@@ -287,20 +289,15 @@ createdAt                 timestamp not null
 约束：
 
 - `targetDomain='local'` 必须设置 `localUserId`，其他 domain 禁止设置；
-- 同一 target/thread 最多一条 THREAD；同一 target/thread/creator 最多一条 CREATOR；
+- 同一 target/thread 最多一条 audience；
 - 解除好友、退出群聊、被踢，或远端 domain 的最后一个本地群成员离开时物理删除对应行；
 - 重新获得权限时直接重新插入，不保留 thread 级 epoch 或 pull cursor；
 - 同一服务器的群消息缓存由该服务器上的成员共享：仍有其他成员时继续拉取并缓存，重新加入者
   可以看到服务器已经缓存的历史；
 - `THREAD` 表示当前订阅整个 thread，撤权时物理删除；
-- `CREATOR` 仅允许群 origin 拉取 `creatorUserId` 在该群中的发言。退群系统消息产生 change 后，
-  将其包含式 change ID 写入 `deliverThroughChangeId`；生产端只读取该字段为 null 的 CREATOR，
-  `/missed` 仍允许消费 `changeId <= deliverThroughChangeId`；
-- `remoteHwm >= deliverThroughChangeId` 后可以物理删除已排空的 CREATOR audience；
 - 建议索引：
   - unique `(targetDomain, localUserId, threadId)`（local partial）；
   - unique `(targetDomain, threadId)`（peer partial）；
-  - unique `(targetDomain, threadId, creatorUserId)`（CREATOR partial）；
   - `(localUserId, threadId)`（local partial）；
   - `(targetDomain, threadId)`（peer partial）；
   - `Message(threadId, id)`。
@@ -330,26 +327,11 @@ unique                   (targetId, messageId)
 消息事务对每个可见目标锁定其 `DiscoveryTarget` 行，递增 `allocatedThrough` 并插入
 `DiscoveryChange`。该字段只负责源端事务型 change ID 分配和行锁，不是接收端 HWM。
 `audienceId` 记录产生 change 时有效的访问授权。撤销当前访问时该外键 `ON DELETE SET NULL`，但
-`DiscoveryChange` 本身保留，作为该 target 曾被分配此 Message 的历史凭证；重新插入 audience 后只为
-此后新消息产生 change。CAS/bundle 下载端不保存也不回传 changeId，源端按消息身份查自己的
-`DiscoveryChange(target, message)` 完成历史授权校验。
+`DiscoveryChange` 在确认前作为该 target 的持久投递记录；重新插入 audience 后只为此后新消息产生
+change。CAS/bundle 下载不依赖 change：源端 join signer 的 `ThreadAudience`，再验证精确 Message 与
+digest/bundle 绑定，因此确认后的 change 物理清理不会中断资源下载。
 
-### 6.5 SystemMessageTarget
-
-部分关系事件只应让特定成员/peer 看见，不能仅依靠 thread 级 audience：
-
-```text
-messageId                bigint not null
-targetType               LOCAL_USER | FEDERATED_PEER
-localUserId              integer null
-peerDomain               varchar(63) null
-primary key              (messageId, target identity)
-```
-
-普通消息没有 target 行，按当前 `ThreadAudience` 判断；SYSTEM 消息存在 target 行时，必须同时
-满足当前 audience 和 target 命中。
-
-### 6.6 FederationPullCursor
+### 6.5 FederationPullCursor
 
 ```text
 peerDomain               varchar(63) primary key
@@ -358,7 +340,7 @@ remoteHwm                bigint not null default 0
 updatedAt                timestamp not null
 ```
 
-双方首次可信互联时交换各自当前 `DiscoveryTarget.allocatedThrough`，作为不可变
+双方首次可信互联时交换各自当前 `DiscoveryTarget.allocatedThrough`，作为初始
 `startChangeId`。接收端以它初始化 `remoteHwm`，源端拒绝任何 `afterChangeId < startChangeId`，
 从协议层禁止读取建立信任前的历史。
 
@@ -382,9 +364,23 @@ lastServedThrough        bigint not null
 `startChangeId <= X`、`acknowledgedThrough <= X` 且 `X <= allocatedThrough`：禁止回退和伪造超前
 ACK，但允许调用方跳过已经确认落库的区间。页面扫描成功后，同一事务将
 `acknowledgedThrough` 设为 X，并记录新的 `lastServedThrough`；扫描或响应组装失败则全部回滚。
-初始化时三个水位均等于 `startChangeId`。该确认水位同时为 CREATOR audience 的排空 GC 提供依据。
+初始化时三个水位均等于 `startChangeId`。
 cursor 被拒绝时，错误 `data` 返回十进制字符串形式的 `requestedCursor`、`availableCursor`、
 `startChangeId` 和 `allocatedThrough`；调用方使用 `availableCursor` 恢复请求，不使用 JSON number。
+
+SOMS 每五分钟尝试一次 message change GC。多进程通过 session advisory lock 保证全局只有一个 sweep；
+未取得锁的实例立即退出。普通 sweep 检测到数据库存在其他 active client query 时跳过，紧急积压除外。
+单 target 使用 cursor/target 行锁和 `SKIP LOCKED`，不执行 `LOCK TABLE`：
+
+- 物理删除 `changeId <= acknowledgedThrough`，并把 retained `startChangeId` 推进到确认水位；
+- 单 target 实际残留超过 10,000 条时强制物理删除最旧一半，并原子抬高 `startChangeId`、
+  `acknowledgedThrough`、`lastServedThrough`；
+- 紧急积压即使系统忙也尝试，若该 target 正在 serve、分配或 reset 则本轮跳过；
+- destructive peer reset 物理删除其 `DiscoveryTarget`，级联清除 change/serve cursor，并显式删除
+  peer audience；与 GC 对同一行自然串行。
+
+receiver 收到单调前进的 cursor-invalid floor 后，在本地 pull cursor 事务中同时更新
+`startChangeId/remoteHwm`，不发布空缺区间的消息副作用，然后立即从新 `availableCursor` 继续。
 
 如果拉取结果允许因无权限而跳过 ID，响应必须返回服务端扫描水位 `scannedThrough`；客户端只有在
 整页成功提交后才将 `remoteHwm` 推进到该值。否则无权限行造成的 ID 空洞会导致永久重复扫描。
@@ -401,45 +397,6 @@ unique (originDomain, originMessageId)
 
 该唯一约束是重试、分页回滚和重复 push 下的最终去重后盾。
 
-## 7. SYSTEM 消息
-
-### 7.1 类型
-
-新增 `ContentType.SYSTEM`。payload 使用带版本的判别联合，不使用含义模糊的 `{type:"delete"}`：
-
-```json
-{
-  "version": 1,
-  "event": "group_member_joined",
-  "memberRevision": 18,
-  "actor": { "account": "alice", "domain": "a.example" },
-  "subject": { "account": "bob", "domain": "b.example" }
-}
-```
-
-首批事件是群 meta 的可显示提示，例如 `group_member_joined`、成员/角色/管理员变更。事件携带稳定
-group address、`memberRevision`、actor 和 subject；它不是权限事实，接收端以群 origin 的统一
-thread access/meta 查询结果为准。
-
-删除好友、本人退群或被踢不发送独立终止 change。源端删除对应 `ThreadAudience` 后自然停止产生
-后续消息 change；仍显示旧 thread 的客户端立即打开本地缓存，服务器在后台查询权威状态并异步修正。
-
-拉黑、屏蔽、重复删除、好友不存在及普通权限失败不创建 SYSTEM 消息：按既有幂等成功或 toast
-处理。消息撤回/举报继续使用专门的删除模型，不改造成关系 SYSTEM 消息。
-
-### 7.2 强制限制
-
-SYSTEM 消息只能由服务端创建，并在后端和客户端同时强制：
-
-- 不可撤回；
-- 不可举报；
-- 不可转发；
-- 不可编辑；
-- 不可回复/引用；
-- 多选模式不可选中。
-
-### 7.3 权威 thread access 查询
-
 统一查询不传 thread type：`localAccount` 以 `!` 开头表示群聊，否则表示 P2P。统一返回
 `active`、`revision`、`role`、`reason`；P2P active 时 `role` 固定为 `MEMBER`。P2P 查询用户
 home server，群聊查询 group origin。
@@ -448,12 +405,12 @@ home server，群聊查询 group origin。
 `federationVersion`。写入迟到响应前在同一事务重新比较；任何一项变化都丢弃响应。有效响应在事务
 内更新 participant/audience/ThreadRevision，提交后通过 SSE 异步修正客户端，不阻塞打开本地缓存。
 
-## 8. 两条持久 feed 与 revision 唤醒
+## 7. 两条持久 feed 与 revision 唤醒
 
 本节记录实现设计；wire contract 以 `spec/v1/` 为准。联邦只有 state feed、message feed 两条持久
 拉取流，以及一个只携带两条流最新 revision 的轻量 push；不存在单独的 HWM 查询或 `missed` API。
 
-### 8.1 Message feed
+### 7.1 Message feed
 
 ```text
 GET /s2s/v1/message-feed?after=90000&take=100
@@ -474,7 +431,7 @@ GET /s2s/v1/message-feed?after=90000&take=100
 
 1. 以请求开始时的 `allocatedThrough` 作为本次响应上界；
 2. 扫描该 peer 的 `DiscoveryChange.changeId > afterChangeId`，按 change ID 升序；
-3. change 必须仍关联当前存在的 `ThreadAudience`，并应用可选 `SystemMessageTarget`；
+3. change 必须仍关联当前存在的 `ThreadAudience`；
 4. 直接返回实际消息正文和附件描述，媒体二进制仍按需下载；
 5. `scannedThrough` 是本页已经完整检查到的最大 change ID，即使部分 change 已级联删除；
 6. `hasMore` 表示固定上界内仍有未扫描 ID；
@@ -491,7 +448,7 @@ GET /s2s/v1/message-feed?after=90000&take=100
 超时或响应组装失败都回滚 cursor 更新。页面不足 `take` 时，`scannedThrough` 直接推进到锁内固定的
 `allocatedThrough`，因此 audience 删除造成的 change ID 空洞不会被永久重复扫描。
 
-### 8.2 State feed
+### 7.2 State feed
 
 ```text
 GET /s2s/v1/state-feed?after=120&take=100
@@ -500,7 +457,7 @@ GET /s2s/v1/state-feed?after=120&take=100
 它传输 profile、好友关系和群状态快照/墓碑，使用独立的 `stateFeedRev`、分页 cursor 和事务边界；
 不得借用 message feed 的 change ID。详细事件、分页和授权规则见 `spec/v1/state-feed.md`。
 
-### 8.3 轻量 revision push
+### 7.3 轻量 revision push
 
 原 `FederationBufferService` 内存 hint 不再承担正确性职责，并在切换完成后删除。push 仅发送：
 
@@ -517,7 +474,7 @@ revision 并将其视为 wake-up signal，随后分别拉取落后的 feed；它
 不表示远端已经收到具体事件。push 失败按普通 S2S 传输失败处理；push 丢失由建立连接、重连和
 低频 reconciliation 时再次发送当前 revision 恢复。精确重试周期属于实现配置，不是 wire contract。
 
-### 8.4 客户端 missed
+### 7.4 客户端 missed
 
 客户端使用本地消息 ID 调用等价增量接口：
 
@@ -532,9 +489,9 @@ GET/POST client missed(afterChangeId: decimal-string, take: 100)
 客户端 thread revision 仍用于 thread 列表 ADD/DELETE 变化；消息 ID missed 负责发现消息，二者
 不能互相替代。
 
-## 9. 事务边界
+## 8. 事务边界
 
-### 9.1 本地关系变化
+### 8.1 本地关系变化
 
 以下操作必须在同一数据库事务完成：
 
@@ -546,7 +503,7 @@ GET/POST client missed(afterChangeId: decimal-string, take: 100)
 
 删除好友、被踢或退群不发送独立终止 change；删除 audience 后自然停止产生后续消息 change。
 
-### 9.2 远端 missed 页面
+### 8.2 远端 missed 页面
 
 一个响应页面作为一个本地事务处理：
 
@@ -562,9 +519,20 @@ GET/POST client missed(afterChangeId: decimal-string, take: 100)
 
 页事务只覆盖消息正文落库与游标推进；媒体文件本地化在事务外异步进行（§12），不阻塞 `remoteHwm`。任一消息的**格式校验**或去重冲突失败则整页回滚，HWM 不推进；但媒体未下载**不构成**页失败。建议事务超时 10–15 秒；连续处理 10 页或 1000 条后让出执行权，再继续追赶，避免 NAS 上的 PostgreSQL 长时间被同步任务占用。
 
-## 10. reset 与禁止继承旧授权
+## 9. reset 与禁止继承旧授权
 
-### 10.1 reset 前置条件
+### 9.0 非破坏性原 pin 恢复
+
+`identity_lost` 不会被后台任务自动恢复。确认 DNS 已修复后，最高权限管理员可输入 peer domain 发起
+恢复探测。实现清除该 domain 的 discovery cache，重新获取 well-known，并使用新 nonce 请求签名
+identity proof。只有 root fingerprint、唯一 keyId/公钥和 pairwise server ID 与已有 pin 全部相同，
+才把 trust edge 恢复为 `trusted`；操作保留 `trustedAt`、cursor、mirror、authorization 和历史数据，
+并写入管理员审计与 peer `recovered` 事件。探测失败或任一字段不同都保持 `identity_lost`。
+
+该操作不能接受新身份。原私钥丢失、服务器确实更换或无法重新取得全部原 pin 时，必须使用以下
+destructive reset。
+
+### 9.1 reset 前置条件
 
 只有 `identity_lost` peer 可执行本设计的 identity reset。操作必须：
 
@@ -574,7 +542,7 @@ GET/POST client missed(afterChangeId: decimal-string, take: 100)
 - 写入不可删除的管理员安全审计记录；
 - 不允许普通 `/init`、重连任务或数据库启动逻辑隐式触发。
 
-### 10.2 原子锁定与物理清理
+### 9.2 原子锁定与物理清理
 
 reset 作业先获得该 peer 的排他维护锁，阻止其 S2S 和本地相关写入。随后在可重试的维护事务/作业中
 物理删除或解除：
@@ -598,7 +566,7 @@ reset 作业先获得该 peer 的排他维护锁，阻止其 S2S 和本地相关
 `federationVersion` 加一。因此旧节点的 inflight 响应即使晚于 reset 完成或新节点握手，也不能插入
 新身份的数据。服务重启后继续枚举相关且 `federationTruncated=false` 的 thread。
 
-### 10.3 reset 后
+### 9.3 reset 后
 
 reset 完成后：
 
@@ -612,7 +580,7 @@ reset 完成后：
 - 必须由用户重新加好友、重新邀请入群，重新建立当前 audience；
 - 旧授权永远不能仅凭 domain、account 名称相同而继承。
 
-## 11. 错误与重试分类
+## 10. 错误与重试分类
 
 建议新增稳定业务错误：
 
@@ -626,13 +594,13 @@ reset 完成后：
 
 所有错误响应不得回显私钥、HMAC 派生材料或其他 peer 的 pairwise ID。
 
-## 12. Download inbox / file sync 持久层
+## 11. Download inbox / file sync 持久层
 
 > 本节定义附件本地化的持久化与状态机，取代当前 fire-and-forget 的 `localizeMedia`。所有携带附件的
 > 消息（本地出站上传与联邦入站下载统一处理）必须先将其引用的全部文件本地化为 `SUCCEEDED`，才
 > promote 进 `Message` 表；否则停在 `PendingMessage`，对接收方不可见，直到管理员处理。
 
-### 12.1 目标与非目标
+### 11.1 目标与非目标
 
 固定原则：
 
@@ -658,7 +626,7 @@ reset 完成后：
 - 不保证失败或进行中的消息对客户端可见；
 - 不保证多文件消息（相册/bundle）内的展示顺序与发送顺序一致。
 
-### 12.2 数据模型
+### 11.2 数据模型
 
 `PendingMessage`——消息暂存，出站上传与入站下载共用，按 `direction` 区分：
 
@@ -717,7 +685,7 @@ createdAt                 timestamp not null
 - 下载按 `digest` single-flight：同一 digest 的并发 `FileSyncProgress` 只发起一次网络请求，结果共享；
 - temp 目录与正式 CAS 分离（见 12.11）。
 
-### 12.3 出站与入站统一
+### 11.3 出站与入站统一
 
 两条路径共用 `PendingMessage` + `FileSyncProgress`，仅 `direction` 与身份字段不同：
 
@@ -729,7 +697,7 @@ createdAt                 timestamp not null
   fire-and-forget 触发下载例程；全 `SUCCEEDED` 后 promote；
 - 纯文本消息不经过 `PendingMessage`，仍按现有路径直接落 `Message`。
 
-### 12.4 文件级 promote 与崩溃安全
+### 11.4 文件级 promote 与崩溃安全
 
 单个文件下载完成并校验通过后，按以下顺序落库落盘，**DB 先写、move 后做**，使 `MediaAsset` 行成为
 崩溃恢复的提交记录：
@@ -749,7 +717,7 @@ GC reconcile 对每个 `isDeleted=false` 的 `MediaAsset` 行：
 同一 digest 并发 promote 安全：`MediaAsset` 主键唯一 → 第二个 insert `onConflictDoNothing`；两次
 `.complete`→正式 rename 打同一目标、原子、幂等。
 
-### 12.5 消息级 promote
+### 11.5 消息级 promote
 
 当一条 `PendingMessage` 关联的全部 `FileSyncProgress` 均为 `SUCCEEDED`（用
 `NOT EXISTS (... status IN (PENDING, DOWNLOADING, FAILED))` 判定，不维护计数器），在同一事务内：
@@ -762,7 +730,7 @@ GC reconcile 对每个 `isDeleted=false` 的 `MediaAsset` 行：
 
 任一文件终态 `FAILED` 则**不 promote**，消息留在 `PendingMessage` 等管理员（见 12.7）。
 
-### 12.6 下载例程与调度器
+### 11.6 下载例程与调度器
 
 下载例程由两个业务入口调用：
 
@@ -788,7 +756,7 @@ Promise，但不同 peer 的同 digest 不合并，避免跨信任域复用请�
 引用解析（quote）需同时查 `Message ∪ PendingMessage`：引用一条仍在 pending 或终态 FAILED 的媒体消息
 时，按「引用目标不可用」降级渲染，不丢弃引用方消息。
 
-### 12.7 失败、孤儿与管理员操作
+### 11.7 失败、孤儿与管理员操作
 
 - 干净失败 → `FileSyncProgress=FAILED` → 消息不 promote，留 `PendingMessage`；源消息删除则进入不可重试的
   协议终态 `TOMBSTONED`，不与普通传输失败共用状态；
@@ -799,7 +767,7 @@ Promise，但不同 peer 的同 digest 不合并，避免跨信任域复用请�
   - **clean**：只物理删除 `PendingMessage` + 其全部 `FileSyncProgress`；CAS 与 temp 不在请求内清理，统一
     交给 GC/TTL（见 12.9），以免误删同 digest 的共享断点。
 
-### 12.8 tombstone 与 pending 的交互
+### 11.8 tombstone 与 pending 的交互
 
 删除流到达的 tombstone 现在需要能命中 `PendingMessage`（不止 `Message.isDeleted`）：
 
@@ -812,7 +780,7 @@ Promise，但不同 peer 的同 digest 不合并，避免跨信任域复用请�
   `PendingMessage`；
 - 权限校验（`creator.domain == 作者 home domain`）不变。
 
-### 12.9 GC 扩展
+### 11.9 GC 扩展
 
 GC 由「主回收 + temp TTL + salvage/reconcile」三道组成：
 
@@ -829,7 +797,7 @@ GC 由「主回收 + temp TTL + salvage/reconcile」三道组成：
 temp 文件清理的 ref-check：删一个 digest 的 temp 前，必须确认无其它 `FileSyncProgress` 或 `MediaAsset`
 引用该 digest（同 digest 合并的前提）。
 
-### 12.10 去重与游标
+### 11.10 去重与游标
 
 - 入站去重：`PendingMessage` 上 `unique (threadId, creatorId, originSeq)`，promote 后该身份迁移到
   `Message` 的同名唯一索引；pull 侧去重需查 `PendingMessage ∪ Message` 任一存在即跳过，`Message` 唯一
@@ -837,7 +805,7 @@ temp 文件清理的 ref-check：删一个 digest 的 temp 前，必须确认无
 - `remoteHwm` 在**写入 `PendingMessage`** 时随页事务推进到 `scannedThrough`，不等待 promote；因此失败
   或慢本地化的消息不会阻塞游标，也不会造成游标穿洞（消息已在 `PendingMessage`，cursor 已记录消费）。
 
-### 12.11 temp 目录与正式 CAS 分离
+### 11.11 temp 目录与正式 CAS 分离
 
 - 正式 CAS：`data/cas/<dd>/<dd>/<digest>`（现有 shard 布局，仅放校验通过的 blob）；
 - temp：`data/cas/tmp/`，存放 `.part`（断点续传半成品）、`.resume.json`（续传 offset）、`.complete`
@@ -845,7 +813,7 @@ temp 文件清理的 ref-check：删一个 digest 的 temp 前，必须确认无
 - promote = 校验 + `.complete` 标记 + `MediaAsset` 落库 + rename 进正式 shard；temp 文件由 12.9 的 TTL
   与 salvage 道回收。
 
-### 12.12 统一上传与 GALLERY
+### 11.12 统一上传与 GALLERY
 
 聊天附件统一使用 `POST /upload`；旧的 file/video/audio typed upload 路径不再构成协议。客户端先通过
 `/send-media` 创建 `PendingMedia(direction=OUTBOUND)`，并且必须提交 `clientMessageId`。单文件消息的
@@ -885,7 +853,7 @@ CAS 内容可去重，但每一次合法上传和每一个消息引用都必须�
 导致本次 gallery part 消失。媒体访问鉴权必须同时覆盖直接 CAS 与 forward bundle，并校验请求中的
 account、消息 origin seq，以及 bundle 请求中的 bundle id。
 
-## 13. 实现状态与验收条件
+## 12. 实现状态与验收条件
 
 当前主线状态：
 
@@ -905,13 +873,12 @@ account、消息 origin seq，以及 bundle 请求中的 bundle id。
 
 - A 写消息后在 push 前重启，B 仍通过 HWM/missed 拉到消息；
 - push 重复、乱序或丢失不丢消息且不重复落库；
-- 页面第 N 条失败时整页与 HWM 回滚；
+- message-feed 页面第 N 条失败时只回滚并跳过该条，记录 error，后续消息和 HWM 继续提交；
 - 同 domain 换服务器或换 root key 后进入 `identity_lost`，不会自动 init；
 - 已固定 `keyId`、公钥改变或发布第二个 key 后进入 `identity_lost`；
 - 密钥文件丢失但数据库有历史时不自动生成；
 - 删除好友/退出/踢人与 audience 物理删除在同一事务；
 - 迟到的权威查询结果因 revision/resetGeneration/federationVersion 不匹配而被丢弃；
-- SYSTEM 消息无法由客户端伪造、撤回、举报、转发、引用或多选；
 - reset 不影响其他 peer 或纯本地 thread，且同 domain 新节点不继承旧授权。
 - 媒体消息在全部文件本地化 `SUCCEEDED` 后才 promote 进 `Message`，对接收方此前不可见；
 - 任一消息进入 `Message` 的事务提交后立即发送 SSE；更早的 pending 媒体不得阻塞后续正式消息，且
@@ -920,7 +887,7 @@ account、消息 origin seq，以及 bundle 请求中的 bundle id。
 - tombstone 命中 `PendingMessage` 时中止下载并清理，且 tombstone 行阻止该消息被重复入库；
 - 媒体下载失败或冻住不阻塞 `remoteHwm`，也不造成游标穿洞。
 
-## 14. 当前实现与剩余差异
+## 13. 当前实现与剩余差异
 
 持久发现正确性来自 per-peer message feed、轻量 `feed-revisions` 与持久 pull cursor。旧 buffer、
 `/new-msg-map`、thread 级消息拉取和 reconnect poll 已删除；节点之间不保留回退协议。

@@ -38,6 +38,8 @@ data class NotifDescriptor(
     val kind: String,
     val title: String,
     val body: String,
+    /** New messages represented by this card since the frozen foreground/per-thread dismiss HWM. */
+    val count: Int,
     val lang: String,
     /** URL to the server-composited stacked-avatar PNG (relative — resolved against the API origin at fetch);
      *  null when the server left it null (no avatar / librsvg absent → the client uses its app icon). */
@@ -100,6 +102,10 @@ data class NotifDescriptor(
                     kind = o.optString("kind"),
                     title = o.optString("title"),
                     body = o.optString("body"),
+                    // Fallback 1 keeps a rolling-upgrade client useful against an older server that does not
+                    // carry count yet; the new contract always sends an exact non-negative value.
+                    count = o.optInt("count", if (o.optString("kind") == "thread-message") 1 else 0)
+                        .coerceAtLeast(0),
                     lang = o.optString("lang"),
                     // optString returns "null" for a JSON null — guard explicitly so null stays null.
                     icon = if (o.isNull("icon")) null else o.optString("icon").takeIf { it.isNotEmpty() },

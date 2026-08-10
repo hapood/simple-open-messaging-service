@@ -9,7 +9,6 @@ import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dia
 import { ShellIncompatibleDialogComponent } from '../components/shell-incompatible-dialog/shell-incompatible-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
 import { SettingsComponent } from '../components/settings/settings.component';
-import { FriendInviteDialogComponent } from '../components/friend-invite-dialog/friend-invite-dialog.component';
 import { UploadDetailDialogComponent } from '../components/upload-detail-dialog/upload-detail-dialog.component';
 import {
   ForwardDialogComponent,
@@ -19,7 +18,6 @@ import type {
   ForwardMessageItem,
   ForwardRecordKind,
 } from '../components/forward-message-card/forward-message-card.component';
-import type { User } from './user.service';
 import type { SettingsCategoryId } from '../components/settings/settings-categories';
 import { AppIconType } from '../components/icon/model';
 import {
@@ -54,7 +52,6 @@ export enum RoutePage {
  */
 export enum PopupType {
   FRIEND_REQUESTS,
-  FRIEND_INVITE,
   NEW_GROUP,
   EDIT_PROFILE,
   AVATAR_EDITOR,
@@ -73,7 +70,6 @@ export enum PopupType {
 // make NgComponentOutlet fail while looking up the component definition (`ɵcmp`).
 const componentDict: Record<PopupType, () => Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: () => FriendRequestsComponent,
-  [PopupType.FRIEND_INVITE]: () => FriendInviteDialogComponent,
   [PopupType.NEW_GROUP]: () => NewGroupComponent,
   [PopupType.EDIT_PROFILE]: () => EditProfileComponent,
   [PopupType.AVATAR_EDITOR]: () => AvatarEditorComponent,
@@ -88,7 +84,6 @@ const componentDict: Record<PopupType, () => Type<unknown>> = {
 
 const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.FRIEND_REQUESTS]: 'page',
-  [PopupType.FRIEND_INVITE]: 'page',
   [PopupType.NEW_GROUP]: 'page',
   [PopupType.EDIT_PROFILE]: 'page',
   [PopupType.AVATAR_EDITOR]: 'viewer',
@@ -107,7 +102,6 @@ export interface PopupInput {
     subject?: Subject<any>;
     initialTab?: 'add' | 'pending';
   };
-  [PopupType.FRIEND_INVITE]: { user: User };
   [PopupType.NEW_GROUP]: undefined;
   [PopupType.EDIT_PROFILE]: undefined;
   [PopupType.AVATAR_EDITOR]: { file: File };
@@ -144,12 +138,6 @@ export interface PopupInput {
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
 export interface PopupResult {
   [PopupType.FRIEND_REQUESTS]: undefined;
-  [PopupType.FRIEND_INVITE]:
-    | {
-        userId: number;
-        status: 'OUTGOING_PENDING' | 'FRIEND';
-      }
-    | undefined;
   [PopupType.NEW_GROUP]: { groupId: number };
   [PopupType.EDIT_PROFILE]: boolean;
   // cropped File on Save; undefined on Cancel/back.

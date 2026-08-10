@@ -19,7 +19,12 @@ import { RootPopupComponent } from '../../components/root-popup/root-popup.compo
  */
 @Component({
   selector: 'app-home',
-  imports: [HomeShellComponent, IndicatorSlotComponent, ConnectionBannerComponent, RootPopupComponent],
+  imports: [
+    HomeShellComponent,
+    IndicatorSlotComponent,
+    ConnectionBannerComponent,
+    RootPopupComponent,
+  ],
   template: `
     <app-home-shell />
     <app-indicator-slot>
@@ -34,7 +39,7 @@ export class HomeComponent implements OnInit {
   private readonly wsService = inject(WebsocketService);
   // Injected to instantiate the DB-layer root singletons that self-subscribe to the SSE stream in their
   // constructors: ThreadRepository routes the thread-list data events (NEW_MESSAGE / THREAD_META /
-  // STATE_REV_UPDATED / FRIEND_REQ_REV_UPDATED +
+  // STATE_REV_UPDATED +
   // reconnect refresh); GroupEventService routes the GROUP_* control events (toasts / roster reload).
   // Injecting them here guarantees their subscriptions are alive for the whole home-route session
   // regardless of which child panes are mounted.
@@ -48,9 +53,8 @@ export class HomeComponent implements OnInit {
     // startup token renew — the session token is long-lived; the interceptor attaches it directly.)
     this.wsService.connect();
 
-    // Friend-lifecycle signals no longer need a NOTIFY subscription here:
-    //  - FRIEND_REQUEST badge: armed by the FRIEND_REQ_REV_UPDATED handler (ThreadRepository) driving the
-    //    friendReqRev > IDB-ack-cursor derivation on UserService.
+    // Friend-lifecycle signals no longer need a dedicated SSE subscription here:
+    //  - FRIEND_REQUEST badge: armed by the unified state delta and compared with this device's seen cursor.
     //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by STATE_REV_UPDATED.
   }
 }

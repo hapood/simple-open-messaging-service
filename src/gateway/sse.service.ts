@@ -2,9 +2,9 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
-import { eq, max } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { friendRequest, user as userTable } from '../database/schema.js';
+import { user as userTable } from '../database/schema.js';
 import { MessageService } from '../message/message.service.js';
 import { CallStateRegistry } from './call-state.registry.js';
 
@@ -83,7 +83,7 @@ export class SseService implements OnModuleDestroy {
       if (list.length === 0) delete this.clients[userId];
     });
 
-    // The connect handshake: push HELLO (the user's newest message cursor + the friend-list revision) to THIS
+    // The connect handshake: push HELLO (the newest message cursor + unified state revision) to THIS
     // connection only. The cursor is the client's `to` (the missed-summary walk's pinned upper bound); the
     // revision lets it pull a thread-list delta if stale. Fire-and-forget — a transient failure just means no
     // HELLO this connect (the next live NEW_MESSAGE signal re-establishes `to`).
@@ -94,7 +94,7 @@ export class SseService implements OnModuleDestroy {
    *  DB failure is swallowed (never throws on the connect path). */
   private async sendHello(userId: number, entry: SseClient): Promise<void> {
     try {
-      const [latestMessage, user, friendReqAgg] = await Promise.all([
+      const [latestMessage, user] = await Promise.all([
         this.messages.findNewestForUser(userId),
         this.database.db.query.user.findFirst({
           where: eq(userTable.id, userId),
@@ -102,26 +102,9 @@ export class SseService implements OnModuleDestroy {
             threadRevision: true,
             readRevision: true,
             profileRev: true,
-            friendReqAckRev: true,
           },
         }),
-        // friendReqRev = MAX(createdAt) over the user's incoming FRIEND invites — creation-based so the
-        // badge arms ONLY on a NEW request (accept/decline flip status/updatedAt but don't re-arm). Null
-        // when the user has never received one.
-        this.database.db
-          .select({ createdAt: max(friendRequest.requestedAt) })
-          .from(friendRequest)
-          .where(eq(friendRequest.targetUserId, userId))
-          .then(([row]) => row),
       ]);
-      const friendReqRev = friendReqAgg.createdAt
-        ? friendReqAgg.createdAt.getTime()
-        : null;
-      // friendReqAckRev is a DateTime column; the wire carries it as epoch-ms (JS Number) for a clean `>`
-      // comparison vs friendReqRev. Epoch (0) when somehow absent.
-      const friendReqAckRev = user?.friendReqAckRev
-        ? user.friendReqAckRev.getTime()
-        : 0;
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
@@ -140,13 +123,6 @@ export class SseService implements OnModuleDestroy {
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
         // cache) or a changed rev still fetches. PROFILE deltas advance the same state revision.
         profileRev: user?.profileRev ?? 0,
-        // The friend-request revision (epoch-ms | null) = MAX(createdAt) over incoming FRIEND invites. The
-        // client derives the unread badge as `friendReqRev > friendReqAckRev`; FRIEND_REQ_REV_UPDATED
-        // advances both live. Replaces the former denormalized boolean.
-        friendReqRev,
-        // The friend-request read cursor (epoch-ms). markRead advances it to the current friendReqRev,
-        // clearing the badge on ALL devices (server-state, multi-device consistent).
-        friendReqAckRev,
         // The user's active call (or null). Lets a reconnecting / freshly-booted client reconcile: a device
         // offline when the call's CALL_EVENT frames fired learns "I'm in a call with X" here. The native
         // FSM (driven by CALL_EVENT) is the live authority; this is the connect-time snapshot, mirrored by
@@ -239,11 +215,6 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'DELETED_MESSAGE_UPDATED', { threadId, deletedId });
   }
 
-  /** Notification: push to all of the user's live connections (e.g. a new friend request). No id (not a message-cursor semantic). */
-  onNotify(userId: number, data: unknown) {
-    this.pushToUser(userId, 'NOTIFY', data);
-  }
-
   /** 1:1 WebRTC call LIFECYCLE notification — incoming ring / accepted / declined / cancelled / ended /
    *  missed. This is NOT identity-only (unlike NEW_MESSAGE): a call is ephemeral coordination, not
    *  persisted content the client pulls, so the descriptor rides INLINE. The addressed user's online
@@ -326,18 +297,6 @@ export class SseService implements OnModuleDestroy {
    *  IDB-cached selfProfile (whose profileRev it compared at HELLO) and re-fetches /user/my-profile — this
    *  is the multi-device self-profile refresh (the editor's OTHER tabs/devices learn of their own edit's
    *  effect). Carried on the wire as `{ profileRev }`, advanced in HELLO too. */
-  /** Friend-request badge state changed (a FRIEND invite to this user was created / accepted / declined —
-   *  any mutation of an incoming FRIEND row bumps its `updatedAt` — OR the user markRead'd, advancing the
-   *  ack cursor). Carries the FULL current state `{ friendReqRev, friendReqAckRev }` (epoch-ms); the client
-   *  derives the badge as `friendReqRev > friendReqAckRev`, and the native layer merges both into its cached
-   *  HELLO so a re-attached webview's replay is fresh. Replaces the former denormalized boolean push. */
-  onFriendReqRevUpdated(
-    userId: number,
-    data: { friendReqRev: number | null; friendReqAckRev: number },
-  ) {
-    this.pushToUser(userId, 'FRIEND_REQ_REV_UPDATED', data);
-  }
-
   /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the
    *  entries from the registry (the broadcast deletes the whole user slot; the per-session path splices
    *  just the matching entries). Idempotent per-connection — a half-closed socket is already gone.

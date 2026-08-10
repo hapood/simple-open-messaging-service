@@ -133,7 +133,7 @@ commands.allow = ["sse_net"]
 
 [[permission]]
 identifier = "allow-sse-replay-hello"
-description = "Enables sse_replay_hello — replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected cold start) so it bootstraps (userId/threadRevision/profileRev/friendReqRev/latestMessage) without a reconnect."
+description = "Enables sse_replay_hello — replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected cold start) so it bootstraps (userId/stateRevision/profileRev/latestMessage) without a reconnect."
 commands.allow = ["sse_replay_hello"]
 
 [[permission]]

@@ -216,21 +216,6 @@ export class ThreadRepository {
               (m.data as { stateRevision: number }).stateRevision,
             );
           break;
-        case 'FRIEND_REQ_REV_UPDATED':
-          // The friend-request state changed (new/accepted/declined invite, OR a markRead ack on another
-          // device) → apply the server-state pair (badge = friendReqRev > friendReqAckRev). The native layer
-          // merges this too.
-          if (m.data !== undefined) {
-            const d = m.data as {
-              friendReqRev: number | null;
-              friendReqAckRev: number;
-            };
-            this.userService.applyFriendReqRev(
-              d.friendReqRev,
-              d.friendReqAckRev,
-            );
-          }
-          break;
       }
     });
     // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
@@ -514,15 +499,14 @@ export class ThreadRepository {
    *  every SSE signal), so this keeps each item's `lastReadSeq` + `unreadCount` current without a full snapshot
    *  refresh. Open and read-commit-pending rows are merged too: the server watermark guard in
    *  {@link applyReadState} prevents an older commit response from regressing a newer summary. */
-  private mergeSummaryReadState(items: MissedThreadItem[]): void {
-    if (items.length === 0) return;
+  private mergedSummaryThreads(items: MissedThreadItem[]): ConversationItem[] {
+    if (items.length === 0) return this._items();
     const serverLrs = new Map<number, number | null>();
     const serverUnread = new Map<number, number>();
     const serverMentions = new Map<number, Array<'all' | 'me'>>();
     const previews = new Map<number, { text: string; creator: number }>();
     for (const i of items) {
       serverLrs.set(i.threadId, i.lastReadSeq);
-      this.serverLastReadSeq.set(i.threadId, i.lastReadSeq);
       serverUnread.set(i.threadId, i.unreadCount);
       serverMentions.set(i.threadId, i.mentionUnread ?? []);
       if (i.latestMessage) {
@@ -535,8 +519,7 @@ export class ThreadRepository {
         });
       }
     }
-    let changed = false;
-    const updated = this._items().map((it) => {
+    return this._items().map((it) => {
       if (!serverLrs.has(it.threadId)) return it;
       const next = {
         ...it,
@@ -550,20 +533,8 @@ export class ThreadRepository {
             }
           : {}),
       };
-      if (
-        next.lastReadSeq !== it.lastReadSeq ||
-        next.unreadCount !== it.unreadCount ||
-        next.lastMessagePreview !== it.lastMessagePreview ||
-        next.lastMessageSenderId !== it.lastMessageSenderId ||
-        !sameMentions(next.mentionUnread, it.mentionUnread)
-      )
-        changed = true;
       return next;
     });
-    if (changed) {
-      this._items.set(updated);
-      void this.persistThreads(updated);
-    }
   }
 
   /** Apply the atomic read-commit response; this is the only in-session writer of the open row's badge. */
@@ -803,7 +774,7 @@ export class ThreadRepository {
   private pullTimer?: ReturnType<typeof setTimeout>;
   /** A pull can outlive the debounce window. Preserve a later window as trailing work instead of letting
    *  MissedSyncService's single-flight no-op discard it. */
-  private pullInFlight = false;
+  private pullTask?: Promise<void>;
   private pullPending = false;
   private readRevision: number | undefined;
   private readSyncInFlight = false;
@@ -865,12 +836,7 @@ export class ThreadRepository {
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
-    await this.userService.establishSession(
-      d.userId,
-      d.profileRev ?? 0,
-      d.friendReqRev ?? null,
-      d.friendReqAckRev ?? 0,
-    );
+    await this.userService.establishSession(d.userId, d.profileRev ?? 0);
     // HELLO can race the thread-list mount. It awaits the account-level thread-init barrier, but does
     // not provide or own the deletion HWM; reconnects reuse the persisted result.
     await this.ensureDeletionBootstrap();
@@ -894,10 +860,11 @@ export class ThreadRepository {
       );
     }
     await this.pullDelta(d.stateRevision);
-    // 4. Missed-summary walk toward HELLO's newest message (debounced).
+    // 4. Fully walk the missed-message summary before startup is considered synchronized.
     const lm = d.latestMessage;
     if (lm && typeof lm.threadId === 'number' && typeof lm.seq === 'number') {
-      this.setToAndPull({ threadId: lm.threadId, seq: lm.seq });
+      this._to = { threadId: lm.threadId, seq: lm.seq };
+      await this.pullMissed();
     }
     // 6. Re-derive previews from the local message store.
     void this.hydratePreviews();
@@ -1004,46 +971,58 @@ export class ThreadRepository {
    *  NEW_MESSAGE signals). Pages advance `from` toward `to`; on a NON-empty walk the HWM advances to `to` (it
    *  never regresses on a stale `to ≤ from` — an empty walk leaves the HWM). Fire-and-forget from HELLO +
    *  (debounced) each NEW_MESSAGE; a transient failure retries on the next trigger. */
-  private async pullMissed(): Promise<void> {
-    if (this.pullInFlight) {
+  private pullMissed(): Promise<void> {
+    if (this.pullTask) {
       this.pullPending = true;
-      return;
+      return this.pullTask;
     }
+    this.pullTask = this.drainMissedPulls();
+    return this.pullTask;
+  }
+
+  private async drainMissedPulls(): Promise<void> {
+    try {
+      do {
+        this.pullPending = false;
+        await this.pullMissedOnce();
+      } while (this.pullPending);
+    } finally {
+      this.pullTask = undefined;
+    }
+  }
+
+  private async pullMissedOnce(): Promise<void> {
     const to = this._to;
-    if (!to) return; // no HELLO yet → nothing to walk toward
-    this.pullInFlight = true;
+    if (!to) return;
     try {
       let from = this._missedCursor();
       let walkedAny = false;
+      let caughtUp = false;
+      const summary: MissedThreadItem[] = [];
       for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
         const res = await this.missedSync.fetchMissedSummary(from, to);
         if (res.items.length > 0) {
           walkedAny = true;
-          this.mergeSummaryReadState(res.items); // merge the authoritative lastReadSeq (reconciled w/ optimistic)
+          summary.push(...res.items);
         }
         if (!res.hasMore) {
-          from = to;
+          caughtUp = true;
           break;
-        } // walked the full (from, to] → caught up to `to`
+        }
         if (!res.nextCursor) break;
-        from = res.nextCursor; // page max → advance `from`, continue
+        from = res.nextCursor;
       }
-      if (walkedAny && from) {
-        // don't advance on an empty/stale walk (no HWM regression); from is non-null here
-        this._missedCursor.set(from);
-        this.saveMissedCursor(from);
+      if (walkedAny && caughtUp) {
+        const updated = this.mergedSummaryThreads(summary);
+        await this.webdb.applyMissedSummary(updated, to);
+        for (const item of summary)
+          this.serverLastReadSeq.set(item.threadId, item.lastReadSeq);
+        this._items.set(updated);
+        this._missedCursor.set(to);
       }
       this._missedSummaryApplied.next();
     } catch {
-      /* best-effort — the next HELLO/NEW_MESSAGE retries */
-    } finally {
-      this.pullInFlight = false;
-      if (this.pullPending) {
-        this.pullPending = false;
-        // `_to` may have advanced while the previous request was in flight. Drain that newest bound now,
-        // after the service-level single-flight guard has been released by the awaited request.
-        void this.pullMissed();
-      }
+      /* next HELLO/NEW_MESSAGE retries the same durable cursor */
     }
   }
 
@@ -1092,7 +1071,9 @@ export class ThreadRepository {
         // reload would then carry cursor > 0 too.)
         const bulkHydrate = cursor === 0;
         for (const op of delta) {
-          if (op.direction === 'PROFILE') {
+          if (op.direction === 'FRIEND_REQUEST') {
+            this.userService.applyFriendRequestStateRevision(op.revision);
+          } else if (op.direction === 'PROFILE') {
             this.userService.applyStateProfile(op.user);
             this.applyPeerProfile(op.user);
           } else if (op.direction === 'DELETE') this.removeThread(op.threadId);
@@ -1238,16 +1219,13 @@ export class ThreadRepository {
 /** HELLO (SSE connect handshake) payload — pushed once per connect, the sole boot-critical state the
  *  client cannot derive locally: the caller's userId (opens the per-user IDB), the newest-message cursor
  *  (→ the missed-summary walk's `to`), the thread-list revision (→ delta-replay `(0, rev]` on first
- *  connect), the self-profile version (→ gate the /user/my-profile fetch), and the friend-request revision
- *  (→ the unread badge, derived vs the client's friendReqAckRev). */
+ *  connect), and the self-profile version (→ gate the /user/my-profile fetch). */
 interface HelloPayload {
   userId?: number;
   latestMessage?: { threadId: number; seq: number; ts: number } | null;
   stateRevision: number;
   readRevision?: number;
   profileRev?: number;
-  friendReqRev?: number | null;
-  friendReqAckRev?: number;
 }
 
 interface ThreadMetaPayload {
@@ -1362,18 +1340,6 @@ function moveToTop<T extends { threadId: number }>(
   const [moved] = next.splice(idx, 1);
   next.unshift(moved);
   return next;
-}
-
-function sameMentions(
-  a: Array<'all' | 'me'> | undefined,
-  b: Array<'all' | 'me'> | undefined,
-): boolean {
-  const left = a ?? [];
-  const right = b ?? [];
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
-  );
 }
 
 /** Pin-aware conversation-list rank comparator — the SINGLE source of truth for client-side ordering,

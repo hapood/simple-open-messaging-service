@@ -41,6 +41,9 @@ function makeService(
   };
   const database = {
     db: {
+      query: {
+        federatedPeer: { findFirst: vi.fn().mockResolvedValue(peer) },
+      },
       transaction: vi.fn(async (fn: (value: typeof tx) => unknown) => fn(tx)),
     },
   };
@@ -133,6 +136,22 @@ describe('FederationIdentityService', () => {
         'peer.example',
       ),
     ).toThrow(BusinessException);
+  });
+
+  it('serves proof to an identity-lost peer without treating blocked peers as recoverable', async () => {
+    await expect(
+      makeService({
+        trustLevel: 'identity_lost',
+      }).service.requireIdentityEndpointPeer('peer.example'),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      makeService({
+        trustLevel: 'blocked',
+      }).service.requireIdentityEndpointPeer('peer.example'),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
+    });
   });
 
   it('commits identity_lost before returning the mismatch error', async () => {

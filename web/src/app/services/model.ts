@@ -99,6 +99,17 @@ export function displayUserName(u: { name?: string | null }): string {
   return u.name ?? '';
 }
 
+/** A user's login address. Local users display the account verbatim; only federated identities append
+ *  the server domain with `@` (account@domain). */
+export function displayUserAccount(u: {
+  account?: string | null;
+  isForeigner?: boolean | null;
+  domain?: string | null;
+}): string {
+  const account = u.account ?? '';
+  return u.isForeigner && u.domain ? `${account}@${u.domain}` : account;
+}
+
 /** An invite row (friend-add / group-invite). /invite/incoming + /invite/outgoing return these; the
  *  inviter + recipient profiles are embedded (fromUser / toUser), so no separate profile lookup is
  *  needed. `expiresAt` (ms) lets the client render an "expired" prompt when it has passed. */

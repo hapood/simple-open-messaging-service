@@ -28,9 +28,9 @@ export class FederationCursorError extends Error {
 }
 
 export interface FederationCursorInitialization {
-  /** Immutable floor this server exposes to the peer. */
+  /** Initial floor this server exposes to the peer; retention may raise it later. */
   localStartChangeId: bigint;
-  /** Immutable floor the peer exposes to this server. */
+  /** Initial floor the peer exposes to this server; a cursor-reset response may raise it later. */
   remoteStartChangeId: bigint;
 }
 
@@ -52,7 +52,8 @@ export interface ServePageResult<T> {
 }
 
 /**
- * Owns the immutable federation history floors and the source-side sequential missed cursor.
+ * Owns the federation history floors and the source-side sequential missed cursor. A floor starts at
+ * the handshake value and may only move forward when retained feed history is physically pruned.
  * servePage holds one peer row lock while its callback scans a page and records scannedThrough.
  */
 @Injectable()
