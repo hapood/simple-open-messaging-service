@@ -19,7 +19,11 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { SignatureService } from '../src/federation/signature.service.js';
-import { ContentType, MessageThreadType } from '../src/database/enums.js';
+import {
+  ContentType,
+  GroupRole,
+  MessageThreadType,
+} from '../src/database/enums.js';
 import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   deletedMessage,
@@ -46,6 +50,10 @@ import {
   user,
 } from '../src/database/schema.js';
 import { randomUUID } from 'node:crypto';
+import {
+  SERVER_GROUP_FULL_REASON,
+  SERVER_MAX_GROUP_MEMBERS,
+} from '../src/group/group-capacity.js';
 
 /**
  * Federation e2e — two full SOMS apps (aaa.local + bbb.local) in one process, making real signed HTTP
@@ -284,6 +292,27 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.body.data.domain).toBe(DOM_B);
     bobStubIdOnA = res.body.data.id;
 
+    // Resolving the same profile reuses the local mirror and profileRev gates
+    // all disk/DB writes. In particular, updatedAt and the localized avatar URL
+    // must remain stable when the peer reports the same version.
+    const beforeRepeat = await appA.database.query.user.findFirst({
+      where: eq(user.id, bobStubIdOnA),
+    });
+    const repeated = await request(appA.baseUrl)
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ account: 'bob', domain: DOM_B });
+    expect(repeated.body.code).toBe(BusinessCode.OK);
+    expect(repeated.body.data.id).toBe(bobStubIdOnA);
+    const afterRepeat = await appA.database.query.user.findFirst({
+      where: eq(user.id, bobStubIdOnA),
+    });
+    expect(afterRepeat?.remoteProfileRev).toBe(beforeRepeat?.remoteProfileRev);
+    expect(afterRepeat?.avatar).toBe(beforeRepeat?.avatar);
+    expect(afterRepeat?.updatedAt.getTime()).toBe(
+      beforeRepeat?.updatedAt.getTime(),
+    );
+
     // appA now trusts bbb.local.
     const peerA = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
@@ -502,7 +531,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .replace(/\.[^.]+$/, '');
     // Both subprocesses share this test checkout's CAS directory. Model physically separate NAS
     // storage by serving appA's bytes from the S2S proxy and removing the shared shard before appB
-    // localizes it; otherwise appB legitimately deduplicates and never exercises /get_file.
+    // localizes it; otherwise appB legitimately deduplicates and never exercises /media/:digest.
     proxy.setGetFileFixture(digest, bytes);
     const { rm } = await import('node:fs/promises');
     const nodePath = await import('node:path');
@@ -553,6 +582,29 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           expect(msg!.originSeq).toBeGreaterThanOrEqual(0);
           bobLocalThreadId = msg!.threadId;
           bobLocalSeq = msg!.seq;
+        },
+        { timeout: 5000 },
+      );
+      await vi.waitFor(
+        async () => {
+          const [source, remoteCopy] = await Promise.all([
+            appA.database.query.message.findFirst({
+              where: and(
+                eq(message.content, JSON.stringify({ text: 'hi from alice' })),
+                eq(message.creator, aliceLocalIdA),
+              ),
+            }),
+            appB.database.query.message.findFirst({
+              where: and(
+                eq(message.content, JSON.stringify({ text: 'hi from alice' })),
+                eq(message.creator, aliceStubIdOnB),
+              ),
+            }),
+          ]);
+          expect(source?.originSeq).toBe(source?.seq);
+          expect(source?.originServerTime?.getTime()).toBe(
+            remoteCopy?.createdAt.getTime(),
+          );
         },
         { timeout: 5000 },
       );
@@ -654,7 +706,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       16,
     );
 
-    // The message pulls, then localizeMedia fetches the digest via /get_file + stores it in appB's CAS
+    // The message pulls, then localizeMedia fetches the digest via /media/:digest + stores it in appB's CAS
     // (byte-identical → same shard path) + writes the MediaMessage authz row. Poll for both.
     await vi.waitFor(
       async () => {
@@ -686,14 +738,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   it('Step 2: a federated file localizes over multiple Range chunks (resumable transport)', async () => {
     // A 48x48 PNG spans several 64-byte chunks (chunk size forced small in beforeAll). The file can ONLY
-    // localize if appB fetches /get_file as a sequence of signed Range GETs + reassembles them — so a
-    // byte-exact result here PROVES the multi-chunk path (no need to count /get_file calls).
+    // localize if appB fetches /media/:digest as signed Range GETs + reassembles them — so a
+    // byte-exact result here PROVES the multi-chunk path.
+    proxy.clearRequestLog();
     const { url, size, digest } = await sendFederatedImage(
       await makePng(77, 48),
       48,
     );
 
-    // appB (its own DB) has never seen this asset → localizeMedia fetches it over /get_file + writes a
+    // appB (its own DB) has never seen this asset → localizeMedia fetches it over /media/:digest + writes a
     // MediaAsset + MediaMessage row. (No shared-DB dedup to defeat: appA's row is in _a, appB's in _b.)
     await vi.waitFor(
       async () => {
@@ -726,13 +779,40 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const onDisk = await readFile(abs);
     expect(createHash('sha256').update(onDisk).digest('hex')).toBe(digest);
     expect(onDisk.length).toBe(size);
+
+    // The digest alone is not authorization. Re-sign the same resource request with a different
+    // stable message seq and thread recipient; both must fail the exact historical ownership lookup.
+    const servedPath = proxy
+      .requestLog()
+      .find((entry) => entry.path.startsWith(`/s2s/v1/media/${digest}?`))?.path;
+    expect(servedPath).toBeDefined();
+    const assertRejectedBinding = async (
+      mutate: (url: URL) => void,
+    ): Promise<void> => {
+      const url = new URL(servedPath!, 'http://federation.test');
+      mutate(url);
+      const probe = await request(appB.baseUrl)
+        .get('/api/v1/test/signed-s2s-get')
+        .query({ peerDomain: DOM_A, path: `${url.pathname}${url.search}` });
+      expect(probe.body.status).toBe(200);
+      expect(probe.body.body.code).toBe(BusinessCode.FORBIDDEN);
+    };
+    await assertRejectedBinding((url) => {
+      url.searchParams.set(
+        'seq',
+        String(Number(url.searchParams.get('seq')) + 1),
+      );
+    });
+    await assertRejectedBinding((url) => {
+      url.searchParams.set('toAccount', 'not-the-delivered-thread');
+    });
   });
 
-  it('Step 2: a dropped /get_file chunk resumes from its offset (no demote, byte-exact)', async () => {
+  it('Step 2: a dropped media chunk resumes from its offset (no demote, byte-exact)', async () => {
     await ensureAliceAndBobAreFriends();
     const imageBytes = await makePng(190, 48);
 
-    // Arm the S2S proxy (on appB→appA) to truncate the FIRST /get_file `bytes=0-` response mid-stream —
+    // Arm the S2S proxy (on appB→appA) to truncate the FIRST media `bytes=0-` response mid-stream —
     // a simulated network drop. appB must discard the partial unit + re-request the SAME range (resume),
     // NOT demote appA. The proxy preserves the signed Host, so signatures still verify at appA.
     proxy.armGetFileTruncation();
@@ -750,7 +830,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 8000 },
     );
 
-    // Resume proven: the first-range /get_file was issued ≥2 times through the proxy (the initial call
+    // Resume proven: the first media range was issued ≥2 times through the proxy (the initial call
     // that got truncated + the retry that succeeded) → appB re-requested the SAME range, not restarted.
     expect(proxy.firstRangeGetFileCount()).toBeGreaterThanOrEqual(2);
     // A mid-body stall is a stream glitch, not a trust failure → appB must still trust appA.
@@ -906,13 +986,40 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 8000 },
     );
 
-    // Bob authors the local USER→GROUP direction. The mirror remains inactive until origin GROUP_META.
-    const accept = await request(appB.baseUrl)
-      .post('/api/v1/group/join-request')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: mirrorB.id });
-    expect(accept.status).toBe(200);
-    expect(accept.body.code).toBe(BusinessCode.OK);
+    // Bob authors only the local USER→GROUP direction. Hold the origin's
+    // state-feed confirmation to prove that accepting on a mirror is pending,
+    // not optimistic membership.
+    proxy.blockStateFeed(true);
+    try {
+      const accept = await request(appB.baseUrl)
+        .post('/api/v1/group/join-request')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ groupId: mirrorB.id });
+      expect(accept.status).toBe(200);
+      expect(accept.body.code).toBe(BusinessCode.OK);
+      await vi.waitFor(
+        () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
+        { timeout: 10_000, interval: 100 },
+      );
+      const pendingDetail = await request(appB.baseUrl)
+        .post('/api/v1/invite/detail')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ inviteId: groupAccount });
+      expect(pendingDetail.body.data).toMatchObject({
+        joinRequested: true,
+        alreadyJoined: false,
+      });
+      const premature = await appB.database.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.threadId, mirrorB.id),
+          eq(threadParticipant.userId, bobLocalIdB),
+          isNull(threadParticipant.leftAt),
+        ),
+      });
+      expect(premature).toBeUndefined();
+    } finally {
+      proxy.blockStateFeed(false);
+    }
 
     // The origin (appA) records bob on its canonical roster (handleGroupAccept). Poll for it.
     await vi.waitFor(
@@ -925,8 +1032,71 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           columns: { leftAt: true },
         });
         expect(bobOnA?.leftAt).toBeNull(); // bob is an active member on the origin roster
+
+        const bobOnMirror =
+          await appB.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.userId, bobLocalIdB),
+              eq(threadParticipant.threadId, mirrorB.id),
+              isNull(threadParticipant.leftAt),
+            ),
+          });
+        expect(bobOnMirror).toBeDefined();
       },
-      { timeout: 5000 },
+      { timeout: 10_000 },
+    );
+
+    const confirmedMemberships = await appB.database
+      .select({
+        direction: groupMembershipRequest.direction,
+        status: groupMembershipRequest.status,
+        expiresAt: groupMembershipRequest.expiresAt,
+      })
+      .from(groupMembershipRequest)
+      .where(
+        and(
+          eq(groupMembershipRequest.memberUserId, bobLocalIdB),
+          inArray(groupMembershipRequest.direction, ['INVITE', 'JOIN']),
+        ),
+      );
+    expect(confirmedMemberships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          direction: 'INVITE',
+          status: 'MEMBER',
+          expiresAt: null,
+        }),
+        expect.objectContaining({
+          direction: 'JOIN',
+          status: 'MEMBER',
+          expiresAt: null,
+        }),
+      ]),
+    );
+
+    // The origin authors exactly one durable confirmation status. It is then
+    // pulled onto the mirror like every other group message.
+    await vi.waitFor(
+      async () => {
+        for (const [app, threadId] of [
+          [appA, groupThreadA],
+          [appB, mirrorB.id],
+        ] as const) {
+          const joined = await app.database
+            .select({ id: message.id })
+            .from(message)
+            .where(
+              and(
+                eq(message.threadId, threadId),
+                eq(message.contentType, ContentType.SYSTEM),
+                sql`${message.content}::text like '%GROUP_JOINED%'`,
+                sql`${message.content}::text like '%bob%'`,
+              ),
+            );
+          expect(joined).toHaveLength(1);
+        }
+      },
+      { timeout: 10_000, interval: 100 },
     );
 
     // alice (origin local member) sends a group message → appB mirror pulls it from the origin hub.
@@ -1166,6 +1336,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             ),
           });
         expect(daveOnMirror).not.toBeNull();
+        expect(
+          await appB.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, firstMirrorBId),
+              eq(message.contentType, ContentType.SYSTEM),
+              sql`${message.content}::text like '%GROUP_JOINED%'`,
+              sql`${message.content}::text like '%dave%'`,
+            ),
+          }),
+        ).toBeDefined();
       },
       { timeout: 8000 },
     );
@@ -1181,6 +1361,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         waitForSseEvent(readerBob, (event) => event === 'HELLO'),
         waitForSseEvent(readerDave, (event) => event === 'HELLO'),
       ]);
+      const sendStartedAt = Date.now();
       // Start consuming both streams before the send. Waiting for the database first leaves a test-only
       // race where the short SSE frame can already have passed through one undrained response body.
       const bobEvent = waitForSseEvent(
@@ -1189,7 +1370,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           event === 'NEW_MESSAGE' &&
           typeof data === 'object' &&
           data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId,
+          (data as { threadId?: number }).threadId === firstMirrorBId &&
+          ((data as { ts?: number }).ts ?? 0) >= sendStartedAt,
       ).catch((error) => {
         throw new Error(
           `bob did not receive shared-mirror message: ${(error as Error).message}`,
@@ -1201,7 +1383,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           event === 'NEW_MESSAGE' &&
           typeof data === 'object' &&
           data !== null &&
-          (data as { threadId?: number }).threadId === firstMirrorBId,
+          (data as { threadId?: number }).threadId === firstMirrorBId &&
+          ((data as { ts?: number }).ts ?? 0) >= sendStartedAt,
       ).catch((error) => {
         throw new Error(
           `dave did not receive shared-mirror message: ${(error as Error).message}`,
@@ -1602,6 +1785,197 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
   }, 90_000);
 
+  it('allows an immediate mirror leave and rejoin before the origin observes the leave', async () => {
+    await appA.stop();
+    try {
+      const leave = await request(appB.baseUrl)
+        .post('/api/v1/group/leave')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ groupId: firstMirrorBId, deleteData: false });
+      expect(leave.body.code).toBe(BusinessCode.OK);
+      expect(
+        await appB.database.query.threadParticipant.findFirst({
+          where: and(
+            eq(threadParticipant.threadId, firstMirrorBId),
+            eq(threadParticipant.userId, bobLocalIdB),
+            isNull(threadParticipant.leftAt),
+          ),
+        }),
+      ).toBeUndefined();
+
+      // JOIN replaces the unserved leave on the compacted directional key.
+      // The local server must accept it even though the origin still believes
+      // Bob is a member, and must wait for a fresh origin GROUP_META.
+      const rejoin = await request(appB.baseUrl)
+        .post('/api/v1/group/join-request')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ groupId: firstMirrorBId });
+      expect(rejoin.body.code).toBe(BusinessCode.OK);
+      const pending = await request(appB.baseUrl)
+        .post('/api/v1/invite/detail')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ inviteId: firstGroupAccount });
+      expect(pending.body.data).toMatchObject({
+        joinRequested: true,
+        alreadyJoined: false,
+      });
+    } finally {
+      await appA.restart();
+    }
+
+    await vi.waitFor(
+      async () => {
+        const [originMember, mirrorMember] = await Promise.all([
+          appA.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.threadId, firstGroupThreadA),
+              eq(threadParticipant.userId, bobStubIdOnA),
+              isNull(threadParticipant.leftAt),
+            ),
+          }),
+          appB.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.threadId, firstMirrorBId),
+              eq(threadParticipant.userId, bobLocalIdB),
+              isNull(threadParticipant.leftAt),
+            ),
+          }),
+        ]);
+        expect(originMember).toBeDefined();
+        expect(mirrorMember).toBeDefined();
+        const detail = await request(appB.baseUrl)
+          .post('/api/v1/invite/detail')
+          .set('Authorization', `Bearer ${tokenB}`)
+          .send({ inviteId: firstGroupAccount });
+        expect(detail.body.data).toMatchObject({
+          joinRequested: false,
+          alreadyJoined: true,
+        });
+      },
+      { timeout: 30_000, interval: 150 },
+    );
+  }, 60_000);
+
+  it('rejects a federated join at the origin capacity and clears the mirror pending state', async () => {
+    const created = await request(appA.baseUrl)
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ name: 'full-fed-group', inviteUserIds: [bobStubIdOnA] });
+    expect(created.body.code).toBe(BusinessCode.OK);
+    const originThreadId = created.body.data.threadId as number;
+    const originThread = await findGroupThreadById(appA, originThreadId);
+    const groupAccount = originThread!.groupUser.account;
+    const mirror = await vi.waitFor(
+      async () => {
+        const row = await findGroupThreadByAccount(appB, groupAccount);
+        expect(row).toBeDefined();
+        return row!;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+
+    // The owner is already member #1. Fill the origin roster to its local
+    // 999-person policy without encoding that number in any wire payload.
+    const suffix = randomUUID().slice(0, 8);
+    const fillers = await appA.database
+      .insert(user)
+      .values(
+        Array.from({ length: SERVER_MAX_GROUP_MEMBERS - 1 }, (_, index) => ({
+          account: `cap-${suffix}-${index}`,
+          name: `capacity ${index}`,
+          domain: 'local',
+          isForeigner: false,
+          updatedAt: new Date(),
+        })),
+      )
+      .returning({ id: user.id });
+    await appA.database.insert(threadParticipant).values(
+      fillers.map((filler) => ({
+        threadId: originThreadId,
+        userId: filler.id,
+        role: GroupRole.MEMBER,
+        updatedAt: new Date(),
+      })),
+    );
+
+    proxy.blockStateFeed(true);
+    try {
+      const accepted = await request(appB.baseUrl)
+        .post('/api/v1/group/join-request')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ groupId: mirror.id });
+      expect(accepted.body.code).toBe(BusinessCode.OK);
+      await vi.waitFor(
+        () => expect(proxy.blockedStateFeedCount()).toBeGreaterThan(0),
+        { timeout: 15_000, interval: 100 },
+      );
+      const pending = await request(appB.baseUrl)
+        .post('/api/v1/invite/detail')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ inviteId: groupAccount });
+      expect(pending.body.data).toMatchObject({
+        joinRequested: true,
+        alreadyJoined: false,
+      });
+    } finally {
+      proxy.blockStateFeed(false);
+    }
+
+    await vi.waitFor(
+      async () => {
+        const detail = await request(appB.baseUrl)
+          .post('/api/v1/invite/detail')
+          .set('Authorization', `Bearer ${tokenB}`)
+          .send({ inviteId: groupAccount });
+        expect(detail.body.data).toMatchObject({
+          status: 'REVOKED',
+          joinRequested: false,
+          alreadyJoined: false,
+          note: SERVER_GROUP_FULL_REASON,
+        });
+        const mirrorParticipant =
+          await appB.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.threadId, mirror.id),
+              eq(threadParticipant.userId, bobLocalIdB),
+              isNull(threadParticipant.leftAt),
+            ),
+          });
+        expect(mirrorParticipant).toBeUndefined();
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const [originCount] = await appA.database
+      .select({ value: count() })
+      .from(threadParticipant)
+      .where(
+        and(
+          eq(threadParticipant.threadId, originThreadId),
+          isNull(threadParticipant.leftAt),
+        ),
+      );
+    expect(Number(originCount.value)).toBe(SERVER_MAX_GROUP_MEMBERS);
+    expect(
+      await appA.database.query.threadParticipant.findFirst({
+        where: and(
+          eq(threadParticipant.threadId, originThreadId),
+          eq(threadParticipant.userId, bobStubIdOnA),
+          isNull(threadParticipant.leftAt),
+        ),
+      }),
+    ).toBeUndefined();
+    expect(
+      await appA.database.query.message.findFirst({
+        where: and(
+          eq(message.threadId, originThreadId),
+          eq(message.contentType, ContentType.SYSTEM),
+          sql`${message.content}::text like '%GROUP_JOINED%'`,
+          sql`${message.content}::text like '%bob%'`,
+        ),
+      }),
+    ).toBeUndefined();
+  }, 60_000);
+
   it('unfriend drains the inclusive message boundary, closes both directions, and re-add resumes the retained thread', async () => {
     const oldThreadA = await findActiveP2pBetween(
       appA,
@@ -1655,29 +2029,25 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       });
     expect(rejectedAfterDelete.body.code).toBe(BusinessCode.FRIEND_NOT_FOUND);
 
+    // B has not consumed A's NOT_FRIEND state. A must still accept an
+    // immediate re-add; the compacted directional feed exposes only the newest
+    // revision when B comes back, so the stale remote FRIEND cannot block it.
+    const revive = await request(appA.baseUrl)
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ toUserId: bobStubIdOnA, note: 'revive from alice' });
+    expect(revive.body.code).toBe(BusinessCode.OK);
+    expect(
+      await findActiveP2pBetween(appA, aliceLocalIdA, bobStubIdOnA),
+    ).toEqual(oldThreadA);
+
     await appB.restart();
 
     await vi.waitFor(
       async () => {
-        const locallyClosed = await appB.database.query.friendRequest.findFirst(
-          {
-            where: and(
-              eq(friendRequest.requesterUserId, bobLocalIdB),
-              eq(friendRequest.targetUserId, aliceStubIdOnB),
-            ),
-          },
-        );
-        const closed = await appB.database.query.friendRequest.findFirst({
-          where: and(
-            eq(friendRequest.requesterUserId, aliceStubIdOnB),
-            eq(friendRequest.targetUserId, bobLocalIdB),
-          ),
-        });
-        expect(locallyClosed?.status).toBe('NOT_FRIEND');
-        expect(closed?.status).toBe('NOT_FRIEND');
         expect(
           await findActiveP2pBetween(appB, aliceStubIdOnB, bobLocalIdB),
-        ).toBeUndefined();
+        ).toEqual(oldThreadB);
         expect(
           await appB.database.query.message.findFirst({
             where: and(
@@ -1689,19 +2059,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 20_000, interval: 100 },
     );
-
-    const revive = await request(appA.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ toUserId: bobStubIdOnA, note: 'revive from alice' });
-    expect(revive.body.code).toBe(BusinessCode.OK);
-    expect(await findActiveP2pParticipant(appA, bobStubIdOnA)).toBeUndefined();
-
-    const confirmAgain = await request(appB.baseUrl)
-      .post('/api/v1/invite/friend')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ toUserId: aliceStubIdOnB, note: 'confirm re-add from bob' });
-    expect(confirmAgain.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
       async () => {
         expect(
@@ -1790,13 +2147,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     const headers = evilSig.signOutbound({
       method: 'POST',
-      path: '/api/v1/s2s/feed-rev',
+      path: '/s2s/v1/feed-revisions',
       query: '?',
       authority,
       body,
     });
 
-    const res = await fetch(`http://${authority}/api/v1/s2s/feed-rev`, {
+    const res = await fetch(`http://${authority}/s2s/v1/feed-revisions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body,
@@ -1875,14 +2232,31 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     }
   });
 
-  it('recovers a demoted peer through a pinned-identity signed heartbeat', async () => {
-    // A demoted established peer never repeats /init. Make restarted appB send a real signed ping to
-    // appA; appA verifies the pinned key and promotes bbb before normal user traffic resumes.
-    const ping = await request(appB.baseUrl)
+  it('recovers a demoted peer through a nonce-bound pinned identity proof', async () => {
+    // A demoted established peer never repeats /ignite. Its signed identity request proves possession
+    // of the pinned key and promotes the inbound trust edge before normal data traffic resumes.
+    const beforeRecovery = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
+    });
+    expect(beforeRecovery?.trustedAt).toBeInstanceOf(Date);
+    // The reconnect sweep may already have healed the outage from the preceding test. Put only this
+    // local trust edge back into the exact precondition so identity recovery is deterministic.
+    await appA.database
+      .update(federatedPeer)
+      .set({
+        trustLevel: 'demoted',
+        demotedAt: new Date(),
+        demoteReason: 'deterministic identity recovery fixture',
+      })
+      .where(eq(federatedPeer.domain, DOM_B));
+    const identity = await request(appB.baseUrl)
       .get('/api/v1/test/signed-s2s-get')
-      .query({ peerDomain: DOM_A, path: '/api/v1/s2s/ping' });
-    expect(ping.status).toBe(200);
-    expect(ping.body.status).toBe(200);
+      .query({
+        peerDomain: DOM_A,
+        path: '/s2s/v1/identity?nonce=abcdefghijklmnopqrstuv',
+      });
+    expect(identity.status).toBe(200);
+    expect(identity.body.status).toBe(200);
 
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
@@ -1897,9 +2271,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(peer?.trustLevel).toBe('trusted');
     expect(peer?.demotedAt).toBeNull();
     expect(peer?.demoteReason).toBeNull();
+    expect(peer?.trustedAt?.getTime()).toBe(
+      beforeRecovery?.trustedAt?.getTime(),
+    );
 
     // peerEvents is newest-first. The state is `trusted`, while the lifecycle transition is named
-    // `recovered` to distinguish heartbeat recovery from first-contact trust establishment.
+    // `recovered` distinguishes identity recovery from first-contact trust establishment.
     const eventsRes = await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_B}/events`)
       .set('Cookie', adminCookieA)
@@ -1909,6 +2286,64 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
     expect(types[0]).toBe('recovered');
     expect(types).toContain('demoted');
+  });
+
+  it('lets a super-admin recover identity loss only after the exact original pin returns', async () => {
+    const before = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
+    });
+    expect(before?.trustLevel).toBe('trusted');
+    expect(before?.identityPinnedAt).toBeInstanceOf(Date);
+    expect(before?.pairwiseServerId).toBeTruthy();
+    expect(before?.rootKeyFingerprint).toBeTruthy();
+
+    // This represents the state left by a poisoned DNS answer. The proxy now points at the original
+    // appB again, so the explicit admin probe must discard its discovery cache and prove every old pin.
+    await appA.database
+      .update(federatedPeer)
+      .set({
+        trustLevel: 'identity_lost',
+        identityLostAt: new Date(),
+        identityLostReason:
+          'e2e simulated transient DNS identity contradiction',
+      })
+      .where(eq(federatedPeer.domain, DOM_B));
+
+    const wrongConfirmation = await request(appA.baseUrl)
+      .post(`/api/v1/admin/federation/peers/${DOM_B}/recover-identity`)
+      .set('Cookie', adminCookieA)
+      .send({ confirmDomain: DOM_A });
+    expect(wrongConfirmation.status).toBe(400);
+    expect(wrongConfirmation.body.code).toBe(BusinessCode.VALIDATION_FAILED);
+
+    const recovered = await request(appA.baseUrl)
+      .post(`/api/v1/admin/federation/peers/${DOM_B}/recover-identity`)
+      .set('Cookie', adminCookieA)
+      .send({ confirmDomain: DOM_B });
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.data).toEqual({
+      domain: DOM_B,
+      trustLevel: 'trusted',
+    });
+
+    const after = await appA.database.query.federatedPeer.findFirst({
+      where: eq(federatedPeer.domain, DOM_B),
+    });
+    expect(after?.trustLevel).toBe('trusted');
+    expect(after?.identityLostAt).toBeNull();
+    expect(after?.identityLostReason).toBeNull();
+    expect(after?.trustedAt?.getTime()).toBe(before?.trustedAt?.getTime());
+    expect(after?.pairwiseServerId).toBe(before?.pairwiseServerId);
+    expect(after?.rootKeyFingerprint).toBe(before?.rootKeyFingerprint);
+
+    const newestEvent = await appA.database.query.federatedPeerEvent.findFirst({
+      where: eq(federatedPeerEvent.domain, DOM_B),
+      orderBy: [desc(federatedPeerEvent.createdAt)],
+    });
+    expect(newestEvent).toMatchObject({
+      type: 'recovered',
+      reason: 'administrator verified the original pinned identity',
+    });
   });
 
   it('blocks a peer: resolve fails fast with FEDERATION_PEER_BLOCKED + admin reads work', async () => {

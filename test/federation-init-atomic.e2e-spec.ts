@@ -31,16 +31,17 @@ describe('FederationIgniteService atomic commit', () => {
     protocolVersion: 1,
     originDomain: domain,
     recipientDomain: 'local.test',
-    identityEpoch: 1,
     pairwiseServerId: 'server-id',
     rootKeyFingerprint: 'sha256:fingerprint',
     nonce: 'n'.repeat(24),
-    issuedAt: new Date().toISOString(),
+    issuedAt: Date.now(),
     startChangeId: '12',
   };
 
   beforeAll(async () => {
-    mod = await Test.createTestingModule({ imports: [DatabaseModule] }).compile();
+    mod = await Test.createTestingModule({
+      imports: [DatabaseModule],
+    }).compile();
     database = mod.get(DatabaseService);
     const cursor = new FederationCursorService(database);
     const identity = {
@@ -58,7 +59,6 @@ describe('FederationIgniteService atomic commit', () => {
           trustLevel: 'trusted',
           pairwiseServerId: claim.pairwiseServerId,
           rootKeyFingerprint: claim.rootKeyFingerprint,
-          identityEpoch: 1,
           identityPinnedAt: new Date(),
         });
         return undefined;

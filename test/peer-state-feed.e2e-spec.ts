@@ -16,6 +16,7 @@ import { GroupMembershipStateService } from '../src/group/group-membership-state
 const DOMAINS = ['state-feed-a.test', 'state-feed-b.test'];
 
 describe('per-peer state feed', () => {
+  const wireTime = new Date('2026-08-09T00:00:00.123Z');
   let mod: TestingModule;
   let database: DatabaseService;
   let feed: PeerStateFeedService;
@@ -62,7 +63,7 @@ describe('per-peer state feed', () => {
           account: 'alice',
           eventType: 'PROFILE',
           revision: 2,
-          body: { name: 'B' },
+          body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
         },
       ]);
       await feed.writeManyInTx(tx, [
@@ -79,7 +80,15 @@ describe('per-peer state feed', () => {
     expect(page.stateFeedRev).toBe('2');
     expect(page.scannedThrough).toBe('2');
     expect(page.items).toMatchObject([
-      { revision: '2', rev: '2', body: { name: 'B' } },
+      {
+        revision: '2',
+        rev: '2',
+        body: {
+          name: 'B',
+          updatedAt: wireTime.getTime(),
+          opaqueRevision: '9',
+        },
+      },
     ]);
   });
 

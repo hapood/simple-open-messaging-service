@@ -96,36 +96,36 @@ export function UserDetailPage() {
               <span className="font-mono text-xs text-muted-foreground">@{handle}</span>
             </div>
             <div className="flex items-center gap-2">
-              {u.isDeleted ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={enable.isPending}
-                  onClick={() => onAction(enable, t('users.toast.unbanned'))}
-                >
-                  {t('users.action.unban')}
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-destructive"
-                  disabled={disable.isPending}
-                  onClick={() => onAction(disable, t('users.toast.banned'))}
-                >
-                  {t('users.action.ban')}
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={forceLogout.isPending}
-                onClick={() => onAction(forceLogout, t('users.toast.forceLoggedOut'))}
-              >
-                {t('users.action.forceLogout')}
-              </Button>
               {canManage ? (
                 <>
+                  {u.isDeleted ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={enable.isPending}
+                      onClick={() => onAction(enable, t('users.toast.unbanned'))}
+                    >
+                      {t('users.action.unban')}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive"
+                      disabled={disable.isPending}
+                      onClick={() => onAction(disable, t('users.toast.banned'))}
+                    >
+                      {t('users.action.ban')}
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={forceLogout.isPending}
+                    onClick={() => onAction(forceLogout, t('users.toast.forceLoggedOut'))}
+                  >
+                    {t('users.action.forceLogout')}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => setDlg({ kind: 'issue' })}>
                     {t('users.action.issueLoginCode')}
                   </Button>

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:message-feed",
+  "title": "GET /s2s/v1/message-feed response data",
+  "$defs": {
+    "thread": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "account", "domain"],
+          "properties": {
+            "type": { "const": "GROUP" },
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+            },
+            "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "participants"],
+          "properties": {
+            "type": { "const": "P2P" },
+            "participants": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:soms:federation:v1:common#/$defs/address"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "asset": {
+      "type": "object",
+      "required": ["digest", "bytes", "status"],
+      "properties": {
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "bytes": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        },
+        "status": { "enum": ["READY", "DELETED"] }
+      },
+      "additionalProperties": false
+    },
+    "quoteTarget": {
+      "type": "object",
+      "required": ["creator", "originSeq"],
+      "properties": {
+        "creator": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "originSeq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "changeId",
+        "thread",
+        "author",
+        "seq",
+        "originSeq",
+        "contentType",
+        "content",
+        "createdAt",
+        "updatedAt",
+        "clientMessageId",
+        "assets"
+      ],
+      "properties": {
+        "changeId": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
+        },
+        "thread": { "$ref": "#/$defs/thread" },
+        "author": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "seq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "originSeq": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "contentType": {
+          "enum": [
+            "PURE_TEXT",
+            "INVITE",
+            "IMAGE",
+            "VIDEO",
+            "FILE",
+            "AUDIO",
+            "LINK",
+            "CALL",
+            "FORWARD",
+            "GALLERY",
+            "SYSTEM"
+          ]
+        },
+        "content": { "type": "string", "minLength": 2 },
+        "createdAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "updatedAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "clientMessageId": { "type": ["string", "null"] },
+        "quoteTarget": { "$ref": "#/$defs/quoteTarget" },
+        "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["messages", "scannedThrough", "allocatedThrough", "hasMore"],
+  "properties": {
+    "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+    "scannedThrough": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "allocatedThrough": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

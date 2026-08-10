@@ -27,7 +27,7 @@ const SIG_LABEL = 'sig1';
 
 export interface SignedRequest {
   method: string; // uppercase, e.g. POST
-  path: string; // absolute path WITHOUT query, e.g. /api/v1/s2s/friend-request
+  path: string; // absolute path WITHOUT query, e.g. /s2s/v1/state-feed
   query: string; // raw query including leading "?"; exactly "?" when absent (RFC 9421 §2.2.7)
   authority: string; // host[:port] — the Host/authority value
   body: string;

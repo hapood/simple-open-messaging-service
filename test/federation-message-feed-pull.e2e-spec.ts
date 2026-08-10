@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -113,6 +121,51 @@ describe('FederationMessageFeedPullService', () => {
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
     expect(cursor?.remoteHwm).toBe(1n);
+  });
+
+  it('coalesces a burst of wake-ups and replays the highest HWM after the in-flight fetch', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const requested: bigint[] = [];
+    let activeFetches = 0;
+    let maxActiveFetches = 0;
+    let first = true;
+    const callbacks: FederationMessageFeedPullCallbacks = {
+      fetch: async (after) => {
+        requested.push(after);
+        activeFetches++;
+        maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+        try {
+          if (first) {
+            first = false;
+            await gate;
+            return page(0n, 0n);
+          }
+          return after === 0n ? page(100n, 100n) : page(100n, 100n);
+        } finally {
+          activeFetches--;
+        }
+      },
+      apply: async () => undefined,
+    };
+
+    const initial = service.run(peerDomain, callbacks);
+    await vi.waitFor(() => expect(requested).toEqual([0n]));
+    const burst = Array.from({ length: 100 }, (_, index) => {
+      service.advertise(peerDomain, BigInt(index + 1));
+      return service.run(peerDomain, callbacks);
+    });
+    release();
+    await Promise.all([initial, ...burst]);
+
+    expect(maxActiveFetches).toBe(1);
+    expect(requested).toEqual([0n, 0n, 100n]);
+    const cursor = await database.db.query.federationPullCursor.findFirst({
+      where: eq(federationPullCursor.peerDomain, peerDomain),
+    });
+    expect(cursor?.remoteHwm).toBe(100n);
   });
 
   it('rolls back remoteHwm when applying a page fails', async () => {

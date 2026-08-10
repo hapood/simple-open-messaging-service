@@ -20,6 +20,7 @@ import {
   AdminFederationBlockDto,
   AdminFederationSelfCheckDto,
   AdminFederationResetDto,
+  AdminFederationIdentityRecoverDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -130,6 +131,28 @@ export class AdminFederationController {
     @Body() dto: AdminFederationResetDto,
   ) {
     return this.resetService.start(domain, dto.confirmDomain);
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.peer.identity_recover', {
+    targetType: 'peer',
+    targetParam: 'domain',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/peers/:domain/recover-identity')
+  @ApiOperation({
+    summary:
+      'Recover identity-lost trust only when the original pinned peer identity is reachable again',
+  })
+  async recoverPeerIdentity(
+    @Param('domain') domain: string,
+    @Body() dto: AdminFederationIdentityRecoverDto,
+  ) {
+    return this.federationService.manuallyRecoverPinnedIdentity(
+      domain,
+      dto.confirmDomain,
+    );
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

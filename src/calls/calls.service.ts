@@ -29,6 +29,7 @@ import {
   type CallMediaType,
   type CallOutcome,
 } from './call-content.js';
+import type { CallSignalKind } from './federated-call-protocol.js';
 
 /** Server-side ringing timeout on the CALLEE's server: a RINGING call flips to MISSED if the callee
  *  does not answer. The caller's client also has its own (UI) timeout; this is the authoritative
@@ -484,7 +485,12 @@ export class CallsService implements OnModuleDestroy {
    *  `signal` frame (federated call). The payload is opaque to the server: never inspected/stored. */
   async signal(
     fromUserId: number,
-    dto: { callSid: string; toUserId: number; kind: string; payload: string },
+    dto: {
+      callSid: string;
+      toUserId: number;
+      kind: CallSignalKind;
+      payload: string;
+    },
   ): Promise<void> {
     const call = this.activeCalls.get(dto.callSid);
     if (!call) {
@@ -907,6 +913,7 @@ export class CallsService implements OnModuleDestroy {
     op: S2SCallOp,
     extra: Record<string, unknown>,
   ): void {
+    const endReason = extra.endReason;
     void this.federation
       .sendCallFrame(
         {
@@ -915,8 +922,10 @@ export class CallsService implements OnModuleDestroy {
           callSid: call.callSid,
           op,
           callType: call.callType,
-          ...(typeof extra.endReason === 'string'
-            ? { endReason: extra.endReason }
+          ...(endReason === 'completed' ||
+          endReason === 'timeout' ||
+          endReason === 'failed'
+            ? { endReason }
             : {}),
           ...(typeof extra.startedAt === 'number'
             ? { startedAt: extra.startedAt }

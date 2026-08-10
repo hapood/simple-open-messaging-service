@@ -1460,23 +1460,13 @@ export const systemSetting = pgTable('SystemSetting', {
 
 /** Non-secret anchor for this installation's immutable federation identity. The private root key stays
  * on disk; this row detects a missing/replaced key file and a changed SOMS_DOMAIN before S2S resumes. */
-export const localFederationIdentity = pgTable(
-  'LocalFederationIdentity',
-  {
-    domain: varchar({ length: 63 }).primaryKey().notNull(),
-    identityEpoch: integer().default(1).notNull(),
-    rootKeyFingerprint: varchar({ length: 80 }).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    check(
-      'LocalFederationIdentity_identityEpoch_check',
-      sql`${table.identityEpoch} > 0`,
-    ),
-  ],
-);
+export const localFederationIdentity = pgTable('LocalFederationIdentity', {
+  domain: varchar({ length: 63 }).primaryKey().notNull(),
+  rootKeyFingerprint: varchar({ length: 80 }).notNull(),
+  createdAt: timestamp({ precision: 3, mode: 'date' })
+    .default(sql`CURRENT_TIMESTAMP`)
+    .notNull(),
+});
 
 export const federatedPeer = pgTable(
   'FederatedPeer',
@@ -1501,7 +1491,6 @@ export const federatedPeer = pgTable(
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     pairwiseServerId: varchar({ length: 64 }),
     rootKeyFingerprint: varchar({ length: 80 }),
-    identityEpoch: integer(),
     identityPinnedAt: timestamp({ precision: 3, mode: 'date' }),
     identityLostAt: timestamp({ precision: 3, mode: 'date' }),
     identityLostReason: varchar({ length: 255 }),
@@ -1512,10 +1501,6 @@ export const federatedPeer = pgTable(
     check(
       'FederatedPeer_trustLevel_check',
       sql`${table.trustLevel} IN ('pending', 'trusted', 'demoted', 'blocked', 'identity_lost', 'reset_in_progress')`,
-    ),
-    check(
-      'FederatedPeer_identityEpoch_check',
-      sql`${table.identityEpoch} IS NULL OR ${table.identityEpoch} > 0`,
     ),
     index('FederatedPeer_lastSuccessAt_idx').using(
       'btree',

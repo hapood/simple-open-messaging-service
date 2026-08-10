@@ -150,6 +150,29 @@ describe('Admin RBAC + revocation + audit', () => {
     expect(hi.body.code).toBe(BusinessCode.FORBIDDEN);
   });
 
+  it('returns the current admin identity and revokes the opaque cookie on logout', async () => {
+    const viewer = await seedAdmin('session-owner', AdminRole.VIEWER);
+
+    const me = await post(viewer.cookie, 'admin/me');
+    expect(me.status).toBe(200);
+    expect(me.body.code).toBe(BusinessCode.OK);
+    expect(me.body.data).toMatchObject({
+      account: 'session-owner',
+      role: AdminRole.VIEWER,
+    });
+
+    const logout = await post(viewer.cookie, 'admin/logout');
+    expect(logout.status).toBe(200);
+    expect(logout.body.code).toBe(BusinessCode.OK);
+    expect(logout.headers['set-cookie']?.join(';')).toContain(
+      `${ADMIN_SESSION_COOKIE}=;`,
+    );
+
+    const after = await post(viewer.cookie, 'admin/me');
+    expect(after.status).toBe(401);
+    expect(after.body.code).toBe(BusinessCode.UNAUTHENTICATED);
+  });
+
   // ── 2. Revocation is immediate ────────────────────────────────────────────────
   it('disabling an admin invalidates their outstanding session on the next request', async () => {
     const superA = await seedAdmin('super-a', AdminRole.SUPER_ADMIN);
@@ -199,6 +222,23 @@ describe('Admin RBAC + revocation + audit', () => {
       .limit(1);
     expect(row?.enabled).toBe(true);
     expect(row?.role).toBe(AdminRole.SUPER_ADMIN);
+
+    const [failedAudit] = await database.db
+      .select()
+      .from(adminActionLog)
+      .where(
+        and(
+          eq(adminActionLog.adminId, only.adminId),
+          eq(adminActionLog.action, 'admin.disable'),
+          eq(adminActionLog.targetId, String(only.adminId)),
+        ),
+      )
+      .limit(1);
+    expect(failedAudit).toMatchObject({
+      success: false,
+      adminRole: AdminRole.SUPER_ADMIN,
+    });
+    expect(failedAudit?.errorMessage).toBeTruthy();
   });
 
   it('a same-role setRole is a no-op (no session revocation)', async () => {

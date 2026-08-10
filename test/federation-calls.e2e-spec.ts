@@ -101,14 +101,22 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
     expect(acc.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
       async () => {
-        const activeOnA =
-          await appA.database.query.threadParticipant.findFirst({
+        const [activeOnA, activeOnB] = await Promise.all([
+          appA.database.query.threadParticipant.findFirst({
             where: and(
               eq(threadParticipant.userId, frankStubIdOnA),
               isNull(threadParticipant.leftAt),
             ),
-          });
+          }),
+          appB.database.query.threadParticipant.findFirst({
+            where: and(
+              eq(threadParticipant.userId, erinStubIdOnB),
+              isNull(threadParticipant.leftAt),
+            ),
+          }),
+        ]);
         expect(activeOnA).toBeDefined();
+        expect(activeOnB).toBeDefined();
       },
       { timeout: 10_000, interval: 100 },
     );
@@ -149,7 +157,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         (d as { callSid?: string }).callSid === callSid,
     );
 
-  it('ring → accept → connected → end → completed bubble authored on appA + pulled to appB', async () => {
+  it('ring → connect → AUDIO-to-VIDEO upgrade → completed VIDEO bubble', async () => {
     const callSid = randomUUID();
     // Frank's SSE must be open BEFORE the ring to capture the incoming CALL_EVENT.
     const frankSse = await openSse(appB.baseUrl, tokenFrank);
@@ -163,6 +171,26 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(initRes.body.code).toBe(BusinessCode.OK);
       await incomingP; // the ring crossed S2S → appB mirrored + rang frank
 
+      // Real offer relay over S2S, including the receiver-local peer id.
+      const offer = await request(appA.baseUrl)
+        .post('/api/v1/calls/signal')
+        .set('Authorization', `Bearer ${tokenErin}`)
+        .send({
+          callSid,
+          toUserId: frankStubIdOnA,
+          kind: 'offer',
+          payload: 'OFFER_SDP',
+        });
+      expect(offer.body.code).toBe(BusinessCode.OK);
+      await pollFor(async () => {
+        const staged = await request(appB.baseUrl)
+          .get(`/api/v1/calls/${callSid}/signaling`)
+          .set('Authorization', `Bearer ${tokenFrank}`);
+        return staged.body.data?.offer === 'OFFER_SDP'
+          ? staged.body.data
+          : null;
+      });
+
       // Erin's SSE gets `accepted` (callee answered / negotiating — NOT connected yet).
       const acceptedP = waitCallEvent(erinSse, 'accepted', callSid);
       const accRes = await request(appB.baseUrl)
@@ -172,6 +200,25 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(accRes.body.code).toBe(BusinessCode.OK);
       await acceptedP;
 
+      const answer = await request(appB.baseUrl)
+        .post('/api/v1/calls/signal')
+        .set('Authorization', `Bearer ${tokenFrank}`)
+        .send({
+          callSid,
+          toUserId: erinStubIdOnB,
+          kind: 'answer',
+          payload: 'ANSWER_SDP',
+        });
+      expect(answer.body.code).toBe(BusinessCode.OK);
+      await pollFor(async () => {
+        const staged = await request(appA.baseUrl)
+          .get(`/api/v1/calls/${callSid}/signaling`)
+          .set('Authorization', `Bearer ${tokenErin}`);
+        return staged.body.data?.answer === 'ANSWER_SDP'
+          ? staged.body.data
+          : null;
+      });
+
       // The media leg connects (either client reports) → `connected` is the real startedAt authority.
       const connectedP = waitCallEvent(erinSse, 'connected', callSid);
       const connRes = await request(appB.baseUrl)
@@ -180,6 +227,16 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .send({ callSid });
       expect(connRes.body.code).toBe(BusinessCode.OK);
       await connectedP;
+
+      // Frank requests an in-place AUDIO → VIDEO upgrade. The mirror updates locally and relays the
+      // signed `video-upgraded` frame to the origin; Erin observes it without creating a second call.
+      const upgradedP = waitCallEvent(erinSse, 'video-upgraded', callSid);
+      const upgradeRes = await request(appB.baseUrl)
+        .post('/api/v1/calls/upgrade-video')
+        .set('Authorization', `Bearer ${tokenFrank}`)
+        .send({ callSid });
+      expect(upgradeRes.body.code).toBe(BusinessCode.OK);
+      await upgradedP;
 
       // Erin ends → the ORIGIN (appA) authors the terminal `completed` bubble synchronously.
       const endRes = await request(appA.baseUrl)
@@ -196,6 +253,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(onA.contentType).toBe('CALL');
       const content = JSON.parse(onA.content);
       expect(content.status).toBe('completed');
+      expect(content.callType).toBe('VIDEO');
       expect(content.startedAt).toBeTypeOf('number'); // connected stamped a real connect time
     } finally {
       await frankSse.cancel();
@@ -287,7 +345,9 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           where: and(
             eq(message.threadId, frankThreadB!.threadId),
             eq(message.creator, erinStubIdOnB),
-            eq(message.originSeq, onA.originSeq),
+            // A local source keeps originSeq null until its delivery receipt returns; its wire source
+            // coordinate is the local seq in that interval.
+            eq(message.originSeq, onA.originSeq ?? onA.seq),
             eq(message.contentType, 'CALL'),
           ),
         }),

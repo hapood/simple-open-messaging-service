@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:state-feed",
+  "title": "GET /s2s/v1/state-feed response data",
+  "$defs": {
+    "avatar": {
+      "type": "object",
+      "required": ["digest", "mimeType", "base64"],
+      "properties": {
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "base64": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "intentBaseProperties": {
+      "status": { "enum": ["REQUESTED", "MEMBER", "NOT_MEMBER"] },
+      "note": { "type": "string" },
+      "requestedAt": {
+        "oneOf": [
+          { "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds" },
+          { "type": "null" }
+        ]
+      },
+      "expiresAt": {
+        "oneOf": [
+          { "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds" },
+          { "type": "null" }
+        ]
+      }
+    },
+    "profileBody": {
+      "type": "object",
+      "required": ["domain", "name", "bio", "avatar", "deleted"],
+      "properties": {
+        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+        "name": { "type": "string" },
+        "bio": { "type": "string" },
+        "avatar": {
+          "oneOf": [{ "$ref": "#/$defs/avatar" }, { "type": "null" }]
+        },
+        "deleted": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "p2pMetaBody": {
+      "type": "object",
+      "required": ["status", "note", "requestedAt", "expiresAt"],
+      "properties": {
+        "status": { "enum": ["REQUESTED", "FRIEND", "NOT_FRIEND"] },
+        "note": { "type": "string" },
+        "requestedAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        },
+        "expiresAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "REQUESTED" } } },
+          "then": {
+            "properties": {
+              "requestedAt": { "type": "integer" },
+              "expiresAt": { "type": "integer" }
+            }
+          },
+          "else": { "properties": { "expiresAt": { "type": "null" } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "groupInviteIntentBody": {
+      "type": "object",
+      "required": [
+        "status",
+        "note",
+        "requestedAt",
+        "expiresAt",
+        "owner",
+        "sinceSeq"
+      ],
+      "properties": {
+        "status": { "enum": ["REQUESTED", "MEMBER", "NOT_MEMBER"] },
+        "note": { "type": "string" },
+        "requestedAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        },
+        "expiresAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        },
+        "owner": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "sinceSeq": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "REQUESTED" } } },
+          "then": {
+            "properties": {
+              "requestedAt": { "type": "integer" },
+              "expiresAt": { "type": "integer" }
+            }
+          },
+          "else": { "properties": { "expiresAt": { "type": "null" } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "groupJoinIntentBody": {
+      "type": "object",
+      "required": ["status", "note", "requestedAt", "expiresAt"],
+      "properties": {
+        "status": { "enum": ["REQUESTED", "MEMBER", "NOT_MEMBER"] },
+        "note": { "type": "string" },
+        "requestedAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        },
+        "expiresAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "REQUESTED" } } },
+          "then": { "properties": { "requestedAt": { "type": "integer" } } },
+          "else": { "properties": { "expiresAt": { "type": "null" } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "groupMetaBody": {
+      "type": "object",
+      "required": ["active", "dissolved", "owner", "members"],
+      "properties": {
+        "active": { "type": "boolean" },
+        "dissolved": { "type": "boolean" },
+        "owner": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["account", "domain", "role"],
+            "properties": {
+              "account": {
+                "$ref": "urn:soms:federation:v1:common#/$defs/account"
+              },
+              "domain": {
+                "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+              },
+              "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "dissolved": { "const": true } } },
+          "then": { "properties": { "active": { "const": false } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "itemBase": {
+      "type": "object",
+      "required": [
+        "account",
+        "eventType",
+        "subjectAccount",
+        "revision",
+        "rev",
+        "body"
+      ],
+      "properties": {
+        "account": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
+        "eventType": { "type": "string" },
+        "subjectAccount": { "type": "string" },
+        "revision": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        },
+        "rev": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
+        },
+        "body": { "type": "object" }
+      }
+    },
+    "item": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "eventType": { "const": "PROFILE" },
+            "subjectAccount": { "const": "" },
+            "body": { "$ref": "#/$defs/profileBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "eventType": { "const": "P2P_META" },
+            "subjectAccount": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+            },
+            "body": { "$ref": "#/$defs/p2pMetaBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "eventType": { "const": "GROUP_INVITE_INTENT" },
+            "subjectAccount": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+            },
+            "body": { "$ref": "#/$defs/groupInviteIntentBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "eventType": { "const": "GROUP_JOIN_INTENT" },
+            "subjectAccount": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+            },
+            "body": { "$ref": "#/$defs/groupJoinIntentBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "eventType": { "const": "GROUP_META" },
+            "subjectAccount": { "const": "" },
+            "body": { "$ref": "#/$defs/groupMetaBody" }
+          },
+          "unevaluatedProperties": false
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": ["items", "scannedThrough", "stateFeedRev", "hasMore"],
+  "properties": {
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "scannedThrough": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "stateFeedRev": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

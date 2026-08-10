@@ -5,7 +5,7 @@ import {
   NestInterceptor,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { catchError, tap, throwError } from 'rxjs';
+import { catchError, concatMap, from, map, mergeMap, throwError } from 'rxjs';
 import type { Observable } from 'rxjs';
 import type { FastifyRequest } from 'fastify';
 import { DatabaseService } from '../database/database.service.js';
@@ -21,10 +21,11 @@ type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
  * target (action + targetType + targetId from the named path param), and origin (ip + userAgent +
  * route).
  *
- * Best-effort: the write is fire-and-forget (`void`) and swallows its own errors — auditing is
- * secondary to the operation it observes (mirrors federation.service.logEvent). Runs for ALL routes
- * but is a no-op unless the handler carries @Audit metadata AND req.user.adminId is set (an admin
- * request), so user-side traffic and the admin login endpoint incur no overhead.
+ * Best-effort but response-ordered: an audit write failure never changes the observed operation's
+ * result, while the response waits for the write attempt to finish. This prevents a successful admin
+ * mutation from returning before its audit row is visible (and from losing the row on an immediate
+ * process shutdown). Runs for ALL routes but is a no-op unless the handler carries @Audit metadata AND
+ * req.user.adminId is set, so user-side traffic and the admin login endpoint incur no overhead.
  */
 @Injectable()
 export class AdminAuditInterceptor implements NestInterceptor {
@@ -47,12 +48,13 @@ export class AdminAuditInterceptor implements NestInterceptor {
     if (adminId === undefined) return next.handle();
 
     return next.handle().pipe(
-      tap(() => {
-        void this.record(req, adminId, meta, true);
-      }),
+      concatMap((value) =>
+        from(this.record(req, adminId, meta, true)).pipe(map(() => value)),
+      ),
       catchError((err: unknown) => {
-        void this.record(req, adminId, meta, false, err);
-        return throwError(() => err);
+        return from(this.record(req, adminId, meta, false, err)).pipe(
+          mergeMap(() => throwError(() => err)),
+        );
       }),
     );
   }

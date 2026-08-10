@@ -253,7 +253,7 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'CALL_EVENT', data);
   }
 
-  /** 1:1 WebRTC SIGNALING relay — SDP offer/answer, ICE candidates, renegotiation, media-state. Ephemeral
+  /** 1:1 WebRTC SIGNALING relay — SDP offer/answer, ICE candidates, and camera state. Ephemeral
    *  by nature: never persisted, never replayed (a missed ICE candidate is simply lost; the client
    *  re-gathers). Carried inline for the same reason as onCallEvent. The server is a pure relay — it
    *  never inspects or stores the WebRTC payload, only forwards it to the addressed peer. */

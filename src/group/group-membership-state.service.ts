@@ -77,7 +77,7 @@ export class GroupMembershipStateService {
       ) VALUES (${params.groupUserId}, ${params.memberUserId},
         ${params.direction}::"GroupMembershipDirection",
         ${desired}::"GroupMembershipRequestStatus",
-        ${params.requested ? (params.note ?? '').slice(0, 255) : ''}, 1,
+        ${(params.note ?? '').slice(0, 255)}, 1,
         ${params.requested ? new Date() : null}, ${params.expiresAt ?? null}, CURRENT_TIMESTAMP)
       ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
@@ -166,7 +166,8 @@ export class GroupMembershipStateService {
     `);
     if (active)
       await tx.execute(sql`
-        UPDATE "GroupMembershipRequest" SET status = 'MEMBER', "updatedAt" = CURRENT_TIMESTAMP
+        UPDATE "GroupMembershipRequest" SET status = 'MEMBER', "expiresAt" = NULL,
+          "updatedAt" = CURRENT_TIMESTAMP
         WHERE "groupUserId" = ${groupUserId} AND "memberUserId" = ${memberUserId}
           AND status <> 'NOT_MEMBER'
       `);

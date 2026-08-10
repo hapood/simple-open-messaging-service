@@ -87,12 +87,8 @@ export class MessageFanoutService {
     );
     // Wake every authorized peer with the latest durable discovery HWM. The body remains pull-only via
     // the peer-global /message-feed; this notification is ephemeral and safe to lose.
-    if (message.originSeq != null) {
-      void this.federation.notifyOnSend(
-        senderUserId,
-        threadId,
-        message.originSeq,
-      );
-    }
+    // This service handles locally-authored rows. Their local seq is the wire originSeq until the
+    // self-authored delivery receipt returns and fills the nullable receipt columns.
+    void this.federation.notifyOnSend(senderUserId, threadId, message.seq);
   }
 }

@@ -25,19 +25,19 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
-import { FederationCursorService } from './federation-cursor.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
  * FederatedPeer trust + from.domain==signer binding + captures req.rawBody, then sets req.peer.
  *
- * - POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
- * - GET  /api/v1/s2s/state-feed — compacted profile/relationship/group state for the signed peer.
- * - GET  /api/v1/s2s/message-feed — durable message-discovery changes for the signed peer.
- * - GET/POST /api/v1/s2s/feed-rev — durable feed HWMs and an ephemeral wake-up hint.
+ * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
+ * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
+ * - GET  /s2s/v1/message-feed — durable message-discovery changes for the signed peer.
+ * - POST /s2s/v1/feed-revisions — ephemeral state/message revision wake-up hint.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -48,21 +48,20 @@ import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
  * status. RFC 9421 request-signing covers the REQUEST (which is unchanged); response bodies are not signed.
  */
 @Public()
-@Controller('s2s')
+@Controller(FEDERATION_API_PREFIX)
 @UseGuards(S2sSignatureGuard)
 export class S2sController {
   constructor(
     private readonly federation: FederationService,
     private readonly messageFeed: FederationMessageFeedService,
     private readonly messageFeedPull: FederationMessageFeedPullService,
-    private readonly federationCursor: FederationCursorService,
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly peerStateFeedPull: PeerStateFeedPullService,
   ) {}
 
   /** Receive ephemeral state/miss source HWMs; actual data remains pull-only. */
-  @Post('feed-rev')
+  @Post('feed-revisions')
   @HttpCode(HttpStatus.ACCEPTED)
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
@@ -102,20 +101,6 @@ export class S2sController {
       .catch(() => undefined);
   }
 
-  /** Read our current source HWM for the signed peer; used after heartbeat recovery. */
-  @Get('feed-rev')
-  async getDiscoveryHwm(@Req() req: FastifyRequest) {
-    const allocatedThrough = await this.federationCursor.readAllocatedThrough(
-      this.signerDomain(req),
-    );
-    return {
-      stateFeedRev: (
-        await this.peerStateFeed.readRev(this.signerDomain(req))
-      ).toString(),
-      messageFeedRev: allocatedThrough.toString(),
-    };
-  }
-
   /** Durable cross-thread feed. changeId values stay decimal strings on the JSON wire. */
   @Get('message-feed')
   async getMissed(
@@ -137,15 +122,6 @@ export class S2sController {
     const after = this.parseUnsignedBigInt(afterParam, 'after');
     const take = takeParam === undefined ? undefined : Number(takeParam);
     return this.peerStateFeed.serve(this.signerDomain(req), after, take);
-  }
-
-  @Get('state-feed-rev')
-  async getStateFeedRev(@Req() req: FastifyRequest) {
-    return {
-      stateFeedRev: (
-        await this.peerStateFeed.readRev(this.signerDomain(req))
-      ).toString(),
-    };
   }
 
   @Post('call')
@@ -190,39 +166,7 @@ export class S2sController {
     return BigInt(value);
   }
 
-  /** Binding-check `toDomain` (the REQUESTER's asserted domain) against the RFC 9421 signer — belt-and-
-   *  suspenders over the signature, matching the binding checks on other signed S2S endpoints. The
-   *  signature proves only the signer DOMAIN (not a specific user), so the requester explicitly asserts
-   *  which domain `toAccount` lives on and we enforce it matches the cryptographic identity. */
-  private requireBinding(toDomain: string | undefined, signer: string): void {
-    if (!toDomain) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing toDomain query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (toDomain !== signer) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BINDING_VIOLATION,
-        `toDomain (${toDomain}) != signer (${signer})`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-  }
-
-  /** GET /api/v1/s2s/ping — signed liveness probe (reconnect sweep + quiet-peer lastSuccessAt, §3.4).
-   *  Distinct from the ignite handshake (which establishes trust); a successful signed ping proves the
-   *  peer is reachable + the mutual keys still verify. Advances the requester's liveness watermark. */
-  @Get('ping')
-  async ping(@Req() req: FastifyRequest) {
-    const domain = this.signerDomain(req);
-    await this.federation.markRecovered(domain);
-    await this.federation.markContactSuccess(domain);
-    return { domain: this.federation.ourDomain, ts: Date.now() };
-  }
-
-  /** GET /api/v1/s2s/get_file — stream a chat-media asset by sha256 digest (3-check authz, §3.3),
+  /** GET /s2s/v1/media/:digest — stream a chat-media asset by sha256 digest,
    *  with HTTP Range/206 support so the receiver fetches large files in resumable chunks (no whole-file
    *  buffer, no whole-transfer timeout). The receiver already knows the extension from the message
    *  content URL and re-serves same-origin via @fastify/static (ext→mime), so the S2S Content-Type is
@@ -230,23 +174,22 @@ export class S2sController {
    *  would re-encode the body and break byte-exactness) + interceptors — same pattern as the SSE
    *  hijack in events.controller.ts. Authz (resolveMediaFile) runs before any bytes go out. */
   @Raw() // binary octet-stream via reply.hijack — stays outside the ApiResult envelope; its errors keep HTTP status (the client classifies by status).
-  @Get('get_file')
+  @Get('media/:digest')
   async getFile(
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply,
-    @Query('digest') digest?: string,
+    @Param('digest') digest?: string,
     @Query('fromAccount') fromAccount?: string,
     @Query('fromDomain') fromDomain?: string,
     @Query('toAccount') toAccount?: string,
-    @Query('toDomain') toDomain?: string,
     @Query('seq') seqParam?: string,
     @Query('bundleId') bundleId?: string,
   ) {
     const signer = this.signerDomain(req);
-    this.requireBinding(toDomain, signer);
     const seq = Number(seqParam);
     if (
       !digest ||
+      !/^[a-f0-9]{64}$/.test(digest) ||
       !fromAccount ||
       !fromDomain ||
       !toAccount ||
@@ -255,7 +198,7 @@ export class S2sController {
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing or invalid message media authorization query params',
+        'missing or invalid message media authorization parameters',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -322,7 +265,7 @@ export class S2sController {
   }
 
   /** JSONB is serialized as ordinary UTF-8 application/json. The response contains the root plus the
-   * complete child-bundle closure; binary assets remain resumable /get_file transfers. */
+   * complete child-bundle closure; binary assets remain resumable /media/:digest transfers. */
   @Get('forward-bundles/:bundleId')
   getForwardBundle(
     @Req() req: FastifyRequest,

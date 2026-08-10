@@ -26,9 +26,14 @@ export class FriendRelationshipStatusDto {
 
 export class FriendRelationshipStateDto {
   @ApiProperty() userId!: number;
-  @ApiProperty({ enum: ['NONE', 'OUTGOING_PENDING', 'INCOMING_PENDING', 'FRIEND'] })
+  @ApiProperty({
+    enum: ['NONE', 'OUTGOING_PENDING', 'INCOMING_PENDING', 'FRIEND'],
+  })
   status!: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
-  @ApiProperty({ required: false, description: 'Pending invite id, when applicable' })
+  @ApiProperty({
+    required: false,
+    description: 'Pending invite id, when applicable',
+  })
   inviteId?: string;
 }
 
@@ -36,7 +41,10 @@ export class FriendRelationshipStateDto {
  *  local user OR a federated stub id (minted by /user/resolve). Federated delivery is automatic.
  *  Group invites are NOT sent here — they are minted by group/create + group/invite. */
 export class SendFriendInviteDto {
-  @ApiProperty({ example: 1, description: 'Target user id (local user OR federated stub id)' })
+  @ApiProperty({
+    example: 1,
+    description: 'Target user id (local user OR federated stub id)',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -56,7 +64,10 @@ export class SendFriendInviteDto {
 /** Identify an invite by its id. The id is a BigInt carried as a string on the wire (JSON has no
  *  BigInt). Used by accept / reject / revoke. */
 export class InviteIdDto {
-  @ApiProperty({ example: '123456789', description: 'Invite id (stringified BigInt)' })
+  @ApiProperty({
+    example: '123456789',
+    description: 'Invite id (stringified BigInt)',
+  })
   @IsString()
   @IsNotEmpty()
   inviteId!: string;
@@ -81,8 +92,14 @@ export class InviteDto {
   @ApiProperty({ type: InviteUserDto }) toUser!: InviteUserDto;
   @ApiProperty({ required: false }) threadId?: number;
   @ApiProperty() note!: string;
-  @ApiProperty({ enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'] }) status!: string;
-  @ApiProperty({ description: 'Expiry (ms epoch). expiresAt < Date.now() → expired.' }) expiresAt!: number;
+  @ApiProperty({
+    enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'],
+  })
+  status!: string;
+  @ApiProperty({
+    description: 'Expiry (ms epoch). expiresAt < Date.now() → expired.',
+  })
+  expiresAt!: number;
   @ApiProperty() createdAt!: number;
 }
 
@@ -91,20 +108,32 @@ export class InviteDto {
 export class InviteDetailDto {
   @ApiProperty() id!: string;
   @ApiProperty({ enum: ['FRIEND', 'GROUP'] }) kind!: string;
-  @ApiProperty({ enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'] }) status!: string;
+  @ApiProperty({
+    enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'],
+  })
+  status!: string;
   @ApiProperty({ description: 'Expiry (ms epoch).' }) expiresAt!: number;
   @ApiProperty() note!: string;
   @ApiProperty({ required: false }) threadId?: number;
   @ApiProperty() groupName!: string;
   @ApiProperty() groupAvatar!: string;
-  @ApiProperty({ description: "The group's home domain (our domain for a local group)." })
+  @ApiProperty({
+    description: "The group's home domain (our domain for a local group).",
+  })
   groupDomain!: string;
   @ApiProperty({
     description:
       'True iff the group is homed on THIS server (rendered as a "Local server" label; otherwise a globe + domain badge).',
   })
   groupIsLocal!: boolean;
-  @ApiProperty({ description: 'Is the caller already an active member of the target group?' })
+  @ApiProperty({
+    description: 'Is the caller already an active member of the target group?',
+  })
   alreadyJoined!: boolean;
+  @ApiProperty({
+    description:
+      'The caller accepted a federated invite and is waiting for the origin server to confirm membership.',
+  })
+  joinRequested!: boolean;
   @ApiProperty({ type: InviteUserDto }) fromUser!: InviteUserDto;
 }

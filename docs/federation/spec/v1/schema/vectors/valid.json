@@ -1,0 +1,362 @@
+{
+  "vectors": [
+    {
+      "name": "well-known supports v1 and a future major",
+      "schema": "urn:soms:federation:v1:discovery",
+      "value": {
+        "software": "example/1.0",
+        "protocolVersions": [1, 2],
+        "rootKey": {
+          "fingerprint": "sha256:Zmh6rfhivXdsj8GLjp-OIAiXFIVu4jOzkCpZHQ1fKSU",
+          "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "keys": [
+          {
+            "keyId": "a.example/key-1",
+            "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          }
+        ]
+      }
+    },
+    {
+      "name": "ignite identity claim",
+      "schema": "urn:soms:federation:v1:identity#/$defs/igniteClaim",
+      "value": {
+        "protocolVersion": 1,
+        "originDomain": "a.example",
+        "recipientDomain": "b.example",
+        "pairwiseServerId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rootKeyFingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "nonce": "abcdefghijklmnopqrstuv",
+        "issuedAt": 1700000000000,
+        "startChangeId": "0"
+      }
+    },
+    {
+      "name": "feed revision wake-up",
+      "schema": "urn:soms:federation:v1:identity#/$defs/feedRevisionHint",
+      "value": {
+        "origin": "a.example",
+        "stateFeedRev": "12",
+        "messageFeedRev": "34"
+      }
+    },
+    {
+      "name": "state page covers all event types",
+      "schema": "urn:soms:federation:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "account": "alice",
+            "eventType": "PROFILE",
+            "subjectAccount": "",
+            "revision": "2",
+            "rev": "1",
+            "body": {
+              "domain": "a.example",
+              "name": "Alice",
+              "bio": "",
+              "avatar": null,
+              "deleted": false
+            }
+          },
+          {
+            "account": "alice",
+            "eventType": "P2P_META",
+            "subjectAccount": "bob",
+            "revision": "3",
+            "rev": "2",
+            "body": {
+              "status": "REQUESTED",
+              "note": "hello",
+              "requestedAt": 1700000000000,
+              "expiresAt": 1700600000000
+            }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "eventType": "GROUP_INVITE_INTENT",
+            "subjectAccount": "bob",
+            "revision": "1",
+            "rev": "3",
+            "body": {
+              "status": "MEMBER",
+              "note": "",
+              "requestedAt": 1700000000000,
+              "expiresAt": null,
+              "owner": { "account": "alice", "domain": "a.example" },
+              "sinceSeq": -1
+            }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "eventType": "GROUP_JOIN_INTENT",
+            "subjectAccount": "bob",
+            "revision": "1",
+            "rev": "4",
+            "body": {
+              "status": "REQUESTED",
+              "note": "",
+              "requestedAt": 1700000000000,
+              "expiresAt": null
+            }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "eventType": "GROUP_META",
+            "subjectAccount": "",
+            "revision": "4",
+            "rev": "5",
+            "body": {
+              "active": true,
+              "dissolved": false,
+              "owner": { "account": "alice", "domain": "a.example" },
+              "members": [
+                { "account": "alice", "domain": "a.example", "role": "OWNER" },
+                { "account": "bob", "domain": "b.example", "role": "MEMBER" }
+              ]
+            }
+          }
+        ],
+        "scannedThrough": "5",
+        "stateFeedRev": "5",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "message page with parsed text content",
+      "schema": "urn:soms:federation:v1:message-feed",
+      "value": {
+        "messages": [
+          {
+            "changeId": "1",
+            "thread": {
+              "type": "P2P",
+              "participants": [
+                { "account": "alice", "domain": "a.example" },
+                { "account": "bob", "domain": "b.example" }
+              ]
+            },
+            "author": { "account": "alice", "domain": "a.example" },
+            "seq": 1,
+            "originSeq": 1,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "createdAt": 1700000000000,
+            "updatedAt": 1700000000000,
+            "clientMessageId": "m1",
+            "assets": []
+          }
+        ],
+        "scannedThrough": "1",
+        "allocatedThrough": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "all message content discriminators",
+      "schema": "urn:soms:federation:v1:message-content",
+      "values": [
+        { "contentType": "PURE_TEXT", "content": { "text": "hello" } },
+        {
+          "contentType": "INVITE",
+          "content": {
+            "type": "GROUP_INVITE",
+            "from": "alice",
+            "group": "!group",
+            "groupName": "Group",
+            "groupDomain": "a.example",
+            "groupIsLocal": true
+          }
+        },
+        {
+          "contentType": "IMAGE",
+          "content": { "url": "/asset/0", "w": 1, "h": 1, "size": 1 }
+        },
+        {
+          "contentType": "VIDEO",
+          "content": {
+            "url": "/asset/0",
+            "name": "v",
+            "size": 1,
+            "mimeType": "video/webm",
+            "w": 1,
+            "h": 1,
+            "duration": 1
+          }
+        },
+        {
+          "contentType": "FILE",
+          "content": {
+            "url": "/asset/0",
+            "name": "f",
+            "size": 1,
+            "mimeType": "application/octet-stream"
+          }
+        },
+        {
+          "contentType": "AUDIO",
+          "content": {
+            "url": "/asset/0",
+            "name": "a",
+            "size": 1,
+            "mimeType": "audio/opus",
+            "duration": 1
+          }
+        },
+        {
+          "contentType": "LINK",
+          "content": {
+            "url": "https://example.com",
+            "title": "",
+            "description": ""
+          }
+        },
+        {
+          "contentType": "CALL",
+          "content": {
+            "type": "CALL",
+            "callType": "AUDIO",
+            "status": "completed",
+            "caller": { "account": "alice", "domain": "a.example" },
+            "callee": { "account": "bob", "domain": "b.example" },
+            "startedAt": 1700000000000,
+            "endedAt": 1700000001000,
+            "durationMs": 1000
+          }
+        },
+        {
+          "contentType": "FORWARD",
+          "content": {
+            "version": 1,
+            "bundleId": "b1",
+            "summaryLines": [],
+            "messageCount": 0,
+            "assetCount": 0
+          }
+        },
+        {
+          "contentType": "GALLERY",
+          "content": {
+            "items": [
+              { "kind": "IMAGE", "url": "/asset/0", "size": 1, "w": 1, "h": 1 }
+            ]
+          }
+        },
+        { "contentType": "SYSTEM", "content": { "type": "FRIEND_REQUESTED" } }
+      ]
+    },
+    {
+      "name": "call frame variants",
+      "schema": "urn:soms:federation:v1:call",
+      "values": [
+        {
+          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "origin": "a.example",
+          "ts": 1700000000000,
+          "from": { "account": "alice", "domain": "a.example" },
+          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "incoming",
+          "callType": "AUDIO"
+        },
+        {
+          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "origin": "a.example",
+          "ts": 1700000000000,
+          "from": { "account": "alice", "domain": "a.example" },
+          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "signal",
+          "callType": "AUDIO",
+          "kind": "offer",
+          "payload": "v=0"
+        },
+        {
+          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "origin": "a.example",
+          "ts": 1700000000000,
+          "from": { "account": "alice", "domain": "a.example" },
+          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "connected",
+          "callType": "AUDIO",
+          "startedAt": 1700000000100
+        },
+        {
+          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "origin": "a.example",
+          "ts": 1700000000000,
+          "from": { "account": "alice", "domain": "a.example" },
+          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "video-upgraded",
+          "callType": "VIDEO"
+        },
+        {
+          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "origin": "a.example",
+          "ts": 1700000000000,
+          "from": { "account": "alice", "domain": "a.example" },
+          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "ended",
+          "callType": "VIDEO",
+          "endReason": "completed"
+        }
+      ]
+    },
+    {
+      "name": "profile response",
+      "schema": "urn:soms:federation:v1:profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "avatar": null,
+        "bio": "",
+        "profileRev": 1
+      }
+    },
+    {
+      "name": "empty forward closure",
+      "schema": "urn:soms:federation:v1:forward-bundle",
+      "value": {
+        "schemaVersion": 1,
+        "rootBundleId": "b1",
+        "bundles": [
+          {
+            "id": "b1",
+            "depth": 0,
+            "manifestDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "manifest": {
+              "schemaVersion": 1,
+              "bundleId": "b1",
+              "depth": 0,
+              "children": [],
+              "messages": []
+            },
+            "assets": []
+          }
+        ],
+        "assets": []
+      }
+    },
+    {
+      "name": "media authorization parameters",
+      "schema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
+      "value": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "fromAccount": "alice",
+        "fromDomain": "a.example",
+        "toAccount": "bob",
+        "seq": "1"
+      }
+    },
+    {
+      "name": "error envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": { "code": 50007, "message": "malformed" }
+    }
+  ]
+}

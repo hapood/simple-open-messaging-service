@@ -24,6 +24,11 @@ import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { LinkPreviewService } from './link-preview/link-preview.service.js';
 import { BusinessCode } from './common/business-code.js';
+import {
+  CLIENT_API_PREFIX,
+  FEDERATION_API_PREFIX,
+  FEDERATION_WELL_KNOWN_PATH,
+} from './federation/federation-protocol.js';
 
 // Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
 // POST /upload/video can admit video; images stay bounded at UploadService.MAX_IMAGE_BYTES, files at
@@ -125,11 +130,11 @@ export async function configureApp(
   await app.register(fastifyCookie);
 
   // S2S raw-body capture: RFC 9421 content-digest verification needs the EXACT body bytes the sender
-  // signed — re-serialized JSON would not match. Scoped to /api/v1/s2s/* so only S2S requests pay
+  // signed — re-serialized JSON would not match. Scoped to /s2s/v1/* so only S2S requests pay
   // the double-buffer cost; every other route passes through untouched. S2sSignatureGuard reads
   // req.rawBody.
   adapter.getInstance().addHook('preParsing', async (req, _reply, payload) => {
-    if (!req.url.startsWith('/api/v1/s2s/')) return payload;
+    if (!req.url.startsWith(`/${FEDERATION_API_PREFIX}/`)) return payload;
     const chunks: Buffer[] = [];
     for await (const chunk of payload as AsyncIterable<Buffer>)
       chunks.push(chunk);
@@ -156,6 +161,7 @@ export async function configureApp(
       async (request: FastifyRequest, reply: FastifyReply) => {
         if (
           !request.url.startsWith('/api/') &&
+          !request.url.startsWith('/s2s/') &&
           !request.url.startsWith('/.well-known/')
         )
           return;
@@ -196,12 +202,43 @@ export async function configureApp(
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new SerializeInterceptor(app.get(Reflector)));
 
-  // Global route prefix. All HTTP endpoints (incl. SSE /events) live under /api/v1 (must be set
+  // Client HTTP endpoints (incl. SSE /events) live under /api/v1. Federation is an independently
+  // versioned machine-to-machine surface under /s2s/v1 and is excluded from that client prefix.
+  // The prefix must be set
   // before Swagger createDocument so doc paths include it). The interactive docs mount at
   // /api/v1/docs in non-production only — see the gate below. .well-known/soms is excluded — it must
   // be served at the bare path per RFC 8615 (peers fetch it without knowing our /api/v1 prefix).
-  app.setGlobalPrefix('api/v1', {
-    exclude: [{ path: '.well-known/soms', method: RequestMethod.GET }],
+  app.setGlobalPrefix(CLIENT_API_PREFIX, {
+    exclude: [
+      { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
+      { path: `${FEDERATION_API_PREFIX}/ignite`, method: RequestMethod.POST },
+      { path: `${FEDERATION_API_PREFIX}/identity`, method: RequestMethod.GET },
+      {
+        path: `${FEDERATION_API_PREFIX}/feed-revisions`,
+        method: RequestMethod.POST,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/state-feed`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/message-feed`,
+        method: RequestMethod.GET,
+      },
+      { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
+      {
+        path: `${FEDERATION_API_PREFIX}/users/:account`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/media/:digest`,
+        method: RequestMethod.GET,
+      },
+      {
+        path: `${FEDERATION_API_PREFIX}/forward-bundles/:bundleId`,
+        method: RequestMethod.GET,
+      },
+    ],
   });
 
   // Interactive API docs (Swagger UI at /api/v1/docs, spec at /api/v1/docs-json). The UI is a

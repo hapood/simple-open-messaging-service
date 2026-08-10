@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:http-parameters",
+  "title": "Federation v1 normalized HTTP path/query parameter objects",
+  "$defs": {
+    "feedQuery": {
+      "type": "object",
+      "required": ["after"],
+      "properties": {
+        "after": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        },
+        "take": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      },
+      "additionalProperties": false
+    },
+    "identityQuery": {
+      "type": "object",
+      "required": ["nonce"],
+      "properties": {
+        "nonce": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/base64UrlNonce"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mediaParameters": {
+      "type": "object",
+      "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],
+      "properties": {
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "fromAccount": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/account"
+        },
+        "fromDomain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+        "toAccount": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
+        "seq": { "type": "string", "pattern": "^(?:0|[1-9][0-9]*)$" },
+        "bundleId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

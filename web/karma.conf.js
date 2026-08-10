@@ -5,6 +5,7 @@
 module.exports = (config) => {
   config.set({
     frameworks: ['jasmine', '@angular-devkit/build-angular'],
+    reporters: ['dots'],
     plugins: [
       require('karma-jasmine'),
       require('karma-chrome-launcher'),
@@ -25,6 +26,13 @@ module.exports = (config) => {
         ],
       },
     },
+    // The full Angular suite is large enough that Chrome can spend more than Karma's default
+    // 30 seconds in one synchronous bundle/test turn without answering a heartbeat. Keep the
+    // browser alive long enough for that work, but still fail a genuinely wedged run.
+    browserNoActivityTimeout: 120000,
+    browserDisconnectTimeout: 10000,
+    browserDisconnectTolerance: 1,
+    captureTimeout: 120000,
     singleRun: true,
     restartOnFileChange: false,
   });

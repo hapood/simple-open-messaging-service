@@ -1,32 +1,35 @@
 # Federation Overview
 
-SOMS federation v1 is a signed, pull-based protocol under `/api/v1`. The URL prefix is the protocol
+SOMS federation v1 is a signed, pull-based protocol under `/s2s/v1`. The URL prefix is the protocol
 version; bodies do not repeat a version field. The current endpoint-level contract is documented in
 [federation-s2s-api.md](../api/federation-s2s-api.md), and the audited implementation baseline is in
 [protocol-baseline.md](../federation/protocol-baseline.md).
 
 ## Identity and recovery
 
-Nodes discover public keys through `/.well-known/soms`. First contact uses `POST /s2s/ignite`, which
+Nodes discover public keys and supported major versions through `/.well-known/soms`. First contact uses
+`POST /s2s/v1/ignite`, which
 atomically pins identity continuity and initializes state/message cursors. Subsequent requests are RFC
 9421 signed.
 
 Temporary signed-request failures may move a peer from `trusted` to `demoted`; they do not discard its
-pinned identity. Recovery verifies `/s2s/identity`, performs a signed `/s2s/ping`, drains state, and then
-drains messages. A changed root fingerprint, pairwise server identity, or identity epoch enters
-`identity_lost` and requires an explicit administrator reset. An administrator `blocked` decision is a
-durable policy state and cannot be overwritten by an in-flight ignite or heartbeat.
+pinned identity. Recovery verifies `/s2s/v1/identity`, drains state, and then drains messages. A
+changed root fingerprint, pairwise server identity, or signing key enters `identity_lost`. After DNS is
+repaired, a SUPER_ADMIN may recover the trust edge only by verifying the exact original pinned identity;
+a genuinely new identity requires destructive reset. An administrator `blocked` decision is a
+durable policy state and cannot be overwritten by an in-flight ignite or recovery request.
 
 ## State before messages
 
-Every lightweight `POST /s2s/feed-rev` carries two decimal-string high-water marks:
+Every lightweight `POST /s2s/v1/feed-revisions` carries two decimal-string high-water marks:
 
 - `stateFeedRev` for compacted relationship, profile, and group state;
 - `messageFeedRev` for durable message discovery.
 
-The receiver always commits `/s2s/state-feed` before requesting `/s2s/message-feed`. Wake-ups are
+The receiver always commits `/s2s/v1/state-feed` before requesting
+`/s2s/v1/message-feed`. Wake-ups are
 ephemeral and may be lost, duplicated, delayed, or reordered; startup and periodic reconciliation read
-the source revisions again. Both receivers reject cursor rollback.
+both feeds directly. Both receivers reject cursor rollback.
 
 State pages and their cursor advance commit in one transaction. A malformed item rolls back the whole
 page. The source compacts by event key and overwrites only with a strictly newer business revision.
@@ -58,7 +61,7 @@ then processes the missed-message summary. There are no chat-open profile/meta r
 ## Message and media delivery
 
 Messages allocate a durable per-peer discovery change in the same transaction as the message and its
-audience. `/message-feed` carries ordered changes and advances with `scannedThrough`, including across
+audience. `/s2s/v1/message-feed` carries ordered changes and advances with `scannedThrough`, including across
 compaction or deletion gaps. Pulled messages are idempotent by stable author identity and `originSeq`.
 
 For group leave, the leaving server first writes a structured `GROUP_LEFT` SYSTEM message, allocates its
@@ -78,17 +81,26 @@ forward-bundle closure downloads validate the message/bundle binding. Durable pe
 restart, quota pause, and transient chunk loss; a failed download does not block later message-feed cursor
 progress.
 
+## Voice and video calls
+
+Endpoints use WebRTC/JSEP. Signed `/s2s/v1/call` frames relay the transient lifecycle, SDP, ICE and
+in-place AUDIO-to-VIDEO upgrade; terminal history is an ordinary `CALL` message pulled through the message
+feed. STUN/TURN selection and credentials stay between each endpoint and its home server. Federation relays
+the resulting ICE candidates, including TURN `relay` candidates, without a credential exchange or
+capability negotiation. See the normative [call specification](../federation/spec/v1/calls.md).
+
 ## Current S2S surface
 
-- `POST /s2s/ignite`
-- `GET /s2s/identity`, `GET /s2s/ping`
-- `POST|GET /s2s/feed-rev`
-- `GET /s2s/state-feed-rev`, `GET /s2s/state-feed`
-- `GET /s2s/message-feed`
-- `POST /s2s/call`
-- `GET /s2s/users/:account`
-- `GET /s2s/get_file`
-- `GET /s2s/forward-bundles/:bundleId`
+- `GET /.well-known/soms`
+- `POST /s2s/v1/ignite`
+- `GET /s2s/v1/identity`
+- `POST /s2s/v1/feed-revisions`
+- `GET /s2s/v1/state-feed`
+- `GET /s2s/v1/message-feed`
+- `POST /s2s/v1/call`
+- `GET /s2s/v1/users/:account`
+- `GET /s2s/v1/media/:digest`
+- `GET /s2s/v1/forward-bundles/:bundleId`
 
-The former S2S invite commands, `/init`, `/thread-access`, profile/meta probes, `/new-msg-map`, thread-level
-message pulls, and `/miss-feed` are removed and intentionally not compatible.
+This list is the complete v1 surface. Removed experimental paths and S2S invite commands are intentionally
+not compatible.

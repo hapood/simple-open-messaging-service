@@ -63,12 +63,7 @@ pairwiseServerId(peerDomain)
 该值只能出现在已知接收 domain、且被请求签名覆盖的握手/身份响应中。它不能单独证明身份，
 必须与 domain、root fingerprint 和有效签名一起校验。
 
-### 2.4 identity epoch
-
-`identityEpoch` 在本协议中固定为 `1`，作为身份声明格式的一部分参与比较。协议不提供 key 轮换、
-epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 `2` 恢复。
-
-### 2.5 消息 ID
+### 2.4 消息 ID
 
 `Message.id` 只在生成它的数据库内单调递增：
 
@@ -91,7 +86,6 @@ epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 
 {
   "version": 1,
   "domain": "a.example",
-  "identityEpoch": 1,
   "rootKey": {
     "keyId": "a.example/root-1",
     "publicKey": "base64...",
@@ -126,7 +120,7 @@ epoch 提升或私钥在线恢复；root key 丢失不能通过把 epoch 改成 
 1. 普通本地功能可以启动；
 2. 联邦模块进入 `local_identity_lost`，停止所有 S2S 入站和出站；
 3. 管理界面要求从备份恢复原密钥；
-4. 不得静默生成新 key，也不得调用 `/s2s/ignite` 自动恢复同一 domain。
+4. 不得静默生成新 key，也不得调用 `/s2s/v1/ignite` 自动恢复同一 domain。
 
 ### 3.3 单密钥约束
 
@@ -155,14 +149,13 @@ pending --首次 /init--> trusted --传输失败--> demoted --固定身份 + 签
 固定三元组为：
 
 ```text
-(normalizedDomain, pairwiseServerId, rootKeyFingerprint, identityEpoch)
+(normalizedDomain, pairwiseServerId, rootKeyFingerprint)
 ```
 
 以下任一情况进入 `identity_lost`：
 
 - pairwise server ID 改变；
 - root fingerprint 改变；
-- identity epoch 改变；
 - 已固定的 `keyId` 或公钥被替换，或出现第二个 key；
 - 本地发现 peer 历史存在，但固定身份字段缺失或互相冲突，无法安全迁移。
 
@@ -182,26 +175,27 @@ pending --首次 /init--> trusted --传输失败--> demoted --固定身份 + 签
 
 ### 5.1 公开 well-known
 
-`GET /.well-known/soms` 继续是公开端点，只发布软件版本、协议版本、root public key 与唯一的
+`GET /.well-known/soms` 继续是公开端点，只发布软件版本、严格递增的 `protocolVersions`、root public key 与唯一的
 signing key。它不返回 pairwise server ID，因为公开请求没有可靠的请求方身份。
 
 ### 5.2 首次 init
 
-`POST /api/v1/s2s/ignite` 请求体至少为：
+`POST /s2s/v1/ignite` 请求体至少为：
 
 ```json
 {
   "protocolVersion": 1,
   "originDomain": "a.example",
   "recipientDomain": "b.example",
-  "identityEpoch": 1,
   "pairwiseServerId": "...value derived for b.example...",
   "rootKeyFingerprint": "sha256:...",
   "startChangeId": "0",
   "nonce": "base64url...",
-  "issuedAt": "2026-08-05T00:00:00.000Z"
+  "issuedAt": 1785888000000
 }
 ```
+
+`issuedAt` 使用统一的 Unix epoch milliseconds JSON number；不得发送 ISO 时间字符串。
 
 所有字段和 content digest 必须由 RFC 9421 请求签名覆盖。接收端还必须验证：
 
@@ -229,10 +223,10 @@ cursor 必然已经存在；任一步失败则全部回滚，不使用额外 ini
 新增：
 
 ```text
-GET /api/v1/s2s/identity?recipientDomain=<caller-domain>&nonce=<nonce>
+GET /s2s/v1/identity?recipientDomain=<caller-domain>&nonce=<nonce>
 ```
 
-请求必须签名。响应包含 `domain`、`recipientDomain`、`identityEpoch`、`pairwiseServerId`、
+请求必须签名。响应包含 `domain`、`recipientDomain`、`pairwiseServerId`、
 `rootKeyFingerprint`、`nonce`、`issuedAt`、active key 列表摘要和 detached signature。
 
 重连顺序：
@@ -256,7 +250,6 @@ GET /api/v1/s2s/identity?recipientDomain=<caller-domain>&nonce=<nonce>
 
 ```text
 domain                  varchar(63) primary key
-identityEpoch           integer not null
 rootKeyFingerprint      varchar(80) not null
 createdAt               timestamp not null
 ```
@@ -266,7 +259,6 @@ createdAt               timestamp not null
 ```text
 pairwiseServerId        varchar(64) null
 rootKeyFingerprint      varchar(80) null
-identityEpoch           integer null
 identityPinnedAt        timestamp null
 identityLostAt          timestamp null
 identityLostReason      varchar(255) null
@@ -456,23 +448,15 @@ home server，群聊查询 group origin。
 `federationVersion`。写入迟到响应前在同一事务重新比较；任何一项变化都丢弃响应。有效响应在事务
 内更新 participant/audience/ThreadRevision，提交后通过 SSE 异步修正客户端，不阻塞打开本地缓存。
 
-## 8. 持久 change feed 与 missed API
+## 8. 两条持久 feed 与 revision 唤醒
 
-### 8.1 S2S HWM
+本节记录实现设计；wire contract 以 `spec/v1/` 为准。联邦只有 state feed、message feed 两条持久
+拉取流，以及一个只携带两条流最新 revision 的轻量 push；不存在单独的 HWM 查询或 `missed` API。
 
-提供一个轻量查询，返回为调用 peer 已事务分配的全局 change ID：
-
-```text
-GET /api/v1/s2s/discovery-hwm
-200 { "allocatedThrough": "92831" }
-```
-
-没有可访问消息时返回 `"0"`。值仅用于判断“可能有变化”，不代表调用方已经同步。
-
-### 8.2 S2S missed
+### 8.1 Message feed
 
 ```text
-GET /api/v1/s2s/missed?after=90000&take=100
+GET /s2s/v1/message-feed?after=90000&take=100
 ```
 
 响应示意：
@@ -507,23 +491,31 @@ GET /api/v1/s2s/missed?after=90000&take=100
 超时或响应组装失败都回滚 cursor 更新。页面不足 `take` 时，`scannedThrough` 直接推进到锁内固定的
 `allocatedThrough`，因此 audience 删除造成的 change ID 空洞不会被永久重复扫描。
 
-### 8.3 轻量 push/SSE
+### 8.2 State feed
+
+```text
+GET /s2s/v1/state-feed?after=120&take=100
+```
+
+它传输 profile、好友关系和群状态快照/墓碑，使用独立的 `stateFeedRev`、分页 cursor 和事务边界；
+不得借用 message feed 的 change ID。详细事件、分页和授权规则见 `spec/v1/state-feed.md`。
+
+### 8.3 轻量 revision push
 
 原 `FederationBufferService` 内存 hint 不再承担正确性职责，并在切换完成后删除。push 仅发送：
 
 ```json
 {
   "origin": "a.example",
-  "allocatedThrough": "92831"
+  "stateFeedRev": "180",
+  "messageFeedRev": "92831"
 }
 ```
 
-发送路径为 `POST /api/v1/s2s/discovery-hwm`。接收者校验 `origin` 等于签名域，仅在进程内合并该
-水位并将其视为 wake-up signal，随后调用 missed；它不写入 pull cursor。push 失败按普通 S2S
-传输失败将 peer 降级。签名心跳恢复后，双方重新 push 并查询当前 HWM。push 丢失也可由定时 HWM
-reconciliation 恢复。
-建议 trusted peer 在建立连接、重连后立即查询 HWM，在线时按 NAS 友好的低频周期再次查询；精确
-周期作为部署配置，不属于 wire contract。
+发送路径为 `POST /s2s/v1/feed-revisions`。接收者校验 `origin` 等于签名域，仅在进程内合并两个
+revision 并将其视为 wake-up signal，随后分别拉取落后的 feed；它不直接写入任何 pull cursor，也
+不表示远端已经收到具体事件。push 失败按普通 S2S 传输失败处理；push 丢失由建立连接、重连和
+低频 reconciliation 时再次发送当前 revision 恢复。精确重试周期属于实现配置，不是 wire contract。
 
 ### 8.4 客户端 missed
 
@@ -903,7 +895,7 @@ account、消息 origin seq，以及 bundle 请求中的 bundle id。
 4. download inbox、统一上传、GALLERY、并发下载调度：已实现主链；
 5. 启动恢复下载任务、quota 提额自动唤醒：已实现；
 6. 源端 PostgreSQL E2E 已覆盖正文与附件描述、分页、change ID 空洞，以及删除消息跳过后推进
-   `scannedThrough`；双节点 E2E 已验证轻量 `feed-rev`、`message-feed` 落库、`remoteHwm`
+   `scannedThrough`；双节点 E2E 已验证轻量 `feed-revisions`、`message-feed` 落库、`remoteHwm`
    推进与本地 SSE；双节点 E2E 也已验证接收端在文件下载处于
    `DOWNLOADING` 时进程退出，重启扫描后恢复下载、promote 正式消息并发送 SSE；也已验证 quota
    暂停期间不生成正式消息，管理员追加当日一次性额度后自动唤醒下载、promote 并发送 SSE；
@@ -930,7 +922,7 @@ account、消息 origin seq，以及 bundle 请求中的 bundle id。
 
 ## 14. 当前实现与剩余差异
 
-持久发现正确性来自 per-peer message feed、轻量 `feed-rev` 与持久 pull cursor。旧 buffer、
+持久发现正确性来自 per-peer message feed、轻量 `feed-revisions` 与持久 pull cursor。旧 buffer、
 `/new-msg-map`、thread 级消息拉取和 reconnect poll 已删除；节点之间不保留回退协议。
 
 当前下载调度队列是进程内状态，数据库中的 `PendingMedia/FileSyncProgress` 才是权威状态；服务启动后

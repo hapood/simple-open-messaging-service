@@ -278,7 +278,7 @@ describe('FederationService global missed transport', () => {
     });
     expect(order).toEqual(['token', 'request']);
     expect(target.getSigned).toHaveBeenCalledWith(
-      '/api/v1/s2s/message-feed?after=7&take=100',
+      '/s2s/v1/message-feed?after=7&take=100',
       'peer.test',
       16 * 1024 * 1024,
     );

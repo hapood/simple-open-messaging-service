@@ -15,9 +15,10 @@ import {
   hasPostgresErrorCode,
   PG_LOCK_NOT_AVAILABLE,
 } from '../database/database-error.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
-/** The `/api/v1` route is the schema version; bodies contain business state only. */
+/** The `/s2s/v1` route is the schema version; bodies contain business state only. */
 export type PeerStateBody = Record<string, unknown>;
 
 export interface PeerStateFeedWrite {
@@ -76,11 +77,14 @@ export class PeerStateFeedService {
         (a.subjectAccount ?? '').localeCompare(b.subjectAccount ?? ''),
     );
     for (const write of ordered) {
+      // State bodies are persisted as JSONB before the HTTP serializer sees them. Normalize at this
+      // boundary so Date/BigInt use the same wire representation as every HTTP and SSE response.
+      const body = serializeBody(write.body);
       if (
         !Number.isInteger(write.revision) ||
         write.revision < 0 ||
-        !write.body ||
-        typeof write.body !== 'object'
+        !body ||
+        typeof body !== 'object'
       ) {
         throw new Error('invalid peer state feed write');
       }
@@ -135,7 +139,7 @@ export class PeerStateFeedService {
           subjectAccount,
           revision: write.revision,
           rev: allocated.rev,
-          body: write.body,
+          body,
         })
         .onConflictDoUpdate({
           target: [
@@ -147,7 +151,7 @@ export class PeerStateFeedService {
           set: {
             revision: write.revision,
             rev: allocated.rev,
-            body: write.body,
+            body,
             updatedAt: new Date(),
           },
         });

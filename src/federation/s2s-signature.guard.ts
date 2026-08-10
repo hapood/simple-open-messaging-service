@@ -17,7 +17,7 @@ import { KeypairService } from './keypair.service.js';
  * Inbound S2S signature guard for the friend-op + signed GET endpoints — Gate 1 (server allow-list +
  * valid signature). Verifies the request was signed by a TRUSTED peer's CURRENT key and that the
  * asserted sender's domain matches the signer's domain (binding rule — each server vouches only for
- * its own users). The trust-establishment endpoint POST /api/v1/s2s/ignite does NOT use this guard (it
+ * its own users). The trust-establishment endpoint POST /s2s/v1/ignite does NOT use this guard (it
  * IS the trust step) — see S2sIgniteController, which calls S2sVerifyService directly.
  *
  * Verification (keyId parse + .well-known key fetch + sig verify) is delegated to S2sVerifyService,
@@ -68,15 +68,9 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.LOCKED,
       );
     }
-    // A signed ping is the only operation accepted from a demoted peer. This lets two peers that
-    // demoted each other recover without weakening data endpoints or repeating /init. The pinned
-    // current key is still verified below before the ping handler can promote the peer.
-    const isPing = req.routeOptions.url?.endsWith('/s2s/ping') === true;
-    if (
-      !peer ||
-      (peer.trustLevel !== 'trusted' &&
-        !(peer.trustLevel === 'demoted' && isPing))
-    ) {
+    // Demoted peers recover only through the nonce-bound identity endpoint, which has its own
+    // pinned-key verification flow. Every ordinary data-plane request requires trusted.
+    if (!peer || peer.trustLevel !== 'trusted') {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
         `${signerDomain} is not a trusted peer`,

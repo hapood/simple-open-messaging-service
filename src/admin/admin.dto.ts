@@ -386,6 +386,19 @@ export class AdminFederationResetDto {
   confirmDomain!: string;
 }
 
+/** Non-destructive recovery confirmation for the exact already-pinned peer identity. */
+export class AdminFederationIdentityRecoverDto {
+  @ApiProperty({
+    example: 'peer.example',
+    description:
+      'Type the federation domain again; recovery succeeds only if the original pinned identity is reachable',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  confirmDomain!: string;
+}
+
 /** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
  *  field means "use the global default". Stored on FederatedPeer. See QuotaService.setLimits. */
 export class AdminSetQuotaDto {

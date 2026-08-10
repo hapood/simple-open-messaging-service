@@ -1,0 +1,110 @@
+{
+  "protocol": "SOMS Federation",
+  "majorVersion": 1,
+  "s2sPrefix": "/s2s/v1",
+  "discoveryPath": "/.well-known/soms",
+  "operations": [
+    {
+      "id": "wellKnown",
+      "method": "GET",
+      "path": "/.well-known/soms",
+      "authentication": "public-tls",
+      "successStatus": [200],
+      "responseMediaType": "application/json",
+      "responseSchema": "urn:soms:federation:v1:discovery"
+    },
+    {
+      "id": "ignite",
+      "method": "POST",
+      "path": "/s2s/v1/ignite",
+      "authentication": "bootstrap-http-message-signature",
+      "successStatus": [202],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:soms:federation:v1:identity#/$defs/igniteClaim",
+      "responseSchema": "urn:soms:federation:v1:identity#/$defs/signedClaim"
+    },
+    {
+      "id": "identity",
+      "method": "GET",
+      "path": "/s2s/v1/identity",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/identityQuery",
+      "responseSchema": "urn:soms:federation:v1:identity#/$defs/signedClaim"
+    },
+    {
+      "id": "feedRevisions",
+      "method": "POST",
+      "path": "/s2s/v1/feed-revisions",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [202],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:soms:federation:v1:identity#/$defs/feedRevisionHint"
+    },
+    {
+      "id": "stateFeed",
+      "method": "GET",
+      "path": "/s2s/v1/state-feed",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/feedQuery",
+      "responseSchema": "urn:soms:federation:v1:state-feed",
+      "responseEnvelope": true
+    },
+    {
+      "id": "messageFeed",
+      "method": "GET",
+      "path": "/s2s/v1/message-feed",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/feedQuery",
+      "responseSchema": "urn:soms:federation:v1:message-feed",
+      "responseEnvelope": true,
+      "secondaryContentSchema": "urn:soms:federation:v1:message-content"
+    },
+    {
+      "id": "call",
+      "method": "POST",
+      "path": "/s2s/v1/call",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [202],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:soms:federation:v1:call"
+    },
+    {
+      "id": "userProfile",
+      "method": "GET",
+      "path": "/s2s/v1/users/:account",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [200],
+      "responseSchema": "urn:soms:federation:v1:profile",
+      "responseEnvelope": true
+    },
+    {
+      "id": "media",
+      "method": "GET",
+      "path": "/s2s/v1/media/:digest",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [200, 206],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
+      "requestHeaders": ["Range"],
+      "responseMediaType": "application/octet-stream",
+      "responseHeaders": [
+        "Content-Length",
+        "Accept-Ranges",
+        "Content-Range",
+        "Content-Digest"
+      ]
+    },
+    {
+      "id": "forwardBundle",
+      "method": "GET",
+      "path": "/s2s/v1/forward-bundles/:bundleId",
+      "authentication": "pinned-http-message-signature",
+      "successStatus": [200],
+      "responseSchema": "urn:soms:federation:v1:forward-bundle",
+      "responseEnvelope": true
+    }
+  ],
+  "errorSchema": "urn:soms:federation:v1:error"
+}

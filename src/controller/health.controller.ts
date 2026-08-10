@@ -45,7 +45,7 @@ export class HealthResponseDto {
  * Public liveness probe.
  *
  * Distinct from the other two "is the server alive" surfaces in this codebase:
- *  - `GET /s2s/ping` (federation) is a SIGNED peer-to-peer reachability + mutual-key-validity check
+ *  - nonce-bound `GET /s2s/v1/identity` is the signed federation continuity/recovery check
  *    between trusted servers — it proves identity, not just uptime.
  *  - The SSE `event: ping` heartbeat only fires on an already-established, AUTHENTICATED stream.
  *

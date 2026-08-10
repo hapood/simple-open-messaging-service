@@ -1,8 +1,8 @@
 # SOMS 联邦 API 闭环审计
 
-> 当前实现审计，更新于 2026-08-09。端点字段见
-> [S2S API](../api/federation-s2s-api.md)，剩余验收项见
-> [重构清单](./refactor-followup-checklist.md)。
+> 当前 SOMS 实现审计，更新于 2026-08-10。端点字段见
+> [S2S API](../api/federation-s2s-api.md)，规范要求见
+> [Federation v1](./spec/v1/README.md)。
 
 ## 当前闭环
 
@@ -13,7 +13,7 @@ first contact
 
 restart / transient failure
   → identity continuity proof
-  → signed ping restores an existing demoted trust edge
+  → identity proof restores an existing demoted trust edge
   → state-feed
   → message-feed
 
@@ -21,46 +21,29 @@ local business transaction
   → mutate fact/snapshot and increment business revision
   → compact per-peer state item / allocate discovery change
   → commit
-  → lightweight feed-rev wake-up
+  → lightweight feed-revisions wake-up
 ```
+
+v1 surface、字段、错误和恢复规则已并入[正式协议](./spec/v1/protocol.md)。下表 `CLOSED` 表示当前
+SOMS 实现已有对应生产者、消费者和回归证据；它不表示内部实现不能继续优化。
 
 ## Surface 审计
 
-| Endpoint | 状态 | 闭环说明 |
-| --- | --- | --- |
-| `/.well-known/soms` | IMPLEMENTED | 发布 root/signing identity；仍需正式 capability schema。 |
-| `/s2s/ignite` | IMPLEMENTED | 首次 pin identity 与 cursor 初始化原子完成；不用于身份丢失后的重建。 |
-| `/s2s/identity` | IMPLEMENTED | nonce、fingerprint、epoch、pairwise identity 连续性验证。 |
-| `/s2s/ping` | IMPLEMENTED | demoted peer 的唯一恢复数据面；原 key 验签成功才恢复 trusted。 |
-| `/s2s/feed-rev` | IMPLEMENTED | wake-up 可丢/重复/乱序；只 max-coalesce，不持久化为事实。 |
-| `/s2s/state-feed` | IMPLEMENTED | page/cursor 原子应用、key compaction、防回退、state-first。大页边界矩阵仍扩充中。 |
-| `/s2s/message-feed` | IMPLEMENTED | durable discovery、分页 cursor、重启恢复；删除矩阵仍扩充中。 |
-| `/s2s/users/:account` | IMPLEMENTED | 仅用于首次显式 profile 查询并落本地库，不用于 chat-open freshness probe。 |
-| `/s2s/call` | IMPLEMENTED | 临时信令；终态消息走普通 message feed。进程崩溃中的实时信令不保证恢复。 |
-| `/s2s/get_file` | IMPLEMENTED | Range、digest、thread/message 授权；并发/GC/墓碑矩阵仍扩充中。 |
-| `/s2s/forward-bundles/:bundleId` | IMPLEMENTED | closure digest/depth/可见性校验。 |
-
-## 已关闭的旧路径
-
-以下路径不再属于 v1 surface，也不兼容：
-
-- `/s2s/init`
-- `/s2s/invite`、`/s2s/invite-accept`、`/s2s/invite-revoke`
-- `/s2s/thread-access`
-- `/s2s/users/:account/revision`
-- group roster/meta revision probe
-- `/s2s/new-msg-map`
-- thread 级 `/s2s/messages` 与 `/messages/before`
-- `/s2s/miss-feed`
-- 客户端 `sync-peer-profile`、群 `sync-meta` 和 chat-open probe
+| Endpoint                                       | 状态   | 闭环说明                                                                      |
+| ---------------------------------------------- | ------ | ----------------------------------------------------------------------------- |
+| `/.well-known/soms`                            | CLOSED | 发布 root/signing identity 和 protocol version；无 capability 分支。          |
+| `/s2s/v1/ignite`                           | CLOSED | 首次 pin identity 与 cursor 初始化原子完成；不用于身份丢失后的重建。          |
+| `/s2s/v1/identity`                         | CLOSED | nonce、fingerprint、pairwise identity 连续性、demotion 与管理员原 pin 恢复。 |
+| `/s2s/v1/feed-revisions`                   | CLOSED | wake-up 可丢、重复、乱序；只 max-coalesce，不持久化为事实。                   |
+| `/s2s/v1/state-feed`                       | CLOSED | 完整五类状态、page/cursor 原子应用、key compaction、防回退、state-first。     |
+| `/s2s/v1/message-feed`                     | CLOSED | 完整消息类型、durable discovery、分页 cursor、回执、relay 与重启恢复。       |
+| `/s2s/v1/users/:account`                   | CLOSED | 仅用于首次显式 profile 查询，不用于 chat-open freshness probe。              |
+| `/s2s/v1/call`                             | CLOSED | 临时信令；终态记录走普通 message feed，进程崩溃中的实时信令不保证恢复。       |
+| `/s2s/v1/media/:digest`                    | CLOSED | Range、精确 message/thread/source-seq/digest ownership、恢复、GC 与墓碑覆盖。 |
+| `/s2s/v1/forward-bundles/:bundleId`        | CLOSED | closure digest、depth、资源和消息可见性校验。                                 |
 
 关系和群成员变化统一由 state feed 传输；消息发送只依据本地已经收敛的状态，不同步查询远端。
 
-## 仍未 CLOSED 的共同原因
-
-- 尚未发布第三方可消费的严格 JSON Schema 与 capability negotiation。
-- 字段级 fuzz/未知字段/Unicode 和最大字节矩阵未全部覆盖。
-- 媒体终止、共享 digest、临时分块 GC 与管理员物理删除矩阵未全部完成。
-- 群踢人、最后 peer member、重新加入等交付边界仍需完整 E2E 矩阵。
-
-因此当前端点最高标记为 `IMPLEMENTED`，不宣称第三方协议规范已经 `CLOSED`。
+正式规范中的字段 union 由单元测试与代码枚举比对；route manifest、数据库 E2E 和双节点 E2E 分别
+验证 surface、事务恢复和互操作闭环。JSON Schema、向量与离线 conformance 工具已经随 v1 发布；
+它们不是 endpoint 闭环或运行时互操作的前置条件。

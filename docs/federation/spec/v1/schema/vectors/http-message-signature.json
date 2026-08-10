@@ -1,0 +1,22 @@
+{
+  "description": "Non-secret deterministic Federation v1 RFC 9421 Ed25519 test vector. Never deploy this key.",
+  "privateKeyBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "publicKeyBase64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "request": {
+    "method": "POST",
+    "path": "/s2s/v1/feed-revisions",
+    "query": "?",
+    "authority": "b.example",
+    "body": "{\"origin\":\"a.example\",\"stateFeedRev\":\"12\",\"messageFeedRev\":\"34\"}"
+  },
+  "created": 1700000000,
+  "expires": 1700000300,
+  "keyId": "a.example/key-1",
+  "headers": {
+    "date": "Tue, 14 Nov 2023 22:13:20 GMT",
+    "content-digest": "sha-256=HL1+FDa+Gn829ivsfgBhN6ZULEerCbKiuBrUCGDY31g=",
+    "signature-input": "sig1=(\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\"",
+    "signature": "sig1=:qTGSvmz/fkIxa6ZVzH3QQ6uBc/pPeCy4/VdSZvvjW7n0t8luTt1a4KhbxrCGl2F0IGhjXe+XE0v6PwS936mGAQ==:"
+  },
+  "signatureBase": "\"@method\" POST\n\"@path\" /s2s/v1/feed-revisions\n\"@query\" ?\n\"@authority\" b.example\n\"date\" Tue, 14 Nov 2023 22:13:20 GMT\n\"content-digest\" sha-256=HL1+FDa+Gn829ivsfgBhN6ZULEerCbKiuBrUCGDY31g=\n\"@signature-params\" (\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\"\n"
+}

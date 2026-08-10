@@ -34,6 +34,7 @@ import { ThreadRevisionService } from '../thread-revision/thread-revision.servic
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
+import { assertServerGroupCapacityInTx } from '../group/group-capacity.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -139,7 +140,7 @@ export class InviteService {
         "requesterUserId", "targetUserId", status, note, revision,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${actorUserId}, ${peerUserId}, ${desired}::"FriendRequestStatus",
-        ${wantsFriend ? note.slice(0, 255) : ''}, 1,
+        ${note.slice(0, 255)}, 1,
         ${wantsFriend ? new Date() : null},
         ${desired === 'REQUESTED' ? new Date(Date.now() + INVITE_TTL_MS) : null}, CURRENT_TIMESTAMP)
       ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
@@ -175,8 +176,15 @@ export class InviteService {
     tx: DatabaseTransaction,
     userAId: number,
     userBId: number,
+    reason = '',
   ): Promise<void> {
-    await this.writeLocalFriendIntentInTx(tx, userAId, userBId, false);
+    await this.writeLocalFriendIntentInTx(
+      tx,
+      userAId,
+      userBId,
+      false,
+      reason,
+    );
   }
 
   /**
@@ -399,6 +407,7 @@ export class InviteService {
             "updatedAt" = CURRENT_TIMESTAMP
           WHERE "GroupMembershipRequest".status IS DISTINCT FROM 'REQUESTED'
              OR "GroupMembershipRequest".note IS DISTINCT FROM EXCLUDED.note
+             OR "GroupMembershipRequest"."expiresAt" <= CURRENT_TIMESTAMP
         `);
       }
       const request = await tx.query.groupMembershipRequest.findFirst({
@@ -434,6 +443,7 @@ export class InviteService {
     groupDomain: string;
     groupIsLocal: boolean;
     alreadyJoined: boolean;
+    joinRequested: boolean;
     fromUser: {
       id: number;
       account: string;
@@ -472,7 +482,7 @@ export class InviteService {
         BusinessCode.INVITE_NOT_FOUND,
         'group mirror missing',
       );
-    const [p, groupRow] = await Promise.all([
+    const [p, groupRow, joinDirection] = await Promise.all([
       this.database.db.query.threadParticipant.findFirst({
         where: and(
           eq(threadParticipant.userId, callerId),
@@ -483,6 +493,14 @@ export class InviteService {
       this.database.db.query.group.findFirst({
         where: eq(group.groupUserId, request.groupUserId),
         columns: { ownerId: true },
+      }),
+      this.database.db.query.groupMembershipRequest.findFirst({
+        where: and(
+          eq(groupMembershipRequest.groupUserId, request.groupUserId),
+          eq(groupMembershipRequest.memberUserId, callerId),
+          eq(groupMembershipRequest.direction, 'JOIN'),
+        ),
+        columns: { status: true },
       }),
     ]);
     const owner = groupRow
@@ -517,6 +535,7 @@ export class InviteService {
       groupDomain,
       groupIsLocal,
       alreadyJoined,
+      joinRequested: !alreadyJoined && joinDirection?.status === 'REQUESTED',
       fromUser: owner,
     };
   }
@@ -686,6 +705,7 @@ export class InviteService {
           );
         const isMirror = !!groupState?.domain && groupState.domain !== 'local';
         if (!isMirror) {
+          await assertServerGroupCapacityInTx(tx, threadRow.id, byUserId);
           await this.participantService.upsertMemberInTx(
             tx,
             threadRow.id,
@@ -759,7 +779,10 @@ export class InviteService {
           );
           void this.messageFanout.dispatch(accepted);
         }
-      } else {
+      } else if (result.originDomain === null) {
+        // A mirror only authored a JOIN intent. Its origin server will emit
+        // GROUP_JOINED after GROUP_META confirms membership; never announce
+        // success optimistically on the requesting mirror.
         const joined = await this.messages.writeSystemMessage(
           byUserId,
           result.threadId,
@@ -993,7 +1016,7 @@ export class InviteService {
         "requesterUserId", "targetUserId", status, note, revision,
         "requestedAt", "expiresAt", "updatedAt"
       ) VALUES (${params.peerUserId}, ${params.localUserId},
-        ${desired}::"FriendRequestStatus", ${desired === 'NOT_FRIEND' ? '' : params.note.slice(0, 255)},
+        ${desired}::"FriendRequestStatus", ${params.note.slice(0, 255)},
         ${params.revision}, ${desired === 'NOT_FRIEND' ? null : params.requestedAt},
         ${desired === 'REQUESTED' ? params.expiresAt : null}, CURRENT_TIMESTAMP)
       ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
@@ -1026,6 +1049,23 @@ export class InviteService {
         RETURNING revision
       `);
       localStateRevision = confirmed.rows[0]?.revision;
+      if (localStateRevision === undefined && desired === 'FRIEND') {
+        // A peer may still advertise its established, non-expiring FRIEND
+        // direction after this user deleted the relationship. Preserve that
+        // standing peer consent, but refresh our newer NOT_FRIEND direction so
+        // the state-feed caller sends the deletion back and both sides
+        // converge. A valid local REQUESTED direction took the confirmation
+        // branch above and becomes FRIEND instead.
+        const rejected = await tx.execute<{ revision: number }>(sql`
+          UPDATE "FriendRequest" SET revision = revision + 1,
+            "updatedAt" = CURRENT_TIMESTAMP
+          WHERE "requesterUserId" = ${params.localUserId}
+            AND "targetUserId" = ${params.peerUserId}
+            AND status = 'NOT_FRIEND'
+          RETURNING revision
+        `);
+        localStateRevision = rejected.rows[0]?.revision;
+      }
     }
     const pairEffect = await this.reconcileFriendPairInTx(
       tx,
@@ -1036,9 +1076,7 @@ export class InviteService {
       return {
         changed: true,
         requestCreated: false,
-        ...(localStateRevision === undefined
-          ? {}
-          : { localStateRevision }),
+        ...(localStateRevision === undefined ? {} : { localStateRevision }),
         threadId: pairEffect.threadId,
         added: pairEffect.transitioned,
       };
@@ -1046,9 +1084,7 @@ export class InviteService {
     if (desired === 'REQUESTED') {
       return {
         changed: true,
-        ...(localStateRevision === undefined
-          ? {}
-          : { localStateRevision }),
+        ...(localStateRevision === undefined ? {} : { localStateRevision }),
         requestCreated:
           previous?.status !== 'REQUESTED' ||
           previous.expiresAt === null ||
@@ -1059,9 +1095,7 @@ export class InviteService {
     return {
       changed: true,
       requestCreated: false,
-      ...(localStateRevision === undefined
-        ? {}
-        : { localStateRevision }),
+      ...(localStateRevision === undefined ? {} : { localStateRevision }),
       ...(pairEffect.threadId === undefined
         ? {}
         : { threadId: pairEffect.threadId, added: false }),

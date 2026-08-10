@@ -77,6 +77,21 @@ import {
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
 import {
+  buildCallContent,
+  parseFederatedCallContent,
+  sameFederatedCallAddress,
+} from '../calls/call-content.js';
+import {
+  assertS2SCallFrame,
+  type S2SCallFrame,
+  type S2SCallOp,
+} from '../calls/federated-call-protocol.js';
+
+export type {
+  S2SCallFrame,
+  S2SCallOp,
+} from '../calls/federated-call-protocol.js';
+import {
   FederationIdentityService,
   type SignedFederationIdentity,
 } from './federation-identity.service.js';
@@ -97,6 +112,14 @@ import {
   parseSystemMessageContent,
   SystemMessageType,
 } from '../message/system-message.js';
+import {
+  assertServerGroupCapacityInTx,
+  SERVER_GROUP_FULL_REASON,
+} from '../group/group-capacity.js';
+import {
+  FEDERATION_PROTOCOL_VERSION,
+  selectFederationProtocolVersion,
+} from './federation-protocol.js';
 
 /**
  * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
@@ -119,11 +142,18 @@ export class S2sResponseError extends Error {
   }
 }
 
-function toIsoString(value: Date | string | null): string | null {
-  if (value === null) return null;
-  return value instanceof Date
-    ? value.toISOString()
-    : new Date(value).toISOString();
+/** A well-formed feed item whose local relationship/thread context no longer exists. */
+export class FederationMessageContextError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FederationMessageContextError';
+  }
+}
+
+/** Raw SQL timestamp columns are driver-dependent Date|string values. Restore the domain Date at
+ * that boundary; PeerStateFeedService owns the shared Date -> epoch-ms wire serialization. */
+function fromRawTimestamp(value: Date | string | null): Date | null {
+  return value === null || value instanceof Date ? value : new Date(value);
 }
 
 /** A federated user address on the wire: two separate fields (account + domain). The `@` separator
@@ -182,6 +212,11 @@ interface StatePageEffect {
     threadId: number;
     sourcePeerDomain: string;
   }>;
+  groupStatusMessages: Array<{
+    actorUserId: number;
+    threadId: number;
+    message: Omit<Message, 'id'>;
+  }>;
 }
 
 interface S2SDeletedMessage {
@@ -205,7 +240,7 @@ export interface S2SAvatar {
 }
 
 /**
- * A user's public profile as transmitted over S2S — the resolve endpoint (GET /api/v1/s2s/users/:account)
+ * A user's public profile as transmitted over S2S — the resolve endpoint (GET /s2s/v1/users/:account)
  * response body and the `profile` slot on the friend-request payload. `profileRev` is the sender's
  * User.profileRev (Int, the profile revision); receivers store it as the stub's remoteProfileRev so the
  * lightweight /revision probe can detect staleness without re-transferring the avatar.
@@ -217,49 +252,6 @@ export interface S2SProfile {
   avatar: S2SAvatar | null;
   bio: string;
   profileRev: number;
-}
-
-interface S2SOpsBase {
-  id: string; // origin-assigned ULID; dedup key with origin
-  origin: string; // sending server's domain (== signer)
-  ts: number; // ms since epoch
-}
-
-/** POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame. Carries the EPHEMERAL realtime call
- *  signaling + lifecycle between two servers. The persisted CALL record is an ordinary Message that
- *  rides the existing pull-based sync — it needs NO frame. `op` discriminates:
- *    incoming              — the caller's server rings the callee's server
- *    accepted/declined/    — lifecycle transitions (the callee's side acted)
- *    cancelled/ended/missed
- *    signal                — an SDP/ICE relay frame (opaque, never persisted)
- *  `from` is always the RELAYING (signing) server's user → satisfies the guard's `from.domain ===
- *  signer` binding rule. No (origin, opId) dedup table: the receiver's in-memory call state machine +
- *  the callSid-keyed terminal bubble write (writeMsgToThread dedups on clientMessageId) make replays
- *  idempotent — a per-frame DB write would choke ICE candidate bursts. */
-export type S2SCallOp =
-  | 'incoming'
-  | 'accepted'
-  | 'ringing'
-  | 'declined'
-  | 'cancelled'
-  | 'ended'
-  | 'missed'
-  | 'signal'
-  | 'connected'
-  | 'video-upgraded';
-
-export interface S2SCallFrame extends S2SOpsBase {
-  from: S2SAddress; // sender; from.domain === signer (binding rule)
-  to: S2SAddress; // recipient; resolved to a local userId inbound
-  callSid: string; // the call's idempotency key (== the terminal CALL bubble's clientMessageId)
-  op: S2SCallOp;
-  callType: 'AUDIO' | 'VIDEO';
-  endReason?: string; // op==='ended' only → maps to the persisted CallOutcome (completed/failed)
-  kind?: string; // op==='signal' only (the SDP/ICE frame kind)
-  payload?: string; // op==='signal' only (opaque SDP/ICE — relayed verbatim, never persisted)
-  // op==='connected' only: the real media-connect epoch-ms (the connect authority — NOT set on `accepted`,
-  // which only means the callee answered / is negotiating). The origin stamps this verbatim.
-  startedAt?: number;
 }
 
 function parseInboundDownloadAuth(
@@ -401,10 +393,9 @@ export class FederationService {
   }
 
   /**
-   * The single origin-hub routing + loop-safety entry. Computes the dest domain set for a new message,
-   * then subtracts fetchedFromDomain (the domain the message was just pulled from — it already has it).
-   * This one rule closes BOTH symmetric back-notify paths: a mirror pulling from origin signals nothing
-   * (its only dest IS its fetch source); the origin re-signals every foreign domain EXCEPT the source.
+   * The single origin-hub routing + loop-safety entry. A message pulled directly from its author is
+   * signalled back once because its allocated self-authored feed item is the delivery receipt. For a
+   * third-party relay, fetchedFromDomain is subtracted because that source already has the message.
    * P2P → each foreign peer except the author; GROUP → (origin: all foreign member-domains; mirror:
    * {originDomain}). Best-effort: logs + swallows.
    */
@@ -436,6 +427,14 @@ export class FederationService {
       if (!trd) return;
       const author = participants.find((p) => p.userId === authorUserId);
       if (!author) return;
+      const authorDomain = this.effectiveDomain(author.user);
+      if (fetchedFromDomain && authorDomain === fetchedFromDomain) {
+        void this.pushDiscoveryHwm(fetchedFromDomain).catch((e) =>
+          this.logger.debug(
+            `delivery receipt HWM push ${fetchedFromDomain} failed: ${(e as Error).message}`,
+          ),
+        );
+      }
 
       const groupDomain = trd.user?.domain; // 'local' = origin; <peer> = mirror; undefined = P2P
       if (!groupDomain) {
@@ -483,7 +482,7 @@ export class FederationService {
    *  The isDeleted gate matters here because S2S bypasses the token system: the local /uploads/* path is
    *  protected from admin-disabled users by session-token revocation (invalidateAllSessions revokes every
    *  SessionToken row on disable), but
-   *  /get_file never touches tokens — so a disabled user's media would still flow out over federation
+   *  /media/:digest never touches client tokens — so a disabled user's media would still flow out over federation
    *  unless we reject the soft-deleted row here. */
   async findLocalUserId(account: string): Promise<number | null> {
     const u = await this.database.db.query.user.findFirst({
@@ -701,8 +700,8 @@ export class FederationService {
         body: {
           status: current.status,
           note: current.note,
-          requestedAt: toIsoString(current.requestedAt),
-          expiresAt: toIsoString(current.expiresAt),
+          requestedAt: fromRawTimestamp(current.requestedAt),
+          expiresAt: fromRawTimestamp(current.expiresAt),
         },
       },
     ]);
@@ -774,8 +773,8 @@ export class FederationService {
         body: {
           status: membership.request.status,
           note: membership.request.note,
-          requestedAt: membership.request.requestedAt?.toISOString() ?? null,
-          expiresAt: membership.request.expiresAt?.toISOString() ?? null,
+          requestedAt: membership.request.requestedAt,
+          expiresAt: membership.request.expiresAt,
           owner: {
             account: owner.account,
             domain:
@@ -864,7 +863,7 @@ export class FederationService {
         body: {
           status: membership.request.status,
           note: membership.request.note,
-          requestedAt: membership.request.requestedAt?.toISOString() ?? null,
+          requestedAt: membership.request.requestedAt,
           expiresAt: null,
         },
       },
@@ -907,7 +906,19 @@ export class FederationService {
           BusinessCode.INVITE_NOT_FOUND,
           'group request not found',
         );
+      let statusMessage: Omit<Message, 'id'> | null = null;
+      let alreadyActive = false;
       if (thread.groupDomain === 'local') {
+        await assertServerGroupCapacityInTx(tx, threadId, memberUserId);
+        const existing = await tx.query.threadParticipant.findFirst({
+          where: and(
+            eq(tables.threadParticipant.threadId, threadId),
+            eq(tables.threadParticipant.userId, memberUserId),
+            isNull(tables.threadParticipant.leftAt),
+          ),
+          columns: { id: true },
+        });
+        alreadyActive = !!existing;
         await this.participantService.upsertMemberInTx(
           tx,
           threadId,
@@ -928,6 +939,17 @@ export class FederationService {
         threadId,
         memberUserId,
       );
+      if (thread.groupDomain === 'local' && !alreadyActive) {
+        statusMessage = (
+          await this.message.writeSystemMessageInTx(
+            tx,
+            memberUserId,
+            threadId,
+            SystemMessageType.GROUP_JOINED,
+            memberUserId,
+          )
+        ).message;
+      }
       const revision =
         thread.groupDomain === 'local'
           ? await this.threadRevisionService.recordThreadAddInTx(
@@ -936,12 +958,18 @@ export class FederationService {
               threadId,
             )
           : null;
-      return { allocated, revision };
+      return { allocated, revision, statusMessage };
     });
     if (result.revision !== null)
       this.threadRevisionService.notifyThreadRevision({
         userId: memberUserId,
         revision: result.revision,
+      });
+    if (result.statusMessage)
+      await this.publishConfirmedGroupStatus({
+        actorUserId: memberUserId,
+        threadId,
+        message: result.statusMessage,
       });
     await this.pushStateFeedDomains(result.allocated.keys());
   }
@@ -1151,7 +1179,7 @@ export class FederationService {
     );
   }
 
-  /** Public profile of a local user (GET /api/v1/s2s/users/:account). Null if not local / not found. */
+  /** Public profile of a local user (GET /s2s/v1/users/:account). Null if not local / not found. */
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
     const u = await this.database.db.query.user.findFirst({
@@ -1486,8 +1514,8 @@ export class FederationService {
 
   /**
    * Recover one reconnect-sweep candidate without confusing availability with identity bootstrap.
-   * A pending first contact may retry the atomic/idempotent /init. A demoted established peer must
-   * prove the already-pinned identity and complete a signed ping; it can never silently re-bootstrap.
+   * A pending first contact may retry the atomic/idempotent /ignite. A demoted established peer must
+   * prove the already-pinned identity; it can never silently re-bootstrap.
    */
   async recoverPeerTrust(domain: string): Promise<void> {
     const peer = await this.database.db.query.federatedPeer.findFirst({
@@ -1506,7 +1534,6 @@ export class FederationService {
       );
     }
     await this.verifyPeerIdentity(domain);
-    await this.pingPeer(domain);
     await this.markRecovered(domain);
   }
 
@@ -1534,7 +1561,7 @@ export class FederationService {
   // log of every transition (the admin timeline). FederationService is the single owner: every
   // transition — runtime (init, op success/failure) and admin (block/unblock) — flows through these
   // methods, so the row + the event stay consistent. State machine:
-  //   pending ──init ok──► trusted ──op failed──► demoted ──signed ping ok──► trusted …
+  //   pending ──ignite ok──► trusted ──op failed──► demoted ──identity proof ok──► trusted …
 
   /** Best-practice liveness watermark window. "Last successful contact" is an admin observability
    *  signal whose consumer needs MINUTE granularity (is this peer up?), not sub-second — so write
@@ -1558,7 +1585,7 @@ export class FederationService {
    *  Observability-only: NO state machine consumes lastSuccessAt. Demotion is failure-driven (the
    *  matched markDemoted on a failed op), NOT staleness-driven; the reconnect sweep + slowPoll select
    *  targets by trustLevel, never by this watermark. So this write is benign bookkeeping — the explicit
-   *  liveness channel is GET /s2s/ping (+ ensurePeerTrusted on trust refresh); advancing here is the
+   *  identity continuity and normal signed data requests provide liveness; advancing here is the
    *  higher-fidelity supplement that records every real successful contact. */
   async markContactSuccess(domain: string): Promise<void> {
     const now = Date.now();
@@ -1769,7 +1796,7 @@ export class FederationService {
     const preUpgradeKeys =
       await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
     const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}/api/v1/s2s/ignite`);
+    const url = new URL(`${base}/s2s/v1/ignite`);
     const localStartChangeId =
       await this.federationCursor.prepareHandshakeStart(peerDomain);
     const claim = this.federationIdentity.createClaim(
@@ -1801,12 +1828,7 @@ export class FederationService {
     if (res.status !== 200 && res.status !== 202) {
       throw new Error(`S2S init to ${peerDomain} rejected: HTTP ${res.status}`);
     }
-    const payload = (await res.json()) as
-      | { data?: SignedFederationIdentity }
-      | SignedFederationIdentity;
-    const response = (
-      'data' in payload && payload.data ? payload.data : payload
-    ) as SignedFederationIdentity;
+    const response = (await res.json()) as SignedFederationIdentity;
     await this.verifyAndPinIdentityResponse(
       peerDomain,
       claim.nonce,
@@ -1823,7 +1845,7 @@ export class FederationService {
       await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
     const nonce = randomBytes(24).toString('base64url');
     const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}/api/v1/s2s/identity`);
+    const url = new URL(`${base}/s2s/v1/identity`);
     url.searchParams.set('nonce', nonce);
     const headers = this.signature.signOutbound({
       method: 'GET',
@@ -1861,18 +1883,180 @@ export class FederationService {
         `S2S identity from ${peerDomain} rejected: HTTP ${res.status}`,
       );
     }
-    const payload = (await res.json()) as
-      | { data?: SignedFederationIdentity }
-      | SignedFederationIdentity;
+    const response = (await res.json()) as SignedFederationIdentity;
     await this.verifyAndPinIdentityResponse(
       peerDomain,
       nonce,
-      ('data' in payload && payload.data
-        ? payload.data
-        : payload) as SignedFederationIdentity,
+      response,
       preUpgradeKeys,
       false,
     );
+  }
+
+  /**
+   * Administrator-only, non-destructive recovery after a transient DNS/SRV hijack caused identity loss.
+   * The operation never adopts what DNS currently serves: it succeeds only when well-known, the detached
+   * identity proof, pairwise id, root fingerprint and signing key all match the evidence pinned before the
+   * incident. Cursors, mirrors, authorization and trustedAt are preserved.
+   */
+  async manuallyRecoverPinnedIdentity(
+    peerDomain: string,
+    confirmDomain: string,
+  ): Promise<{ domain: string; trustLevel: 'trusted' }> {
+    const domain = peerDomain.trim().toLowerCase().replace(/\.+$/, '');
+    if (confirmDomain.trim().toLowerCase().replace(/\.+$/, '') !== domain) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'confirmDomain must exactly match the peer domain',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const peer = await this.database.db.query.federatedPeer.findFirst({
+      where: eq(tables.federatedPeer.domain, domain),
+      columns: {
+        trustLevel: true,
+        pairwiseServerId: true,
+        rootKeyFingerprint: true,
+        identityPinnedAt: true,
+      },
+    });
+    if (
+      peer?.trustLevel !== 'identity_lost' ||
+      !peer.identityPinnedAt ||
+      !peer.pairwiseServerId ||
+      !peer.rootKeyFingerprint
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `${domain} is not an identity-lost peer with complete pinned evidence`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // The explicit admin action is also an instruction to discard a possibly polluted cached DNS route.
+    this.discovery.invalidateBase(domain);
+    const doc = await this.discovery.fetchWellKnown(domain);
+    const rootPublicKey = doc.rootKey?.ed25519;
+    const computedFingerprint = rootPublicKey
+      ? `sha256:${createHash('sha256')
+          .update(Buffer.from(rootPublicKey, 'base64'))
+          .digest('base64url')}`
+      : undefined;
+    const cachedKeys = await this.database.db.query.s2SKeyCache.findMany({
+      where: eq(tables.s2SKeyCache.domain, domain),
+      columns: { keyId: true, publicKey: true },
+    });
+    const publishedKey = doc.keys[0];
+    const originalIdentityReturned =
+      selectFederationProtocolVersion(doc.protocolVersions) ===
+        FEDERATION_PROTOCOL_VERSION &&
+      doc.rootKey?.fingerprint === peer.rootKeyFingerprint &&
+      computedFingerprint === peer.rootKeyFingerprint &&
+      doc.keys.length === 1 &&
+      publishedKey?.ed25519 === rootPublicKey &&
+      cachedKeys.length === 1 &&
+      cachedKeys[0]?.keyId === publishedKey?.keyId &&
+      cachedKeys[0]?.publicKey === publishedKey?.ed25519;
+    if (!originalIdentityReturned || !publishedKey) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        `${domain} still does not present the original pinned identity`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const nonce = randomBytes(24).toString('base64url');
+    const base = await this.discovery.resolveBase(domain);
+    const url = new URL(`${base}/s2s/v1/identity`);
+    url.searchParams.set('nonce', nonce);
+    const headers = this.signature.signOutbound({
+      method: 'GET',
+      path: url.pathname,
+      query: url.search || '?',
+      authority: url.host,
+      body: '',
+    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+      });
+    } catch (error) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_DELIVERY_FAILED,
+        `identity recovery probe for ${domain} failed: ${(error as Error).message}`,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    if (!res.ok) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
+        `identity recovery probe for ${domain} returned HTTP ${res.status}`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const response = (await res.json()) as SignedFederationIdentity;
+    const claim = this.federationIdentity.verifySignedClaim(
+      response,
+      domain,
+      this.config.domain,
+      nonce,
+      Uint8Array.from(Buffer.from(publishedKey.ed25519, 'base64')),
+    );
+    if (
+      claim.pairwiseServerId !== peer.pairwiseServerId ||
+      claim.rootKeyFingerprint !== peer.rootKeyFingerprint
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        `${domain} signed proof does not match the original pinned identity`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    await this.discovery.cacheKeys(domain, doc.keys);
+    await this.database.db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select({
+          trustLevel: tables.federatedPeer.trustLevel,
+          pairwiseServerId: tables.federatedPeer.pairwiseServerId,
+          rootKeyFingerprint: tables.federatedPeer.rootKeyFingerprint,
+        })
+        .from(tables.federatedPeer)
+        .where(eq(tables.federatedPeer.domain, domain))
+        .for('update')
+        .limit(1);
+      if (
+        locked?.trustLevel !== 'identity_lost' ||
+        locked.pairwiseServerId !== claim.pairwiseServerId ||
+        locked.rootKeyFingerprint !== claim.rootKeyFingerprint
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+          `${domain} pinned identity changed during recovery`,
+          HttpStatus.CONFLICT,
+        );
+      }
+      await tx
+        .update(tables.federatedPeer)
+        .set({
+          trustLevel: 'trusted',
+          identityLostAt: null,
+          identityLostReason: null,
+          demotedAt: null,
+          demoteReason: null,
+          lastSuccessAt: new Date(),
+        })
+        .where(eq(tables.federatedPeer.domain, domain));
+      await tx.insert(tables.federatedPeerEvent).values({
+        domain,
+        type: 'recovered',
+        reason: 'administrator verified the original pinned identity',
+      });
+    });
+    return { domain, trustLevel: 'trusted' };
   }
 
   private async verifyAndPinIdentityResponse(
@@ -1890,8 +2074,8 @@ export class FederationService {
           .digest('base64url')}`
       : undefined;
     if (
-      doc.protocolVersion !== 1 ||
-      doc.identityEpoch !== response.identityEpoch ||
+      selectFederationProtocolVersion(doc.protocolVersions) !==
+        FEDERATION_PROTOCOL_VERSION ||
       doc.rootKey?.fingerprint !== response.rootKeyFingerprint ||
       computedFingerprint !== response.rootKeyFingerprint ||
       doc.keys.length !== 1 ||
@@ -1943,7 +2127,7 @@ export class FederationService {
     }
   }
 
-  /** POST /api/v1/s2s/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
+  /** POST /s2s/v1/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
    *  to the peer server hosting the call's other participant. Awaitable so the caller's `initiate` can
    *  detect a ring failure (→ the `unreachable` terminal bubble). The persisted CALL record rides the
    *  pull-based message sync, NOT this frame. `peerDomain` is the foreign participant's home domain. */
@@ -1954,8 +2138,8 @@ export class FederationService {
       callSid: string;
       op: S2SCallOp;
       callType: 'AUDIO' | 'VIDEO';
-      endReason?: string;
-      kind?: string;
+      endReason?: 'completed' | 'timeout' | 'failed';
+      kind?: S2SCallFrame['kind'];
       payload?: string;
       startedAt?: number;
     },
@@ -1976,11 +2160,7 @@ export class FederationService {
     if (params.kind !== undefined) frame.kind = params.kind;
     if (params.payload !== undefined) frame.payload = params.payload;
     if (params.startedAt !== undefined) frame.startedAt = params.startedAt;
-    await this.postSigned(
-      '/api/v1/s2s/call',
-      JSON.stringify(frame),
-      peerDomain,
-    );
+    await this.postSigned('/s2s/v1/call', JSON.stringify(frame), peerDomain);
   }
 
   /** Whether THIS server is the origin (roster + history authority) of a group thread: the group
@@ -2051,7 +2231,7 @@ export class FederationService {
       .then((row) => (row ? { ...row, groupUser: row.user } : null));
   }
 
-  /** Inbound POST /api/v1/s2s/call — receive ONE federated call frame. Resolves the wire identities to
+  /** Inbound POST /s2s/v1/call — receive ONE federated call frame. Resolves the wire identities to
    *  LOCAL ids (the sender → a foreigner stub; the recipient → a local userId) + the LOCAL P2P thread,
    *  then hands the frame to CallsService via `emitAsync('call.frame.inbound')` — NOT a direct injection
    *  (the calls layer injects FederationService for outbound; a back-edge would cycle). `emitAsync` (not
@@ -2064,7 +2244,8 @@ export class FederationService {
    *  receiver's call state machine + the callSid-keyed bubble write make replays idempotent. The
    *  not-found / not-friends rejects use HTTP 404 (NOT in postSigned's success- or demote-sets → the
    *  sender throws without demoting a healthy peer). */
-  async handleCallFrame(body: S2SCallFrame): Promise<void> {
+  async handleCallFrame(body: unknown): Promise<void> {
+    assertS2SCallFrame(body, this.config.domain);
     if (body.op === 'incoming') {
       await this.quota.peek(body.origin, 'requests');
     }
@@ -2368,16 +2549,6 @@ export class FederationService {
     }
   }
 
-  /** Outbound signed ping (GET /api/v1/s2s/ping) — the reconnect sweep's cheap first probe
-   *  (reachability + mutual-key-validity) before the heavier re-handshake. Raw getSigned (NOT
-   *  withTrustedPeer): a demoted peer is pinged directly; on failure it stays demoted for the next tick. */
-  async pingPeer(domain: string): Promise<void> {
-    await this.getSigned<{ domain: string; ts: number }>(
-      '/api/v1/s2s/ping',
-      domain,
-    );
-  }
-
   /** Lightweight, ephemeral discovery wake-up. The receiver never persists this advertised HWM. */
   async pushDiscoveryHwm(domain: string): Promise<void> {
     const allocatedThrough =
@@ -2388,7 +2559,7 @@ export class FederationService {
         columns: { allocatedThrough: true },
       });
     await this.postSigned(
-      '/api/v1/s2s/feed-rev',
+      '/s2s/v1/feed-revisions',
       JSON.stringify({
         origin: this.config.domain,
         stateFeedRev: (stateFeedRev?.allocatedThrough ?? 0n).toString(),
@@ -2396,16 +2567,6 @@ export class FederationService {
       }),
       domain,
     );
-  }
-
-  async pullStateFeedRev(domain: string): Promise<bigint> {
-    const result = await this.getSigned<{ stateFeedRev: string }>(
-      '/api/v1/s2s/state-feed-rev',
-      domain,
-    );
-    if (!/^(0|[1-9]\d*)$/.test(result.stateFeedRev))
-      throw new Error(`peer ${domain} returned an invalid state feed rev`);
-    return BigInt(result.stateFeedRev);
   }
 
   async pullStateFeedPage(
@@ -2417,7 +2578,7 @@ export class FederationService {
       throw new Error('invalid state feed cursor/page size');
     return this.withTrustedPeer(domain, () =>
       this.getSigned<PeerStateFeedPage>(
-        `/api/v1/s2s/state-feed?after=${after.toString()}&take=${take}`,
+        `/s2s/v1/state-feed?after=${after.toString()}&take=${take}`,
         domain,
         16 * 1024 * 1024,
       ),
@@ -2438,6 +2599,7 @@ export class FederationService {
           statePushDomains: [],
           friendRequests: [],
           formedFriendships: [],
+          groupStatusMessages: [],
         };
         for (const pending of effect.revisions)
           this.threadRevisionService.notifyThreadRevision(pending);
@@ -2461,6 +2623,8 @@ export class FederationService {
             formed.threadId,
             formed.sourcePeerDomain,
           );
+        for (const status of effect.groupStatusMessages)
+          await this.publishConfirmedGroupStatus(status);
       },
     });
   }
@@ -2474,6 +2638,7 @@ export class FederationService {
     const statePushDomains: string[] = [];
     const friendRequests: StatePageEffect['friendRequests'] = [];
     const formedFriendships: StatePageEffect['formedFriendships'] = [];
+    const groupStatusMessages: StatePageEffect['groupStatusMessages'] = [];
     // GROUP_META materializes the roster stubs that relayed member PROFILE snapshots target. The pull
     // layer already validated wire rev ordering, so snapshot application may safely use dependency order.
     const applyPriority = {
@@ -2640,20 +2805,24 @@ export class FederationService {
           ) ||
           typeof body.note !== 'string' ||
           body.note.length > 255 ||
-          (body.requestedAt !== null && typeof body.requestedAt !== 'string') ||
-          (body.expiresAt !== null && typeof body.expiresAt !== 'string') ||
+          (body.requestedAt !== null &&
+            (!Number.isSafeInteger(body.requestedAt) ||
+              Number(body.requestedAt) < 0)) ||
+          (body.expiresAt !== null &&
+            (!Number.isSafeInteger(body.expiresAt) ||
+              Number(body.expiresAt) < 0)) ||
           (body.status === 'REQUESTED' &&
-            (typeof body.requestedAt !== 'string' ||
-              typeof body.expiresAt !== 'string')) ||
+            (typeof body.requestedAt !== 'number' ||
+              typeof body.expiresAt !== 'number')) ||
           (body.status !== 'REQUESTED' && body.expiresAt !== null)
         )
           throw new Error('invalid P2P_META body');
         const requestedAt =
-          typeof body.requestedAt === 'string'
+          typeof body.requestedAt === 'number'
             ? new Date(body.requestedAt)
             : null;
         const expiresAt =
-          typeof body.expiresAt === 'string' ? new Date(body.expiresAt) : null;
+          typeof body.expiresAt === 'number' ? new Date(body.expiresAt) : null;
         if (
           (requestedAt && Number.isNaN(requestedAt.getTime())) ||
           (expiresAt && Number.isNaN(expiresAt.getTime()))
@@ -2719,8 +2888,8 @@ export class FederationService {
               body: {
                 status: localDirection.status,
                 note: localDirection.note,
-                requestedAt: toIsoString(localDirection.requestedAt),
-                expiresAt: toIsoString(localDirection.expiresAt),
+                requestedAt: localDirection.requestedAt,
+                expiresAt: localDirection.expiresAt,
               },
             },
           ]);
@@ -2787,8 +2956,12 @@ export class FederationService {
           ) ||
           typeof body.note !== 'string' ||
           body.note.length > 255 ||
-          (body.requestedAt !== null && typeof body.requestedAt !== 'string') ||
-          (body.expiresAt !== null && typeof body.expiresAt !== 'string') ||
+          (body.requestedAt !== null &&
+            (!Number.isSafeInteger(body.requestedAt) ||
+              Number(body.requestedAt) < 0)) ||
+          (body.expiresAt !== null &&
+            (!Number.isSafeInteger(body.expiresAt) ||
+              Number(body.expiresAt) < 0)) ||
           (item.eventType === 'GROUP_INVITE_INTENT' &&
             (!owner ||
               typeof owner.account !== 'string' ||
@@ -2835,11 +3008,11 @@ export class FederationService {
             note: body.note,
             revision,
             requestedAt:
-              typeof body.requestedAt === 'string'
+              typeof body.requestedAt === 'number'
                 ? new Date(body.requestedAt)
                 : null,
             expiresAt:
-              typeof body.expiresAt === 'string'
+              typeof body.expiresAt === 'number'
                 ? new Date(body.expiresAt)
                 : null,
           });
@@ -2853,7 +3026,7 @@ export class FederationService {
             status: body.status as 'REQUESTED' | 'MEMBER' | 'NOT_MEMBER',
             note: body.note,
             expiresAt:
-              typeof body.expiresAt === 'string'
+              typeof body.expiresAt === 'number'
                 ? new Date(body.expiresAt)
                 : null,
           });
@@ -2863,19 +3036,71 @@ export class FederationService {
           membership.shouldBeActive
         ) {
           const [originThread] = await tx
-            .select({ id: tables.messageThread.id })
+            .select({
+              id: tables.messageThread.id,
+              ownerId: tables.group.ownerId,
+            })
             .from(tables.messageThread)
+            .innerJoin(
+              tables.group,
+              eq(tables.group.groupUserId, tables.messageThread.groupUserId),
+            )
             .where(eq(tables.messageThread.groupUserId, groupUser.id))
             .for('update')
             .limit(1);
           if (!originThread) throw new Error('origin group thread missing');
-          const activated = await this.groupMembershipState.setPairActiveInTx(
+          try {
+            await assertServerGroupCapacityInTx(tx, originThread.id, member.id);
+          } catch (error) {
+            if (
+              !(error instanceof BusinessException) ||
+              error.bizCode !== BusinessCode.GROUP_FULL
+            )
+              throw error;
+
+            // Capacity is an origin-server policy, not a federation protocol
+            // constant. Reject the request using the existing authoritative
+            // membership state so older peers converge without learning about
+            // this server's numerical limit.
+            await this.groupMembershipState.setPairActiveInTx(
+              tx,
+              groupUser.id,
+              member.id,
+              false,
+            );
+            const rejection = await this.writeGroupInviteIntentInTx(
+              tx,
+              originThread.id,
+              member.id,
+              SERVER_GROUP_FULL_REASON,
+              false,
+            );
+            await tx
+              .update(tables.group)
+              .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
+              .where(eq(tables.group.groupUserId, groupUser.id));
+            const groupState = await this.writeGroupStateInTx(
+              tx,
+              originThread.id,
+              [peerDomain],
+            );
+            statePushDomains.push(...rejection.keys(), ...groupState.keys());
+            this.logger.warn(
+              `Rejected federated group join for ${item.subjectAccount}@${peerDomain}: origin group is full`,
+            );
+            continue;
+          }
+          await this.groupMembershipState.setPairActiveInTx(
             tx,
             groupUser.id,
             member.id,
             true,
           );
-          if (!activated) continue;
+          // The origin may still consider this member active when a mirror
+          // compacts an unobserved leave followed immediately by a rejoin.
+          // Re-emit the authoritative roster for every new JOIN revision even
+          // when the pair itself needs no transition, otherwise that mirror
+          // would wait forever for confirmation.
           await this.participantService.upsertMemberInTx(
             tx,
             originThread.id,
@@ -2897,6 +3122,18 @@ export class FederationService {
               targetWhere: sql`${tables.threadAudience.targetDomain} <> 'local' AND ${tables.threadAudience.scope} = 'THREAD'`,
               set: { deliverThroughChangeId: null },
             });
+          const status = await this.message.writeSystemMessageInTx(
+            tx,
+            originThread.ownerId,
+            originThread.id,
+            SystemMessageType.GROUP_JOINED,
+            member.id,
+          );
+          groupStatusMessages.push({
+            actorUserId: originThread.ownerId,
+            threadId: originThread.id,
+            message: status.message,
+          });
           await tx
             .update(tables.group)
             .set({ rosterRev: sql`${tables.group.rosterRev} + 1` })
@@ -2989,6 +3226,7 @@ export class FederationService {
           revision,
           item.body as Record<string, unknown>,
         );
+        statePushDomains.push(...groupEffect.statePushDomains);
         for (const { userId, active } of groupEffect.users) {
           changed.push({
             userId,
@@ -3023,7 +3261,34 @@ export class FederationService {
       statePushDomains,
       friendRequests,
       formedFriendships,
+      groupStatusMessages,
     };
+  }
+
+  /** Publish an origin-authored membership confirmation only after its state transaction commits. */
+  private async publishConfirmedGroupStatus(status: {
+    actorUserId: number;
+    threadId: number;
+    message: Omit<Message, 'id'>;
+  }): Promise<void> {
+    const recipients =
+      await this.participantService.getActiveParticipantUserIds(
+        status.threadId,
+      );
+    for (const recipient of recipients) {
+      if (recipient.userId !== status.actorUserId)
+        this.sse.onNewMessage(
+          recipient.userId,
+          status.threadId,
+          status.message.seq,
+          status.message.createdAt.getTime(),
+        );
+    }
+    await this.notifyOnSend(
+      status.actorUserId,
+      status.threadId,
+      status.message.originSeq ?? status.message.seq,
+    );
   }
 
   /** A group origin relays a member's authoritative PROFILE snapshot to every other member server. */
@@ -3146,6 +3411,7 @@ export class FederationService {
   ): Promise<{
     threadId: number;
     users: Array<{ userId: number; active: boolean }>;
+    statePushDomains: string[];
   }> {
     const active = body.active;
     const dissolved = body.dissolved;
@@ -3182,7 +3448,11 @@ export class FederationService {
       )
       .limit(1);
     if (!mirror || (mirror.remoteRosterRev ?? -1) >= revision)
-      return { threadId: mirror?.threadId ?? 0, users: [] };
+      return {
+        threadId: mirror?.threadId ?? 0,
+        users: [],
+        statePushDomains: [],
+      };
     await tx.execute(sql`
       SELECT id FROM "MessageThread"
       WHERE id = ${mirror.threadId}
@@ -3198,6 +3468,24 @@ export class FederationService {
       .where(
         and(
           eq(tables.threadParticipant.threadId, mirror.threadId),
+          eq(tables.user.isForeigner, false),
+        ),
+      );
+    const localJoinDirections = await tx
+      .select({
+        userId: tables.groupMembershipRequest.memberUserId,
+        account: tables.user.account,
+        status: tables.groupMembershipRequest.status,
+      })
+      .from(tables.groupMembershipRequest)
+      .innerJoin(
+        tables.user,
+        eq(tables.user.id, tables.groupMembershipRequest.memberUserId),
+      )
+      .where(
+        and(
+          eq(tables.groupMembershipRequest.groupUserId, mirror.groupUserId),
+          eq(tables.groupMembershipRequest.direction, 'JOIN'),
           eq(tables.user.isForeigner, false),
         ),
       );
@@ -3302,9 +3590,62 @@ export class FederationService {
     const affectedLocalUsers = new Set([
       ...localBefore.map((row) => row.userId),
       ...localDesired,
+      ...localJoinDirections.map((row) => row.userId),
     ]);
+    const statePushDomains: string[] = [];
     for (const userId of affectedLocalUsers) {
-      const isActive = active && localDesired.has(userId);
+      const localDirection = localJoinDirections.find(
+        (row) => row.userId === userId,
+      );
+      const locallyRejected = localDirection?.status === 'NOT_MEMBER';
+      const isActive = active && localDesired.has(userId) && !locallyRejected;
+      if (!isActive && localDirection?.status === 'REQUESTED')
+        await tx
+          .update(tables.groupMembershipRequest)
+          .set({ status: 'NOT_MEMBER', updatedAt: new Date() })
+          .where(
+            and(
+              eq(tables.groupMembershipRequest.groupUserId, mirror.groupUserId),
+              eq(tables.groupMembershipRequest.memberUserId, userId),
+              eq(tables.groupMembershipRequest.direction, 'JOIN'),
+              eq(tables.groupMembershipRequest.status, 'REQUESTED'),
+            ),
+          );
+      if (locallyRejected && active && localDesired.has(userId)) {
+        const [refreshed] = await tx
+          .update(tables.groupMembershipRequest)
+          .set({
+            revision: sql`${tables.groupMembershipRequest.revision} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(tables.groupMembershipRequest.groupUserId, mirror.groupUserId),
+              eq(tables.groupMembershipRequest.memberUserId, userId),
+              eq(tables.groupMembershipRequest.direction, 'JOIN'),
+              eq(tables.groupMembershipRequest.status, 'NOT_MEMBER'),
+            ),
+          )
+          .returning({ revision: tables.groupMembershipRequest.revision });
+        if (refreshed && localDirection) {
+          const allocated = await this.stateFeed.writeManyInTx(tx, [
+            {
+              peerDomain,
+              account,
+              subjectAccount: localDirection.account,
+              eventType: 'GROUP_JOIN_INTENT',
+              revision: refreshed.revision,
+              body: {
+                status: 'NOT_MEMBER',
+                note: '',
+                requestedAt: null,
+                expiresAt: null,
+              },
+            },
+          ]);
+          statePushDomains.push(...allocated.keys());
+        }
+      }
       await this.groupMembershipState.setPairActiveInTx(
         tx,
         mirror.groupUserId,
@@ -3329,6 +3670,17 @@ export class FederationService {
             set: { deliverThroughChangeId: null },
           });
       else
+        await tx
+          .update(tables.threadParticipant)
+          .set({ leftAt: new Date(), updatedAt: new Date() })
+          .where(
+            and(
+              eq(tables.threadParticipant.threadId, mirror.threadId),
+              eq(tables.threadParticipant.userId, userId),
+              isNull(tables.threadParticipant.leftAt),
+            ),
+          );
+      if (!isActive)
         await tx.execute(sql`
           UPDATE "ThreadAudience" audience
           SET "deliverThroughChangeId" = COALESCE((
@@ -3348,21 +3700,14 @@ export class FederationService {
       threadId: mirror.threadId,
       users: [...affectedLocalUsers].map((userId) => ({
         userId,
-        active: active && desired.has(userId),
+        active:
+          active &&
+          desired.has(userId) &&
+          localJoinDirections.find((row) => row.userId === userId)?.status !==
+            'NOT_MEMBER',
       })),
+      statePushDomains,
     };
-  }
-
-  /** Query the peer's current source HWM after reconnect or during reconciliation. */
-  async pullDiscoveryHwm(domain: string): Promise<bigint> {
-    const result = await this.getSigned<{ messageFeedRev: string }>(
-      '/api/v1/s2s/feed-rev',
-      domain,
-    );
-    if (!/^(0|[1-9]\d*)$/.test(result.messageFeedRev)) {
-      throw new Error(`peer ${domain} returned an invalid discovery HWM`);
-    }
-    return BigInt(result.messageFeedRev);
   }
 
   /**
@@ -3383,7 +3728,7 @@ export class FederationService {
     const token = await this.capturePeerResponseToken(domain);
     const page = await this.withTrustedPeer(domain, () =>
       this.getSigned<FederationMessageFeedPage>(
-        `/api/v1/s2s/message-feed?after=${after.toString()}&take=${take}`,
+        `/s2s/v1/message-feed?after=${after.toString()}&take=${take}`,
         domain,
         16 * 1024 * 1024,
       ),
@@ -3445,251 +3790,324 @@ export class FederationService {
     await this.assertPeerResponseWritable(tx, token);
     const effects: MissedPageEffect[] = [];
     for (const item of page.messages) {
-      if (!Number.isSafeInteger(item.originSeq) || item.originSeq < 0) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'missed message has invalid originSeq',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      const system =
-        item.contentType === ContentType.SYSTEM
-          ? parseSystemMessageContent(item.content)
-          : null;
-      if (item.contentType === ContentType.SYSTEM && !system) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'invalid federated system message',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      const isGroupLeaveBoundary =
-        item.thread.type === 'GROUP' &&
-        system?.type === SystemMessageType.GROUP_LEFT &&
-        system.subject?.account === item.author.account &&
-        system.subject?.domain === item.author.domain &&
-        item.author.domain === domain;
-      const route = await this.resolveMissedThreadInTransaction(
-        tx,
-        item,
-        domain,
-        isGroupLeaveBoundary,
-      );
-      const originTime = new Date(item.createdAt);
-      if (
-        !Number.isFinite(item.createdAt) ||
-        Number.isNaN(originTime.getTime())
-      ) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'missed message has invalid createdAt',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      if (item.author.domain === this.config.domain) {
-        const localSourceMessage = await tx.query.message.findFirst({
-          where: and(
-            eq(tables.message.threadId, route.threadId),
-            eq(tables.message.creator, route.creatorId),
-            eq(tables.message.seq, item.originSeq),
-          ),
-          columns: {
-            id: true,
-            originSeq: true,
-            originServerTime: true,
-          },
-        });
-        if (localSourceMessage) {
-          if (
-            localSourceMessage.originSeq === null &&
-            localSourceMessage.originServerTime === null
-          ) {
-            await tx
-              .update(tables.message)
-              .set({
-                originSeq: item.originSeq,
-                originServerTime: originTime,
-              })
-              .where(eq(tables.message.id, localSourceMessage.id));
-          } else {
-            this.logger.error(
-              `refused to overwrite source coordinates for self-authored missed message: ` +
-                JSON.stringify({
-                  messageId: localSourceMessage.id.toString(),
-                  threadId: route.threadId,
-                  seq: item.originSeq,
-                  sourceDomain: domain,
-                  existingOriginSeq: localSourceMessage.originSeq,
-                  existingOriginServerTime:
-                    localSourceMessage.originServerTime?.toISOString() ?? null,
-                }),
-            );
-          }
-          continue;
-        }
-        this.logger.error(
-          `self-authored missed message has no matching local source message: ${JSON.stringify(
-            item,
-          )}`,
-        );
-        continue;
-      }
-      const existingMessage = await tx.query.message.findFirst({
-        where: and(
-          eq(tables.message.threadId, route.threadId),
-          eq(tables.message.creator, route.creatorId),
-          eq(tables.message.originSeq, item.originSeq),
-        ),
-        columns: { id: true },
-      });
-      const existingPending = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.threadId, route.threadId),
-          eq(tables.pendingMedia.creatorId, route.creatorId),
-          eq(tables.pendingMedia.originSeq, item.originSeq),
-        ),
-        columns: { id: true },
-      });
-      if (existingMessage || existingPending) continue;
-
-      const incomingText =
-        item.contentType === ContentType.PURE_TEXT
-          ? parseTextMessageContent(item.content)
-          : null;
-      if (
-        item.contentType === ContentType.PURE_TEXT &&
-        (!incomingText ||
-          Boolean(incomingText.quote) !== Boolean(item.quoteTarget))
-      ) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'invalid federated text quote',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      this.assertMissedAssetDescriptors(item);
-
-      let forwardCard: FederatedForwardCard | undefined;
-      let forwardClosure: ForwardWireClosure | undefined;
-      if (item.contentType === ContentType.FORWARD) {
-        try {
-          forwardCard = JSON.parse(item.content) as FederatedForwardCard;
-        } catch {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'invalid FORWARD card JSON',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
+      try {
         if (
-          forwardCard.version !== 1 ||
-          typeof forwardCard.bundleId !== 'string' ||
-          !Array.isArray(forwardCard.summaryLines) ||
-          forwardCard.summaryLines.length > 3
+          !Number.isSafeInteger(item.originSeq) ||
+          item.originSeq < 0 ||
+          !Number.isSafeInteger(item.seq) ||
+          item.seq < 0
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
-            'invalid FORWARD card shape',
+            'missed message has invalid seq coordinate',
             HttpStatus.BAD_REQUEST,
           );
         }
-        forwardClosure = await this.getSigned<ForwardWireClosure>(
-          `/api/v1/s2s/forward-bundles/${encodeURIComponent(forwardCard.bundleId)}`,
+        const system =
+          item.contentType === ContentType.SYSTEM
+            ? parseSystemMessageContent(item.content)
+            : null;
+        if (item.contentType === ContentType.SYSTEM && !system) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid federated system message',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        const isGroupLeaveBoundary =
+          item.thread.type === 'GROUP' &&
+          system?.type === SystemMessageType.GROUP_LEFT &&
+          system.subject?.account === item.author.account &&
+          system.subject?.domain === item.author.domain &&
+          item.author.domain === domain;
+        const route = await this.resolveMissedThreadInTransaction(
+          tx,
+          item,
           domain,
-          FORWARD_MAX_WIRE_JSON_BYTES + 64 * 1024,
+          isGroupLeaveBoundary,
         );
-      }
+        const originTime = new Date(item.createdAt);
+        if (
+          !Number.isFinite(item.createdAt) ||
+          Number.isNaN(originTime.getTime())
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'missed message has invalid createdAt',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
 
-      const stored = await this.storePulledMessageInTransaction(tx, {
-        threadId: route.threadId,
-        creator: route.creatorId,
-        fetchedFromDomain: domain,
-        message: {
-          originSeq: item.originSeq,
-          contentType: item.contentType,
-          content: item.content,
-          ts: item.createdAt,
-          quoteTarget: item.quoteTarget,
-        },
-        expectedFederationVersion: route.federationVersion,
-        incomingText,
-        forwardCard,
-        forwardClosure,
-        originTime,
-        downloadAuth: {
-          fromAccount: item.author.account,
-          fromDomain: item.author.domain,
-          toAccount: route.toAccount,
-        },
-      });
-      if (stored.kind === 'pending') {
+        if (item.author.domain === this.config.domain) {
+          const localSourceMessage = await tx.query.message.findFirst({
+            where: and(
+              eq(tables.message.threadId, route.threadId),
+              eq(tables.message.creator, route.creatorId),
+              eq(tables.message.seq, item.originSeq),
+            ),
+            columns: {
+              id: true,
+              originSeq: true,
+              originServerTime: true,
+            },
+          });
+          if (localSourceMessage) {
+            if (
+              localSourceMessage.originSeq === null &&
+              localSourceMessage.originServerTime === null
+            ) {
+              await tx
+                .update(tables.message)
+                .set({
+                  originSeq: item.originSeq,
+                  originServerTime: originTime,
+                })
+                .where(eq(tables.message.id, localSourceMessage.id));
+            } else if (
+              localSourceMessage.originSeq !== item.originSeq ||
+              localSourceMessage.originServerTime?.getTime() !==
+                originTime.getTime()
+            ) {
+              this.logger.error(
+                `refused to overwrite a conflicting self-authored message receipt: ${JSON.stringify(
+                  {
+                    messageId: localSourceMessage.id.toString(),
+                    peerDomain: domain,
+                    receiptOriginSeq: item.originSeq,
+                    receiptOriginServerTime: originTime.toISOString(),
+                    existingOriginSeq: localSourceMessage.originSeq,
+                    existingOriginServerTime:
+                      localSourceMessage.originServerTime?.toISOString() ??
+                      null,
+                  },
+                )}`,
+              );
+            }
+            continue;
+          }
+          this.logger.error(
+            `self-authored missed message has no matching local source message: ${JSON.stringify(
+              item,
+            )}`,
+          );
+          continue;
+        }
+        const existingMessage = await tx.query.message.findFirst({
+          where: and(
+            eq(tables.message.threadId, route.threadId),
+            eq(tables.message.creator, route.creatorId),
+            eq(tables.message.originSeq, item.originSeq),
+          ),
+          columns: { id: true },
+        });
+        const existingPending = await tx.query.pendingMedia.findFirst({
+          where: and(
+            eq(tables.pendingMedia.threadId, route.threadId),
+            eq(tables.pendingMedia.creatorId, route.creatorId),
+            eq(tables.pendingMedia.originSeq, item.originSeq),
+          ),
+          columns: { id: true },
+        });
+        if (existingMessage || existingPending) continue;
+
+        const incomingText =
+          item.contentType === ContentType.PURE_TEXT
+            ? parseTextMessageContent(item.content)
+            : null;
+        if (
+          item.contentType === ContentType.PURE_TEXT &&
+          (!incomingText ||
+            Boolean(incomingText.quote) !== Boolean(item.quoteTarget))
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'invalid federated text quote',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        this.assertMissedAssetDescriptors(item);
+
+        let storedContent = item.content;
+        if (item.contentType === ContentType.CALL) {
+          const call = parseFederatedCallContent(item.content);
+          const participantMatch =
+            item.thread.type === 'P2P' &&
+            item.thread.participants.some((participant) =>
+              sameFederatedCallAddress(
+                participant,
+                call?.callee ?? {
+                  account: '',
+                  domain: '',
+                },
+              ),
+            );
+          if (
+            !call ||
+            item.thread.type !== 'P2P' ||
+            !sameFederatedCallAddress(call.caller, item.author) ||
+            !participantMatch ||
+            route.recipients.length !== 1
+          ) {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'invalid federated CALL content',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          storedContent = buildCallContent({
+            callType: call.callType,
+            status: call.status,
+            callerId: route.creatorId,
+            calleeId: route.recipients[0],
+            ...(call.startedAt === undefined
+              ? {}
+              : { startedAt: call.startedAt }),
+            ...(call.endedAt === undefined ? {} : { endedAt: call.endedAt }),
+            ...(call.durationMs === undefined
+              ? {}
+              : { durationMs: call.durationMs }),
+          });
+        }
+
+        let forwardCard: FederatedForwardCard | undefined;
+        let forwardClosure: ForwardWireClosure | undefined;
+        if (item.contentType === ContentType.FORWARD) {
+          try {
+            forwardCard = JSON.parse(item.content) as FederatedForwardCard;
+          } catch {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'invalid FORWARD card JSON',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          if (
+            forwardCard.version !== 1 ||
+            typeof forwardCard.bundleId !== 'string' ||
+            !Array.isArray(forwardCard.summaryLines) ||
+            forwardCard.summaryLines.length > 3
+          ) {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'invalid FORWARD card shape',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          forwardClosure = await this.getSigned<ForwardWireClosure>(
+            `/s2s/v1/forward-bundles/${encodeURIComponent(forwardCard.bundleId)}`,
+            domain,
+            FORWARD_MAX_WIRE_JSON_BYTES + 64 * 1024,
+          );
+        }
+
+        const stored = await this.storePulledMessageInTransaction(tx, {
+          threadId: route.threadId,
+          creator: route.creatorId,
+          fetchedFromDomain: domain,
+          authorDomain: item.author.domain,
+          message: {
+            originSeq: item.originSeq,
+            contentType: item.contentType,
+            content: storedContent,
+            ts: item.createdAt,
+            quoteTarget: item.quoteTarget,
+          },
+          expectedFederationVersion: route.federationVersion,
+          incomingText,
+          forwardCard,
+          forwardClosure,
+          originTime,
+          downloadAuth: {
+            fromAccount: item.author.account,
+            fromDomain: item.author.domain,
+            toAccount: route.toAccount,
+          },
+        });
+        if (stored.kind === 'pending') {
+          effects.push({
+            kind: 'pending',
+            threadId: route.threadId,
+            creatorId: route.creatorId,
+            originSeq: item.originSeq,
+            recipients: route.recipients,
+            toAccount: route.toAccount,
+            author: item.author,
+            batchId: stored.batchId,
+            restored: [],
+          });
+          continue;
+        }
+
+        const arrival = stored.message.createdAt;
+        await tx
+          .update(tables.messageThread)
+          .set({
+            lastMessageSeq: stored.message.seq,
+            lastMessagePreview: derivePreview(
+              item.contentType as ContentType,
+              stored.storedContent,
+            ),
+            lastMessageAt: arrival,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(tables.messageThread.id, route.threadId),
+              or(
+                isNull(tables.messageThread.lastMessageAt),
+                lt(tables.messageThread.lastMessageAt, arrival),
+              ),
+            ),
+          );
+        const restored =
+          await this.threadRevisionService.restoreHiddenThreadsInTx(
+            tx,
+            route.threadId,
+            route.recipients,
+          );
+        let deletionId: string | undefined;
+        if (stored.message.isDeleted) {
+          const deletion = await tx.query.deletedMessage.findFirst({
+            where: and(
+              eq(tables.deletedMessage.threadId, route.threadId),
+              eq(tables.deletedMessage.seq, stored.message.seq),
+            ),
+            columns: { id: true },
+          });
+          deletionId = deletion?.id.toString();
+        }
         effects.push({
-          kind: 'pending',
+          kind: 'message',
           threadId: route.threadId,
           creatorId: route.creatorId,
           originSeq: item.originSeq,
           recipients: route.recipients,
           toAccount: route.toAccount,
           author: item.author,
-          batchId: stored.batchId,
-          restored: [],
+          message: stored.message,
+          deletionId,
+          restored,
+          forwardClosure,
+          remoteForwardBundleId: forwardCard?.bundleId,
         });
-        continue;
-      }
-
-      const arrival = stored.message.createdAt;
-      await tx
-        .update(tables.messageThread)
-        .set({
-          lastMessageSeq: stored.message.seq,
-          lastMessagePreview: derivePreview(
-            item.contentType as ContentType,
-            stored.storedContent,
-          ),
-          lastMessageAt: arrival,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(tables.messageThread.id, route.threadId),
-            or(
-              isNull(tables.messageThread.lastMessageAt),
-              lt(tables.messageThread.lastMessageAt, arrival),
-            ),
-          ),
+      } catch (error) {
+        if (!(error instanceof FederationMessageContextError)) throw error;
+        // State is deliberately drained first, so a missing author/friend/thread
+        // here is an unauthorized or stale item, not a dependency to retry.
+        // Acknowledge just this change id, retain the rest of the page, and leave
+        // enough structured context for operators to diagnose the peer.
+        this.logger.error(
+          `ignored federated message without local relationship context: ${JSON.stringify(
+            {
+              peerDomain: domain,
+              changeId: item.changeId,
+              author: item.author,
+              thread: item.thread,
+              reason: error.message,
+            },
+          )}`,
         );
-      const restored =
-        await this.threadRevisionService.restoreHiddenThreadsInTx(
-          tx,
-          route.threadId,
-          route.recipients,
-        );
-      let deletionId: string | undefined;
-      if (stored.message.isDeleted) {
-        const deletion = await tx.query.deletedMessage.findFirst({
-          where: and(
-            eq(tables.deletedMessage.threadId, route.threadId),
-            eq(tables.deletedMessage.seq, stored.message.seq),
-          ),
-          columns: { id: true },
-        });
-        deletionId = deletion?.id.toString();
       }
-      effects.push({
-        kind: 'message',
-        threadId: route.threadId,
-        creatorId: route.creatorId,
-        originSeq: item.originSeq,
-        recipients: route.recipients,
-        toAccount: route.toAccount,
-        author: item.author,
-        message: stored.message,
-        deletionId,
-        restored,
-        forwardClosure,
-        remoteForwardBundleId: forwardCard?.bundleId,
-      });
     }
     return effects;
   }
@@ -3821,10 +4239,8 @@ export class FederationService {
     `);
     const creatorId = authorRows.rows[0]?.id;
     if (!creatorId) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
+      throw new FederationMessageContextError(
         'missed message author is not a known thread participant',
-        HttpStatus.BAD_REQUEST,
       );
     }
 
@@ -3931,10 +4347,8 @@ export class FederationService {
     }
     const route = threadRows[0];
     if (!route) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
+      throw new FederationMessageContextError(
         'missed message has no active local thread access',
-        HttpStatus.BAD_REQUEST,
       );
     }
     const recipientRows = await tx.execute<{ userId: number }>(sql`
@@ -4049,8 +4463,8 @@ export class FederationService {
   ): Promise<{ absPath: string; bytes: number }> {
     // Authorization is historical, not derived from the current friendship/roster. DiscoveryChange is
     // durable proof that this signer had already been allocated the exact message; leaving a group or
-    // removing a friend only stops future allocations. The request still binds the historical proof to
-    // its author, recipient/group, source sequence and digest below.
+    // removing a friend only stops future allocations. Bind that proof to the stable author, thread,
+    // source sequence and digest supplied by the message-feed descriptor.
     const candidates = await this.database.db
       .select({
         messageId: tables.message.id,
@@ -4104,10 +4518,7 @@ export class FederationService {
       ) {
         continue;
       }
-      sourceMessage = {
-        id: candidate.messageId,
-        threadId: candidate.threadId,
-      };
+      sourceMessage = { id: candidate.messageId, threadId: candidate.threadId };
       break;
     }
     if (!sourceMessage) {
@@ -4369,6 +4780,7 @@ export class FederationService {
       threadId: number;
       creator: number | S2SAddress;
       fetchedFromDomain: string;
+      authorDomain: string;
       message: {
         originSeq: number;
         contentType: string;
@@ -4400,6 +4812,7 @@ export class FederationService {
       threadId,
       creator,
       fetchedFromDomain,
+      authorDomain,
       message: incoming,
       expectedFederationVersion,
       incomingText,
@@ -4554,9 +4967,11 @@ export class FederationService {
         forwardClosure.bundles.length,
       );
     }
-    await this.discoveryChanges.recordMessageInTx(tx, message.id, [
-      fetchedFromDomain,
-    ]);
+    await this.discoveryChanges.recordMessageInTx(
+      tx,
+      message.id,
+      authorDomain === fetchedFromDomain ? [] : [fetchedFromDomain],
+    );
     return { kind: 'message', message, storedContent, localForwardBundleId };
   }
 
@@ -5140,9 +5555,18 @@ export class FederationService {
         .delete(tables.pendingMedia)
         .where(eq(tables.pendingMedia.id, batch.id));
       await this.quota.tickLax(batch.originDomain!, 'messages', tx, 1);
-      await this.discoveryChanges.recordMessageInTx(tx, message.id, [
-        batch.originDomain!,
-      ]);
+      const author = await tx.query.user.findFirst({
+        where: eq(tables.user.id, creatorId),
+        columns: { domain: true, isForeigner: true },
+      });
+      if (!author) throw new Error('promoted message author is missing');
+      await this.discoveryChanges.recordMessageInTx(
+        tx,
+        message.id,
+        this.effectiveDomain(author) === batch.originDomain
+          ? []
+          : [batch.originDomain!],
+      );
       return {
         message,
         threadId,
@@ -5205,7 +5629,7 @@ export class FederationService {
 
   /**
    * Receiver-side media localize (§3.3 / §4.5): for each CAS digest referenced by a pulled message,
-   * fetch the bytes from the peer's /get_file and store them through the SAME CAS pipeline as a local
+   * fetch the bytes from the peer's /media/:digest and store them through the SAME CAS pipeline as a local
    * upload (sha256 → shard path → MediaAsset ref++), then write the MediaMessage authz row so the local
    * /uploads/cas/* gate admits the recipient. The content URL is already server-relative, so once the
    * file is local it serves same-origin with no rewrite. Integrity-checked (the re-hash must match the
@@ -5450,7 +5874,7 @@ export class FederationService {
 
   /**
    * Resolve the localizeMedia transport context for a pulled message: `toAccount` + `peerDomain`
-   * naming the peer /get_file source. GROUP → the thread's group-User account + its origin domain
+   * naming the peer /media/:digest source. GROUP → the thread's group-User account + its origin domain
    * (roster-gated source). P2P → the thread's OTHER active (non-creator) participant account (the
    * local receiver), with peerDomain = the creator's domain (the sender server). Mirrors the context
    * the pull paths compute at pull time (pullP2P / pullGroupWhole), recovered here from the stored
@@ -5491,13 +5915,7 @@ export class FederationService {
     };
   }
 
-  /**
-   * Resolve the /get_file authorization for a stored FORWARD message's bundle assets. The forward
-   * bundle's bytes are authorized by the FORWARD message's OWN identity bound to its bundle (see
-   * resolveMediaFile's forwardBundleId branch): fromAccount/fromDomain = the forwarder, toAccount =
-   * the thread receiver, sourceSeq = the forward message's seq (COALESCE(originSeq, seq)). Mirrors
-   * localizeMediaForMessage's context resolution; extracted so both the pull-time and retry paths
-   * derive the same authorization. */
+  /** Derive the stable message/thread authorization coordinate for a stored FORWARD message. */
   private async resolveForwardAssetAuth(msg: Message): Promise<{
     fromAccount: string;
     fromDomain: string;
@@ -5530,7 +5948,7 @@ export class FederationService {
 
   /**
    * Receiver-side resumable media fetch (Step 2 §4.5): yield a peer-hosted chat-media asset as ordered
-   * Buffer chunks via signed Range GETs to /get_file, for saveCasFromStream to stream to disk. Each
+   * Buffer chunks via signed Range GETs to /media/:digest, for saveCasFromStream to stream to disk. Each
    * yielded Buffer is ONE fully-accumulated Range unit (≤ mediaChunkBytes), so a body-read abort
    * discards only that unit upstream and is re-requested from the SAME offset — the writer never sees a
    * partial/duplicated slice, and resume is byte-exact. Offset advances by the peer's returned
@@ -5558,9 +5976,14 @@ export class FederationService {
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
-    const path = forwardBundleId
-      ? `/api/v1/s2s/get_file?digest=${digest}&bundleId=${encodeURIComponent(forwardBundleId)}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&seq=${sourceSeq}`
-      : `/api/v1/s2s/get_file?digest=${digest}&fromAccount=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&toAccount=${encodeURIComponent(toAccount)}&toDomain=${encodeURIComponent(this.ourDomain)}&seq=${sourceSeq}`;
+    const params = new URLSearchParams({
+      fromAccount,
+      fromDomain,
+      toAccount,
+      seq: String(sourceSeq),
+    });
+    if (forwardBundleId) params.set('bundleId', forwardBundleId);
+    const path = `/s2s/v1/media/${digest}?${params.toString()}`;
     const url = new URL(`${base}${path}`);
     let offset = startOffset;
     let total: number | null = null;
@@ -5619,7 +6042,7 @@ export class FederationService {
     }
   }
 
-  /** One signed Range GET to /get_file, with status-based classification (see fetchMediaChunks). Returns
+  /** One signed Range GET to /media/:digest, with status-based classification (see fetchMediaChunks). Returns
    *  the Response + parsed Content-Range bounds and optional per-unit Content-Digest. Throws — with
    *  markDemoted for auth/transport failures — on
    *  anything that isn't 200/206. The raw query is covered by the request signature. */
@@ -5653,15 +6076,15 @@ export class FederationService {
     } catch (e) {
       await this.markDemoted(
         peerDomain,
-        `GET get_file network/timeout: ${(e as Error).message}`,
+        `GET media network/timeout: ${(e as Error).message}`,
         operationStartedAt,
       );
       throw new Error(
-        `S2S get_file from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
+        `S2S media from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
     if (res.status === 200) {
-      throw new Error('S2S get_file peer ignored required Range request');
+      throw new Error('S2S media peer ignored required Range request');
     }
     if (res.status === 206) {
       const cr = res.headers.get('content-range') ?? '';
@@ -5669,12 +6092,10 @@ export class FederationService {
       if (!m) {
         await this.markDemoted(
           peerDomain,
-          `GET get_file 206 unparseable Content-Range: ${cr}`,
+          `GET media 206 unparseable Content-Range: ${cr}`,
           operationStartedAt,
         );
-        throw new Error(
-          `S2S get_file 206 without parseable Content-Range: ${cr}`,
-        );
+        throw new Error(`S2S media 206 without parseable Content-Range: ${cr}`);
       }
       const returnedStart = Number(m[1]);
       const returnedEnd = Number(m[2]);
@@ -5687,14 +6108,14 @@ export class FederationService {
         returnedEnd >= returnedTotal
       ) {
         throw new Error(
-          `S2S get_file returned unexpected Content-Range: ${cr} for bytes=${start}-${end}`,
+          `S2S media returned unexpected Content-Range: ${cr} for bytes=${start}-${end}`,
         );
       }
       if (
         contentDigestHeader !== null &&
         !/^sha-256=[A-Za-z0-9+/]{43}=$/.test(contentDigestHeader)
       ) {
-        throw new Error('S2S get_file 206 with an invalid Content-Digest');
+        throw new Error('S2S media 206 with an invalid Content-Digest');
       }
       return {
         res,
@@ -5709,15 +6130,15 @@ export class FederationService {
     if (res.status === 401 || res.status === 403 || res.status >= 500) {
       await this.markDemoted(
         peerDomain,
-        `GET get_file HTTP ${res.status}`,
+        `GET media HTTP ${res.status}`,
         operationStartedAt,
       );
       throw new Error(
-        `S2S get_file from ${peerDomain} rejected: HTTP ${res.status}`,
+        `S2S media from ${peerDomain} rejected: HTTP ${res.status}`,
       );
     }
     throw new Error(
-      `S2S get_file from ${peerDomain} HTTP ${res.status} (no demote)`,
+      `S2S media from ${peerDomain} HTTP ${res.status} (no demote)`,
     );
   }
 
@@ -5732,14 +6153,14 @@ export class FederationService {
   }
 
   /**
-   * Fetch a peer user's public profile (signed GET /api/v1/s2s/users/:account). Used by federated
+   * Fetch a peer user's public profile (signed GET /s2s/v1/users/:account). Used by federated
    * resolve (the add-friend card), ensureForeignUserLocalized (send-friend-request safety net), and
    * initial invite/profile localization. Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
   async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
     return this.getSigned<S2SProfile>(
-      `/api/v1/s2s/users/${address.account}`,
+      `/s2s/v1/users/${address.account}`,
       address.domain,
     );
   }
@@ -5821,7 +6242,6 @@ export class FederationService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const data = await this.prepareForeignProfileData(profile);
     return this.database.db.transaction(async (tx) => {
       await this.assertPeerResponseWritable(tx, peerToken);
       const userId = await this.ensureForeignUserInTransaction(
@@ -5829,6 +6249,19 @@ export class FederationService {
         account,
         domain,
       );
+      const [stub] = await tx
+        .select({ remoteProfileRev: tables.user.remoteProfileRev })
+        .from(tables.user)
+        .where(eq(tables.user.id, userId))
+        .for('update')
+        .limit(1);
+      if (
+        stub?.remoteProfileRev !== null &&
+        stub?.remoteProfileRev !== undefined &&
+        profile.profileRev <= stub.remoteProfileRev
+      )
+        return userId;
+      const data = await this.prepareForeignProfileData(profile);
       await tx
         .update(tables.user)
         .set({ ...data, updatedAt: new Date() })

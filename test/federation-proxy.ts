@@ -1,12 +1,12 @@
 // A lightweight one-way HTTP relay for the federation e2e: appB → appA. It exists for ONE purpose —
 // fault injection on the resume test. localhost never drops bytes, so to exercise appB's resumable
-// /get_file transport (mid-stream stall → re-request the SAME range, no demote) the test must inject a
+// media transport (mid-stream stall → re-request the SAME range, no demote) the test must inject a
 // truncation. Rather than stub appB's in-process fetch (impossible across processes) or add a test
-// branch to production /get_file, this proxy sits on the path and can drop a response mid-stream.
+// branch to production media handling, this proxy sits on the path and can drop a response mid-stream.
 //
 // Default behavior is fully transparent: relay the request to appA preserving the original `Host` header
 // (== appB's signed @authority — so RFC9421 signatures still verify at appA) + the body, and pipe the
-// response back unchanged. `armGetFileTruncation()` makes the next `/s2s/get_file` `bytes=0-` response
+// response back unchanged. `armGetFileTruncation()` makes the next media `bytes=0-` response
 // relay only its first chunk then destroy both sockets (a simulated mid-stream network drop); appB must
 // detect the short read, discard the partial unit, and re-request the same range. One-shot (re-arms are
 // the test's job), deterministic (not random — random would flake).
@@ -15,9 +15,9 @@ import { createHash } from 'node:crypto';
 
 export interface S2sProxy {
   port: number;
-  /** One-shot: the next `/get_file` first-range response is truncated mid-stream. */
+  /** One-shot: the next media first-range response is truncated mid-stream. */
   armGetFileTruncation: () => void;
-  /** How many `/get_file` `bytes=0-` requests appB has issued through the proxy. The resume test asserts
+  /** How many media `bytes=0-` requests appB has issued through the proxy. The resume test asserts
    *  this is ≥2 (initial + the retry after the truncation) → appB re-requested the SAME range (resume). */
   firstRangeGetFileCount: () => number;
   /** Total requests the proxy has relayed (debug: confirms appB's traffic is routing through it at all). */
@@ -29,7 +29,7 @@ export interface S2sProxy {
     responseBody?: string;
   }>;
   clearRequestLog: () => void;
-  /** Hold `/get_file` requests open until released. Used to leave a durable DOWNLOADING row across a
+  /** Hold media requests open until released. Used to leave a durable DOWNLOADING row across a
    *  real receiver-process restart without adding test branches to production code. */
   blockGetFile: (blocked: boolean) => void;
   blockedGetFileCount: () => number;
@@ -37,6 +37,10 @@ export interface S2sProxy {
    * relationship-closing state snapshot is applied before its inclusive final message boundary. */
   blockMessageFeed: (blocked: boolean) => void;
   blockedMessageFeedCount: () => number;
+  /** Hold state-feed GETs while feed-revisions wake-ups continue. Used to prove
+   * a mirror does not activate a join before the origin confirms GROUP_META. */
+  blockStateFeed: (blocked: boolean) => void;
+  blockedStateFeedCount: () => number;
   /** Serve one digest from proxy memory so the two test processes can model physically separate CAS roots. */
   setGetFileFixture: (digest: string, bytes: Buffer | null) => void;
   close: () => Promise<void>;
@@ -46,7 +50,7 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
   return new Promise((resolve, reject) => {
     // One-shot truncation flag — set by the resume test, cleared after it fires once.
     let truncateNextGetFile = false;
-    // Running count of `/get_file` first-range requests seen (initial + any retries).
+    // Running count of media first-range requests seen (initial + any retries).
     let firstRangeCount = 0;
     // Total requests relayed (debug).
     let totalCount = 0;
@@ -60,6 +64,8 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
     const blockedGetFiles = new Set<() => void>();
     let messageFeedBlocked = false;
     const blockedMessageFeeds = new Set<() => void>();
+    let stateFeedBlocked = false;
+    const blockedStateFeeds = new Set<() => void>();
     const getFileFixtures = new Map<string, Buffer>();
 
     const server = http.createServer((req, res) => {
@@ -67,21 +73,22 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
       const range = req.headers['range'];
       const isGetFileFirstRange =
         typeof req.url === 'string' &&
-        req.url.includes('/s2s/get_file') &&
+        req.url.includes('/s2s/v1/media/') &&
         typeof range === 'string' &&
         range.startsWith('bytes=0-');
       if (isGetFileFirstRange) firstRangeCount++;
       const shouldTruncate = isGetFileFirstRange && truncateNextGetFile;
       const isMessageFeed =
-        typeof req.url === 'string' && req.url.includes('/s2s/message-feed');
+        typeof req.url === 'string' && req.url.includes('/s2s/v1/message-feed');
+      const isStateFeed =
+        typeof req.url === 'string' && req.url.includes('/s2s/v1/state-feed?');
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
 
       const relay = (): void => {
         if (res.destroyed || req.destroyed) return;
-        const fixtureDigest = new URL(
+        const fixtureDigest = /^\/s2s\/v1\/media\/([a-f0-9]{64})(?:\?|$)/.exec(
           req.url ?? '/',
-          'http://federation.test',
-        ).searchParams.get('digest');
+        )?.[1];
         const fixture = fixtureDigest
           ? getFileFixtures.get(fixtureDigest)
           : undefined;
@@ -210,6 +217,15 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         req.once('aborted', () => blockedMessageFeeds.delete(resume));
         return;
       }
+      if (isStateFeed && stateFeedBlocked) {
+        const resume = (): void => {
+          blockedStateFeeds.delete(resume);
+          relay();
+        };
+        blockedStateFeeds.add(resume);
+        req.once('aborted', () => blockedStateFeeds.delete(resume));
+        return;
+      }
       relay();
     });
 
@@ -241,6 +257,13 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
           }
         },
         blockedMessageFeedCount: () => blockedMessageFeeds.size,
+        blockStateFeed: (blocked: boolean) => {
+          stateFeedBlocked = blocked;
+          if (!blocked) {
+            for (const resume of [...blockedStateFeeds]) resume();
+          }
+        },
+        blockedStateFeedCount: () => blockedStateFeeds.size,
         setGetFileFixture: (digest: string, bytes: Buffer | null) => {
           if (bytes) getFileFixtures.set(digest, bytes);
           else getFileFixtures.delete(digest);

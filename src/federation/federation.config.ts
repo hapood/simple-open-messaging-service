@@ -16,7 +16,7 @@ export interface FederationConfig {
    *  to control traffic (friend ops, /missed, /ping); NOT to the media fetch, which
    *  uses mediaChunkTimeoutSec per chunk (a large file can't cross in callTimeoutSec). */
   callTimeoutSec: number;
-  /** Step 2 media fetch (GET /get_file): byte size of one Range request — the bounded per-request
+  /** Federation media fetch (GET /media/:digest): byte size of one Range request — the bounded per-request
    *  memory AND the resume granularity. A chunk that drops/stalls is re-issued from its own offset,
    *  never from zero, so this is the worst-case wasted work on a flaky link. No whole-file buffer. */
   mediaChunkBytes: number;

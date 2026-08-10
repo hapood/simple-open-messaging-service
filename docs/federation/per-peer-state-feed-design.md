@@ -182,10 +182,20 @@ Group PROFILE 使用相同结构，`bio` 表示群简介。头像建议同时携
 }
 ```
 
-状态为 `REQUESTED | FRIEND | NOT_FRIEND`。发送方只能声明自己的方向；`REQUESTED` 只表示一封
-未过期申请，绝不创建 thread 或开放消息权限。接收方只有在本地方向已经是 `FRIEND`，且从对端
-state feed 明确收到对方方向的 `FRIEND` 后，才能激活 `FriendPair` 和 P2P thread。交叉申请或同意
-申请会先把本地方向推进为 `FRIEND` 并产生反向 feed，用这次往返完成双方确认。
+状态为 `REQUESTED | FRIEND | NOT_FRIEND`。发送方只能声明自己的方向。`REQUESTED` 必须携带绝对
+`expiresAt`；只有尚未过期的申请才参与 pending/接受判断。过期申请在业务上等同不存在，允许复用
+原行创建新申请，并提高 business revision、刷新 `requestedAt/expiresAt`。`FRIEND` 与
+`NOT_FRIEND` 都没有有效期，`expiresAt` 必须为空。
+`note` 是 directional state 的复用字段：`REQUESTED` 时表示申请理由，`NOT_FRIEND` 时可表示解除
+原因；没有原因必须发送空字符串，不能沿用旧申请文案。
+
+接收方只有在本地方向和对端方向都明确为 `FRIEND` 时，才能激活 `FriendPair` 和 P2P thread。
+本地仍有未过期 `REQUESTED` 时收到对端 `FRIEND`，本地方向推进为无有效期的 `FRIEND` 并回送
+确认。若本地方向已经是 `NOT_FRIEND`，对端 `FRIEND` 只保留为对端长期有效的同意，不能覆盖
+本地删除；接收方必须提高本地 `NOT_FRIEND` revision 并回送最新否定状态，让 peer 收敛。
+
+删除好友后立即重加不等待 peer 先消费删除。相同 directional key 在尚未 serve 时会 compact 到
+最新 revision；已经分批送达时仍按 revision 顺序收敛。过期反向申请不能促成自动成立。
 
 ### 5.3 GROUP_META
 
@@ -213,6 +223,21 @@ peer THREAD audience 就保持打开，共享镜像继续接收并保存消息�
 同一镜像后，可以看到这段期间的历史。最后一个属于该服务器的成员离开时，origin 将 peer
 audience 冻结到当前 inclusive changeId，之后不再为该服务器生成消息 discovery change；再次加入
 只清空边界并恢复后续消息，不补发无人订阅期间的历史。
+
+群邀请的 `REQUESTED` 同样有绝对有效期；过期后视为不存在并允许重新创建。确认成为 `MEMBER`
+时必须清空邀请 `expiresAt`，已成立成员状态没有 TTL。镜像加入联邦群后不能立即开放 thread：只有
+origin 的新 `GROUP_META` 才能激活 participant/audience，origin 同时写一条可持久化、可联邦拉取的
+`GROUP_JOINED` status 消息。
+
+`GROUP_INVITE_INTENT.note` 同样复用：`REQUESTED` 时是邀请理由，`NOT_MEMBER` 时是拒绝/踢出
+原因，无原因发空字符串。服务器本地 999 人上限拒绝使用英文原因
+`Group has reached this server's 999-member limit.`；这个数字仍不是联邦协议能力或 wire 上限。
+
+镜像退群后可在 origin 尚未消费 leave 时立即重新 JOIN。若 leave 与 JOIN 尚未 serve，相同
+`GROUP_JOIN_INTENT` key compact 为最新 revision；origin 即使仍认为成员 active，也必须为新的 JOIN
+revision 重发 `GROUP_META` 确认。反过来，若镜像本地方向已是 `NOT_MEMBER`，旧的 origin roster
+仍包含该用户，则不得重新激活本地 participant；镜像提高 `NOT_MEMBER` revision 并回送 leave。
+群邀请继续只通过群邀请卡展示，不进入好友 pending/badge。
 
 页面和单 item 必须同时设置字节上限。完整 roster 和 base64 头像会放大 JSON、WAL 与网络流量，
 因此分页除 `take` 外必须限制总响应字节；单个合法 item 即使超过普通页预算，也必须有明确的
@@ -245,7 +270,7 @@ PROFILE 的正常目标 peer 从当前有效跨站好友关系和共享联邦群
 端点名称可在实现时与现有 S2S 命名统一，协议语义如下：
 
 ```text
-GET /api/v1/s2s/state-feed?after=120&take=100
+GET /s2s/v1/state-feed?after=120&take=100
 ```
 
 响应：

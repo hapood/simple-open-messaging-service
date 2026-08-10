@@ -22,10 +22,15 @@ import { KeypairService } from './keypair.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationIgniteService } from './federation-ignite.service.js';
+import {
+  FEDERATION_API_PREFIX,
+  FEDERATION_PROTOCOL_VERSION,
+  selectFederationProtocolVersion,
+} from './federation-protocol.js';
 
 @Public()
 @Raw()
-@Controller('s2s')
+@Controller(FEDERATION_API_PREFIX)
 export class S2sIgniteController {
   private readonly config = loadFederationConfig();
 
@@ -91,6 +96,7 @@ export class S2sIgniteController {
         HttpStatus.UNAUTHORIZED,
       );
     }
+    await this.identity.markIdentityEndpointRecovered(domain);
     return this.identity.signClaim(this.identity.createClaim(domain, nonce));
   }
 
@@ -104,8 +110,8 @@ export class S2sIgniteController {
       ? `sha256:${createHash('sha256').update(Buffer.from(rootPublicKey, 'base64')).digest('base64url')}`
       : undefined;
     if (
-      doc.protocolVersion !== 1 ||
-      doc.identityEpoch !== claim.identityEpoch ||
+      selectFederationProtocolVersion(doc.protocolVersions) !==
+        FEDERATION_PROTOCOL_VERSION ||
       doc.rootKey?.fingerprint !== claim.rootKeyFingerprint ||
       computed !== claim.rootKeyFingerprint ||
       doc.keys.length !== 1 ||

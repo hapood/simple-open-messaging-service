@@ -39,7 +39,6 @@ interface StoredSigningKey extends StoredIdentityKey {
 interface StoredKeyFileV1 {
   version: 1;
   domain: string;
-  identityEpoch: number;
   rootKey: StoredIdentityKey;
   signingKeys: StoredSigningKey[];
 }
@@ -110,7 +109,6 @@ export class KeypairService implements OnApplicationBootstrap {
       if (anchor) {
         if (
           normalizeDomain(anchor.domain) !== configuredDomain ||
-          anchor.identityEpoch !== keyFile.identityEpoch ||
           anchor.rootKeyFingerprint !== fingerprint
         ) {
           this.disable(
@@ -123,7 +121,6 @@ export class KeypairService implements OnApplicationBootstrap {
           .insert(localFederationIdentity)
           .values({
             domain: configuredDomain,
-            identityEpoch: keyFile.identityEpoch,
             rootKeyFingerprint: fingerprint,
           })
           .onConflictDoNothing();
@@ -131,7 +128,6 @@ export class KeypairService implements OnApplicationBootstrap {
         if (
           !stored ||
           normalizeDomain(stored.domain) !== configuredDomain ||
-          stored.identityEpoch !== keyFile.identityEpoch ||
           stored.rootKeyFingerprint !== fingerprint
         ) {
           this.disable(
@@ -186,11 +182,6 @@ export class KeypairService implements OnApplicationBootstrap {
 
   getCreatedAt(): string {
     return this.activeKey().createdAt;
-  }
-
-  getIdentityEpoch(): number {
-    this.assertAvailable();
-    return this.keyFile!.identityEpoch;
   }
 
   getRootKeyFingerprint(): string {
@@ -255,7 +246,6 @@ export class KeypairService implements OnApplicationBootstrap {
     const keyFile: StoredKeyFileV1 = {
       version: 1,
       domain,
-      identityEpoch: 1,
       rootKey,
       signingKeys: [
         {
@@ -292,8 +282,6 @@ export class KeypairService implements OnApplicationBootstrap {
   private validateKeyFile(keyFile: StoredKeyFileV1): void {
     if (
       typeof keyFile.domain !== 'string' ||
-      !Number.isInteger(keyFile.identityEpoch) ||
-      keyFile.identityEpoch < 1 ||
       !keyFile.rootKey ||
       !Array.isArray(keyFile.signingKeys) ||
       keyFile.signingKeys.length !== 1

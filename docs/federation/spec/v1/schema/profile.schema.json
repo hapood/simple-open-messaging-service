@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:profile",
+  "title": "GET /s2s/v1/users/:account response data",
+  "type": "object",
+  "required": [
+    "account",
+    "domain",
+    "displayName",
+    "avatar",
+    "bio",
+    "profileRev"
+  ],
+  "properties": {
+    "account": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
+    "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+    "displayName": { "type": "string" },
+    "avatar": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["b64", "w", "h"],
+          "properties": {
+            "b64": { "type": "string" },
+            "w": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+            },
+            "h": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "bio": { "type": "string" },
+    "profileRev": {
+      "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+    }
+  },
+  "additionalProperties": false
+}

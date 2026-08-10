@@ -37,7 +37,7 @@ export async function stageCasAsset(
   const digest = createHash('sha256').update(buf).digest('hex');
   const rel = `${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`;
   // CAS root MUST match the server's UploadService.uploadDir (process.cwd()/data/uploads, see
-  // src/upload/upload.service.ts) — /get_file + /uploads/* read shards from here. Writing to
+  // src/upload/upload.service.ts) — /media/:digest + /uploads/* read shards from here. Writing to
   // process.cwd()/uploads (no data/) leaves the staged file invisible to the server, so federated
   // media localization fetches zero bytes and fails the digest check.
   const casRoot = join(process.cwd(), 'data', 'cas');

@@ -3468,14 +3468,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/feed-rev": {
+    "/s2s/v1/feed-revisions": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["S2sController_getDiscoveryHwm"];
+        get?: never;
         put?: never;
         post: operations["S2sController_postDiscoveryHwm"];
         delete?: never;
@@ -3484,7 +3484,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/message-feed": {
+    "/s2s/v1/message-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -3500,7 +3500,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/state-feed": {
+    "/s2s/v1/state-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -3516,23 +3516,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/state-feed-rev": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getStateFeedRev"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/s2s/call": {
+    "/s2s/v1/call": {
         parameters: {
             query?: never;
             header?: never;
@@ -3548,7 +3532,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/users/{account}": {
+    "/s2s/v1/users/{account}": {
         parameters: {
             query?: never;
             header?: never;
@@ -3564,23 +3548,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/ping": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_ping"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/s2s/get_file": {
+    "/s2s/v1/media/{digest}": {
         parameters: {
             query?: never;
             header?: never;
@@ -3596,7 +3564,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/forward-bundles/{bundleId}": {
+    "/s2s/v1/forward-bundles/{bundleId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -3612,7 +3580,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/ignite": {
+    "/s2s/v1/ignite": {
         parameters: {
             query?: never;
             header?: never;
@@ -3628,7 +3596,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/identity": {
+    "/s2s/v1/identity": {
         parameters: {
             query?: never;
             header?: never;
@@ -3715,7 +3683,18 @@ export interface components {
              * @description Content type
              * @enum {string}
              */
-            contentType: "PURE_TEXT" | "INVITE" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO" | "LINK" | "CALL" | "FORWARD" | "GALLERY" | "SYSTEM";
+            contentType:
+                | "PURE_TEXT"
+                | "INVITE"
+                | "IMAGE"
+                | "VIDEO"
+                | "FILE"
+                | "AUDIO"
+                | "LINK"
+                | "CALL"
+                | "FORWARD"
+                | "GALLERY"
+                | "SYSTEM";
             /**
              * @description Message content
              * @example hello
@@ -4586,6 +4565,8 @@ export interface components {
             groupIsLocal: boolean;
             /** @description Is the caller already an active member of the target group? */
             alreadyJoined: boolean;
+            /** @description The caller accepted a federated invite and is waiting for the origin server to confirm membership. */
+            joinRequested: boolean;
             fromUser: components["schemas"]["InviteUserDto"];
         };
         RegisterDeviceDto: {
@@ -4748,7 +4729,7 @@ export interface components {
              * @description Signaling frame kind.
              * @enum {string}
              */
-            kind: "offer" | "answer" | "ice" | "renegotiate" | "media-state" | "video-state";
+            kind: "offer" | "answer" | "ice" | "video-state";
             /** @description Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted. */
             payload: string;
         };
@@ -9397,23 +9378,6 @@ export interface operations {
             };
         };
     };
-    S2sController_getDiscoveryHwm: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     S2sController_postDiscoveryHwm: {
         parameters: {
             query?: never;
@@ -9471,23 +9435,6 @@ export interface operations {
             };
         };
     };
-    S2sController_getStateFeedRev: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     S2sController_postCall: {
         parameters: {
             query?: never;
@@ -9524,36 +9471,19 @@ export interface operations {
             };
         };
     };
-    S2sController_ping: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     S2sController_getFile: {
         parameters: {
             query: {
-                digest: string;
                 fromAccount: string;
                 fromDomain: string;
                 toAccount: string;
-                toDomain: string;
                 seq: string;
                 bundleId: string;
             };
             header?: never;
-            path?: never;
+            path: {
+                digest: string;
+            };
             cookie?: never;
         };
         requestBody?: never;

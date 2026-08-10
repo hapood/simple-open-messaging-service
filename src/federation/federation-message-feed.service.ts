@@ -15,6 +15,10 @@ import { ContentType } from '../database/enums.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { FederationCursorService } from './federation-cursor.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import {
+  buildFederatedCallContent,
+  parseCallContent,
+} from '../calls/call-content.js';
 
 export const FEDERATION_MISSED_DEFAULT_PAGE_SIZE = 100;
 export const FEDERATION_MISSED_MAX_PAGE_SIZE = 200;
@@ -253,8 +257,8 @@ export class FederationMessageFeedService {
                 account: row.account,
                 domain: this.wireDomain(row.domain),
               },
-              // All newly-created messages persist originSeq=seq. COALESCE keeps old local rows safe
-              // during the pre-release migration window.
+              // A local source row keeps originSeq null until its delivery receipt returns, so its
+              // local seq is the wire source coordinate in the meantime.
               originSeq: row.originSeq ?? row.seq,
             },
           ]),
@@ -282,22 +286,42 @@ export class FederationMessageFeedService {
               `quoted message ${row.threadId}/${quoteSeq} is missing`,
             );
           }
+          const author = {
+            account: row.authorAccount,
+            domain: this.wireDomain(row.authorDomain),
+          };
+          const thread: FederationMessageFeedMessage['thread'] = group
+            ? { type: 'GROUP', ...group }
+            : {
+                type: 'P2P',
+                participants: participants.get(row.threadId) ?? [],
+              };
+          let content = row.content;
+          if (row.contentType === ContentType.CALL) {
+            const local = parseCallContent(row.content);
+            const callee =
+              thread.type === 'P2P'
+                ? thread.participants.find(
+                    (participant) =>
+                      participant.account !== author.account ||
+                      participant.domain !== author.domain,
+                  )
+                : undefined;
+            if (!local || !callee) {
+              throw new Error(
+                `CALL message ${row.threadId}/${row.seq} has no valid federation projection`,
+              );
+            }
+            content = buildFederatedCallContent(local, author, callee);
+          }
           return {
             changeId: row.changeId.toString(),
-            thread: group
-              ? { type: 'GROUP', ...group }
-              : {
-                  type: 'P2P',
-                  participants: participants.get(row.threadId) ?? [],
-                },
-            author: {
-              account: row.authorAccount,
-              domain: this.wireDomain(row.authorDomain),
-            },
+            thread,
+            author,
             seq: row.seq,
             originSeq: row.originSeq ?? row.seq,
             contentType: row.contentType,
-            content: row.content,
+            content,
             createdAt: row.createdAt.getTime(),
             updatedAt: row.updatedAt.getTime(),
             clientMessageId: row.clientMessageId,

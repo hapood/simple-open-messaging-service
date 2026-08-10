@@ -84,6 +84,7 @@ export enum BusinessCode {
   GROUP_FORBIDDEN = 40005, // role permission denied (cannot kick/modify/transfer this target)
   GROUP_TARGET_NOT_MEMBER = 40006, // target is not an active member of the group
   GROUP_DISSOLVED = 40007, // terminal group state: history remains readable, sending/membership changes stop
+  GROUP_FULL = 40008, // this origin server's local group-member capacity has been reached (not an S2S protocol limit)
 
   // 50xxx federation (S2S) — protocol/system-tier; HTTP status drives sender retry, code is detail.
   FEDERATION_PEER_NOT_TRUSTED = 50001, // signer domain not in FederatedPeer trusted (401, no retry)

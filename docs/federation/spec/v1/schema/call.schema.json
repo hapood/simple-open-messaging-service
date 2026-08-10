@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:call",
+  "title": "POST /s2s/v1/call request",
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": [
+        "id",
+        "origin",
+        "ts",
+        "from",
+        "to",
+        "callSid",
+        "op",
+        "callType"
+      ],
+      "properties": {
+        "id": { "$ref": "urn:soms:federation:v1:common#/$defs/ulid" },
+        "origin": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
+        "ts": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "from": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "to": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "callSid": { "$ref": "urn:soms:federation:v1:common#/$defs/callSid" },
+        "op": { "type": "string" },
+        "callType": { "enum": ["AUDIO", "VIDEO"] },
+        "kind": { "enum": ["offer", "answer", "ice", "video-state"] },
+        "payload": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "startedAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "endReason": { "enum": ["completed", "timeout", "failed"] }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/base",
+      "properties": {
+        "op": {
+          "enum": [
+            "incoming",
+            "accepted",
+            "ringing",
+            "declined",
+            "cancelled",
+            "missed"
+          ]
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    {
+      "$ref": "#/$defs/base",
+      "required": ["kind", "payload"],
+      "properties": { "op": { "const": "signal" } },
+      "unevaluatedProperties": false
+    },
+    {
+      "$ref": "#/$defs/base",
+      "required": ["startedAt"],
+      "properties": { "op": { "const": "connected" } },
+      "unevaluatedProperties": false
+    },
+    {
+      "$ref": "#/$defs/base",
+      "properties": {
+        "op": { "const": "video-upgraded" },
+        "callType": { "const": "VIDEO" }
+      },
+      "unevaluatedProperties": false
+    },
+    {
+      "$ref": "#/$defs/base",
+      "properties": { "op": { "const": "ended" } },
+      "unevaluatedProperties": false
+    }
+  ]
+}

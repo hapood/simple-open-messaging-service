@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:soms:federation:v1:message-content",
+  "title": "Parsed Federation v1 message content selected by contentType",
+  "$defs": {
+    "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
+    "text": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "quote": {
+          "type": "object",
+          "required": ["seq"],
+          "properties": {
+            "seq": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            },
+            "author": { "type": "string" },
+            "body": { "type": "string" },
+            "contentType": { "type": "string" },
+            "image": { "type": "string" },
+            "imageLabel": { "type": "string" },
+            "imageIdentity": { "type": "string" },
+            "imageSize": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            },
+            "imageShape": { "enum": ["thumbnail", "avatar"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "required": ["url", "w", "h", "size"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "w": { "$ref": "#/$defs/positiveNumber" },
+        "h": { "$ref": "#/$defs/positiveNumber" },
+        "size": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "required": ["url", "name", "size", "mimeType"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "size": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "mimeType": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "video": {
+      "type": "object",
+      "required": ["url", "name", "size", "mimeType", "w", "h", "duration"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "size": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "w": { "$ref": "#/$defs/positiveNumber" },
+        "h": { "$ref": "#/$defs/positiveNumber" },
+        "duration": { "$ref": "#/$defs/positiveNumber" }
+      },
+      "additionalProperties": false
+    },
+    "audio": {
+      "type": "object",
+      "required": ["url", "name", "size", "mimeType", "duration"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "size": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "duration": { "$ref": "#/$defs/positiveNumber" }
+      },
+      "additionalProperties": false
+    },
+    "galleryItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "url", "size", "w", "h"],
+          "properties": {
+            "kind": { "const": "IMAGE" },
+            "url": { "type": "string" },
+            "size": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            },
+            "w": { "$ref": "#/$defs/positiveNumber" },
+            "h": { "$ref": "#/$defs/positiveNumber" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "url",
+            "size",
+            "name",
+            "mimeType",
+            "w",
+            "h",
+            "duration"
+          ],
+          "properties": {
+            "kind": { "const": "VIDEO" },
+            "url": { "type": "string" },
+            "size": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            },
+            "name": { "type": "string" },
+            "mimeType": { "type": "string" },
+            "w": { "$ref": "#/$defs/positiveNumber" },
+            "h": { "$ref": "#/$defs/positiveNumber" },
+            "duration": { "$ref": "#/$defs/positiveNumber" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "url", "size", "name", "mimeType", "duration"],
+          "properties": {
+            "kind": { "const": "AUDIO" },
+            "url": { "type": "string" },
+            "size": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            },
+            "name": { "type": "string" },
+            "mimeType": { "type": "string" },
+            "duration": { "$ref": "#/$defs/positiveNumber" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "url", "size", "name", "mimeType"],
+          "properties": {
+            "kind": { "const": "FILE" },
+            "url": { "type": "string" },
+            "size": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+            },
+            "name": { "type": "string" },
+            "mimeType": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "gallery": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/galleryItem" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "link": {
+      "type": "object",
+      "required": ["url", "title", "description"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https?://" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "siteName": { "type": "string" },
+        "image": { "type": "string" },
+        "favicon": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "invite": {
+      "type": "object",
+      "required": [
+        "type",
+        "from",
+        "group",
+        "groupName",
+        "groupDomain",
+        "groupIsLocal"
+      ],
+      "properties": {
+        "type": { "const": "GROUP_INVITE" },
+        "from": { "type": "string" },
+        "group": { "type": "string", "pattern": "^!" },
+        "groupName": { "type": "string" },
+        "groupAvatar": { "type": "string" },
+        "groupDomain": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+        },
+        "groupIsLocal": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "call": {
+      "type": "object",
+      "required": ["type", "callType", "status", "caller", "callee"],
+      "properties": {
+        "type": { "const": "CALL" },
+        "callType": { "enum": ["AUDIO", "VIDEO"] },
+        "status": {
+          "enum": [
+            "completed",
+            "cancelled",
+            "declined",
+            "missed",
+            "failed",
+            "unreachable"
+          ]
+        },
+        "caller": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "callee": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "startedAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "endedAt": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+        },
+        "durationMs": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "dependentRequired": {
+        "startedAt": ["endedAt", "durationMs"],
+        "endedAt": ["startedAt", "durationMs"],
+        "durationMs": ["startedAt", "endedAt"]
+      },
+      "additionalProperties": false
+    },
+    "forward": {
+      "type": "object",
+      "required": [
+        "version",
+        "bundleId",
+        "summaryLines",
+        "messageCount",
+        "assetCount"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "bundleId": { "type": "string", "minLength": 1 },
+        "summaryLines": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "type": "string" }
+        },
+        "messageCount": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "assetCount": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "system": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "FRIEND_REQUESTED",
+            "FRIEND_ACCEPTED",
+            "FRIEND_ADDED",
+            "FRIEND_REMOVED",
+            "GROUP_JOINED",
+            "GROUP_LEFT",
+            "GROUP_ADMIN_GRANTED",
+            "GROUP_ADMIN_REVOKED",
+            "GROUP_OWNER_TRANSFERRED"
+          ]
+        },
+        "subject": { "$ref": "urn:soms:federation:v1:common#/$defs/address" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": ["FRIEND_REQUESTED", "FRIEND_ACCEPTED", "FRIEND_ADDED"]
+              }
+            }
+          },
+          "then": { "not": { "required": ["subject"] } },
+          "else": { "required": ["subject"] }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["contentType", "content"],
+  "properties": {
+    "contentType": {
+      "enum": [
+        "PURE_TEXT",
+        "INVITE",
+        "IMAGE",
+        "VIDEO",
+        "FILE",
+        "AUDIO",
+        "LINK",
+        "CALL",
+        "FORWARD",
+        "GALLERY",
+        "SYSTEM"
+      ]
+    },
+    "content": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "contentType": { "const": "PURE_TEXT" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/text" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "INVITE" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/invite" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "IMAGE" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/image" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "VIDEO" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/video" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "FILE" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/file" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "AUDIO" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/audio" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "LINK" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/link" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "CALL" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/call" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "FORWARD" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/forward" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "GALLERY" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/gallery" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "SYSTEM" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/system" } } }
+    }
+  ],
+  "additionalProperties": false
+}

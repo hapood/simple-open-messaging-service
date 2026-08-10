@@ -254,9 +254,9 @@ export class MessageService {
    * seq is allocated atomically from MessageThread.curSeq (`curSeq = curSeq + 1`, read back) inside the
    * tx — Postgres row-locks the MessageThread row until commit, so concurrent sends to the SAME thread
    * serialize (a brief wait, never an error) and each gets a distinct, gapless-modulo-rollback value.
-   * No MAX() aggregate and no retry loop: the row lock IS the allocation authority. originSeq is set to
-   * seq — for a locally-authored message, this server's per-thread seq IS the federation value a
-   * receiver copies verbatim (the dedup key + per-(thread, sender) pull cursor).
+   * No MAX() aggregate and no retry loop: the row lock IS the allocation authority. A local message
+   * keeps originSeq/originServerTime null until its self-authored message-feed receipt returns; the
+   * publisher uses seq as the wire originSeq while the receipt is still absent.
    */
   async writeMsgToThread(
     userId: number,
@@ -313,8 +313,7 @@ export class MessageService {
             'conversation is read-only',
           );
         }
-        // originSeq == seq: a locally-authored message's per-thread seq IS the value a federation
-        // receiver copies verbatim (the dedup key + per-(thread, sender) pull cursor).
+        // originSeq remains null until a remote publisher returns this self-authored item as a receipt.
         const textContent =
           type === ContentType.PURE_TEXT
             ? parseTextMessageContent(content)
@@ -386,7 +385,6 @@ export class MessageService {
             creator: userId,
             clientMessageId,
             seq,
-            originSeq: seq,
             updatedAt: new Date(),
           })
           .returning();
@@ -505,7 +503,6 @@ export class MessageService {
         threadId,
         creator: actorUserId,
         seq,
-        originSeq: seq,
         updatedAt: new Date(),
       })
       .returning();
@@ -951,7 +948,6 @@ export class MessageService {
             creator: stage.creatorId,
             clientMessageId,
             seq,
-            originSeq: seq,
             updatedAt: new Date(),
           })
           .returning();

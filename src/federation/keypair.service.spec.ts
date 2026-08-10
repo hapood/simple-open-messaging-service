@@ -16,7 +16,6 @@ import { KeypairService } from './keypair.service.js';
 
 interface Anchor {
   domain: string;
-  identityEpoch: number;
   rootKeyFingerprint: string;
   createdAt: Date;
 }
@@ -92,16 +91,13 @@ describe('KeypairService identity continuity', () => {
     const file = JSON.parse(readFileSync(keyPath, 'utf8')) as {
       version: number;
       domain: string;
-      identityEpoch: number;
     };
     expect(file).toMatchObject({
       version: 1,
       domain: 'node-a.example',
-      identityEpoch: 1,
     });
     expect(fake.getAnchor()).toMatchObject({
       domain: 'node-a.example',
-      identityEpoch: 1,
       rootKeyFingerprint: service.getRootKeyFingerprint(),
     });
     expect(service.getPairwiseServerId('peer-b.example')).toBe(

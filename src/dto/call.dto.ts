@@ -1,6 +1,20 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import {
+  CALL_SID_RE,
+  CALL_SIGNAL_KINDS,
+  type CallSignalKind,
+} from '../calls/federated-call-protocol.js';
 
 /** 1:1 WebRTC call request DTOs. The server is signaling coordinator + lifecycle owner only — it
  *  never carries media. Validation mirrors the message.dto convention (class-validator + @ApiProperty). */
@@ -10,28 +24,35 @@ import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 
  * idempotency key AND the address every signaling frame carries. The shape is enforced at the DTO
  * boundary so a malformed/garbage id can never reach the in-memory map or become a clientMessageId.
  */
-export const CALL_SID_RE =
-  /^([0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+export { CALL_SID_RE } from '../calls/federated-call-protocol.js';
 
 /** Caller initiates a call. `callSid` is the client-generated idempotency key + stable signaling
  *  address (mirrors Message.clientMessageId); a retried initiate with the same value re-rings the
  *  still-ringing call instead of creating a duplicate. */
 export class InitiateCallDto {
   @ApiProperty({
-    description: 'Client-generated ULID/UUID — the call idempotency key + the address every signaling frame carries.',
+    description:
+      'Client-generated ULID/UUID — the call idempotency key + the address every signaling frame carries.',
   })
   @IsString()
   @MaxLength(36)
   @Matches(CALL_SID_RE, { message: 'callSid must be a ULID or UUID' })
   callSid!: string;
 
-  @ApiProperty({ example: 7, description: 'The callee userId (must be a friend — share an active P2P thread).' })
+  @ApiProperty({
+    example: 7,
+    description:
+      'The callee userId (must be a friend — share an active P2P thread).',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   calleeUserId!: number;
 
-  @ApiProperty({ enum: ['AUDIO', 'VIDEO'], description: 'Call media direction.' })
+  @ApiProperty({
+    enum: ['AUDIO', 'VIDEO'],
+    description: 'Call media direction.',
+  })
   @IsIn(['AUDIO', 'VIDEO'])
   callType!: 'AUDIO' | 'VIDEO';
 }
@@ -83,7 +104,7 @@ export class EndCallDto extends CallSidDto {
 }
 
 /** Relay one WebRTC signaling frame to the peer. The payload is opaque to the server (relayed verbatim,
- *  never persisted) — SDP offer/answer, an ICE candidate (or batch), renegotiation, or media-state. */
+ *  never persisted) — SDP offer/answer, an ICE candidate, or camera enabled state. */
 export class SignalCallDto {
   @ApiProperty({ description: 'The callSid this frame belongs to.' })
   @IsString()
@@ -91,21 +112,26 @@ export class SignalCallDto {
   @Matches(CALL_SID_RE, { message: 'callSid must be a ULID or UUID' })
   callSid!: string;
 
-  @ApiProperty({ example: 7, description: 'The peer userId to relay to (must be the OTHER call participant).' })
+  @ApiProperty({
+    example: 7,
+    description:
+      'The peer userId to relay to (must be the OTHER call participant).',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   toUserId!: number;
 
   @ApiProperty({
-    enum: ['offer', 'answer', 'ice', 'renegotiate', 'media-state', 'video-state'],
+    enum: CALL_SIGNAL_KINDS,
     description: 'Signaling frame kind.',
   })
-  @IsIn(['offer', 'answer', 'ice', 'renegotiate', 'media-state', 'video-state'])
-  kind!: string;
+  @IsIn(CALL_SIGNAL_KINDS)
+  kind!: CallSignalKind;
 
   @ApiProperty({
-    description: 'Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted.',
+    description:
+      'Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted.',
   })
   @IsString()
   @MaxLength(32768)

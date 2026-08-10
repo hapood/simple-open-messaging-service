@@ -1,0 +1,147 @@
+{
+  "vectors": [
+    {
+      "name": "well-known scalar version is obsolete",
+      "schema": "urn:soms:federation:v1:discovery",
+      "value": {
+        "software": "example/1.0",
+        "protocolVersion": 1,
+        "rootKey": {
+          "fingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "keys": [
+          {
+            "keyId": "a.example/key-1",
+            "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          }
+        ]
+      }
+    },
+    {
+      "name": "well-known version list must be strictly increasing",
+      "schema": "urn:soms:federation:v1:discovery",
+      "semantic": "protocolVersions",
+      "value": {
+        "software": "example/1.0",
+        "protocolVersions": [2, 1],
+        "rootKey": {
+          "fingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "keys": [
+          {
+            "keyId": "a.example/key-1",
+            "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          }
+        ]
+      }
+    },
+    {
+      "name": "identity timestamps cannot be ISO strings",
+      "schema": "urn:soms:federation:v1:identity#/$defs/claim",
+      "value": {
+        "protocolVersion": 1,
+        "originDomain": "a.example",
+        "recipientDomain": "b.example",
+        "pairwiseServerId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rootKeyFingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "nonce": "abcdefghijklmnopqrstuv",
+        "issuedAt": "2026-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "profile snapshot cannot have a directional subject",
+      "schema": "urn:soms:federation:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "account": "alice",
+            "eventType": "PROFILE",
+            "subjectAccount": "bob",
+            "revision": "1",
+            "rev": "1",
+            "body": {
+              "domain": "a.example",
+              "name": "Alice",
+              "bio": "",
+              "avatar": null,
+              "deleted": false
+            }
+          }
+        ],
+        "scannedThrough": "1",
+        "stateFeedRev": "1",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "unknown message content type",
+      "schema": "urn:soms:federation:v1:message-content",
+      "value": { "contentType": "STICKER", "content": {} }
+    },
+    {
+      "name": "system message is closed",
+      "schema": "urn:soms:federation:v1:message-content",
+      "value": {
+        "contentType": "SYSTEM",
+        "content": { "type": "FRIEND_REQUESTED", "text": "rendered" }
+      }
+    },
+    {
+      "name": "connected call requires startedAt",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "origin": "a.example",
+        "ts": 1700000000000,
+        "from": { "account": "alice", "domain": "a.example" },
+        "to": { "account": "bob", "domain": "b.example" },
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "connected",
+        "callType": "AUDIO"
+      }
+    },
+    {
+      "name": "video upgrade must carry VIDEO type",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "origin": "a.example",
+        "ts": 1700000000000,
+        "from": { "account": "alice", "domain": "a.example" },
+        "to": { "account": "bob", "domain": "b.example" },
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "video-upgraded",
+        "callType": "AUDIO"
+      }
+    },
+    {
+      "name": "call frame rejects unknown fields",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "origin": "a.example",
+        "ts": 1700000000000,
+        "from": { "account": "alice", "domain": "a.example" },
+        "to": { "account": "bob", "domain": "b.example" },
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "incoming",
+        "callType": "AUDIO",
+        "extra": true
+      }
+    },
+    {
+      "name": "media authorization requires source coordinates",
+      "schema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
+      "value": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "success is not an error envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": { "code": 0, "message": "ok" }
+    }
+  ]
+}

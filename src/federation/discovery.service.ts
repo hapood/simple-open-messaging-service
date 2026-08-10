@@ -22,8 +22,7 @@ interface PeerKey {
 }
 export interface WellKnownDoc {
   software?: string;
-  protocolVersion?: number;
-  identityEpoch?: number;
+  protocolVersions?: number[];
   rootKey?: { fingerprint?: string; ed25519?: string };
   keys: PeerKey[];
 }
@@ -100,6 +99,11 @@ export class DiscoveryService {
         : `${scheme}://${host}`;
     this.baseCache.set(domain, { baseUrl, fetchedAt: Date.now() });
     return baseUrl;
+  }
+
+  /** Drop a cached SRV/apex decision before an explicit administrator recovery probe. */
+  invalidateBase(domain: string): void {
+    this.baseCache.delete(domain.trim().toLowerCase().replace(/\.+$/, ''));
   }
 
   /** GET `<domain>/.well-known/soms` with the S2S call timeout. Throws on non-2xx or malformed shape. */

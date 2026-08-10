@@ -43,6 +43,7 @@ export const BusinessCode = {
   GROUP_FORBIDDEN: 40005,
   GROUP_TARGET_NOT_MEMBER: 40006,
   GROUP_DISSOLVED: 40007,
+  GROUP_FULL: 40008,
   FEDERATION_DELIVERY_FAILED: 50008,
   FEDERATION_QUOTA_EXCEEDED: 50011,
   FEDERATION_PAYLOAD_TOO_LARGE: 50012,
@@ -91,6 +92,7 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.GROUP_FORBIDDEN]: 'errors.biz.groupForbidden',
   [BusinessCode.GROUP_TARGET_NOT_MEMBER]: 'errors.biz.groupTargetNotMember',
   [BusinessCode.GROUP_DISSOLVED]: 'errors.biz.groupDissolved',
+  [BusinessCode.GROUP_FULL]: 'errors.biz.groupFull',
   [BusinessCode.FEDERATION_DELIVERY_FAILED]:
     'errors.biz.federationDeliveryFailed',
   [BusinessCode.FEDERATION_QUOTA_EXCEEDED]:

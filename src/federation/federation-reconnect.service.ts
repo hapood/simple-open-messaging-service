@@ -16,7 +16,7 @@ const RECONCILE_MS = 5 * 60_000;
  * re-trigger `ensurePeerTrusted`; this sweep makes recovery active + bounded instead.
  *
  * Each tick, pending first contacts retry their idempotent /init; demoted established peers verify the
- * pinned identity and recover through a signed ping, never a new handshake. Recovery then exchanges the
+ * pinned identity and recover through a nonce-bound identity proof, never a new handshake. Recovery then exchanges the
  * ephemeral feed revs and drains state before the durable miss feed.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
@@ -72,15 +72,8 @@ export class FederationReconnectService implements OnApplicationBootstrap {
 
   private async reconcile(domain: string): Promise<void> {
     await this.federation.verifyPeerIdentity(domain);
-    // Our local row may still say trusted while the peer demoted us during this process's outage.
-    // Ping is deliberately accepted from a demoted signer and promotes that inbound trust edge before
-    // the first state request. This is a recovery barrier, not an optional liveness optimization.
-    await this.federation.pingPeer(domain);
+    // The signed nonce-bound identity request also restores the peer's inbound demoted trust edge.
     await this.federation.pullStateFromPeer(domain);
-    this.missedPull.advertise(
-      domain,
-      await this.federation.pullDiscoveryHwm(domain),
-    );
     await this.federation.pullMissedFromPeer(this.missedPull, domain);
   }
 
@@ -107,10 +100,6 @@ export class FederationReconnectService implements OnApplicationBootstrap {
     await this.federation.recoverPeerTrust(domain);
     await this.federation.pushDiscoveryHwm(domain);
     await this.federation.pullStateFromPeer(domain);
-    this.missedPull.advertise(
-      domain,
-      await this.federation.pullDiscoveryHwm(domain),
-    );
     await this.federation.pullMissedFromPeer(this.missedPull, domain);
   }
 }

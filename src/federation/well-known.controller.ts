@@ -4,6 +4,7 @@ import { Controller, Get } from '@nestjs/common';
 import { SERVER_VERSION } from '../common/version.js';
 import { KeypairService } from './keypair.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 
 /**
  * Publish this server's S2S signing keys. PUBLIC (no auth) — peers fetch this over HTTPS to discover
@@ -11,7 +12,7 @@ import { loadFederationConfig } from './federation.config.js';
  * bootstrap.ts so it's served at exactly /.well-known/soms.
  *
  * S2S endpoint paths (friend-request, friend-approve, users, messages, …) are NOT published here —
- * peers derive them from the resolved base URL as `${base}/api/v1/s2s/<path>`, the same way the
+ * peers derive them from the resolved base URL as `${base}/s2s/v1/<path>`, the same way the
  * Step 2 pull routes are already resolved.
  *
  * `keys` remains an array for wire compatibility, but this protocol version publishes exactly one
@@ -29,8 +30,7 @@ export class WellKnownController {
   getWellKnown() {
     return {
       software: `soms/${SERVER_VERSION}`,
-      protocolVersion: 1,
-      identityEpoch: this.keypair.getIdentityEpoch(),
+      protocolVersions: [...FEDERATION_PROTOCOL_VERSIONS],
       rootKey: {
         fingerprint: this.keypair.getRootKeyFingerprint(),
         ed25519: this.keypair.getRootPublicKeyB64(),

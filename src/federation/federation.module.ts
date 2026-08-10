@@ -34,8 +34,8 @@ import { GroupMembershipStateService } from '../group/group-membership-state.ser
  * raw roster mutators), SseService (GatewayModule), + UploadModule (avatar wire helpers). DatabaseService
  * is provided globally by DatabaseModule.
  *
- * Two S2S controllers share the `s2s` prefix: S2sController (unified invite + roster + signed GETs,
- * allow-list-gated via S2sSignatureGuard) and S2sIgniteController (POST /s2s/ignite — the trust bootstrap,
+ * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
+ * allow-list-gated via S2sSignatureGuard) and S2sIgniteController (POST /s2s/v1/ignite — the trust bootstrap,
  * NOT allow-list-gated since it IS the trust step; verifies via S2sVerifyService directly).
  */
 @Global()

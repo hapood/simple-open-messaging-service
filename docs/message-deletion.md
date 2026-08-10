@@ -18,25 +18,9 @@ The browser and native clients persist tombstones in their ordinary message stor
 
 ## Federation flow
 
-The signed endpoint is:
-
-```text
-GET /api/v1/s2s/message-deletions
-```
-
-It uses the same three address shapes as the message endpoint:
-
-- P2P author stream: `fromAccount`, `toAccount`, `toDomain`, `afterId`, `take`.
-- Group mirror stream from the group origin: `toAccount=!group`, `toDomain`, `afterId`, `take`.
-- Group-origin per-author stream: the group parameters plus `fromAccount` and `fromDomain`.
-
-Responses contain ascending deletion IDs, stable creator/origin coordinates, deletion type, and deletion time. Pagination continues until a short or empty page; there is no snapshot maximum.
-
-`FederationDeletedCursor` stores one HWM per ordered remote stream. A group mirror has one group-origin stream; a group origin has one stream per remote author server/account. Cursor advancement is committed in the same transaction as `FederatedMessageTombstone` and any matching local message update.
-
-Federated message insertion and tombstone insertion take the same PostgreSQL transaction-scoped advisory lock derived from `(threadId, creatorId, originSeq)`. Therefore either ordering converges:
-
-1. Message first: the tombstone transaction marks it deleted and writes a local `DeletedMessage` row.
-2. Tombstone first: the later message insert sees it, inserts the message as deleted, and writes the local deletion row.
-
-Existing federation message hints are reused as lossy wake-up signals. Every triggered P2P/group pull fetches deletions before messages, and opening a conversation is the durable recovery path after lost pushes or process restarts.
+Federation v1 does not define a message-deletion endpoint or deletion feed. The former standalone deletion
+endpoint proposal is not part of the published surface and must not be exposed.
+The message feed skips messages that were already deleted at its origin. Propagating a deletion after the
+remote peer has received the original message is deliberately outside the v1 wire contract; local
+`FederatedMessageTombstone` concurrency rules remain implementation detail and do not create an interoperable
+S2S API.

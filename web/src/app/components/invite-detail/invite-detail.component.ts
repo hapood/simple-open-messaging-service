@@ -14,6 +14,7 @@ import {
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { AppIconType, IconComponent } from '../icon/icon.component';
@@ -31,7 +32,13 @@ import type { InviteDetail } from '../../services/model';
 const ENTER_MS = 300;
 const EASING = 'cubic-bezier(0.32,0.72,0,1)';
 
-type ViewState = 'loading' | 'valid' | 'joined' | 'expired' | 'invalid';
+type ViewState =
+  | 'loading'
+  | 'valid'
+  | 'requested'
+  | 'joined'
+  | 'expired'
+  | 'invalid';
 
 /**
  * Fullscreen Material dialog for a group invite. Opened with the raw GROUP_INVITE message body; it
@@ -68,6 +75,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   private readonly userService = inject(UserService);
   private readonly nav = inject(NavStateMachineService);
   private readonly transloco = inject(TranslocoService);
+  private readonly snackBar = inject(MatSnackBar);
 
   /** Fallback identity parsed from the card message (shown instantly while the detail loads). */
   readonly fallback = signal<{ groupName: string; groupAvatar?: string }>({
@@ -86,6 +94,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
     const d = this.detail();
     if (d === null) return 'loading';
     if (d.alreadyJoined) return 'joined';
+    if (d.joinRequested) return 'requested';
     if (d.status !== 'PENDING') return 'invalid';
     if (Date.now() > d.expiresAt) return 'expired';
     return 'valid';
@@ -226,9 +235,18 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
       void this.loadDetail();
       return;
     }
-    const tid = threadId;
-    // openChat clears the pane stack → the invite-detail entry is removed → the overlay is disposed.
-    if (tid != null) this.nav.openChat(tid, 'group-joined');
+    if (!this.detail()!.groupIsLocal) {
+      this.snackBar.open(
+        this.transloco.translate('chat.federatedJoinRequested'),
+        undefined,
+        { duration: 3500 },
+      );
+      await this.loadDetail();
+      this.busy.set(false);
+      return;
+    }
+    // A local-origin group confirms in this request, so it is safe to enter immediately.
+    this.nav.openChat(threadId, 'group-joined');
   }
 
   /** Already joined → open the group. openChat clears the pane stack → overlay disposed. */

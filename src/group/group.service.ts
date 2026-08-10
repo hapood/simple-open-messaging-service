@@ -473,6 +473,9 @@ export class GroupService {
       });
     }
     await this.federation.pushStateFeedDomains(result.statePeers);
+    if (result.transitioned) {
+      await this.federation.notifyGroupLeave(params.threadId, params.userId);
+    }
     if (result.systemMessage && this.messageFanout)
       void this.messageFanout.dispatch(result.systemMessage);
     return {
@@ -588,6 +591,7 @@ export class GroupService {
     threadId: number;
     operatorUserId: number;
     targetUserId: number;
+    reason?: string;
   }): Promise<{ transitioned: boolean }> {
     const result = await this.database.db.transaction(async (tx) => {
       const [operator, target] = await Promise.all([
@@ -707,7 +711,7 @@ export class GroupService {
         tx,
         params.threadId,
         params.targetUserId,
-        '',
+        params.reason ?? '',
         false,
       );
       const groupState = await this.federation.writeGroupStateInTx(

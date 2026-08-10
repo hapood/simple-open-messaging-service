@@ -375,7 +375,7 @@ export async function bootFederationPair(): Promise<{
     portA,
     portB,
   });
-  // appB routes aaa.local through the proxy (portA field = proxy.port), so its signed /get_file calls can
+  // appB routes aaa.local through the proxy (portA field = proxy.port), so its signed media calls can
   // be fault-injected; bbb.local stays appB's own port.
   const appB = makeFedApp({
     domain: FED_DOMAIN_B,
@@ -414,8 +414,8 @@ export async function assertSeparateDatabases(
 /** The federation-relevant tables to TRUNCATE between tests (User CASCADE clears its kin). MediaAsset is
  *  included explicitly: it has NO FK to User/Message, so the User CASCADE doesn't reach it, and a
  *  deterministic fixture (makePng(red,size) → stable digest) would leave a row that makes localizeMedia's
- *  dedup SKIP the /get_file fetch on the next run — defeating the media tests (the proxy would see no
- *  /get_file). MediaMessage + Message are belt-and-suspenders (they FK-cascade, but list them anyway). */
+ *  dedup SKIP the media fetch on the next run — defeating the media tests. MediaMessage + Message are
+ *  belt-and-suspenders (they FK-cascade, but list them anyway). */
 const FEDERATION_TRUNCATE_SQL =
   'TRUNCATE TABLE "User", "MessageThread", "Message", "MessageAsset", "MediaAsset", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache" RESTART IDENTITY CASCADE';
 

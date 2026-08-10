@@ -248,7 +248,7 @@ export class GroupController {
         );
         // Deliver the card LIVE, exactly like a normal send: dispatch fans NEW_MESSAGE to every active
         // participant of the P2P thread (LOCAL → the invitee sees the card the instant it is written; no
-        // more "only on next list refresh"), and its federation leg (notifyOnSend, since originSeq is set)
+        // more "only on next list refresh"), and its federation leg
         // marks the inviter's mirror dirty so the invitee's server promptly pulls the card via the Step-2
         // P2P path → storePulledMessage → NEW_MESSAGE (FEDERATED). Without this the invitee had no live
         // discovery path. Fire-and-forget: the card is already committed; a fan-out failure degrades to

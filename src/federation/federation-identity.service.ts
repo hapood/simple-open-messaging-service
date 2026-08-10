@@ -12,17 +12,18 @@ import { isUniqueViolation } from '../database/database-error.js';
 import * as tables from '../database/schema.js';
 import { KeypairService } from './keypair.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { FEDERATION_PROTOCOL_VERSION } from './federation-protocol.js';
 
 export interface FederationIdentityClaim {
-  protocolVersion: 1;
+  protocolVersion: typeof FEDERATION_PROTOCOL_VERSION;
   originDomain: string;
   recipientDomain: string;
-  identityEpoch: number;
   pairwiseServerId: string;
   rootKeyFingerprint: string;
   nonce: string;
-  issuedAt: string;
-  /** Decimal bigint; present only on the one-time /init exchange. */
+  /** Unix epoch milliseconds. */
+  issuedAt: number;
+  /** Decimal bigint; present only on the one-time /ignite exchange. */
   startChangeId?: string;
 }
 
@@ -50,14 +51,13 @@ export class FederationIdentityService {
     startChangeId?: bigint,
   ): FederationIdentityClaim {
     return {
-      protocolVersion: 1,
+      protocolVersion: FEDERATION_PROTOCOL_VERSION,
       originDomain: normalizeDomain(this.config.domain),
       recipientDomain: normalizeDomain(peerDomain),
-      identityEpoch: this.keypair.getIdentityEpoch(),
       pairwiseServerId: this.keypair.getPairwiseServerId(peerDomain),
       rootKeyFingerprint: this.keypair.getRootKeyFingerprint(),
       nonce,
-      issuedAt: new Date().toISOString(),
+      issuedAt: Date.now(),
       ...(startChangeId === undefined
         ? {}
         : { startChangeId: startChangeId.toString() }),
@@ -83,20 +83,20 @@ export class FederationIdentityService {
     requireStartChangeId = false,
   ): FederationIdentityClaim {
     const claim = value as Partial<FederationIdentityClaim> | null;
-    const issuedAt =
-      typeof claim?.issuedAt === 'string' ? Date.parse(claim.issuedAt) : NaN;
+    const issuedAt = claim?.issuedAt;
     if (
-      claim?.protocolVersion !== 1 ||
+      claim?.protocolVersion !== FEDERATION_PROTOCOL_VERSION ||
       typeof claim.originDomain !== 'string' ||
       typeof claim.recipientDomain !== 'string' ||
-      claim.identityEpoch !== 1 ||
       typeof claim.pairwiseServerId !== 'string' ||
       !/^[A-Za-z0-9_-]{43}$/.test(claim.pairwiseServerId) ||
       typeof claim.rootKeyFingerprint !== 'string' ||
       !/^sha256:[A-Za-z0-9_-]{43}$/.test(claim.rootKeyFingerprint) ||
       typeof claim.nonce !== 'string' ||
       !/^[A-Za-z0-9_-]{22,128}$/.test(claim.nonce) ||
-      !Number.isFinite(issuedAt) ||
+      typeof issuedAt !== 'number' ||
+      !Number.isSafeInteger(issuedAt) ||
+      issuedAt < 0 ||
       Math.abs(Date.now() - issuedAt) > CLAIM_MAX_AGE_MS ||
       normalizeDomain(claim.originDomain) !== normalizeDomain(expectedOrigin) ||
       normalizeDomain(claim.recipientDomain) !==
@@ -235,8 +235,7 @@ export class FederationIdentityService {
     const mismatch =
       pinned &&
       (peer.pairwiseServerId !== claim.pairwiseServerId ||
-        peer.rootKeyFingerprint !== claim.rootKeyFingerprint ||
-        peer.identityEpoch !== claim.identityEpoch);
+        peer.rootKeyFingerprint !== claim.rootKeyFingerprint);
     if (mismatch || (peer && !pinned && !legacyContinuityProven)) {
       const reason = mismatch
         ? 'peer presented an identity different from the pinned identity'
@@ -264,7 +263,6 @@ export class FederationIdentityService {
         trustLevel: 'trusted',
         pairwiseServerId: claim.pairwiseServerId,
         rootKeyFingerprint: claim.rootKeyFingerprint,
-        identityEpoch: claim.identityEpoch,
         identityPinnedAt: now,
         trustedAt: now,
         lastSuccessAt: now,
@@ -275,11 +273,12 @@ export class FederationIdentityService {
           trustLevel: 'trusted',
           pairwiseServerId: claim.pairwiseServerId,
           rootKeyFingerprint: claim.rootKeyFingerprint,
-          identityEpoch: claim.identityEpoch,
           identityPinnedAt: peer?.identityPinnedAt ?? now,
           identityLostAt: null,
           identityLostReason: null,
-          trustedAt: now,
+          // Preserve the first time this continuity edge became trusted. Recovery and ordinary
+          // identity refresh advance lastSuccessAt but do not rewrite its historical start time.
+          trustedAt: peer?.trustedAt ?? now,
           lastSuccessAt: now,
           demotedAt: null,
           demoteReason: null,
@@ -375,12 +374,42 @@ export class FederationIdentityService {
     }
   }
 
+  /** A valid signed identity request from a known demoted peer proves the pinned key is still held.
+   * Promote that inbound trust edge before returning the nonce-bound response, so identity itself is
+   * the recovery barrier and the peer can immediately pull its feeds. */
+  async markIdentityEndpointRecovered(domain: string): Promise<void> {
+    const normalized = normalizeDomain(domain);
+    await this.database.db.transaction(async (tx) => {
+      const [recovered] = await tx
+        .update(tables.federatedPeer)
+        .set({
+          trustLevel: 'trusted',
+          demotedAt: null,
+          demoteReason: null,
+          lastSuccessAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tables.federatedPeer.domain, normalized),
+            eq(tables.federatedPeer.trustLevel, 'demoted'),
+          ),
+        )
+        .returning({ domain: tables.federatedPeer.domain });
+      if (recovered) {
+        await tx.insert(tables.federatedPeerEvent).values({
+          domain: normalized,
+          type: 'recovered',
+          reason: 'pinned identity request verified',
+        });
+      }
+    });
+  }
+
   private serializeClaim(claim: FederationIdentityClaim): string {
     return JSON.stringify({
       protocolVersion: claim.protocolVersion,
       originDomain: normalizeDomain(claim.originDomain),
       recipientDomain: normalizeDomain(claim.recipientDomain),
-      identityEpoch: claim.identityEpoch,
       pairwiseServerId: claim.pairwiseServerId,
       rootKeyFingerprint: claim.rootKeyFingerprint,
       nonce: claim.nonce,

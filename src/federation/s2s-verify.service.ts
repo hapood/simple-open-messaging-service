@@ -42,7 +42,7 @@ export class S2sVerifyService {
   }
 
   /** Build the SignedRequest (method/path/query/authority/body) the verifier expects. body comes from the
-   *  /api/v1/s2s/* raw-body capture hook in bootstrap.ts — re-serialized JSON would not match the digest. */
+   *  /s2s/v1/* raw-body capture hook in bootstrap.ts — re-serialized JSON would not match the digest. */
   signedRequest(req: FastifyRequest): SignedRequest {
     const requestTarget = req.url ?? '';
     const queryIndex = requestTarget.indexOf('?');

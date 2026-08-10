@@ -18,7 +18,7 @@ left of `@`) and `domain` to the email domain. SOMS borrows email's `account@dom
 an intentionally **small, URL-safe charset subset** — because an account is not only a login handle.
 It is simultaneously:
 
-- a **URL path parameter** (`GET /api/v1/s2s/users/:account`), and
+- a **URL path parameter** (`GET /s2s/v1/users/:account`), and
 - a **federation wire field** (carried in JSON bodies, signed by RFC 9421).
 
 Email's full RFC 5321 `atext` set includes characters that are **fatal** in those roles
@@ -212,10 +212,8 @@ sigil stays un-spoofable (`!` is neither a letter nor a digit). Underscode remai
 it would be a separate review of this document. No migration was needed for the digit change — the DB
 CHECK constraint only enforces the `!`/`isGroup` consistency, not the user charset.
 
-## 9. Related / supersedes
+## 9. Related
 
-- Supersedes the `thr_<rand>@<origin-domain>` **federated thread-id** form for groups described in
-  `docs/roadmap/federation-step3-design.md`. Canonical group identity is now the `!`-sigil account (§3.2);
-  when federated groups are built, align Step 3's thread identity to this scheme rather than keeping
-  two conventions.
+- Canonical federated group identity is the `!`-sigil account defined in §3.2; no separate federated
+  thread-id identity crosses the wire.
 - Cross-referenced from `docs/overview/federation-protocol.md` §3.1 (federated identifiers).

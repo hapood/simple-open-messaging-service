@@ -330,10 +330,7 @@ Documentation lives under `docs/` in three buckets.
 **Architecture evolution / roadmap** (`docs/roadmap/`) — phase designs, reviews, follow-ups, planned items:
 
 - [protocol-plan.md](docs/roadmap/protocol-plan.md) — Core protocol-stack plan + P0–P3 roadmap
-- [federation-step2-design.md](docs/roadmap/federation-step2-design.md) — Federation Step 2 (cross-server 1:1 messages + media)
-- [federation-step3-design.md](docs/roadmap/federation-step3-design.md) — Federation Step 3 (cross-server groups, origin-hub)
-- [federation-api-design-review.md](docs/roadmap/federation-api-design-review.md) — Federation S2S API design review
-- [federation-quotas.md](docs/roadmap/federation-quotas.md) — Unified daily quotas (local + federated peers)
+- [federation/README.md](docs/federation/README.md) — Federation v1 specification, implementation references, audits, and remaining protocol work
 - [push-fcm-runtime-config.md](docs/roadmap/push-fcm-runtime-config.md) — FCM runtime-config fetch (planned)
 - [backend-review-followups.md](docs/roadmap/backend-review-followups.md) — Backend review P1–P3 follow-ups
 

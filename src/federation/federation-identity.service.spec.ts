@@ -45,7 +45,6 @@ function makeService(
     },
   };
   const keypair = {
-    getIdentityEpoch: () => 1,
     getPairwiseServerId: () => 'A'.repeat(43),
     getRootKeyFingerprint: () => `sha256:${'B'.repeat(43)}`,
     getPrivateKey: () => privateKey,
@@ -91,12 +90,8 @@ describe('FederationIdentityService', () => {
       service.createClaim('peer.example', 'n'.repeat(24), 42n),
     );
     expect(
-      service.validateClaim(
-        signed,
-        'local.example',
-        'peer.example',
-        true,
-      ).startChangeId,
+      service.validateClaim(signed, 'local.example', 'peer.example', true)
+        .startChangeId,
     ).toBe('42');
 
     expect(() =>
@@ -122,9 +117,21 @@ describe('FederationIdentityService', () => {
   it('rejects stale identity claims', () => {
     const { service } = makeService();
     const claim = service.createClaim('peer.example', 'n'.repeat(24));
-    claim.issuedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    claim.issuedAt = Date.now() - 6 * 60_000;
     expect(() =>
       service.validateClaim(claim, 'local.example', 'peer.example'),
+    ).toThrow(BusinessException);
+  });
+
+  it('rejects the former ISO-string identity timestamp representation', () => {
+    const { service } = makeService();
+    const claim = service.createClaim('peer.example', 'n'.repeat(24));
+    expect(() =>
+      service.validateClaim(
+        { ...claim, issuedAt: new Date(claim.issuedAt).toISOString() },
+        'local.example',
+        'peer.example',
+      ),
     ).toThrow(BusinessException);
   });
 
@@ -135,7 +142,6 @@ describe('FederationIdentityService', () => {
       identityPinnedAt: new Date(),
       pairwiseServerId: 'old',
       rootKeyFingerprint: `sha256:${'C'.repeat(43)}`,
-      identityEpoch: 1,
     });
     const claim = service.createClaim('local.example', 'n'.repeat(24));
     claim.originDomain = 'peer.example';

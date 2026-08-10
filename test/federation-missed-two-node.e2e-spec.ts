@@ -256,19 +256,14 @@ describe('federation durable missed transport (two nodes)', () => {
           .filter(
             (entry) =>
               entry.method === 'GET' &&
-              entry.path.startsWith('/api/v1/s2s/') &&
-              !entry.path.startsWith('/api/v1/s2s/identity'),
+              entry.path.startsWith('/s2s/v1/') &&
+              !entry.path.startsWith('/s2s/v1/identity'),
           );
         expect(signedGets[0]).toMatchObject({
-          path: '/api/v1/s2s/ping',
+          path: expect.stringMatching(/^\/s2s\/v1\/state-feed\?/),
           status: 200,
         });
-        const dataGets = signedGets.filter(
-          (entry) => entry.path !== '/api/v1/s2s/ping',
-        );
-        expect(dataGets[0]?.path).toMatch(
-          /^\/api\/v1\/s2s\/state-feed(?:-rev|\?)/,
-        );
+        const dataGets = signedGets;
         expect(
           dataGets[0]?.status,
           `first signed data GET: ${JSON.stringify(dataGets[0])}`,
@@ -276,8 +271,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(
           dataGets.some(
             (entry) =>
-              (entry.path === '/api/v1/s2s/feed-rev' ||
-                entry.path.startsWith('/api/v1/s2s/message-feed?')) &&
+              entry.path.startsWith('/s2s/v1/message-feed?') &&
               entry.status === 200,
           ),
         ).toBe(true);
