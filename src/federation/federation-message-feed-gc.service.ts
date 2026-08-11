@@ -28,11 +28,26 @@ export class FederationMessageFeedGcService {
   @Interval(SWEEP_INTERVAL_MS)
   async scheduledSweep(): Promise<void> {
     if (this.running) return this.running;
-    if ((await this.databaseIsBusy()) && !(await this.hasEmergencyBacklog()))
+    try {
+      if ((await this.databaseIsBusy()) && !(await this.hasEmergencyBacklog()))
+        return;
+    } catch (error) {
+      this.logger.error(
+        `message-feed GC scheduling check failed: ${(error as Error).message}`,
+        (error as Error).stack,
+      );
       return;
-    this.running = this.runOnce().finally(() => {
-      this.running = null;
-    });
+    }
+    this.running = this.runOnce()
+      .catch((error: unknown) => {
+        this.logger.error(
+          `message-feed GC sweep failed: ${(error as Error).message}`,
+          (error as Error).stack,
+        );
+      })
+      .finally(() => {
+        this.running = null;
+      });
     return this.running;
   }
 

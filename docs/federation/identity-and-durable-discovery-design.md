@@ -375,9 +375,10 @@ SOMS 每五分钟尝试一次 message change GC。多进程通过 session adviso
 - 物理删除 `changeId <= acknowledgedThrough`，并把 retained `startChangeId` 推进到确认水位；
 - 单 target 实际残留超过 10,000 条时强制物理删除最旧一半，并原子抬高 `startChangeId`、
   `acknowledgedThrough`、`lastServedThrough`；
-- 紧急积压即使系统忙也尝试，若该 target 正在 serve、分配或 reset 则本轮跳过；
+- 紧急积压即使系统忙也尝试；正在 serve/分配的 target 通过行锁跳过本轮；
 - destructive peer reset 物理删除其 `DiscoveryTarget`，级联清除 change/serve cursor，并显式删除
-  peer audience；与 GC 对同一行自然串行。
+  peer audience；reset 在该清理段获取与 GC 相同的 advisory lock，二者全局互斥，不会因相反的
+  行删除顺序产生死锁。
 
 receiver 收到单调前进的 cursor-invalid floor 后，在本地 pull cursor 事务中同时更新
 `startChangeId/remoteHwm`，不发布空缺区间的消息副作用，然后立即从新 `availableCursor` 继续。
