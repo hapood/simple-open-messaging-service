@@ -4,7 +4,7 @@ import { MessageService } from './message.service.js';
 import { SystemMessageType } from './system-message.js';
 
 describe('MessageService local system messages', () => {
-  it('persists a local SYSTEM row without allocating a federation discovery change', async () => {
+  it('persists a local SYSTEM row', async () => {
     const stored = {
       id: 10n,
       threadId: 7,
@@ -45,12 +45,7 @@ describe('MessageService local system messages', () => {
       };
       return query;
     });
-    const discovery = { recordMessageInTx: vi.fn() };
-    const service = new MessageService(
-      {} as never,
-      {} as never,
-      discovery as never,
-    );
+    const service = new MessageService({} as never, {} as never);
     const tx = {
       query: {
         user: {
@@ -75,12 +70,11 @@ describe('MessageService local system messages', () => {
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({ contentType: ContentType.SYSTEM }),
     );
-    expect(discovery.recordMessageInTx).not.toHaveBeenCalled();
     expect(threadUpdate).toBe(1);
   });
 
   it('logs and returns null when best-effort generation fails', async () => {
-    const service = new MessageService({} as never, {} as never, {} as never);
+    const service = new MessageService({} as never, {} as never);
     vi.spyOn(service, 'writeSystemMessage').mockRejectedValue(
       new Error('storage unavailable'),
     );

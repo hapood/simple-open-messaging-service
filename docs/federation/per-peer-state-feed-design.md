@@ -338,7 +338,7 @@ avatar、关系或群 meta 的二次远程请求。
 继续保留：
 
 - 申请、接受、拒绝、删除好友等业务 command；
-- 消息 `/message-feed`、`DiscoveryChange`、`ThreadAudience`、message HWM/cursor；
+- 消息 `/message-feed`、bounded memory buffer、`ThreadAudience`、message HWM/cursor；
 - 消息删除、`leaveId` 及现有消息交付机制；
 - federation identity、签名、trust、reset 和 quota 约束。
 

@@ -86,7 +86,7 @@ describe('ThreadAudience schema', () => {
     );
   });
 
-  it('installs shared discovery targets, durable changes, and federation pull cursors', async () => {
+  it('installs cursor-only federation allocation and removes database change queues', async () => {
     const tables = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
        FROM information_schema.tables
@@ -102,12 +102,7 @@ describe('ThreadAudience schema', () => {
       ],
     );
     expect(tables.rows.map((row) => row.table_name).sort()).toEqual(
-      [
-        'DiscoveryTarget',
-        'DiscoveryChange',
-        'FederationPullCursor',
-        'FederationServeCursor',
-      ].sort(),
+      ['FederationPullCursor', 'FederationServeCursor'].sort(),
     );
 
     const indexes = await database.pool.query<{ indexname: string }>(
@@ -125,25 +120,16 @@ describe('ThreadAudience schema', () => {
         ],
       ],
     );
-    expect(indexes.rows.map((row) => row.indexname).sort()).toEqual(
-      [
-        'DiscoveryTarget_local_key',
-        'DiscoveryTarget_peer_key',
-        'DiscoveryChange_pkey',
-        'DiscoveryChange_target_message_key',
-        'DiscoveryChange_audience_idx',
-        'FederationServeCursor_targetId_key',
-      ].sort(),
-    );
+    expect(indexes.rows).toEqual([]);
 
     const targetColumns = await database.pool.query<{ column_name: string }>(
       `SELECT column_name
        FROM information_schema.columns
-       WHERE table_name = 'DiscoveryTarget'`,
+       WHERE table_name = 'FederationServeCursor'`,
     );
     const targetColumnNames = targetColumns.rows.map((row) => row.column_name);
     expect(targetColumnNames).toContain('allocatedThrough');
-    expect(targetColumnNames).not.toContain('latestChangeId');
+    expect(targetColumnNames).not.toContain('targetId');
 
     const cursorConstraints = await database.pool.query<{
       conname: string;

@@ -115,7 +115,13 @@
     }
   },
   "type": "object",
-  "required": ["messages", "scannedThrough", "allocatedThrough", "hasMore"],
+  "required": [
+    "messages",
+    "scannedThrough",
+    "allocatedThrough",
+    "hasMore",
+    "degradation"
+  ],
   "properties": {
     "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
     "scannedThrough": {
@@ -124,7 +130,26 @@
     "allocatedThrough": {
       "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
     },
-    "hasMore": { "type": "boolean" }
+    "hasMore": { "type": "boolean" },
+    "degradation": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["kind", "truncatedThrough", "since"],
+          "properties": {
+            "kind": { "const": "HISTORY_TRUNCATED" },
+            "truncatedThrough": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+            },
+            "since": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
   },
   "additionalProperties": false
 }

@@ -386,20 +386,10 @@ export class FederationResetService implements OnModuleInit {
       await tx.execute(
         sql`DELETE FROM "QuotaDailyUsage" WHERE domain = ${domain}`,
       );
-      // Serialize this destructive delivery-index cleanup with the globally singleton GC sweep. The
-      // session-level lock held by GC and this transaction-level lock share the same advisory key, so
-      // reset cannot deadlock with GC by touching ThreadAudience/DiscoveryChange in the opposite order.
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended('federation-message-feed-gc', 0))`,
-      );
-      // Authorization and the peer's delivery index are removed before its identity anchor.
-      // DiscoveryTarget owns DiscoveryChange and FederationServeCursor through ON DELETE CASCADE.
-      // The shared advisory lock above excludes GC for this short destructive section.
+      // Authorization and the peer's small cursor/reconstruction state are removed before its
+      // identity anchor. Peer deletion cascades the federation serve/pull cursors.
       await tx.execute(
         sql`DELETE FROM "ThreadAudience" WHERE "targetDomain" = ${domain}`,
-      );
-      await tx.execute(
-        sql`DELETE FROM "DiscoveryTarget" WHERE "targetDomain" = ${domain} AND "localUserId" IS NULL`,
       );
       await tx.execute(sql`
         DELETE FROM "User"

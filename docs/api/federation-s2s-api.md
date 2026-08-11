@@ -101,8 +101,10 @@ not a wire-protocol constant; a full origin rejects by returning ordinary author
 
 ## Message feed
 
-Query parameters are `after` and `take`. The response contains `messageFeedRev`, `scannedThrough`, and
-ordered changes. A discovery change is allocated transactionally with the message and its audience.
+Query parameters are `after` and `take`. The response contains `allocatedThrough`, `scannedThrough`,
+ordered changes, and a required nullable `degradation` field. `degradation.kind = HISTORY_TRUNCATED`
+means the publisher explicitly discarded history through the reported cursor; this is an exceptional
+service degradation, not normal bounded-buffer behavior.
 
 The feed is target-allocated, not filtered as “messages authored by someone else”. After SOMS commits a
 message fetched from its author server, it allocates that self-authored item back to the author as a
@@ -116,9 +118,10 @@ accepts only the content types defined by the federation schema and uniformly re
 Group membership changes converge through `GROUP_META` and membership state.
 
 `after` may repeat the current acknowledged cursor for retry but cannot move behind the retained floor.
-Change IDs are strictly increasing, not contiguous. A server may prune acknowledged changes and may apply
-its own bounded-retention policy to an abandoned backlog; `FEDERATION_MISSED_CURSOR_INVALID` returns the
-new `startChangeId`/`availableCursor`, which the receiver adopts atomically before continuing.
+Change IDs are strictly increasing, not contiguous. A full source buffer freezes new allocation and waits
+for acknowledgement; it does not normally prune unacknowledged history. An exceptional explicit history
+truncation raises the retained floor, returns `FEDERATION_MISSED_CURSOR_INVALID` to an old cursor, and is
+subsequently visible in every page's `degradation` field.
 
 Media and forward-bundle authorization joins the signed peer's thread audience and then verifies the exact
 message-to-digest/bundle binding. It does not depend on a message-feed change remaining after acknowledgement.

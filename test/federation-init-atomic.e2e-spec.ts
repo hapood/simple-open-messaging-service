@@ -80,7 +80,7 @@ describe('FederationIgniteService atomic commit', () => {
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "FederatedPeer", "DiscoveryTarget", "S2SIdentityNonce" CASCADE',
+      'TRUNCATE TABLE "FederatedPeer", "S2SIdentityNonce" CASCADE',
     );
   });
 

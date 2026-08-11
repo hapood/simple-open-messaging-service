@@ -14,6 +14,7 @@ function page(
     scannedThrough,
     allocatedThrough: scannedThrough,
     hasMore,
+    degradation: null,
   };
 }
 
@@ -122,5 +123,23 @@ describe('FederationMessageFeedPullService commit boundary', () => {
     expect(state).toEqual({ startChangeId: 5n, remoteHwm: 8n });
     expect(apply).toHaveBeenCalledTimes(2);
     expect(afterCommit).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a degradation marker beyond the advertised allocation', async () => {
+    const { service, whereUpdate } = harness();
+    const degraded = page('3');
+    degraded.degradation = {
+      kind: 'HISTORY_TRUNCATED',
+      truncatedThrough: '4',
+      since: 1,
+    };
+
+    await expect(
+      service.run('peer.test', {
+        fetch: async () => degraded,
+        apply: async () => undefined,
+      }),
+    ).rejects.toThrow('invalid message-feed degradation');
+    expect(whereUpdate).not.toHaveBeenCalled();
   });
 });

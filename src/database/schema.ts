@@ -491,45 +491,6 @@ export const threadAudience = pgTable(
   ],
 );
 
-/** Transactional change-id allocator for one pull target. `local` identifies one local user; a real
- * domain identifies the whole remote federation server. Updating allocatedThrough row-locks only this
- * target, so unrelated users/peers do not serialize their message writes. */
-export const discoveryTarget = pgTable(
-  'DiscoveryTarget',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    targetDomain: varchar({ length: 63 }).notNull(),
-    localUserId: integer(),
-    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
-    updatedAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    uniqueIndex('DiscoveryTarget_local_key')
-      .on(table.targetDomain, table.localUserId)
-      .where(sql`${table.targetDomain} = 'local'`),
-    uniqueIndex('DiscoveryTarget_peer_key')
-      .on(table.targetDomain)
-      .where(sql`${table.targetDomain} <> 'local'`),
-    foreignKey({
-      columns: [table.localUserId],
-      foreignColumns: [user.id],
-      name: 'DiscoveryTarget_localUserId_fkey',
-    })
-      .onUpdate('cascade')
-      .onDelete('cascade'),
-    check(
-      'DiscoveryTarget_identity_check',
-      sql`(${table.targetDomain} = 'local' AND ${table.localUserId} IS NOT NULL) OR (${table.targetDomain} <> 'local' AND ${table.localUserId} IS NULL)`,
-    ),
-    check(
-      'DiscoveryTarget_allocatedThrough_check',
-      sql`${table.allocatedThrough} >= 0`,
-    ),
-  ],
-);
-
 export const messageAsset = pgTable(
   'MessageAsset',
   {
@@ -737,56 +698,6 @@ export const message = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
-  ],
-);
-
-/** Lightweight per-target message-feed entry. Message bodies remain in Message; this row makes their
- * allocation durable across restart/SSE loss until acknowledgement or retention GC removes it. */
-export const discoveryChange = pgTable(
-  'DiscoveryChange',
-  {
-    targetId: bigint({ mode: 'bigint' }).notNull(),
-    changeId: bigint({ mode: 'bigint' }).notNull(),
-    /** Audience that admitted the change. It becomes null when current access is revoked; targetId
-     * remains the delivery proof until acknowledgement or retention GC physically deletes the row. */
-    audienceId: bigint({ mode: 'bigint' }),
-    threadId: integer().notNull(),
-    messageId: bigint({ mode: 'bigint' }).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.targetId, table.changeId],
-      name: 'DiscoveryChange_pkey',
-    }),
-    uniqueIndex('DiscoveryChange_target_message_key').on(
-      table.targetId,
-      table.messageId,
-    ),
-    index('DiscoveryChange_audience_idx').on(table.audienceId),
-    foreignKey({
-      columns: [table.targetId],
-      foreignColumns: [discoveryTarget.id],
-      name: 'DiscoveryChange_targetId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.audienceId],
-      foreignColumns: [threadAudience.id],
-      name: 'DiscoveryChange_audienceId_fkey',
-    }).onDelete('set null'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'DiscoveryChange_threadId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.messageId],
-      foreignColumns: [message.id],
-      name: 'DiscoveryChange_messageId_fkey',
-    }).onDelete('cascade'),
-    check('DiscoveryChange_changeId_check', sql`${table.changeId} > 0`),
   ],
 );
 
@@ -1596,6 +1507,72 @@ export const peerStateFeedPullCursor = pgTable(
   ],
 );
 
+/** Immutable delivery interval for one federated peer's access to a thread. The current
+ * ThreadAudience row remains the authorization source; epochs retain the message-seq boundaries
+ * needed to rebuild the in-memory S2S message feed after a process restart. */
+export const federationAudienceEpoch = pgTable(
+  'FederationAudienceEpoch',
+  {
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    peerDomain: varchar({ length: 63 }).notNull(),
+    threadId: integer().notNull(),
+    fromSeq: integer().notNull(),
+    throughSeq: integer(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    closedAt: timestamp({ precision: 3, mode: 'date' }),
+  },
+  (table) => [
+    uniqueIndex('FederationAudienceEpoch_active_key')
+      .on(table.peerDomain, table.threadId)
+      .where(sql`${table.throughSeq} IS NULL`),
+    index('FederationAudienceEpoch_peer_scan_idx').on(
+      table.peerDomain,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.peerDomain],
+      foreignColumns: [federatedPeer.domain],
+      name: 'FederationAudienceEpoch_peerDomain_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [messageThread.id],
+      name: 'FederationAudienceEpoch_threadId_fkey',
+    }).onDelete('cascade'),
+    check('FederationAudienceEpoch_fromSeq_check', sql`${table.fromSeq} >= 0`),
+    check(
+      'FederationAudienceEpoch_range_check',
+      sql`${table.throughSeq} IS NULL OR ${table.throughSeq} >= ${table.fromSeq} - 1`,
+    ),
+  ],
+);
+
+/** Durable acknowledgement per audience epoch. Loaded-but-unacknowledged messages live only in the
+ * process buffer and are replayed from this cursor after a crash. */
+export const federationThreadCheckpoint = pgTable(
+  'FederationThreadCheckpoint',
+  {
+    epochId: bigint({ mode: 'bigint' }).primaryKey().notNull(),
+    acknowledgedSeq: integer().notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.epochId],
+      foreignColumns: [federationAudienceEpoch.id],
+      name: 'FederationThreadCheckpoint_epochId_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FederationThreadCheckpoint_acknowledgedSeq_check',
+      sql`${table.acknowledgedSeq} >= -1`,
+    ),
+  ],
+);
+
 /** One authoritative directed request. A and B may each retain an independent row and note. */
 export const friendRequest = pgTable(
   'FriendRequest',
@@ -1785,26 +1762,27 @@ export const federationServeCursor = pgTable(
   'FederationServeCursor',
   {
     peerDomain: varchar({ length: 63 }).primaryKey().notNull(),
-    targetId: bigint({ mode: 'bigint' }).notNull(),
+    allocatedThrough: bigint({ mode: 'bigint' }).default(0n).notNull(),
     startChangeId: bigint({ mode: 'bigint' }).notNull(),
     acknowledgedThrough: bigint({ mode: 'bigint' }).notNull(),
     lastServedThrough: bigint({ mode: 'bigint' }).notNull(),
+    degradedAt: timestamp({ precision: 3, mode: 'date' }),
+    degradedThrough: bigint({ mode: 'bigint' }),
+    degradationReason: varchar({ length: 64 }),
     updatedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
-    uniqueIndex('FederationServeCursor_targetId_key').on(table.targetId),
     foreignKey({
       columns: [table.peerDomain],
       foreignColumns: [federatedPeer.domain],
       name: 'FederationServeCursor_peerDomain_fkey',
     }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.targetId],
-      foreignColumns: [discoveryTarget.id],
-      name: 'FederationServeCursor_targetId_fkey',
-    }).onDelete('cascade'),
+    check(
+      'FederationServeCursor_allocatedThrough_check',
+      sql`${table.allocatedThrough} >= ${table.lastServedThrough}`,
+    ),
     check(
       'FederationServeCursor_startChangeId_check',
       sql`${table.startChangeId} >= 0`,
@@ -1816,6 +1794,10 @@ export const federationServeCursor = pgTable(
     check(
       'FederationServeCursor_lastServedThrough_check',
       sql`${table.lastServedThrough} >= ${table.acknowledgedThrough}`,
+    ),
+    check(
+      'FederationServeCursor_degradation_check',
+      sql`(${table.degradedAt} IS NULL AND ${table.degradedThrough} IS NULL AND ${table.degradationReason} IS NULL) OR (${table.degradedAt} IS NOT NULL AND ${table.degradedThrough} IS NOT NULL AND ${table.degradedThrough} >= 0 AND ${table.degradationReason} = 'HISTORY_TRUNCATED')`,
     ),
   ],
 );

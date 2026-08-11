@@ -302,34 +302,17 @@ createdAt                 timestamp not null
   - `(targetDomain, threadId)`（peer partial）；
   - `Message(threadId, id)`。
 
-### 6.4 Durable discovery change feed
+### 6.4 Bounded in-memory message feed
 
-`Message.id` 的 PostgreSQL sequence 分配顺序不等于事务提交顺序，不能单独承担可靠 HWM。
-持久发现使用按目标分配、事务内递增的 change ID：
+数据库 change queue 已整体删除：不再存在 `DiscoveryChange` 或 `DiscoveryTarget`。本地客户端通过
+thread revision、各 thread 的 message seq/cursor 和消息查询恢复断线缺口，不需要另一个全局 change
+索引。S2S 的 `allocatedThrough` 直接保存在 `FederationServeCursor`，仅在 bounded memory buffer 真正
+接纳引用时递增。
 
-```text
-DiscoveryTarget
-id                       bigserial primary key
-targetDomain             varchar(63) not null
-localUserId              integer null
-allocatedThrough         bigint not null default 0
-
-DiscoveryChange
-targetId                 bigint not null
-changeId                 bigint not null
-audienceId               bigint null
-threadId                 integer not null
-messageId                bigint not null
-primary key              (targetId, changeId)
-unique                   (targetId, messageId)
-```
-
-消息事务对每个可见目标锁定其 `DiscoveryTarget` 行，递增 `allocatedThrough` 并插入
-`DiscoveryChange`。该字段只负责源端事务型 change ID 分配和行锁，不是接收端 HWM。
-`audienceId` 记录产生 change 时有效的访问授权。撤销当前访问时该外键 `ON DELETE SET NULL`，但
-`DiscoveryChange` 在确认前作为该 target 的持久投递记录；重新插入 audience 后只为此后新消息产生
-change。CAS/bundle 下载不依赖 change：源端 join signer 的 `ThreadAudience`，再验证精确 Message 与
-digest/bundle 绑定，因此确认后的 change 物理清理不会中断资源下载。
+`FederationAudienceEpoch` 记录 peer 对 thread 的不可变 seq 区间，`FederationThreadCheckpoint` 记录
+各 epoch 已确认到的 seq；它们与 `Message` 是崩溃后重建的 durable truth。`Message.id` 只作为稳定
+引用，不承担 commit-order HWM。CAS/bundle 下载直接验证 `ThreadAudience` 和精确 Message 绑定，不依赖
+内存 change 引用的生命周期。
 
 ### 6.5 FederationPullCursor
 
@@ -340,7 +323,7 @@ remoteHwm                bigint not null default 0
 updatedAt                timestamp not null
 ```
 
-双方首次可信互联时交换各自当前 `DiscoveryTarget.allocatedThrough`，作为初始
+双方首次可信互联时交换各自当前 `FederationServeCursor.allocatedThrough`，作为初始
 `startChangeId`。接收端以它初始化 `remoteHwm`，源端拒绝任何 `afterChangeId < startChangeId`，
 从协议层禁止读取建立信任前的历史。
 
@@ -353,7 +336,7 @@ advisory lock 作为数据库级 pull 锁，不维护任何 thread 级 pull seq/
 
 ```text
 peerDomain               varchar(63) primary key
-targetId                 bigint unique not null
+allocatedThrough         bigint not null
 startChangeId            bigint not null
 acknowledgedThrough      bigint not null
 lastServedThrough        bigint not null
@@ -368,17 +351,10 @@ ACK，但允许调用方跳过已经确认落库的区间。页面扫描成功�
 cursor 被拒绝时，错误 `data` 返回十进制字符串形式的 `requestedCursor`、`availableCursor`、
 `startChangeId` 和 `allocatedThrough`；调用方使用 `availableCursor` 恢复请求，不使用 JSON number。
 
-SOMS 每五分钟尝试一次 message change GC。多进程通过 session advisory lock 保证全局只有一个 sweep；
-未取得锁的实例立即退出。普通 sweep 检测到数据库存在其他 active client query 时跳过，紧急积压除外。
-单 target 使用 cursor/target 行锁和 `SKIP LOCKED`，不执行 `LOCK TABLE`：
-
-- 物理删除 `changeId <= acknowledgedThrough`，并把 retained `startChangeId` 推进到确认水位；
-- 单 target 实际残留超过 10,000 条时强制物理删除最旧一半，并原子抬高 `startChangeId`、
-  `acknowledgedThrough`、`lastServedThrough`；
-- 紧急积压即使系统忙也尝试；正在 serve/分配的 target 通过行锁跳过本轮；
-- destructive peer reset 物理删除其 `DiscoveryTarget`，级联清除 change/serve cursor，并显式删除
-  peer audience；reset 在该清理段获取与 GC 相同的 advisory lock，二者全局互斥，不会因相反的
-  行删除顺序产生死锁。
+S2S 不再运行 message change GC。每个 peer 的内存 buffer 上限为 10,000；满载后状态变为 `FULL`，
+冻结该 peer 的新 change 分配且不淘汰未确认消息。ACK 持久推进 epoch checkpoint、释放 buffer 前缀并
+触发一次补满。显式历史截断只用于运维或资源灾难造成的服务降级，必须抬高 retained floor 并持续在
+feed 页返回 degradation marker，不能作为常态背压手段。
 
 receiver 收到单调前进的 cursor-invalid floor 后，在本地 pull cursor 事务中同时更新
 `startChangeId/remoteHwm`，不发布空缺区间的消息副作用，然后立即从新 `availableCursor` 继续。
@@ -424,17 +400,18 @@ GET /s2s/v1/message-feed?after=90000&take=100
   "messages": [],
   "scannedThrough": "90100",
   "allocatedThrough": "92831",
-  "hasMore": true
+  "hasMore": true,
+  "degradation": null
 }
 ```
 
 查询语义：
 
 1. 以请求开始时的 `allocatedThrough` 作为本次响应上界；
-2. 扫描该 peer 的 `DiscoveryChange.changeId > afterChangeId`，按 change ID 升序；
-3. change 必须仍关联当前存在的 `ThreadAudience`；
+2. 扫描该 peer 内存 buffer 中 `changeId > afterChangeId` 的引用，按 change ID 升序；
+3. buffer 由 durable audience epoch、checkpoint 与 Message 重建；当前授权仍在响应组装时复核；
 4. 直接返回实际消息正文和附件描述，媒体二进制仍按需下载；
-5. `scannedThrough` 是本页已经完整检查到的最大 change ID，即使部分 change 已级联删除；
+5. `scannedThrough` 是本页已经完整检查到的最大 change ID，即使引用的消息已删除；
 6. `hasMore` 表示固定上界内仍有未扫描 ID；
 7. 不再二次调用任何 thread 级消息 pull，也不维护 thread 级 pull seq/cursor。
 
@@ -477,18 +454,10 @@ revision 并将其视为 wake-up signal，随后分别拉取落后的 feed；它
 
 ### 7.4 客户端 missed
 
-客户端使用本地消息 ID 调用等价增量接口：
-
-```text
-GET/POST client missed(afterChangeId: decimal-string, take: 100)
-```
-
-响应提供实际消息正文和附件描述，以及 `scannedThrough`、`allocatedThrough`、`hasMore`；媒体
-二进制仍按需下载。SSE `NEW_MESSAGE` 只携带最新 change ID 用于唤醒。客户端在一个页面完整写入
-其本地存储后才持久推进 cursor。
-
-客户端 thread revision 仍用于 thread 列表 ADD/DELETE 变化；消息 ID missed 负责发现消息，二者
-不能互相替代。
+客户端不使用全局 change feed。HELLO/SSE 提供唤醒和上界，thread revision catch-up 恢复会话列表
+ADD/DELETE；客户端再按每个 thread 已保存的 message seq 调用消息查询补齐正文。通知中心的
+`notification-feed/query` 只生成离线通知描述，不承担消息存储同步。这样断线恢复只依赖现有 thread
+revision、MessageThread HWM 与 `(threadId, seq)` 索引，不需要逐消息写第二张全局队列表。
 
 ## 8. 事务边界
 
@@ -498,11 +467,11 @@ GET/POST client missed(afterChangeId: decimal-string, take: 100)
 
 1. 校验当前 relationship/membership revision；
 2. 更新好友或群成员状态；
-3. 物理删除不再有效的 `ThreadAudience`；
+3. 关闭不再有效的 `ThreadAudience`，并由触发器记录远端 audience epoch 的 thread seq 边界；
 4. 写入/更新受影响用户的 `ThreadRevision`；
 5. 提交后才发送 SSE。
 
-删除好友、被踢或退群不发送独立终止 change；删除 audience 后自然停止产生后续消息 change。
+删除好友、被踢或退群不发送独立终止 change；关闭 audience 后不再向对应 peer 的内存 feed 添加消息。
 
 ### 8.2 远端 missed 页面
 
@@ -727,7 +696,7 @@ GC reconcile 对每个 `isDeleted=false` 的 `MediaAsset` 行：
 2. `insert Message`（分配本地 `seq`，顺序以 promote 时刻为准）；
 3. 为每个成功 digest 写 `MessageAsset` 授权行；
 4. 删除 `PendingMessage` 行；
-5. 提交后 SSE `onNewMessage` + 产出 `DiscoveryChange`（出站向 peer 发 hint）。
+5. 提交后 SSE `onNewMessage`；数据库 commit notification/主动 offer 唤醒 S2S 内存 feed 并向 peer 发 hint。
 
 任一文件终态 `FAILED` 则**不 promote**，消息留在 `PendingMessage` 等管理员（见 12.7）。
 

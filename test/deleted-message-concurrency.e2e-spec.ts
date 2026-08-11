@@ -6,8 +6,6 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
 import {
   deletedMessage,
-  discoveryChange,
-  discoveryTarget,
   federatedMessageTombstone,
   federatedPeer,
   federationDeletedCursor,
@@ -15,7 +13,6 @@ import {
   message,
   messageThread,
   pendingMedia,
-  threadAudience,
   user,
 } from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
@@ -262,40 +259,5 @@ describe('federated message deletion transaction ordering', () => {
       errorKind: 'SOURCE_MESSAGE_DELETED',
       bytesReceived: 40n,
     });
-  });
-
-  it('retains historical discovery proof after current audience access is revoked', async () => {
-    const created = await insertIncoming();
-    const stored = await database.db.query.message.findFirst({
-      where: and(eq(message.threadId, threadId), eq(message.seq, created.seq)),
-      columns: { id: true },
-    });
-    const [audience] = await database.db
-      .insert(threadAudience)
-      .values({ targetDomain: 'peer.test', threadId })
-      .returning({ id: threadAudience.id });
-    const [target] = await database.db
-      .insert(discoveryTarget)
-      .values({ targetDomain: 'peer.test', allocatedThrough: 1n })
-      .returning({ id: discoveryTarget.id });
-    await database.db.insert(discoveryChange).values({
-      targetId: target.id,
-      changeId: 1n,
-      audienceId: audience.id,
-      threadId,
-      messageId: stored!.id,
-    });
-
-    await database.db
-      .delete(threadAudience)
-      .where(eq(threadAudience.id, audience.id));
-
-    const proof = await database.db.query.discoveryChange.findFirst({
-      where: and(
-        eq(discoveryChange.targetId, target.id),
-        eq(discoveryChange.changeId, 1n),
-      ),
-    });
-    expect(proof).toMatchObject({ messageId: stored!.id, audienceId: null });
   });
 });

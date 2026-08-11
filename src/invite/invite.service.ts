@@ -1142,21 +1142,14 @@ export class InviteService {
     };
   }
 
-  /** Freeze every P2P subscription at the last change already allocated for
-   * that target. The boundary is inclusive: existing changes remain pullable,
-   * while DiscoveryChangeService ignores the non-null audience afterwards. */
+  /** Close every P2P subscription. The federation epoch trigger captures the current thread seq. */
   private async closeP2PAudiencesInTx(
     tx: DatabaseTransaction,
     threadId: number,
   ): Promise<void> {
     await tx.execute(sql`
       UPDATE "ThreadAudience" audience
-      SET "deliverThroughChangeId" = COALESCE((
-        SELECT target."allocatedThrough"
-        FROM "DiscoveryTarget" target
-        WHERE target."targetDomain" = audience."targetDomain"
-          AND target."localUserId" IS NOT DISTINCT FROM audience."localUserId"
-      ), 0)
+      SET "deliverThroughChangeId" = 0
       WHERE audience."threadId" = ${threadId}
         AND audience."deliverThroughChangeId" IS NULL
     `);

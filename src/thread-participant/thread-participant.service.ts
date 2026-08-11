@@ -447,17 +447,11 @@ export class ThreadParticipantService {
         }
       }
       if (transitioned) {
-        // Keep the audience rows as an inclusive leave boundary. Changes
-        // already allocated for each target remain drainable, while the
-        // non-null boundary prevents any later message from being discovered.
+        // Keep the row as a closed audience sentinel; federation epoch triggers capture the durable
+        // MessageThread.curSeq boundary independently of this legacy-named field.
         await tx.execute(sql`
           UPDATE "ThreadAudience" audience
-          SET "deliverThroughChangeId" = COALESCE((
-            SELECT target."allocatedThrough"
-            FROM "DiscoveryTarget" target
-            WHERE target."targetDomain" = audience."targetDomain"
-              AND target."localUserId" IS NOT DISTINCT FROM audience."localUserId"
-          ), 0)
+          SET "deliverThroughChangeId" = 0
           WHERE audience."threadId" = ${threadId}
             AND audience."deliverThroughChangeId" IS NULL
         `);

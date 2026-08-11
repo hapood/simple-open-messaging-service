@@ -47,6 +47,7 @@ export class FederationMessageFeedPullService {
   private readonly running = new Map<string, Promise<void>>();
   private readonly pending = new Set<string>();
   private readonly advertised = new Map<string, bigint>();
+  private readonly observedDegradation = new Map<string, string>();
 
   constructor(private readonly database: DatabaseService) {}
 
@@ -181,6 +182,7 @@ export class FederationMessageFeedPullService {
         page.allocatedThrough,
         'allocatedThrough',
       );
+      this.validateDegradation(peerDomain, page, allocatedThrough);
       if (
         scannedThrough < cursor.remoteHwm ||
         scannedThrough > allocatedThrough ||
@@ -227,5 +229,33 @@ export class FederationMessageFeedPullService {
       throw new Error(`invalid ${name}`);
     }
     return BigInt(value);
+  }
+
+  private validateDegradation(
+    peerDomain: string,
+    page: FederationMessageFeedPage,
+    allocatedThrough: bigint,
+  ): void {
+    if (page.degradation === null) return;
+    if (
+      page.degradation.kind !== 'HISTORY_TRUNCATED' ||
+      !Number.isSafeInteger(page.degradation.since) ||
+      page.degradation.since < 0
+    ) {
+      throw new Error('peer returned an invalid message-feed degradation');
+    }
+    const truncatedThrough = this.parseCursor(
+      page.degradation.truncatedThrough,
+      'degradation.truncatedThrough',
+    );
+    if (truncatedThrough > allocatedThrough) {
+      throw new Error('peer returned an invalid message-feed degradation');
+    }
+    const signature = `${page.degradation.kind}:${truncatedThrough.toString()}:${page.degradation.since}`;
+    if (this.observedDegradation.get(peerDomain) === signature) return;
+    this.observedDegradation.set(peerDomain, signature);
+    this.logger.warn(
+      `message-feed history for ${peerDomain} was truncated through ${truncatedThrough.toString()} at ${new Date(page.degradation.since).toISOString()}`,
+    );
   }
 }

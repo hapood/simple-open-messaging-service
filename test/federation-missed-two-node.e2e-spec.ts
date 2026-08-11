@@ -6,10 +6,10 @@ import request from 'supertest';
 import { and, eq, isNull } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
-  discoveryTarget,
   fileSyncProgress,
   federatedPeer,
   federationPullCursor,
+  federationServeCursor,
   mediaAsset,
   message,
   messageAsset,
@@ -158,12 +158,10 @@ describe('federation durable missed transport (two nodes)', () => {
           localThreadId = received!.threadId;
           localSeq = received!.seq;
 
-          const source = await appB.database.query.discoveryTarget.findFirst({
-            where: and(
-              eq(discoveryTarget.targetDomain, FED_DOMAIN_A),
-              isNull(discoveryTarget.localUserId),
-            ),
-          });
+          const source =
+            await appB.database.query.federationServeCursor.findFirst({
+              where: eq(federationServeCursor.peerDomain, FED_DOMAIN_A),
+            });
           const pulled =
             await appA.database.query.federationPullCursor.findFirst({
               where: eq(federationPullCursor.peerDomain, FED_DOMAIN_B),

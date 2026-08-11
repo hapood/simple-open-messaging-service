@@ -16,14 +16,25 @@ interface MessageFeedPage {
   scannedThrough: DecimalString;
   allocatedThrough: DecimalString;
   hasMore: boolean;
+  degradation: null | {
+    kind: 'HISTORY_TRUNCATED';
+    truncatedThrough: DecimalString;
+    since: EpochMilliseconds;
+  };
 }
 ```
 
 `allocatedThrough` 是本页冻结的 source HWM；`scannedThrough` 是本页成功提交后可确认的 cursor。
 `hasMore: false` 时两者 MUST 相等。空页与重放规则和 state-feed 相同。message item 必须逐条用
 savepoint 隔离：单条失败回滚该条、记录 error 并继续，不能阻止同页其他消息或 cursor 推进。
-publisher 可以按主协议的 retained-floor 规则删除旧 change；因此 `changeId` 与 `scannedThrough`
-可以跨越很大的空洞，consumer 不得要求连续。
+正常运行时 publisher MUST NOT 因 backlog 达到内存容量而淘汰未确认消息；容量满时暂停为该 peer
+分配新 change，待 ACK 释放空间后从 durable audience/message checkpoint 补充。`changeId` 与
+`scannedThrough` 仍可因重启重建、过滤和显式降级而存在空洞，consumer 不得要求连续。
+
+`degradation` 正常 MUST 为 `null`。仅当 publisher 因运维或资源灾难明确截断历史时，才设为
+`HISTORY_TRUNCATED`；`truncatedThrough` 是已经不可恢复的 inclusive source cursor，`since` 是降级
+发生时间。该标记 MUST 持久保留，不能把历史截断伪装成正常空页。consumer MUST 记录并向运维层暴露
+该降级；消息同步仍从 publisher 返回的 retained floor 继续。
 
 ## 2. 外层 Message
 
@@ -131,7 +142,7 @@ consumer 下载并验证 bytes 后 MAY 重写为自己的本地路径。URL/quer
 `GET /media/:digest` 的精确消息授权参数。
 
 publisher 必须通过 signer 的 thread audience 授权资源访问，并验证 digest 与精确消息的绑定；
-不得使用 `DiscoveryChange` 或其他 message-feed allocation 作为下载授权，因为 change 可以在消息
+不得使用内存 message-feed allocation 作为下载授权，因为 feed 引用可以在消息
 确认后被物理清理。
 
 ```ts

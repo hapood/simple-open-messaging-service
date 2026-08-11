@@ -5,7 +5,6 @@ import { UserBlockModule } from '../user-block/user-block.module.js';
 import { MessageVisibilityService } from './message-visibility.service.js';
 import { DeletedMessageService } from './deleted-message.service.js';
 import { MessageReportService } from './message-report.service.js';
-import { DiscoveryChangeService } from './discovery-change.service.js';
 
 @Module({
   // LinkPreviewModule: MessageService inlines a LINK card's og:image (digest → base64) on the wire.
@@ -14,7 +13,6 @@ import { DiscoveryChangeService } from './discovery-change.service.js';
     MessageVisibilityService,
     DeletedMessageService,
     MessageReportService,
-    DiscoveryChangeService,
   ],
   imports: [LinkPreviewModule, UserBlockModule],
   exports: [
@@ -22,7 +20,6 @@ import { DiscoveryChangeService } from './discovery-change.service.js';
     MessageVisibilityService,
     DeletedMessageService,
     MessageReportService,
-    DiscoveryChangeService,
   ],
 })
 export class MessageModule {}

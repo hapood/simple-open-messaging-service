@@ -4,8 +4,9 @@ import {
   HttpStatus,
   Inject,
   Logger,
+  Optional,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   mintUlid,
@@ -70,6 +71,8 @@ import {
 import { contextualizeCasUrls } from '../upload/cas-url.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
+import { FederationMemoryFeedService } from './federation-memory-feed.service.js';
+import { FEDERATION_MEMORY_FEED_ADVANCED } from './federation-memory-feed.events.js';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -106,7 +109,6 @@ import {
   FederationMessageFeedPullService,
   RemoteMessageFeedCursorResetError,
 } from './federation-message-feed-pull.service.js';
-import { DiscoveryChangeService } from '../message/discovery-change.service.js';
 import {
   PeerStateFeedService,
   type PeerStateBody,
@@ -393,7 +395,8 @@ export class FederationService {
     private readonly stateFeedPull: PeerStateFeedPullService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly groupMembershipState: GroupMembershipStateService,
-    private readonly discoveryChanges: DiscoveryChangeService = new DiscoveryChangeService(),
+    @Optional()
+    private readonly memoryMessageFeed?: FederationMemoryFeedService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -478,7 +481,11 @@ export class FederationService {
       if (!author) return;
       const authorDomain = this.effectiveDomain(author.user);
       if (fetchedFromDomain && authorDomain === fetchedFromDomain) {
-        void this.pushDiscoveryHwm(fetchedFromDomain).catch((e) =>
+        void this.offerAndPushMessage(
+          fetchedFromDomain,
+          threadId,
+          latestSeq,
+        ).catch((e) =>
           this.logger.debug(
             `delivery receipt HWM push ${fetchedFromDomain} failed: ${(e as Error).message}`,
           ),
@@ -493,8 +500,11 @@ export class FederationService {
           if (p.userId === authorUserId || !p.user.isForeigner) continue;
           if (fetchedFromDomain && p.user.domain === fetchedFromDomain)
             continue;
-          void latestSeq;
-          void this.pushDiscoveryHwm(p.user.domain).catch((e) =>
+          void this.offerAndPushMessage(
+            p.user.domain,
+            threadId,
+            latestSeq,
+          ).catch((e) =>
             this.logger.debug(
               `discovery HWM push ${p.user.domain} failed: ${(e as Error).message}`,
             ),
@@ -513,7 +523,7 @@ export class FederationService {
       }
       if (fetchedFromDomain) destDomains.delete(fetchedFromDomain);
       for (const d of destDomains) {
-        void this.pushDiscoveryHwm(d).catch((e) =>
+        void this.offerAndPushMessage(d, threadId, latestSeq).catch((e) =>
           this.logger.debug(
             `discovery HWM push ${d} failed: ${(e as Error).message}`,
           ),
@@ -525,6 +535,28 @@ export class FederationService {
         `signalOutbound(${threadId}) failed: ${(e as Error).message}`,
       );
     }
+  }
+
+  private async offerAndPushMessage(
+    peerDomain: string,
+    threadId: number,
+    messageSeq: number,
+  ): Promise<void> {
+    await this.memoryMessageFeed?.offerCommitted(
+      peerDomain,
+      threadId,
+      messageSeq,
+    );
+    await this.pushDiscoveryHwm(peerDomain);
+  }
+
+  @OnEvent(FEDERATION_MEMORY_FEED_ADVANCED)
+  onMemoryMessageFeedAdvanced(event: { peerDomain: string }): void {
+    void this.pushDiscoveryHwm(event.peerDomain).catch((error: unknown) =>
+      this.logger.debug(
+        `memory-feed HWM push ${event.peerDomain} failed: ${(error as Error).message}`,
+      ),
+    );
   }
 
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
@@ -2593,6 +2625,9 @@ export class FederationService {
 
   /** Lightweight, ephemeral discovery wake-up. The receiver never persists this advertised HWM. */
   async pushDiscoveryHwm(domain: string): Promise<void> {
+    // Startup/reconnect and state-only wake-ups are also reconstruction backstops. Fill before reading
+    // the HWM so a message committed just before a crash is advertised after the new process rebuilds.
+    await this.memoryMessageFeed?.fill(domain);
     const allocatedThrough =
       await this.federationCursor.readAllocatedThrough(domain);
     const stateFeedRev =
@@ -3216,12 +3251,7 @@ export class FederationService {
           if ((peerMembers.rows[0]?.count ?? 0) === 0)
             await tx.execute(sql`
               UPDATE "ThreadAudience" audience
-              SET "deliverThroughChangeId" = COALESCE((
-                SELECT target."allocatedThrough"
-                FROM "DiscoveryTarget" target
-                WHERE target."targetDomain" = ${peerDomain}
-                  AND target."localUserId" IS NULL
-              ), 0)
+              SET "deliverThroughChangeId" = 0
               WHERE audience."targetDomain" = ${peerDomain}
                 AND audience."localUserId" IS NULL
                 AND audience."threadId" = ${originThread.id}
@@ -3727,12 +3757,7 @@ export class FederationService {
       if (!isActive)
         await tx.execute(sql`
           UPDATE "ThreadAudience" audience
-          SET "deliverThroughChangeId" = COALESCE((
-            SELECT target."allocatedThrough"
-            FROM "DiscoveryTarget" target
-            WHERE target."targetDomain" = 'local'
-              AND target."localUserId" = ${userId}
-          ), 0)
+          SET "deliverThroughChangeId" = 0
           WHERE audience."targetDomain" = 'local'
             AND audience."localUserId" = ${userId}
             AND audience."threadId" = ${mirror.threadId}
@@ -4533,7 +4558,7 @@ export class FederationService {
     forwardBundleId?: string,
   ): Promise<{ absPath: string; bytes: number }> {
     // Resource authorization is thread-audience based and deliberately independent from the ephemeral
-    // lifetime of a DiscoveryChange row. A retained/frozen audience may finish downloading resources
+    // lifetime of an in-memory feed reference. A retained/frozen audience may finish downloading resources
     // referenced by history after its feed changes have been acknowledged and garbage-collected.
     const candidates = await this.database.db
       .select({
@@ -5033,11 +5058,6 @@ export class FederationService {
         forwardClosure.bundles.length,
       );
     }
-    await this.discoveryChanges.recordMessageInTx(
-      tx,
-      message.id,
-      authorDomain === fetchedFromDomain ? [] : [fetchedFromDomain],
-    );
     return { kind: 'message', message, storedContent, localForwardBundleId };
   }
 
@@ -5621,18 +5641,6 @@ export class FederationService {
         .delete(tables.pendingMedia)
         .where(eq(tables.pendingMedia.id, batch.id));
       await this.quota.tickLax(batch.originDomain!, 'messages', tx, 1);
-      const author = await tx.query.user.findFirst({
-        where: eq(tables.user.id, creatorId),
-        columns: { domain: true, isForeigner: true },
-      });
-      if (!author) throw new Error('promoted message author is missing');
-      await this.discoveryChanges.recordMessageInTx(
-        tx,
-        message.id,
-        this.effectiveDomain(author) === batch.originDomain
-          ? []
-          : [batch.originDomain!],
-      );
       return {
         message,
         threadId,

@@ -55,6 +55,7 @@ describe('FederationMessageFeedPullService', () => {
     scannedThrough: scannedThrough.toString(),
     allocatedThrough: allocatedThrough.toString(),
     hasMore,
+    degradation: null,
     messages: changeIds.map((changeId) => ({
       changeId: changeId.toString(),
       thread: { type: 'P2P', participants: [] },

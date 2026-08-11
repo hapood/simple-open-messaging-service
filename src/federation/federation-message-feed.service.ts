@@ -1,9 +1,8 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, lte, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
-  discoveryChange,
   mediaAsset,
   message,
   messageAsset,
@@ -14,6 +13,7 @@ import {
 import { ContentType } from '../database/enums.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { FederationCursorService } from './federation-cursor.service.js';
+import { FederationMemoryFeedService } from './federation-memory-feed.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import {
   buildFederatedCallContent,
@@ -64,13 +64,21 @@ export interface FederationMessageFeedPage {
   scannedThrough: string;
   allocatedThrough: string;
   hasMore: boolean;
+  degradation: {
+    kind: 'HISTORY_TRUNCATED';
+    truncatedThrough: string;
+    since: number;
+  } | null;
 }
 
 @Injectable()
 export class FederationMessageFeedService {
   private readonly localDomain = loadFederationConfig().domain;
 
-  constructor(private readonly cursor: FederationCursorService) {}
+  constructor(
+    private readonly cursor: FederationCursorService,
+    private readonly memoryFeed: FederationMemoryFeedService,
+  ) {}
 
   async serve(
     peerDomain: string,
@@ -78,11 +86,31 @@ export class FederationMessageFeedService {
     requestedTake?: number,
   ): Promise<FederationMessageFeedPage> {
     const take = this.pageSize(requestedTake);
+    return this.memoryFeed.runExclusive(peerDomain, async () => {
+      await this.memoryFeed.fillWhileLocked(peerDomain);
+      const page = await this.serveWithCursor(peerDomain, after, take);
+      this.memoryFeed.retireWhileLocked(peerDomain, after);
+      await this.memoryFeed.fillWhileLocked(peerDomain);
+      const allocatedThrough =
+        await this.cursor.readAllocatedThrough(peerDomain);
+      if (allocatedThrough > BigInt(page.scannedThrough)) {
+        page.allocatedThrough = allocatedThrough.toString();
+        page.hasMore = true;
+      }
+      return page;
+    });
+  }
+
+  private async serveWithCursor(
+    peerDomain: string,
+    after: bigint,
+    take: number,
+  ): Promise<FederationMessageFeedPage> {
     const deadline = Date.now() + REQUEST_TIMEOUT_MS;
     const result = await this.cursor.servePage(
       peerDomain,
       after,
-      async ({ tx, targetId, allocatedThrough }) => {
+      async ({ tx, allocatedThrough, degradation }) => {
         // Both settings are transaction-local. statement_timeout cancels a slow page SQL; the idle
         // timeout is only a final safety net if application code stops progressing after BEGIN.
         await tx.execute(
@@ -95,41 +123,63 @@ export class FederationMessageFeedService {
         );
         this.assertBeforeDeadline(deadline);
 
-        const changes = await tx
-          .select({
-            changeId: discoveryChange.changeId,
-            messageId: discoveryChange.messageId,
-            threadId: discoveryChange.threadId,
-            seq: message.seq,
-            originSeq: message.originSeq,
-            contentType: message.contentType,
-            content: message.content,
-            createdAt: message.createdAt,
-            updatedAt: message.updatedAt,
-            clientMessageId: message.clientMessageId,
-            threadType: messageThread.type,
-            groupUserId: messageThread.groupUserId,
-            authorAccount: user.account,
-            authorDomain: user.domain,
-          })
-          .from(discoveryChange)
-          .innerJoin(message, eq(message.id, discoveryChange.messageId))
-          .innerJoin(
-            messageThread,
-            eq(messageThread.id, discoveryChange.threadId),
-          )
-          .innerJoin(user, eq(user.id, message.creator))
-          .where(
-            and(
-              eq(discoveryChange.targetId, targetId),
-              gt(discoveryChange.changeId, after),
-              lte(discoveryChange.changeId, allocatedThrough),
-              eq(message.isDeleted, false),
-              ne(message.contentType, ContentType.SYSTEM),
-            ),
-          )
-          .orderBy(asc(discoveryChange.changeId))
-          .limit(take);
+        const memoryRefs = this.memoryFeed.readAfterWhileLocked(
+          peerDomain,
+          after,
+          take,
+        );
+        await this.memoryFeed.acknowledgeInTx(tx, peerDomain, after);
+        const memoryScannedThrough =
+          memoryRefs.length === take
+            ? memoryRefs.at(-1)!.changeId
+            : allocatedThrough;
+
+        const changes =
+          memoryRefs.length === 0
+            ? []
+            : await tx
+                .select({
+                  messageId: message.id,
+                  threadId: message.threadId,
+                  seq: message.seq,
+                  originSeq: message.originSeq,
+                  contentType: message.contentType,
+                  content: message.content,
+                  createdAt: message.createdAt,
+                  updatedAt: message.updatedAt,
+                  clientMessageId: message.clientMessageId,
+                  threadType: messageThread.type,
+                  groupUserId: messageThread.groupUserId,
+                  authorAccount: user.account,
+                  authorDomain: user.domain,
+                })
+                .from(message)
+                .innerJoin(
+                  messageThread,
+                  eq(messageThread.id, message.threadId),
+                )
+                .innerJoin(user, eq(user.id, message.creator))
+                .where(
+                  and(
+                    inArray(
+                      message.id,
+                      memoryRefs.map((entry) => entry.messageId),
+                    ),
+                    eq(message.isDeleted, false),
+                    ne(message.contentType, ContentType.SYSTEM),
+                  ),
+                )
+                .then((rows) => {
+                  const byId = new Map(rows.map((row) => [row.messageId, row]));
+                  return memoryRefs
+                    .map((entry) => {
+                      const row = byId.get(entry.messageId);
+                      return row ? { ...row, changeId: entry.changeId } : null;
+                    })
+                    .filter(
+                      (row): row is NonNullable<typeof row> => row !== null,
+                    );
+                });
         this.assertBeforeDeadline(deadline);
 
         const messageIds = changes.map((row) => row.messageId);
@@ -334,10 +384,7 @@ export class FederationMessageFeedService {
           };
         });
         this.assertBeforeDeadline(deadline);
-        const scannedThrough =
-          changes.length === take
-            ? changes[changes.length - 1].changeId
-            : allocatedThrough;
+        const scannedThrough = memoryScannedThrough;
         return {
           scannedThrough,
           value: {
@@ -345,6 +392,13 @@ export class FederationMessageFeedService {
             scannedThrough: scannedThrough.toString(),
             allocatedThrough: allocatedThrough.toString(),
             hasMore: scannedThrough < allocatedThrough,
+            degradation: degradation
+              ? {
+                  kind: degradation.kind,
+                  truncatedThrough: degradation.truncatedThrough.toString(),
+                  since: degradation.since.getTime(),
+                }
+              : null,
           },
         };
       },

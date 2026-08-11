@@ -54,7 +54,6 @@ import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
-import { DiscoveryChangeService } from './discovery-change.service.js';
 import {
   parseSystemMessageContent,
   stringifySystemMessageContent,
@@ -213,7 +212,6 @@ export class MessageService {
   constructor(
     private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
-    private readonly discoveryChanges: DiscoveryChangeService = new DiscoveryChangeService(),
   ) {}
 
   private async queryRaw<T extends object[]>(
@@ -441,7 +439,6 @@ export class MessageService {
             );
           }
         }
-        await this.discoveryChanges.recordMessageInTx(tx, msg.id);
         // Strip the internal BigInt id — a throughput side-channel that must never be serialized.
         // (msg.id is consumed above for the MediaMessage FK; the strip is the LAST use of the full row.)
         return stripMessageId(msg);
@@ -1006,7 +1003,6 @@ export class MessageService {
         await tx
           .delete(fileSyncProgress)
           .where(eq(fileSyncProgress.batchId, stage.batchId));
-        await this.discoveryChanges.recordMessageInTx(tx, msg.id);
         return stripMessageId(msg);
       });
     } catch (e) {

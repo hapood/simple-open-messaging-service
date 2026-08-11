@@ -306,12 +306,7 @@ export class GroupService {
       if (ended.length > 0) {
         await tx.execute(sql`
           UPDATE "ThreadAudience" audience
-          SET "deliverThroughChangeId" = COALESCE((
-            SELECT target."allocatedThrough"
-            FROM "DiscoveryTarget" target
-            WHERE target."targetDomain" = 'local'
-              AND target."localUserId" = ${params.userId}
-          ), 0)
+          SET "deliverThroughChangeId" = 0
           WHERE audience."targetDomain" = 'local'
             AND audience."localUserId" = ${params.userId}
             AND audience."threadId" = ${params.threadId}

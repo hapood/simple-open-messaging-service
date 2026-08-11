@@ -4,8 +4,6 @@ import { eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  discoveryChange,
-  discoveryTarget,
   federatedPeer,
   mediaAsset,
   message,
@@ -16,12 +14,14 @@ import {
   user,
 } from '../src/database/schema.js';
 import { FederationCursorService } from '../src/federation/federation-cursor.service.js';
+import { FederationMemoryFeedService } from '../src/federation/federation-memory-feed.service.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 
 describe('FederationMessageFeedService', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let cursor: FederationCursorService;
+  let memory: FederationMemoryFeedService;
   let service: FederationMessageFeedService;
   const peerDomain = 'missed-peer.test';
 
@@ -31,13 +31,14 @@ describe('FederationMessageFeedService', () => {
     }).compile();
     database = mod.get(DatabaseService);
     cursor = new FederationCursorService(database);
-    service = new FederationMessageFeedService(cursor);
   });
 
   beforeEach(async () => {
     await database.pool.query(
-      'TRUNCATE TABLE "User", "FederatedPeer", "DiscoveryTarget", "MediaAsset" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "User", "FederatedPeer", "MediaAsset" RESTART IDENTITY CASCADE',
     );
+    memory = new FederationMemoryFeedService(database);
+    service = new FederationMessageFeedService(cursor, memory);
   });
 
   afterAll(async () => {
@@ -71,7 +72,7 @@ describe('FederationMessageFeedService', () => {
       .returning();
     const [thread] = await database.db
       .insert(messageThread)
-      .values({ type: 'P2P', updatedAt: now, curSeq: 0 })
+      .values({ type: 'P2P', updatedAt: now })
       .returning();
     await database.db.insert(threadParticipant).values([
       {
@@ -87,10 +88,9 @@ describe('FederationMessageFeedService', () => {
         updatedAt: now,
       },
     ]);
-    const [audience] = await database.db
+    await database.db
       .insert(threadAudience)
-      .values({ targetDomain: peerDomain, threadId: thread.id })
-      .returning();
+      .values({ targetDomain: peerDomain, threadId: thread.id });
     const [msg] = await database.db
       .insert(message)
       .values({
@@ -103,6 +103,10 @@ describe('FederationMessageFeedService', () => {
         originSeq: 0,
       })
       .returning();
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 0 })
+      .where(eq(messageThread.id, thread.id));
     await database.db.insert(mediaAsset).values({
       digest: 'a'.repeat(64),
       bytes: 123n,
@@ -115,29 +119,18 @@ describe('FederationMessageFeedService', () => {
     });
 
     await cursor.initializePeer(peerDomain, 0n);
-    const [target] = await database.db.select().from(discoveryTarget);
-    await database.db
-      .update(discoveryTarget)
-      .set({ allocatedThrough: 3n })
-      .where(eq(discoveryTarget.id, target.id));
-    await database.db.insert(discoveryChange).values({
-      targetId: target.id,
-      changeId: 1n,
-      audienceId: audience.id,
-      threadId: thread.id,
-      messageId: msg.id,
-    });
-    return { audience, author, msg, target, thread };
+    return { author, msg, thread };
   }
 
-  it('returns bodies and asset descriptors and scans through allocation gaps', async () => {
+  it('returns bodies and asset descriptors from the memory feed', async () => {
     await seedP2pChange();
     const page = await service.serve(peerDomain, 0n);
 
     expect(page).toMatchObject({
-      scannedThrough: '3',
-      allocatedThrough: '3',
+      scannedThrough: '1',
+      allocatedThrough: '1',
       hasMore: false,
+      degradation: null,
       messages: [
         {
           changeId: '1',
@@ -184,6 +177,7 @@ describe('FederationMessageFeedService', () => {
       scannedThrough: '0',
       allocatedThrough: '0',
       hasMore: false,
+      degradation: null,
     });
   });
 
@@ -198,16 +192,17 @@ describe('FederationMessageFeedService', () => {
 
     expect(page).toEqual({
       messages: [],
-      scannedThrough: '3',
-      allocatedThrough: '3',
+      scannedThrough: '1',
+      allocatedThrough: '1',
       hasMore: false,
+      degradation: null,
     });
   });
 
-  it('paginates surviving messages by change id and advances across a final gap', async () => {
-    const { audience, author, target, thread } = await seedP2pChange();
+  it('paginates surviving messages by memory change id', async () => {
+    const { author, thread } = await seedP2pChange();
     const now = new Date();
-    const extraMessages = await database.db
+    await database.db
       .insert(message)
       .values([
         {
@@ -230,22 +225,10 @@ describe('FederationMessageFeedService', () => {
         },
       ])
       .returning();
-    await database.db.insert(discoveryChange).values([
-      {
-        targetId: target.id,
-        changeId: 2n,
-        audienceId: audience.id,
-        threadId: thread.id,
-        messageId: extraMessages[0].id,
-      },
-      {
-        targetId: target.id,
-        changeId: 3n,
-        audienceId: audience.id,
-        threadId: thread.id,
-        messageId: extraMessages[1].id,
-      },
-    ]);
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 2 })
+      .where(eq(messageThread.id, thread.id));
 
     const first = await service.serve(peerDomain, 0n, 2);
     const second = await service.serve(peerDomain, 2n, 2);

@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
-  discoveryTarget,
   federatedPeer,
   federationPullCursor,
   federationServeCursor,
@@ -31,9 +30,7 @@ describe('FederationCursorService', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(
-      'TRUNCATE TABLE "FederatedPeer", "DiscoveryTarget" CASCADE',
-    );
+    await database.pool.query('TRUNCATE TABLE "FederatedPeer" CASCADE');
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
       trustLevel: 'trusted',
@@ -46,32 +43,27 @@ describe('FederationCursorService', () => {
 
   async function setAllocatedThrough(value: bigint): Promise<void> {
     await database.db
-      .insert(discoveryTarget)
-      .values({ targetDomain: peerDomain, allocatedThrough: value })
-      .onConflictDoUpdate({
-        target: discoveryTarget.targetDomain,
-        set: { allocatedThrough: value },
-        targetWhere: sql`${discoveryTarget.targetDomain} <> 'local'`,
-      });
+      .update(federationServeCursor)
+      .set({ allocatedThrough: value })
+      .where(eq(federationServeCursor.peerDomain, peerDomain));
   }
 
   it('pins both initial history floors and keeps them immutable on reconnect', async () => {
-    await setAllocatedThrough(7n);
-    await expect(service.prepareLocalStart(peerDomain)).resolves.toBe(7n);
+    await expect(service.prepareLocalStart(peerDomain)).resolves.toBe(0n);
     await setAllocatedThrough(8n);
-    await expect(service.prepareLocalStart(peerDomain)).resolves.toBe(7n);
+    await expect(service.prepareLocalStart(peerDomain)).resolves.toBe(0n);
     await expect(service.initializePeer(peerDomain, 11n)).resolves.toEqual({
-      localStartChangeId: 7n,
+      localStartChangeId: 0n,
       remoteStartChangeId: 11n,
     });
 
     await setAllocatedThrough(9n);
     await expect(service.initializePeer(peerDomain, 11n)).resolves.toEqual({
-      localStartChangeId: 7n,
+      localStartChangeId: 0n,
       remoteStartChangeId: 11n,
     });
     await expect(service.initializePeer(peerDomain, 12n)).resolves.toEqual({
-      localStartChangeId: 7n,
+      localStartChangeId: 0n,
       remoteStartChangeId: 11n,
     });
 

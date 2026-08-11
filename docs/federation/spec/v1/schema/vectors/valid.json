@@ -150,7 +150,8 @@
         ],
         "scannedThrough": "1",
         "allocatedThrough": "1",
-        "hasMore": false
+        "hasMore": false,
+        "degradation": null
       }
     },
     {

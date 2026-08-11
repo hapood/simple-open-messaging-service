@@ -27,13 +27,12 @@ import {
 import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   deletedMessage,
-  discoveryChange,
-  discoveryTarget,
   federatedPeer,
   federatedPeerEvent,
   federatedPeerReset,
   federatedMessageTombstone,
   federationDeletedCursor,
+  federationServeCursor,
   forwardBundle,
   forwardBundleDependency,
   forwardMessage,
@@ -810,20 +809,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       url.searchParams.set('toAccount', 'not-the-delivered-thread');
     });
 
-    // Feed retention and resource authorization are intentionally independent. Once appB has consumed
-    // the carrier message, physically remove appA's per-peer delivery record and disable the proxy's
-    // byte fixture so this probe reaches appA's real /media authorization path. The exact historical
-    // message/digest binding plus the retained ThreadAudience must still authorize the download.
+    // Feed allocation and resource authorization are intentionally independent. Once appB has consumed
+    // the carrier message, disable the proxy's byte fixture so this probe reaches appA's real /media
+    // authorization path. The exact message/digest binding plus retained ThreadAudience authorizes it.
     const sourceBinding = await appA.database.query.messageAsset.findFirst({
       where: eq(messageAsset.digest, digest),
       columns: { messageId: true },
     });
     expect(sourceBinding).toBeDefined();
-    const deleted = await appA.database
-      .delete(discoveryChange)
-      .where(eq(discoveryChange.messageId, sourceBinding!.messageId))
-      .returning({ changeId: discoveryChange.changeId });
-    expect(deleted.length).toBeGreaterThan(0);
     proxy.setGetFileFixture(digest, null);
     const afterFeedGc = await request(appB.baseUrl)
       .get('/api/v1/test/signed-s2s-get')
@@ -1680,14 +1673,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 15_000, interval: 100 },
     );
 
-    const targetBeforeGap = await appA.database.query.discoveryTarget.findFirst(
-      {
-        where: and(
-          eq(discoveryTarget.targetDomain, DOM_B),
-          isNull(discoveryTarget.localUserId),
-        ),
-      },
-    );
+    const targetBeforeGap =
+      await appA.database.query.federationServeCursor.findFirst({
+        where: eq(federationServeCursor.peerDomain, DOM_B),
+      });
     const absentGap = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -1699,12 +1688,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       });
     expect(absentGap.body.code).toBe(BusinessCode.OK);
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const targetAfterGap = await appA.database.query.discoveryTarget.findFirst({
-      where: and(
-        eq(discoveryTarget.targetDomain, DOM_B),
-        isNull(discoveryTarget.localUserId),
-      ),
-    });
+    const targetAfterGap =
+      await appA.database.query.federationServeCursor.findFirst({
+        where: eq(federationServeCursor.peerDomain, DOM_B),
+      });
     expect(targetAfterGap?.allocatedThrough).toBe(
       targetBeforeGap?.allocatedThrough,
     );
@@ -2099,11 +2086,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             eq(threadAudience.targetDomain, DOM_B),
           ),
         }),
-        appA.database.query.discoveryTarget.findFirst({
-          where: and(
-            eq(discoveryTarget.targetDomain, DOM_B),
-            isNull(discoveryTarget.localUserId),
-          ),
+        appA.database.query.federationServeCursor.findFirst({
+          where: eq(federationServeCursor.peerDomain, DOM_B),
         }),
         appA.database.query.federatedPeer.findFirst({
           where: eq(federatedPeer.domain, DOM_B),
@@ -2124,11 +2108,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(continued.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(async () => {
       const targetAfterContinue =
-        await appA.database.query.discoveryTarget.findFirst({
-          where: and(
-            eq(discoveryTarget.targetDomain, DOM_B),
-            isNull(discoveryTarget.localUserId),
-          ),
+        await appA.database.query.federationServeCursor.findFirst({
+          where: eq(federationServeCursor.peerDomain, DOM_B),
         });
       expect(targetAfterContinue!.allocatedThrough).toBeGreaterThan(
         targetBeforeContinue!.allocatedThrough,
