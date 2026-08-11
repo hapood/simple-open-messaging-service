@@ -334,6 +334,22 @@ export class SetMutedDto {
   muted!: boolean;
 }
 
+/** Suppress/resume live delivery for one conversation while retaining its history. */
+export class SetBlockedDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({
+    example: true,
+    description: 'true = block new messages, false = resume delivery',
+  })
+  @IsBoolean()
+  blocked!: boolean;
+}
+
 /** Toggle pin for a conversation (the caller's ThreadParticipant row). */
 export class SetPinnedDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })

@@ -32,7 +32,9 @@
 
 :host {
   display: block;
-  background: var(--app-bg);
+  // The viewport paints the full-page setup background. Keeping another background on this rectangular
+  // host leaks sharp gray corners around the rounded dialog card.
+  background: transparent;
 }
 
 .cfg-viewport {
@@ -51,15 +53,62 @@
     var(--app-bg);
   transition: height 160ms ease-out;
 
-  &.auth-keyboard-open {
-    align-items: flex-start;
-    padding-top: 16px;
-    padding-bottom: 16px;
-  }
-
-  // Android shell only: position from native IME geometry. Browser keyboard behavior remains unchanged.
+  // Android shell only: position the unchanged card from native IME geometry. `safe center` keeps an
+  // oversized form scrollable without switching to a smaller keyboard-specific visual design.
   &.auth-native-keyboard-open {
     align-items: safe center;
+  }
+}
+
+// Reconfiguration is a real modal, mounted inside AppComponent's global backdrop. It reuses the same
+// form/connection state machine without creating a second page-sized surface behind the card.
+.cfg-viewport--dialog {
+  position: relative;
+  width: min(420px, calc(100vw - 32px));
+  height: auto;
+  max-height: calc(100dvh - var(--soms-safe-top, 0px) - var(--soms-safe-bottom, 0px) - 32px);
+  display: block;
+  padding: 0;
+  overflow: auto;
+  background: transparent;
+  transition: none;
+
+  .cfg-back {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+  }
+
+  .cfg-progress {
+    position: absolute;
+    top: 0;
+    border-radius: var(--app-radius-lg) var(--app-radius-lg) 0 0;
+  }
+
+  .cfg-step {
+    position: absolute;
+    top: 12px;
+  }
+
+  &.auth-keyboard-open,
+  &.auth-native-keyboard-open {
+    padding: 0;
+  }
+
+  .cfg-shell {
+    max-width: none;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
+  }
+
+  // A dialog should be as tall as its current content. The full-page setup reserves room for feedback
+  // to avoid layout jumps; inside a modal that reservation reads as an unexplained white block.
+  .cfg-feedback-slot {
+    min-height: 0;
+    padding-top: 0;
+
+    &.has-feedback {
+      padding-top: 12px;
+    }
   }
 }
 
@@ -178,22 +227,13 @@
   .cfg-logo {
     margin-bottom: 16px;
   }
+
+  .cfg-viewport--dialog {
+    padding: 0;
+  }
 }
 
 .cfg-viewport.auth-keyboard-open {
-  .cfg-logo {
-    display: none;
-  }
-
-  .cfg-intro {
-    margin-bottom: 12px;
-  }
-
-  .cfg-shell {
-    padding-top: 20px;
-    padding-bottom: 20px;
-  }
-
   .cfg-toast {
     bottom: calc(var(--auth-keyboard-inset, 0px) + 16px);
   }
@@ -203,6 +243,7 @@
   transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
   transition: transform 160ms ease-out;
 }
+
 
 // The "can't validate both servers at once" guidance under the LAN field — small + faded, reads as a hint
 // not an error. Integer-px vertical metrics per the project CSS rule.

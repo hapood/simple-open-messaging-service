@@ -55,11 +55,9 @@ class TestS2sHookController {
   ): Promise<{ status: number; body: unknown }> {
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}${path}`);
-    const headers = this.sig.signOutbound({
+    const headers = await this.sig.signOutbound({
       method: 'GET',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body: '', // GET — content-digest covers sha256("")
     });
     const upstream = await fetch(url, {

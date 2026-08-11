@@ -1,4 +1,8 @@
-import { crossesExpandedLayout, nextConversationListWidth } from './home-shell.component';
+import {
+  crossesExpandedLayout,
+  nextConversationListWidth,
+  shouldCloseChatOnThreadSelect,
+} from './home-shell.component';
 
 describe('expanded conversation-list keyboard resizer', () => {
   it('moves one 16px step with the horizontal arrow keys', () => {
@@ -30,5 +34,23 @@ describe('adaptive top-section reconciliation', () => {
   it('reconciles the top section when either side of the transition is expanded', () => {
     expect(crossesExpandedLayout('medium', 'expanded')).toBeTrue();
     expect(crossesExpandedLayout('expanded', 'compact')).toBeTrue();
+  });
+});
+
+describe('two-column thread selection', () => {
+  it('closes the chatbox on PC when the open thread is selected again', () => {
+    expect(shouldCloseChatOnThreadSelect('expanded', 42, 42)).toBeTrue();
+  });
+
+  it('closes the chatbox on Pad when the open thread is selected again', () => {
+    expect(shouldCloseChatOnThreadSelect('medium', 42, 42)).toBeTrue();
+  });
+
+  it('opens a different thread normally', () => {
+    expect(shouldCloseChatOnThreadSelect('expanded', 42, 7)).toBeFalse();
+  });
+
+  it('keeps the existing behavior in the compact single-column layout', () => {
+    expect(shouldCloseChatOnThreadSelect('compact', 42, 42)).toBeFalse();
   });
 });

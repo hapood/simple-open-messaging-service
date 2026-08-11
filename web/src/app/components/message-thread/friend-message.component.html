@@ -3,12 +3,14 @@
     class="msg-container"
     [class.msg-container--has-floating-composer]="
       !blockedPeer() &&
+      !friendshipEnded() &&
       !nativeComposerOccluded() &&
       (!nativeComposer.supported || nativeComposerActive())
     "
     [class.msg-container--has-compose-quote]="
       !nativeComposer.supported && !!composingQuote()
     "
+    [class.msg-container--friendship-ended]="friendshipEnded()"
     #container
     appKbdOffset
     appComposerWidthSource
@@ -18,7 +20,6 @@
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
       (searchJump)="onSearchJump($event)"
-      (historyCleared)="onHistoryCleared()"
     ></app-message-header>
 
     @if (messageContextMenu(); as menu) {
@@ -89,12 +90,20 @@
          next scroll. The handler filters to the viewport's own `transform` (ignoring bubbled item transitions). -->
     <div
       class="msg-viewport"
+      [class.blocked]="blockedPeer()"
       #viewport
       tabindex="0"
       role="region"
       [attr.aria-label]="'chat.messageListAria' | transloco"
       (transitionend)="onViewportTransitionEnd($event)"
     >
+      @if (blockedPeer()) {
+        <div class="msg-blocked-center" role="status">
+          <span class="msg-blocked-center-icon" aria-hidden="true">⊘</span>
+          <strong>{{ 'chat.blockedCenterTitle' | transloco }}</strong>
+          <span>{{ 'chat.blockedCenterHint' | transloco }}</span>
+        </div>
+      }
       <!-- A plain list, deliberately not role="log": virtual-window remounts must not cause assistive
            technology to announce historical messages as if they were newly received. -->
       <div class="msg-content" #content role="list">
@@ -476,17 +485,15 @@
         {{ 'chat.groupDissolvedBanner' | transloco }}
       </div>
     } @else if (friendshipEnded()) {
-      <div class="msg-blocked-banner">
-        {{ 'chat.notFriendsBanner' | transloco }}
-      </div>
+      <!-- Retained P2P history is read-only: intentionally render no composer or replacement action. -->
     } @else if (leftGroup()) {
       <div class="msg-blocked-banner">
         {{ 'chat.leftGroupBanner' | transloco }}
       </div>
     } @else if (blockedPeer()) {
-      <button type="button" class="msg-blocked-banner" (click)="unblockPeer()">
+      <div class="msg-blocked-banner">
         {{ 'chat.blockedBanner' | transloco }}
-      </button>
+      </div>
     } @else if (sendPaused()) {
       <div class="msg-blocked-banner">
         {{ 'chat.quotaPausedBanner' | transloco }}

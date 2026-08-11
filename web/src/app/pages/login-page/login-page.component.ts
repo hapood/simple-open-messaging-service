@@ -11,6 +11,7 @@ import { RouteService, RoutePage } from '../../services/route.service';
 import { ConfigService } from '../../services/config.service';
 import { apiOrigin, apiOriginSecondary, isTauri } from '../../services/runtime';
 import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
+import { ServerConfigDialogService } from '../../services/server-config-dialog.service';
 import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
 
 @Component({
@@ -25,6 +26,7 @@ export class LoginPageComponent {
   protected readonly isTauri = isTauri;
   protected readonly AppIcon = AppIconType;
   private readonly config = inject(ConfigService);
+  private readonly serverConfigDialog = inject(ServerConfigDialogService);
 
   // --- Origin banner (shows the configured backend prominently on the login page). https = green globe
   //     (cert was validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure). ---
@@ -81,6 +83,7 @@ export class LoginPageComponent {
    *  so without this the user sees an empty page with no clue why; this surfaces a visible error + a
    *  reconfigure action. */
   readonly configFailed = computed(() => this.config.loaded() && this.config.loginMode() === null);
+  readonly connectionCancelled = this.config.cancelled;
   /** True when the login page is a legitimate destination and should paint its CONTENT: the first `/config`
    *  fetch has settled AND (password is an enabled method, OR the backend is unreachable so the error card
    *  must show). Until then the splash-continuous loading view is shown — and that splash window covers TWO
@@ -120,10 +123,14 @@ export class LoginPageComponent {
     this.routeService.redirect(RoutePage.AUTH_QR)
   }
 
-  /** Open the in-SPA server-config page (reconfigure). Under the merged single-frontend shell this is a
-   *  plain router navigation — no Rust window swap (the former `open_init`/bootstrap are gone). */
+  /** Edit an existing server configuration without leaving the current auth surface. */
   reopenServerConfig(): void {
-    this.routeService.redirect(RoutePage.CONFIG);
+    this.serverConfigDialog.open();
+  }
+
+  /** Immediately unsubscribe the current public-config request and settle on the stopped state. */
+  cancelConnection(): void {
+    this.config.cancelLoad();
   }
 
   /** Re-fetch `/config` (the cached load settled as a failure, or the origin was just reconfigured).

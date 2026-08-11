@@ -25,6 +25,7 @@ interface GroupEventPayload {
   description?: string;
   avatar?: string;
   dissolved?: boolean;
+  membersCanInvite?: boolean;
 }
 
 /** The five group-lifecycle events the backend fans (sse.service.ts GROUP_SSE). */
@@ -86,6 +87,7 @@ export class GroupEventService implements OnDestroy {
         description: p.description,
         avatar: p.avatar,
         dissolvedAt: p.dissolved ? Date.now() : undefined,
+        membersCanInvite: p.membersCanInvite,
       });
       return;
     }

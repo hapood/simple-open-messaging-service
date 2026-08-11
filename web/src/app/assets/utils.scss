@@ -43,6 +43,23 @@
   --mat-progress-bar-track-color: var(--app-brand-soft);
 }
 
+// One compact brand lockup for every narrow authentication/setup surface. The mark, wordmark and gap
+// stay identical across password, OTP, QR, registration and server setup instead of each page selecting
+// its own logo size. Desktop keeps the dedicated left brand panel, so this lockup is hidden there.
+@mixin auth-compact-brand {
+  .form-brand {
+    display: none;
+    margin-bottom: 20px;
+    --bl-word: 28px;
+  }
+
+  @media (max-width: 899px) {
+    .form-brand {
+      display: block;
+    }
+  }
+}
+
 // Shared auth split-screen shell. Include inside the `.auth-shell` selector.
 // Left column = <app-auth-brand> (decorative, hides itself below the breakpoint),
 // right column = `.form-pane` that centers the form card. Below 900px the grid
@@ -78,26 +95,11 @@
       var(--app-bg);
   }
 
-  // With the IME open, prioritize the focused form over decorative chrome. The scrollable pane keeps
-  // every field reachable even on short landscape viewports.
-  &.auth-keyboard-open .form-pane {
-    justify-content: flex-start;
-    padding-top: 20px;
-    padding-bottom: 20px;
-  }
-
-  // Android shell only: native WindowInsets gives us authoritative IME geometry. Center the compacted
-  // form in the visible region above it, then apply a small optical lift. `safe center` falls back to the
-  // start edge when content is taller than the available region, leaving the first field scroll-reachable.
+  // Android shell only: native WindowInsets gives us authoritative IME geometry. Keep the unchanged form
+  // centered in the visible region. `safe center` falls back to the start edge when the full-size content
+  // is taller than that region, leaving it scroll-reachable without hiding or resizing any page chrome.
   &.auth-native-keyboard-open .form-pane {
     justify-content: safe center;
-  }
-
-  &.auth-keyboard-open app-auth-brand,
-  &.auth-keyboard-open app-auth-toolbar,
-  &.auth-keyboard-open .form-brand,
-  &.auth-keyboard-open .auth-footer {
-    display: none;
   }
 
   @media (max-width: 899px) {

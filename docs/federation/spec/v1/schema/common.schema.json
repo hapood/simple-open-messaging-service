@@ -32,7 +32,8 @@
       "maximum": 9007199254740991
     },
     "epochMilliseconds": {
-      "$ref": "#/$defs/safeNonNegativeInteger"
+      "$ref": "#/$defs/safeNonNegativeInteger",
+      "description": "Unix epoch milliseconds encoded as a non-negative JSON safe integer"
     },
     "sha256Hex": {
       "type": "string",
@@ -58,9 +59,12 @@
       "type": "string",
       "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
     },
-    "callSid": {
+    "canonicalUuid": {
       "type": "string",
-      "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "callSid": {
+      "$ref": "#/$defs/canonicalUuid"
     },
     "address": {
       "type": "object",

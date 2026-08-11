@@ -35,6 +35,7 @@ describe('CallEventService web call routing', () => {
   it('routes CALL_SIGNAL frames to the selected media adapter', () => {
     TestBed.inject(CallEventService);
     const signal = {
+      id: '550e8400-e29b-41d4-a716-446655440000',
       callSid: 'call-1',
       fromUserId: 7,
       kind: 'offer',

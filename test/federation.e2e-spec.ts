@@ -2146,11 +2146,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       stateFeedRev: '1',
       messageFeedRev: '1',
     });
-    const headers = evilSig.signOutbound({
+    const headers = await evilSig.signOutbound({
       method: 'POST',
-      path: '/s2s/v1/feed-revisions',
-      query: '?',
-      authority,
+      url: new URL(`http://${authority}/s2s/v1/feed-revisions`),
       body,
     });
 

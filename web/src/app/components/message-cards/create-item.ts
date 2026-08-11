@@ -46,23 +46,47 @@ interface RowComponent {
 export function computeRowFlags(
   item: CbItem<ChatItemData>,
   prev: CbItem<ChatItemData> | null,
+  next: CbItem<ChatItemData> | null = null,
 ): {
   isShowHead: boolean;
   isGroupStart: boolean;
   showDate: boolean;
+  groupPosition: 'single' | 'head' | 'body' | 'tail';
 } {
   let isShowHead = true;
   let isGroupStart = false;
   let showDate = false;
+  let groupPosition: 'single' | 'head' | 'body' | 'tail' = 'single';
   if (item.data.type === 'msg') {
     const msg = item.data;
-    const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
+    // A SYSTEM row is timeline chrome, not part of a sender's message run. Treat it as a hard grouping
+    // boundary so the first real message after a fresh-chat notice renders its avatar and sender name,
+    // even when the system event happens to carry the same creator id.
+    const prevMsg =
+      prev?.data.type === 'msg' && prev.data.contentType !== 'SYSTEM'
+        ? prev.data
+        : null;
     const curCtx: GroupCtx = { creator: msg.creator };
     const prevCtx: GroupCtx | null = prevMsg
       ? { creator: prevMsg.creator }
       : null;
-    isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
+    const nextMsg =
+      next?.data.type === 'msg' && next.data.contentType !== 'SYSTEM'
+        ? next.data
+        : null;
+    const nextCtx: GroupCtx | null = nextMsg
+      ? { creator: nextMsg.creator }
+      : null;
+    const groupFlags = classifyGroupFlags(prevCtx, curCtx, nextCtx);
+    isShowHead = groupFlags.isShowHead;
     isGroupStart = isShowHead && !!prevMsg; // a sender-change group start adds inter-group spacing
+    groupPosition = isShowHead
+      ? groupFlags.isDateShrink
+        ? 'head'
+        : 'single'
+      : groupFlags.isDateShrink
+        ? 'body'
+        : 'tail';
     // date separator: derived per-window from the prev message's createdAtMs (date lives outside the source). The
     // oldest boundary always shows date above; a non-oldest prev==null (trim re-mount) does not (anti-flicker).
     // The label text itself is computed by DateRowComponent from the timestamp + active language, so the factory
@@ -73,7 +97,37 @@ export function computeRowFlags(
       item.boundary === 'oldest',
     );
   }
-  return { isShowHead, isGroupStart, showDate };
+  return { isShowHead, isGroupStart, showDate, groupPosition };
+}
+
+function applyGroupPosition(
+  host: HTMLElement,
+  position: 'single' | 'head' | 'body' | 'tail',
+): void {
+  const bubble = host.querySelector('.msg-bubble');
+  if (!bubble) return;
+  bubble.classList.remove('msg-single', 'msg-head', 'msg-body', 'msg-tail');
+  bubble.classList.add(`msg-${position}`);
+}
+
+function groupPositionFrom(
+  isShowHead: boolean,
+  item: CbItem<ChatItemData>,
+  next: CbItem<ChatItemData> | null,
+): 'single' | 'head' | 'body' | 'tail' {
+  const nextIsSameSender =
+    item.data.type === 'msg' &&
+    item.data.contentType !== 'SYSTEM' &&
+    next?.data.type === 'msg' &&
+    next.data.contentType !== 'SYSTEM' &&
+    next.data.creator === item.data.creator;
+  return isShowHead
+    ? nextIsSameSender
+      ? 'head'
+      : 'single'
+    : nextIsSameSender
+      ? 'body'
+      : 'tail';
 }
 
 /**
@@ -151,6 +205,10 @@ export function createMsgCbElement(
     ref.setInput('clientMessageId', item.clientMessageId ?? '');
   }
   ref.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually (triggers ngOnInit)
+  applyGroupPosition(
+    ref.location.nativeElement,
+    isShowHead ? 'single' : 'tail',
+  );
 
   // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
   // signal inputs on the SAME component instance + DOM node, then drive change detection synchronously so the kernel's
@@ -158,6 +216,8 @@ export function createMsgCbElement(
   // (sending→failed) and to re-group after a reorder — without remounting (which would break a FLIP move animation).
   let selectionHost: HTMLElement | undefined;
   let interactionItem = item;
+  let interactionIsShowHead = isShowHead;
+  let interactionNext: CbItem<ChatItemData> | null = null;
   const applySelectionMetadata = (
     host: HTMLElement,
     nextItem: CbItem<ChatItemData>,
@@ -182,7 +242,7 @@ export function createMsgCbElement(
     nextItem: CbItem<ChatItemData>,
     nextPrev: CbItem<ChatItemData> | null,
   ): void => {
-    const flags = computeRowFlags(nextItem, nextPrev);
+    const flags = computeRowFlags(nextItem, nextPrev, interactionNext);
     ref.setInput('data', nextItem.data as ChatMsgData);
     ref.setInput('isShowHead', flags.isShowHead);
     ref.setInput('isGroupStart', flags.isGroupStart);
@@ -191,8 +251,18 @@ export function createMsgCbElement(
       ref.setInput('clientMessageId', nextItem.clientMessageId ?? '');
     }
     ref.changeDetectorRef.detectChanges();
+    applyGroupPosition(ref.location.nativeElement, flags.groupPosition);
     interactionItem = nextItem;
+    interactionIsShowHead = flags.isShowHead;
     if (selectionHost) applySelectionMetadata(selectionHost, nextItem);
+  };
+
+  const updateNext = (nextItem: CbItem<ChatItemData> | null): void => {
+    interactionNext = nextItem;
+    applyGroupPosition(
+      ref.location.nativeElement,
+      groupPositionFrom(interactionIsShowHead, interactionItem, nextItem),
+    );
   };
 
   let measuredHost: HTMLElement | undefined;
@@ -209,7 +279,7 @@ export function createMsgCbElement(
     wrapper.append(divider, ref.location.nativeElement);
     measuredHost = wrapper;
   }
-  const el = wrapEl(ref, update, measuredHost, () =>
+  const el = wrapEl(ref, update, updateNext, measuredHost, () =>
     appRef.detachView(ref.hostView),
   );
   selectionHost = el.el;
@@ -450,6 +520,7 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
 function wrapEl<T>(
   ref: { location: { nativeElement: HTMLElement }; destroy: () => void },
   update: (item: CbItem<T>, prev: CbItem<T> | null) => void,
+  updateNext: (next: CbItem<T> | null) => void,
   measuredHost?: HTMLElement,
   beforeDestroy?: () => void,
 ): CbElement<T> {
@@ -473,6 +544,7 @@ function wrapEl<T>(
       };
     },
     update,
+    updateNext,
     destroy: () => {
       ro?.disconnect();
       ro = null;

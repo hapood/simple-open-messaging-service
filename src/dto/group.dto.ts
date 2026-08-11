@@ -217,4 +217,13 @@ export class UpdateGroupDto {
     message: 'group description must be at most 240 characters',
   })
   description?: string;
+
+  @ApiProperty({
+    required: false,
+    example: false,
+    description: 'Whether ordinary members may invite users',
+  })
+  @IsBoolean()
+  @IsOptional()
+  membersCanInvite?: boolean;
 }

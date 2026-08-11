@@ -64,6 +64,32 @@ describe('WebCallAdapter multi-device ownership', () => {
     });
   });
 
+  it('applies the first endpoint delivery of a signal ID only once', async () => {
+    const adapter = new WebCallAdapter({} as HttpClient, IDLE_CALL);
+    adapter.applyLifecycle({
+      ...IDLE_CALL,
+      phase: 'connected',
+      callSid: 'call-1',
+      callType: 'VIDEO',
+    });
+    await adapter.handleSignal({
+      id: 'signal-1',
+      callSid: 'call-1',
+      fromUserId: 7,
+      kind: 'video-state',
+      payload: '{"enabled":true}',
+    });
+    await adapter.handleSignal({
+      id: 'signal-1',
+      callSid: 'call-1',
+      fromUserId: 7,
+      kind: 'video-state',
+      payload: '{"enabled":false}',
+    });
+
+    expect(adapter.snapshot().remoteCameraEnabled).toBeTrue();
+  });
+
   it('lets the callee wait for the caller-owned ICE restart', () => {
     expect(webReconnectDecision(false, false)).toEqual({
       delayMs: 30_000,
@@ -90,9 +116,9 @@ describe('WebCallAdapter multi-device ownership', () => {
   });
 
   it('ends an active renderer-owned call before the session credential is cleared', async () => {
-    const post = jasmine.createSpy('post').and.returnValue(
-      of({ code: 0, message: '' }),
-    );
+    const post = jasmine
+      .createSpy('post')
+      .and.returnValue(of({ code: 0, message: '' }));
     const adapter = new WebCallAdapter(
       { post } as unknown as HttpClient,
       IDLE_CALL,

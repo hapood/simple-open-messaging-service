@@ -1,2 +1,19 @@
-/* The root component only hosts <router-outlet />; no host styles. The legacy .bottom-bar mobile
-   bottom navigation has been superseded by the desktop icon-rail / mobile-home, and the dead code removed. */
+// Global auth-flow modal frame. ServerConfigPage owns the actual card and its keyboard-aware geometry;
+// this layer only centers it inside the shared Material backdrop and native safe areas.
+.server-config-dialog-frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding:
+    calc(16px + var(--soms-safe-top, 0px))
+    16px
+    calc(16px + var(--soms-safe-bottom, 0px));
+  box-sizing: border-box;
+  pointer-events: none;
+
+  app-server-config-page {
+    pointer-events: auto;
+  }
+}

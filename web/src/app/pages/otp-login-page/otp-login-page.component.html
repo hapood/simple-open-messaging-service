@@ -2,6 +2,7 @@
   <app-auth-brand aria-hidden="true"></app-auth-brand>
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
+    <app-brand-logo class="form-brand" [size]="80" />
     <form (ngSubmit)="submit()" class="login-card">
       <div class="progress-slot">
         @if (isSubmitting()) {
@@ -47,10 +48,10 @@
         }
       </div>
       @if (isTauri()) {
-        <a mat-button class="server-link" routerLink="/config" replaceUrl>
+        <button mat-button class="server-link" type="button" (click)="openServerConfig()">
           <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
           {{ 'serverConfig.entry' | transloco }}
-        </a>
+        </button>
       }
     </div>
   </main>

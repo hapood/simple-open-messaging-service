@@ -1,7 +1,7 @@
 :host {
   display: block;
   // Vertical whitespace uses padding, not margin (offsetHeight excludes margin → otherwise the next bubble stacks on top).
-  padding: 14px var(--app-space-4);
+  padding: var(--chat-timeline-gap-separator) var(--chat-timeline-inset-inline);
   box-sizing: border-box;
 }
 

@@ -914,6 +914,29 @@ async fn proxy_media(
         }
         return;
     }
+    // Cache-only variant used by oversized gallery-card icons. A miss must stay a 404: probing this
+    // route is not permission to fetch the original bytes across the user's configured size gate.
+    if let Some(source_path) = request.uri().path().strip_prefix("/cached-chat-thumbnails") {
+        if !source_path.starts_with("/uploads/") {
+            responder.respond(empty(StatusCode::NOT_FOUND));
+            return;
+        }
+        if let Ok(bytes) = media_cache::get_cached_chat_thumbnail(&app, &st, source_path).await {
+            responder.respond(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "image/webp")
+                    .header("content-length", bytes.len().to_string())
+                    .header("cache-control", "no-store")
+                    .header("x-content-type-options", "nosniff")
+                    .body(Cow::Owned(bytes))
+                    .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
+            );
+        } else {
+            responder.respond(empty(StatusCode::NOT_FOUND));
+        }
+        return;
+    }
     if !path_and_query.starts_with("/uploads/") {
         responder.respond(empty(StatusCode::NOT_FOUND));
         return;

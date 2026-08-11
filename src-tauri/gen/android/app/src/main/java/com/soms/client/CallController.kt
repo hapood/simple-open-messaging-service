@@ -30,6 +30,7 @@ import org.webrtc.SessionDescription
 import org.webrtc.VideoTrack
 import org.webrtc.SessionDescription.Type
 import org.webrtc.audio.JavaAudioDeviceModule
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -162,6 +163,8 @@ object CallController {
     /** Only the original caller creates renegotiation offers, avoiding offer glare when both participants
      *  enable cameras at nearly the same time. Cleared when the corresponding answer is applied. */
     @Volatile private var videoRenegotiationInFlight = false
+    /** End-to-end SOMS signal IDs already applied for the active call. WebRTC itself does not dedupe SDP. */
+    private val seenSignalIds = HashSet<String>()
     /** Posted on [mainHandler] when the PC goes DISCONNECTED; hops to [callExecutor]. Cancelled on CONNECTED +
      *  [teardown]. Bounds "Reconnecting…": after the grace the caller restarts ICE once (re-arming a shorter
      *  backstop), then the call fails. */
@@ -452,6 +455,9 @@ object CallController {
      *  PC (the caller sends them right after initiate, while the callee is still ringing) — buffer those and
      *  flush in [accept] once the PC exists; otherwise `pc == null` drops them and the call never negotiates. */
     private fun handleSignalFrame(obj: JSONObject) {
+        val sid = obj.optString("callSid")
+        val id = obj.optString("id")
+        if (sid.isEmpty() || sid != callSid || id.isEmpty() || !seenSignalIds.add(id)) return
         val kind = obj.optString("kind")
         val payload = obj.optString("payload")
         if (kind == "video-state") {
@@ -1202,6 +1208,7 @@ object CallController {
         cancelAnswerFetchBackstop()
         pendingOffer = null
         pendingIce.clear()
+        seenSignalIds.clear()
         pushSnapshot()
     }
 
@@ -1240,6 +1247,7 @@ object CallController {
         post(
             "$origin${SomsSecureStore.API_PREFIX}/calls/signal",
             JSONObject()
+                .put("id", UUID.randomUUID().toString())
                 .put("callSid", callSid)
                 .put("toUserId", toUserId)
                 .put("kind", kind)

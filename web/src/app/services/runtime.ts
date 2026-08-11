@@ -609,6 +609,15 @@ export function chatThumbnailUrl(path: string | null | undefined): string {
   return assetUrl(`/chat-thumbnails${path}`);
 }
 
+/** Native cache-only chat thumbnail URL. Unlike chatThumbnailUrl(), a miss returns 404 and never fetches
+ * the original, so oversized list-card images can probe the local cache without bypassing the size gate. */
+export function cachedChatThumbnailUrl(
+  path: string | null | undefined,
+): string {
+  if (!path || !isTauri() || !path.startsWith('/uploads/')) return '';
+  return assetUrl(`/cached-chat-thumbnails${path}`);
+}
+
 const VIDEO_CAS_PATH =
   /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.[A-Za-z0-9]+$/;
 

@@ -5,76 +5,134 @@
   "$defs": {
     "base": {
       "type": "object",
-      "required": [
-        "id",
-        "origin",
-        "ts",
-        "from",
-        "to",
-        "callSid",
-        "op",
-        "callType"
-      ],
+      "required": ["callSid", "op", "callType"],
       "properties": {
-        "id": { "$ref": "urn:soms:federation:v1:common#/$defs/ulid" },
-        "origin": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
-        "ts": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "from": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
-        "to": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
         "callSid": { "$ref": "urn:soms:federation:v1:common#/$defs/callSid" },
         "op": { "type": "string" },
-        "callType": { "enum": ["AUDIO", "VIDEO"] },
-        "kind": { "enum": ["offer", "answer", "ice", "video-state"] },
-        "payload": { "type": "string", "minLength": 1, "maxLength": 32768 },
-        "startedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "endReason": { "enum": ["completed", "timeout", "failed"] }
+        "callType": { "enum": ["AUDIO", "VIDEO"] }
       }
+    },
+    "signalKind": {
+      "enum": ["offer", "answer", "ice", "video-state"]
+    },
+    "signalPayload": {
+      "type": "object",
+      "required": ["id", "kind", "data"],
+      "properties": {
+        "id": { "$ref": "urn:soms:federation:v1:common#/$defs/canonicalUuid" },
+        "kind": { "$ref": "#/$defs/signalKind" },
+        "data": { "type": "string", "minLength": 1, "maxLength": 32768 }
+      },
+      "additionalProperties": false
+    },
+    "endReason": {
+      "enum": ["completed", "timeout", "failed"]
     }
   },
   "oneOf": [
     {
-      "$ref": "#/$defs/base",
-      "properties": {
-        "op": {
-          "enum": [
-            "incoming",
-            "accepted",
-            "ringing",
-            "declined",
-            "cancelled",
-            "missed"
-          ]
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "required": ["payload"],
+          "properties": {
+            "op": { "const": "incoming" },
+            "payload": {
+              "type": "object",
+              "required": ["fromAccount", "toAccount"],
+              "properties": {
+                "fromAccount": {
+                  "$ref": "urn:soms:federation:v1:common#/$defs/account"
+                },
+                "toAccount": {
+                  "$ref": "urn:soms:federation:v1:common#/$defs/account"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
         }
-      },
+      ],
       "unevaluatedProperties": false
     },
     {
-      "$ref": "#/$defs/base",
-      "required": ["kind", "payload"],
-      "properties": { "op": { "const": "signal" } },
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "op": {
+              "enum": ["accepted", "ringing", "declined", "cancelled", "missed"]
+            }
+          }
+        }
+      ],
       "unevaluatedProperties": false
     },
     {
-      "$ref": "#/$defs/base",
-      "required": ["startedAt"],
-      "properties": { "op": { "const": "connected" } },
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "required": ["payload"],
+          "properties": {
+            "op": { "const": "signal" },
+            "payload": { "$ref": "#/$defs/signalPayload" }
+          }
+        }
+      ],
       "unevaluatedProperties": false
     },
     {
-      "$ref": "#/$defs/base",
-      "properties": {
-        "op": { "const": "video-upgraded" },
-        "callType": { "const": "VIDEO" }
-      },
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "required": ["payload"],
+          "properties": {
+            "op": { "const": "connected" },
+            "payload": {
+              "type": "object",
+              "required": ["startedAt"],
+              "properties": {
+                "startedAt": {
+                  "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
       "unevaluatedProperties": false
     },
     {
-      "$ref": "#/$defs/base",
-      "properties": { "op": { "const": "ended" } },
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "properties": {
+            "op": { "const": "video-upgraded" },
+            "callType": { "const": "VIDEO" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "required": ["payload"],
+          "properties": {
+            "op": { "const": "ended" },
+            "payload": {
+              "type": "object",
+              "required": ["endReason"],
+              "properties": {
+                "endReason": { "$ref": "#/$defs/endReason" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
       "unevaluatedProperties": false
     }
   ]

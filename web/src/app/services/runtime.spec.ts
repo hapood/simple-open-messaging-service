@@ -1,5 +1,6 @@
 import {
   assetUrl,
+  cachedChatThumbnailUrl,
   canonicalOrigin,
   chatThumbnailUrl,
   nativeVideoThumbnailUrl,
@@ -116,6 +117,13 @@ describe('assetUrl', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     expect(chatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
       'http://media.localhost/chat-thumbnails/uploads/cas/aa/bb/photo.jpg',
+    );
+  });
+
+  it('maps a native image onto a cache-only thumbnail path', () => {
+    setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
+    expect(cachedChatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
+      'http://media.localhost/cached-chat-thumbnails/uploads/cas/aa/bb/photo.jpg',
     );
   });
 

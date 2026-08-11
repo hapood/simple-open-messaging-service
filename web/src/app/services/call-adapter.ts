@@ -77,6 +77,7 @@ export const IDLE_CALL: CallSnapshot = {
 
 export type CallSnapshotListener = (snapshot: CallSnapshot) => void;
 export interface CallSignalPayload {
+  id: string;
   callSid: string;
   fromUserId: number;
   kind: string;

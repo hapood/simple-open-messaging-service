@@ -124,7 +124,9 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
             'content-length': body.length,
             'content-range': `bytes ${start}-${end}/${fixture.length}`,
             'content-digest':
-              'sha-256=' + createHash('sha256').update(body).digest('base64'),
+              'sha-256=:' +
+              createHash('sha256').update(body).digest('base64') +
+              ':',
           });
           if (shouldTruncate) {
             res.write(body.subarray(0, Math.min(body.length, 8)));

@@ -32,6 +32,7 @@ import { finalize } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
+import { MsgService } from '../../services/message.service';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -75,6 +76,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly http = inject(HttpClient);
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
+  private readonly msgService = inject(MsgService);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -98,6 +100,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly selectedDict = signal<Record<number, boolean | undefined>>({});
   readonly selectedList = signal<ConversationItem[]>([]);
   readonly showInvite = signal(false);
+  readonly memberQuery = signal('');
 
   /** Inline identity-edit mode (admin+). */
   readonly editing = signal(false);
@@ -127,12 +130,24 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly isAdmin = computed(
     () => this.myRole() === 'OWNER' || this.myRole() === 'ADMIN',
   );
+  readonly overviewMembers = computed(() => this.roster().slice(0, 5));
+  readonly remainingMemberCount = computed(() =>
+    Math.max(0, this.roster().length - this.overviewMembers().length),
+  );
+  readonly filteredRoster = computed(() => {
+    const q = this.memberQuery().trim().toLocaleLowerCase();
+    if (!q) return this.roster();
+    return this.roster().filter((member) =>
+      `${member.name} ${member.account}`.toLocaleLowerCase().includes(q),
+    );
+  });
+  readonly canInvite = computed(
+    () => this.isAdmin() || this.group()?.membersCanInvite !== false,
+  );
   readonly existingMemberIds = computed(
     () => new Set(this.roster().map((member) => member.userId)),
   );
-  readonly canLeave = computed(
-    () => !this.isOwner() || this.roster().length <= 1,
-  );
+  readonly canLeave = computed(() => !this.isOwner());
   readonly confirmDissolve = signal(false);
 
   readonly group = computed(() => this.userMsgTrd()?.group);
@@ -379,6 +394,35 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       this.deletionLock.end(id);
       this.convList.load();
     }
+  }
+
+  toggleBlocked(): void {
+    const trd = this.userMsgTrd();
+    if (!trd) return;
+    const blocked = !trd.blocked;
+    this.msgService.setBlocked({ threadId: trd.threadId, blocked }).subscribe({
+      next: (res) => {
+        if (res.code !== 0) return this.showBusinessError(res);
+        this.convList.applyThreadMeta(trd.threadId, { blocked });
+      },
+      error: () => this.showNetworkError(),
+    });
+  }
+
+  setMembersCanInvite(enabled: boolean): void {
+    const id = this.groupId();
+    if (id === undefined || !this.isAdmin()) return;
+    this.busy.set(true);
+    this.groupService
+      .updateGroup({ groupId: id, membersCanInvite: enabled })
+      .pipe(finalize(() => this.busy.set(false)))
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          this.convList.applyGroupUpdate(id, { membersCanInvite: enabled });
+        },
+        error: () => this.showNetworkError(),
+      });
   }
 
   // ── identity editing (admin+) ──

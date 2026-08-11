@@ -19,7 +19,7 @@ import { Component, input } from '@angular/core';
 })
 export class BrandLogoComponent {
   /** Size of the logo mark in px */
-  readonly size = input(64)
+  readonly size = input(80)
   /** Whether to show the "SOMS" wordmark */
   readonly wordmark = input(true)
   /** Subtitle below the wordmark (plain text) */

@@ -551,13 +551,11 @@ export class FederationSelfCheckService {
     }
     const req: SignedRequest = {
       method: 'POST',
-      path: '/s2s/v1/ignite',
-      query: '?',
-      authority,
+      url: new URL(`https://${authority}/s2s/v1/ignite`),
       body: '{"probe":"self-check"}',
     };
-    const headers = this.signature.signOutbound(req);
-    const ok = this.signature.verifyWithKey(req, headers, pub);
+    const headers = await this.signature.signOutbound(req);
+    const ok = await this.signature.verifyWithKey(req, headers, pub);
     return {
       status: ok ? 'ok' : 'fail',
       detail: ok

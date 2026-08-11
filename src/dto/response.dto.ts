@@ -205,6 +205,12 @@ export class GroupResponseDto {
   description!: string;
 
   @ApiProperty({
+    example: true,
+    description: 'Whether ordinary members may invite users to this group',
+  })
+  membersCanInvite!: boolean;
+
+  @ApiProperty({
     example: 'soms.io',
     description:
       "The group's home (origin) domain. Empty for a locally-originated group (this server is the " +
@@ -331,7 +337,7 @@ export class ConversationItemDto {
     required: false,
     example: false,
     description:
-      'Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.',
+      'Whether the caller blocks new messages from this conversation. Applies to P2P and GROUP.',
   })
   blocked?: boolean;
 

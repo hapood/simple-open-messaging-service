@@ -4,6 +4,8 @@
   @include auth-shell;
 }
 
+@include auth-compact-brand;
+
 // Form card — shared auth-card surface (mirrors the password / QR cards so all methods read as one).
 .login-card {
   @include auth-card;

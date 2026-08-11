@@ -65,7 +65,7 @@ export class ThreadParticipantService {
         eq(threadParticipant.threadId, threadId),
         isNull(threadParticipant.leftAt),
       ),
-      columns: { userId: true, muted: true },
+      columns: { userId: true, muted: true, blocked: true },
     });
   }
 
@@ -111,6 +111,11 @@ export class ThreadParticipantService {
     return this.updateParticipant(userId, threadId, { muted });
   }
 
+  /** Thread-scoped delivery block. Works for both P2P and groups without changing membership/history. */
+  setBlocked(userId: number, threadId: number, blocked: boolean) {
+    return this.updateParticipant(userId, threadId, { blocked });
+  }
+
   /**
    * Toggle pin for the caller's row. Pinning stamps pinnedAt = now (most-recently-pinned-first ordering);
    * unpin clears both the flag and the timestamp. Idempotent at the row level — re-pinning an already
@@ -139,19 +144,6 @@ export class ThreadParticipantService {
     });
     return this.updateParticipant(userId, threadId, {
       clearedSeq: thread?.curSeq ?? -1,
-    });
-  }
-
-  /** Permanently hide a thread for one participant. The peer/member copies and Message rows are untouched. */
-  async deleteThreadForUser(userId: number, threadId: number) {
-    const thread = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { curSeq: true },
-    });
-    return this.updateParticipant(userId, threadId, {
-      clearedSeq: thread?.curSeq ?? -1,
-      pinned: false,
-      pinnedAt: null,
     });
   }
 

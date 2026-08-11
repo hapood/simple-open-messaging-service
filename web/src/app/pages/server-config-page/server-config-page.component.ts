@@ -5,6 +5,9 @@ import {
   ElementRef,
   HostListener,
   inject,
+  input,
+  OnInit,
+  output,
   signal,
   DestroyRef,
   isDevMode,
@@ -71,17 +74,17 @@ export function resolveOriginSelection(
 }
 
 /**
- * The in-SPA backend-config page (`/config`) — the single surface for first-run setup AND reconfigure.
- * Replaces the former bundled `shell-config` bootstrap (eliminated along with the `somsapp://` scheme).
- * Reached: first-run (landed here by the `guestGuard` when `apiOriginIsEmpty()`), reconfigure (the login
- * page's "Server settings" entry). On save it runs `init_check_compat` → `init_validate_cert` → a hash
+ * Shared backend-config surface. First run is mounted by the guarded `/config` startup state as a required,
+ * non-dismissible modal over an empty background; an existing configuration opens the same component in
+ * the global auth-flow dialog without changing routes. On save it runs `init_check_compat` →
+ * `init_validate_cert` → a hash
  * check (`init_update_status`); if the server advertises a web bundle whose sha256 differs from the
  * installed one it downloads + swaps it (`init_download_web`) and reloads, otherwise it persists the origin
  * (`setApiOrigin` → Rust config + SomsSecureStore + the live `apiOrigin` signal) and redirects to login.
  * No `handoff_to_spa` / window swap (one window, one origin).
  *
  * Owns the Android hardware-back button while active (overrides the SPA nav-state-machine's handler, which
- * is restored on destroy): reconfigure → return to login; first-run (no origin yet) → double-back-to-exit.
+ * is restored on destroy): reconfigure closes the dialog; required first-run setup ignores Back.
  */
 @Component({
   selector: 'app-server-config-page',
@@ -102,7 +105,11 @@ export function resolveOriginSelection(
   styleUrl: './server-config-page.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ServerConfigPageComponent {
+export class ServerConfigPageComponent implements OnInit {
+  /** Dialog mode is used when editing an existing configuration from an auth page. */
+  readonly dialog = input(false);
+  /** Dialog-only dismissal event. First-run route mode never emits it. */
+  readonly closed = output<void>();
   private readonly route = inject(RouteService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly config = inject(ConfigService);
@@ -112,8 +119,6 @@ export class ServerConfigPageComponent {
   private firebaseConfig: FirebaseClientConfigPayload | null = null;
   /** Saved SPA nav-state `__SOMS_BACK__` to restore when this page is left. */
   private prevBack: typeof window.__SOMS_BACK__ = window.__SOMS_BACK__;
-  /** Arming timer for the double-back-to-exit pattern (first-run only); cleared on destroy. */
-  private backExitTimer: ReturnType<typeof setTimeout> | null = null;
   @ViewChild('serverInput') private serverInput?: ElementRef<HTMLInputElement>;
 
   readonly url = new FormControl(canonicalOrigin(apiOrigin()), {
@@ -137,16 +142,22 @@ export class ServerConfigPageComponent {
    *  signal — the two can drift on a device that configured via an older build, which would wrongly show
    *  the back button on a true first-run. */
   readonly isReconfigure = signal(false);
-  readonly canGoBack = computed(() => this.isReconfigure());
+  readonly canGoBack = computed(() => this.dialog() || this.isReconfigure());
   readonly busy = computed(() => this.phase() !== 'form');
   readonly titleKey = computed(() =>
-    this.isReconfigure() ? 'serverConfig.reconfigureTitle' : 'serverConfig.firstRunTitle',
+    this.dialog() || this.isReconfigure()
+      ? 'serverConfig.reconfigureTitle'
+      : 'serverConfig.firstRunTitle',
   );
   readonly introKey = computed(() =>
-    this.isReconfigure() ? 'serverConfig.reconfigureHint' : 'serverConfig.firstRunHint',
+    this.dialog() || this.isReconfigure()
+      ? 'serverConfig.reconfigureHint'
+      : 'serverConfig.firstRunHint',
   );
   readonly actionKey = computed(() =>
-    this.isReconfigure() ? 'serverConfig.switchServer' : 'serverConfig.connectContinue',
+    this.dialog() || this.isReconfigure()
+      ? 'serverConfig.switchServer'
+      : 'serverConfig.connectContinue',
   );
   readonly errorKey = signal<string | null>(null);
   readonly errorDetail = signal('');
@@ -215,17 +226,23 @@ export class ServerConfigPageComponent {
       this.errorKey.set(null);
       this.errorDetail.set('');
     });
-    // Authoritative first-run vs reconfigure detection (drives the back button): is_origin_configured is
-    // true iff a backend has been configured (persisted origin != the non-routable placeholder).
-    void tauriInvoke<boolean>('is_origin_configured')
-      .then((c) => this.isReconfigure.set(c))
-      .catch(() => {});
-    this.installBackHandler();
     this.registerDownloadProgress();
     this.destroyRef.onDestroy(() => {
-      if (this.backExitTimer) clearTimeout(this.backExitTimer);
       window.__SOMS_BACK__ = this.prevBack;
     });
+  }
+
+  ngOnInit(): void {
+    // Inputs are available here. Dialog mode is always a reconfiguration flow; route mode asks native
+    // storage so the same component can distinguish first run from a legacy direct /config visit.
+    if (this.dialog()) {
+      this.isReconfigure.set(true);
+    } else {
+      void tauriInvoke<boolean>('is_origin_configured')
+        .then((configured) => this.isReconfigure.set(configured))
+        .catch(() => {});
+    }
+    this.installBackHandler();
   }
 
   /** Run the connect steps. Bound to the form's NATIVE `submit` event (this component imports only
@@ -357,6 +374,10 @@ export class ServerConfigPageComponent {
       if (isDevMode()) {
         console.info('server-config SPA navigation', { route: RoutePage.AUTH_LOGIN });
       }
+      if (this.dialog()) {
+        this.closed.emit();
+        return;
+      }
       this.route.redirect(RoutePage.AUTH_LOGIN);
     } catch (e) {
       this.fail(e);
@@ -383,10 +404,11 @@ export class ServerConfigPageComponent {
    * through the route-owned __SOMS_BACK__ callback below. */
   @HostListener('document:keydown.escape', ['$event'])
   onEscape(event: KeyboardEvent): void {
-    if (!this.autoFill()) return;
+    if (!this.autoFill() && !this.dialog()) return;
     event.preventDefault();
     event.stopPropagation();
-    void this.cancelAutoFill();
+    if (this.autoFill()) void this.cancelAutoFill();
+    else this.closed.emit();
   }
 
   /** Surface a connect/OTA failure as a categorized toast + reset to the form for an edit-and-retry. */
@@ -428,13 +450,15 @@ export class ServerConfigPageComponent {
   /** Visible top-left back affordance (reconfigure only — hidden on first run). Same effect as the
    *  hardware-back reconfigure branch: return to login. */
   goBack(): void {
+    if (this.dialog()) {
+      this.closed.emit();
+      return;
+    }
     this.route.redirect(RoutePage.AUTH_LOGIN);
   }
 
-  /** Own `window.__SOMS_BACK__` while active (MainActivity evals it on hardware-back). Two modes:
-   *   - Reconfigure (an origin is set): a single back returns to login (replaceUrl keeps history flat).
-   *   - First-run (no origin): double-back-to-exit — a first back arms a 2s "press back again to exit"
-   *     hint; a second back within it exits the app via window.SomsBack.exit(). */
+  /** Own `window.__SOMS_BACK__` while active (MainActivity evals it on hardware-back). Reconfigure closes
+   * the dialog; first-run setup is required and deliberately ignores Back. */
   private installBackHandler(): void {
     window.__SOMS_BACK__ = () => {
       if (this.autoFill()) {
@@ -442,17 +466,11 @@ export class ServerConfigPageComponent {
         return;
       }
       if (this.canGoBack()) {
-        this.route.redirect(RoutePage.AUTH_LOGIN);
+        this.goBack();
         return;
       }
-      if (this.exitHint()) {
-        this.exitHint.set(false);
-        window.SomsBack?.exit();
-        return;
-      }
-      this.exitHint.set(true);
-      if (this.backExitTimer) clearTimeout(this.backExitTimer);
-      this.backExitTimer = setTimeout(() => this.exitHint.set(false), 2000);
+      // First-run setup is a required modal: hardware Back must not dismiss it or expose an unusable
+      // background. The Activity itself can still be left through the Android task switcher/home gesture.
     };
   }
 

@@ -251,58 +251,92 @@
       "schema": "urn:soms:federation:v1:call",
       "values": [
         {
-          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-          "origin": "a.example",
-          "ts": 1700000000000,
-          "from": { "account": "alice", "domain": "a.example" },
-          "to": { "account": "bob", "domain": "b.example" },
           "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "op": "incoming",
+          "callType": "AUDIO",
+          "payload": { "fromAccount": "alice", "toAccount": "bob" }
+        },
+        {
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "ringing",
           "callType": "AUDIO"
         },
         {
-          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-          "origin": "a.example",
-          "ts": 1700000000000,
-          "from": { "account": "alice", "domain": "a.example" },
-          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "accepted",
+          "callType": "AUDIO"
+        },
+        {
           "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "op": "signal",
           "callType": "AUDIO",
-          "kind": "offer",
-          "payload": "v=0"
+          "payload": {
+            "id": "c0a80101-0000-4000-8000-000000000001",
+            "kind": "offer",
+            "data": "v=0"
+          }
         },
         {
-          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-          "origin": "a.example",
-          "ts": 1700000000000,
-          "from": { "account": "alice", "domain": "a.example" },
-          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "signal",
+          "callType": "AUDIO",
+          "payload": {
+            "id": "c0a80101-0000-4000-8000-000000000002",
+            "kind": "answer",
+            "data": "v=0"
+          }
+        },
+        {
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "signal",
+          "callType": "AUDIO",
+          "payload": {
+            "id": "c0a80101-0000-4000-8000-000000000003",
+            "kind": "ice",
+            "data": "{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"
+          }
+        },
+        {
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "signal",
+          "callType": "VIDEO",
+          "payload": {
+            "id": "c0a80101-0000-4000-8000-000000000004",
+            "kind": "video-state",
+            "data": "{\"enabled\":true}"
+          }
+        },
+        {
           "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "op": "connected",
           "callType": "AUDIO",
-          "startedAt": 1700000000100
+          "payload": { "startedAt": 1700000000100 }
         },
         {
-          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-          "origin": "a.example",
-          "ts": 1700000000000,
-          "from": { "account": "alice", "domain": "a.example" },
-          "to": { "account": "bob", "domain": "b.example" },
           "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "op": "video-upgraded",
           "callType": "VIDEO"
         },
         {
-          "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-          "origin": "a.example",
-          "ts": 1700000000000,
-          "from": { "account": "alice", "domain": "a.example" },
-          "to": { "account": "bob", "domain": "b.example" },
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "declined",
+          "callType": "AUDIO"
+        },
+        {
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "cancelled",
+          "callType": "AUDIO"
+        },
+        {
+          "callSid": "550e8400-e29b-41d4-a716-446655440000",
+          "op": "missed",
+          "callType": "AUDIO"
+        },
+        {
           "callSid": "550e8400-e29b-41d4-a716-446655440000",
           "op": "ended",
           "callType": "VIDEO",
-          "endReason": "completed"
+          "payload": { "endReason": "completed" }
         }
       ]
     },

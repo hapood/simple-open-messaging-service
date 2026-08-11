@@ -128,6 +128,7 @@ export class GroupService {
     name?: string;
     description?: string;
     avatar?: string;
+    membersCanInvite?: boolean;
   }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/group/update`,

@@ -5,7 +5,13 @@ import {
   MediaSaveCancelledError,
   MediaSaveService,
 } from './media-save.service';
-import { assetUrl, chatThumbnailUrl, isTauri, listenEvent } from './runtime';
+import {
+  assetUrl,
+  cachedChatThumbnailUrl,
+  chatThumbnailUrl,
+  isTauri,
+  listenEvent,
+} from './runtime';
 import {
   IMAGE_DOWNLOAD_ADAPTER,
   type ImageDownloadArtifact,
@@ -107,6 +113,16 @@ export class ImageDownloadService {
     const base = chatThumbnailUrl(media.src);
     const revision = this.thumbnailRevisions().get(media.src) ?? 0;
     if (revision === 0 || !base.includes('/chat-thumbnails/')) return base;
+    return `${base}${base.includes('?') ? '&' : '?'}v=${revision}`;
+  }
+
+  /** Returns only already-local bytes: an in-memory completed download or a native cache-only URL. */
+  cachedThumbnailUrl(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+    const loaded = this.task(media)?.blobUrl;
+    if (loaded) return loaded;
+    const base = cachedChatThumbnailUrl(media.src);
+    const revision = this.thumbnailRevisions().get(media.src) ?? 0;
+    if (!base || revision === 0) return base;
     return `${base}${base.includes('?') ? '&' : '?'}v=${revision}`;
   }
 

@@ -35,13 +35,23 @@ import { TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { uuid } from './lib/uuid';
 import { stringifyTextMessageContent } from '../../../shared/text-message-content';
+import { MaterialDialogComponent } from './components/material-dialog/material-dialog.component';
+import { ServerConfigPageComponent } from './pages/server-config-page/server-config-page.component';
+import { ServerConfigDialogService } from './services/server-config-dialog.service';
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, DebugLogFabComponent, UpdateBannerComponent],
+  imports: [
+    RouterOutlet,
+    DebugLogFabComponent,
+    UpdateBannerComponent,
+    MaterialDialogComponent,
+    ServerConfigPageComponent,
+  ],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
 export class AppComponent {
+  protected readonly serverConfigDialog = inject(ServerConfigDialogService);
   // Eagerly instantiate so their effects + listeners are live for the whole session.
   private readonly composerGeometry = inject(ComposerGeometryService);
   // Register the Android ACTION_SEND pull hook before any recipient UI exists. Payloads remain native-owned

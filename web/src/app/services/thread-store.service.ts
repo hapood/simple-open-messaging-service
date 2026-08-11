@@ -84,6 +84,13 @@ export class ThreadRepository {
     number,
     { threadId: number; seq: number; ts: number }
   >();
+  /** Unknown-thread NEW_MESSAGE signals are retained while the complete ConversationItem is fetched.
+   *  One request per thread is enough; a burst only replaces the pending signal with its newest seq. */
+  private readonly pendingUnknownMessages = new Map<
+    number,
+    { threadId: number; seq: number; ts: number }
+  >();
+  private readonly unknownThreadHydrations = new Map<number, Promise<void>>();
 
   /** A thread promoted to index 0 on the most recent update (to be FLIP-animated by the list), or null.
    *  Set in {@link applyItems} / {@link upsertThread} when a top-insert was requested; the list clears it
@@ -253,6 +260,8 @@ export class ThreadRepository {
     this.localStableReadSeq.clear();
     this._readCommitPending.set(new Set());
     this.bufferedNewMessage.clear();
+    this.pendingUnknownMessages.clear();
+    this.unknownThreadHydrations.clear();
     this._missedCursor.set(null);
     this._threadHwms.set({});
     this.readRevision = undefined;
@@ -412,6 +421,7 @@ export class ThreadRepository {
       description?: string;
       avatar?: string;
       dissolvedAt?: number | null;
+      membersCanInvite?: boolean;
     },
   ): void {
     let changed: ConversationItem | undefined;
@@ -425,6 +435,8 @@ export class ThreadRepository {
         if (patch.avatar !== undefined) group.avatar = patch.avatar;
         if (patch.dissolvedAt !== undefined)
           group.dissolvedAt = patch.dissolvedAt;
+        if (patch.membersCanInvite !== undefined)
+          group.membersCanInvite = patch.membersCanInvite;
         changed = { ...t, group };
         return changed;
       }),
@@ -645,6 +657,7 @@ export class ThreadRepository {
       pinned: d.pinned,
       pinnedAt: d.pinnedAt,
       clearedSeq: d.clearedSeq,
+      blocked: d.blocked,
       alias: d.alias,
     });
   }
@@ -677,7 +690,8 @@ export class ThreadRepository {
    * {@link mergeSummaryReadState} when the debounced missed-summary pull lands (the summary carries the
    * correct per-thread unread — 0 for the caller's own messages, since the send tx advanced `lastReadSeq`;
    * the real count for incoming). A redelivered/out-of-order seq is discarded by the per-thread HWM guard.
-   * If the thread isn't in the list yet (a brand-new conversation), reloads to fetch it.
+   * If the thread isn't in the list yet (a brand-new/restored conversation), fetches that thread's full
+   * ConversationItem directly. Concurrent signals for the same unknown thread share one request.
    */
   onNewMessage(msg: { threadId: number; seq: number; ts: number }): void {
     if (this._readCommitPending().has(msg.threadId)) {
@@ -693,6 +707,15 @@ export class ThreadRepository {
     // re-sort below is instant from the signal itself.
     this.setToAndPull({ threadId: msg.threadId, seq: msg.seq });
 
+    if (!this.applyNewMessageToKnownThread(msg)) this.hydrateUnknownThread(msg);
+  }
+
+  /** Apply recency/seq to an existing row. Returns false when metadata must be hydrated first. */
+  private applyNewMessageToKnownThread(msg: {
+    threadId: number;
+    seq: number;
+    ts: number;
+  }): boolean {
     let existed = false;
     let changed: ConversationItem | undefined;
     this._items.update((list) => {
@@ -700,6 +723,11 @@ export class ThreadRepository {
       if (idx === -1) return list;
       existed = true;
       const item = list[idx];
+      if (
+        typeof item.lastMessageSeq === 'number' &&
+        msg.seq <= item.lastMessageSeq
+      )
+        return list;
       // No live unread bump — `unreadCount` is server-authoritative (set by mergeSummaryReadState on the
       // missed-summary pull). Advance the public per-thread message HWM together with recency.
       changed = {
@@ -713,7 +741,45 @@ export class ThreadRepository {
       return next;
     });
     if (changed) void this.persistThread(changed);
-    if (!existed) this.load();
+    return existed;
+  }
+
+  /** Pull a complete row for a NEW_MESSAGE whose thread is absent locally. Upsert is idempotent by threadId,
+   *  so it is safe if the state-delta path inserts the same thread too. Replay the newest signal retained
+   *  during hydration so a later message cannot be missed by the response snapshot. */
+  private hydrateUnknownThread(msg: {
+    threadId: number;
+    seq: number;
+    ts: number;
+  }): void {
+    const pending = this.pendingUnknownMessages.get(msg.threadId);
+    if (!pending || msg.seq > pending.seq)
+      this.pendingUnknownMessages.set(msg.threadId, msg);
+    if (this.unknownThreadHydrations.has(msg.threadId)) return;
+
+    const sessionUserId = this.userService.sessionUserId();
+    let run!: Promise<void>;
+    run = (async () => {
+      try {
+        const res = await firstValueFrom(
+          this.userService.getThreadInfo({ threadId: msg.threadId }),
+        );
+        if (this.userService.sessionUserId() !== sessionUserId) return;
+        if (res.code !== 0 || !res.data) return;
+        this.markTopOnNextUpdate(msg.threadId);
+        this.upsertThread(res.data);
+        const latest = this.pendingUnknownMessages.get(msg.threadId);
+        if (latest) this.applyNewMessageToKnownThread(latest);
+      } catch {
+        // A later NEW_MESSAGE, STATE_REV_UPDATED, or reconnect HELLO retries/reconciles the thread.
+      } finally {
+        if (this.unknownThreadHydrations.get(msg.threadId) === run) {
+          this.pendingUnknownMessages.delete(msg.threadId);
+          this.unknownThreadHydrations.delete(msg.threadId);
+        }
+      }
+    })();
+    this.unknownThreadHydrations.set(msg.threadId, run);
   }
 
   private advanceThreadSeq(threadId: number, seq: number): boolean {
@@ -1234,6 +1300,7 @@ interface ThreadMetaPayload {
   pinned?: boolean;
   pinnedAt?: number | null;
   clearedSeq?: number | null;
+  blocked?: boolean;
   alias?: string | null;
 }
 

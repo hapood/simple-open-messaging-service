@@ -1,10 +1,4 @@
-import {
-  Component,
-  computed,
-  inject,
-  input,
-  output,
-} from '@angular/core';
+import { Component, computed, inject, input, output } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -15,7 +9,6 @@ import {
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { LinkCardService } from '../../../services/link-card.service';
-import { PopupType, RouteService } from '../../../services/route.service';
 import { openExternalUrl } from '../../../services/runtime';
 
 /**
@@ -39,7 +32,6 @@ export class TextRowComponent {
   private readonly downloads = inject(ImageDownloadService);
   private readonly mediaThreshold = inject(MediaSizeThresholdService);
   private readonly linkCards = inject(LinkCardService);
-  private readonly route = inject(RouteService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
   /** Group head (shows avatar + other party's name) / mid-group. */
@@ -86,16 +78,11 @@ export class TextRowComponent {
     };
   });
 
-  showOriginal(): void {
-    const card = this.linkCard();
-    if (card)
-      this.route.popupDlg(PopupType.LINK_ORIGINAL, {
-        text: this.data().text,
-        url: card.url,
-      });
-  }
-
-  async openLink(): Promise<void> {
+  /** Keep the URL as a real anchor for accessibility/copying, but route activation through the
+   * shared runtime helper so Tauri opens the system browser and web opens a noopener tab. */
+  async openLink(event: MouseEvent): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
     const card = this.linkCard();
     if (card) await openExternalUrl(card.url);
   }

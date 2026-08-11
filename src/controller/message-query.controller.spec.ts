@@ -137,7 +137,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         } as never,
         {} as never,
         {} as never,
-        {} as never,
         { assertCanSend, tick } as never,
       );
       const req = {
@@ -181,7 +180,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {
         assertP2PWritable: vi.fn().mockResolvedValue(undefined),
       } as never,
-      {} as never,
       {} as never,
       {} as never,
       { assertCanSend: vi.fn().mockResolvedValue(undefined) } as never,

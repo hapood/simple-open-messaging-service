@@ -273,6 +273,7 @@ export class UserController {
         // Per-user display state: mute (notification suppression), pin (top-tier ordering), and the
         // Per-user clear-history watermark (query-messages hides rows through this seq for this user).
         muted: p.muted,
+        blocked: p.blocked,
         pinned: p.pinned,
         pinnedAt: p.pinnedAt ?? null,
         clearedSeq: p.clearedSeq ?? null,
@@ -290,7 +291,7 @@ export class UserController {
         pinned: boolean;
         pinnedAt: Date | null;
         clearedSeq: number | null;
-        blocked?: boolean;
+        blocked: boolean;
         friendshipActive?: boolean;
         conversationState: 'ACTIVE' | 'READ_ONLY';
         alias: string | null;
@@ -304,7 +305,7 @@ export class UserController {
         const peerId = peerByThread.get(p.threadId);
         if (peerId !== undefined) {
           item.peerUser = userDict[peerId];
-          item.blocked = blockedPeers.has(peerId);
+          item.blocked = item.blocked || blockedPeers.has(peerId);
         }
       } else {
         const gu = groupByThread.get(p.threadId);
@@ -320,6 +321,7 @@ export class UserController {
               domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,
               dissolvedAt: gu.group?.dissolvedAt ?? null,
+              membersCanInvite: gu.group?.membersCanInvite ?? true,
               createdAt: gu.group?.createdAt ?? p.thread.createdAt,
               updatedAt: gu.group?.updatedAt ?? p.thread.updatedAt,
             }

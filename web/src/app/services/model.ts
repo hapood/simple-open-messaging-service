@@ -35,6 +35,7 @@ export type Message = Omit<S['MessageResponseDto'], 'contentType'> & {
 export type Group = S['GroupResponseDto'] & {
   profileRev: number;
   dissolvedAt?: number | null;
+  membersCanInvite?: boolean;
 };
 
 // peerUser/group are optional on the generated DTO (mutually exclusive by type), but templates branch on

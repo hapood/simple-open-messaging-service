@@ -8,10 +8,7 @@
 // breakpoint), so the narrow Tauri shell / Android WebView keeps identity in every auth state —
 // including the server-unreachable error, which has no form title to fall back on. Hidden on
 // desktop, where the full brand panel is visible (showing both would be redundant).
-.form-brand {
-  display: none;
-  margin-bottom: 24px;
-}
+@include auth-compact-brand;
 
 // Splash-continuous loading view (brand + Material indeterminate spinner), shown while /config is in
 // flight. Bridges the index.html app-splash and the settled form so the window never paints a blank or
@@ -22,6 +19,10 @@
   flex-direction: column;
   align-items: center;
   gap: 24px;
+
+  // Keep the Angular-owned continuation of the splash calm and neutral. Red is
+  // reserved for actual failures, not normal startup progress.
+  --mat-progress-spinner-active-indicator-color: var(--app-text-muted);
 
   .form-brand {
     margin-bottom: 0;
@@ -142,11 +143,3 @@
 // auth-footer block, so the password page's switch buttons sit in the SAME position as the OTP/QR
 // pages: outside the card, bottom-left.
 @include auth-footer;
-
-// Below the split breakpoint the side <app-auth-brand> panel hides itself, so the compact form-brand
-// takes over identity. Same threshold as the auth-shell mixin + auth-brand.component.scss.
-@media (max-width: 899px) {
-  .form-brand {
-    display: block;
-  }
-}

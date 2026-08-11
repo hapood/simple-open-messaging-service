@@ -383,8 +383,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.msgRepo,
   );
 
-  /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
-   *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
+  /** Conversation block state for both P2P and groups. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
   readonly friendshipEnded = computed(
     () =>
@@ -604,6 +603,10 @@ export class MessageThreadComponent implements OnDestroy {
       const ct = this.contentRef();
       const trd = this.userMsgTrd();
       if (!vp || !ct || !trd) return;
+      if (this.blockedPeer()) {
+        this.teardown();
+        return;
+      }
       if (this.currentTrdId === trd.id) return;
       this.teardown();
       this.initScroller(vp.nativeElement, ct.nativeElement, trd);
@@ -638,7 +641,7 @@ export class MessageThreadComponent implements OnDestroy {
         !this.chatboxDialogOpen() &&
         !this.selectionMode();
       if (!shouldShow) {
-        this.hideNativeComposer();
+        this.hideNativeComposer(this.friendshipEnded());
         return;
       }
       const theme = this.theme.effective();
@@ -755,7 +758,7 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
-  private hideNativeComposer(): void {
+  private hideNativeComposer(resetGeometry = false): void {
     this.nativeComposerBoundsObserver?.disconnect();
     this.nativeComposerBoundsObserver = undefined;
     if (this.nativeComposerBoundsFrame)
@@ -766,6 +769,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.nativeComposerLastBounds = undefined;
     const contextId = this.nativeComposerContextId;
     if (contextId !== null) this.nativeComposer.hide(contextId);
+    if (resetGeometry) this.nativeComposer.resetGeometry();
     this.nativeComposerContextId = null;
     this.nativeComposerThreadId = null;
   }
@@ -3454,30 +3458,15 @@ export class MessageThreadComponent implements OnDestroy {
     }
   }
 
-  /** Clear-history landed on the server: the now-empty view (filtered by the caller's clearedSeq watermark)
-   *  must reload from scratch. Data changed beneath a possibly-warm pane, so force a re-init regardless of
-   *  warmth ({@link reinit}, not {@link reset}). */
-  async onHistoryCleared(): Promise<void> {
-    const threadId = this.threadId();
-    if (threadId !== undefined) {
-      // Clear-for-me is a server-side watermark, not a Message delete. Purge the local mirror before
-      // re-init so cache-first startup cannot briefly remount pre-watermark rows while THREAD_META is
-      // still propagating the new clearedSeq into the conversation item.
-      await this.msgRepo.deleteByThread(threadId);
-    }
-    this.reinit();
-  }
-
-  /** Unblock the P2P peer from the blocked banner (mirrors the header menu's unblock path). */
+  /** Resume delivery for this conversation. */
   unblockPeer(): void {
     const trd = this.userMsgTrd();
-    const peerId = trd?.peerUser?.id;
-    if (peerId === undefined) return;
-    this.userService
-      .setBlock({ userId: peerId, block: false })
+    if (!trd) return;
+    this.msgService
+      .setBlocked({ threadId: trd.threadId, blocked: false })
       .subscribe((res) => {
         if (res.code === 0)
-          this.convList.applyThreadMeta(trd!.threadId, { blocked: false });
+          this.convList.applyThreadMeta(trd.threadId, { blocked: false });
       });
   }
 

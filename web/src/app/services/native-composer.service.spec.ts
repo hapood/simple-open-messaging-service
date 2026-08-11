@@ -127,7 +127,7 @@ describe('NativeComposerService global geometry', () => {
     expect(css('--soms-keyboard-height')).toBe('351px');
   });
 
-  it('keeps split emoji geometry cached across hide', () => {
+  it('keeps split emoji geometry cached across a temporary hide', () => {
     const service = TestBed.inject(NativeComposerService);
     service.show(context);
     inset.set(320);
@@ -151,5 +151,11 @@ describe('NativeComposerService global geometry', () => {
     expect(css('--soms-keyboard-height')).toBe('288px');
     expect(service.composerHeight()).toBe(64);
     expect(service.keyboardHeight()).toBe(288);
+
+    service.resetGeometry();
+    expect(css('--soms-composer-height')).toBe('0px');
+    expect(css('--soms-keyboard-height')).toBe('0px');
+    expect(service.composerHeight()).toBe(0);
+    expect(service.keyboardHeight()).toBe(0);
   });
 });

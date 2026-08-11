@@ -95,6 +95,7 @@ export class CallEventService implements OnDestroy {
         if (m.event === 'CALL_SIGNAL') {
           this.adapter.handleSignal(
             m.data as {
+              id: string;
               callSid: string;
               fromUserId: number;
               kind: string;

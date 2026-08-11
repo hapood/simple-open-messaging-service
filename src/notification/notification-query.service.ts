@@ -346,6 +346,7 @@ export class NotificationQueryService {
     active: Array<{
       threadId: number;
       muted: boolean;
+      blocked: boolean;
       lastReadSeq: number | null;
       thread: {
         type: 'P2P' | 'GROUP';
@@ -389,6 +390,7 @@ export class NotificationQueryService {
     // Active = threads with a latest message, minus P2P-blocked latest senders.
     const active = list.filter(
       (p) =>
+        !p.blocked &&
         latestIdByThread.has(p.threadId) &&
         !(
           p.thread.type === 'P2P' &&
@@ -409,6 +411,7 @@ export class NotificationQueryService {
     rows: Array<{
       threadId: number;
       muted: boolean;
+      blocked?: boolean;
       lastReadSeq: number | null;
       thread: {
         type: 'P2P' | 'GROUP';

@@ -45,13 +45,12 @@ export class S2sVerifyService {
    *  /s2s/v1/* raw-body capture hook in bootstrap.ts — re-serialized JSON would not match the digest. */
   signedRequest(req: FastifyRequest): SignedRequest {
     const requestTarget = req.url ?? '';
-    const queryIndex = requestTarget.indexOf('?');
     return {
       method: req.method.toUpperCase(),
-      path:
-        queryIndex === -1 ? requestTarget : requestTarget.slice(0, queryIndex),
-      query: queryIndex === -1 ? '?' : requestTarget.slice(queryIndex),
-      authority: (req.headers.host as string) ?? '',
+      url: new URL(
+        requestTarget,
+        `${req.protocol}://${(req.headers.host as string) ?? ''}`,
+      ),
       body: req.rawBody?.toString('utf8') ?? '',
     };
   }
@@ -66,6 +65,7 @@ export class S2sVerifyService {
   parseSigner(headers: OutboundSignatureHeaders): {
     keyId: string;
     domain: string;
+    expires: number;
   } {
     if (
       !this.signature.hasValidMetadata(headers, Math.floor(Date.now() / 1000))
@@ -76,17 +76,15 @@ export class S2sVerifyService {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    const keyIdMatch = (headers['signature-input'] ?? '').match(
-      /keyid="([^"]+)"/,
-    );
-    if (!keyIdMatch) {
+    const metadata = this.signature.parseMetadata(headers);
+    if (!metadata) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing keyid in Signature-Input',
+        'missing required Signature-Input metadata',
         HttpStatus.UNAUTHORIZED,
       );
     }
-    const keyId = keyIdMatch[1];
+    const { keyId, expires } = metadata;
     const domain = this.domainFromKeyId(keyId);
     if (!domain) {
       throw new BusinessException(
@@ -95,7 +93,7 @@ export class S2sVerifyService {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    return { keyId, domain };
+    return { keyId, domain, expires };
   }
 
   /**
@@ -129,7 +127,7 @@ export class S2sVerifyService {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    if (!this.signature.verifyWithKey(req, headers, publicKey)) {
+    if (!(await this.signature.verifyWithKey(req, headers, publicKey))) {
       throw new BusinessException(
         BusinessCode.FEDERATION_BAD_SIGNATURE,
         'signature verification failed',

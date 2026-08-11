@@ -67,9 +67,17 @@
       "method": "POST",
       "path": "/s2s/v1/call",
       "authentication": "pinned-http-message-signature",
-      "successStatus": [202],
+      "successStatus": [200],
       "requestMediaType": "application/json",
-      "requestSchema": "urn:soms:federation:v1:call"
+      "requestHeaders": [
+        "Content-Type",
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
+      "requestSchema": "urn:soms:federation:v1:call",
+      "responseEnvelope": true
     },
     {
       "id": "userProfile",

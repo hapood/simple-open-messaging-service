@@ -1,0 +1,23 @@
+{
+  "description": "Non-secret deterministic Federation v1 signed POST /s2s/v1/call vector. Never deploy this key.",
+  "privateKeyBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "publicKeyBase64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "request": {
+    "method": "POST",
+    "path": "/s2s/v1/call",
+    "query": "?",
+    "authority": "b.example",
+    "body": "{\"callSid\":\"550e8400-e29b-41d4-a716-446655440000\",\"op\":\"incoming\",\"callType\":\"AUDIO\",\"payload\":{\"fromAccount\":\"alice\",\"toAccount\":\"bob\"}}"
+  },
+  "created": 1700000000,
+  "expires": 1700000300,
+  "keyId": "a.example/key-1",
+  "headers": {
+    "content-type": "application/json",
+    "date": "Tue, 14 Nov 2023 22:13:20 GMT",
+    "content-digest": "sha-256=:7gcUlkOLCRxInjNiYIO3Jb6WiLdOzsyU8NP+84olqfE=:",
+    "signature-input": "sig1=(\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\"",
+    "signature": "sig1=:cfDpYAFvFvzr0K4tdD9KzsDzkfMFSWebkvlaPqZNUYF/8n51RS6TEHyfIKGy5DIrBpfNEbFEOgyELvGv3r6uDw==:"
+  },
+  "signatureBase": "\"@method\": POST\n\"@path\": /s2s/v1/call\n\"@query\": ?\n\"@authority\": b.example\n\"date\": Tue, 14 Nov 2023 22:13:20 GMT\n\"content-digest\": sha-256=:7gcUlkOLCRxInjNiYIO3Jb6WiLdOzsyU8NP+84olqfE=:\n\"@signature-params\": (\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\""
+}

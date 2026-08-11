@@ -7,9 +7,7 @@ import type { KeypairService } from './keypair.service.js';
 describe('SignatureService (RFC 9421 + Ed25519)', () => {
   const req = {
     method: 'POST',
-    path: '/s2s/v1/feed-revisions',
-    query: '?cursor=abc%2D1',
-    authority: 'peer.com',
+    url: new URL('https://peer.com/s2s/v1/feed-revisions?cursor=abc%2D1'),
     body: '{"hi":1}',
   };
 
@@ -23,82 +21,91 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     return { svc: new SignatureService(keypair), pub };
   }
 
-  it('contentDigest = sha-256 base64 of the body', () => {
+  it('contentDigest uses the RFC 9530 SHA-256 byte-sequence form', () => {
     expect(contentDigest('hello')).toBe(
-      'sha-256=' + createHash('sha256').update('hello').digest('base64'),
+      'sha-256=:' + createHash('sha256').update('hello').digest('base64') + ':',
     );
   });
 
-  it('round-trip: a signed request verifies with the correct public key', () => {
+  it('round-trip: a signed request verifies with the correct public key', async () => {
     const { svc, pub } = makeService();
-    const headers = svc.signOutbound(req);
+    const headers = await svc.signOutbound(req);
     expect(headers['signature-input']).toMatch(/^sig1=\("@method"/);
     expect(headers.signature).toMatch(/^sig1=:[^:]+:$/);
-    expect(svc.verifyWithKey(req, headers, pub)).toBe(true);
+    await expect(svc.verifyWithKey(req, headers, pub)).resolves.toBe(true);
   });
 
-  it('rejects a tampered body (content-digest mismatch)', () => {
+  it('rejects a tampered body (content-digest mismatch)', async () => {
     const { svc, pub } = makeService();
-    const headers = svc.signOutbound(req);
-    expect(svc.verifyWithKey({ ...req, body: '{"hi":2}' }, headers, pub)).toBe(
+    const headers = await svc.signOutbound(req);
+    await expect(
+      svc.verifyWithKey({ ...req, body: '{"hi":2}' }, headers, pub),
+    ).resolves.toBe(false);
+  });
+
+  it('rejects the wrong public key', async () => {
+    const { svc } = makeService();
+    const otherPub = ed25519.getPublicKey(ed25519.utils.randomSecretKey());
+    const headers = await svc.signOutbound(req);
+    await expect(svc.verifyWithKey(req, headers, otherPub)).resolves.toBe(
       false,
     );
   });
 
-  it('rejects the wrong public key', () => {
-    const { svc } = makeService();
-    const otherPub = ed25519.getPublicKey(ed25519.utils.randomSecretKey());
-    const headers = svc.signOutbound(req);
-    expect(svc.verifyWithKey(req, headers, otherPub)).toBe(false);
-  });
-
-  it('rejects a malformed Signature-Input', () => {
+  it('rejects a malformed Signature-Input', async () => {
     const { svc, pub } = makeService();
-    const headers = svc.signOutbound(req);
-    expect(
+    const headers = await svc.signOutbound(req);
+    await expect(
       svc.verifyWithKey(req, { ...headers, 'signature-input': 'garbage' }, pub),
-    ).toBe(false);
+    ).resolves.toBe(false);
   });
 
-  it('rejects a tampered authority (signature covers @authority)', () => {
+  it('rejects a tampered authority (signature covers @authority)', async () => {
     const { svc, pub } = makeService();
-    const headers = svc.signOutbound(req);
-    expect(
-      svc.verifyWithKey({ ...req, authority: 'evil.com' }, headers, pub),
-    ).toBe(false);
+    const headers = await svc.signOutbound(req);
+    await expect(
+      svc.verifyWithKey(
+        {
+          ...req,
+          url: new URL(req.url.toString().replace('peer.com', 'evil.com')),
+        },
+        headers,
+        pub,
+      ),
+    ).resolves.toBe(false);
   });
 
-  it('rejects a tampered query (signature covers the raw @query)', () => {
+  it('rejects a tampered query (signature covers the raw @query)', async () => {
     const { svc, pub } = makeService();
-    const headers = svc.signOutbound(req);
-    expect(
-      svc.verifyWithKey({ ...req, query: '?cursor=other' }, headers, pub),
-    ).toBe(false);
+    const headers = await svc.signOutbound(req);
+    const tampered = new URL(req.url);
+    tampered.search = '?cursor=other';
+    await expect(
+      svc.verifyWithKey({ ...req, url: tampered }, headers, pub),
+    ).resolves.toBe(false);
   });
 
-  it('rejects an expired signature', () => {
+  it('rejects an expired signature', async () => {
     const { svc, pub } = makeService();
     const now = Date.now();
+    const headers = await svc.signOutbound(req, new Date(now - 301_000));
     const spy = vi.spyOn(Date, 'now').mockReturnValue(now);
-    const headers = svc.signOutbound(req);
-    spy.mockReturnValue(now + 301_000);
-    expect(svc.verifyWithKey(req, headers, pub)).toBe(false);
+    await expect(svc.verifyWithKey(req, headers, pub)).resolves.toBe(false);
     spy.mockRestore();
   });
 
-  it('rejects a signature created too far in the future', () => {
+  it('rejects a signature created too far in the future', async () => {
     const { svc, pub } = makeService();
     const now = Date.now();
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
-    const headers = svc.signOutbound(req);
-    spy.mockReturnValue(now);
-    expect(svc.verifyWithKey(req, headers, pub)).toBe(false);
+    const headers = await svc.signOutbound(req, new Date(now + 61_000));
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    await expect(svc.verifyWithKey(req, headers, pub)).resolves.toBe(false);
     spy.mockRestore();
   });
 
-  it('rejects malformed timestamp metadata before crypto verification', () => {
+  it('rejects malformed timestamp metadata before crypto verification', async () => {
     const { svc, pub } = makeService();
-    const headers = svc.signOutbound(req);
+    const headers = await svc.signOutbound(req);
     const malformed = {
       ...headers,
       'signature-input': headers['signature-input'].replace(
@@ -106,6 +113,6 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
         ';created=1.5',
       ),
     };
-    expect(svc.verifyWithKey(req, malformed, pub)).toBe(false);
+    await expect(svc.verifyWithKey(req, malformed, pub)).resolves.toBe(false);
   });
 });

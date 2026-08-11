@@ -32,7 +32,7 @@ import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
- * FederatedPeer trust + from.domain==signer binding + captures req.rawBody, then sets req.peer.
+ * FederatedPeer trust + request integrity + captures req.rawBody, then sets req.peer.
  *
  * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
  * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
@@ -125,12 +125,17 @@ export class S2sController {
   }
 
   @Post('call')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async postCall(@Req() req: FastifyRequest): Promise<void> {
+  @HttpCode(HttpStatus.OK)
+  async postCall(@Req() req: FastifyRequest): Promise<null> {
     // handleCallFrame is awaitable + emits the frame to CallsService via emitAsync before returning,
-    // so the 202 serializes behind the callee-side mirror setup (the caller's first `offer` cannot
+    // so the 200 serializes behind the callee-side mirror setup (the caller's first `offer` cannot
     // win the race against the mirror it addresses).
-    await this.federation.handleCallFrame(req.body as S2SCallFrame);
+    await this.federation.handleCallFrame(
+      req.body as S2SCallFrame,
+      this.signerDomain(req),
+      req.peer!.signatureExpiresAtSec,
+    );
+    return null;
   }
 
   @Get('users/:account')
@@ -241,7 +246,7 @@ export class S2sController {
       })) {
         chunkHash.update(piece);
       }
-      chunkDigest = `sha-256=${chunkHash.digest('base64')}`;
+      chunkDigest = `sha-256=:${chunkHash.digest('base64')}:`;
     }
     // Single byte range → 206. Hijack the raw response: the byte-exact partial body MUST pass through
     // untouched (compress must not gzip it, interceptors must not touch it).

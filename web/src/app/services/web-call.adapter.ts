@@ -9,6 +9,7 @@ import type {
   CallSnapshotListener,
   CallSignalPayload,
 } from './call-adapter';
+import { uuid } from '../lib/uuid';
 
 interface IceServerResponse {
   urls: string | string[];
@@ -92,6 +93,7 @@ export function webReconnectDecision(
  */
 export class WebCallAdapter implements CallAdapter {
   private state: CallSnapshot;
+  private readonly seenSignalIds = new Set<string>();
   private listener?: CallSnapshotListener;
   private pc?: RTCPeerConnection;
   private localStream?: MediaStream;
@@ -109,8 +111,7 @@ export class WebCallAdapter implements CallAdapter {
   private acceptingLocally = false;
   private facingMode: 'user' | 'environment' = 'user';
   private readonly onPageHide = () => this.finishForLifecycle('completed');
-  private readonly onSessionEnding = () =>
-    this.finishForLifecycle('completed');
+  private readonly onSessionEnding = () => this.finishForLifecycle('completed');
 
   constructor(
     private readonly http: HttpClient,
@@ -119,10 +120,7 @@ export class WebCallAdapter implements CallAdapter {
   ) {
     this.state = { ...idle };
     window.addEventListener('pagehide', this.onPageHide);
-    window.addEventListener(
-      CALL_SESSION_ENDING_EVENT,
-      this.onSessionEnding,
-    );
+    window.addEventListener(CALL_SESSION_ENDING_EVENT, this.onSessionEnding);
   }
 
   setSnapshotListener(listener?: CallSnapshotListener): void {
@@ -306,11 +304,15 @@ export class WebCallAdapter implements CallAdapter {
   async handleSignal(signal: CallSignalPayload): Promise<void> {
     if (signal.callSid !== this.state.callSid) {
       if (this.state.phase !== 'idle') return;
+      if (this.seenSignalIds.has(signal.id)) return;
+      this.seenSignalIds.add(signal.id);
       // An offer commonly arrives immediately before CALL_EVENT{incoming}.
       if (signal.kind === 'offer') this.pendingOffer = signal.payload;
       else if (signal.kind === 'ice') this.pendingIce.push(signal.payload);
       return;
     }
+    if (this.seenSignalIds.has(signal.id)) return;
+    this.seenSignalIds.add(signal.id);
     if (signal.kind === 'offer') {
       if (!this.pc) this.pendingOffer = signal.payload;
       else await this.applyOffer(signal.payload);
@@ -710,6 +712,7 @@ export class WebCallAdapter implements CallAdapter {
     const { callSid, peerUserId } = this.state;
     if (!callSid || !peerUserId) return;
     await this.post('calls/signal', {
+      id: uuid(),
       callSid,
       toUserId: peerUserId,
       kind,
@@ -725,6 +728,7 @@ export class WebCallAdapter implements CallAdapter {
   private finish(): void {
     this.update({ phase: 'ended' });
     this.releaseMedia();
+    this.seenSignalIds.clear();
     this.state = { ...this.idle };
   }
 

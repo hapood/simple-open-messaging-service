@@ -59,6 +59,16 @@ export function crossesExpandedLayout(
   return previous !== next && (previous === 'expanded' || next === 'expanded');
 }
 
+/** Two-column layouts treat the active thread row as a toggle. Compact keeps the existing drill-in
+ *  behavior so tapping the selected row cannot unexpectedly dismiss the full-screen chat overlay. */
+export function shouldCloseChatOnThreadSelect(
+  mode: LayoutMode,
+  openThreadId: number | undefined,
+  selectedThreadId: number,
+): boolean {
+  return mode !== 'compact' && openThreadId === selectedThreadId;
+}
+
 /** Compact overlay transition state. `static` = medium/expanded (inline chat / side panel, no transform);
  *  `mobile-closed` = off-screen right + hidden; `mobile-open` = in place as a full-screen overlay. The
  *  animation-state names stay stable to avoid a noisy motion migration while the layout vocabulary changes. */
@@ -221,9 +231,19 @@ export class HomeShellComponent {
     }
   }
 
-  /** Open a conversation. The state machine sets chatThreadId (→ URL mirror + this shell's convList.open
-   *  effect via the A/B pane buffer) and closes any chat-scoped aside on a thread switch. */
+  /** Select a conversation. In a two-column layout the active thread row is a toggle, so selecting it
+   *  again closes the chatbox. Otherwise the state machine opens the thread as usual. */
   openChat(item: ConversationItem) {
+    if (
+      shouldCloseChatOnThreadSelect(
+        this.mode(),
+        this.navState.chatThreadId(),
+        item.threadId,
+      )
+    ) {
+      this.navState.closeChat();
+      return;
+    }
     this.navState.openChat(item.threadId);
   }
 

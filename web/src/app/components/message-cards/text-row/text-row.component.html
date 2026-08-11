@@ -136,7 +136,14 @@
       }
       <p class="msg-bubble-text">
         @if (linkTextParts(); as parts) {
-          {{ parts.before }}<span class="msg-preview-url">{{ parts.url }}</span
+          {{ parts.before
+          }}<a
+            class="msg-preview-url"
+            [href]="parts.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            (click)="openLink($event)"
+            >{{ parts.url }}</a
           >{{ parts.after }}
         } @else if (data().textSegments?.length) {
           @for (segment of data().textSegments; track $index) {
@@ -159,22 +166,6 @@
           data().time
         }}</span>
       </p>
-      @if (linkCard(); as card) {
-        <div class="msg-link-card">
-          <button type="button" class="msg-link-main" (click)="showOriginal()">
-            <span class="msg-link-icon">
-              <span class="msg-link-fallback" aria-hidden="true">↗</span>
-            </span>
-            <span class="msg-link-copy">
-              <strong>{{ card.rule.hostname }}</strong>
-              <span>{{ card.url }}</span>
-            </span>
-          </button>
-          <button type="button" class="msg-link-open" (click)="openLink()">
-            {{ 'linkCard.open' | transloco }}
-          </button>
-        </div>
-      }
       @if (statusTick()) {
         @if (!isFailed()) {
           <span

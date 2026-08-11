@@ -47,7 +47,7 @@
   display: flex;
   position: relative;
   isolation: isolate;
-  padding: 6px var(--app-space-4) 0;
+  padding: var(--chat-timeline-gap-item) var(--chat-timeline-inset-inline) 0;
   box-sizing: border-box;
   transition:
     opacity 0.3s ease,
@@ -62,10 +62,10 @@
   // follow-ups keep a small gap (WhatsApp-style compact but not touching). Each row's vertical footprint depends
   // only on whether IT is a group-start → appending a new row never changes the previous tail's height (0 reflow).
   &.msg-group-start {
-    padding-top: 14px;
+    padding-top: var(--chat-timeline-gap-group);
   }
   &.msg-grp-body {
-    padding-top: 3px;
+    padding-top: var(--chat-timeline-gap-compact);
   }
 }
 
@@ -74,24 +74,24 @@
 .msg-highlight-layer {
   position: absolute;
   z-index: -1;
-  top: var(--msg-highlight-top, 6px);
-  right: var(--app-space-4);
+  top: var(--msg-highlight-top, var(--chat-timeline-gap-item));
+  right: var(--chat-timeline-inset-inline);
   bottom: 0;
-  left: var(--app-space-4);
+  left: var(--chat-timeline-inset-inline);
   border-radius: var(--app-radius-md);
   pointer-events: none;
 }
 
 .msg-row.msg-other .msg-highlight-layer {
-  left: calc(var(--app-space-4) + 48px);
+  left: calc(var(--chat-timeline-inset-inline) + 48px);
 }
 
 .msg-row.msg-group-start {
-  --msg-highlight-top: 14px;
+  --msg-highlight-top: var(--chat-timeline-gap-group);
 }
 
 .msg-row.msg-grp-body {
-  --msg-highlight-top: 3px;
+  --msg-highlight-top: var(--chat-timeline-gap-compact);
 }
 
 .msg-failed-actions {
@@ -236,19 +236,27 @@
   }
   background: var(--bubble-bg);
   color: var(--bubble-text);
+  // On the sender/avatar side, only corners that face an adjacent same-sender bubble tighten:
+  // single = neither; head = bottom; body = both; tail = top. The far side stays fully rounded.
   &.msg-other.msg-head {
-    border-top-left-radius: 6px;
+    border-bottom-left-radius: 6px;
   }
   &.msg-other.msg-body {
     border-top-left-radius: 6px;
     border-bottom-left-radius: 6px;
   }
+  &.msg-other.msg-tail {
+    border-top-left-radius: 6px;
+  }
   &.msg-self.msg-head {
-    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
   }
   &.msg-self.msg-body {
     border-top-right-radius: 6px;
     border-bottom-right-radius: 6px;
+  }
+  &.msg-self.msg-tail {
+    border-top-right-radius: 6px;
   }
 }
 

@@ -20,8 +20,8 @@ import {
  *  never carries media. Validation mirrors the message.dto convention (class-validator + @ApiProperty). */
 
 /**
- * A callSid is a client-generated ULID (26 Crockford-base32 chars) or a UUIDv4 — the call's
- * idempotency key AND the address every signaling frame carries. The shape is enforced at the DTO
+ * A callSid is a client-generated canonical lowercase RFC UUID — the call's idempotency key AND the
+ * address every signaling frame carries. The shape is enforced at the DTO
  * boundary so a malformed/garbage id can never reach the in-memory map or become a clientMessageId.
  */
 export { CALL_SID_RE } from '../calls/federated-call-protocol.js';
@@ -32,11 +32,13 @@ export { CALL_SID_RE } from '../calls/federated-call-protocol.js';
 export class InitiateCallDto {
   @ApiProperty({
     description:
-      'Client-generated ULID/UUID — the call idempotency key + the address every signaling frame carries.',
+      'Client-generated canonical lowercase RFC UUID — the call idempotency key + the address every signaling frame carries.',
   })
   @IsString()
   @MaxLength(36)
-  @Matches(CALL_SID_RE, { message: 'callSid must be a ULID or UUID' })
+  @Matches(CALL_SID_RE, {
+    message: 'callSid must be a canonical lowercase RFC UUID',
+  })
   callSid!: string;
 
   @ApiProperty({
@@ -62,7 +64,9 @@ export class CallSidDto {
   @ApiProperty({ description: 'The callSid addressing the call.' })
   @IsString()
   @MaxLength(36)
-  @Matches(CALL_SID_RE, { message: 'callSid must be a ULID or UUID' })
+  @Matches(CALL_SID_RE, {
+    message: 'callSid must be a canonical lowercase RFC UUID',
+  })
   callSid!: string;
 }
 
@@ -106,10 +110,23 @@ export class EndCallDto extends CallSidDto {
 /** Relay one WebRTC signaling frame to the peer. The payload is opaque to the server (relayed verbatim,
  *  never persisted) — SDP offer/answer, an ICE candidate, or camera enabled state. */
 export class SignalCallDto {
+  @ApiProperty({
+    description:
+      'Endpoint-generated canonical UUID for end-to-end signal idempotency. Reuse it when retrying the same logical signal.',
+  })
+  @IsString()
+  @MaxLength(36)
+  @Matches(CALL_SID_RE, {
+    message: 'id must be a canonical lowercase RFC UUID',
+  })
+  id!: string;
+
   @ApiProperty({ description: 'The callSid this frame belongs to.' })
   @IsString()
   @MaxLength(36)
-  @Matches(CALL_SID_RE, { message: 'callSid must be a ULID or UUID' })
+  @Matches(CALL_SID_RE, {
+    message: 'callSid must be a canonical lowercase RFC UUID',
+  })
   callSid!: string;
 
   @ApiProperty({

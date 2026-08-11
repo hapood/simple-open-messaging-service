@@ -284,11 +284,18 @@ export class NativeComposerService {
     if (!this.supported || this.activeContextId === null) return;
     const contextId = this.activeContextId;
     // Clear ownership before calling native: hideComposer emits a zero-height geometry event
-    // synchronously on some WebViews. Reject that event so the last real measurement remains cached
-    // for the next chat and its first frame can use the measured height instead of falling back.
+    // synchronously on some WebViews. Reject that event so temporary hides keep the last real measurement.
     this.activeContextId = null;
     window.SomsShell!.hideComposer?.(contextId);
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
     this.event.set(null);
+  }
+
+  /** A retained non-friend thread has no composer to restore, so unlike temporary hides its geometry is zero. */
+  resetGeometry(): void {
+    this.composerHeight.set(0);
+    this.keyboardHeight.set(0);
+    document.documentElement.style.setProperty('--soms-composer-height', '0px');
+    document.documentElement.style.setProperty('--soms-keyboard-height', '0px');
   }
 }

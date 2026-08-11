@@ -7,7 +7,6 @@ import {
   DestroyRef,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -25,6 +24,8 @@ import { RouteService, RoutePage } from '../../services/route.service';
 import { isTauri, sessionClient } from '../../services/runtime';
 import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
 import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
+import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
+import { ServerConfigDialogService } from '../../services/server-config-dialog.service';
 
 type QrView = 'loading' | 'pending' | 'scanned' | 'error';
 
@@ -55,9 +56,9 @@ type QrView = 'loading' | 'pending' | 'scanned' | 'error';
     MatButtonModule,
     MatProgressBarModule,
     MatProgressSpinnerModule,
-    RouterLink,
     AuthViewportDirective,
     AuthMethodMenuComponent,
+    BrandLogoComponent,
   ],
   templateUrl: './qr-login-page.component.html',
   styleUrl: './qr-login-page.component.scss',
@@ -72,6 +73,7 @@ export class QrLoginPageComponent implements OnDestroy {
   private readonly auth = inject(AuthService);
   private readonly config = inject(ConfigService);
   private readonly routeService = inject(RouteService);
+  private readonly serverConfigDialog = inject(ServerConfigDialogService);
   /** Piped onto every qrCreate/qrPoll subscription so an in-flight response can't fire its `next` on a
    *  destroyed component (which would re-create poll/countdown intervals that ngOnDestroy already missed). */
   private readonly destroyRef = inject(DestroyRef);
@@ -257,6 +259,10 @@ export class QrLoginPageComponent implements OnDestroy {
     }
     this.qrRemainingPct.set(Math.min(100, (remaining / this.qrTotalMs) * 100));
     this.qrRemainingSec.set(Math.ceil(remaining / 1000));
+  }
+
+  openServerConfig(): void {
+    this.serverConfigDialog.open();
   }
 
   private stopCountdown(): void {

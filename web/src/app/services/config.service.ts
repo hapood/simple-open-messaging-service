@@ -1,6 +1,6 @@
-import { computed, inject, Injectable, signal } from '@angular/core';
+import { computed, Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, Subject, takeUntil } from 'rxjs';
 import { apiPrefix } from './constants';
 
 /** Mirror of the backend `LoginMode` (src/config/public-config.ts). 1=all, 2=app-otp+qr, 3=password-only. */
@@ -35,15 +35,19 @@ type ConfigRes = {
  */
 @Injectable({ providedIn: 'root' })
 export class ConfigService {
-  private readonly http = inject(HttpClient);
+  constructor(private readonly http: HttpClient) {}
 
   /** `null` until the first successful load (closed-by-default while unknown). */
   readonly registrationOpen = signal<boolean | null>(null);
   readonly loginMode = signal<LoginMode | null>(null);
   /** Flips to true once the first load attempt has settled (success or failure). */
   readonly loaded = signal(false);
+  /** The user explicitly stopped the current connection attempt. Kept separate from a network failure so
+   * the login surface can report an accurate idle state instead of claiming the server was unreachable. */
+  readonly cancelled = signal(false);
 
   private loadPromise: Promise<void> | null = null;
+  private cancelRequest = new Subject<void>();
   /** Monotonic request generation. A response from the previously configured server may arrive after
    *  reconfigure/reload; only the newest generation is allowed to publish signals. */
   private loadGeneration = 0;
@@ -70,11 +74,16 @@ export class ConfigService {
   ensureLoaded(): Promise<void> {
     if (this.loadPromise) return this.loadPromise;
     const generation = ++this.loadGeneration;
-    this.loadPromise = firstValueFrom(this.http.get<ConfigRes>(`${apiPrefix()}/config`))
+    this.loadPromise = firstValueFrom(
+      this.http
+        .get<ConfigRes>(`${apiPrefix()}/config`)
+        .pipe(takeUntil(this.cancelRequest)),
+    )
       .then((res) => {
         if (generation === this.loadGeneration && res.code === 0 && res.data) {
           this.registrationOpen.set(res.data.registrationOpen);
           this.loginMode.set(res.data.loginMode);
+          this.cancelled.set(false);
         }
       })
       .catch(() => {
@@ -95,10 +104,27 @@ export class ConfigService {
     // Invalidate the old generation before resetting its cached promise. Even though Fetch/IPC work may
     // continue underneath an unsubscribed consumer, its late result can no longer overwrite the new server.
     this.loadGeneration++;
+    this.cancelRequest.next();
+    this.cancelRequest.complete();
+    this.cancelRequest = new Subject<void>();
     this.loadPromise = null;
     this.loaded.set(false);
+    this.cancelled.set(false);
     this.registrationOpen.set(null);
     this.loginMode.set(null);
     return this.ensureLoaded();
+  }
+
+  /** Immediately unsubscribe the active HTTP request. The settled promise remains cached so guards and
+   * components cannot silently restart the cancelled connection; only an explicit retry/reload does. */
+  cancelLoad(): void {
+    if (!this.loadPromise || this.loaded()) return;
+    this.loadGeneration++;
+    this.cancelled.set(true);
+    this.loaded.set(true);
+    this.registrationOpen.set(null);
+    this.loginMode.set(null);
+    this.cancelRequest.next();
+    this.cancelRequest.complete();
   }
 }

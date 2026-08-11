@@ -93,6 +93,8 @@ export interface CbElement<T = unknown> {
    *  node + component instance. Used by reconcilePending to morph a pending send's status (sending→failed) and to
    *  re-group after a reorder, without the destroy+recreate that would break a FLIP move animation. */
   update(item: CbItem<T>, prev: CbItem<T> | null): void;
+  /** Paint-only grouping refresh when the newer neighbor changes. Implementations must keep offsetHeight stable. */
+  updateNext?(next: CbItem<T> | null): void;
   destroy(): void;
 }
 
@@ -653,7 +655,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // since tailAnchorId() is empty when nothing is mounted). animate=true: a new message is appearing.
     if (this.mounted.length === 0) {
       const anchor = this.captureAnchor();
-      const entry = this.createEntry(item, null, null, true);
+      const entry = this.createEntry(item, null, null, null, true);
       if (opts?.optimistic) entry.optimistic = true;
       else entry.transient = true;
       this.mounted.push(entry);
@@ -676,11 +678,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // New entry: prev = target item (older neighbor). DOM lands between target and successor (createEntry inserts
     // before anchorEl; no successor → append). cb-pending hides it until measurePending settles the real height;
     // animate=true so it plays cb-enter once measured (a viewport-level insert is a "new message appears" event).
-    const entry = this.createEntry(item, target.item, anchorEl, true);
+    const entry = this.createEntry(
+      item,
+      target.item,
+      successor?.item ?? null,
+      anchorEl,
+      true,
+    );
     if (opts?.optimistic)
       entry.optimistic = true; // pending send: in source.pending, returned by getNewer, atomic
     else entry.transient = true; // FAKE debug insert: viewport-only, never in the source
     this.mounted.splice(idx + 1, 0, entry);
+    target.vs.updateNext?.(item);
     if (successor) this.rebuildEntry(successor); // prev changed → recompute group-head/date (height reset, re-measured below)
 
     this.dirtyPrefix = true;
@@ -1320,6 +1329,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   ): void {
     if (merged.length === 0) return;
     if (side === 'newer') {
+      const oldTail = this.mounted[this.mounted.length - 1] ?? null;
       for (let i = 0; i < merged.length; i++) {
         const prev =
           i > 0
@@ -1328,16 +1338,26 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
               ? this.mounted[this.mounted.length - 1].item
               : null;
         this.mounted.push(
-          this.createEntry(merged[i], prev, undefined, animate),
+          this.createEntry(
+            merged[i],
+            prev,
+            merged[i + 1] ?? null,
+            undefined,
+            animate,
+          ),
         );
       }
+      oldTail?.vs.updateNext?.(merged[0]);
     } else {
       // init / older both prepend (when init, mounted is empty, anchorEl = null → appendChild)
       const anchorEl = this.mounted.length > 0 ? this.mounted[0].el : null;
+      const oldHead = this.mounted[0]?.item ?? null;
       const fresh: Entry<T>[] = [];
       for (let i = 0; i < merged.length; i++) {
         const prev = i > 0 ? merged[i - 1] : null;
-        fresh.push(this.createEntry(merged[i], prev, anchorEl)); // never animate prepended history
+        fresh.push(
+          this.createEntry(merged[i], prev, merged[i + 1] ?? oldHead, anchorEl),
+        ); // never animate prepended history
       }
       this.mounted.unshift(...fresh);
     }
@@ -1367,10 +1387,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private createEntry(
     item: CbItem<T>,
     prev: CbItem<T> | null,
+    next: CbItem<T> | null,
     anchorEl?: HTMLElement | null,
     animate = false,
   ): Entry<T> {
     const vs = this.createVs(item, prev);
+    vs.updateNext?.(next);
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
     if (anchorEl !== undefined && anchorEl !== null)
@@ -1420,7 +1442,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const idx = this.mounted.indexOf(entry);
     if (idx < 0) return;
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null; // older neighbor (one index lower)
+    const newNext = this.mounted[idx + 1]?.item ?? null;
     const newVs = this.createVs(newItem, newPrev);
+    newVs.updateNext?.(newNext);
     const newEl = newVs.el;
     newEl.dataset['cbId'] = String(newItem.id);
     this.content.insertBefore(newEl, entry.el);
@@ -1458,6 +1482,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
     e.vs.destroy();
     this.mounted.pop();
+    this.mounted[this.mounted.length - 1]?.vs.updateNext?.(null);
     this.dirtyPrefix = true;
     return true;
   }
@@ -1471,6 +1496,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
     e.vs.destroy();
     this.mounted.splice(i, 1);
+    this.mounted[i - 1]?.vs.updateNext?.(this.mounted[i]?.item ?? null);
+    const successor = this.mounted[i];
+    if (successor) {
+      const prev = i > 0 ? this.mounted[i - 1].item : null;
+      const next = this.mounted[i + 1]?.item ?? null;
+      successor.vs.update(successor.item, prev);
+      successor.vs.updateNext?.(next);
+      const height = successor.el.offsetHeight;
+      if (height > 0 && height !== successor.height) successor.height = height;
+    }
     this.dirtyPrefix = true;
     return true;
   }
@@ -2137,9 +2172,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           this.mounted.length > 0
             ? this.mounted[this.mounted.length - 1].item
             : null;
-        const entry = this.createEntry(p, tail, undefined, true);
+        const previousTail = this.mounted[this.mounted.length - 1] ?? null;
+        const entry = this.createEntry(p, tail, null, undefined, true);
         entry.optimistic = true;
         this.mounted.push(entry);
+        previousTail?.vs.updateNext?.(p);
       }
     }
   }
@@ -2250,12 +2287,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // cb-confirmed spinner→check choreography should play (reconcileOptimistic tags it). A plain incoming real (no
       // optimistic counterpart) DOES animate — enterAbove when a tail is present, else cb-enter from below. Flagged
       // resortTarget so reconcileOptimistic removes the optimistic duplicate and tags this real cb-confirmed.
-      const entry = this.createEntry(item, prev, anchorEl, !confirm);
+      const next = this.mounted[insertIdx]?.item ?? null;
+      const entry = this.createEntry(item, prev, next, anchorEl, !confirm);
       entry.enterAbove = enterAbove;
       if (confirm) {
         entry.resortTarget = true;
       }
       this.mounted.splice(insertIdx, 0, entry);
+      this.mounted[insertIdx - 1]?.vs.updateNext?.(item);
       insertIdx++;
     }
     this.dirtyPrefix = true;

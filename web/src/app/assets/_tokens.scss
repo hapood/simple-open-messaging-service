@@ -278,6 +278,16 @@ $app-gray-900: #111827;
   --chat-meta-on-media: #ffffff;
   --chat-date-bg: var(--im-date-pill-bg);
   --chat-date-text: var(--im-date-pill-text);
+  // Chat timeline spacing contract. Every measured row owns the whitespace BEFORE itself; rows never
+  // add trailing space that would have to be reassigned when a new message is appended. Message-card
+  // bodies keep their type-specific inset, while all timeline chrome consumes these shared outer gaps.
+  --chat-timeline-inset-inline: var(--app-space-4);
+  --chat-timeline-gap-item: 6px;
+  --chat-timeline-gap-compact: 3px;
+  // Edge-to-edge image/video cards read optically tighter than padded text bubbles at the same physical gap.
+  --chat-timeline-gap-compact-media: 5px;
+  --chat-timeline-gap-group: 14px;
+  --chat-timeline-gap-separator: 14px;
   // Timeline events are quieter than message bubbles but remain opaque so the
   // wallpaper cannot visually merge with their text.
   --chat-system-bg: color-mix(

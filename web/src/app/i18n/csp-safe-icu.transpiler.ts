@@ -25,7 +25,7 @@ import {
  * `DefaultTranspiler.transpile` (so ordinary `{{param}}` interpolation and the
  * object/array param shapes still work), then resolves any ICU arguments in the
  * result via {@link resolveIcu}. The five ICU strings currently in the app —
- * `group.members`, `chat.mediaCount.{image,video,audio}` —
+ * `group.members`, `chat.mediaCount.{file,image,video,audio}` —
  * all resolve correctly; any unsupported ICU construct is left untouched.
  */
 @Injectable()

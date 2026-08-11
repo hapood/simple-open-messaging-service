@@ -2,6 +2,7 @@
   <app-auth-brand aria-hidden="true"></app-auth-brand>
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
+    <app-brand-logo class="form-brand" [size]="80" />
     <div class="qr-card">
       <h1 class="qr-title">
         <span class="qr-title-lead">{{ 'auth.qrTitleLead' | transloco }}</span>
@@ -126,14 +127,14 @@
         }
       </div>
       @if (isTauri()) {
-        <a mat-button class="server-link" routerLink="/config" replaceUrl>
+        <button mat-button class="server-link" type="button" (click)="openServerConfig()">
           <app-icon
             matButtonIcon
             [type]="AppIcon.SETTINGS"
             [style]="{ width: '18px', height: '18px' }"
           />
           {{ 'serverConfig.entry' | transloco }}
-        </a>
+        </button>
       }
     </div>
   </main>

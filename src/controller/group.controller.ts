@@ -283,6 +283,17 @@ export class GroupController {
     // Load the group's `!`-User for name/avatar to embed in the invite cards.
     const trd = await this.groupService.findGroupByThreadId(threadId);
     const gu = trd?.groupUser;
+    const role = req.threadAccess!.participant.role;
+    if (
+      gu?.group?.membersCanInvite === false &&
+      role !== GroupRole.OWNER &&
+      role !== GroupRole.ADMIN
+    ) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'only group managers may invite',
+      );
+    }
     const { invited, skipped } = await this.writeInvites(
       inviter,
       {
@@ -322,6 +333,7 @@ export class GroupController {
       avatar: gu.avatar,
       profileRev: gu.profileRev,
       description: gu.bio,
+      membersCanInvite: gu.group?.membersCanInvite ?? true,
       // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group so the
       // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).
       domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
@@ -546,9 +558,12 @@ export class GroupController {
       name: dto.name,
       description: dto.description,
       avatar: dto.avatar,
+      membersCanInvite: dto.membersCanInvite,
     });
     // updated is the `!`-User row; description lives in User.bio. Signal-only: the client receives
     // { threadId } and HTTP-pulls /group/info to refresh (GroupService.updateGroup bumped profileRev).
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {});
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {
+      membersCanInvite: dto.membersCanInvite,
+    });
   }
 }

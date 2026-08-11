@@ -30,6 +30,8 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { NativeVideoService } from '../../../services/native-video.service';
 
+const GALLERY_CARD_W = 280;
+
 /**
  * Unified media message row (IMAGE / VIDEO / AUDIO).
  *
@@ -103,12 +105,69 @@ export class MediaRowComponent {
   private readonly displayedImages = computed(() => {
     const images = this.data().images ?? [];
     if (this.data().contentType !== 'GALLERY') return images;
-    const cover = images.find((image) => image.kind === 'image') ?? images[0];
+    // Prefer the first image as the group cover; a file-only group falls back to its first file icon.
+    // Oversized images remain this chosen cover but the size gate below paints the default image icon.
+    const cover =
+      images.find((image) => image.kind === 'image') ??
+      images.find((image) => image.kind === 'file') ??
+      images[0];
     return cover ? [cover] : [];
+  });
+  readonly galleryIcons = computed(() => {
+    const items = this.data().images ?? [];
+    const threshold = this.threshold();
+    this.downloads.tasks();
+    this.downloads.thumbnailVersion();
+    const visible = items.length > 6 ? items.slice(0, 5) : items.slice(0, 6);
+    const icons: Array<{
+      kind: AlbumImage['kind'] | 'more';
+      index: number;
+      localPreview: boolean;
+      thumbnail: string;
+    }> = visible.map((item, index) => {
+      const task = this.downloads.task(item);
+      const localPreview =
+        item.src.startsWith('blob:') || item.src.startsWith('data:');
+      const oversized =
+        item.kind === 'image' &&
+        !localPreview &&
+        threshold > 0 &&
+        (item.size ?? 0) > threshold &&
+        !this.thresholdSvc.isLoaded(this.mediaKey(item, index)) &&
+        !task?.blobUrl;
+      return {
+        kind: item.kind,
+        index,
+        localPreview,
+        thumbnail:
+          item.kind !== 'image'
+            ? ''
+            : oversized
+              ? this.downloads.cachedThumbnailUrl(item)
+              : this.downloads.thumbnailUrl(item),
+      };
+    });
+    if (items.length > 6)
+      icons.push({
+        kind: 'more',
+        index: 5,
+        localPreview: false,
+        thumbnail: '',
+      });
+    return icons;
+  });
+  readonly galleryOpenIndex = computed(() => {
+    const images = this.data().images ?? [];
+    const firstImage = images.findIndex((item) => item.kind === 'image');
+    return firstImage >= 0 ? firstImage : 0;
   });
   private readonly layout = computed(() => layoutAlbum(this.displayedImages()));
   readonly totalH = computed(() => this.layout().totalH);
-  readonly containerW = computed(() => this.layout().containerW);
+  readonly containerW = computed(() =>
+    this.data().contentType === 'GALLERY'
+      ? GALLERY_CARD_W
+      : this.layout().containerW,
+  );
 
   /** Per-cell render data. `kind` drives the inner content branch (background-image / <video> / placeholder). */
   readonly cells = computed(() => {
@@ -183,6 +242,19 @@ export class MediaRowComponent {
     image.hidden = true;
     console.warn('[video-thumbnail] message card load failed');
   }
+
+  onGalleryThumbnailLoad(
+    event: Event,
+    index: number,
+    markLoaded: boolean,
+  ): void {
+    (event.currentTarget as HTMLImageElement).style.opacity = '1';
+    if (markLoaded) this.onImageLoad(index);
+  }
+
+  onGalleryThumbnailError(event: Event): void {
+    (event.currentTarget as HTMLImageElement).style.opacity = '0';
+  }
   onVideoError(i: number): void {
     this.unplayableVideos.update((s) => {
       if (s.has(i)) return s;
@@ -232,6 +304,13 @@ export class MediaRowComponent {
     });
   }
 
+  onGalleryClick(): void {
+    this.openImage.emit({
+      images: this.data().images ?? [],
+      index: this.galleryOpenIndex(),
+    });
+  }
+
   onImageLoad(index: number): void {
     const media = this.data().images?.[index];
     if (!media) return;
@@ -274,7 +353,13 @@ export class MediaRowComponent {
       else if (m.kind === 'video') videos++;
       else if (m.kind === 'audio') audios++;
     }
-    return { images, videos, audios, time: this.data().time };
+    return {
+      images,
+      videos,
+      audios,
+      files: imgs.length,
+      time: this.data().time,
+    };
   });
 
   readonly formatDuration = formatDuration;

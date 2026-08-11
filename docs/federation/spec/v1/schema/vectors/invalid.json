@@ -84,11 +84,6 @@
       "name": "connected call requires startedAt",
       "schema": "urn:soms:federation:v1:call",
       "value": {
-        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "origin": "a.example",
-        "ts": 1700000000000,
-        "from": { "account": "alice", "domain": "a.example" },
-        "to": { "account": "bob", "domain": "b.example" },
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "connected",
         "callType": "AUDIO"
@@ -98,11 +93,6 @@
       "name": "video upgrade must carry VIDEO type",
       "schema": "urn:soms:federation:v1:call",
       "value": {
-        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "origin": "a.example",
-        "ts": 1700000000000,
-        "from": { "account": "alice", "domain": "a.example" },
-        "to": { "account": "bob", "domain": "b.example" },
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "video-upgraded",
         "callType": "AUDIO"
@@ -112,15 +102,75 @@
       "name": "call frame rejects unknown fields",
       "schema": "urn:soms:federation:v1:call",
       "value": {
-        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "origin": "a.example",
-        "ts": 1700000000000,
-        "from": { "account": "alice", "domain": "a.example" },
-        "to": { "account": "bob", "domain": "b.example" },
         "callSid": "550e8400-e29b-41d4-a716-446655440000",
         "op": "incoming",
         "callType": "AUDIO",
+        "payload": { "fromAccount": "alice", "toAccount": "bob" },
         "extra": true
+      }
+    },
+    {
+      "name": "incoming call rejects ended-only field",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "incoming",
+        "callType": "AUDIO",
+        "payload": { "endReason": "completed" }
+      }
+    },
+    {
+      "name": "signal call rejects connected-only field",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "signal",
+        "callType": "AUDIO",
+        "payload": {
+          "id": "c0a80101-0000-4000-8000-000000000001",
+          "kind": "offer",
+          "data": "v=0"
+        },
+        "startedAt": 1700000000100
+      }
+    },
+    {
+      "name": "ended call rejects signal-only fields",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "ended",
+        "callType": "AUDIO",
+        "payload": { "kind": "ice", "data": "{}" }
+      }
+    },
+    {
+      "name": "ended call requires an explicit end reason",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "callSid": "550e8400-e29b-41d4-a716-446655440000",
+        "op": "ended",
+        "callType": "AUDIO"
+      }
+    },
+    {
+      "name": "callSid rejects ULID",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "callSid": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "op": "incoming",
+        "callType": "AUDIO",
+        "payload": { "fromAccount": "alice", "toAccount": "bob" }
+      }
+    },
+    {
+      "name": "callSid rejects UUID version zero",
+      "schema": "urn:soms:federation:v1:call",
+      "value": {
+        "callSid": "550e8400-e29b-01d4-a716-446655440000",
+        "op": "incoming",
+        "callType": "AUDIO",
+        "payload": { "fromAccount": "alice", "toAccount": "bob" }
       }
     },
     {

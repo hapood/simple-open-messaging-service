@@ -49,7 +49,7 @@ import {
   ForwardBundleService,
   type ForwardWireClosure,
 } from '../forward/forward-bundle.service.js';
-import { SignatureService } from './signature.service.js';
+import { contentDigest, SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -86,6 +86,8 @@ import {
 } from '../calls/call-content.js';
 import {
   assertS2SCallFrame,
+  type CallSignalPayload,
+  type CallSignalKind,
   type S2SCallFrame,
   type S2SCallOp,
 } from '../calls/federated-call-protocol.js';
@@ -94,6 +96,7 @@ export type {
   S2SCallFrame,
   S2SCallOp,
 } from '../calls/federated-call-protocol.js';
+
 import {
   FederationIdentityService,
   type SignedFederationIdentity,
@@ -223,6 +226,19 @@ export interface S2SAddress {
   account: string;
   domain: string;
 }
+
+type OutboundCallFrameParams = {
+  fromLocalUserId: number;
+  to: S2SAddress;
+  callSid: string;
+  op: S2SCallOp;
+  callType: 'AUDIO' | 'VIDEO';
+  endReason?: 'completed' | 'timeout' | 'failed';
+  kind?: CallSignalKind;
+  payload?: string;
+  signalId?: string;
+  startedAt?: number;
+};
 
 export interface PeerResponseToken {
   domain: string;
@@ -367,6 +383,18 @@ export class FederationService {
   /** Serializes runFileSyncBatch per batchId so the fire-and-forget pull driver and an admin retry
    *  never double-drive the same batch (and never reach promote concurrently for one). */
   private readonly batchSyncLocks = new KeyedMutex();
+  /** Serializes inbound frames that may establish the same call binding, closing concurrent incoming races. */
+  private readonly callInboundLocks = new KeyedMutex();
+  /** Per-call lifecycle tail. State-changing HTTP requests are emitted in creation order; signal
+   *  frames wait for the current lifecycle tail but do not serialize the ICE burst with each other. */
+  private readonly callLifecycleTails = new Map<string, Promise<void>>();
+  /** In-flight SDP answers. `connected` must not overtake the answer it confirms; ICE remains parallel. */
+  private readonly callAnswerDeliveries = new Map<string, Set<Promise<void>>>();
+  /** Last failed lifecycle op per call. A dependent op cannot overtake it; the same op may retry. */
+  private readonly callLifecycleFailures = new Map<
+    string,
+    { op: S2SCallOp; error: unknown }
+  >();
 
   constructor(
     private readonly database: DatabaseService,
@@ -1069,6 +1097,7 @@ export class FederationService {
         avatar: tables.user.avatar,
         profileRev: tables.user.profileRev,
         rosterRev: tables.group.rosterRev,
+        membersCanInvite: tables.group.membersCanInvite,
         dissolvedAt: tables.group.dissolvedAt,
         ownerId: tables.group.ownerId,
       })
@@ -1151,6 +1180,7 @@ export class FederationService {
               state.dissolvedAt === null &&
               roster.some((m) => m.domain === peerDomain),
             dissolved: state.dissolvedAt !== null,
+            membersCanInvite: state.membersCanInvite,
             owner: {
               account: owner.account,
               domain: normalizeDomain(owner.domain),
@@ -1384,11 +1414,9 @@ export class FederationService {
     peerDomain: string,
   ): Promise<void> {
     const operationStartedAt = new Date();
-    const headers = this.signature.signOutbound({
+    const headers = await this.signature.signOutbound({
       method: 'POST',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body,
     });
     let res: Response;
@@ -1412,6 +1440,21 @@ export class FederationService {
     const status = res.status;
     if (status === 200 || status === 202 || status === 204 || status === 409) {
       await this.markContactSuccess(peerDomain); // delivered or idempotent → advance liveness
+      if (status === 200 || status === 202) {
+        const envelope = (await res.json().catch(() => undefined)) as
+          | { code?: unknown; data?: unknown }
+          | undefined;
+        if (envelope?.code !== 0) {
+          throw new S2sResponseError(
+            `S2S POST to ${peerDomain} returned business code ${String(envelope?.code)}`,
+            status,
+            typeof envelope?.code === 'number'
+              ? envelope.code
+              : BusinessCode.FEDERATION_MALFORMED,
+            envelope?.data,
+          );
+        }
+      }
       return;
     }
     // Trust/server failure (401/403 = signature/trust rejected; 5xx = peer broken) → demote so the
@@ -1443,11 +1486,9 @@ export class FederationService {
     const operationStartedAt = new Date();
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}${path}`);
-    const headers = this.signature.signOutbound({
+    const headers = await this.signature.signOutbound({
       method: 'GET',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body: '', // GET — the content-digest covers sha256("")
     });
     let res: Response;
@@ -1879,11 +1920,9 @@ export class FederationService {
       localStartChangeId,
     );
     const body = JSON.stringify(claim);
-    const headers = this.signature.signOutbound({
+    const headers = await this.signature.signOutbound({
       method: 'POST',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body,
     });
     let res: Response;
@@ -1921,11 +1960,9 @@ export class FederationService {
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}/s2s/v1/identity`);
     url.searchParams.set('nonce', nonce);
-    const headers = this.signature.signOutbound({
+    const headers = await this.signature.signOutbound({
       method: 'GET',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body: '',
     });
     let res: Response;
@@ -2043,11 +2080,9 @@ export class FederationService {
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/identity`);
     url.searchParams.set('nonce', nonce);
-    const headers = this.signature.signOutbound({
+    const headers = await this.signature.signOutbound({
       method: 'GET',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body: '',
     });
     let res: Response;
@@ -2204,36 +2239,113 @@ export class FederationService {
   /** POST /s2s/v1/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
    *  to the peer server hosting the call's other participant. Awaitable so the caller's `initiate` can
    *  detect a ring failure (→ the `unreachable` terminal bubble). The persisted CALL record rides the
-   *  pull-based message sync, NOT this frame. `peerDomain` is the foreign participant's home domain. */
+   *  pull-based message sync, NOT this frame. `peerDomain` is the server hosting the foreign participant. */
   async sendCallFrame(
-    params: {
-      fromLocalUserId: number;
-      to: S2SAddress;
-      callSid: string;
-      op: S2SCallOp;
-      callType: 'AUDIO' | 'VIDEO';
-      endReason?: 'completed' | 'timeout' | 'failed';
-      kind?: S2SCallFrame['kind'];
-      payload?: string;
-      startedAt?: number;
-    },
+    params: OutboundCallFrameParams,
     peerDomain: string,
   ): Promise<void> {
-    const from = await this.requireLocalUser(params.fromLocalUserId);
-    const frame: S2SCallFrame = {
-      id: mintUlid(),
-      origin: this.config.domain,
-      ts: Date.now(),
-      from: this.localAddress(from.account),
-      to: { account: params.to.account, domain: params.to.domain },
+    const queueKey = `${peerDomain}\u0000${params.callSid}`;
+    const previous = this.callLifecycleTails.get(queueKey);
+    const failed = this.callLifecycleFailures.get(queueKey);
+    if (params.op === 'incoming') {
+      this.callLifecycleFailures.delete(queueKey);
+    } else if (failed && params.op !== failed.op) {
+      throw failed.error;
+    }
+    if (params.op === 'signal') {
+      await previous;
+      const delivery = this.postCallFrame(params, peerDomain);
+      if (params.kind !== 'answer') return delivery;
+      const pending = this.callAnswerDeliveries.get(queueKey) ?? new Set();
+      pending.add(delivery);
+      this.callAnswerDeliveries.set(queueKey, pending);
+      try {
+        await delivery;
+      } finally {
+        pending.delete(delivery);
+        if (pending.size === 0) this.callAnswerDeliveries.delete(queueKey);
+      }
+      return;
+    }
+
+    const lifecyclePredecessor =
+      failed?.op === params.op
+        ? (previous ?? Promise.resolve()).catch(() => undefined)
+        : (previous ?? Promise.resolve());
+    const pendingAnswers =
+      params.op === 'connected'
+        ? [...(this.callAnswerDeliveries.get(queueKey) ?? [])]
+        : [];
+    const predecessor = Promise.all([
+      lifecyclePredecessor,
+      ...pendingAnswers,
+    ]).then(() => undefined);
+    const current = predecessor.then(async () => {
+      try {
+        await this.postCallFrame(params, peerDomain);
+        this.callLifecycleFailures.delete(queueKey);
+      } catch (error) {
+        this.callLifecycleFailures.set(queueKey, { op: params.op, error });
+        throw error;
+      }
+    });
+    this.callLifecycleTails.set(queueKey, current);
+    try {
+      await current;
+    } finally {
+      if (this.callLifecycleTails.get(queueKey) === current) {
+        this.callLifecycleTails.delete(queueKey);
+      }
+    }
+  }
+
+  private async postCallFrame(
+    params: OutboundCallFrameParams,
+    peerDomain: string,
+  ): Promise<void> {
+    const base = {
       callSid: params.callSid,
-      op: params.op,
       callType: params.callType,
     };
-    if (params.endReason !== undefined) frame.endReason = params.endReason;
-    if (params.kind !== undefined) frame.kind = params.kind;
-    if (params.payload !== undefined) frame.payload = params.payload;
-    if (params.startedAt !== undefined) frame.startedAt = params.startedAt;
+    let frame: S2SCallFrame;
+    if (params.op === 'incoming') {
+      const from = await this.requireLocalUser(params.fromLocalUserId);
+      frame = {
+        ...base,
+        op: 'incoming',
+        payload: {
+          fromAccount: from.account,
+          toAccount: params.to.account,
+        },
+      };
+    } else if (params.op === 'signal') {
+      const signalPayload = {
+        id: params.signalId!,
+        kind: params.kind!,
+        data: params.payload!,
+      };
+      frame = {
+        ...base,
+        op: 'signal',
+        payload: signalPayload as CallSignalPayload,
+      };
+    } else if (params.op === 'connected') {
+      frame = {
+        ...base,
+        op: 'connected',
+        payload: { startedAt: params.startedAt! },
+      };
+    } else if (params.op === 'ended') {
+      frame = {
+        ...base,
+        op: 'ended',
+        payload: { endReason: params.endReason! },
+      };
+    } else if (params.op === 'video-upgraded') {
+      frame = { ...base, op: 'video-upgraded', callType: 'VIDEO' };
+    } else {
+      frame = { ...base, op: params.op };
+    }
     await this.postSigned('/s2s/v1/call', JSON.stringify(frame), peerDomain);
   }
 
@@ -2309,34 +2421,80 @@ export class FederationService {
    *  LOCAL ids (the sender → a foreigner stub; the recipient → a local userId) + the LOCAL P2P thread,
    *  then hands the frame to CallsService via `emitAsync('call.frame.inbound')` — NOT a direct injection
    *  (the calls layer injects FederationService for outbound; a back-edge would cycle). `emitAsync` (not
-   *  `emit`) so the 202 ACK serializes BEHIND the callee-side mirror setup: the caller's first `offer`
-   *  signal must not race ahead of the mirror it addresses.
+   *  `emit`) so the 200 response serializes after callee-side state setup: the caller's first `offer`
+   *  signal must not race ahead of the call it addresses.
    *
-   *  Quota: `peek 'requests'` for the initiating `incoming` op ONLY (a call is one unit; an ICE burst
-   *  must not exhaust the budget). The `tick` happens in CallsService AFTER the in-memory mirror-state
-   *  guard, so a retried `incoming` (fresh ULID) burns no quota. No (origin, opId) dedup table — the
+   *  The verified signer domain supplies the sender's server identity; the body carries only account
+   *  names because the receiver domain is this server. Quota: `peek 'requests'` for the initiating
+   *  `incoming` op ONLY (a call is one unit; an ICE burst
+   *  must not exhaust the budget). The `tick` happens in CallsService AFTER the in-memory call-state
+   *  guard, so a retried `incoming` (fresh UUID) burns no quota. No persistent callSid table — the
    *  receiver's call state machine + the callSid-keyed bubble write make replays idempotent. The
    *  not-found / not-friends rejects use HTTP 404 (NOT in postSigned's success- or demote-sets → the
    *  sender throws without demoting a healthy peer). */
-  async handleCallFrame(body: unknown): Promise<void> {
-    assertS2SCallFrame(body, this.config.domain);
-    if (body.op === 'incoming') {
-      await this.quota.peek(body.origin, 'requests');
+  async handleCallFrame(
+    body: unknown,
+    peerDomain: string,
+    signatureExpiresAtSec: number,
+  ): Promise<void> {
+    assertS2SCallFrame(body);
+    if (body.op !== 'incoming') {
+      await this.eventEmitter.emitAsync('call.frame.inbound', {
+        peerDomain,
+        signatureExpiresAtSec,
+        frame: body,
+      });
+      return;
     }
-    if (body.op === 'signal') {
-      // Per-frame tick against the dedicated `signals` budget (a 429 here throws without demoting a
-      // healthy peer → the caller's relay fails closed; the client re-gathers ICE). No peek — the tick's
-      // atomic check+increment is authoritative.
-      await this.quota.tick(body.origin, 'signals');
+    await this.callInboundLocks.runExclusive(
+      `${peerDomain}\u0000${body.callSid}`,
+      async () =>
+        this.handleInboundIncoming(body, peerDomain, signatureExpiresAtSec),
+    );
+  }
+
+  private async handleInboundIncoming(
+    body: Extract<S2SCallFrame, { op: 'incoming' }>,
+    peerDomain: string,
+    signatureExpiresAtSec: number,
+  ): Promise<void> {
+    const preflight = await this.eventEmitter.emitAsync(
+      'call.frame.incoming.preflight',
+      { peerDomain, frame: body },
+    );
+    if (preflight?.some((handled) => handled === true)) return;
+    const terminal = await this.database.db.query.callTombstone.findFirst({
+      where: and(
+        eq(tables.callTombstone.peerDomain, peerDomain),
+        eq(tables.callTombstone.callSid, body.callSid),
+        gt(tables.callTombstone.expiresAt, new Date()),
+      ),
+      columns: { terminalOp: true },
+    });
+    if (terminal) {
+      throw new BusinessException(
+        terminal.terminalOp === 'cancelled'
+          ? BusinessCode.CALL_CANCELLED
+          : BusinessCode.CALL_TERMINATED,
+        terminal.terminalOp === 'cancelled'
+          ? 'call was already cancelled'
+          : 'call was already terminated',
+        HttpStatus.OK,
+      );
     }
-    const from = this.requireS2SAddress(body.from);
-    const to = this.requireS2SAddress(body.to);
-    const peerStubId = await this.ensureForeignUser(from.account, from.domain);
-    const localUserId = await this.findLocalUserIdByAddress(to);
+    await this.quota.peek(peerDomain, 'requests');
+    const peerStubId = await this.ensureForeignUser(
+      body.payload.fromAccount,
+      peerDomain,
+    );
+    const localUserId = await this.findLocalUserIdByAddress({
+      account: body.payload.toAccount,
+      domain: this.config.domain,
+    });
     if (localUserId === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `local user ${to.account} not found`,
+        `local user ${body.payload.toAccount} not found`,
       );
     }
     const threadId = await this.participantService.findP2PThreadBetween(
@@ -2352,6 +2510,8 @@ export class FederationService {
     await this.eventEmitter.emitAsync('call.frame.inbound', {
       localUserId,
       peerStubId,
+      peerDomain,
+      signatureExpiresAtSec,
       threadId,
       frame: body,
     });
@@ -3334,7 +3494,7 @@ export class FederationService {
           status.threadId,
         );
       for (const recipient of recipients) {
-        if (recipient.userId !== status.actorUserId)
+        if (!recipient.blocked && recipient.userId !== status.actorUserId)
           this.sse.onNewMessage(
             recipient.userId,
             status.threadId,
@@ -3475,6 +3635,7 @@ export class FederationService {
   }> {
     const active = body.active;
     const dissolved = body.dissolved;
+    const membersCanInvite = body.membersCanInvite;
     const owner = body.owner as
       | { account?: unknown; domain?: unknown }
       | undefined;
@@ -3482,6 +3643,8 @@ export class FederationService {
     if (
       typeof active !== 'boolean' ||
       typeof dissolved !== 'boolean' ||
+      (membersCanInvite !== undefined &&
+        typeof membersCanInvite !== 'boolean') ||
       !owner ||
       typeof owner.account !== 'string' ||
       typeof owner.domain !== 'string' ||
@@ -3637,6 +3800,7 @@ export class FederationService {
       .update(tables.group)
       .set({
         ownerId: ownerUser.id,
+        membersCanInvite: membersCanInvite ?? true,
         remoteRosterRev: revision,
         dissolvedAt: dissolved ? new Date() : null,
         updatedAt: new Date(),
@@ -4244,7 +4408,11 @@ export class FederationService {
           }
         }
       } else {
-        for (const userId of effect.recipients) {
+        const recipients = await this.unblockedRecipients(
+          effect.threadId,
+          effect.recipients,
+        );
+        for (const userId of recipients) {
           if (userId !== effect.creatorId) {
             this.sse.onNewMessage(
               userId,
@@ -5682,7 +5850,11 @@ export class FederationService {
         }
       }
     } else {
-      for (const uid of recipients) {
+      const liveRecipients = await this.unblockedRecipients(
+        threadId,
+        recipients,
+      );
+      for (const uid of liveRecipients) {
         if (uid !== creatorId) {
           this.sse.onNewMessage(
             uid,
@@ -5699,6 +5871,22 @@ export class FederationService {
       originSeq,
       originDomain,
     ).catch(() => undefined);
+  }
+
+  /** Apply the participant's thread-scoped delivery block to federation-originated live signals too. */
+  private async unblockedRecipients(
+    threadId: number,
+    candidateIds: number[],
+  ): Promise<number[]> {
+    const candidates = new Set(candidateIds);
+    const participants =
+      await this.participantService.getActiveParticipantUserIds(threadId);
+    return participants
+      .filter(
+        (participant) =>
+          !participant.blocked && candidates.has(participant.userId),
+      )
+      .map((participant) => participant.userId);
   }
 
   /**
@@ -6091,7 +6279,7 @@ export class FederationService {
               `unit byte mismatch (got ${buf.length}, expected ${unitLen})`,
             );
           }
-          const actualDigest = `sha-256=${createHash('sha256').update(buf).digest('base64')}`;
+          const actualDigest = contentDigest(buf);
           if (unit.contentDigest && actualDigest !== unit.contentDigest) {
             throw new Error(`unit digest mismatch at offset ${offset}`);
           }
@@ -6133,11 +6321,9 @@ export class FederationService {
     contentDigest?: string;
   }> {
     const operationStartedAt = new Date();
-    const headers = this.signature.signOutbound({
+    const headers = await this.signature.signOutbound({
       method: 'GET',
-      path: url.pathname,
-      query: url.search || '?',
-      authority: url.host,
+      url,
       body: '', // GET — the content-digest covers sha256("")
     });
     let res: Response;
@@ -6187,7 +6373,7 @@ export class FederationService {
       }
       if (
         contentDigestHeader !== null &&
-        !/^sha-256=[A-Za-z0-9+/]{43}=$/.test(contentDigestHeader)
+        !/^sha-256=:[A-Za-z0-9+/]{43}=:$/i.test(contentDigestHeader)
       ) {
         throw new Error('S2S media 206 with an invalid Content-Digest');
       }

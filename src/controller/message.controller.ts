@@ -41,6 +41,7 @@ import {
   MediaStatusDto,
   RelocalizeMediaDto,
   SetMutedDto,
+  SetBlockedDto,
   SetPinnedDto,
   ClearHistoryDto,
   SetAliasDto,
@@ -56,7 +57,6 @@ import {
   transformMessageEntities,
 } from '../common/message-entity.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
-import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { MessageReportService } from '../message/message-report.service.js';
@@ -78,7 +78,6 @@ export class MessageController {
     private readonly federation: FederationService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
-    private readonly threadRevisionService: ThreadRevisionService,
     private readonly userQuota: UserQuotaService,
     private readonly deletedMessages: DeletedMessageService,
     private readonly messageReports: MessageReportService,
@@ -362,8 +361,8 @@ export class MessageController {
         dto.clientMessageId,
         direct.forwardBundleId,
         async (tx) => {
-        await this.userQuota.tickLax(req.user.userId, 'messages', tx);
-      },
+          await this.userQuota.tickLax(req.user.userId, 'messages', tx);
+        },
       );
       void this.fanout.dispatch(data);
       return data;
@@ -597,19 +596,14 @@ export class MessageController {
     if (dto.truncate && dto.truncateSeq !== undefined) {
       newParams.truncateSeq = dto.truncateSeq;
     }
-    // Per-viewer filters: clearedSeq hides the caller's "clear history" prefix (P2P + GROUP), and on P2P
-    // threads a blocked peer's messages are hidden (group threads leave blocked members visible —
-    // WhatsApp neutral-ground). blockedByMe is empty for ~all users, so the creator filter is skipped.
+    // Blocking does not alter stored history. The client deliberately skips this request while a thread
+    // is blocked and can query the retained history again after unblocking.
     const filters: {
       clearedThroughSeq?: number | null;
       hideCreatorIds?: number[];
     } = {
       clearedThroughSeq: req.threadAccess.participant.clearedSeq,
     };
-    if (req.threadAccess.threadType === 'P2P') {
-      const blocked = await this.userBlockService.blockedByMe(req.user.userId);
-      if (blocked.size > 0) filters.hideCreatorIds = [...blocked];
-    }
     const rows = await this.messageService.queryMessages(
       dto.threadId,
       newParams,
@@ -741,6 +735,43 @@ export class MessageController {
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SetBlockedDto>('threadId')
+  @Throttle(30, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/set-blocked')
+  @ApiOperation({
+    summary: 'Block / unblock new-message delivery for one conversation',
+  })
+  async setBlocked(
+    @Request() req: FastifyRequest,
+    @Body() dto: SetBlockedDto,
+  ): Promise<void> {
+    await this.participantService.setBlocked(
+      req.user.userId,
+      dto.threadId,
+      dto.blocked,
+    );
+    // Preserve compatibility with existing P2P UserBlock rows and the sender-side delivery guard.
+    if (req.threadAccess.threadType === 'P2P') {
+      const [peer] = await this.participantService.findP2PPeers(
+        [dto.threadId],
+        req.user.userId,
+      );
+      if (peer) {
+        if (dto.blocked)
+          await this.userBlockService.block(req.user.userId, peer.userId);
+        else await this.userBlockService.unblock(req.user.userId, peer.userId);
+      }
+    }
+    this.sseService.onThreadMeta(req.user.userId, {
+      event: 'THREAD_META',
+      threadId: dto.threadId,
+      blocked: dto.blocked,
+    });
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetPinnedDto>('threadId')
   @Throttle(30, 60)
   @ApiBearerAuth()
@@ -791,42 +822,6 @@ export class MessageController {
       threadId: dto.threadId,
       clearedSeq: updated.clearedSeq,
     });
-  }
-
-  @UseGuards(ThrottleGuard)
-  @Throttle(10, 60)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('thread/delete')
-  @ApiOperation({
-    summary: 'Delete this conversation for the current user only',
-  })
-  async deleteThread(
-    @Request() req: FastifyRequest,
-    @Body() dto: ClearHistoryDto,
-  ): Promise<void> {
-    const participant = await this.participantService.findParticipant(
-      req.user.userId,
-      dto.threadId,
-    );
-    if (!participant) {
-      throw new BusinessException(BusinessCode.THREAD_NOT_FOUND, 'no thread');
-    }
-    if (
-      await this.threadRevisionService.isThreadHidden(
-        req.user.userId,
-        dto.threadId,
-      )
-    )
-      return;
-    await this.participantService.deleteThreadForUser(
-      req.user.userId,
-      dto.threadId,
-    );
-    await this.threadRevisionService.recordThreadDelete(
-      req.user.userId,
-      dto.threadId,
-    );
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)

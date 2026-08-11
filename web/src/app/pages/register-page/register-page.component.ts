@@ -1,5 +1,4 @@
 import { Component } from '@angular/core';
-import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { RegisterComponent } from '../../components/register/register.component';
@@ -12,6 +11,8 @@ import {
 import { RouteService, RoutePage } from '../../services/route.service';
 import { AuthService } from '../../services/auth.service';
 import { isTauri } from '../../services/runtime';
+import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
+import { ServerConfigDialogService } from '../../services/server-config-dialog.service';
 
 @Component({
   selector: 'app-register-page',
@@ -19,10 +20,10 @@ import { isTauri } from '../../services/runtime';
     RegisterComponent,
     AuthBrandComponent,
     AuthToolbarComponent,
-    RouterLink,
     TranslocoPipe,
     MatButtonModule,
     IconComponent,
+    BrandLogoComponent,
   ],
   templateUrl: './register-page.component.html',
   styleUrl: './register-page.component.scss',
@@ -37,7 +38,12 @@ export class RegisterPageComponent {
   constructor(
     private routeService: RouteService,
     private authService: AuthService,
+    private serverConfigDialog: ServerConfigDialogService,
   ) {}
+
+  openServerConfig(): void {
+    this.serverConfigDialog.open();
+  }
   onSuccess({ account, password }: { account: string; password: string }) {
     this.authService.login({ account, password }).subscribe(() => {
       this.routeService.redirect(RoutePage.HOME);

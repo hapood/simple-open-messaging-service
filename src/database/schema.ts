@@ -307,6 +307,8 @@ export const threadParticipant = pgTable(
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
     muted: boolean().default(false).notNull(),
+    /** Suppress this conversation's live delivery/catch-up for this participant. History stays stored. */
+    blocked: boolean().default(false).notNull(),
     pinned: boolean().default(false).notNull(),
     pinnedAt: timestamp({ precision: 3, mode: 'date' }),
     clearedSeq: integer(),
@@ -332,6 +334,9 @@ export const threadParticipant = pgTable(
         table.joinedAt.asc().nullsLast().op('int4_ops'),
       )
       .where(sql`("leftAt" IS NULL)`),
+    uniqueIndex('ThreadParticipant_one_active_group_owner_key')
+      .using('btree', table.threadId.asc().nullsLast().op('int4_ops'))
+      .where(sql`${table.role} = 'OWNER' AND ${table.leftAt} IS NULL`),
     index('ThreadParticipant_userId_pinned_idx').using(
       'btree',
       table.userId.asc().nullsLast().op('int4_ops'),
@@ -1227,6 +1232,8 @@ export const group = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
     dissolvedAt: timestamp({ precision: 3, mode: 'date' }),
+    /** Members may invite by default. When false, only OWNER/ADMIN participants may invite. */
+    membersCanInvite: boolean().default(true).notNull(),
   },
   (table) => [
     uniqueIndex('Group_groupUserId_key').using(
@@ -2246,6 +2253,34 @@ export const quotaDailyAllowance = pgTable(
       columns: [table.domain, table.date],
       name: 'QuotaDailyAllowance_pkey',
     }),
+  ],
+);
+
+/**
+ * Bounded Federation v1 call terminal cache. It survives a process restart only long enough to classify
+ * signed retries and late frames; it is not a call-history table (the durable CALL message remains the CDR).
+ */
+export const callTombstone = pgTable(
+  'CallTombstone',
+  {
+    peerDomain: varchar({ length: 253 }).notNull(),
+    callSid: varchar({ length: 36 }).notNull(),
+    terminalOp: varchar({ length: 16 }).notNull(),
+    endReason: varchar({ length: 16 }),
+    initialCallType: varchar({ length: 8 }).notNull(),
+    finalCallType: varchar({ length: 8 }).notNull(),
+    signalIds: jsonb().$type<string[]>().default([]).notNull(),
+    expiresAt: timestamp({ withTimezone: true, mode: 'date' }).notNull(),
+    createdAt: timestamp({ withTimezone: true, mode: 'date' })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.peerDomain, table.callSid],
+      name: 'CallTombstone_pkey',
+    }),
+    index('CallTombstone_expiresAt_idx').on(table.expiresAt),
   ],
 );
 

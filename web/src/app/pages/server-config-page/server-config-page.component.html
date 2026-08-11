@@ -1,4 +1,8 @@
-<div class="cfg-viewport" appAuthViewport>
+<div
+  class="cfg-viewport"
+  [class.cfg-viewport--dialog]="dialog()"
+  appAuthViewport
+>
 @if (canGoBack()) {
   <button
     class="cfg-back"
@@ -26,8 +30,14 @@
 
 <!-- The only in-flow element: centered brand + title + form. Never unmounts (busy only toggles the
   button + the fixed overlays above), so its position is identical in every phase. -->
-<div class="cfg-shell">
-  <app-brand-logo class="cfg-logo" [size]="84" />
+<div
+  class="cfg-shell"
+  [attr.role]="dialog() ? 'dialog' : null"
+  [attr.aria-modal]="dialog() ? 'true' : null"
+>
+  @if (!dialog()) {
+    <app-brand-logo class="cfg-logo" [size]="80" />
+  }
   <h1 class="cfg-title">{{ titleKey() | transloco }}</h1>
   <p class="cfg-intro">{{ introKey() | transloco }}</p>
 
@@ -63,7 +73,10 @@
     <!-- Keep a two-line feedback area mounted below the primary action. Common warnings and failures can
       appear without moving the button; only an unusually long translation or expanded technical details
       grows the card. A connection failure takes precedence over the input-derived HTTP warning. -->
-    <div class="cfg-feedback-slot">
+    <div
+      class="cfg-feedback-slot"
+      [class.has-feedback]="errorKey() || (insecure() && url.value.trim() && !url.invalid)"
+    >
       @if (errorKey()) {
         <div class="cfg-error" role="alert">
           <strong>{{ errorKey()! | transloco }}</strong>

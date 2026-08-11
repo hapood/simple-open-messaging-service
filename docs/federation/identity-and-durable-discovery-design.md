@@ -709,7 +709,7 @@ GC reconcile 对每个 `isDeleted=false` 的 `MediaAsset` 行：
 - **管理员 retry 时**：经 GC UI 触发，复用同一例程。
 
 例程内部：取该 `batchId` 下可重试的 `PENDING/FAILED`，按 digest single-flight 执行下载；每个 Range
-响应可按全局设置携带该分块的 `Content-Digest: sha-256=...`（默认关闭，开启会增加一次 NAS 磁盘读取）。
+响应可按全局设置携带该分块的 `Content-Digest: sha-256=:...:`（默认关闭，开启会增加一次 NAS 磁盘读取）。
 接收端始终校验分块长度和范围；若响应提供摘要则必须校验格式与内容，未提供时依赖完成后的整文件
 digest 校验。peer 忽略 Range 而返回 200，或提供畸形/不匹配的 Content-Digest，均按协议失败处理，
 不得降级为无分块校验的全量下载。`.resume.json` 保存从 byte 0 连续排列的分块边界与摘要；恢复时从头顺序复核

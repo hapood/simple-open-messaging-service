@@ -35,7 +35,7 @@ import { firstValueFrom } from 'rxjs';
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
  * the top-right MORE button, which opens a {@link ChatActionMenuComponent} anchored CDK overlay with
- * the full per-thread action set (view info, search, mute, pin, mark-read, clear; P2P: block,
+ * the full per-thread action set (view info, search, mute, pin, clear; P2P: block,
  * delete; GROUP: leave). System settings is NOT here — it lives in the global nav
  * (icon-rail / nav-drawer), not a per-thread context menu.
  *
@@ -43,8 +43,8 @@ import { firstValueFrom } from 'rxjs';
  * confirm dialog) — EXCEPT clear history, whose irreversibility warrants an unmissable app-level modal
  * ({@link PopupType.CONFIRM}) with a danger-styled warning. Mute / pin apply optimistically to the
  * conversation list (via applyThreadMeta) and the server's THREAD_META frame re-confirms idempotently.
- * Actions that affect the kernel (clear history → reset, block → banner) or the shell (delete / leave
- * → navigate away) are delegated to the parent via outputs.
+ * Actions that affect the shell (clear history / delete / leave → navigate away) or conversation state
+ * (block → banner) are applied through their owning services.
  */
 @Component({
   selector: 'app-message-header',
@@ -67,9 +67,6 @@ export class MessageHeaderComponent {
 
   /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
   readonly searchJump = output<number>();
-  /** Emitted after clear-history succeeds (parent resets the kernel against the now-empty view). */
-  readonly historyCleared = output<void>();
-
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
   private readonly msgService = inject(MsgService);
@@ -232,46 +229,7 @@ export class MessageHeaderComponent {
         icon: AppIconType.TRASH,
         danger: true,
       },
-      { kind: 'divider' },
     ];
-    if (isP2P) {
-      list.push({
-        kind: 'action',
-        key: 'block',
-        labelKey: trd.blocked ? 'chat.menuUnblock' : 'chat.menuBlock',
-        icon: AppIconType.BLOCK,
-        danger: !trd.blocked,
-      });
-      if (trd.friendshipActive !== false) {
-        list.push({
-          kind: 'action',
-          key: 'deleteChat',
-          labelKey: 'chat.menuUnfriend',
-          icon: AppIconType.TRASH,
-          danger: true,
-        });
-      }
-    } else if (
-      trd.role !== 'OWNER' &&
-      trd.group?.dissolvedAt == null &&
-      trd.conversationState !== 'READ_ONLY'
-    ) {
-      list.push({
-        kind: 'action',
-        key: 'leaveGroup',
-        labelKey: 'chat.menuLeaveGroup',
-        icon: AppIconType.CLOSE,
-        danger: true,
-      });
-    }
-    list.push({ kind: 'divider' });
-    list.push({
-      kind: 'action',
-      key: 'deleteData',
-      labelKey: 'chat.menuDeleteData',
-      icon: AppIconType.TRASH,
-      danger: true,
-    });
     return list;
   }
 
@@ -357,9 +315,6 @@ export class MessageHeaderComponent {
       case 'leaveGroup':
         this.leaveGroup(trd);
         return;
-      case 'deleteData':
-        this.confirmDeleteData(trd.threadId);
-        return;
     }
   }
 
@@ -389,12 +344,7 @@ export class MessageHeaderComponent {
     });
   }
 
-  /**
-   *  Clear history is irreversible (a per-user watermark: every message vanishes from this view, while the
-   *  peer retains them) — so it pops the app-level confirm dialog with a danger-styled, unmissable warning
-   *  rather than the inline two-tap the other destructive actions use. The actual clear runs only on a
-   *  `true` result; a cancel / system-back delivers undefined and the history is left untouched.
-   */
+  /** Clear the caller's server-visible history and remove the local thread plus its cached messages. */
   private confirmClearHistory(threadId: number): void {
     this.routeService.popupDlg(
       PopupType.CONFIRM,
@@ -407,16 +357,16 @@ export class MessageHeaderComponent {
         icon: AppIconType.REPORT,
       },
       (ok) => {
-        if (ok) this.clearHistory(threadId);
+        if (ok)
+          void this.runLockedDelete(
+            threadId,
+            () => firstValueFrom(this.msgService.clearHistory({ threadId })),
+            true,
+            () => undefined,
+            false,
+          );
       },
     );
-  }
-
-  private clearHistory(threadId: number): void {
-    this.msgService.clearHistory({ threadId }).subscribe((res) => {
-      if (res.code !== 0) return;
-      this.historyCleared.emit();
-    });
   }
 
   /** Block / unblock (P2P). The backend drops delivery + query-messages hides the blocked creator. The
@@ -497,33 +447,12 @@ export class MessageHeaderComponent {
     );
   }
 
-  private confirmDeleteData(threadId: number): void {
-    this.routeService.popupDlg(
-      PopupType.CONFIRM,
-      {
-        titleKey: 'chat.deleteDataConfirmTitle',
-        messageKey: 'chat.deleteDataConfirmBody',
-        confirmKey: 'chat.menuDeleteData',
-        cancelKey: 'common.cancel',
-        danger: true,
-      },
-      (ok) => {
-        if (ok)
-          void this.runLockedDelete(
-            threadId,
-            () => firstValueFrom(this.msgService.deleteThread({ threadId })),
-            true,
-            () => undefined,
-          );
-      },
-    );
-  }
-
   private async runLockedDelete(
     threadId: number,
     request: () => Promise<{ code: number; message: string }>,
     deleteData: boolean,
     onRetain: () => void,
+    reloadAfter = true,
   ): Promise<void> {
     if (!this.deletionLock.begin(threadId)) return;
     try {
@@ -540,7 +469,7 @@ export class MessageHeaderComponent {
       this.toast.warn(this.transloco.translate('errors.networkError'));
     } finally {
       this.deletionLock.end(threadId);
-      this.convList.load();
+      if (reloadAfter) this.convList.load();
     }
   }
 

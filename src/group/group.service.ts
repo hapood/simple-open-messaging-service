@@ -5,7 +5,7 @@ import {
   Injectable,
   Optional,
 } from '@nestjs/common';
-import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   group,
@@ -96,6 +96,7 @@ export class GroupService {
         profileRev: number;
         group: {
           ownerId: number;
+          membersCanInvite: boolean;
           dissolvedAt: Date | null;
           createdAt: Date;
           updatedAt: Date;
@@ -122,6 +123,7 @@ export class GroupService {
             group: {
               columns: {
                 ownerId: true,
+                membersCanInvite: true,
                 dissolvedAt: true,
                 createdAt: true,
                 updatedAt: true,
@@ -143,6 +145,7 @@ export class GroupService {
         profileRev: number;
         group: {
           ownerId: number;
+          membersCanInvite: boolean;
           dissolvedAt: Date | null;
           createdAt: Date;
           updatedAt: Date;
@@ -238,10 +241,9 @@ export class GroupService {
   }
 
   /**
-   * Leave a group (soft: sets leftAt). The owner may NOT leave while other active members remain —
-   * they must transfer ownership first (GROUP_OWNER_MUST_TRANSFER). A sole-member owner may leave
-   * (the group is then abandoned). Returns the remaining active member ids so the controller can
-   * fan out GROUP_MEMBER_LEFT.
+   * Leave a group (soft: sets leftAt). The owner may not leave: they must transfer ownership or dissolve
+   * the group, preserving the invariant that every active group has exactly one owner. Returns the
+   * remaining active member ids so the controller can fan out GROUP_MEMBER_LEFT.
    */
   async leaveGroup(params: {
     userId: number;
@@ -276,21 +278,10 @@ export class GroupService {
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'member not found');
       if (current.leftAt === null && current.role === GroupRole.OWNER) {
-        const [{ value: active }] = await tx
-          .select({ value: count() })
-          .from(threadParticipant)
-          .where(
-            and(
-              eq(threadParticipant.threadId, params.threadId),
-              isNull(threadParticipant.leftAt),
-            ),
-          );
-        if (active > 1) {
-          throw new BusinessException(
-            BusinessCode.GROUP_OWNER_MUST_TRANSFER,
-            'transfer ownership before leaving',
-          );
-        }
+        throw new BusinessException(
+          BusinessCode.GROUP_OWNER_MUST_TRANSFER,
+          'transfer ownership or dissolve the group before leaving',
+        );
       }
       const ended = await tx
         .update(threadParticipant)
@@ -654,9 +645,8 @@ export class GroupService {
 
   /**
    * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
-   * OWNER — all in one transaction so the group is never ownerless. The owner is now derived from
-   * ThreadParticipant.role=OWNER (the old Group.ownerId denormalized pointer is gone), so the
-   * role-swaps alone are sufficient. The controller emits GROUP_ROLE_CHANGED for both users.
+   * OWNER — all in one transaction so no ownerless state is visible. Group.ownerId is updated in
+   * the same transaction, and the controller emits GROUP_ROLE_CHANGED for both users.
    */
   async transferOwnership(params: {
     threadId: number;
@@ -670,6 +660,26 @@ export class GroupService {
       );
     }
     const statePeers = await this.database.db.transaction(async (tx) => {
+      // Serialize every transfer through the current OWNER row. The partial unique index prevents
+      // multiple active owners; the service invariants prevent the sole owner from leaving/demotion.
+      const [currentOwner] = await tx
+        .select({ id: threadParticipant.id, role: threadParticipant.role })
+        .from(threadParticipant)
+        .where(
+          and(
+            eq(threadParticipant.userId, params.fromUserId),
+            eq(threadParticipant.threadId, params.threadId),
+            isNull(threadParticipant.leftAt),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (currentOwner?.role !== GroupRole.OWNER) {
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'only the current owner may transfer ownership',
+        );
+      }
       const [target] = await tx
         .select({
           participant: threadParticipant,
@@ -683,6 +693,7 @@ export class GroupService {
             eq(threadParticipant.threadId, params.threadId),
           ),
         )
+        .for('update')
         .limit(1);
       if (!target || target.participant.leftAt !== null) {
         throw new BusinessException(
@@ -847,6 +858,7 @@ export class GroupService {
     name?: string;
     description?: string;
     avatar?: string;
+    membersCanInvite?: boolean;
   }) {
     const trd = await this.database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, params.threadId),
@@ -873,6 +885,16 @@ export class GroupService {
         })
         .where(eq(user.id, trd.groupUserId!))
         .returning();
+      if (params.membersCanInvite !== undefined) {
+        await tx
+          .update(group)
+          .set({
+            membersCanInvite: params.membersCanInvite,
+            rosterRev: sql`${group.rosterRev} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(group.groupUserId, trd.groupUserId!));
+      }
       const stateItems = await this.federation.writeGroupStateInTx(
         tx,
         params.threadId,

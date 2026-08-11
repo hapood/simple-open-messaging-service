@@ -528,6 +528,38 @@ app-chat-input.msg-composer--dialog-hidden {
   }
 }
 
+.msg-viewport.blocked > :not(.msg-blocked-center) {
+  display: none;
+}
+.msg-blocked-center {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--app-text);
+  > span:last-child {
+    color: var(--app-text-muted);
+    font-size: 13px;
+  }
+}
+.msg-blocked-center-icon {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 6px;
+  border-radius: 20px;
+  background: var(--app-bg-muted);
+  color: var(--app-text-muted);
+  font-size: 36px;
+}
+
 .msg-context-backdrop {
   position: fixed;
   inset: 0;

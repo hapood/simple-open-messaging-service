@@ -24,6 +24,10 @@ function makeStubs() {
     applyFederated: vi.fn(),
     advanceFederatedCursor: vi.fn(),
   };
+  const eventEmitter = {
+    emitAsync: vi.fn().mockResolvedValue(undefined),
+    emit: vi.fn(),
+  };
   const database = {
     db: {
       query: {
@@ -65,7 +69,7 @@ function makeStubs() {
     {} as never, // forwardBundles
     {} as never, // messageVisibility
     deletedMessages as never,
-    { emitAsync: vi.fn().mockResolvedValue(undefined), emit: vi.fn() } as never, // eventEmitter
+    eventEmitter as never,
     {} as never, // federationIdentity
     { readAllocatedThrough: vi.fn().mockResolvedValue(0n) } as never, // federationCursor
     {} as never, // federationInit
@@ -77,8 +81,29 @@ function makeStubs() {
     store,
     sse,
     deletedMessages,
+    eventEmitter,
   };
 }
+
+describe('FederationService inbound call preflight', () => {
+  it('short-circuits an incoming retry before resolving either account', async () => {
+    const { svc, eventEmitter } = makeStubs();
+    eventEmitter.emitAsync.mockResolvedValueOnce([true]);
+    const frame = {
+      callSid: '550e8400-e29b-41d4-a716-446655440000',
+      op: 'incoming' as const,
+      callType: 'AUDIO' as const,
+      payload: { fromAccount: 'alice', toAccount: 'bob' },
+    };
+
+    await svc.handleCallFrame(frame, 'peer.example', 1_700_000_300);
+
+    expect(eventEmitter.emitAsync).toHaveBeenCalledExactlyOnceWith(
+      'call.frame.incoming.preflight',
+      { peerDomain: 'peer.example', frame },
+    );
+  });
+});
 
 describe('FederationService optional range digest', () => {
   function target() {

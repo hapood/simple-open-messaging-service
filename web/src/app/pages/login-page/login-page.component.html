@@ -12,14 +12,13 @@
         flash for a frame on the way out. Mirrors the app-splash (brand mark + 40px spinner) for one
         continuous loading feel; the toolbar stays available so theme/language are reachable immediately. -->
       <div class="auth-loading" role="status" aria-live="polite">
-        <app-brand-logo class="form-brand" [size]="48" />
+        <app-brand-logo class="form-brand" [size]="80" />
         <mat-progress-spinner mode="indeterminate" [diameter]="40" />
         @if (isTauri()) {
-          <!-- Reconfiguration is an escape hatch, not server-derived content. Keep it usable while the old
-            server's public /config request is still pending or timed out. -->
-          <button mat-button class="server-link" type="button" (click)="reopenServerConfig()">
-            <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
-            {{ 'serverConfig.entry' | transloco }}
+          <!-- Cancel the connection wait and return to the editable server dialog. The in-flight request
+            is generation-guarded, so a later server choice cannot publish stale config. -->
+          <button mat-button class="server-link" type="button" (click)="cancelConnection()">
+            {{ 'common.cancel' | transloco }}
           </button>
         }
       </div>
@@ -27,7 +26,7 @@
       <!-- Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split
         breakpoint), so every auth state keeps brand identity on the narrow Tauri shell / Android WebView.
         Desktop owns the full panel; showing both there would be redundant. -->
-      <app-brand-logo class="form-brand" [size]="48" />
+      <app-brand-logo class="form-brand" [size]="80" />
       @if (isTauri() && configuredOrigins().length) {
         <div class="origin-list" role="status">
           @for (server of configuredOrigins(); track server.origin) {
@@ -52,7 +51,9 @@
         <div class="login-error" role="alert">
           <app-icon class="login-error__icon" [type]="AppIcon.REPORT" [style]="{ width: '20px', height: '20px' }" />
           <div class="login-error__body">
-            <p class="login-error__msg">{{ 'auth.serverUnreachable' | transloco }}</p>
+            <p class="login-error__msg">
+              {{ (connectionCancelled() ? 'auth.connectionCancelled' : 'auth.serverUnreachable') | transloco }}
+            </p>
             <div class="login-error__actions">
               <button mat-flat-button color="primary" type="button" (click)="retry()">
                 <app-icon matButtonIcon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />

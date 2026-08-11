@@ -75,6 +75,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   let sessionProfile: ReturnType<typeof signal<User | undefined>>;
   let establishSessionSpy: jasmine.Spy;
   let queryThreadDeltaSpy: jasmine.Spy;
+  let getThreadInfoSpy: jasmine.Spy;
   let queryReadDeltaSpy: jasmine.Spy;
   let queryUserInfoSpy: jasmine.Spy;
   let advanceCursorSpy: jasmine.Spy;
@@ -146,6 +147,9 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
               .and.callFake((r: number) => cursorSignal.set(r))),
             queryThreadDelta: (queryThreadDeltaSpy =
               jasmine.createSpy('queryThreadDelta')),
+            getThreadInfo: (getThreadInfoSpy = jasmine
+              .createSpy('getThreadInfo')
+              .and.returnValue(of({ code: 1 }))),
             queryReadDelta: (queryReadDeltaSpy = jasmine
               .createSpy('queryReadDelta')
               .and.returnValue(
@@ -666,6 +670,43 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     });
     await flush();
     expect(repo.items()[0].lastMessageAt).toBe(300);
+  });
+
+  it('actively hydrates an unknown thread and coalesces messages behind one request', async () => {
+    await populate([p2p(1, 11)]);
+    const response = new Subject<{
+      code: number;
+      data?: ConversationItem;
+    }>();
+    getThreadInfoSpy.and.returnValue(response);
+
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      data: { threadId: 2, seq: 5, ts: 200 },
+    });
+    eventSubject.next({
+      event: 'NEW_MESSAGE',
+      data: { threadId: 2, seq: 7, ts: 300 },
+    });
+
+    expect(getThreadInfoSpy).toHaveBeenCalledOnceWith({ threadId: 2 });
+    response.next({
+      code: 0,
+      data: p2p(2, 22, { lastMessageSeq: 5, lastMessageAt: 200 }),
+    });
+    response.complete();
+    await flush(20);
+
+    expect(repo.items()[0]).toEqual(
+      jasmine.objectContaining({
+        threadId: 2,
+        lastMessageSeq: 7,
+        lastMessageAt: 300,
+      }),
+    );
+    expect(
+      await (await webdb.db()).get('threads', 2),
+    ).toEqual(jasmine.objectContaining({ lastMessageSeq: 7 }));
   });
 
   // ── mutations (each writes through to IDB + emits a fine-grained signal update) ───────────────

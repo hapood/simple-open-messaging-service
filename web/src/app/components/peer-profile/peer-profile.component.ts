@@ -1,33 +1,31 @@
-import { Component, computed, effect, inject, signal } from '@angular/core';
-import { MatButtonModule } from '@angular/material/button';
-import { MatCheckboxModule } from '@angular/material/checkbox';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { Component, computed, inject } from '@angular/core';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { firstValueFrom } from 'rxjs';
 import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
-import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { ConversationItem, displayUserName } from '../../services/model';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
+import { UserService } from '../../services/user.service';
+import { MsgService } from '../../services/message.service';
+import { PopupType, RouteService } from '../../services/route.service';
 import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
-import { firstValueFrom } from 'rxjs';
+import { ToastService } from '../../services/toast.service';
+import { translateBizResult } from '../../services/biz-code';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
  * Resolves its conversation from the parent route's `:threadId` + the shared list (no input binding
- * needed — the aside child route carries no params of its own). Surfaces Unfriend (delete-friend) and
- * Block/Unblock — the destructive actions use a two-step inline confirm (mutually exclusive); Unblock is
- * a single tap. On unfriend it drops the thread and returns to the conversation list, which closes both
- * the chat and this panel. A future custom-name/alias feature would also live here.
+ * needed — the aside child route carries no params of its own). Relationship actions intentionally live
+ * here, grouped in one quiet action card instead of competing with everyday chat controls.
  */
 @Component({
   selector: 'app-peer-profile',
   imports: [
-    MatButtonModule,
-    MatCheckboxModule,
     UserAvatarComponent,
     TranslocoPipe,
     ThreadAliasEditorComponent,
@@ -69,94 +67,45 @@ import { firstValueFrom } from 'rxjs';
           />
           <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
           <div class="name">{{ peerDisplayName() }}</div>
+          @if (peer()?.bio) {
+            <div class="bio">{{ peer()?.bio }}</div>
+          }
         </div>
 
         <app-thread-alias-editor [threadId]="threadId()!" />
 
-        @if (userMsgTrd()?.friendshipActive !== false && confirmUnfriend()) {
-          <div class="confirm-row">
-            <span>{{
-              'profile.removeFriendConfirm'
-                | transloco: { name: peerDisplayName() }
-            }}</span>
-            <mat-checkbox
-              [checked]="deleteData()"
-              (change)="deleteData.set($event.checked)"
-              >{{ 'chat.alsoDeleteData' | transloco }}</mat-checkbox
+        <section
+          class="relationship-card"
+          [attr.aria-label]="'profile.relationship' | transloco"
+        >
+          <button
+            class="relationship-action"
+            type="button"
+            (click)="toggleBlocked()"
+          >
+            <span class="action-icon" aria-hidden="true">⊘</span>
+            <span class="action-copy">
+              <strong>{{
+                (userMsgTrd()?.blocked ? 'profile.unblock' : 'profile.block')
+                  | transloco
+              }}</strong>
+              <small>{{ 'profile.blockHint' | transloco }}</small>
+            </span>
+          </button>
+          @if (userMsgTrd()?.friendshipActive !== false) {
+            <button
+              class="relationship-action danger"
+              type="button"
+              (click)="removeFriend()"
             >
-            <div class="confirm-actions">
-              <button
-                mat-stroked-button
-                [disabled]="busy()"
-                (click)="cancelUnfriend()"
-              >
-                {{ 'common.cancel' | transloco }}
-              </button>
-              <button
-                mat-flat-button
-                color="warn"
-                [disabled]="busy()"
-                (click)="doUnfriend()"
-              >
-                {{ 'profile.unfriend' | transloco }}
-              </button>
-            </div>
-          </div>
-        } @else if (userMsgTrd()?.friendshipActive !== false) {
-          <button
-            mat-stroked-button
-            color="warn"
-            class="unfriend-btn"
-            [disabled]="busy()"
-            (click)="askUnfriend()"
-          >
-            {{ 'profile.unfriend' | transloco }}
-          </button>
-        }
-
-        @if (blocked()) {
-          <button
-            mat-stroked-button
-            class="block-btn"
-            [disabled]="busy()"
-            (click)="doUnblock()"
-          >
-            {{ 'profile.unblock' | transloco }}
-          </button>
-        } @else if (confirmBlock()) {
-          <div class="confirm-row">
-            <span>{{
-              'profile.blockConfirm' | transloco: { name: peerDisplayName() }
-            }}</span>
-            <div class="confirm-actions">
-              <button
-                mat-stroked-button
-                [disabled]="busy()"
-                (click)="cancelBlock()"
-              >
-                {{ 'common.cancel' | transloco }}
-              </button>
-              <button
-                mat-flat-button
-                color="warn"
-                [disabled]="busy()"
-                (click)="doBlock()"
-              >
-                {{ 'profile.block' | transloco }}
-              </button>
-            </div>
-          </div>
-        } @else {
-          <button
-            mat-stroked-button
-            color="warn"
-            class="block-btn"
-            [disabled]="busy()"
-            (click)="askBlock()"
-          >
-            {{ 'profile.block' | transloco }}
-          </button>
-        }
+              <span class="action-icon" aria-hidden="true">−</span>
+              <span class="action-copy">
+                <strong>{{ 'chat.menuUnfriend' | transloco }}</strong>
+                <small>{{ 'profile.unfriendHint' | transloco }}</small>
+              </span>
+            </button>
+          }
+        </section>
       </div>
     </div>
   `,
@@ -226,30 +175,74 @@ import { firstValueFrom } from 'rxjs';
         font-size: 18px;
         font-weight: 600;
       }
-      // Full-width destructive action — real mat-stroked-button color="warn" (red outline + text, Material
-      // state layer on hover, disabled styling built in). Matches the confirm-state unfriend button below.
-      .unfriend-btn {
-        width: 100%;
+      .bio {
+        max-width: 320px;
+        color: var(--app-text-muted);
+        font-size: 13px;
+        line-height: 19px;
+        text-align: center;
       }
-      .block-btn {
-        width: 100%;
+      .relationship-card {
+        overflow: hidden;
+        border: 1px solid var(--app-border);
+        border-radius: var(--app-radius-lg, 14px);
+        background: var(--app-surface);
       }
-      .confirm-row {
+      .relationship-action {
+        width: 100%;
+        min-height: 64px;
+        padding: 10px 14px;
+        border: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-align: left;
+        color: var(--app-text);
+        background: transparent;
+        cursor: pointer;
+      }
+      .relationship-action + .relationship-action {
+        border-top: 1px solid var(--app-border);
+      }
+      .relationship-action:hover {
+        background: var(--app-hover);
+      }
+      .action-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border-radius: 10px;
+        background: var(--app-bg-muted);
+        color: var(--app-text-muted);
+        font-size: 20px;
+      }
+      .action-copy {
         display: flex;
         flex-direction: column;
-        gap: 12px;
-        padding: 14px;
-        border: 1px solid var(--app-border-strong);
-        border-radius: var(--app-radius-md);
-        background: var(--app-bg-muted);
+        gap: 3px;
+        min-width: 0;
       }
-      .confirm-row > span {
+      .action-copy strong {
         font-size: 14px;
+        font-weight: 600;
       }
-      .confirm-actions {
-        display: flex;
-        gap: 8px;
-        justify-content: flex-end;
+      .action-copy small {
+        color: var(--app-text-muted);
+        font-size: 12px;
+        line-height: 17px;
+      }
+      .relationship-action.danger strong {
+        color: var(--app-danger, #c73535);
+      }
+      .relationship-action.danger .action-icon {
+        color: var(--app-danger, #c73535);
+        background: color-mix(
+          in srgb,
+          var(--app-danger, #c73535) 10%,
+          transparent
+        );
       }
     `,
   ],
@@ -258,19 +251,13 @@ export class PeerProfileComponent {
   readonly UserAvatarType = UserAvatarType;
 
   private readonly nav = inject(NavStateMachineService);
-  private readonly userService = inject(UserService);
   private readonly convList = inject(ConversationListService);
+  private readonly userService = inject(UserService);
+  private readonly msgService = inject(MsgService);
+  private readonly route = inject(RouteService);
   private readonly deletionLock = inject(ThreadDeletionLockService);
-
-  constructor() {}
-
-  readonly busy = signal(false);
-  /** Two-step destructive confirm gate for Unfriend. */
-  readonly confirmUnfriend = signal(false);
-  readonly deleteData = signal(false);
-  /** Two-step destructive confirm gate for Block (mirrors confirmUnfriend; mutually exclusive with it —
-   *  starting one cancels the other so at most one confirm-row is ever visible). */
-  readonly confirmBlock = signal(false);
+  private readonly toast = inject(ToastService);
+  private readonly transloco = inject(TranslocoService);
 
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly threadId = this.convList.openThreadId;
@@ -292,92 +279,95 @@ export class PeerProfileComponent {
     const p = this.peer();
     return p && p.isForeigner ? p.domain : null;
   });
-  /** Whether the caller has blocked this peer (hydrated on the conversation item by the backend's batched
-   *  UserBlock lookup). Drives the Block ↔ Unblock label; patched in place by applyThreadMeta on toggle. */
-  readonly blocked = computed(() => this.userMsgTrd()?.blocked ?? false);
-
-  askUnfriend() {
-    this.confirmBlock.set(false);
-    this.confirmUnfriend.set(true);
-  }
-  cancelUnfriend() {
-    this.confirmUnfriend.set(false);
-  }
-  askBlock() {
-    this.confirmUnfriend.set(false);
-    this.confirmBlock.set(true);
-  }
-  cancelBlock() {
-    this.confirmBlock.set(false);
-  }
-
-  async doUnfriend() {
-    const peer = this.peer();
-    const threadId = this.threadId();
-    if (!peer || threadId === undefined) return;
-    if (!this.deletionLock.begin(threadId)) return;
-    const deleteData = this.deleteData();
-    this.busy.set(true);
-    try {
-      const res = await firstValueFrom(
-        this.userService.deleteFriend({ userId: peer.id, deleteData }),
-      );
-      if (res.code !== 0) return;
-      if (deleteData) {
-        await this.convList.removeThread(threadId);
-        this.nav.closeChat();
-      } else {
-        this.convList.applyThreadMeta(threadId, {
-          friendshipActive: false,
-          conversationState: 'READ_ONLY',
-        });
-      }
-      this.confirmUnfriend.set(false);
-    } catch {
-      // Keep the confirmation visible; the global HTTP error surface explains the network failure.
-    } finally {
-      this.busy.set(false);
-      this.deletionLock.end(threadId);
-      this.convList.load();
-    }
-  }
-
-  /** Block the peer (two-step confirmed). Patches the conversation item's `blocked` flag in place via
-   *  applyThreadMeta so the chat-header menu + blocked banner flip immediately; the panel stays open. */
-  doBlock() {
-    const peer = this.peer();
-    const threadId = this.threadId();
-    if (!peer || threadId === undefined) return;
-    this.busy.set(true);
-    this.userService.setBlock({ userId: peer.id, block: true }).subscribe({
-      next: (res) => {
-        this.busy.set(false);
-        if (res.code !== 0) return;
-        this.convList.applyThreadMeta(threadId, { blocked: true });
-        this.confirmBlock.set(false);
-      },
-      error: () => this.busy.set(false),
-    });
-  }
-
-  /** Unblock the peer (single tap — non-destructive, no confirm). */
-  doUnblock() {
-    const peer = this.peer();
-    const threadId = this.threadId();
-    if (!peer || threadId === undefined) return;
-    this.busy.set(true);
-    this.userService.setBlock({ userId: peer.id, block: false }).subscribe({
-      next: (res) => {
-        this.busy.set(false);
-        if (res.code !== 0) return;
-        this.convList.applyThreadMeta(threadId, { blocked: false });
-      },
-      error: () => this.busy.set(false),
-    });
-  }
 
   /** Close the aside (back to the chat). Clears the aside signal — back won't re-open it. */
   goBack() {
     this.nav.closeAside();
+  }
+
+  toggleBlocked(): void {
+    const trd = this.userMsgTrd();
+    if (!trd) return;
+    const next = !trd.blocked;
+    const apply = () => {
+      this.msgService
+        .setBlocked({ threadId: trd.threadId, blocked: next })
+        .subscribe({
+          next: (res) => {
+            if (res.code !== 0)
+              return this.toast.warn(translateBizResult(res, this.transloco));
+            this.convList.applyThreadMeta(trd.threadId, { blocked: next });
+          },
+          error: () =>
+            this.toast.warn(this.transloco.translate('errors.networkError')),
+        });
+    };
+    if (!next) return apply();
+    this.route.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'profile.block',
+        messageKey: 'profile.blockConfirm',
+        confirmKey: 'profile.block',
+        cancelKey: 'common.cancel',
+        danger: false,
+        messageParams: { name: this.peerDisplayName() },
+      },
+      (result) => {
+        if (result) apply();
+      },
+    );
+  }
+
+  removeFriend(): void {
+    const trd = this.userMsgTrd();
+    const peerId = trd?.peerUser?.id;
+    if (!trd || peerId === undefined) return;
+    this.route.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'chat.unfriendConfirmTitle',
+        messageKey: 'chat.unfriendConfirmBody',
+        confirmKey: 'chat.menuUnfriend',
+        cancelKey: 'common.cancel',
+        checkboxKey: 'chat.alsoDeleteData',
+        danger: true,
+      },
+      (result) => {
+        if (!result) return;
+        const deleteData = typeof result === 'object' && result.checked;
+        void this.finishRemoveFriend(trd, peerId, deleteData);
+      },
+    );
+  }
+
+  private async finishRemoveFriend(
+    trd: ConversationItem,
+    peerId: number,
+    deleteData: boolean,
+  ) {
+    if (!this.deletionLock.begin(trd.threadId)) return;
+    try {
+      const res = await firstValueFrom(
+        this.userService.deleteFriend({ userId: peerId, deleteData }),
+      );
+      if (res.code !== 0)
+        return this.toast.warn(translateBizResult(res, this.transloco));
+      if (deleteData) {
+        await this.convList.removeThread(trd.threadId);
+        this.nav.closeChat();
+      } else {
+        this.convList.applyThreadMeta(trd.threadId, {
+          friendshipActive: false,
+          conversationState: 'READ_ONLY',
+        });
+        this.nav.closeAside();
+      }
+    } catch {
+      this.toast.warn(this.transloco.translate('errors.networkError'));
+    } finally {
+      this.deletionLock.end(trd.threadId);
+      this.convList.load();
+    }
   }
 }

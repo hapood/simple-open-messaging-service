@@ -392,6 +392,14 @@ export class MsgService {
     );
   }
 
+  /** Block / unblock new-message delivery for a conversation; history is retained. */
+  setBlocked(params: { threadId: number; blocked: boolean }) {
+    return this.http.post<StandardResponse>(
+      `${apiPrefix()}/thread/set-blocked`,
+      params,
+    );
+  }
+
   /** Pin / unpin a conversation (pinned-first ordering). */
   setPinned(params: { threadId: number; pinned: boolean }) {
     return this.http.post<StandardResponse>(
@@ -404,14 +412,6 @@ export class MsgService {
   clearHistory(params: { threadId: number }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/thread/clear-history`,
-      params,
-    );
-  }
-
-  /** Permanently remove this conversation from the current user's roster and localizable history. */
-  deleteThread(params: { threadId: number }) {
-    return this.http.post<StandardResponse>(
-      `${apiPrefix()}/thread/delete`,
       params,
     );
   }

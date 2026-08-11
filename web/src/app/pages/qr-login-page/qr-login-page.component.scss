@@ -4,6 +4,8 @@
   @include auth-shell;
 }
 
+@include auth-compact-brand;
+
 .qr-card {
   @include auth-card;
   // Center the QR stage / title / notices horizontally — the one card-level difference from the

@@ -4,11 +4,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
 export const CALL_SID_RE =
-  /^([0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
-
-const FRAME_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
-const DOMAIN_RE =
-  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export const S2S_CALL_OPS = [
   'incoming',
@@ -32,37 +28,64 @@ export const CALL_SIGNAL_KINDS = [
 
 export type S2SCallOp = (typeof S2S_CALL_OPS)[number];
 export type CallSignalKind = (typeof CALL_SIGNAL_KINDS)[number];
+export type CallEndReason = 'completed' | 'timeout' | 'failed';
+export type SdpText = string;
+export type SerializedIceCandidate = string;
+export type SerializedVideoState = string;
+export type UnixEpochMilliseconds = number;
+export type CallSignalPayload =
+  | {
+      id: string;
+      kind: 'offer' | 'answer';
+      data: SdpText;
+    }
+  | {
+      id: string;
+      kind: 'ice';
+      data: SerializedIceCandidate;
+    }
+  | { id: string; kind: 'video-state'; data: SerializedVideoState };
 
-export interface FederatedCallAddress {
-  account: string;
-  domain: string;
-}
-
-export interface S2SCallFrame {
-  id: string;
-  origin: string;
-  ts: number;
-  from: FederatedCallAddress;
-  to: FederatedCallAddress;
+interface S2SCallFrameBase {
   callSid: string;
-  op: S2SCallOp;
   callType: 'AUDIO' | 'VIDEO';
-  endReason?: 'completed' | 'timeout' | 'failed';
-  kind?: CallSignalKind;
-  payload?: string;
-  startedAt?: number;
 }
 
-const COMMON_KEYS = [
-  'id',
-  'origin',
-  'ts',
-  'from',
-  'to',
-  'callSid',
-  'op',
-  'callType',
-] as const;
+type PayloadlessCallOp =
+  | 'accepted'
+  | 'ringing'
+  | 'declined'
+  | 'cancelled'
+  | 'missed';
+
+type PayloadlessCallFrame = {
+  [Op in PayloadlessCallOp]: S2SCallFrameBase & { op: Op };
+}[PayloadlessCallOp];
+
+export type S2SCallFrame =
+  | (S2SCallFrameBase & {
+      op: 'incoming';
+      payload: { fromAccount: string; toAccount: string };
+    })
+  | PayloadlessCallFrame
+  | (S2SCallFrameBase & {
+      op: 'signal';
+      payload: CallSignalPayload;
+    })
+  | (S2SCallFrameBase & {
+      op: 'connected';
+      payload: { startedAt: UnixEpochMilliseconds };
+    })
+  | (S2SCallFrameBase & {
+      op: 'video-upgraded';
+      callType: 'VIDEO';
+    })
+  | (S2SCallFrameBase & {
+      op: 'ended';
+      payload: { endReason: CallEndReason };
+    });
+
+const COMMON_KEYS = ['callSid', 'op', 'callType'] as const;
 
 function malformed(message: string): never {
   throw new BusinessException(
@@ -87,26 +110,9 @@ function isEpochMs(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-function assertAddress(
-  value: unknown,
-  field: string,
-): asserts value is FederatedCallAddress {
-  if (
-    !isRecord(value) ||
-    !hasExactlyKeys(value, ['account', 'domain']) ||
-    typeof value.account !== 'string' ||
-    !isValidAccount(value.account) ||
-    typeof value.domain !== 'string' ||
-    !DOMAIN_RE.test(value.domain)
-  ) {
-    malformed(`malformed ${field} address`);
-  }
-}
-
 /** Validate the complete, closed POST /s2s/v1/call wire shape before quota or state-machine work. */
 export function assertS2SCallFrame(
   value: unknown,
-  localDomain: string,
 ): asserts value is S2SCallFrame {
   if (!isRecord(value)) malformed('call frame must be an object');
 
@@ -118,56 +124,71 @@ export function assertS2SCallFrame(
     malformed('unknown call op');
   }
 
-  const conditionalKeys =
-    op === 'signal'
-      ? ['kind', 'payload']
-      : op === 'connected'
-        ? ['startedAt']
-        : op === 'ended'
-          ? ['endReason']
-          : [];
+  const conditionalKeys = ['incoming', 'signal', 'connected', 'ended'].includes(
+    op,
+  )
+    ? ['payload']
+    : [];
   if (!hasExactlyKeys(value, [...COMMON_KEYS, ...conditionalKeys])) {
     malformed('call frame contains fields not allowed for its op');
   }
 
   if (
-    typeof value.id !== 'string' ||
-    !FRAME_ID_RE.test(value.id) ||
-    typeof value.origin !== 'string' ||
-    !DOMAIN_RE.test(value.origin) ||
-    !isEpochMs(value.ts) ||
     typeof value.callSid !== 'string' ||
     !CALL_SID_RE.test(value.callSid) ||
     (value.callType !== 'AUDIO' && value.callType !== 'VIDEO')
   ) {
     malformed('malformed call frame scalar');
   }
-  assertAddress(value.from, 'from');
-  assertAddress(value.to, 'to');
-  if (value.origin !== value.from.domain) {
-    malformed('call origin must equal from.domain');
-  }
-  if (value.to.domain !== localDomain.toLowerCase().replace(/\.$/, '')) {
-    malformed('call to.domain is not this server');
-  }
 
-  if (op === 'signal') {
+  if (op === 'incoming') {
     if (
-      typeof value.kind !== 'string' ||
-      !(CALL_SIGNAL_KINDS as readonly string[]).includes(value.kind) ||
-      typeof value.payload !== 'string' ||
-      value.payload.length === 0 ||
-      value.payload.length > 32768
+      !isRecord(value.payload) ||
+      !hasExactlyKeys(value.payload, ['fromAccount', 'toAccount']) ||
+      typeof value.payload.fromAccount !== 'string' ||
+      !isValidAccount(value.payload.fromAccount) ||
+      typeof value.payload.toAccount !== 'string' ||
+      !isValidAccount(value.payload.toAccount)
+    ) {
+      malformed('incoming requires valid account payload');
+    }
+  } else if (op === 'signal') {
+    if (!isRecord(value.payload)) malformed('signal requires payload object');
+    const kind = value.payload.kind;
+    if (!hasExactlyKeys(value.payload, ['id', 'kind', 'data'])) {
+      malformed('signal payload contains unknown fields');
+    }
+    const payloadLength =
+      typeof value.payload.data === 'string'
+        ? Array.from(value.payload.data).length
+        : 0;
+    if (
+      typeof kind !== 'string' ||
+      !(CALL_SIGNAL_KINDS as readonly string[]).includes(kind) ||
+      typeof value.payload.id !== 'string' ||
+      !CALL_SID_RE.test(value.payload.id) ||
+      typeof value.payload.data !== 'string' ||
+      payloadLength === 0 ||
+      payloadLength > 32768
     ) {
       malformed('malformed call signal');
     }
   } else if (op === 'connected') {
-    if (!isEpochMs(value.startedAt)) malformed('connected requires startedAt');
-  } else if (op === 'ended' && value.endReason !== undefined) {
     if (
-      !['completed', 'timeout', 'failed'].includes(value.endReason as string)
+      !isRecord(value.payload) ||
+      !hasExactlyKeys(value.payload, ['startedAt']) ||
+      !isEpochMs(value.payload.startedAt)
     ) {
-      malformed('invalid call endReason');
+      malformed('connected requires payload.startedAt');
+    }
+  } else if (op === 'ended') {
+    if (
+      !isRecord(value.payload) ||
+      !hasExactlyKeys(value.payload, ['endReason']) ||
+      typeof value.payload.endReason !== 'string' ||
+      !['completed', 'timeout', 'failed'].includes(value.payload.endReason)
+    ) {
+      malformed('ended requires a valid payload.endReason');
     }
   }
 

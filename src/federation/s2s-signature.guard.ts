@@ -51,7 +51,11 @@ export class S2sSignatureGuard implements CanActivate {
     const headers = this.verify.extractHeaders(req);
 
     // 1. Parse keyId from Signature-Input → signer domain (cheap, no network).
-    const { keyId, domain: signerDomain } = this.verify.parseSigner(headers);
+    const {
+      keyId,
+      domain: signerDomain,
+      expires,
+    } = this.verify.parseSigner(headers);
 
     // 2. Gate 1 allow-list: is this domain a trusted peer? (Cheap indexed lookup BEFORE any fetch.)
     const peer = await this.database.db.query.federatedPeer.findFirst({
@@ -105,7 +109,11 @@ export class S2sSignatureGuard implements CanActivate {
     }
 
     // Stash the verified signer for the handler.
-    req.peer = { domain: signerDomain, keyId };
+    req.peer = {
+      domain: signerDomain,
+      keyId,
+      signatureExpiresAtSec: expires,
+    };
     return true;
   }
 }

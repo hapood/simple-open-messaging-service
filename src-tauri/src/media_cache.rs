@@ -323,6 +323,31 @@ pub(crate) async fn read_chat_thumbnail(
     tokio::fs::read(thumbnail_path(app, &key).ok()?).await.ok()
 }
 
+/** Cache-only thumbnail lookup for size-gated list cards. It may encode a missing thumbnail from a
+ * complete cached original, but it never calls get_or_fetch and therefore never opens the network. */
+pub(crate) async fn get_cached_chat_thumbnail(
+    app: &tauri::AppHandle,
+    proxy: &ProxyState,
+    source_path: &str,
+) -> Result<Vec<u8>, String> {
+    validate_path(source_path)?;
+    let (_, _, key) = request_identity(proxy, source_path);
+    if let Ok(bytes) = tokio::fs::read(thumbnail_path(app, &key)?).await {
+        return Ok(bytes);
+    }
+    let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
+    let _maintenance_guard = maintenance.read().await;
+    let (data_path, meta_path) = cache_paths(app, &key)?;
+    let lock = key_lock(&key).await;
+    let _guard = lock.lock().await;
+    let original = read_cached(&data_path, &meta_path, expected_digest(source_path), true)
+        .await
+        .ok_or_else(|| "original image is not cached".to_string())?;
+    drop(_guard);
+    drop(_maintenance_guard);
+    ensure_chat_thumbnail(app, proxy, source_path, original.bytes).await
+}
+
 /** Best-effort post-original warm-up. The URI response must not wait for this: a later thumbnail request
  * either hits the completed file or joins the same per-thumbnail lock in ensure_chat_thumbnail. */
 pub(crate) fn warm_chat_thumbnail(app: tauri::AppHandle, proxy: ProxyState, source_path: String) {

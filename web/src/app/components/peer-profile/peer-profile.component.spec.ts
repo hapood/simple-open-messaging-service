@@ -5,26 +5,24 @@ import {
   WritableSignal,
 } from '@angular/core';
 import { provideTransloco } from '@jsverse/transloco';
-import { of } from 'rxjs';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { PeerProfileComponent } from './peer-profile.component';
-import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { ConversationItem, User } from '../../services/model';
+import { UserService } from '../../services/user.service';
+import { MsgService } from '../../services/message.service';
+import { RouteService } from '../../services/route.service';
+import { ThreadDeletionLockService } from '../../services/thread-deletion-lock.service';
+import { ToastService } from '../../services/toast.service';
 
 /**
- * PeerProfileComponent unit tests — the destructive P2P actions (Unfriend + Block/Unblock).
- *
- * Focuses on the Block/Unblock behavior: the two-step inline confirm (mirrors Unfriend), its mutual
- * exclusivity with the Unfriend confirm (at most one confirm-row visible), the service call shape
- * (userService.setBlock → convList.applyThreadMeta in-place patch), and that a server-side failure keeps
- * the panel + confirm visible so the error is observable. Drives component signals directly (no template
- * render) like user-avatar.spec — zoneless CD is provided for the constructor's revision probe effect.
+ * PeerProfileComponent unit tests — profile resolution and panel navigation.
  */
-function makeItem(
-  over: { blocked?: boolean; threadId?: number; userId?: number } = {},
-): { item: ConversationItem; peer: User } {
+function makeItem(over: { threadId?: number; userId?: number } = {}): {
+  item: ConversationItem;
+  peer: User;
+} {
   const peer = {
     id: over.userId ?? 42,
     name: 'Alice',
@@ -36,22 +34,15 @@ function makeItem(
   const item = {
     threadId: over.threadId ?? 5,
     peerUser: peer,
-    blocked: over.blocked ?? false,
   } as unknown as ConversationItem;
   return { item, peer };
 }
 
-describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
+describe('PeerProfileComponent', () => {
   let comp: PeerProfileComponent;
-  // Service spies — re-armed per test via .and.returnValue.
-  let deleteFriend: jasmine.Spy;
-  let setBlock: jasmine.Spy;
-  let applyThreadMeta: jasmine.Spy;
-  let removeThread: jasmine.Spy;
-  let closeChat: jasmine.Spy;
-  // Conversation-list state signals — driven from the test to move the open thread / blocked flag.
   let items: WritableSignal<ConversationItem[]>;
   let openThreadId: WritableSignal<number | undefined>;
+  let closeAside: jasmine.Spy;
 
   beforeEach(() => {
     TestBed.resetTestingModule();
@@ -59,11 +50,7 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
     items = signal<ConversationItem[]>([item]);
     openThreadId = signal<number | undefined>(5);
 
-    deleteFriend = jasmine.createSpy('deleteFriend');
-    setBlock = jasmine.createSpy('setBlock');
-    applyThreadMeta = jasmine.createSpy('applyThreadMeta');
-    removeThread = jasmine.createSpy('removeThread');
-    closeChat = jasmine.createSpy('closeChat');
+    closeAside = jasmine.createSpy('closeAside');
 
     TestBed.configureTestingModule({
       providers: [
@@ -80,34 +67,27 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
           loader: InlineTranslocoLoader,
         }),
         PeerProfileComponent,
-        {
-          provide: UserService,
-          useValue: {
-            deleteFriend,
-            setBlock,
-          } as unknown as UserService,
-        },
+        { provide: UserService, useValue: {} },
+        { provide: MsgService, useValue: {} },
+        { provide: RouteService, useValue: {} },
+        { provide: ThreadDeletionLockService, useValue: {} },
+        { provide: ToastService, useValue: {} },
         {
           provide: ConversationListService,
           useValue: {
             openThreadId,
             items,
-            applyThreadMeta,
-            removeThread,
-            load: jasmine.createSpy('load'),
-            updatePeerUser: jasmine.createSpy(),
           } as unknown as ConversationListService,
         },
         {
           provide: NavStateMachineService,
           useValue: {
-            closeChat,
-            closeAside: jasmine.createSpy(),
+            closeAside,
           } as unknown as NavStateMachineService,
         },
       ],
     })
-      // These tests assert the component's class logic (signals + service calls), not the DOM. Blank the
+      // These tests assert the component's class logic, not the DOM. Blank the
       // template so the view's transitive deps (<app-user-avatar> → AvatarRepository → HttpClient, IDB, …)
       // are never instantiated — the unit under test stays isolated from its view's rendering concerns.
       .overrideComponent(PeerProfileComponent, { set: { template: '' } });
@@ -117,97 +97,13 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
   });
   afterEach(() => TestBed.resetTestingModule());
 
-  it('resolves the peer + blocked flag from the open thread', () => {
+  it('resolves the peer from the open thread', () => {
     expect(comp.peer()?.id).toBe(42);
-    expect(comp.blocked()).toBe(false);
-    const { peer } = makeItem({ blocked: true });
-    items.set([
-      {
-        threadId: 5,
-        peerUser: peer,
-        blocked: true,
-      } as unknown as ConversationItem,
-    ]);
-    expect(comp.blocked()).toBe(true);
+    expect(comp.peerDisplayName()).toBe('Alice');
   });
 
-  it('askBlock enters the block confirm and cancels an open unfriend confirm (mutually exclusive)', () => {
-    comp.askUnfriend();
-    expect(comp.confirmUnfriend()).toBe(true);
-    comp.askBlock();
-    expect(comp.confirmBlock()).toBe(true);
-    expect(comp.confirmUnfriend()).toBe(false);
-  });
-
-  it('askUnfriend cancels an open block confirm (symmetric — at most one confirm-row)', () => {
-    comp.askBlock();
-    expect(comp.confirmBlock()).toBe(true);
-    comp.askUnfriend();
-    expect(comp.confirmUnfriend()).toBe(true);
-    expect(comp.confirmBlock()).toBe(false);
-  });
-
-  it('cancelBlock leaves the confirm state', () => {
-    comp.askBlock();
-    comp.cancelBlock();
-    expect(comp.confirmBlock()).toBe(false);
-  });
-
-  it('doBlock blocks the peer and patches the conversation item in place, then dismisses the confirm', () => {
-    setBlock.and.returnValue(of({ code: 0 }));
-    comp.askBlock();
-    comp.doBlock();
-    expect(setBlock.calls.mostRecent().args[0]).toEqual({
-      userId: 42,
-      block: true,
-    });
-    expect(applyThreadMeta).toHaveBeenCalledWith(5, { blocked: true });
-    expect(comp.confirmBlock()).toBe(false);
-  });
-
-  it('doBlock on a non-zero code keeps the panel + confirm visible (server failure is observable)', () => {
-    setBlock.and.returnValue(of({ code: 20004 }));
-    comp.askBlock();
-    comp.doBlock();
-    expect(setBlock).toHaveBeenCalled();
-    expect(applyThreadMeta).not.toHaveBeenCalled();
-    expect(comp.confirmBlock()).toBe(true); // unchanged so the user can retry
-  });
-
-  it('doUnblock unblocks the peer in a single tap (no confirm) and patches the item', () => {
-    setBlock.and.returnValue(of({ code: 0 }));
-    comp.doUnblock();
-    expect(setBlock.calls.mostRecent().args[0]).toEqual({
-      userId: 42,
-      block: false,
-    });
-    expect(applyThreadMeta).toHaveBeenCalledWith(5, { blocked: false });
-  });
-
-  it('doUnfriend ends the friendship but retains readable history by default', async () => {
-    deleteFriend.and.returnValue(of({ code: 0 }));
-    await comp.doUnfriend();
-    expect(deleteFriend.calls.mostRecent().args[0]).toEqual({
-      userId: 42,
-      deleteData: false,
-    });
-    expect(applyThreadMeta).toHaveBeenCalledWith(5, {
-      friendshipActive: false,
-      conversationState: 'READ_ONLY',
-    });
-    expect(removeThread).not.toHaveBeenCalled();
-    expect(closeChat).not.toHaveBeenCalled();
-  });
-
-  it('guards: with no peer resolved, doBlock/doUnblock/doUnfriend are all no-ops', () => {
-    openThreadId.set(999); // no matching item → peer() is undefined
-    setBlock.and.returnValue(of({ code: 0 }));
-    deleteFriend.and.returnValue(of({ code: 0 }));
-    comp.doBlock();
-    comp.doUnblock();
-    comp.doUnfriend();
-    expect(setBlock).not.toHaveBeenCalled();
-    expect(deleteFriend).not.toHaveBeenCalled();
-    expect(removeThread).not.toHaveBeenCalled();
+  it('closes the profile panel when navigating back', () => {
+    comp.goBack();
+    expect(closeAside).toHaveBeenCalled();
   });
 });

@@ -66,9 +66,11 @@ describe('Federation v1 protocol documentation', () => {
       properties: { contentType: { enum: string[] } };
     }>('message-content.schema.json');
     const call = readSchema<{
-      $defs: { base: { properties: { kind: { enum: string[] } } } };
+      $defs: { signalKind: { enum: string[] } };
       oneOf: Array<{
-        properties: { op: { enum?: string[]; const?: string } };
+        allOf: Array<{
+          properties?: { op: { enum?: string[]; const?: string } };
+        }>;
       }>;
     }>('call.schema.json');
 
@@ -83,11 +85,13 @@ describe('Federation v1 protocol documentation', () => {
     expect(content.properties.contentType.enum).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
     );
-    expect(call.$defs.base.properties.kind.enum).toEqual(CALL_SIGNAL_KINDS);
+    expect(call.$defs.signalKind.enum).toEqual(CALL_SIGNAL_KINDS);
     expect(
       call.oneOf
         .flatMap((branch) => {
-          const op = branch.properties.op;
+          const op = branch.allOf.find((part) => part.properties)?.properties
+            ?.op;
+          if (!op) return [];
           return op.enum ?? (op.const === undefined ? [] : [op.const]);
         })
         .sort(),

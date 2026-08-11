@@ -58,7 +58,7 @@ declare module 'fastify' {
      * the verified signer's domain + keyId. Downstream handlers trust this (the guard verified the
      * signature + allow-list + binding rule).
      */
-    peer?: { domain: string; keyId: string };
+    peer?: { domain: string; keyId: string; signatureExpiresAtSec: number };
   }
 }
 

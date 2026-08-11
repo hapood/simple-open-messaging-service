@@ -113,8 +113,10 @@ trust，也不得开放其他 S2S endpoint。双方管理员可据此分别验�
 
 ## 6. 请求契约与通用 Scalar
 
-JSON 请求使用 UTF-8。wire identity 使用 `{ account, domain }`，数据库 ID 不得跨 S2S。domain
-比较使用小写、移除末尾根点后的规范形式；account 按 v1 account grammar 规范化。
+JSON 请求使用 UTF-8；有 JSON body 的请求必须发送 `Content-Type: application/json`。wire identity
+通常使用 `{ account, domain }`，数据库 ID 不得跨 S2S；某个 operation 明确定义由已验证 signer 或
+request authority 提供 domain 时，body 不得再重复该 domain。domain 比较使用小写、移除末尾根点后的
+规范形式；account 按 v1 account grammar 规范化。
 
 revision、HWM 和 cursor 使用匹配 `^(0|[1-9][0-9]*)$` 的十进制字符串，不使用 JSON number。
 timestamp 使用 Unix epoch milliseconds，并且必须是非负安全整数。SHA-256 digest 是 64 位小写
@@ -122,10 +124,55 @@ timestamp 使用 Unix epoch milliseconds，并且必须是非负安全整数。S
 
 资源 identity 放 path，分页和消息授权坐标放 query，POST command 放 JSON body，HTTP Message
 Signature、Range 和内容摘要放 header。重复 query key、缺失必选值、空值、非法编码或越界数值均
-视为 malformed request。signer domain 必须与 body 中声明的 `origin`/`from.domain` 一致。
+视为 malformed request。operation 的 body 如果包含 `origin` 或 `{ account, domain }` 形式的
+`from`，其中 domain 必须等于已验证 signer domain；不携带这些字段的 operation 直接使用 signer
+domain 作为发送服务器身份。
 
 除 well-known、ignite 和 identity 的专门流程外，全部 S2S 请求必须由已 pinned 且 trusted 的 peer
-按 RFC 9421 签名；签名覆盖 method、authority、path/query 和 body digest。
+使用以下固定 HTTP Message Signature profile。这里列出的格式是 Federation v1 wire contract，不由
+实现自行选择：
+
+| 项目                 | Federation v1 固定值或规则                                                              |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| 签名标准             | RFC 9421 wire format，单一 label `sig1`                                                 |
+| 算法                 | `ed25519`                                                                               |
+| 必选 header          | `Date`、`Content-Digest`、`Signature-Input`、`Signature`                                |
+| 必须覆盖的组件       | `"@method" "@path" "@query" "@authority" "date" "content-digest"`                       |
+| `keyid`              | signer 在 discovery document 中发布的当前 signing key ID；第一个 `/` 前是 signer domain |
+| `created`、`expires` | Unix epoch seconds；`created <= expires <= created + 300`                               |
+| `Date`               | IMF-fixdate，表示与 `created` 相同的秒，允许最多 1 秒舍入差                             |
+| 无 query 的 `@query` | 单个字符 `?`                                                                            |
+| `Content-Digest`     | RFC 9530 `sha-256=:<base64>:`；摘要对 request body 原始字节计算，空 body 使用空字节串   |
+
+`Signature-Input` 使用 RFC 9421 Structured Fields 语法，label 为 `sig1`，并且必须包含上述六个覆盖
+组件以及 `created`、`expires`、`keyid`、`alg="ed25519"` 参数。发送方使用以下规范序列化；接收方按
+`Signature-Input` 中实际声明的组件顺序构造签名基串，不把参数的文本排列顺序当作鉴权条件：
+
+```text
+sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=<seconds>;expires=<seconds>;keyid="<key-id>";alg="ed25519"
+```
+
+签名基串由 RFC 9421 库根据 `Signature-Input` 构造。上述规范序列化对应以下七行，行之间使用 `LF`，
+最后一行之后没有额外 `LF`：
+
+```text
+"@method": <uppercase-method>
+"@path": <absolute-path-without-query>
+"@query": <raw-query-with-leading-question-mark-or-question-mark-only>
+"@authority": <HTTP-authority>
+"date": <Date-header-value>
+"content-digest": <Content-Digest-header-value>
+"@signature-params": <Signature-Input中sig1=之后的完整值>
+```
+
+`Signature` 的值必须是 `sig1=:<base64-ed25519-signature>:`。接收方必须以收到的 request body 原始
+字节验证 digest 和签名，不能重新序列化 JSON 后验证。接收方必须拒绝早于本地时间 300 秒以上的
+`created`、晚于本地时间 60 秒以上的 `created`、已经过期的 `expires`，以及任何字段、顺序、label
+或算法不符合本 profile 的签名。固定、非秘密的完整签名样例见
+[`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json)。
+
+Federation v1 不对普通 JSON response 再加 HTTP Message Signature；response 的来源和完整性由已经
+验证 hostname 的 TLS 连接提供。`media` operation 明确定义的 response digest 规则不受此句影响。
 
 ## 7. 响应、错误与 Caller Action
 
@@ -137,8 +184,9 @@ consumer 不得仅凭 JSON body 把 401/403、identity conflict 或 5xx 当作�
 所有允许出现在 S2S JSON error envelope 中的稳定 code 及 caller action 由
 [Federation v1 错误码注册表](./errors.md) 定义；`message` 仅供诊断，不能作为机器分支条件。
 
-`feed-revisions` 和 `call` 成功返回 202；这表示当前 command 已被接受处理，不表示对端 durable
-feed 已完全排空。网络错误和 5xx MAY 重试；malformed、binding、authorization 和 identity
+`feed-revisions` 成功返回 202；这表示 revision hint 已被接受，不表示对端 durable feed 已完全排空。
+`call` 在 frame 已完成同步验证和临时状态处理后返回 200；它不表示 endpoint 已收到事件或媒体已连通。
+网络错误和 5xx MAY 重试；malformed、binding、authorization 和 identity
 conflict MUST NOT 原样无限重试。cursor 只能在 response 完整验证且本地副作用与 cursor 同事务
 提交后推进。
 
@@ -157,8 +205,8 @@ revision 是完整 no-op。P2P 只有双方方向均为 `FRIEND` 才成立；群
 媒体与转发由 [Federation v1 Message Feed](./message-feed.md) 定义。二者与本文
 共同构成 v1 规范性正文，概要不能覆盖其字段级要求。
 
-一对一实时通话采用 WebRTC media/JSEP，并以签名 `/s2s/v1/call` frame 承载 SOMS 联邦信令。完整 frame、
-生命周期、失败语义、codec 基线以及同一连接上的 AUDIO→VIDEO 单向升级由
+一对一实时通话采用 WebRTC media/JSEP，并以签名 `/s2s/v1/call` frame 承载 SOMS 联邦信令。完整 HTTP
+operation、frame、生命周期、失败语义以及同一连接上的 AUDIO→VIDEO 单向升级由
 [Federation v1 语音与视频通话](./calls.md) 定义。实时 frame 不进入 feed；终态历史是普通 `CALL`
 message。
 

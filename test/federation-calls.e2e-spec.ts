@@ -176,6 +176,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .post('/api/v1/calls/signal')
         .set('Authorization', `Bearer ${tokenErin}`)
         .send({
+          id: randomUUID(),
           callSid,
           toUserId: frankStubIdOnA,
           kind: 'offer',
@@ -204,6 +205,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         .post('/api/v1/calls/signal')
         .set('Authorization', `Bearer ${tokenFrank}`)
         .send({
+          id: randomUUID(),
           callSid,
           toUserId: erinStubIdOnB,
           kind: 'answer',
@@ -219,7 +221,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           : null;
       });
 
-      // The media leg connects (either client reports) → `connected` is the real startedAt authority.
+      // The callee endpoint confirms media-up; its server is the sole connected/startedAt authority.
       const connectedP = waitCallEvent(erinSse, 'connected', callSid);
       const connRes = await request(appB.baseUrl)
         .post('/api/v1/calls/connected')
@@ -228,12 +230,12 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       expect(connRes.body.code).toBe(BusinessCode.OK);
       await connectedP;
 
-      // Frank requests an in-place AUDIO → VIDEO upgrade. The mirror updates locally and relays the
-      // signed `video-upgraded` frame to the origin; Erin observes it without creating a second call.
-      const upgradedP = waitCallEvent(erinSse, 'video-upgraded', callSid);
-      const upgradeRes = await request(appB.baseUrl)
+      // After caller-authored renegotiation succeeds, the caller server is the sole video-upgraded
+      // authority; Frank observes the signed lifecycle frame without creating a second call.
+      const upgradedP = waitCallEvent(frankSse, 'video-upgraded', callSid);
+      const upgradeRes = await request(appA.baseUrl)
         .post('/api/v1/calls/upgrade-video')
-        .set('Authorization', `Bearer ${tokenFrank}`)
+        .set('Authorization', `Bearer ${tokenErin}`)
         .send({ callSid });
       expect(upgradeRes.body.code).toBe(BusinessCode.OK);
       await upgradedP;

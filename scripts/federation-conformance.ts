@@ -8,10 +8,10 @@ import Ajv2020Module, {
   type ValidateFunction,
 } from 'ajv/dist/2020.js';
 import {
-  buildSignatureBase,
-  buildSignatureParams,
+  SignatureService,
   contentDigest,
 } from '../src/federation/signature.service.js';
+import type { KeypairService } from '../src/federation/keypair.service.js';
 import {
   FEDERATION_API_PREFIX,
   FEDERATION_PROTOCOL_VERSION,
@@ -92,18 +92,6 @@ function semanticValid(schema: string, value: unknown): boolean {
       doc.rootKey.fingerprint === fingerprint &&
       doc.keys.length === 1 &&
       doc.keys[0]?.ed25519 === doc.rootKey.ed25519
-    );
-  }
-  if (schema === 'urn:soms:federation:v1:call') {
-    const frame = value as {
-      origin?: unknown;
-      from?: { domain?: unknown };
-      to?: { domain?: unknown };
-      ts?: unknown;
-      startedAt?: unknown;
-    };
-    return (
-      frame.origin === frame.from?.domain && frame.to?.domain !== frame.origin
     );
   }
   if (schema === 'urn:soms:federation:v1:state-feed') {
@@ -248,10 +236,8 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
   }
 }
 
-async function validateSignatureVector(): Promise<void> {
-  const vector = (await json(
-    join(specDir, 'vectors', 'http-message-signature.json'),
-  )) as {
+async function validateSignatureVector(file: string): Promise<void> {
+  const vector = (await json(join(specDir, 'vectors', file))) as {
     privateKeyBase64: string;
     publicKeyBase64: string;
     request: {
@@ -268,39 +254,39 @@ async function validateSignatureVector(): Promise<void> {
     signatureBase: string;
   };
   const digest = contentDigest(vector.request.body);
-  const params = buildSignatureParams(
-    vector.keyId,
-    vector.created,
-    vector.expires,
-  );
-  const base = buildSignatureBase(
+  const privateKey = Buffer.from(vector.privateKeyBase64, 'base64');
+  const service = new SignatureService({
+    getKeyId: () => vector.keyId,
+    getPrivateKey: () => privateKey,
+  } as unknown as KeypairService);
+  const headers = await service.signOutbound(
     {
       method: vector.request.method,
-      path: vector.request.path,
-      query: vector.request.query,
-      authority: vector.request.authority,
-      date: vector.headers.date,
-      contentDigest: digest,
+      url: new URL(
+        `https://${vector.request.authority}${vector.request.path}${vector.request.query === '?' ? '' : vector.request.query}`,
+      ),
+      body: vector.request.body,
     },
-    params,
+    new Date(vector.created * 1000),
   );
-  const signature = ed25519.sign(
-    new TextEncoder().encode(base),
-    Buffer.from(vector.privateKeyBase64, 'base64'),
-  );
-  const encoded = Buffer.from(signature).toString('base64');
+  const encoded = /^sig1=:([^:]+):$/.exec(headers.signature)?.[1];
+  const signature = encoded ? Buffer.from(encoded, 'base64') : null;
   if (
+    vector.expires !== vector.created + 300 ||
     digest !== vector.headers['content-digest'] ||
-    base !== vector.signatureBase ||
-    vector.headers['signature-input'] !== `sig1=${params}` ||
-    vector.headers.signature !== `sig1=:${encoded}:` ||
+    headers.date !== vector.headers.date ||
+    headers['signature-input'] !== vector.headers['signature-input'] ||
+    headers.signature !== vector.headers.signature ||
+    !signature ||
     !ed25519.verify(
       signature,
-      new TextEncoder().encode(base),
+      new TextEncoder().encode(vector.signatureBase),
       Buffer.from(vector.publicKeyBase64, 'base64'),
     )
   ) {
-    throw new Error('HTTP Message Signature vector does not reproduce exactly');
+    throw new Error(
+      `${file}: HTTP Message Signature vector does not reproduce exactly`,
+    );
   }
 }
 
@@ -330,7 +316,8 @@ async function main(): Promise<void> {
   }
   await validateManifest(ajv);
   await validateVectors(ajv);
-  await validateSignatureVector();
+  await validateSignatureVector('http-message-signature.json');
+  await validateSignatureVector('call-http-message-signature.json');
   console.log('Federation v1 conformance package: PASS');
 }
 

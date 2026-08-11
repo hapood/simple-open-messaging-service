@@ -29,24 +29,25 @@ const LABEL_KEYS: Record<string, string> = {
   styles: `
     :host {
       display: block;
-      padding: 0.25rem 1rem;
+      box-sizing: border-box;
+      padding: var(--chat-timeline-gap-item) var(--chat-timeline-inset-inline) 0;
     }
     .system-message {
       width: fit-content;
       max-width: min(32rem, 90%);
-      margin: 0.25rem auto;
-      padding: 0.25rem 0.65rem;
+      margin: 0 auto;
+      padding: 2px 10px;
+      box-sizing: border-box;
       border-radius: 999px;
       color: var(--chat-system-text);
       background: var(--chat-system-bg);
       border: 1px solid var(--chat-system-border);
-      box-shadow: var(--chat-system-shadow);
-      font-size: 0.75rem;
-      line-height: 1.25rem;
+      font-size: 12px;
+      line-height: 18px;
       text-align: center;
     }
     time {
-      margin-left: 0.35rem;
+      margin-left: 6px;
       opacity: 0.7;
     }
   `,

@@ -26,6 +26,7 @@ export class AuthViewportDirective {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
   private readonly destroyRef = inject(DestroyRef);
   private readonly focusedLift = signal(0);
+  private readonly ownsFocus = signal(false);
   private measureFrame: number | null = null;
 
   constructor() {
@@ -43,19 +44,19 @@ export class AuthViewportDirective {
 
   @HostBinding('style.--auth-keyboard-inset')
   get keyboardInset(): string {
-    return `${this.keyboard.inset()}px`;
+    return `${this.ownsFocus() ? this.keyboard.inset() : 0}px`;
   }
 
   @HostBinding('class.auth-keyboard-open')
   get keyboardOpen(): boolean {
-    return this.keyboard.open();
+    return this.ownsFocus() && this.keyboard.open();
   }
 
   /** Native-only styling hook. Browser auth pages keep their existing soft-keyboard layout; the subtle
    * centered lift is an Android shell treatment backed by authoritative WindowInsets geometry. */
   @HostBinding('class.auth-native-keyboard-open')
   get nativeKeyboardOpen(): boolean {
-    return this.keyboard.available && this.keyboard.open();
+    return this.ownsFocus() && this.keyboard.available && this.keyboard.open();
   }
 
   @HostBinding('style.--auth-focused-lift')
@@ -80,13 +81,16 @@ export class AuthViewportDirective {
   }
 
   private measureFocusedLift(): void {
-    if (!this.keyboard.available || !this.keyboard.open()) {
+    const active = document.activeElement;
+    const ownsFocus = active instanceof HTMLElement && this.host.contains(active);
+    this.ownsFocus.set(ownsFocus);
+
+    if (!ownsFocus || !this.keyboard.available || !this.keyboard.open()) {
       this.focusedLift.set(0);
       return;
     }
 
-    const active = document.activeElement;
-    if (!(active instanceof HTMLInputElement) || !this.host.contains(active)) {
+    if (!(active instanceof HTMLInputElement)) {
       this.focusedLift.set(0);
       return;
     }

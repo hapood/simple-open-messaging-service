@@ -72,7 +72,9 @@ export class MessageFanoutService {
     // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push —
     // the blocked user is invisible to the blocker's message stream).
     const blockers = await this.userBlockService.blockersOf(senderUserId);
-    const sseTargets = participants.filter((p) => !blockers.has(p.userId));
+    const sseTargets = participants.filter(
+      (p) => !p.blocked && !blockers.has(p.userId),
+    );
     sseTargets.forEach((p) => {
       this.sseService.onNewMessage(p.userId, threadId, message.seq, ts);
     });

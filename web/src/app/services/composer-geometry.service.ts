@@ -22,6 +22,8 @@ export class ComposerGeometryService {
     const sync = (): void => {
       const composer = container.querySelector<HTMLElement>('app-chat-input');
       if (composer) this.syncHeight(this.composerLayoutHeight(composer));
+      else if (container.classList.contains('msg-container--friendship-ended'))
+        this.syncHeight(0);
       else this.syncForWidth(container.clientWidth);
     };
     sync();
@@ -64,7 +66,7 @@ export class ComposerGeometryService {
 
   private syncHeight(height: number): void {
     const next = Math.max(0, Math.round(height));
-    if (!next || next === this.lastHeight) return;
+    if (next === this.lastHeight) return;
     this.lastHeight = next;
     document.documentElement.style.setProperty(
       '--soms-composer-height',

@@ -51,7 +51,16 @@ function mkMocks() {
               avatar: 'a.webp',
             }),
           },
+          callTombstone: { findFirst: vi.fn().mockResolvedValue(null) },
         },
+        delete: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+        insert: vi.fn(() => ({
+          values: vi.fn(() => ({
+            onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+          })),
+        })),
       },
     },
     sse: { onCallEvent: vi.fn(), onCallSignal: vi.fn() },
@@ -142,6 +151,31 @@ describe('CallsService.initiate', () => {
     ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_ALLOWED,
     );
+  });
+
+  it('dedupes a retried endpoint signal ID before staging or fan-out', async () => {
+    const { svc, m } = mkService();
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    const signal = {
+      id: 'signal-retry',
+      callSid: 'cs1',
+      toUserId: 2,
+      kind: 'offer' as const,
+      payload: 'OFFER_SDP',
+    };
+
+    await svc.signal(1, signal);
+    await svc.signal(1, signal);
+
+    expect(m.sse.onCallSignal).toHaveBeenCalledTimes(1);
+    expect(svc.signaling(2, 'cs1')).toEqual({
+      offer: 'OFFER_SDP',
+      ice: [],
+    });
   });
 
   it('refuses a non-friend callee (no P2P thread)', async () => {
@@ -389,6 +423,10 @@ describe('CallsService terminal bubble persistence', () => {
     expect(c.status).toBe('failed'); // a connection failure
     expect(c.startedAt).toBeUndefined(); // never really connected
     expect(c.durationMs).toBeUndefined();
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ type: 'ended', endReason: 'failed' }),
+    );
   });
 
   it('end with reason `failed` after connected → failed WITH duration (connected-then-failed)', async () => {
@@ -540,6 +578,10 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
       callType: 'VIDEO',
       status: 'completed',
     });
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ type: 'ended', endReason: 'completed' }),
+    );
   });
 
   it('rejects video upgrade before media connects or from a non-participant', async () => {
@@ -582,6 +624,7 @@ describe('CallsService.signal (relay)', () => {
     });
     await svc.accept(2, 'cs1');
     await svc.signal(1, {
+      id: 'signal-1',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'ice',
@@ -590,6 +633,7 @@ describe('CallsService.signal (relay)', () => {
     expect(m.sse.onCallSignal).toHaveBeenCalledWith(
       2,
       expect.objectContaining({
+        id: 'signal-1',
         callSid: 'cs1',
         fromUserId: 1,
         kind: 'ice',
@@ -607,6 +651,7 @@ describe('CallsService.signal (relay)', () => {
     });
     await expect(
       svc.signal(99, {
+        id: 'signal-1',
         callSid: 'cs1',
         toUserId: 2,
         kind: 'ice',
@@ -626,6 +671,7 @@ describe('CallsService.signal (relay)', () => {
     });
     await expect(
       svc.signal(1, {
+        id: 'signal-1',
         callSid: 'cs1',
         toUserId: 77,
         kind: 'ice',
@@ -640,6 +686,7 @@ describe('CallsService.signal (relay)', () => {
     const { svc } = mkService();
     await expect(
       svc.signal(1, {
+        id: 'signal-1',
         callSid: 'nope',
         toUserId: 2,
         kind: 'ice',
@@ -719,16 +766,25 @@ describe('CallsService ringing timeout', () => {
 /** Build an inbound S2SCallFrame (the wire shape FederationService resolves + emits on
  *  'call.frame.inbound'). Defaults describe S_B's server ringing OUR local user (alice@aaa.local). */
 function mkFrame(p: Partial<S2SCallFrame> = {}): S2SCallFrame {
+  const op = p.op ?? 'incoming';
+  const suppliedPayload = (p as { payload?: Record<string, unknown> }).payload;
   return {
-    id: 'fid1',
-    origin: 'bbb.local',
-    ts: 0,
-    from: { account: 'bob', domain: 'bbb.local' },
-    to: { account: 'alice', domain: 'aaa.local' },
     callSid: 'cs1',
-    op: 'incoming',
+    op,
     callType: 'AUDIO',
     ...p,
+    ...(op === 'incoming'
+      ? {
+          payload: {
+            fromAccount: 'bob',
+            toAccount: 'alice',
+            ...suppliedPayload,
+          },
+        }
+      : {}),
+    ...(op === 'signal' && suppliedPayload
+      ? { payload: { id: 'signal-1', ...suppliedPayload } }
+      : {}),
   } as S2SCallFrame;
 }
 
@@ -739,13 +795,16 @@ function inbound(
     localUserId: number;
     peerStubId: number;
     threadId?: number;
+    peerDomain?: string;
     frame: S2SCallFrame;
   },
 ): Promise<void> {
   return svc.onInboundCallFrame({
     localUserId: args.localUserId,
     peerStubId: args.peerStubId,
+    peerDomain: args.peerDomain ?? 'bbb.local',
     threadId: args.threadId ?? 10,
+    signatureExpiresAtSec: Math.floor(Date.now() / 1000) + 300,
     frame: args.frame,
   });
 }
@@ -808,10 +867,96 @@ describe('CallsService federated initiate (outbound)', () => {
       svc.initiate(1, { callSid: 'csX', calleeUserId: 2, callType: 'AUDIO' }),
     ).resolves.toBeDefined();
   });
+
+  it('sends cancelled when the caller ring safety timeout fires', async () => {
+    vi.useFakeTimers();
+    try {
+      const { svc, m } = mkService();
+      m.database.db.query.user.findFirst.mockResolvedValue({
+        isForeigner: true,
+        account: 'bob',
+        domain: 'bbb.local',
+        name: 'Bob',
+        avatar: '',
+      });
+      await svc.initiate(1, {
+        callSid: 'cs1',
+        calleeUserId: 2,
+        callType: 'AUDIO',
+      });
+      m.federation.sendCallFrame.mockClear();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+        expect.objectContaining({ op: 'cancelled', callSid: 'cs1' }),
+        'bbb.local',
+      );
+      expect(lastBubbleContent(m)?.status).toBe('missed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends ended(timeout) when the callee connect timeout fires', async () => {
+    vi.useFakeTimers();
+    try {
+      const { svc, m } = mkService();
+      await inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame(),
+      });
+      await svc.accept(2, 'cs1');
+      m.federation.sendCallFrame.mockClear();
+
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+        expect.objectContaining({
+          op: 'ended',
+          callSid: 'cs1',
+          endReason: 'timeout',
+        }),
+        'bbb.local',
+      );
+      expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let the caller server author connected', async () => {
+    const { svc, m } = mkService();
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
+    });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await inbound(svc, {
+      localUserId: 1,
+      peerStubId: 2,
+      frame: mkFrame({ op: 'accepted' }),
+    });
+    m.federation.sendCallFrame.mockClear();
+    m.sse.onCallEvent.mockClear();
+
+    await svc.connected(1, 'cs1');
+
+    expect(m.federation.sendCallFrame).not.toHaveBeenCalled();
+    expect(m.sse.onCallEvent).not.toHaveBeenCalled();
+  });
 });
 
 describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
-  it('incoming registers a mirror (origin false), rings the local user, ticks quota once', async () => {
+  it('incoming registers callee-side state, rings the local user, and ticks quota once', async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
@@ -824,11 +969,11 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     );
     expect(m.quota.tick).toHaveBeenCalledWith('bbb.local', 'requests');
     expect(m.quota.tick).toHaveBeenCalledTimes(1);
-    // origin=false → no terminal bubble is ever authored on this (callee) side.
+    // The callee server never authors the terminal bubble.
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
   });
 
-  it('incoming on a busy local user throws CALL_BUSY @422 (non-demoting) + burns no quota', async () => {
+  it('incoming on a busy local user returns CALL_BUSY as a business result + burns no quota', async () => {
     const { svc, m } = mkService();
     await svc.initiate(2, {
       callSid: 'local1',
@@ -855,9 +1000,120 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     expect(m.quota.tick).not.toHaveBeenCalled();
   });
 
-  it('accepted + connected transition the mirror; the ORIGIN authors the completed bubble', async () => {
-    // Seed an ORIGIN live call (caller's server) via a federated initiate, then drive the inbound
-    // accepted + connected + ended frames the peer sends back — the origin must author the `completed`
+  it('preflights an incoming account collision before identity resolution', async () => {
+    const { svc } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+
+    expect(
+      svc.onInboundIncomingPreflight({
+        peerDomain: 'bbb.local',
+        frame: mkFrame(),
+      }),
+    ).toBe(true);
+    expect(() =>
+      svc.onInboundIncomingPreflight({
+        peerDomain: 'bbb.local',
+        frame: mkFrame({
+          payload: { fromAccount: 'mallory', toAccount: 'bob' },
+        }),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        bizCode: BusinessCode.FEDERATION_MALFORMED,
+      }),
+    );
+  });
+
+  it('rejects a callSid collision instead of attaching it to the active call', async () => {
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    m.quota.tick.mockClear();
+
+    await expect(
+      inbound(svc, {
+        localUserId: 3,
+        peerStubId: 5,
+        frame: mkFrame({
+          payload: { fromAccount: 'bob', toAccount: 'charlie' },
+        }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        (e as { bizCode?: number }).bizCode ===
+        BusinessCode.FEDERATION_MALFORMED,
+    );
+    expect(m.quota.tick).not.toHaveBeenCalled();
+  });
+
+  it('treats a later frame from another signer as an unknown call without touching the active call', async () => {
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    m.sse.onCallSignal.mockClear();
+
+    await expect(
+      inbound(svc, {
+        localUserId: 3,
+        peerStubId: 5,
+        peerDomain: 'other.local',
+        frame: mkFrame({
+          op: 'signal',
+          payload: { kind: 'ice', data: '{}' },
+        }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        (e as { bizCode?: number }).bizCode === BusinessCode.CALL_NOT_ALLOWED,
+    );
+    expect(m.sse.onCallSignal).not.toHaveBeenCalled();
+  });
+
+  it('rejects an op sent in the opposite server direction', async () => {
+    const { svc } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+
+    await expect(
+      inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame({ op: 'accepted' }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        (e as { bizCode?: number }).bizCode ===
+        BusinessCode.FEDERATION_MALFORMED,
+    );
+  });
+
+  it('rejects connected and video-upgraded before their prerequisite state', async () => {
+    const { svc } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+
+    await expect(
+      inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame({
+          op: 'connected',
+          payload: { startedAt: Date.now() },
+        }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+    await expect(
+      inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame({ op: 'video-upgraded', callType: 'VIDEO' }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+  });
+
+  it('accepted + connected transition the caller-side call and author the completed bubble', async () => {
+    // Seed a caller-side live call via a federated initiate, then drive the inbound
+    // accepted + connected + ended frames the peer sends back — the caller server authors the `completed`
     // bubble, stamping startedAt from the `connected` frame (NOT `accepted`).
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
@@ -885,30 +1141,61 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await inbound(svc, {
       localUserId: 1,
       peerStubId: 2,
-      frame: mkFrame({ op: 'connected', startedAt: 1000 }),
+      frame: mkFrame({ op: 'connected', payload: { startedAt: 1000 } }),
     });
     await inbound(svc, {
       localUserId: 1,
       peerStubId: 2,
-      frame: mkFrame({ op: 'ended', endReason: 'completed' }),
+      frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
     expect(lastBubbleContent(m)?.status).toBe('completed');
     expect(lastBubbleContent(m)?.startedAt).toBe(1000); // from the `connected` frame, not `accepted`
   });
 
-  it('applies a federated video upgrade to the mirror and notifies its local participant', async () => {
+  it('absorbs a connected replay and preserves the first accepted startedAt', async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
+    });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
     await inbound(svc, {
-      localUserId: 2,
-      peerStubId: 5,
+      localUserId: 1,
+      peerStubId: 2,
       frame: mkFrame({ op: 'accepted' }),
     });
     await inbound(svc, {
-      localUserId: 2,
-      peerStubId: 5,
-      frame: mkFrame({ op: 'connected', startedAt: Date.now() }),
+      localUserId: 1,
+      peerStubId: 2,
+      frame: mkFrame({ op: 'connected', payload: { startedAt: 1000 } }),
     });
+
+    await inbound(svc, {
+      localUserId: 1,
+      peerStubId: 2,
+      frame: mkFrame({ op: 'connected', payload: { startedAt: 1001 } }),
+    });
+
+    await inbound(svc, {
+      localUserId: 1,
+      peerStubId: 2,
+      frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
+    });
+    expect(lastBubbleContent(m)?.startedAt).toBe(1000);
+  });
+
+  it('applies a federated video upgrade on the callee server and notifies its local participant', async () => {
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await svc.accept(2, 'cs1');
+    await svc.connected(2, 'cs1');
     m.sse.onCallEvent.mockClear();
 
     await inbound(svc, {
@@ -927,7 +1214,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     );
   });
 
-  it('an inbound `ringing` frame emits `ringing` to the origin caller (idempotent on replay)', async () => {
+  it('an inbound `ringing` frame notifies the caller (idempotent on replay)', async () => {
     const { svc, m } = mkService();
     m.database.db.query.user.findFirst.mockResolvedValue({
       isForeigner: true,
@@ -940,7 +1227,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       callSid: 'cs1',
       calleeUserId: 2,
       callType: 'AUDIO',
-    }); // origin live call
+    }); // caller-side live call
     m.sse.onCallEvent.mockClear();
     await inbound(svc, {
       localUserId: 1,
@@ -967,7 +1254,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await inbound(svc, {
       localUserId: 2,
       peerStubId: 5,
-      frame: mkFrame({ op: 'signal', kind: 'ice', payload: '{"cand":1}' }),
+      frame: mkFrame({
+        op: 'signal',
+        payload: { kind: 'ice', data: '{"cand":1}' },
+      }),
     });
     expect(m.sse.onCallSignal).toHaveBeenCalledWith(
       2,
@@ -979,46 +1269,207 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     );
   });
 
-  it('inbound signal STAGES on the mirror for the local callee to GET (federated store-and-forward)', async () => {
+  it('inbound signal stages on the callee server for the local callee to GET', async () => {
     const { svc } = mkService();
-    // mirror: localUserId=2 is the callee; peerStubId=5 is the foreign caller's stub (= callerId on the mirror).
+    // localUserId=2 is the callee; peerStubId=5 is the foreign caller's local stub.
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
     await inbound(svc, {
       localUserId: 2,
       peerStubId: 5,
-      frame: mkFrame({ op: 'signal', kind: 'offer', payload: 'OFFER_SDP' }),
+      frame: mkFrame({
+        op: 'signal',
+        payload: { id: 'offer-1', kind: 'offer', data: 'OFFER_SDP' },
+      }),
     });
     await inbound(svc, {
       localUserId: 2,
       peerStubId: 5,
-      frame: mkFrame({ op: 'signal', kind: 'ice', payload: 'ICE_1' }),
+      frame: mkFrame({
+        op: 'signal',
+        payload: { id: 'ice-1', kind: 'ice', data: 'ICE_1' },
+      }),
     });
-    // The local callee (2) fetches → the staged offer + the caller's ICE (the mirror held them).
+    // The local callee fetches the staged offer and caller ICE.
     expect(svc.signaling(2, 'cs1')).toEqual({
       offer: 'OFFER_SDP',
       ice: ['ICE_1'],
     });
   });
 
-  it('a terminal frame with no mirror is an idempotent no-op (no double bubble)', async () => {
+  it('uses the first signal body for an id and treats later bodies with that id as successful no-ops', async () => {
     const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    m.sse.onCallSignal.mockClear();
+    m.quota.tick.mockClear();
+
     await inbound(svc, {
       localUserId: 2,
       peerStubId: 5,
-      frame: mkFrame({ op: 'missed' }),
+      frame: mkFrame({
+        op: 'signal',
+        payload: { id: 'same-id', kind: 'offer', data: 'FIRST' },
+      }),
     });
+    await inbound(svc, {
+      localUserId: 2,
+      peerStubId: 5,
+      frame: mkFrame({
+        op: 'signal',
+        payload: { id: 'same-id', kind: 'answer', data: 'DIFFERENT' },
+      }),
+    });
+
+    expect(m.sse.onCallSignal).toHaveBeenCalledTimes(1);
+    expect(m.quota.tick).toHaveBeenCalledTimes(1);
+    expect(svc.signaling(2, 'cs1')).toEqual({ offer: 'FIRST', ice: [] });
+  });
+
+  it('allows caller cancellation to win after the callee accepted locally', async () => {
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await svc.accept(2, 'cs1');
+    m.sse.onCallEvent.mockClear();
+
+    await inbound(svc, {
+      localUserId: 2,
+      peerStubId: 5,
+      frame: mkFrame({ op: 'cancelled' }),
+    });
+
+    expect(m.sse.onCallEvent).toHaveBeenCalledWith(
+      2,
+      expect.objectContaining({ type: 'cancelled', callSid: 'cs1' }),
+    );
+    expect(() => svc.signaling(2, 'cs1')).toThrow();
+  });
+
+  it('rejects accepted during the tombstone-write window after local cancellation starts', async () => {
+    const { svc, m } = mkService();
+    m.database.db.query.user.findFirst.mockResolvedValue({
+      isForeigner: true,
+      account: 'bob',
+      domain: 'bbb.local',
+      name: 'Bob',
+      avatar: '',
+    });
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+
+    let finishDelete!: () => void;
+    const deleteGate = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+    m.database.db.delete.mockReturnValue({
+      where: vi.fn(() => deleteGate),
+    });
+    const cancelling = svc.cancel(1, 'cs1');
+
+    await expect(
+      inbound(svc, {
+        localUserId: 1,
+        peerStubId: 2,
+        frame: mkFrame({ op: 'accepted' }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_CANCELLED,
+    );
+
+    finishDelete();
+    await cancelling;
+  });
+
+  it('maps late frames through cancelled and other terminal tombstones', async () => {
+    const { svc, m } = mkService();
+    m.database.db.query.callTombstone.findFirst.mockResolvedValue({
+      terminalOp: 'cancelled',
+      endReason: null,
+      signalIds: [],
+    });
+    await expect(
+      inbound(svc, {
+        localUserId: 1,
+        peerStubId: 2,
+        frame: mkFrame({ op: 'accepted' }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_CANCELLED,
+    );
+
+    m.database.db.query.callTombstone.findFirst.mockResolvedValue({
+      terminalOp: 'ended',
+      endReason: 'failed',
+      signalIds: [],
+    });
+    await expect(
+      inbound(svc, {
+        localUserId: 1,
+        peerStubId: 2,
+        frame: mkFrame({ op: 'accepted' }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_TERMINATED,
+    );
+  });
+
+  it('an unknown terminal frame returns CALL_NOT_ALLOWED without a bubble', async () => {
+    const { svc, m } = mkService();
+    await expect(
+      inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame({ op: 'missed' }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        (e as { bizCode?: number }).bizCode === BusinessCode.CALL_NOT_ALLOWED,
+    );
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
   });
 
-  it("a non-origin terminal does NOT author a bubble (the callee side pulls the origin's)", async () => {
+  it('binds ended reasons to accepted and connected states', async () => {
+    const { svc } = mkService();
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await svc.accept(2, 'cs1');
+
+    await expect(
+      inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame({
+          op: 'ended',
+          payload: { endReason: 'completed' },
+        }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+
+    await svc.connected(2, 'cs1');
+    await expect(
+      inbound(svc, {
+        localUserId: 2,
+        peerStubId: 5,
+        frame: mkFrame({ op: 'ended', payload: { endReason: 'timeout' } }),
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+  });
+
+  it("the callee server does not author a bubble; it pulls the caller server's", async () => {
     const { svc, m } = mkService();
-    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() }); // mirror (origin false)
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await svc.accept(2, 'cs1');
+    await svc.connected(2, 'cs1');
     await inbound(svc, {
       localUserId: 2,
       peerStubId: 5,
-      frame: mkFrame({ op: 'ended', endReason: 'completed' }),
+      frame: mkFrame({ op: 'ended', payload: { endReason: 'completed' } }),
     });
-    // The mirror released + emitted `ended` to the local user, but NO bubble (origin=false).
+    // The callee server released the call and emitted `ended`, but wrote no bubble.
     expect(m.sse.onCallEvent).toHaveBeenCalledWith(
       2,
       expect.objectContaining({ type: 'ended' }),
@@ -1036,18 +1487,21 @@ describe('CallsService signaling store-and-forward', () => {
       callType: 'AUDIO',
     });
     await svc.signal(1, {
+      id: 'offer-1',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'offer',
       payload: 'OFFER_SDP',
     });
     await svc.signal(1, {
+      id: 'ice-1',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'ice',
       payload: 'ICE_1',
     });
     await svc.signal(1, {
+      id: 'ice-2',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'ice',
@@ -1068,12 +1522,14 @@ describe('CallsService signaling store-and-forward', () => {
       callType: 'AUDIO',
     });
     await svc.signal(2, {
+      id: 'answer-1',
       callSid: 'cs1',
       toUserId: 1,
       kind: 'answer',
       payload: 'ANSWER_SDP',
     });
     await svc.signal(2, {
+      id: 'ice-1',
       callSid: 'cs1',
       toUserId: 1,
       kind: 'ice',
@@ -1093,12 +1549,14 @@ describe('CallsService signaling store-and-forward', () => {
       callType: 'AUDIO',
     });
     await svc.signal(1, {
+      id: 'ice-retry',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'ice',
       payload: 'ICE_X',
     });
     await svc.signal(1, {
+      id: 'ice-retry',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'ice',
@@ -1115,6 +1573,7 @@ describe('CallsService signaling store-and-forward', () => {
       callType: 'AUDIO',
     });
     await svc.signal(1, {
+      id: 'offer-1',
       callSid: 'cs1',
       toUserId: 2,
       kind: 'offer',
