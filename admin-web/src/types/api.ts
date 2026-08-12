@@ -230,14 +230,13 @@ export interface PushTestResult {
   error?: string;
 }
 
-// Federated-peer trust lifecycle (POST /admin/federation/peers). The trust state machine:
-// pending → trusted → demoted (a signed op failed; re-handshakes on next contact) → trusted…, plus
-// `blocked` (admin intent; federation refused). Date fields are ms-epoch numbers.
+// Federation v1 bidirectional recognition lifecycle.
 export type FederationTrustLevel =
-  | 'pending'
-  | 'trusted'
-  | 'demoted'
-  | 'blocked';
+  | 'unrecognized'
+  | 'establishing'
+  | 'available'
+  | 'degraded'
+  | 'halted';
 
 export interface FederatedPeer {
   domain: string;
@@ -249,7 +248,16 @@ export interface FederatedPeer {
   demotedAt: number | null; // last trusted→demoted transition
   demoteReason: string | null; // latest failure message
   demotionCount: number; // how many times demoted — flakiness signal
-  blockedAt: number | null; // admin block time
+  haltedAt: number | null;
+  haltCode: number | null;
+  haltReason: string | null;
+  resetInProgress: boolean;
+  recognizesPeer: boolean;
+  outboundRecognitionConfirmed: boolean;
+  inboundRecognitionConfirmed: boolean;
+  lightweightInboundReady: boolean;
+  localServiceAvailable: boolean;
+  remoteServiceReachable: boolean;
 }
 
 export interface FederatedPeerListResult {
@@ -314,14 +322,14 @@ export type FederationPeerEventType =
   | 'discovered'
   | 'trusted'
   | 'demoted'
-  | 'blocked'
+  | 'halted'
   | 'unblocked';
 
 export interface FederatedPeerEvent {
   id: number;
   domain: string;
   type: FederationPeerEventType;
-  reason: string | null; // demoted: the failure message; blocked: optional admin note
+  reason: string | null; // demoted: failure message; halted: persisted stop reason
   createdAt: number;
 }
 
@@ -520,10 +528,11 @@ export interface UserQuotaState {
 // ── Dashboard overview (POST /admin/dashboard) ───────────────────────────────
 // Backend BigInt (media.bytes) is serialized to a string by the global interceptor.
 export interface DashboardFederation {
-  trusted: number;
-  demoted: number;
-  pending: number;
-  blocked: number;
+  unrecognized: number;
+  establishing: number;
+  available: number;
+  degraded: number;
+  halted: number;
 }
 
 export interface DashboardAction {

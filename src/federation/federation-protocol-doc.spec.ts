@@ -112,8 +112,8 @@ describe('Federation v1 protocol documentation', () => {
       ),
     ).toEqual([
       'GET /.well-known/soms',
-      'POST /s2s/v1/ignite',
-      'GET /s2s/v1/identity',
+      'POST /s2s/v1/recognize',
+      'POST /s2s/v1/healthy',
       'POST /s2s/v1/feed-revisions',
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/message-feed',

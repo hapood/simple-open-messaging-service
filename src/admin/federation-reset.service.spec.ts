@@ -11,7 +11,6 @@ const counts = {
   userBlockCount: 0,
   deletionCursorCount: 2,
   keyCacheCount: 1,
-  nonceCount: 4,
   friendOperationCount: 5,
 };
 
@@ -52,24 +51,28 @@ function makeStartService(results: { rows: unknown[] }[]) {
 }
 
 describe('FederationResetService', () => {
-  it('previews only an identity_lost peer under the reset transaction lock', async () => {
+  it('previews only an idle identity-mismatch halted peer under the reset transaction lock', async () => {
     const { service, execute } = makeService({
-      trustLevel: 'identity_lost',
-      identityLostReason: 'pairwise id changed',
+      trustLevel: 'halted',
+      haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+      resetInProgress: false,
+      haltReason: 'pinned root changed',
     });
 
     await expect(service.preview('Peer.Example.')).resolves.toMatchObject({
       domain: 'peer.example',
-      identityLostReason: 'pairwise id changed',
+      haltReason: 'pinned root changed',
       ...counts,
     });
     expect(execute).toHaveBeenCalledTimes(3);
   });
 
-  it('refuses reset preview for a peer that is not identity_lost', async () => {
+  it('refuses reset preview for a peer that is not halted for identity mismatch', async () => {
     const { service } = makeService({
-      trustLevel: 'trusted',
-      identityLostReason: null,
+      trustLevel: 'available',
+      haltCode: null,
+      resetInProgress: false,
+      haltReason: null,
     });
 
     await expect(service.preview('peer.example')).rejects.toMatchObject({
@@ -77,11 +80,18 @@ describe('FederationResetService', () => {
     });
   });
 
-  it('freezes an identity-lost domain and marks its related threads', async () => {
+  it('freezes an identity-mismatch halted domain and marks its related threads', async () => {
     const { service, execute } = makeStartService([
       { rows: [] },
       {
-        rows: [{ domain: 'peer.example', trustLevel: 'identity_lost' }],
+        rows: [
+          {
+            domain: 'peer.example',
+            trustLevel: 'halted',
+            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            resetInProgress: false,
+          },
+        ],
       },
       { rows: [{ threadId: 11 }, { threadId: 12 }] },
       { rows: [] },
@@ -112,8 +122,18 @@ describe('FederationResetService', () => {
       { rows: [] },
       {
         rows: [
-          { domain: 'peer.example', trustLevel: 'identity_lost' },
-          { domain: 'other.example', trustLevel: 'reset_in_progress' },
+          {
+            domain: 'peer.example',
+            trustLevel: 'halted',
+            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            resetInProgress: false,
+          },
+          {
+            domain: 'other.example',
+            trustLevel: 'halted',
+            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            resetInProgress: true,
+          },
         ],
       },
     ]);
@@ -127,7 +147,14 @@ describe('FederationResetService', () => {
     const { service, execute } = makeStartService([
       { rows: [] },
       {
-        rows: [{ domain: 'peer.example', trustLevel: 'reset_in_progress' }],
+        rows: [
+          {
+            domain: 'peer.example',
+            trustLevel: 'halted',
+            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            resetInProgress: true,
+          },
+        ],
       },
       { rows: [{ count: 3 }] },
     ]);
@@ -179,7 +206,13 @@ describe('FederationResetService', () => {
       .fn()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ trustLevel: 'reset_in_progress', resetGeneration: 2 }],
+        rows: [
+          {
+            trustLevel: 'halted',
+            resetInProgress: true,
+            resetGeneration: 2,
+          },
+        ],
       })
       .mockResolvedValueOnce({ rows: [{ count: 0 }] })
       .mockResolvedValue({ rows: [] });
@@ -202,7 +235,7 @@ describe('FederationResetService', () => {
     await service.finalizeDomainReset('peer.example');
 
     expect(database.db.transaction).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledTimes(21);
+    expect(execute).toHaveBeenCalledTimes(20);
   });
 
   it('resumes from the first non-truncated thread after a service restart', async () => {

@@ -33,7 +33,7 @@ describe('FederationCursorService', () => {
     await database.pool.query('TRUNCATE TABLE "FederatedPeer" CASCADE');
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
   });
 
@@ -122,7 +122,7 @@ describe('FederationCursorService', () => {
         })),
       ).rejects.toMatchObject({
         bizCode: BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
-        status: 409,
+        status: 200,
         data: {
           requestedCursor: after.toString(),
           availableCursor: '7',
@@ -181,7 +181,7 @@ describe('FederationCursorService', () => {
       })),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MISSED_CONCURRENT,
-      status: 409,
+      status: 200,
       data: {
         requestedCursor: '0',
         availableCursor: '0',

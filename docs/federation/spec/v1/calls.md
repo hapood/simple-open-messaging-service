@@ -1,4 +1,4 @@
-# Federation v1 通话信令（Call Signaling）
+# SOMS Federation v1 通话信令（Call Signaling）
 
 状态：`FINAL`
 
@@ -18,21 +18,24 @@ JSON 响应封装（JSON envelope）、[传输与安全](./transport-security.md
 Federation v1 负责：
 
 - 在 caller server 与 callee server 之间建立临时通话状态；
-- 原样中继 endpoint 产生的 SDP、ICE 和 SOMS `video-state` 载荷（payload）；
+- 原样中继终端产生的 SDP、ICE 和 SOMS `video-state` 载荷（payload）；
 - 同步振铃、接听、连接、结束以及 AUDIO→VIDEO 升级事件；
 - 定义 frame 的顺序、重试、幂等、竞态收敛和有限墓碑记录（tombstone）。
 
 音视频媒体不进入 `/s2s/v1/call`、state-feed 或 message-feed。SOMS 联邦服务器不得（MUST NOT）解密、转码、
-混合或转发媒体，也不得（MUST NOT）解析或改写 SDP/ICE 来替 endpoint 作协商决定。
+混合或转发媒体，也不得（MUST NOT）解析或改写 SDP/ICE 来替终端作协商决定。
 
 WebRTC/JSEP 不定义 SOMS 使用的应用层信令传输，因此 `/s2s/v1/call` 的投递、幂等和错误处理由本文
 完整定义，不能从 SDP、ICE 或 WebRTC transport 推导。
 
 ## 2. 角色、身份与关联键（Roles, Identities, and Correlation Keys）
 
-- **caller server**：托管 caller 账号、接收本地发起请求并保存权威生命周期的服务器。
-- **callee server**：托管 callee 账号、接收 `incoming` 并保存该通话临时信令状态的服务器。
-- **callSid**：caller endpoint 为每次新通话生成的 UUID，是通话关联键；生成方终身不得（MUST NOT）主动复用。
+- **主叫用户（caller）**：使用主叫账号发起通话的用户。
+- **被叫用户（callee）**：使用被叫账号接听或拒绝通话的用户。
+- **主叫服务器（caller server）**：托管主叫用户账号、发送 `incoming` 并仲裁权威生命周期的服务器。
+- **被叫服务器（callee server）**：托管被叫用户账号、接收 `incoming` 并参与该通话临时信令状态的服务器。
+- **终端（endpoint）**：产生或消费 WebRTC 信令与媒体的通话参与端；按角色称为主叫终端或被叫终端。
+- **callSid**：主叫终端为每次新通话生成的 UUID，是通话关联键；生成方终身不得（MUST NOT）主动复用。
 - **`signal.payload.id`**：signal 产生方为每个逻辑 signal 生成的 UUID，是该 signal 的幂等键。
   `callSid` 和 `signal.payload.id` 都使用 `common.schema.json#/$defs/canonicalUuid` 的 grammar：符合
   RFC 9562、版本字段为 1..8、RFC variant，并使用带连字符的 `8-4-4-4-12` 小写规范形式。v1 不根据
@@ -50,17 +53,17 @@ WebRTC/JSEP 不定义 SOMS 使用的应用层信令传输，因此 `/s2s/v1/call
 
 ## 3. HTTP 操作（HTTP Operation）
 
-| 项目                   | 值                                                                               |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| Method                 | `POST`                                                                           |
-| Path                   | `/s2s/v1/call`                                                                   |
-| Query                  | 不允许 query parameter                                                           |
-| Request media type     | `application/json`，UTF-8                                                        |
-| Request authentication | Federation v1 HTTP Message Signature（RFC 9421、Ed25519）                        |
-| Signer requirement     | 使用主协议 `recognized signed` 上下文；纯传输 `degraded` 不是协议拒绝条件        |
-| Request body           | 第 4 节定义的一个 closed Call Frame JSON object                                  |
-| Success                | HTTP `200`，JSON success envelope                                                |
-| Error                  | 第 11 节及 Federation v1 错误码注册表                                            |
+| 项目                   | 值                                                                        |
+| ---------------------- | ------------------------------------------------------------------------- |
+| 方法（Method）                         | `POST`                                                                    |
+| 路径（Path）                           | `/s2s/v1/call`                                                            |
+| 查询（Query）                          | 不允许查询参数                                                            |
+| 请求媒体类型（Request media type）     | `application/json`，UTF-8                                                 |
+| 请求认证（Request authentication）     | Federation v1 HTTP Message Signature（RFC 9421、Ed25519）                 |
+| 签名方要求（Signer requirement）       | 使用主协议 `recognized signed` 上下文；纯传输 `degraded` 不是协议拒绝条件 |
+| 请求体（Request body）                 | 第 4 节定义的一个封闭 Call Frame JSON 对象                                |
+| 成功（Success）                        | HTTP `200`，JSON 成功封装                                                 |
+| 错误（Error）                          | 第 11 节及 Federation v1 错误码注册表                                     |
 
 请求必须（MUST）携带 `Content-Type`、`Date`、`Content-Digest`、`Signature-Input` 和 `Signature`。这些 header
 的精确格式、签名组件顺序、时间窗口和原始 body digest 规则由主协议第 6 节统一定义，不能为 call
@@ -71,11 +74,10 @@ Frame 语义，也不参与 Federation v1 签名基串。
 authorization。接收方不得（MUST NOT）仅因自己的缓存状态为 `degraded` 而拒绝一个签名、双向认可事实和业务
 授权均有效的 Call Frame；该有效请求本身可以（MAY）按 recognition.md 恢复纯传输降级。
 
-`blocked`、`identity_lost` 和 `incompatible` 不是 health cache，而是硬门禁。进入其中
-任一状态时，服务器必须（MUST）立即把该 peer 的全部活动通话本地收敛为 `terminal/failed`，停止媒体、计时器
-和非 terminal 重试，并创建第 10 节 tombstone；不得（MUST NOT）等待远端 `cancelled` 或 `ended`。随后到达的
-Call Frame 在查询 call binding 前分别返回错误注册表规定的 blocked、identity 或 version 错误。
-
+`halted` 不是 health cache，而是统一硬门禁。进入该状态时，服务器必须（MUST）立即把该 peer 的全部活动通话
+本地收敛为 `terminal/failed`，停止媒体、计时器和非 terminal 重试，并创建第 10 节 tombstone；不得
+（MUST NOT）等待远端 `cancelled` 或 `ended`。实现必须（MUST）在 lifecycle 之外保留 policy、identity 或
+version 原因；随后到达的 Call Frame 在查询 call binding 前返回该原因对应的注册 fatal error。
 
 成功响应是：
 
@@ -86,7 +88,7 @@ Content-Type: application/json
 {"code":0,"message":"successful","data":null}
 ```
 
-`200/code=0` 表示接收服务器已经验证并按本文处理 frame；它不表示 endpoint 已收到事件，也不表示
+`200/code=0` 表示接收服务器已经验证并按本文处理 frame；它不表示终端已收到事件，也不表示
 媒体已连通。HTTP `200` 的非零业务 code 不是成功，发送方必须（MUST）按第 11 节处理。
 
 ## 4. 通话帧（Call Frame）
@@ -189,11 +191,12 @@ type CallFrame =
 
 ## 5. 生命周期状态机（Lifecycle State Machine）
 
-caller server 保存持久通话历史并负责终态竞态仲裁；callee server 保存通话期间所需的临时阶段。
+caller server 负责终态竞态仲裁并产生权威通话结果；callee server 只维护协议处理所需的临时阶段，且不得
+产生与 caller server 竞争的第二份权威结果。本文不规定任一方的数据库表或历史记录存储方式。
 Federation lifecycle 阶段只有 `ringing`、`accepted`、`connected` 和 `terminal`；实现可以（MAY）使用
 `accepting`、`cancelling` 等内部 pending 状态，但不得（MUST NOT）改变本文定义的外部可观察协议行为。
 
-本文的“阶段”是 server 对 `(peer domain, callSid)` 已提交的 SOMS 生命周期状态，不是 endpoint UI
+本文的“阶段”是 server 对 `(peer domain, callSid)` 已提交的 SOMS 生命周期状态，不是终端界面
 文案，也不是 `RTCPeerConnection.signalingState`、`iceConnectionState` 或 `connectionState`。两台 server
 在 frame 传输期间可以（MAY）短暂处于不同阶段；接收方在返回 `200/code=0` 前提交目标阶段，发送方收到该响应后
 才认为该变更已经完成联邦提交。
@@ -201,13 +204,13 @@ Federation lifecycle 阶段只有 `ringing`、`accepted`、`connected` 和 `term
 | 阶段        | 进入条件                                     | 精确定义                                                                  |
 | ----------- | -------------------------------------------- | ------------------------------------------------------------------------- |
 | `none`      | 尚未接受 `incoming`                          | 不存在活动绑定；非 `incoming` frame 不能据此创建通话                      |
-| `ringing`   | 接受 `incoming`                              | 已建立活动绑定，等待 callee 接听；不表示 endpoint 一定已开始发声/震动     |
-| `accepted`  | 接受 `accepted`                              | callee 已接听，SDP/ICE 可以（MAY）继续协商，但权威媒体连接尚未建立        |
+| `ringing`   | 接受 `incoming`                              | 已建立活动绑定，等待被叫用户接听；不表示被叫终端一定已开始发声/震动       |
+| `accepted`  | 接受 `accepted`                              | 被叫用户已接听，SDP/ICE 可以（MAY）继续协商，但权威媒体连接尚未建立       |
 | `connected` | 接受 callee server 的 `connected(startedAt)` | 权威媒体连接已经建立；`startedAt` 固定，后续重复报告不能覆盖              |
 | `terminal`  | 接受第一个合法 terminal frame 或本地权威终态 | 活动状态不可恢复；只保留第 10 节 tombstone，任何迟到 frame 都不能使其复活 |
 
 `ringing` 这个名称同时用于一个阶段和一个 op，但含义不同：`ringing` **阶段**由 `incoming` 创建，表示“尚未
-接听”；`ringing` **op**只是 callee endpoint 已实际开始提醒用户的 acknowledgment，设置独立的 advisory
+接听”；`ringing` **op**只是被叫终端已实际开始提醒用户的确认（acknowledgment），设置独立的 advisory
 事实，不改变阶段。因此没有收到该 op 的通话仍处于 `ringing` 阶段，收到该 op 后也仍处于 `ringing` 阶段。
 
 ```text
@@ -238,25 +241,25 @@ ringing(op)、signal: 不改变阶段
 | `ended`          | 双向            | `accepted` 或 `connected` | `terminal`         | 已经 terminal                                   |
 | `signal`         | 第 8 节         | 第 8 节                   | 阶段不变并转发     | 相同 `payload.id` 已经处理                      |
 
-callee endpoint 收到 `incoming` 并开始实际提醒用户时，必须（MUST）向其 home server 提交 ringing acknowledgment；
-callee server 接受该 acknowledgment 后必须（MUST）发送 `ringing`。由于 endpoint 和 S2S 发送都可能重试，双方
-server 必须（MUST）按第 7 节幂等处理重复 `ringing`。
+被叫服务器在本地确认被叫终端已开始实际提醒用户后必须（MUST）发送 `ringing`，在此之前不得
+（MUST NOT）发送；仅接收 `incoming` 不足以产生该帧。由于本地确认和 S2S 发送都可能重试，双方服务器
+必须（MUST）按第 7 节幂等处理重复 `ringing`。
 
 `cancelled` 允许作用于 `accepted` 是规范性的竞态收敛规则：caller 在尚未观察到 `accepted` 时发出的
 取消，即使到达 callee 时 callee 已进入或正在进入 `accepted`，仍然终止尚未连通的通话。caller server
 一旦已经接受 `accepted`，本地用户后续结束必须（MUST）发送 `ended`，不得（MUST NOT）新发送 `cancelled`。
 
-`payload.startedAt` 是 callee endpoint 首次确认媒体连接已建立的 Unix epoch milliseconds，必须（MUST）是
-`0..9007199254740991` 范围内的 JSON integer。caller server 不发送 `connected`；caller endpoint 的
+`payload.startedAt` 是被叫终端首次确认媒体连接已建立的 Unix epoch milliseconds，必须（MUST）是
+`0..9007199254740991` 范围内的 JSON integer。主叫服务器不发送 `connected`；主叫终端的
 本地 WebRTC 状态不能产生第二个联邦时间戳。
 
 `payload.endReason` 的阶段约束：
 
-| 值          | 允许阶段    | 含义                                       |
-| ----------- | ----------- | ------------------------------------------ |
+| 值          | 允许阶段                  | 含义                                             |
+| ----------- | ------------------------- | ------------------------------------------------ |
 | `completed` | `accepted` 或 `connected` | 任一参与者在接听后主动正常挂断；可以尚未建立媒体 |
-| `timeout`   | `accepted`  | 接听后在本地建链期限内未能进入 `connected` |
-| `failed`    | 两者均可    | 非超时技术失败，或已连接媒体不可恢复地中断 |
+| `timeout`   | `accepted`                | 接听后在本地建链期限内未能进入 `connected`       |
+| `failed`    | 两者均可                  | 非超时技术失败，或已连接媒体不可恢复地中断       |
 
 ## 6. 提交、顺序与竞态（Commit, Ordering, and Races）
 
@@ -266,7 +269,7 @@ server 必须（MUST）按第 7 节幂等处理重复 `ringing`。
 response 后才发送依赖它的新状态。上一条失败时必须（MUST）先重试同一 frame 或按 caller action 终止，不能
 越过失败继续发送依赖状态。`signal` 必须（MUST）等待此前由它依赖的状态变更成功；多个 `signal` 可以（MAY）并发。
 
-`ringing` 是不改变阶段的 advisory frame，不属于上述串行依赖链。callee endpoint 的 `ringing` 与
+`ringing` 是不改变阶段的 advisory frame，不属于上述串行依赖链。被叫终端的 `ringing` 与
 `accept` 请求可以（MAY）并发；callee server 不得（MUST NOT）等待 `ringing` 的 S2S response 才处理或发送 `accepted`。
 `ringing` 发送失败不得（MUST NOT）阻止 `accepted`，也不得（MUST NOT）使通话失败。若 `accepted` 先到达，随后到达的
 `ringing` 按第 7 节作为历史事件返回 `200/code=0` no-op。
@@ -275,12 +278,12 @@ response 后才发送依赖它的新状态。上一条失败时必须（MUST）�
 可以（MAY）先进入内部 pending 状态，但只有收到 `200/code=0` 后才把该状态视为已在联邦提交。收到
 `CALL_CANCELLED` 或 `CALL_TERMINATED` 时必须（MUST）终止对应 pending 通话，不能继续发送依赖 frame。
 callee server 必须（MUST）等待 `signal(answer)` 的 HTTP 成功响应后才能发送依赖该 answer 的 `connected`。
-该依赖不要求 ICE 串行；ICE 仍可并发投递并由 endpoint 处理乱序。
+该依赖不要求 ICE 串行；ICE 仍可并发投递并由终端处理乱序。
 
 ### 6.2 正常时序（Normal Sequence）
 
 ```text
-caller endpoint    caller server         callee server       callee endpoint
+主叫终端           主叫服务器            被叫服务器          被叫终端
       | local initiate   |                     |                    |
       |----------------->| [ringing]           |                    |
       |                  | S2S incoming        |                    |
@@ -316,8 +319,8 @@ caller endpoint    caller server         callee server       callee endpoint
 
 初始 SDP offer 可以（MAY）在 `incoming` 成功后、callee 接听前发送。callee server 必须（MUST）先创建该通话的临时
 状态并完成处理，之后才能返回 `incoming` 的 HTTP response；caller 收到该 response 后才能发送 offer，
-所以 offer 不会先于其目标通话到达。callee endpoint 针对 offer 生成的 SDP answer 只能在
-`accepted` 后发送。图中的 `local SDP answer` 是 endpoint 与其 home server 之间的本地 API/event；
+所以 offer 不会先于其目标通话到达。被叫终端针对 offer 生成的 SDP answer 只能在
+`accepted` 后发送。图中的 `local SDP answer` 是终端与其归属服务器之间的本地 API/event；
 `S2S signal{answer}` 才是两个服务器之间、`payload.kind="answer"` 的 Call Frame。两者携带同一份 SDP
 文本，但不是同一个协议操作；SDP answer 与 HTTP response 也不是同一概念。
 
@@ -345,7 +348,7 @@ caller server                         callee server
 ### 6.4 双向终态（Bidirectional Terminal Events）
 
 双方可能同时发送 `ended`。caller server 首次提交的终态是权威终态；callee server 的临时终态记录
-不得（MUST NOT）生成第二份持久通话历史。任一端进入 terminal 后都必须（MUST）停止媒体和 endpoint 活动语义。
+不得（MUST NOT）生成第二份权威通话结果。任一端进入 terminal 后都必须（MUST）停止该通话的媒体与活动语义。
 
 ## 7. 生命周期幂等性（Lifecycle Idempotency）
 
@@ -373,9 +376,9 @@ caller server                         callee server
 长度、ID 和活动绑定，不能解析、规范化、重新序列化或改写 `data`。
 
 上面的 `JsonText<T>` 是描述 transmitted representation 的文档记法：字段 on the wire 是 JSON
-string，`T` 是 endpoint 对该字符串
+string，`T` 是终端对该字符串
 执行 `JSON.parse` 后必须（MUST）得到的结构。signal 产生方必须（MUST）生成符合对应结构的内容；联邦服务器即使发现或
-怀疑内层内容无效也不得（MUST NOT）代替 endpoint 拒绝它。endpoint 必须（MUST）在交给 WebRTC API 或应用状态前验证/解析，
+怀疑内层内容无效也不得（MUST NOT）代替接收方拒绝它。消费该载荷的一侧必须（MUST）在交给 WebRTC API 或应用状态前验证/解析，
 无效内容只终止或忽略本地协商，不能改变服务器已经完成的 signal 幂等结果。
 
 | `kind`        | 方向            | 允许阶段                           | `data` 编码                                 |
@@ -386,33 +389,33 @@ string，`T` 是 endpoint 对该字符串
 | `video-state` | 双向            | `connected`                        | closed `{"enabled":boolean}` 的 JSON string |
 
 一个 `callSid` 同一时刻最多有一个未完成 negotiation。caller 只能在上一轮 answer 已成功应用、
-endpoint signaling state 恢复
+终端 signaling state 恢复
 `stable` 后创建下一轮 offer；callee 每收到一个合法 offer 至多产生一个 answer。
 
-`payload.id` 是端到端幂等键：产生逻辑 signal 的 endpoint 必须（MUST）生成新 ID，并在重试本地提交时复用它；
+`payload.id` 是端到端幂等键：产生逻辑 signal 的终端必须（MUST）生成新 ID，并在重试同一 signal 时复用它；
 caller/callee server 必须（MUST）将该 ID 原样放入 S2S Call Frame，接收 server 再把同一 ID 原样投递给目标
-endpoint，任何一层都不得（MUST NOT）重新生成或改写。
+终端，任何一层都不得（MUST NOT）重新生成或改写。
 
 接收 server 对同一 `(signer domain, callSid, payload.id)` 只处理最先接受的 signal；以后相同 ID 的
-signal 无论 body 是否相同都必须（MUST）返回 `200/code=0` 且不得（MUST NOT）再次通知 endpoint。目标 endpoint 也必须（MUST）在调用
-WebRTC API 或应用 `video-state` 前，按 `(callSid, payload.id)` 只应用第一次投递。server 和 endpoint 都可
+signal 无论 body 是否相同都必须（MUST）返回 `200/code=0` 且不得（MUST NOT）再次投递。接收一侧也必须（MUST）在调用
+WebRTC API 或应用 `video-state` 前，按 `(callSid, payload.id)` 只应用第一次投递。两端都可以（MAY）
 在通话进入 terminal 后释放 seen-ID 集合。生成方负责保证同一 ID 的重试 body 一致；接收方不得（MUST NOT）通过比较
 后续 body 改写或否定已经接受的第一条 signal。WebRTC/JSEP 不提供该应用层去重能力。
 
 ICE 可以（MAY）相对 offer/answer 乱序到达。联邦服务器不得（MUST NOT）根据 JSEP 到达顺序拒绝、重排或解释 ICE，只按
-外层 binding、shape 和 `payload.id` 执行校验与幂等，并原样转发；endpoint 根据本地 WebRTC signaling
+外层 binding、shape 和 `payload.id` 执行校验与幂等，并原样转发；终端根据本地 WebRTC signaling
 state 缓存、应用。初次协商须等待 callee server 的
 `connected` 才表示媒体建链成功。ICE restart 成功不产生生命周期事件；AUDIO→VIDEO 成功后按第 9 节
 发送 `video-upgraded`。
 
 ## 9. AUDIO→VIDEO 升级（AUDIO-to-VIDEO Upgrade）
 
-Federation v1 固定 caller endpoint 为所有 offer 的产生方，callee endpoint 为 answer 产生方。这是 SOMS
+Federation v1 固定主叫终端为所有 offer 的产生方，被叫终端为 answer 产生方。这是 SOMS
 为避免 offer glare 选择的应用层 profile，不是 RFC 3264 对 offerer 的限制。
 
-callee 想把 AUDIO 通话升级为 VIDEO 时先发送 `video-state {"enabled":true}`；caller 收到请求后创建
-新 offer。caller 自己发起时也由 caller 创建 offer。升级期间 offer、answer 和 ICE 的 `callType` 仍为
-`AUDIO`。caller endpoint 成功应用对应 answer 后，caller server 才发送：
+被叫用户希望把 AUDIO 通话升级为 VIDEO 时，被叫终端先发送 `video-state {"enabled":true}`；主叫终端收到
+请求后创建新 offer。主叫用户发起升级时也由主叫终端创建 offer。升级期间 offer、answer 和 ICE 的 `callType` 仍为
+`AUDIO`。主叫终端成功应用对应 answer 后，主叫服务器才发送：
 
 ```json
 {
@@ -436,7 +439,7 @@ min(terminal request 的 Signature-Input.expires,
     接受终态的本地时间 + 300 秒)
 ```
 
-`300 秒` 是 Federation v1 call tombstone 最大保留窗口。实现可以（MAY）更早物理清理已经自然过期的条目，
+`300 秒` 是 Federation v1 call tombstone 最大保留窗口。已经到期的条目可以（MAY）清理，但
 不能把重试请求的新签名期限用于延长首次终态 tombstone。发送方为本地产生的终态使用自己生成的终态
 请求 `expires` 计算相同截止时间。
 
@@ -454,10 +457,9 @@ tombstone 至少保存第 7、8 节执行幂等所需的信息。tombstone 存�
 `callSid` 的要求，墓碑只负责吸收仍处于已签名有效窗口内的在途重放，不承担永久 call ID 注册表的作用。
 
 服务器重启可以（MAY）丢失活动媒体状态，但必须（MUST）保留尚未到期的 tombstone；v1 不提供活动通话恢复操作。
-endpoint 在活动状态丢失后依靠本地连接状态结束通话。
 
 callee server 必须（MUST）分别设置未接听超时和接听后的建链超时；caller server 必须（MUST）分别设置更长的对应安全
-超时。每次进入 `accepted` 必须（MUST）停止 ring timeout 并新启动 connect timeout。具体时长属于本地参数，
+超时。进入 `accepted` 后，未接听期限不再适用，并开始适用建链期限。具体时长属于本地参数，
 但 caller safety timeout 必须（MUST）大于对应 callee timeout 加一次 S2S request timeout 和允许的时钟余量。
 
 超时产生的 protocol operation 固定如下；首次超时进入 terminal，并按第 6、7 节参与终态竞态：
@@ -502,17 +504,18 @@ Federation peer 进入硬门禁时改由本节前述本地 `terminal/failed` 规
 
 错误 body 使用主协议定义的 JSON envelope；实现不能根据 `message` 文本分支。
 
-| 条件                                      | HTTP / code                        | 动作                                                |
-| ----------------------------------------- | ---------------------------------- | --------------------------------------------------- |
-| shape、字段、ID、活动绑定、方向或非法转换 | `400 FEDERATION_MALFORMED`         | 修正后才能重试                                      |
-| signer 与 `incoming` 发送用户不绑定       | `401 FEDERATION_BINDING_VIOLATION` | 不得（MUST NOT）原样重试                            |
+| 条件                                       | HTTP / code                        | 动作                                                |
+| ------------------------------------------ | ---------------------------------- | --------------------------------------------------- |
+| shape、字段、ID、活动绑定、方向或非法转换  | `400 FEDERATION_MALFORMED`         | 修正后才能重试                                      |
+| signer 与 `incoming` 发送用户不绑定        | `401 FEDERATION_BINDING_VIOLATION` | 不得（MUST NOT）原样重试                            |
 | 未知 callSid，或隐私合并后的新呼叫准入失败 | `200 CALL_NOT_ALLOWED`             | 终止本次呼叫，不得（MUST NOT）把 peer 置为 degraded |
-| cancelled 通话的迟到非重复 frame          | `200 CALL_CANCELLED`               | 收敛为 cancelled，不再发送依赖项                    |
-| 其他 terminal 通话的迟到非重复 frame      | `200 CALL_TERMINATED`              | 收敛为 terminal，不再发送依赖项                     |
-| callee 已有其他活动通话                   | `200 CALL_BUSY`                    | 终止或以后创建新 `callSid`                          |
+| cancelled 通话的迟到非重复 frame           | `200 CALL_CANCELLED`               | 收敛为 cancelled，不再发送依赖项                    |
+| 其他 terminal 通话的迟到非重复 frame       | `200 CALL_TERMINATED`              | 收敛为 terminal，不再发送依赖项                     |
+| callee 已有其他活动通话                    | `200 CALL_BUSY`                    | 终止或以后创建新 `callSid`                          |
 
-网络错误和 5xx 可以（MAY）退避重试完全相同的 frame。HTTP `200` 仍必须（MUST）解析 envelope；`code=0` 是成功，非零
-code 是已处理的业务结果。签名、身份绑定、请求格式和服务故障不是业务结果，继续使用对应 4xx/5xx。
+网络错误和 HTTP `503` 可以（MAY）退避重试完全相同的 frame。HTTP `200` 仍必须（MUST）解析 envelope；
+`code=0` 是成功，非零 code 是已处理的业务结果。签名、身份绑定、请求格式和服务故障不是业务结果，分别使用
+HTTP `401`、`400` 和 `503`。
 
 ## 12. 通话帧与签名示例（Call Frame and Signature Examples）
 

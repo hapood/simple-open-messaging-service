@@ -3,7 +3,7 @@ import { RequestMethod } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { S2sController } from './s2s.controller.js';
-import { S2sIgniteController } from './s2s-ignite.controller.js';
+import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
 import {
   FEDERATION_API_PREFIX,
@@ -45,21 +45,21 @@ describe('Federation v1 surface', () => {
 
   it('matches the complete mandatory route manifest', () => {
     expect(
-      [S2sController, S2sIgniteController, WellKnownController]
+      [S2sController, S2sRecognitionController, WellKnownController]
         .flatMap(routes)
         .sort(),
     ).toEqual(
       [
         'GET /.well-known/soms',
         'GET /s2s/v1/forward-bundles/:bundleId',
-        'GET /s2s/v1/identity',
         'GET /s2s/v1/media/:digest',
         'GET /s2s/v1/message-feed',
         'GET /s2s/v1/state-feed',
         'GET /s2s/v1/users/:account',
         'POST /s2s/v1/call',
         'POST /s2s/v1/feed-revisions',
-        'POST /s2s/v1/ignite',
+        'POST /s2s/v1/healthy',
+        'POST /s2s/v1/recognize',
       ].sort(),
     );
   });
@@ -67,11 +67,8 @@ describe('Federation v1 surface', () => {
   it('publishes protocol v1 without capability negotiation', () => {
     vi.stubEnv('SOMS_DOMAIN', 'node-a.example');
     const controller = new WellKnownController({
-      getIdentityEpoch: () => 3,
-      getRootKeyFingerprint: () => 'sha256:root',
       getRootPublicKeyB64: () => 'root-key',
-      getKeyId: () => 'node-a.example/key-1',
-      getPublicKeyB64: () => 'signing-key',
+      getSigningKeyCertificates: () => [],
     } as never);
 
     const document = controller.getWellKnown();

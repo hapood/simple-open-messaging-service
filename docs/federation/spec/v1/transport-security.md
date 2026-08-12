@@ -33,10 +33,9 @@ interface DiscoveryDocumentV1View {
 
 `software` 是可选、不可信的 opaque diagnostic string。若存在，UTF-8 编码后 必须（MUST）为 1–128 bytes，
 不得（MUST NOT）包含 Unicode control character；建议使用 `product/version`，但 consumer 不得（MUST NOT）解析或依赖其
-格式，不得（MUST NOT）用它进行版本协商、能力判断、身份验证、授权或实现特例。实现 可以（MAY）将它用于日志、管理界面
-和互操作排障，但在写入日志或界面前必须（MUST）按不可信输入处理。
+格式，不得（MUST NOT）用它进行版本协商、能力判断、身份验证、授权或实现特例。它始终是不可信的诊断输入。
 
-`protocolVersions` 必须（MUST）符合第 2 节。`rootKey` 是服务器身份锚对象（server identity anchor object），
+`protocolVersions` 必须（MUST）符合[主协议](./protocol.md)第 2 节。`rootKey` 是服务器身份锚对象（server identity anchor object），
 本身只是包含 root 公钥的对象容器；真正的 Ed25519 root 公钥值位于 `rootKey.ed25519`。
 
 `keys` 必须（MUST）是非空数组，可同时包含旧、当前和尚未生效的 signing key certificate。同一文档中
@@ -56,7 +55,7 @@ interface DiscoveryDocumentV1View {
 | `keys[].authorizationSignature` | 是   | root private key 对第 1.3 节 certificate statement 的 Ed25519 signature；完整可验证示例见 [服务器认可](./recognition.md#10-完整-http-构造示例complete-http-construction-examples) |
 
 选择 v1 的 consumer 必须（MUST）忽略 v1 未定义的 well-known 字段，但不得（MUST NOT）据此形成 v1
-endpoint、授权或安全行为分支。v1 不通过 well-known 发布运行时 limits。page、body、media、quota、
+接口、授权或安全行为分支。v1 不通过 well-known 发布运行时 limits。page、body、media、quota、
 群容量和 retention 等限制按各 operation 的确定响应处理。
 
 ### 1.2 根密钥验证与固定（Root Key Verification and Pinning）
@@ -71,7 +70,7 @@ root public key 的 strict base64 规则、逐字节固定、首次 Recognize �
 
 已建立 peer 的后续验证必须（MUST）使用本地 pinned root，而不是把新获取的 root 当作新的信任锚。重新获取
 well-known 时，root public key 必须（MUST）与 pin 逐字节完全一致；不一致是 identity contradiction，
-必须（MUST）进入 `identity_lost` 并拒绝普通 S2S operation。v1 不支持在原认可关系上轮换
+必须（MUST）进入 `halted`、记录 identity mismatch 原因并拒绝普通 S2S operation。v1 不支持在原认可关系上轮换
 root key；采用新 root 必须（MUST）执行 destructive reset 和 fresh bidirectional Recognize。
 
 ### 1.3 根授权签名密钥证书（Root-Authorized Signing Key Certificate）
@@ -132,13 +131,13 @@ Federation peer 是服务器侧配置和信任的 domain identity，不是面向
 
 ### 2.1 强制 SRV 解析（Mandatory SRV Resolution）
 
-给定 canonical peer `Domain` 值 `D`，实现 必须（MUST）查询 exact owner name `_soms._tcp.D` 的 DNS SRV
+给定 canonical peer `Domain` 值 `D`，实现必须（MUST）查询 exact owner name `_soms._tcp.D` 的 DNS SRV
 RRset。发布有效 SRV record 是 server 启用 Federation 的必选条件；v1 不允许绕过 SRV 后直接解析
 `D`，也不定义默认 `443` 或本地直连配置等替代发现路径：
 
 1. 收到非空、语法有效的 SRV RRset 时，按 RFC 2782 的最低 `priority` 优先和同 priority `weight`
    随机选择规则处理。`priority`、`weight` 必须（MUST）是 `0..65535`；非 `.` target 的 `port` 必须（MUST）是
-   `1..65535`，target 必须（MUST）是可规范化为protocol.md 第 6.2 节 `Domain` 的 DNS hostname。target 不得（MUST NOT）是 IPv4
+   `1..65535`，target 必须（MUST）是可规范化为[主协议](./protocol.md)第 6.2 节 `Domain` 的 DNS hostname。target 不得（MUST NOT）是 IPv4
    或 IPv6 address literal；带方括号的 IPv6、十进制 IPv4 及其他直接 IP 表示均无效。target 可以（MAY）位于
    `D` 之外，但按 RFC 2782 不得（MUST NOT）是 CNAME alias。
 2. 对选中的 target 解析 A/AAAA，并连接该 target 的选定 port。每个可连接 target 必须（MUST）至少解析出一个
@@ -153,7 +152,7 @@ RRset。发布有效 SRV record 是 server 启用 Federation 的必选条件；v
    从 IPv6 切换到 IPv4 或切换 target，不得（MUST NOT）使同一合规重试产生第二份业务副作用。
 4. 地址级并行只表示并行建立连接。除非对应 operation 明确定义该请求可用相同幂等 key 安全重试，
    调用方不得（MUST NOT）因多个地址可达而并行发送同一个有副作用的 HTTP request。连接结果不确定后的重试
-   仍必须（MUST）遵守第 7.4 节和对应 operation 的幂等规则。
+   仍必须（MUST）遵守[主协议](./protocol.md)第 7.4 节和对应 operation 的幂等规则。
 5. SRV 查询得到确定的 `NXDOMAIN` 或 `NODATA` 表示 `D` 当前未发布 Federation 服务。调用方不得（MUST NOT）
    发起 Federation 请求，也不得（MUST NOT）尝试 `D:443` 或其他推测位置；仅可在 negative DNS TTL 到期或管理员
    明确触发后重新查询。
@@ -165,7 +164,7 @@ RRset。发布有效 SRV record 是 server 启用 Federation 的必选条件；v
 8. 尝试完有效 RRset 中的可用 target 仍无法连接时，本次操作以连接失败结束，不得（MUST NOT）改为直接解析 `D`、
    尝试裸 IP 或其他常见 port，也不得（MUST NOT）从 well-known/HTTP redirect 猜测替代位置。
 
-SRV/A/AAAA 的正负缓存 不得（MUST NOT）超过 DNS resolver 提供的有效 TTL；TTL 到期后的重新解析可以（MAY）改变连接
+SRV/A/AAAA 的正负缓存不得（MUST NOT）超过 DNS resolver 提供的有效 TTL；TTL 到期后的重新解析可以（MAY）改变连接
 位置，但不得（MUST NOT）改变 peer identity。v1 不要求 DNSSEC，因为 DNS/SRV 只提供不可信 routing input；实现
 可以（MAY）使用 DNSSEC、固定 resolver、IP/egress policy 或其他本地加固，但不得（MUST NOT）用 DNS 结果跳过 HTTPS、root
 pin 或 request signature 验证。
@@ -204,29 +203,29 @@ DNS/SRV 结果只决定连接位置，不得（MUST NOT）改变已经 pinned �
 
 ### 2.3 身份恢复与传输要求（Identity Recovery and Transport Requirements）
 
-identity contradiction 发生后，自动流程 必须（MUST）保持 `identity_lost`，不得（MUST NOT）因 DNS 再次变化而自动恢复。
-DNS 已修复时，管理员 可以（MAY）发起非破坏性原身份恢复：实现必须（MUST）绕过已缓存的连接位置，重新获取
-well-known，并通过已验证 hostname 的 HTTPS 取得 discovery document。只有其 root public key 和
-root public key 与 identity-loss 前的 pin 逐字节一致，且当前 signing key certificate 能由该 root
+identity contradiction 发生后，自动流程必须（MUST）保持 `halted`，不得（MUST NOT）因 DNS 再次变化而自动恢复。
+DNS 已修复时，管理员可以（MAY）发起非破坏性原身份恢复。恢复时必须（MUST）重新解析连接位置，并通过
+主机名验证成功的 HTTPS 重新取得发现文档（discovery document）。只有其中的 root public key 与 identity
+contradiction 前的 pin 逐字节一致，且当前 signing key certificate 能由该 root
 正确验证时，才可恢复原认可关系。signing key 或 certificate 集合可因正常轮换而不同，不要求与
 旧缓存逐项相等。该恢复必须（MUST）保留双向认可事实、首次确认时间、cursor、mirror 与既有
-authorization；root identity 不同必须（MUST）继续 fail closed。采用新 root identity 只能使用第 10 节的
-destructive reset。
+authorization；root identity 不同必须（MUST）继续 fail closed。采用新 root identity 只能按
+[主协议](./protocol.md)第 10 节的安全底线执行 destructive reset；具体管理流程不属于 Federation v1。
 
-身份连续性不依赖额外的公开 proof endpoint：接收入站请求时，由 HTTP Message Signature 证明对端
+身份连续性不依赖额外的公开证明接口（proof endpoint）：接收入站请求时，由 HTTP Message Signature 证明对端
 持有当前 signing private key，并由已 pinned root 对 certificate 的签名把该 key 绑定到原 Federation
 identity；主动连接和读取响应时，由已验证 hostname 的 HTTPS 认证当前域名端点，well-known 中的
 root 则必须（MUST）与本地 pin 一致。任一检查失败都不得（MUST NOT）开放普通 S2S operation。
 
-生产通信 必须（MUST）使用 HTTPS 并验证连接目标的 TLS hostname；明确启用的 insecure HTTP 只适用于
-隔离开发/测试环境。节点采用何种 DNS resolver、IP 分类、连接器或出站网络策略属于本地实现，
+Federation v1 通信必须（MUST）使用 HTTPS 并验证逻辑 peer domain 的 TLS hostname；使用明文 HTTP 的交互
+不符合 Federation v1。节点采用何种 DNS resolver、IP 分类、连接器或出站网络策略属于本地实现，
 不得（MUST NOT）改变 v1 的 identity 与 signature 验证语义。
 
 ## 3. 请求构造总览（Request Construction Overview）
 
 除公开 well-known 外，发送方必须（MUST）按以下唯一顺序构造 v1 request：
 
-1. 按 operation 规范选择 method、path template、query fields 和 body shape，并选择符合第 3、4 节的 signing key。
+1. 按 operation 规范选择 method、path template、query fields 和 body shape，并选择符合第 1.3、1.4 节的 signing key。
 2. 按第 3.1 节构造最终 method、path、query 和 authority。
 3. 按第 3.2 节把 body 序列化为最终 UTF-8 bytes，并计算 `Content-Digest`；无 body 时使用空 byte string。
 4. 生成 `created`、`expires` 和 `Date`，再按第 3.3 节构造全部请求头。
@@ -253,13 +252,13 @@ percent-encoding。不得（MUST NOT）发送 operation 未定义的空 query ma
 固定为单个字符 `?`。验签时不得（MUST NOT）对 path 或 query 重新排序、解码再编码或规范化。
 
 `@authority` 是按第 2.2 节构造并实际发送的 logical HTTP request authority：小写 peer domain，
-非默认端口必须（MUST）保留，HTTPS `443` 和明确启用的 HTTP `80` 必须（MUST）省略。HTTP/2 和 HTTP/3 使用
+非默认 HTTPS 端口必须（MUST）保留，HTTPS `443` 必须（MUST）省略。HTTP/2 和 HTTP/3 使用
 `:authority`；HTTP/1.1 使用 `Host`。SRV target 不得（MUST NOT）出现在 `@authority` 中；signer identity
 始终从已验证 `keyid` 得出，不从 authority 推导。
 
 ### 3.2 请求体与内容摘要（Request Body and Content Digest）
 
-有 body 的 operation 必须（MUST）先按protocol.md 第 6.1 节和对应 operation 的字段顺序要求生成最终 UTF-8 bytes；
+有 body 的 operation 必须（MUST）先按[主协议](./protocol.md)第 6.1 节和对应 operation 的字段顺序要求生成最终 UTF-8 bytes；
 无 body 的 operation 使用长度为零的 byte string。`Content-Digest` 必须（MUST）按 RFC 9530 对这组精确
 bytes 计算，固定为 `sha-256=:<base64-sha256>:`。验证完成前，发送方和接收方均不得（MUST NOT）通过
 JSON 重建、重新序列化、空白整理或 Unicode/数字规范化替换这些 bytes。
@@ -272,7 +271,8 @@ header 与 method、request target、authority 和时间绑定到 signer。接�
 ### 3.3 已签名请求头（Signed Request Headers）
 
 除公开 well-known 外，全部 v1 request（包括 `recognize` 和 `healthy`）必须（MUST）使用以下固定 HTTP
-Message Signature profile。第 3 节的鉴权上下文只改变 key resolution 和 recognition/authorization gate，不改变本节
+Message Signature profile。[主协议](./protocol.md)第 3 节的鉴权上下文只改变 key resolution 和
+recognition/authorization gate，不改变本节
 wire format。
 
 | Header            | 要求                                                                               |
@@ -338,7 +338,8 @@ sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=<
 
 1. 限制 request line、header 和 body 大小，拒绝重复或无法唯一解析的安全 header。
 2. 解析 `Signature-Input` 和 `Signature`，检查唯一 label、固定组件顺序、参数集合和 `alg`。
-3. 从 `keyid` 提取 canonical signer domain，按第 3 节的鉴权上下文执行 recognition/authorization gate 并选择 key；
+3. 从 `keyid` 提取 canonical signer domain，按[主协议](./protocol.md)第 3 节的鉴权上下文执行
+   recognition/authorization gate 并选择 key；
    `recognized signed` 不得（MUST NOT）把纯传输 `degraded` 当作授权失败。
 4. 检查 `created <= expires <= created + 300`、`Date` 解析后的 Unix epoch seconds 精确等于 `created`，并拒绝
    `created < now - 300`、`created > now + 60` 或 `expires < now`。
@@ -385,4 +386,3 @@ body 最后一行的精确 UTF-8 bytes 同时用于 `Content-Digest` 和签名�
 [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json)。Recognize 和
 Healthy 的 certificate、request、response 与签名基串完整示例见
 [Federation v1 服务器认可](./recognition.md#10-完整-http-构造示例complete-http-construction-examples)。
-

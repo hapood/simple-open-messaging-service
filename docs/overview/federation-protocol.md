@@ -7,17 +7,16 @@ version; bodies do not repeat a version field. The current endpoint-level contra
 
 ## Identity and recovery
 
-Nodes discover public keys and supported major versions through `/.well-known/soms`. First contact uses
-`POST /s2s/v1/ignite`, which
-atomically pins identity continuity and initializes state/message cursors. Subsequent requests are RFC
-9421 signed.
+Nodes discover the root public key, root-authorized signing-key certificates and supported major versions
+through `/.well-known/soms`. First contact uses signed, idempotent `POST /s2s/v1/recognize` in both
+directions. Ordinary data traffic opens only after both directions and local availability facts converge.
 
-Temporary signed-request failures may move a peer from `trusted` to `demoted`; they do not discard its
-pinned identity. Recovery verifies `/s2s/v1/identity`, drains state, and then drains messages. A
-changed root fingerprint, pairwise server identity, or signing key enters `identity_lost`. After DNS is
-repaired, a SUPER_ADMIN may recover the trust edge only by verifying the exact original pinned identity;
-a genuinely new identity requires destructive reset. An administrator `blocked` decision is a
-durable policy state and cannot be overwritten by an in-flight ignite or recovery request.
+`POST /s2s/v1/healthy` checks an existing pinned relationship without becoming a key-fetch oracle.
+Temporary transport failures move a peer from `healthy` to `degraded` without discarding its recognition
+facts. A changed root enters `halted` with an identity-mismatch reason; normal root-authorized signing-key rotation does not. After
+DNS is repaired, a SUPER_ADMIN may recover only the exact original pinned root. A genuinely new root
+requires destructive reset and fresh bilateral recognition. `blocked` and `reset_in_progress` are durable
+policy states that an in-flight recognition request cannot overwrite.
 
 ## State before messages
 
@@ -89,8 +88,8 @@ capability negotiation. See the normative [call specification](../federation/spe
 ## Current S2S surface
 
 - `GET /.well-known/soms`
-- `POST /s2s/v1/ignite`
-- `GET /s2s/v1/identity`
+- `POST /s2s/v1/recognize`
+- `POST /s2s/v1/healthy`
 - `POST /s2s/v1/feed-revisions`
 - `GET /s2s/v1/state-feed`
 - `GET /s2s/v1/message-feed`

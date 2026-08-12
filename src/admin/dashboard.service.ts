@@ -99,7 +99,13 @@ export class DashboardService {
         .limit(10),
     ]);
 
-    const federation = { trusted: 0, demoted: 0, pending: 0, blocked: 0 };
+    const federation = {
+      unrecognized: 0,
+      establishing: 0,
+      available: 0,
+      degraded: 0,
+      halted: 0,
+    };
     for (const g of fedGroups) {
       const lvl = g.trustLevel as keyof typeof federation;
       if (lvl in federation) federation[lvl] = g.value;

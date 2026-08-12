@@ -94,9 +94,10 @@ describe('Federation destructive reset', () => {
     await appA.database
       .update(federatedPeer)
       .set({
-        trustLevel: 'identity_lost',
-        identityLostAt: new Date(),
-        identityLostReason: 'e2e simulated identity mismatch',
+        trustLevel: 'halted',
+        haltedAt: new Date(),
+        haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        haltReason: 'e2e simulated identity mismatch',
       })
       .where(eq(federatedPeer.domain, FED_DOMAIN_B));
   }, 120_000);
@@ -196,7 +197,7 @@ describe('Federation destructive reset', () => {
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ account: 'reset-bob', domain: FED_DOMAIN_B });
-    expect(rejoin.status).toBe(200);
+    expect(rejoin.status, JSON.stringify(rejoin.body)).toBe(200);
     expect(rejoin.body.code).toBe(BusinessCode.OK);
     expect(rejoin.body.data.id).not.toBe(oldBobStubId);
 
@@ -208,7 +209,7 @@ describe('Federation destructive reset', () => {
         where: eq(federatedPeerReset.domain, FED_DOMAIN_B),
       }),
     ]);
-    expect(rejoinedPeer?.trustLevel).toBe('trusted');
+    expect(rejoinedPeer?.trustLevel).toBe('available');
     expect(consumedReset?.reinitPending).toBe(false);
 
     const inheritedParticipants = await appA.database

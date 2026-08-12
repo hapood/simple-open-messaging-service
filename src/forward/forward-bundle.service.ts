@@ -657,7 +657,7 @@ export class ForwardBundleService {
       throw new BusinessException(
         BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
         'forward bundle JSON exceeds 2 MiB',
-        HttpStatus.PAYLOAD_TOO_LARGE,
+        HttpStatus.OK,
       );
     }
     return closure;
@@ -1108,11 +1108,11 @@ export class ForwardBundleService {
                 ? '[图集]'
                 : message.contentType === ContentType.FORWARD
                   ? '[转发消息]'
-                : toDisplayText(
-                    parseTextMessageContent(message.content)?.text ?? '',
-                  )
-                    .replace(/\s+/g, ' ')
-                    .trim();
+                  : toDisplayText(
+                      parseTextMessageContent(message.content)?.text ?? '',
+                    )
+                      .replace(/\s+/g, ' ')
+                      .trim();
     return truncateGraphemes(
       `${message.sender.displayName}：${label}`,
       FORWARD_SUMMARY_CHARS,

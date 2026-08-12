@@ -8,11 +8,10 @@ import { BusinessCode } from './business-code.js';
  * structured payload is passed) at the given httpStatus — **default 200**. Business outcomes return
  * HTTP 200 + business code by convention, including not-found and authorization denials (FORBIDDEN):
  * a missing resource or a "not friends" refusal is a business answer, not a protocol error, so it
- * must NOT demote a federated peer. An explicit non-200 status is reserved for deliberate
- * protocol/policy signals — 410 GONE (the federation group-author-left leave signal, which the pulling
- * side detects via `S2sResponseError.status === 410`), 403 for an admin-enforced peer block, 400 for
- * malformed-input refusals. The federation transports (`getSigned`/`postSigned`) demote a peer only on
- * 401/403/5xx — never on a 200 business refusal.
+ * must NOT demote a federated peer. Federation v1 reserves non-200 JSON statuses for protocol shape
+ * (`400`), authentication/binding (`401`), fatal peer-relationship conflict (`409`), and temporary
+ * service unavailability (`503`). Its transports change lifecycle only for `503`, or for `409` paired
+ * with a registered fatal code; an HTTP 200 business refusal never changes peer lifecycle.
  *
  * Guards/services/controllers throw this to abort with a domain code (e.g. THREAD_NOT_FOUND); success
  * handlers return raw data and the global SerializeInterceptor wraps the `{ code, message, data }`

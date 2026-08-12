@@ -6,11 +6,11 @@
 
 ## 公开 surface
 
-| Method | Path                                    | 鉴权与用途                                          |
-| ------ | --------------------------------------- | --------------------------------------------------- |
-| `GET`  | `/.well-known/soms`                     | 公开服务器身份、公钥和能力发现。                    |
-| `POST` | `/s2s/v1/ignite`                    | 首次建立并固定 peer identity；不要求预先 trusted。  |
-| `GET`  | `/s2s/v1/identity`                  | nonce-bound 身份连续性证明。                        |
+| Method | Path                                | 鉴权与用途                                          |
+| ------ | ----------------------------------- | --------------------------------------------------- |
+| `GET`  | `/.well-known/soms`                 | 公开服务器身份、公钥和能力发现。                    |
+| `POST` | `/s2s/v1/recognize`                 | 建立一个认可方向并持久调度反向认可。                |
+| `POST` | `/s2s/v1/healthy`                   | 查询既有认可关系的可用性，不为未知方取 key。        |
 | `POST` | `/s2s/v1/feed-revisions`            | 轻量 state/message source revision wake-up。        |
 | `GET`  | `/s2s/v1/state-feed`                | PROFILE、好友方向事实、群方向事实和 origin 群快照。 |
 | `GET`  | `/s2s/v1/message-feed`              | durable message discovery feed。                    |
@@ -23,10 +23,10 @@
 
 - wire identity 固定为 `{ account, domain }`，不传数据库 id。
 - P2P 两端各有本地 thread；group 以 origin 的 `!account` 为稳定身份，每个成员服务器持有本地镜像。
-- `trusted` 可正常交换数据；`demoted` 仅表示临时不可用，保留 pinned identity。
-- 重启恢复顺序是 identity → state feed → message feed；identity 同时恢复已有 demoted trust edge。
-- fingerprint、root key 或 pairwise server identity 冲突进入 `identity_lost`。DNS 修复后管理员可
-  手动验证并恢复完全相同的原 pin；新身份仍只能 destructive reset，不能重新 ignite 静默继承授权。
+- `healthy` 可正常交换数据；`degraded` 表示事实未收敛或临时不可用，并保留 pinned identity。
+- 重启恢复先查询 `healthy`；缺少任一认可事实时执行幂等双向 `recognize`，再拉 state 和 message feed。
+- pinned root 冲突进入 `halted` 并记录 identity mismatch 原因；同一 root 授权的 signing certificate 轮换不改变身份。DNS
+  修复后管理员只能恢复完全相同的原 root；新 root 必须 destructive reset 和 fresh recognition。
 - 迟到的旧网络失败不能覆盖较新的成功心跳。
 
 ### SOMS 网络实现边界

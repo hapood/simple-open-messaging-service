@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -80,19 +79,33 @@ function semanticValid(schema: string, value: unknown): boolean {
   if (schema === 'urn:soms:federation:v1:discovery') {
     if (!validateStrictVersions(value)) return false;
     const doc = value as {
-      rootKey: { fingerprint: string; ed25519: string };
-      keys: Array<{ keyId: string; ed25519: string }>;
+      rootKey: { ed25519: string };
+      keys: Array<{
+        keyId: string;
+        ed25519: string;
+        notBefore: number;
+        notAfter: number;
+        authorizationSignature: string;
+      }>;
     };
-    const fingerprint =
-      'sha256:' +
-      createHash('sha256')
-        .update(Buffer.from(doc.rootKey.ed25519, 'base64'))
-        .digest('base64url');
-    return (
-      doc.rootKey.fingerprint === fingerprint &&
-      doc.keys.length === 1 &&
-      doc.keys[0]?.ed25519 === doc.rootKey.ed25519
-    );
+    const root = Buffer.from(doc.rootKey.ed25519, 'base64');
+    const ids = new Set<string>();
+    return doc.keys.every((key) => {
+      if (ids.has(key.keyId) || key.notBefore >= key.notAfter) return false;
+      ids.add(key.keyId);
+      const statement = JSON.stringify({
+        keyId: key.keyId,
+        ed25519: key.ed25519,
+        usage: 'soms-http-message-signature',
+        notBefore: key.notBefore,
+        notAfter: key.notAfter,
+      });
+      return ed25519.verify(
+        Buffer.from(key.authorizationSignature, 'base64'),
+        Buffer.from(statement),
+        root,
+      );
+    });
   }
   if (schema === 'urn:soms:federation:v1:state-feed') {
     const page = value as {
@@ -198,8 +211,8 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
   }
   const expected = new Set([
     'GET /.well-known/soms',
-    'POST /s2s/v1/ignite',
-    'GET /s2s/v1/identity',
+    'POST /s2s/v1/recognize',
+    'POST /s2s/v1/healthy',
     'POST /s2s/v1/feed-revisions',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/message-feed',

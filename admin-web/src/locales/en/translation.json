@@ -443,15 +443,16 @@
   },
   "federation": {
     "title": "Federation",
-    "desc": "Peer servers on the trust allow-list and their lifecycle: trust → demote (a signed op failed; re-handshakes on next contact) → re-trust, plus admin-blocked domains. Open a peer for the full timeline.",
+    "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and the full timeline.",
     "searchPlaceholder": "Search domain",
     "tabs": { "peers": "Peers", "selfCheck": "Self-check" },
     "status": {
       "all": "All",
-      "trusted": "Trusted",
-      "demoted": "Demoted",
-      "pending": "Pending",
-      "blocked": "Blocked"
+      "available": "Available",
+      "establishing": "Establishing",
+      "degraded": "Degraded",
+      "unrecognized": "Unrecognized",
+      "halted": "Halted"
     },
     "col": {
       "domain": "Domain",
@@ -489,7 +490,7 @@
       "discovered": "Discovered",
       "trusted": "Trust established",
       "demoted": "Connection lost / demoted",
-      "blocked": "Blocked by admin",
+      "halted": "Communication halted",
       "unblocked": "Unblocked by admin"
     },
     "detail": {

@@ -1,253 +1,317 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import { lookup, type LookupAddress } from 'node:dns';
 import { resolveSrv } from 'node:dns/promises';
+import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
+import {
+  certificateDomain,
+  type SigningKeyCertificate,
+  verifySigningCertificate,
+} from './federation-certificate.js';
 import { loadFederationConfig } from './federation.config.js';
 import { KeypairService } from './keypair.service.js';
+import { selectFederationProtocolVersion } from './federation-protocol.js';
 
-/** Proactive peer-key refresh cadence — equals the lazy cache TTL (SOMS_KEY_CACHE_TTL_SEC, 6h default).
- *  Read directly from env, NOT via loadFederationConfig, so evaluating it at module scope never triggers
- *  the fail-fast requireEnv('SOMS_DOMAIN') at import time (test harnesses import this module before SOMS_DOMAIN
- *  is set). Numerically identical to loadFederationConfig().keyCacheTtlSec * 1000. */
 const KEY_REFRESH_MS =
   Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60) * 1000;
+const DOMAIN_RE =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
 
-interface PeerKey {
-  keyId: string;
-  ed25519: string; // base64 raw 32 bytes
-}
 export interface WellKnownDoc {
   software?: string;
-  protocolVersions?: number[];
-  rootKey?: { fingerprint?: string; ed25519?: string };
-  keys: PeerKey[];
+  protocolVersions: number[];
+  rootKey: { ed25519: string };
+  keys: SigningKeyCertificate[];
+  [key: string]: unknown;
 }
 
-/**
- * Resolves peer servers: SRV `_soms._tcp.<domain>` (host:port, fallback https://<domain>) → fetch
- * `.well-known/soms` over HTTPS → cache the peer's single identity/signing key.
- *
- * Key cache: fetch-on-`keyId`-miss + TTL. A proactive refresh worker re-fetches every
- * communicated-with peer's key each TTL window. A pinned peer may never replace or add a key.
- * No eviction in v0.1 — the cache only ever holds trusted peers (the allow-list gate at Gate 1
- * precedes any key fetch, so untrusted senders never populate it; the set is small + admin-managed).
- *
- * Step-1 simplifications (documented): the `.well-known` fetch uses native fetch (Node HE handles
- * v4/v6); the explicit RFC 8305 racing (§6.4) lands with the shared S2S HTTP client in Phase D.
- *
- * Error contract: fetch failures THROW (caller returns 503 → sender retries). A transient key fetch
- * must NEVER become a permanent 401 — that would violate §6.1's "401 = do not retry".
- */
+interface CachedRoute {
+  baseUrl: string;
+  connectHost: string;
+  fetchedAt: number;
+  dispatcher?: Agent;
+}
+
 @Injectable()
 export class DiscoveryService {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
-  private readonly baseCache = new Map<
-    string,
-    { baseUrl: string; fetchedAt: number }
-  >();
+  private readonly routes = new Map<string, CachedRoute>();
 
   constructor(
     private readonly database: DatabaseService,
     private readonly keypair: KeypairService,
   ) {}
 
-  /** Proactive peer-key refresh round. Registered with @nestjs/schedule; cleared on shutdown. */
   @Interval(KEY_REFRESH_MS)
   periodicRefresh(): void {
-    this.refreshAll().catch((e) =>
+    void this.refreshAll().catch((error) =>
       this.logger.warn(
-        `proactive key-refresh round failed: ${(e as Error).message}`,
+        `proactive key-refresh round failed: ${(error as Error).message}`,
       ),
     );
   }
 
-  /** Resolve a peer's base URL via SRV `_soms._tcp.<domain>` (fallback to apex), in-memory cached. */
+  /** Resolve the mandatory SOMS SRV record while keeping the logical peer as HTTP/TLS authority. */
   async resolveBase(domain: string): Promise<string> {
+    const normalized = this.normalizeDomain(domain);
     const ttlMs = this.config.keyCacheTtlSec * 1000;
-    const cached = this.baseCache.get(domain);
+    const cached = this.routes.get(normalized);
     if (cached && Date.now() - cached.fetchedAt < ttlMs) return cached.baseUrl;
 
-    let host = domain;
-    let port: number | undefined;
-    try {
-      const records = await resolveSrv(`_soms._tcp.${domain}`);
-      if (records.length > 0) {
-        // Step-1: take the highest-priority target. (Full priority/weight selection per RFC 2782 §6.4 Layer 2.)
-        records.sort((a, b) => a.priority - b.priority || a.weight - b.weight);
-        const top = records[0];
-        host = top.name.replace(/\.+$/, ''); // strip trailing FQDN dot
-        port = top.port;
-      }
-    } catch (e) {
-      // No SRV record (ENOTFOUND) or DNS hiccup → fall back to the apex domain; the .well-known
-      // fetch below is the real liveness test.
-      this.logger.debug(
-        `SRV _soms._tcp.${domain} fell back to apex: ${(e as Error).message}`,
-      );
+    if (this.config.allowInsecureHttp) {
+      const baseUrl = `http://${normalized}`;
+      this.routes.set(normalized, {
+        baseUrl,
+        connectHost: normalized,
+        fetchedAt: Date.now(),
+      });
+      return baseUrl;
     }
 
-    const scheme = this.config.allowInsecureHttp ? 'http' : 'https';
-    const defaultPort = scheme === 'https' ? 443 : 80;
+    let records;
+    try {
+      records = await resolveSrv(`_soms._tcp.${normalized}`);
+    } catch (error) {
+      throw new Error(
+        `SRV discovery for ${normalized} failed: ${(error as Error).message}`,
+      );
+    }
+    if (records.length === 0)
+      throw new Error(`${normalized} does not publish SOMS Federation SRV`);
+    if (records.some((record) => record.name === '.')) {
+      if (records.length === 1)
+        throw new Error(`${normalized} explicitly disables SOMS Federation`);
+      throw new Error(`${normalized} publishes an invalid mixed SRV RRset`);
+    }
+    const valid = records.filter(
+      (record) =>
+        DOMAIN_RE.test(record.name.replace(/\.+$/, '').toLowerCase()) &&
+        record.port >= 1 &&
+        record.port <= 65_535 &&
+        record.priority >= 0 &&
+        record.priority <= 65_535 &&
+        record.weight >= 0 &&
+        record.weight <= 65_535,
+    );
+    if (valid.length !== records.length)
+      throw new Error(`${normalized} publishes an invalid SOMS SRV RRset`);
+    const priority = Math.min(...valid.map((record) => record.priority));
+    const candidates = valid.filter((record) => record.priority === priority);
+    const selected = this.weightedRecord(candidates);
+    const connectHost = selected.name.replace(/\.+$/, '').toLowerCase();
     const baseUrl =
-      port && port !== defaultPort
-        ? `${scheme}://${host}:${port}`
-        : `${scheme}://${host}`;
-    this.baseCache.set(domain, { baseUrl, fetchedAt: Date.now() });
+      selected.port === 443
+        ? `https://${normalized}`
+        : `https://${normalized}:${selected.port}`;
+    const route: CachedRoute = {
+      baseUrl,
+      connectHost,
+      fetchedAt: Date.now(),
+    };
+    route.dispatcher = this.createDispatcher(normalized, connectHost);
+    this.routes.set(normalized, route);
     return baseUrl;
   }
 
-  /** Drop a cached SRV/apex decision before an explicit administrator recovery probe. */
   invalidateBase(domain: string): void {
-    this.baseCache.delete(domain.trim().toLowerCase().replace(/\.+$/, ''));
+    const normalized = this.normalizeDomain(domain);
+    const route = this.routes.get(normalized);
+    void route?.dispatcher?.close();
+    this.routes.delete(normalized);
   }
 
-  /** GET `<domain>/.well-known/soms` with the S2S call timeout. Throws on non-2xx or malformed shape. */
+  /** Federation HTTP transport: never follows redirects and preserves logical authority across SRV routing. */
+  async request(url: URL | string, init: RequestInit = {}): Promise<Response> {
+    const parsed = typeof url === 'string' ? new URL(url) : url;
+    const domain = this.normalizeDomain(parsed.hostname);
+    const route = this.routes.get(domain);
+    const response = await undiciFetch(parsed, {
+      ...(init as Record<string, unknown>),
+      redirect: 'manual',
+      ...(route?.dispatcher ? { dispatcher: route.dispatcher } : {}),
+    } as never);
+    return response as unknown as Response;
+  }
+
   async fetchWellKnown(domain: string): Promise<WellKnownDoc> {
     this.keypair.assertAvailable();
     const base = await this.resolveBase(domain);
-    const res = await fetch(`${base}/.well-known/soms`, {
+    const response = await this.request(`${base}/.well-known/soms`, {
       signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       headers: { accept: 'application/json' },
     });
-    if (!res.ok) throw new Error(`well-known ${domain}: HTTP ${res.status}`);
-    let doc: WellKnownDoc;
+    if (response.status !== 200)
+      throw new Error(`well-known ${domain}: HTTP ${response.status}`);
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!/^application\/json(?:\s*;|$)/i.test(contentType))
+      throw new Error(`well-known ${domain}: invalid Content-Type`);
+    let value: unknown;
     try {
-      doc = (await res.json()) as WellKnownDoc;
-    } catch (e) {
+      value = await response.json();
+    } catch (error) {
       throw new Error(
-        `well-known ${domain}: malformed JSON (${(e as Error).message})`,
+        `well-known ${domain}: malformed JSON (${(error as Error).message})`,
       );
     }
-    if (!doc || !Array.isArray(doc.keys)) {
-      throw new Error(`well-known ${domain}: missing keys`);
-    }
-    return doc;
+    return this.validateWellKnown(domain, value);
   }
 
-  /**
-   * Resolve a peer's public key by keyId: TTL-cached in S2SKeyCache, fetch-on-miss from .well-known.
-   * THROWS on fetch failure (caller → 503 → sender retries). Returns null only if the peer is
-   * reachable but does not publish this keyId (a permanent signature failure → caller 401).
-   */
+  validateWellKnown(domain: string, value: unknown): WellKnownDoc {
+    const normalized = this.normalizeDomain(domain);
+    const doc = value as Partial<WellKnownDoc> | null;
+    const softwareValid =
+      doc?.software === undefined ||
+      (typeof doc.software === 'string' &&
+        Buffer.byteLength(doc.software) >= 1 &&
+        Buffer.byteLength(doc.software) <= 128 &&
+        !/[\u0000-\u001f\u007f-\u009f]/u.test(doc.software));
+    if (
+      !doc ||
+      selectFederationProtocolVersion(doc.protocolVersions) !== 1 ||
+      !softwareValid ||
+      !doc.rootKey ||
+      typeof doc.rootKey.ed25519 !== 'string' ||
+      !/^[A-Za-z0-9+/]{43}=$/.test(doc.rootKey.ed25519) ||
+      !Array.isArray(doc.keys) ||
+      doc.keys.length === 0
+    ) {
+      throw new Error(`well-known ${normalized}: malformed v1 document`);
+    }
+    const ids = new Set<string>();
+    for (const certificate of doc.keys) {
+      if (
+        !certificate ||
+        typeof certificate.keyId !== 'string' ||
+        certificateDomain(certificate.keyId) !== normalized ||
+        ids.has(certificate.keyId) ||
+        !verifySigningCertificate(certificate, doc.rootKey.ed25519)
+      ) {
+        throw new Error(
+          `well-known ${normalized}: invalid signing certificate`,
+        );
+      }
+      ids.add(certificate.keyId);
+    }
+    if (
+      !doc.keys.some(
+        (certificate) =>
+          certificate.notBefore <= Date.now() &&
+          Date.now() < certificate.notAfter,
+      )
+    ) {
+      throw new Error(
+        `well-known ${normalized}: no currently valid signing key`,
+      );
+    }
+    return doc as WellKnownDoc;
+  }
+
   async getPublicKey(
     domain: string,
     keyId: string,
   ): Promise<Uint8Array | null> {
-    const ttlMs = this.config.keyCacheTtlSec * 1000;
+    const normalized = this.normalizeDomain(domain);
+    const now = new Date();
     const cached = await this.database.db.query.s2SKeyCache.findFirst({
       where: and(
-        eq(tables.s2SKeyCache.domain, domain),
+        eq(tables.s2SKeyCache.domain, normalized),
         eq(tables.s2SKeyCache.keyId, keyId),
       ),
     });
-    if (cached && Date.now() - cached.fetchedAt.getTime() < ttlMs) {
+    if (cached && cached.notBefore <= now && cached.notAfter > now) {
       return Uint8Array.from(Buffer.from(cached.publicKey, 'base64'));
     }
-    // Cache miss or stale → re-fetch the peer's single published key.
-    const doc = await this.fetchWellKnown(domain); // throws → caller 503
-    await this.cacheKeys(domain, doc.keys);
-    const hit = doc.keys.find((k) => k.keyId === keyId);
+    const doc = await this.fetchWellKnown(normalized);
+    await this.cacheDocument(normalized, doc);
+    const hit = doc.keys.find(
+      (key) =>
+        key.keyId === keyId &&
+        key.notBefore <= Date.now() &&
+        Date.now() < key.notAfter,
+    );
     return hit ? Uint8Array.from(Buffer.from(hit.ed25519, 'base64')) : null;
   }
 
-  /**
-   * Cache a peer's single key. Once identity is pinned, a different keyId or different public key is
-   * identity loss, never a cache refresh. The old cache row is deliberately retained as evidence.
-   */
-  async cacheKeys(domain: string, keys: PeerKey[]): Promise<void> {
-    const normalized = domain.trim().toLowerCase().replace(/\.+$/, '');
-    if (
-      keys.length === 0 ||
-      keys.some(
-        (candidate) =>
-          candidate.keyId.split('/')[0] !== normalized ||
-          !/^[A-Za-z0-9+/]{43}=$/.test(candidate.ed25519),
-      )
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
-        `${normalized} must publish exactly one valid domain-bound key`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    const key = keys[0];
-    const mismatchReason = await this.database.db.transaction(async (tx) => {
-      const [peer, cachedKeys] = await Promise.all([
-        tx.query.federatedPeer.findFirst({
-          where: eq(tables.federatedPeer.domain, normalized),
-        }),
-        tx.query.s2SKeyCache.findMany({
-          where: eq(tables.s2SKeyCache.domain, normalized),
-        }),
-      ]);
-      const pinned = peer?.identityPinnedAt != null;
-      if (!pinned && keys.length !== 1) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
-          `${normalized} must publish exactly one key`,
-          HttpStatus.UNAUTHORIZED,
-        );
-      }
-      const cached = cachedKeys.find((row) => row.keyId === key.keyId);
-      const mismatch =
-        keys.length !== 1 ||
-        (cached && cached.publicKey !== key.ed25519) ||
-        (pinned &&
-          (cachedKeys.length !== 1 ||
-            !cached ||
-            cached.publicKey !== key.ed25519));
-      if (mismatch) {
-        const reason = 'peer replaced its pinned federation signing key';
-        if (
-          peer?.trustLevel !== 'identity_lost' &&
-          peer?.trustLevel !== 'reset_in_progress'
-        ) {
-          await tx
-            .update(tables.federatedPeer)
-            .set({
-              trustLevel: 'identity_lost',
-              identityLostAt: new Date(),
-              identityLostReason: reason,
-            })
-            .where(eq(tables.federatedPeer.domain, normalized));
-          await tx.insert(tables.federatedPeerEvent).values({
-            domain: normalized,
-            type: 'identity_lost',
-            reason,
-          });
-        }
+  async getCachedPublicKey(
+    domain: string,
+    keyId: string,
+  ): Promise<Uint8Array | null> {
+    const now = new Date();
+    const cached = await this.database.db.query.s2SKeyCache.findFirst({
+      where: and(
+        eq(tables.s2SKeyCache.domain, this.normalizeDomain(domain)),
+        eq(tables.s2SKeyCache.keyId, keyId),
+      ),
+    });
+    return cached && cached.notBefore <= now && cached.notAfter > now
+      ? Uint8Array.from(Buffer.from(cached.publicKey, 'base64'))
+      : null;
+  }
+
+  /** Verify root continuity and atomically replace the cache with the currently published certificates. */
+  async cacheDocument(domain: string, doc: WellKnownDoc): Promise<void> {
+    const normalized = this.normalizeDomain(domain);
+    const fingerprint = this.fingerprint(doc.rootKey.ed25519);
+    const mismatch = await this.database.db.transaction(async (tx) => {
+      const peer = await tx.query.federatedPeer.findFirst({
+        where: eq(tables.federatedPeer.domain, normalized),
+      });
+      if (
+        peer?.identityPinnedAt &&
+        (peer.rootPublicKey !== doc.rootKey.ed25519 ||
+          peer.rootKeyFingerprint !== fingerprint)
+      ) {
+        const reason =
+          'peer presented a root different from the pinned identity';
+        await tx
+          .update(tables.federatedPeer)
+          .set({
+            trustLevel: 'halted',
+            remoteServiceReachable: false,
+            haltedAt: new Date(),
+            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            haltReason: reason,
+          })
+          .where(eq(tables.federatedPeer.domain, normalized));
+        await tx.insert(tables.federatedPeerEvent).values({
+          domain: normalized,
+          type: 'halted',
+          reason,
+        });
         return reason;
       }
-      const fetchedAt = new Date();
       await tx
-        .insert(tables.s2SKeyCache)
-        .values({
+        .delete(tables.s2SKeyCache)
+        .where(eq(tables.s2SKeyCache.domain, normalized));
+      await tx.insert(tables.s2SKeyCache).values(
+        doc.keys.map((key) => ({
           domain: normalized,
           keyId: key.keyId,
           publicKey: key.ed25519,
-          fetchedAt,
-        })
-        .onConflictDoUpdate({
-          target: [tables.s2SKeyCache.domain, tables.s2SKeyCache.keyId],
-          set: { fetchedAt },
-        });
+          notBefore: new Date(key.notBefore),
+          notAfter: new Date(key.notAfter),
+          authorizationSignature: key.authorizationSignature,
+          fetchedAt: new Date(),
+        })),
+      );
       return undefined;
     });
-    if (mismatchReason) {
+    if (mismatch) {
       throw new BusinessException(
         BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-        mismatchReason,
+        mismatch,
         HttpStatus.CONFLICT,
       );
     }
   }
 
-  /** Proactive refresh: re-fetch every cached peer's keys. Per-domain failures are logged, not fatal. */
   private async refreshAll(): Promise<void> {
     if (!this.keypair.getStatus().available) return;
     const rows = await this.database.db
@@ -256,12 +320,54 @@ export class DiscoveryService {
     for (const { domain } of rows) {
       try {
         const doc = await this.fetchWellKnown(domain);
-        await this.cacheKeys(domain, doc.keys);
-      } catch (e) {
+        await this.cacheDocument(domain, doc);
+      } catch (error) {
         this.logger.warn(
-          `proactive key refresh failed for ${domain}: ${(e as Error).message}`,
+          `proactive key refresh failed for ${domain}: ${(error as Error).message}`,
         );
       }
     }
+  }
+
+  private weightedRecord<T extends { weight: number }>(records: T[]): T {
+    const total = records.reduce((sum, record) => sum + record.weight, 0);
+    if (total === 0)
+      return records[Math.floor(Math.random() * records.length)]!;
+    let selected = Math.random() * total;
+    for (const record of records) {
+      selected -= record.weight;
+      if (selected < 0) return record;
+    }
+    return records[records.length - 1]!;
+  }
+
+  private createDispatcher(domain: string, connectHost: string): Agent {
+    return new Agent({
+      connect: {
+        servername: domain,
+        lookup: (_hostname, options, callback) => {
+          lookup(connectHost, options as never, (error, address, family) => {
+            callback(
+              error,
+              address as string | LookupAddress[],
+              family as number,
+            );
+          });
+        },
+      },
+    });
+  }
+
+  private normalizeDomain(domain: string): string {
+    const normalized = domain.trim().toLowerCase().replace(/\.+$/, '');
+    if (!DOMAIN_RE.test(normalized))
+      throw new Error(`invalid domain ${domain}`);
+    return normalized;
+  }
+
+  private fingerprint(publicKey: string): string {
+    return `sha256:${createHash('sha256')
+      .update(Buffer.from(publicKey, 'base64'))
+      .digest('base64url')}`;
   }
 }

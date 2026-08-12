@@ -49,7 +49,7 @@ describe('FederationMessageFeedService', () => {
     const now = new Date();
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
     const [author, remote] = await database.db
       .insert(user)
@@ -162,7 +162,7 @@ describe('FederationMessageFeedService', () => {
     const otherPeer = 'other-peer.test';
     await database.db.insert(federatedPeer).values({
       domain: otherPeer,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
     await cursor.initializePeer(otherPeer, 0n);
 

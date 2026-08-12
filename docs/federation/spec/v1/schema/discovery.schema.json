@@ -3,27 +3,20 @@
   "$id": "urn:soms:federation:v1:discovery",
   "title": "GET /.well-known/soms response for a v1-capable node",
   "type": "object",
-  "required": ["software", "protocolVersions", "rootKey", "keys"],
+  "required": ["protocolVersions", "rootKey", "keys"],
   "properties": {
-    "software": { "type": "string", "minLength": 1 },
+    "software": { "type": "string", "minLength": 1, "maxLength": 128 },
     "protocolVersions": {
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
       "contains": { "const": 1 },
-      "items": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 9007199254740991
-      }
+      "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
     },
     "rootKey": {
       "type": "object",
-      "required": ["fingerprint", "ed25519"],
+      "required": ["ed25519"],
       "properties": {
-        "fingerprint": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/rootFingerprint"
-        },
         "ed25519": {
           "$ref": "urn:soms:federation:v1:common#/$defs/base64Ed25519Key"
         }
@@ -33,14 +26,28 @@
     "keys": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 1,
       "items": {
         "type": "object",
-        "required": ["keyId", "ed25519"],
+        "required": [
+          "keyId",
+          "ed25519",
+          "notBefore",
+          "notAfter",
+          "authorizationSignature"
+        ],
         "properties": {
           "keyId": { "type": "string", "minLength": 3 },
           "ed25519": {
             "$ref": "urn:soms:federation:v1:common#/$defs/base64Ed25519Key"
+          },
+          "notBefore": {
+            "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+          },
+          "notAfter": {
+            "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
+          },
+          "authorizationSignature": {
+            "$ref": "urn:soms:federation:v1:common#/$defs/base64Ed25519Signature"
           }
         },
         "additionalProperties": false

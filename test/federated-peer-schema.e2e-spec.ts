@@ -33,12 +33,11 @@ describe('FederatedPeer schema', () => {
 
     expect(result.rows).toHaveLength(1);
     for (const trustLevel of [
-      'pending',
-      'trusted',
-      'demoted',
-      'blocked',
-      'identity_lost',
-      'reset_in_progress',
+      'unrecognized',
+      'establishing',
+      'available',
+      'degraded',
+      'halted',
     ]) {
       expect(result.rows[0].definition).toContain(trustLevel);
     }
@@ -54,5 +53,23 @@ describe('FederatedPeer schema', () => {
       code: '23514',
       constraint: 'FederatedPeer_trustLevel_check',
     });
+  });
+
+  it('removes the obsolete nonce table and pairwise peer column', async () => {
+    const [table, column] = await Promise.all([
+      database.pool.query<{ relation: string | null }>(
+        `SELECT to_regclass('public."S2SIdentityNonce"')::text AS relation`,
+      ),
+      database.pool.query<{ column_name: string }>(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'FederatedPeer'
+           AND column_name = 'pairwiseServerId'`,
+      ),
+    ]);
+
+    expect(table.rows[0]?.relation).toBeNull();
+    expect(column.rows).toEqual([]);
   });
 });

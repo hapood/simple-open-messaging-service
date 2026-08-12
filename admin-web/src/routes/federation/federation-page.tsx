@@ -38,10 +38,11 @@ import { quotaRisk } from './peer-quota-panel';
 const PAGE_SIZE = 20;
 const FILTERS: (FederationTrustLevel | undefined)[] = [
   undefined,
-  'trusted',
-  'demoted',
-  'pending',
-  'blocked',
+  'unrecognized',
+  'establishing',
+  'available',
+  'degraded',
+  'halted',
 ];
 
 /** The federated-peer lifecycle list. URL-synced (search/page/status shareable + back-safe). A row
@@ -200,18 +201,19 @@ export function FederationPage() {
                         {isSuper ? (
                           <DropdownMenuItem
                             variant={
-                              p.trustLevel === 'blocked'
+                              p.trustLevel === 'halted' && p.haltCode === 50009
                                 ? undefined
                                 : 'destructive'
                             }
                             onClick={() =>
                               onToggleBlock(
                                 p.domain,
-                                p.trustLevel === 'blocked',
+                                p.trustLevel === 'halted' &&
+                                  p.haltCode === 50009,
                               )
                             }
                           >
-                            {p.trustLevel === 'blocked'
+                            {p.trustLevel === 'halted' && p.haltCode === 50009
                               ? t('federation.action.unblock')
                               : t('federation.action.block')}
                           </DropdownMenuItem>

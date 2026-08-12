@@ -16,7 +16,7 @@ describe('FederationService message-feed cursor reset translation', () => {
       getSigned: vi.fn().mockRejectedValue(
         new S2sResponseError(
           'cursor truncated',
-          409,
+          200,
           BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
           {
             startChangeId: '5000',

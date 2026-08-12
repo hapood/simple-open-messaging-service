@@ -7,17 +7,16 @@ import { FederationMessageFeedPullService } from './federation-message-feed-pull
 const SWEEP_MS = 60_000;
 /** Max stagger across domains within one tick (avoids a thundering herd on a fleet-wide outage). */
 const JITTER_MS = 5000;
-/** Durable reconciliation cadence for already-trusted peers; lightweight HWM reads return quickly. */
+/** Durable reconciliation cadence for recognized peers; lightweight HWM reads return quickly. */
 const RECONCILE_MS = 5 * 60_000;
 
 /**
  * The 60s reconnect sweep (§4.3) — drives the self-healing the design's resilience story leans on.
- * Without it, a peer demoted by a failed signed op stays demoted until some user action happens to
- * re-trigger `ensurePeerTrusted`; this sweep makes recovery active + bounded instead.
+ * Without it, a transport-degraded peer stays degraded until user traffic happens to retry it; this
+ * sweep makes availability recovery active and bounded.
  *
- * Each tick, pending first contacts retry their idempotent /init; demoted established peers verify the
- * pinned identity and recover through a nonce-bound identity proof, never a new handshake. Recovery then exchanges the
- * ephemeral feed revs and drains state before the durable miss feed.
+ * Each tick retries missing idempotent recognition facts or probes an established pinned relationship
+ * with Healthy. Recovery then exchanges ephemeral feed revisions and drains state before messages.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
  * inFlight guard dedupes recoveries for one domain within a sweep.
@@ -52,7 +51,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   periodicReconciliation(): void {
     void this.reconcileTrustedPeers().catch((error) =>
       this.logger.warn(
-        `trusted-peer reconciliation failed: ${(error as Error).message}`,
+        `recognized-peer reconciliation failed: ${(error as Error).message}`,
       ),
     );
   }
@@ -71,8 +70,6 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   }
 
   private async reconcile(domain: string): Promise<void> {
-    await this.federation.verifyPeerIdentity(domain);
-    // The signed nonce-bound identity request also restores the peer's inbound demoted trust edge.
     await this.federation.pullStateFromPeer(domain);
     await this.federation.pullMissedFromPeer(this.missedPull, domain);
   }

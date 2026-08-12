@@ -18,7 +18,7 @@ import { BusinessCode } from '../common/business-code.js';
  * Error ordering is cheap → expensive AND permanent → transient (a transient key-fetch failure never
  * becomes a permanent 401):
  *   parseSigner        → 401 FEDERATION_MALFORMED       (no retry)
- *   fetchAndVerify     → 503 FEDERATION_KEY_FETCH_FAILED (RETRY) on transient fetch
+ *   fetchAndVerify     → 500 INTERNAL                    (RETRY) on transient fetch
  *                      → 401 FEDERATION_BAD_SIGNATURE    (no retry) if keyId unpublished / sig fails
  *
  * SignatureService is intentionally free of DiscoveryService (unit-testable); this service composes the
@@ -99,7 +99,7 @@ export class S2sVerifyService {
   /**
    * Fetch the signer's public key from their .well-known (authoritative — fetch-on-miss + TTL cached,
    * so the requester can't lie with an inline key) and verify the signature over the raw body. Throws
-   * FEDERATION_KEY_FETCH_FAILED (503 → sender retries) on a transient fetch failure; FEDERATION_BAD_SIGNATURE
+   * INTERNAL (500 → sender retries) on a transient fetch failure; FEDERATION_BAD_SIGNATURE
    * (401, no retry) if the keyId isn't published or the signature/content-digest fails. Caches the key
    * on success (getPublicKey does the upsert).
    */
@@ -114,9 +114,9 @@ export class S2sVerifyService {
       publicKey = await this.discovery.getPublicKey(domain, keyId);
     } catch (e) {
       throw new BusinessException(
-        BusinessCode.FEDERATION_KEY_FETCH_FAILED,
+        BusinessCode.INTERNAL,
         `key fetch failed for ${domain}: ${(e as Error).message}`,
-        HttpStatus.SERVICE_UNAVAILABLE, // → sender retries
+        HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
     if (!publicKey) {
@@ -128,6 +128,26 @@ export class S2sVerifyService {
       );
     }
     if (!(await this.signature.verifyWithKey(req, headers, publicKey))) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        'signature verification failed',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+  }
+
+  async verifyWithPublicKey(
+    req: SignedRequest,
+    headers: OutboundSignatureHeaders,
+    publicKeyBase64: string,
+  ): Promise<void> {
+    if (
+      !(await this.signature.verifyWithKey(
+        req,
+        headers,
+        Uint8Array.from(Buffer.from(publicKeyBase64, 'base64')),
+      ))
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_BAD_SIGNATURE,
         'signature verification failed',

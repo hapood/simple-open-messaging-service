@@ -306,8 +306,7 @@ export class AdminListSessionsDto {
   ip?: string;
 }
 
-/** Pagination + filter for the federated-peer lifecycle list. `status` filters by trustLevel
- *  (pending | trusted | demoted | blocked); `search` is a fuzzy domain match. */
+/** Pagination + filter for the Federation v1 recognition lifecycle list. */
 export class AdminListFederationPeersDto {
   @ApiProperty({
     required: false,
@@ -340,9 +339,9 @@ export class AdminListFederationPeersDto {
 
   @ApiProperty({
     required: false,
-    example: 'trusted',
+    example: 'available',
     description:
-      'Filter by trust level: pending | trusted | demoted | blocked (optional)',
+      'Filter by lifecycle: unrecognized | establishing | available | degraded | halted',
   })
   @IsOptional()
   @IsString()

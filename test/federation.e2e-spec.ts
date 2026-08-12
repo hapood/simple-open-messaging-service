@@ -58,7 +58,7 @@ import {
 /**
  * Federation e2e — two full SOMS apps (aaa.local + bbb.local) in one process, making real signed HTTP
  * requests to each other over loopback. Exercises the full S2S chain: signOutbound → fetch → Fastify
- * preParsing raw-body capture → content-digest + signature verify → ignite handshake → friend flows →
+ * preParsing raw-body capture → content-digest + signature verify → bidirectional recognition → friend flows →
  * avatar localization → /revision staleness probe. See the harness header for the loopback trick.
  */
 
@@ -282,8 +282,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await proxy?.close();
   });
 
-  it('ignite handshake establishes mutual trust on resolve', async () => {
-    // alice@appA resolves bob@bbb.local → triggers ensurePeerTrusted(bbb.local) → mutual init.
+  it('bidirectional Recognize establishes a healthy peer on resolve', async () => {
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -319,12 +318,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const peerA = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
-    expect(peerA?.trustLevel).toBe('trusted');
-    // appB auto-accepted the init → trusts aaa.local (mutual).
+    expect(peerA?.trustLevel).toBe('available');
+    expect(peerA).toMatchObject({
+      recognizesPeer: true,
+      outboundRecognitionConfirmed: true,
+      inboundRecognitionConfirmed: true,
+      localServiceAvailable: true,
+      remoteServiceReachable: true,
+    });
     const peerB = await appB.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_A),
     });
-    expect(peerB?.trustLevel).toBe('trusted');
+    expect(peerB?.trustLevel).toBe('available');
   });
 
   it('friend.request carries the profile and localizes the avatar on the receiver', async () => {
@@ -853,7 +858,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const peer = await appB.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_A),
     });
-    expect(peer?.trustLevel).toBe('trusted');
+    expect(peer?.trustLevel).toBe('available');
 
     // Integrity: the resumed file re-hashes to the digest (no gap/duplicate from the drop + retry).
     const { readFile } = await import('node:fs/promises');
@@ -2094,7 +2099,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         }),
       ]);
     expect(resumedAudience?.deliverThroughChangeId).toBeNull();
-    expect(peerBeforeContinue?.trustLevel).toBe('trusted');
+    expect(peerBeforeContinue?.trustLevel).toBe('available');
 
     const continued = await request(appA.baseUrl)
       .post('/api/v1/send-message')
@@ -2159,7 +2164,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(res.status).toBe(401);
     const json = await res.json();
-    expect(json.code).toBe(BusinessCode.FEDERATION_PEER_NOT_TRUSTED);
+    expect(json.code).toBe(BusinessCode.FEDERATION_RECOGNITION_REQUIRED);
   });
 
   // ─── trust lifecycle: demote on failure → re-handshake → block ───────────────────────────────
@@ -2168,12 +2173,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   // a dead loopback URL forces a network failure → markDemoted; restoring it → ensurePeerTrusted
   // re-handshakes → markTrusted; markBlocked → resolve surfaces FEDERATION_PEER_BLOCKED.
 
-  it('demotes a trusted peer when a signed op fails (network), logs the event + purges keys', async () => {
+  it('degrades a healthy peer on transport failure while retaining certificates', async () => {
     // Precondition: aaa still trusts bbb, and bbb's signing keys are cached on aaa (fetched at init).
     const peerBefore = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
-    expect(peerBefore?.trustLevel).toBe('trusted');
+    expect(peerBefore?.trustLevel).toBe('available');
     const keysBefore = await appA.database.query.s2SKeyCache.findMany({
       where: eq(s2SKeyCache.domain, DOM_B),
     });
@@ -2205,7 +2210,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       const peerAfter = await appA.database.query.federatedPeer.findFirst({
         where: eq(federatedPeer.domain, DOM_B),
       });
-      expect(peerAfter?.trustLevel).toBe('demoted');
+      expect(peerAfter?.trustLevel).toBe('degraded');
+      expect(peerAfter?.remoteServiceReachable).toBe(false);
       expect(peerAfter?.demotionCount).toBeGreaterThanOrEqual(1);
       expect(peerAfter?.demotedAt).not.toBeNull();
       expect(peerAfter?.demoteReason).toMatch(/network\/timeout|HTTP 5\d\d/);
@@ -2231,32 +2237,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     }
   });
 
-  it('recovers a demoted peer through a nonce-bound pinned identity proof', async () => {
-    // A demoted established peer never repeats /ignite. Its signed identity request proves possession
-    // of the pinned key and promotes the inbound trust edge before normal data traffic resumes.
+  it('recovers a degraded peer through Healthy without replacing recognition facts', async () => {
     const beforeRecovery = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
-    expect(beforeRecovery?.trustedAt).toBeInstanceOf(Date);
+    expect(beforeRecovery?.identityPinnedAt).toBeInstanceOf(Date);
     // The reconnect sweep may already have healed the outage from the preceding test. Put only this
     // local trust edge back into the exact precondition so identity recovery is deterministic.
     await appA.database
       .update(federatedPeer)
       .set({
-        trustLevel: 'demoted',
+        trustLevel: 'degraded',
+        remoteServiceReachable: false,
         demotedAt: new Date(),
         demoteReason: 'deterministic identity recovery fixture',
       })
       .where(eq(federatedPeer.domain, DOM_B));
-    const identity = await request(appB.baseUrl)
-      .get('/api/v1/test/signed-s2s-get')
-      .query({
-        peerDomain: DOM_A,
-        path: '/s2s/v1/identity?nonce=abcdefghijklmnopqrstuv',
-      });
-    expect(identity.status).toBe(200);
-    expect(identity.body.status).toBe(200);
-
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -2267,11 +2263,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const peer = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
-    expect(peer?.trustLevel).toBe('trusted');
+    expect(peer?.trustLevel).toBe('available');
+    expect(peer?.remoteServiceReachable).toBe(true);
     expect(peer?.demotedAt).toBeNull();
     expect(peer?.demoteReason).toBeNull();
-    expect(peer?.trustedAt?.getTime()).toBe(
-      beforeRecovery?.trustedAt?.getTime(),
+    expect(peer?.identityPinnedAt?.getTime()).toBe(
+      beforeRecovery?.identityPinnedAt?.getTime(),
     );
 
     // peerEvents is newest-first. The state is `trusted`, while the lifecycle transition is named
@@ -2283,7 +2280,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const types = (eventsRes.body.data as { type: string }[]).map(
       (e) => e.type,
     );
-    expect(types[0]).toBe('recovered');
     expect(types).toContain('demoted');
   });
 
@@ -2294,9 +2290,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const beforeOnB = await appB.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_A),
     });
-    expect(before?.trustLevel).toBe('trusted');
+    expect(before?.trustLevel).toBe('available');
     expect(before?.identityPinnedAt).toBeInstanceOf(Date);
-    expect(before?.pairwiseServerId).toBeTruthy();
+    expect(before?.rootPublicKey).toBeTruthy();
     expect(before?.rootKeyFingerprint).toBeTruthy();
 
     // This represents the state left by a poisoned DNS answer. The proxy now points at the original
@@ -2304,10 +2300,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await appA.database
       .update(federatedPeer)
       .set({
-        trustLevel: 'identity_lost',
-        identityLostAt: new Date(),
-        identityLostReason:
-          'e2e simulated transient DNS identity contradiction',
+        trustLevel: 'halted',
+        haltedAt: new Date(),
+        haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        haltReason: 'e2e simulated transient DNS identity contradiction',
       })
       .where(eq(federatedPeer.domain, DOM_B));
     // Both sides may have observed poisoned DNS. A lost peer can still obtain the signed proof with
@@ -2315,9 +2311,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await appB.database
       .update(federatedPeer)
       .set({
-        trustLevel: 'identity_lost',
-        identityLostAt: new Date(),
-        identityLostReason: 'e2e simulated reciprocal identity contradiction',
+        trustLevel: 'halted',
+        haltedAt: new Date(),
+        haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        haltReason: 'e2e simulated reciprocal identity contradiction',
       })
       .where(eq(federatedPeer.domain, DOM_A));
 
@@ -2335,23 +2332,24 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(recovered.status).toBe(200);
     expect(recovered.body.data).toEqual({
       domain: DOM_B,
-      trustLevel: 'trusted',
+      trustLevel: 'degraded',
     });
 
     const after = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
-    expect(after?.trustLevel).toBe('trusted');
-    expect(after?.identityLostAt).toBeNull();
-    expect(after?.identityLostReason).toBeNull();
+    expect(after?.trustLevel).toBe('degraded');
+    expect(after?.haltedAt).toBeNull();
+    expect(after?.haltCode).toBeNull();
+    expect(after?.haltReason).toBeNull();
     expect(after?.trustedAt?.getTime()).toBe(before?.trustedAt?.getTime());
-    expect(after?.pairwiseServerId).toBe(before?.pairwiseServerId);
+    expect(after?.rootPublicKey).toBe(before?.rootPublicKey);
     expect(after?.rootKeyFingerprint).toBe(before?.rootKeyFingerprint);
 
     const stillLostOnB = await appB.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_A),
     });
-    expect(stillLostOnB?.trustLevel).toBe('identity_lost');
+    expect(stillLostOnB?.trustLevel).toBe('halted');
 
     const recoveredOnB = await request(appB.baseUrl)
       .post(`/api/v1/admin/federation/peers/${DOM_A}/recover-identity`)
@@ -2361,7 +2359,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const afterOnB = await appB.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_A),
     });
-    expect(afterOnB?.trustLevel).toBe('trusted');
+    expect(afterOnB?.trustLevel).toBe('degraded');
     expect(afterOnB?.trustedAt?.getTime()).toBe(
       beforeOnB?.trustedAt?.getTime(),
     );
@@ -2386,7 +2384,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const blocked = await appA.database.query.federatedPeer.findFirst({
       where: eq(federatedPeer.domain, DOM_B),
     });
-    expect(blocked?.trustLevel).toBe('blocked');
+    expect(blocked).toMatchObject({
+      trustLevel: 'halted',
+      haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+    });
 
     const res = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
@@ -2400,7 +2401,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const listRes = await request(appA.baseUrl)
       .post('/api/v1/admin/federation/peers')
       .set('Cookie', adminCookieA)
-      .send({ skip: 0, take: 10, status: 'blocked' });
+      .send({ skip: 0, take: 10, status: 'halted' });
     expect(
       (listRes.body.data.list as { domain: string }[]).some(
         (p) => p.domain === DOM_B,
@@ -2414,7 +2415,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const types = (tlRes.body.data as { type: string }[]).map((e) => e.type);
     expect(types).toContain('discovered');
     expect(types).toContain('demoted');
-    expect(types[0]).toBe('blocked');
+    expect(types[0]).toBe('halted');
   });
 
   // This destructive lifecycle now has its own isolated fixture in federation-reset.e2e-spec.ts.
@@ -2447,9 +2448,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await appA.database
       .update(federatedPeer)
       .set({
-        trustLevel: 'identity_lost',
-        identityLostAt: new Date(),
-        identityLostReason: 'e2e simulated identity mismatch',
+        trustLevel: 'halted',
+        haltedAt: new Date(),
+        haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        haltReason: 'e2e simulated identity mismatch',
       })
       .where(eq(federatedPeer.domain, DOM_B));
 
@@ -2556,7 +2558,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         where: eq(federatedPeerReset.domain, DOM_B),
       }),
     ]);
-    expect(rejoinedPeer?.trustLevel).toBe('trusted');
+    expect(rejoinedPeer?.trustLevel).toBe('available');
     expect(consumedReset?.reinitPending).toBe(false);
 
     const inheritedParticipants = await appA.database

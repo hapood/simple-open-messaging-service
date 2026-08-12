@@ -4,15 +4,16 @@
 > wire contract is [Federation Protocol v1](../federation/spec/v1/protocol.md). Database fields, local
 > limits and worker behavior described here are examples, not requirements on another implementation.
 
-All endpoints except `ignite` and the public identity proof are RFC 9421 signed and gated by the
-pinned peer identity. Wire identities are `{ account, domain }`; database ids never cross S2S.
+All S2S endpoints are RFC 9421 signed. `recognize` is the bootstrap operation, `healthy` is the
+privacy-preserving availability operation, and ordinary data operations require converged bilateral
+recognition facts. Wire identities are `{ account, domain }`; database ids never cross S2S.
 
 ## Endpoints
 
 | Method | Path                         | Purpose                                                                        |
 | ------ | ---------------------------- | ------------------------------------------------------------------------------ |
-| `POST` | `/ignite`                    | First-contact trust establishment and cursor initialization.                   |
-| `GET`  | `/identity`                  | Nonce-bound signed server identity proof.                                      |
+| `POST` | `/recognize`                 | Confirm one recognition direction and schedule the reverse direction.          |
+| `POST` | `/healthy`                   | Return `healthy`, `degraded`, or privacy-preserving `unavailable`.             |
 | `POST` | `/feed-revisions`            | Ephemeral wake-up carrying decimal-string `stateFeedRev` and `messageFeedRev`. |
 | `GET`  | `/state-feed`                | Pull compacted relationship/profile/group state after a revision.              |
 | `GET`  | `/message-feed`              | Pull durable message discovery after a change revision.                        |
@@ -38,15 +39,14 @@ max-coalesced and neither pull cursor may move backwards.
 After a process restart the recovery sequence is:
 
 ```text
-GET /identity → state feed → message feed
+POST /healthy → state feed → message feed
 ```
 
-The nonce-bound identity request succeeds only with the previously pinned signing key and restores an
-existing demoted trust edge. It never establishes a new identity. A fingerprint conflict enters
-`identity_lost` and stops all automatic traffic. After DNS is repaired, a SUPER_ADMIN may explicitly
-probe and restore the trust edge only when root fingerprint, signing key and pairwise ID all match the
-original pin; this preserves `trustedAt`, cursors, mirrors and authorization. A genuinely new identity
-still requires destructive reset.
+`healthy` never establishes identity and never fetches an unknown signer's keys. Missing recognition
+facts are repaired through idempotent bilateral `recognize`; a pure transport failure moves the peer to
+`degraded` without erasing authorization. A root contradiction enters `halted` with an identity-mismatch reason. After DNS is
+repaired, a SUPER_ADMIN may restore only the exact pinned root with a currently valid root-authorized
+signing certificate. A genuinely new root still requires destructive reset and fresh recognition.
 
 ## State feed
 

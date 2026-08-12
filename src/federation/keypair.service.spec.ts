@@ -91,6 +91,8 @@ describe('KeypairService identity continuity', () => {
     const file = JSON.parse(readFileSync(keyPath, 'utf8')) as {
       version: number;
       domain: string;
+      rootKey: { publicKey: string };
+      signingKeys: Array<{ publicKey: string }>;
     };
     expect(file).toMatchObject({
       version: 1,
@@ -100,12 +102,8 @@ describe('KeypairService identity continuity', () => {
       domain: 'node-a.example',
       rootKeyFingerprint: service.getRootKeyFingerprint(),
     });
-    expect(service.getPairwiseServerId('peer-b.example')).toBe(
-      service.getPairwiseServerId('PEER-B.EXAMPLE.'),
-    );
-    expect(service.getPairwiseServerId('peer-b.example')).not.toBe(
-      service.getPairwiseServerId('peer-c.example'),
-    );
+    expect(file.signingKeys[0]?.publicKey).not.toBe(file.rootKey.publicKey);
+    expect(service.getSigningKeyCertificates()).toHaveLength(1);
   });
 
   it('refuses the obsolete unversioned file instead of silently rewriting it', async () => {

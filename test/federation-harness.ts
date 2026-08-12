@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { createHash, createHmac, hkdfSync } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sql } from 'drizzle-orm';
@@ -13,6 +13,7 @@ import {
   type Database,
 } from '../src/database/database.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
+import { signingCertificateStatement } from '../src/federation/federation-certificate.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
 import { ensureDatabase, resetAndMigrateDatabase } from './database.js';
 
@@ -83,44 +84,59 @@ export interface InMemoryKeypair {
   getPrivateKey(): Uint8Array;
   getPublicKeyB64(): string;
   getRootPublicKeyB64(): string;
+  getSigningKeyCertificates(): Array<{
+    keyId: string;
+    ed25519: string;
+    notBefore: number;
+    notAfter: number;
+    authorizationSignature: string;
+  }>;
   getIdentityEpoch(): number;
   getRootKeyFingerprint(): string;
-  getPairwiseServerId(peerDomain: string): string;
 }
 
 export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
   // Stable per test domain: restarting a subprocess models a normal process restart that reloads the
   // same on-disk identity, not catastrophic key loss. Distinct domains still receive distinct keys.
-  const privateKey = createHash('sha256')
-    .update(`soms-federation-e2e-key:${domain}`, 'utf8')
+  const rootPrivateKey = createHash('sha256')
+    .update(`soms-federation-e2e-root-key:${domain}`, 'utf8')
     .digest();
-  const publicKey = ed25519.getPublicKey(privateKey);
-  const publicKeyB64 = Buffer.from(publicKey).toString('base64');
+  const rootPublicKey = ed25519.getPublicKey(rootPrivateKey);
+  const rootPublicKeyB64 = Buffer.from(rootPublicKey).toString('base64');
+  const signingPrivateKey = createHash('sha256')
+    .update(`soms-federation-e2e-signing-key:${domain}`, 'utf8')
+    .digest();
+  const signingPublicKey = ed25519.getPublicKey(signingPrivateKey);
+  const signingPublicKeyB64 = Buffer.from(signingPublicKey).toString('base64');
   const rootKeyFingerprint = `sha256:${createHash('sha256')
-    .update(publicKey)
+    .update(rootPublicKey)
     .digest('base64url')}`;
-  const identityKey = Buffer.from(
-    hkdfSync(
-      'sha256',
-      privateKey,
-      Buffer.alloc(0),
-      'soms-pairwise-identity-v1',
-      32,
-    ),
-  );
+  const unsignedCertificate = {
+    keyId: `${domain}/key-1`,
+    ed25519: signingPublicKeyB64,
+    notBefore: 1_700_000_000_000,
+    notAfter: 253_402_300_799_999,
+  };
   return {
     assertAvailable: () => undefined,
     getStatus: () => ({ available: true }),
     getKeyId: () => `${domain}/key-1`,
-    getPrivateKey: () => privateKey,
-    getPublicKeyB64: () => publicKeyB64,
-    getRootPublicKeyB64: () => publicKeyB64,
+    getPrivateKey: () => signingPrivateKey,
+    getPublicKeyB64: () => signingPublicKeyB64,
+    getRootPublicKeyB64: () => rootPublicKeyB64,
+    getSigningKeyCertificates: () => [
+      {
+        ...unsignedCertificate,
+        authorizationSignature: Buffer.from(
+          ed25519.sign(
+            Buffer.from(signingCertificateStatement(unsignedCertificate)),
+            rootPrivateKey,
+          ),
+        ).toString('base64'),
+      },
+    ],
     getIdentityEpoch: () => 1,
     getRootKeyFingerprint: () => rootKeyFingerprint,
-    getPairwiseServerId: (peerDomain: string) =>
-      createHmac('sha256', identityKey)
-        .update(peerDomain.trim().toLowerCase().replace(/\.+$/, ''), 'utf8')
-        .digest('base64url'),
   };
 }
 

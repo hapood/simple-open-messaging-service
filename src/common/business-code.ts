@@ -7,8 +7,8 @@
  * - 20xxx   friend & conversation state machine
  * - 30xxx   message domain
  * - 40xxx   group domain
- * - 50xxx   federation S2S (peer not trusted / bad signature / binding violation / duplicate /
- *           unsupported type / key-fetch failed / malformed)
+ * - 50xxx   federation S2S (recognition required / bad signature / binding violation / duplicate /
+ *           unsupported type / malformed)
  * - 60xxx   admin settings (VAPID keypair validation)
  *
  * Convention (see protocol-plan §5.2): business outcomes always return HTTP 200 + a business code;
@@ -86,34 +86,35 @@ export enum BusinessCode {
   GROUP_DISSOLVED = 40007, // terminal group state: history remains readable, sending/membership changes stop
   GROUP_FULL = 40008, // this origin server's local group-member capacity has been reached (not an S2S protocol limit)
 
-  // 50xxx federation (S2S) — protocol/system-tier; HTTP status drives sender retry, code is detail.
-  FEDERATION_PEER_NOT_TRUSTED = 50001, // signer domain not in FederatedPeer trusted (401, no retry)
+  // 50xxx federation (S2S). Ordinary operation outcomes use HTTP 200 and the code carries the
+  // business meaning. Only malformed/authentication failures (400/401), temporary service
+  // unavailability (503), and registered peer-relationship conflicts (409) use non-200 JSON responses.
+  FEDERATION_RECOGNITION_REQUIRED = 50001, // required bilateral recognition facts are incomplete (401)
   FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
   FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
-  FEDERATION_DUPLICATE = 50004, // (origin, opId) already applied (409 → idempotent success)
-  FEDERATION_KEY_FETCH_FAILED = 50006, // .well-known key fetch transient failure (503 → retry)
+  FEDERATION_DUPLICATE = 50004, // (origin, opId) already applied (HTTP 200 idempotent result)
   FEDERATION_MALFORMED = 50007, // malformed Signature-Input / friend-op payload (401, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
-  FEDERATION_PEER_BLOCKED = 50009, // an admin blocked this peer domain — federation refused (403, no retry)
+  FEDERATION_PEER_BLOCKED = 50009, // registered fatal federation relationship conflict (HTTP 409)
   FEDERATION_GROUP_AUTHOR_LEFT = 50010, // retained business code for a remote group author that has left
-  FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 429 (transient; the
+  FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 200; the
   // body carries {category, limit, retryAfter = seconds to 00:00 UTC}). Returned on
   // state/message/media ingestion refuses internally (no peer-visible status). NEVER demotes the peer —
   // 429 is outside the demote set in getSigned/sendSignedPost. See src/quota/.
-  FEDERATION_PAYLOAD_TOO_LARGE = 50012, // an inbound federated media item exceeds the single-item byte cap → HTTP 413
+  FEDERATION_PAYLOAD_TOO_LARGE = 50012, // a parsed federation item exceeds its operation limit → HTTP 200
   // (permanent for that item; the body carries {category, limit, received}). Refused
   // at ingest before any disk write. NEVER demotes the peer.
   FEDERATION_CAPABILITY_DISABLED = 50013, // the peer administrator set this category's effective limit/cap to 0.
-  // This is a stable policy refusal (HTTP 403), not a depleted daily budget: retrying after midnight
+  // This is a stable business refusal (HTTP 200), not a depleted daily budget: retrying after midnight
   // cannot help. The body carries {category}; NEVER demotes the peer.
-  FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local key file/immutable domain no longer matches the DB anchor
-  // (503, no automatic retry). Local features remain available, but all S2S traffic stays disabled until
-  // the original key file/configuration is restored.
-  FEDERATION_IDENTITY_MISMATCH = 50015, // a known domain presented a different pinned server identity (409)
-  FEDERATION_PEER_IDENTITY_LOST = 50016, // peer identity is permanently locked pending destructive reset (423)
+  FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local federation service cannot sign safely (HTTP 503)
+  FEDERATION_IDENTITY_MISMATCH = 50015, // registered fatal root identity conflict (HTTP 409)
+  FEDERATION_PEER_IDENTITY_LOST = 50016, // internal/local diagnostic; not a Federation v1 wire code
   FEDERATION_IDENTITY_PROOF_INVALID = 50017, // malformed, stale, replayed, or incorrectly signed identity proof (401)
-  FEDERATION_MISSED_CONCURRENT = 50018, // another /missed request for this peer is still running (409); retry after it completes
-  FEDERATION_MISSED_CURSOR_INVALID = 50019, // /missed cursor moved backwards or beyond the source HWM (409); data returns the usable cursor
+  FEDERATION_MISSED_CONCURRENT = 50018, // another /missed request is running (HTTP 200); retry after it completes
+  FEDERATION_MISSED_CURSOR_INVALID = 50019, // invalid /missed cursor (HTTP 200); data returns the usable cursor
+  FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = 50020, // registered fatal version conflict (HTTP 409)
+  FEDERATION_RANGE_NOT_SATISFIABLE = 50021,
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)

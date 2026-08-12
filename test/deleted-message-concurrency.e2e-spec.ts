@@ -48,7 +48,7 @@ describe('federated message deletion transaction ordering', () => {
     const now = new Date();
     await database.db.insert(federatedPeer).values({
       domain: 'peer.test',
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
     const [creator] = await database.db
       .insert(user)

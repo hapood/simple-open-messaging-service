@@ -10,8 +10,7 @@
 
 - `common.schema.json`：identity、时间、cursor、digest、address 等 Federation 共享类型。
 - `discovery.schema.json`：`/.well-known/soms`，包括多版本 `protocolVersions`。
-- `identity.schema.json`：当前仍包含旧 Ignite identity claim 与 feed revision hint；Recognize/Healthy shape
-  将在正文定稿后的 schema 漂移收敛阶段替换。
+- `identity.schema.json`：Recognize、Healthy 与 feed revision hint 的 closed JSON shape。
 - `state-feed.schema.json`：完整 page 与五种 event body。
 - `message-feed.schema.json`：完整 page、outer message、thread 和 asset descriptor。
 - `message-content.schema.json`：二次解析后的 11 种 message content。

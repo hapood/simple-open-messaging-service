@@ -33,8 +33,8 @@ import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
  * increment is `INSERT … ON CONFLICT DO UPDATE … RETURNING count`; thrown inside a transaction so an
  * over-limit increment rolls back → exact count (not the doc's ±1 slop) on the federation path.
  *
- * Federation callers throw `BusinessException(FEDERATION_QUOTA_EXCEEDED, …, 429)` or
- * `FEDERATION_PAYLOAD_TOO_LARGE` (413); these capacity responses never demote the peer.
+ * Federation callers return quota/capability outcomes as HTTP 200 business codes; these capacity
+ * responses never demote the peer.
  */
 @Injectable()
 export class QuotaService implements OnModuleInit {
@@ -98,7 +98,8 @@ export class QuotaService implements OnModuleInit {
   /**
    * Read-only pre-check: reject fast if `domain` is already at/over its daily limit, WITHOUT writing.
    * Used on the synchronous S2S POST legs (invite / invite-accept) so an exhausted peer's retry does not
-   * burn a dedup slot (peek runs before isOpSeen). Throws FEDERATION_QUOTA_EXCEEDED (429) if exhausted.
+   * burn a dedup slot (peek runs before isOpSeen). Returns FEDERATION_QUOTA_EXCEEDED as an HTTP 200
+   * business outcome if exhausted.
    * The subsequent {@link tick} is still the authoritative atomic check (peek-then-tick race is benign).
    */
   async peek(domain: string, category: QuotaCategory): Promise<void> {
@@ -119,7 +120,7 @@ export class QuotaService implements OnModuleInit {
       throw new BusinessException(
         BusinessCode.FEDERATION_QUOTA_EXCEEDED,
         `daily quota exceeded: ${category} ${count}/${limit} (resets in ${retryAfter}s)`,
-        HttpStatus.TOO_MANY_REQUESTS,
+        HttpStatus.OK,
         { category, limit, retryAfter },
       );
     }
@@ -127,7 +128,7 @@ export class QuotaService implements OnModuleInit {
 
   /**
    * Authoritative atomic count+check for the FEDERATION path. Increments the daily counter and throws
-   * FEDERATION_QUOTA_EXCEEDED (429) if the post-increment count exceeds the limit. When `tx` is supplied
+   * FEDERATION_QUOTA_EXCEEDED if the post-increment count exceeds the limit. When `tx` is supplied
    * (e.g. storePulledMessage's message-write tx) the increment runs on it, so the throw rolls BOTH back
    * (no count burn, no seq gap); otherwise it opens its own transaction. Exact — never ±1 over.
    */
@@ -170,7 +171,7 @@ export class QuotaService implements OnModuleInit {
         throw new BusinessException(
           BusinessCode.FEDERATION_QUOTA_EXCEEDED,
           `daily quota exceeded: ${category} ${count}/${limit} (resets in ${retryAfter}s)`,
-          HttpStatus.TOO_MANY_REQUESTS,
+          HttpStatus.OK,
           { category, limit, retryAfter },
         );
       }
@@ -187,7 +188,7 @@ export class QuotaService implements OnModuleInit {
     throw new BusinessException(
       BusinessCode.FEDERATION_CAPABILITY_DISABLED,
       `federation capability disabled: ${category}`,
-      HttpStatus.FORBIDDEN,
+      HttpStatus.OK,
       { category },
     );
   }
@@ -224,8 +225,12 @@ export class QuotaService implements OnModuleInit {
     allowance: { extraMsg: number; extraFile: number; extraFileBytes: bigint },
   ): Promise<{ msg: number; file: number; fileBytes: number }> {
     return {
-      msg: (overrides.dailyMsgLimit ?? this.cfg.dailyMsgLimit) + allowance.extraMsg,
-      file: (overrides.dailyFileLimit ?? this.cfg.dailyFileLimit) + allowance.extraFile,
+      msg:
+        (overrides.dailyMsgLimit ?? this.cfg.dailyMsgLimit) +
+        allowance.extraMsg,
+      file:
+        (overrides.dailyFileLimit ?? this.cfg.dailyFileLimit) +
+        allowance.extraFile,
       fileBytes:
         Number(overrides.dailyFileBytesLimit ?? this.cfg.dailyFileBytesLimit) +
         Number(allowance.extraFileBytes),
@@ -268,7 +273,12 @@ export class QuotaService implements OnModuleInit {
       .returning({ count: quotaDailyUsage.count });
     const count = rows[0]?.count ?? amount;
     const over = count > limit;
-    if (over) this.breaker.mark(domain, category === 'messages' ? 'msg' : 'file', today);
+    if (over)
+      this.breaker.mark(
+        domain,
+        category === 'messages' ? 'msg' : 'file',
+        today,
+      );
     return { count, limit, over };
   }
 
@@ -333,7 +343,11 @@ export class QuotaService implements OnModuleInit {
    * breaker. The read-then-check is not atomic with the subsequent {@link tickFileBytes}, but tickFileBytes
    * re-marks on the increment, so the worst case under concurrency is one extra claim before the breaker trips.
    */
-  async preCheckFile(domain: string, addCnt: number, addBytes: bigint): Promise<void> {
+  async preCheckFile(
+    domain: string,
+    addCnt: number,
+    addBytes: bigint,
+  ): Promise<void> {
     const limits = await this.effectiveBreakerLimits(
       await this.getOverrides(domain),
       await this.getAllowance(domain),
@@ -367,7 +381,7 @@ export class QuotaService implements OnModuleInit {
         `daily file quota exceeded: cnt ${curCnt + addCnt}/${limits.file} bytes ${(
           curBytes + addBytes
         ).toString()}/${limits.fileBytes}`,
-        HttpStatus.TOO_MANY_REQUESTS,
+        HttpStatus.OK,
         { category: 'files', limit: limits.file, retryAfter },
       );
     }
@@ -411,7 +425,8 @@ export class QuotaService implements OnModuleInit {
     const over: BreakerDim[] = [];
     if ((msgRow?.count ?? 0) > limits.msg) over.push('msg');
     if ((fileRow?.count ?? 0) > limits.file) over.push('file');
-    if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes)) over.push('fileBytes');
+    if ((bytesRow?.bytes ?? 0n) > BigInt(limits.fileBytes))
+      over.push('fileBytes');
     this.breaker.reconcile(domain, over, today);
   }
 
@@ -643,11 +658,7 @@ export class QuotaService implements OnModuleInit {
 
 // ── types ──────────────────────────────────────────────────────────────────
 
-export type QuotaCategory =
-  | 'messages'
-  | 'files'
-  | 'requests'
-  | 'signals';
+export type QuotaCategory = 'messages' | 'files' | 'requests' | 'signals';
 
 /** A per-node override set. null/absent = use the global default for that field. */
 export interface QuotaOverrides {

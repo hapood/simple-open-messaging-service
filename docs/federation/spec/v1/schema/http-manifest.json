@@ -14,30 +14,31 @@
       "responseSchema": "urn:soms:federation:v1:discovery"
     },
     {
-      "id": "ignite",
+      "id": "recognize",
       "method": "POST",
-      "path": "/s2s/v1/ignite",
+      "path": "/s2s/v1/recognize",
       "authentication": "bootstrap-http-message-signature",
-      "successStatus": [202],
+      "successStatus": [200],
       "requestMediaType": "application/json",
-      "requestSchema": "urn:soms:federation:v1:identity#/$defs/igniteClaim",
-      "responseSchema": "urn:soms:federation:v1:identity#/$defs/signedClaim"
+      "requestSchema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
+      "responseSchema": "urn:soms:federation:v1:identity#/$defs/recognizeOk"
     },
     {
-      "id": "identity",
-      "method": "GET",
-      "path": "/s2s/v1/identity",
-      "authentication": "pinned-http-message-signature",
+      "id": "healthy",
+      "method": "POST",
+      "path": "/s2s/v1/healthy",
+      "authentication": "status-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/identityQuery",
-      "responseSchema": "urn:soms:federation:v1:identity#/$defs/signedClaim"
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
+      "responseSchema": "urn:soms:federation:v1:identity#/$defs/healthResult"
     },
     {
       "id": "feedRevisions",
       "method": "POST",
       "path": "/s2s/v1/feed-revisions",
-      "authentication": "pinned-http-message-signature",
-      "successStatus": [202],
+      "authentication": "lightweight-http-message-signature",
+      "successStatus": [200],
       "requestMediaType": "application/json",
       "requestSchema": "urn:soms:federation:v1:identity#/$defs/feedRevisionHint"
     },
@@ -45,7 +46,7 @@
       "id": "stateFeed",
       "method": "GET",
       "path": "/s2s/v1/state-feed",
-      "authentication": "pinned-http-message-signature",
+      "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/feedQuery",
       "responseSchema": "urn:soms:federation:v1:state-feed",
@@ -55,7 +56,7 @@
       "id": "messageFeed",
       "method": "GET",
       "path": "/s2s/v1/message-feed",
-      "authentication": "pinned-http-message-signature",
+      "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/feedQuery",
       "responseSchema": "urn:soms:federation:v1:message-feed",
@@ -66,7 +67,7 @@
       "id": "call",
       "method": "POST",
       "path": "/s2s/v1/call",
-      "authentication": "pinned-http-message-signature",
+      "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
       "requestHeaders": [
@@ -83,7 +84,7 @@
       "id": "userProfile",
       "method": "GET",
       "path": "/s2s/v1/users/:account",
-      "authentication": "pinned-http-message-signature",
+      "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "responseSchema": "urn:soms:federation:v1:profile",
       "responseEnvelope": true
@@ -92,7 +93,7 @@
       "id": "media",
       "method": "GET",
       "path": "/s2s/v1/media/:digest",
-      "authentication": "pinned-http-message-signature",
+      "authentication": "recognized-http-message-signature",
       "successStatus": [200, 206],
       "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
       "requestHeaders": ["Range"],
@@ -108,7 +109,7 @@
       "id": "forwardBundle",
       "method": "GET",
       "path": "/s2s/v1/forward-bundles/:bundleId",
-      "authentication": "pinned-http-message-signature",
+      "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "responseSchema": "urn:soms:federation:v1:forward-bundle",
       "responseEnvelope": true

@@ -197,7 +197,7 @@ Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([t
 
 ### Federation (S2S)
 
-- **FederatedPeer** — domain allow-list (trust data only; keys fetched from `/.well-known/soms`). `trustLevel` `pending → trusted → demoted → trusted…` (+ `blocked`); per-peer daily-quota overrides.
+- **FederatedPeer** — domain allow-list and recognition state. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; `resetInProgress` is a separate persisted maintenance-job flag; per-peer daily-quota overrides are stored alongside it.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
 - **PeerStateFeed / PeerStateFeedTarget / PeerStateFeedPullCursor** — compacted per-peer relationship,

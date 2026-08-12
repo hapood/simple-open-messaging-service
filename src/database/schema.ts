@@ -1372,7 +1372,7 @@ export const federatedPeer = pgTable(
   'FederatedPeer',
   {
     domain: varchar({ length: 63 }).primaryKey().notNull(),
-    trustLevel: varchar({ length: 31 }).default('pending').notNull(),
+    trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
     addedBy: varchar({ length: 31 }),
     createdAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1382,25 +1382,35 @@ export const federatedPeer = pgTable(
     demotedAt: timestamp({ precision: 3, mode: 'date' }),
     demoteReason: varchar({ length: 255 }),
     demotionCount: integer().default(0).notNull(),
-    blockedAt: timestamp({ precision: 3, mode: 'date' }),
+    haltedAt: timestamp({ precision: 3, mode: 'date' }),
+    haltCode: integer(),
+    haltReason: varchar({ length: 255 }),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
     // Quota circuit-breaker file dimensions (daily). All file types (image/video/audio/file) consolidate into a
     // single file cnt + file total size; bundles count +1 file cnt and 0 bytes. null = use the global default.
     dailyFileLimit: integer(),
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
-    pairwiseServerId: varchar({ length: 64 }),
     rootKeyFingerprint: varchar({ length: 80 }),
+    rootPublicKey: varchar({ length: 44 }),
     identityPinnedAt: timestamp({ precision: 3, mode: 'date' }),
-    identityLostAt: timestamp({ precision: 3, mode: 'date' }),
-    identityLostReason: varchar({ length: 255 }),
+    recognizesPeer: boolean().default(false).notNull(),
+    outboundRecognitionConfirmed: boolean().default(false).notNull(),
+    inboundRecognitionConfirmed: boolean().default(false).notNull(),
+    lightweightInboundReady: boolean().default(false).notNull(),
+    localServiceAvailable: boolean().default(false).notNull(),
+    remoteServiceReachable: boolean().default(false).notNull(),
+    reverseRecognitionPending: boolean().default(false).notNull(),
+    outboundRecognizedAt: timestamp({ precision: 3, mode: 'date' }),
+    inboundRecognizedAt: timestamp({ precision: 3, mode: 'date' }),
+    resetInProgress: boolean().default(false).notNull(),
     resetGeneration: integer().default(0).notNull(),
     resetAt: timestamp({ precision: 3, mode: 'date' }),
   },
   (table) => [
     check(
       'FederatedPeer_trustLevel_check',
-      sql`${table.trustLevel} IN ('pending', 'trusted', 'demoted', 'blocked', 'identity_lost', 'reset_in_progress')`,
+      sql`${table.trustLevel} IN ('unrecognized', 'establishing', 'available', 'degraded', 'halted')`,
     ),
     index('FederatedPeer_lastSuccessAt_idx').using(
       'btree',
@@ -1412,7 +1422,7 @@ export const federatedPeer = pgTable(
     ),
     uniqueIndex('FederatedPeer_single_reset_in_progress_key')
       .on(sql`(true)`)
-      .where(sql`${table.trustLevel} = 'reset_in_progress'`),
+      .where(sql`${table.resetInProgress} = true`),
   ],
 );
 
@@ -1829,24 +1839,6 @@ export const federatedPeerReset = pgTable(
   ],
 );
 
-/** Persistent replay protection for signed federation identity handshakes. */
-export const s2SIdentityNonce = pgTable(
-  'S2SIdentityNonce',
-  {
-    originDomain: varchar({ length: 63 }).notNull(),
-    nonceHash: varchar({ length: 64 }).notNull(),
-    issuedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    expiresAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.originDomain, table.nonceHash] }),
-    index('S2SIdentityNonce_expiresAt_idx').using(
-      'btree',
-      table.expiresAt.asc().nullsLast().op('timestamp_ops'),
-    ),
-  ],
-);
-
 export const loginCode = pgTable(
   'LoginCode',
   {
@@ -2102,6 +2094,9 @@ export const s2SKeyCache = pgTable(
     domain: varchar({ length: 63 }).notNull(),
     keyId: varchar({ length: 127 }).notNull(),
     publicKey: varchar({ length: 127 }).notNull(),
+    notBefore: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    notAfter: timestamp({ precision: 3, mode: 'date' }).notNull(),
+    authorizationSignature: varchar({ length: 127 }).notNull(),
     fetchedAt: timestamp({ precision: 3, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),

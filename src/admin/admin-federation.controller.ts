@@ -108,7 +108,7 @@ export class AdminFederationController {
   @Post('admin/federation/peers/:domain/reset-preview')
   @ApiOperation({
     summary:
-      'Preview the destructive scope of an identity-lost peer reset (read-only)',
+      'Preview the destructive scope of an identity-mismatch halted peer reset (read-only)',
   })
   async resetPreview(@Param('domain') domain: string) {
     return this.resetService.preview(domain);
@@ -124,7 +124,7 @@ export class AdminFederationController {
   @Post('admin/federation/peers/:domain/reset')
   @ApiOperation({
     summary:
-      'Freeze an identity-lost domain and mark its related threads for resumable truncation',
+      'Freeze an identity-mismatch halted domain and mark its related threads for resumable truncation',
   })
   async resetPeer(
     @Param('domain') domain: string,
@@ -143,7 +143,7 @@ export class AdminFederationController {
   @Post('admin/federation/peers/:domain/recover-identity')
   @ApiOperation({
     summary:
-      'Recover identity-lost trust only when the original pinned peer identity is reachable again',
+      'Recover an identity-mismatch halted peer only when the original pinned identity is reachable again',
   })
   async recoverPeerIdentity(
     @Param('domain') domain: string,

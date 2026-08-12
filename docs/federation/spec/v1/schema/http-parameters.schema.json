@@ -14,16 +14,6 @@
       },
       "additionalProperties": false
     },
-    "identityQuery": {
-      "type": "object",
-      "required": ["nonce"],
-      "properties": {
-        "nonce": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/base64UrlNonce"
-        }
-      },
-      "additionalProperties": false
-    },
     "mediaParameters": {
       "type": "object",
       "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],

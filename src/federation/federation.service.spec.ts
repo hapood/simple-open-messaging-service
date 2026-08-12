@@ -57,7 +57,7 @@ function makeStubs() {
   const svc = new FederationService(
     database as never,
     {} as never, // signature
-    {} as never, // discovery
+    { request: (...args: Parameters<typeof fetch>) => fetch(...args) } as never, // discovery
     {} as never, // upload
     {} as never, // participantService
     {} as never, // message
@@ -70,10 +70,15 @@ function makeStubs() {
     {} as never, // messageVisibility
     deletedMessages as never,
     eventEmitter as never,
-    {} as never, // federationIdentity
+    {
+      markReachable: vi.fn(),
+      markTransportDegraded: vi.fn(),
+    } as never, // recognition
     { readAllocatedThrough: vi.fn().mockResolvedValue(0n) } as never, // federationCursor
-    {} as never, // federationInit
     {} as never, // downloadScheduler
+    {} as never, // stateFeedPull
+    {} as never, // stateFeed
+    {} as never, // groupMembershipState
   );
   return {
     svc,
@@ -202,7 +207,7 @@ describe('FederationService thread-bound S2S preflight', () => {
       installPreflight({
         federationTruncated: false,
         federationVersion: 7,
-        trustLevel: 'trusted',
+        trustLevel: 'available',
       });
 
     await expect(
@@ -220,35 +225,39 @@ describe('FederationService thread-bound S2S preflight', () => {
   });
 
   it.each([
-    ['reset domain', false, 'reset_in_progress'],
-    ['truncated thread', true, 'trusted'],
-  ])('does not send for a %s', async (_label, truncated, trustLevel) => {
-    const { target, getSigned } = installPreflight({
-      federationTruncated: truncated,
-      federationVersion: 7,
-      trustLevel,
-    });
+    ['reset domain', false, 'halted', true],
+    ['truncated thread', true, 'available', false],
+  ])(
+    'does not send for a %s',
+    async (_label, truncated, trustLevel, resetInProgress) => {
+      const { target, getSigned } = installPreflight({
+        federationTruncated: truncated,
+        federationVersion: 7,
+        trustLevel,
+        resetInProgress,
+      });
 
-    await expect(
-      target.getSignedForThread(10, '/messages', 'peer.test'),
-    ).rejects.toThrow('federation thread 10 is unavailable');
-    expect(getSigned).not.toHaveBeenCalled();
-  });
+      await expect(
+        target.getSignedForThread(10, '/messages', 'peer.test'),
+      ).rejects.toThrow('federation thread 10 is unavailable');
+      expect(getSigned).not.toHaveBeenCalled();
+    },
+  );
 
   it('attaches the captured version to an application error response', async () => {
     const { target, getSigned } = installPreflight({
       federationTruncated: false,
       federationVersion: 7,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
     getSigned.mockRejectedValueOnce(
-      new S2sResponseError('gone', 410, BusinessCode.GROUP_DISSOLVED),
+      new S2sResponseError('gone', 200, BusinessCode.GROUP_DISSOLVED),
     );
 
     await expect(
       target.getSignedForThread(10, '/messages', 'peer.test'),
     ).rejects.toMatchObject({
-      status: 410,
+      status: 200,
       code: BusinessCode.GROUP_DISSOLVED,
       federationVersion: 7,
     });
@@ -369,7 +378,7 @@ describe('FederationService thread-bound response write gate', () => {
     const { target, tx, execute, select, innerJoin } = installWriteGate({
       federationTruncated: false,
       federationVersion: 7,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
 
     await expect(
@@ -381,16 +390,17 @@ describe('FederationService thread-bound response write gate', () => {
   });
 
   it.each([
-    ['changed version', false, 8, 'trusted'],
-    ['truncated thread', true, 7, 'trusted'],
-    ['reset domain', false, 7, 'reset_in_progress'],
+    ['changed version', false, 8, 'available', false],
+    ['truncated thread', true, 7, 'available', false],
+    ['reset domain', false, 7, 'halted', true],
   ])(
     'rejects a stale response for a %s',
-    async (_label, truncated, version, trustLevel) => {
+    async (_label, truncated, version, trustLevel, resetInProgress) => {
       const { target, tx } = installWriteGate({
         federationTruncated: truncated,
         federationVersion: version,
         trustLevel,
+        resetInProgress,
       });
 
       await expect(
@@ -411,6 +421,10 @@ describe('FederationService peer-bound response write gate', () => {
     trustLevel: string;
     resetGeneration: number;
     rootKeyFingerprint: string | null;
+    recognizesPeer?: boolean;
+    outboundRecognitionConfirmed?: boolean;
+    inboundRecognitionConfirmed?: boolean;
+    localServiceAvailable?: boolean;
   }) {
     const { svc } = makeStubs();
     const execute = vi
@@ -428,9 +442,13 @@ describe('FederationService peer-bound response write gate', () => {
 
   it('accepts a response while generation and root identity still match', async () => {
     const { target, tx } = installPeerGate({
-      trustLevel: 'trusted',
+      trustLevel: 'available',
       resetGeneration: 3,
       rootKeyFingerprint: 'sha256:root-a',
+      recognizesPeer: true,
+      outboundRecognitionConfirmed: true,
+      inboundRecognitionConfirmed: true,
+      localServiceAvailable: true,
     });
 
     await expect(
@@ -443,9 +461,13 @@ describe('FederationService peer-bound response write gate', () => {
     ['root identity changed', 3, 'sha256:root-b'],
   ])('rejects a stale response when %s', async (_label, generation, root) => {
     const { target, tx } = installPeerGate({
-      trustLevel: 'trusted',
+      trustLevel: 'available',
       resetGeneration: generation,
       rootKeyFingerprint: root,
+      recognizesPeer: true,
+      outboundRecognitionConfirmed: true,
+      inboundRecognitionConfirmed: true,
+      localServiceAvailable: true,
     });
 
     await expect(target.assertPeerResponseWritable(tx, token)).rejects.toThrow(

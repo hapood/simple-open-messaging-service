@@ -17,14 +17,14 @@
 
 ## 文档分类
 
-| 分类               | 含义                                               | 当前文档                                                                                                                                                                            |
-| ------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Baseline           | 当前 SOMS 实现的审计快照，非独立协议承诺           | [protocol-baseline.md](./protocol-baseline.md)                                                                                                                                      |
-| API closure audit  | 逐端点的生产者、消费者、参数、响应、恢复和测试闭环 | [api-closure-audit.md](./api-closure-audit.md)                                                                                                                                      |
-| Implemented design | 已落地设计与事务/恢复约束                          | [节点身份连续性与持久消息发现](./identity-and-durable-discovery-design.md)、[有界内存 Message Feed](./memory-message-feed.md)、[每 Peer 状态 Feed](./per-peer-state-feed-design.md) |
-| Overview           | 当前协议与部署概览                                 | [联邦协议概览](../overview/federation-protocol.md)                                                                                                                                  |
-| API reference      | 当前 S2S 接口速查                                  | [S2S API reference](../api/federation-s2s-api.md)                                                                                                                                   |
-| Specification      | 面向独立实现者的 v1 wire contract                  | [Federation v1](./spec/v1/README.md)                                                                                                                                                |
+| 分类               | 含义                                               | 当前文档                                                                                                                                              |
+| ------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Baseline           | 当前 SOMS 实现的审计快照，非独立协议承诺           | [protocol-baseline.md](./protocol-baseline.md)                                                                                                        |
+| API closure audit  | 逐端点的生产者、消费者、参数、响应、恢复和测试闭环 | [api-closure-audit.md](./api-closure-audit.md)                                                                                                        |
+| Implemented design | 已落地设计与事务/恢复约束                          | [认可与身份连续性](./spec/v1/recognition.md)、[有界内存 Message Feed](./memory-message-feed.md)、[每 Peer 状态 Feed](./per-peer-state-feed-design.md) |
+| Overview           | 当前协议与部署概览                                 | [联邦协议概览](../overview/federation-protocol.md)                                                                                                    |
+| API reference      | 当前 S2S 接口速查                                  | [S2S API reference](../api/federation-s2s-api.md)                                                                                                     |
+| Specification      | 面向独立实现者的 v1 wire contract                  | [Federation v1](./spec/v1/README.md)                                                                                                                  |
 
 ## 整理原则
 

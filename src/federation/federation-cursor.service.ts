@@ -196,7 +196,7 @@ export class FederationCursorService {
           throw new BusinessException(
             BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
             `after is outside the allowed cursor range for ${peerDomain}`,
-            HttpStatus.CONFLICT,
+            HttpStatus.OK,
             this.cursorErrorData(
               after,
               cursor.startChangeId,
@@ -254,7 +254,7 @@ export class FederationCursorService {
         throw new BusinessException(
           BusinessCode.FEDERATION_MISSED_CONCURRENT,
           `another missed request for ${peerDomain} is still running`,
-          HttpStatus.CONFLICT,
+          HttpStatus.OK,
           current
             ? this.cursorErrorData(
                 after,

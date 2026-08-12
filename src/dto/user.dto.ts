@@ -63,7 +63,7 @@ export class ThreadIdDto {
 }
 
 /** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
- *  federated (runs the ignite handshake + signed profile GET + stub localization). The `@` separator is a
+ *  federated (runs bidirectional server recognition + signed profile GET + stub localization). The `@` separator is a
  *  UI input aid ONLY — the client splits a typed `alice@bbb.com` into these two fields; the API never
  *  carries an @-joined string. */
 export class UserResolveDto {

@@ -528,7 +528,7 @@ export class UserController {
   })
   async peerTrustStatus(@Body() dto: PeerTrustStatusDto) {
     // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
-    // resolve will run the ignite handshake (untrusted → first contact → banner) or resolve fast
+    // resolve will run bidirectional recognition (first contact → banner) or resolve fast
     // (trusted → no banner). A known server-side fact, not a latency guess: the rare
     // already-trusted-but-failing case (peer reset / broken key → re-handshake) surfaces as an error
     // from the resolve itself, not here.
@@ -547,7 +547,7 @@ export class UserController {
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
     const { domain } = dto;
-    // Federated (account + a peer domain != ours) → establish mutual trust (ignite handshake, if not
+    // Federated (account + a peer domain != ours) → establish mutual server recognition, if not
     // already trusted), fetch the peer's profile (avatar inline as base64), find-or-create a stub, and
     // localize it (persist the avatar via saveAvatars + write name/bio), so the caller can address the
     // user by id in subsequent friend ops (same as a local lookup).
@@ -555,7 +555,7 @@ export class UserController {
       try {
         // Trust prerequisite: the signed profile GET below is allow-list-gated on the peer, and our
         // guard gates their reply traffic — so mutual trust must exist first. Idempotent (no-op if
-        // already trusted). The peer auto-accepts us via the ignite handshake.
+        // already recognized). The reverse Recognize is scheduled durably by the peer.
         await this.federationService.ensurePeerTrusted(domain);
       } catch (e) {
         if (

@@ -1,90 +1,27 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:soms:federation:v1:identity",
-  "title": "Federation v1 identity claims",
+  "title": "Federation v1 recognition and feed revision objects",
   "$defs": {
-    "claim": {
+    "recognizeRequest": {
       "type": "object",
-      "required": [
-        "protocolVersion",
-        "originDomain",
-        "recipientDomain",
-        "pairwiseServerId",
-        "rootKeyFingerprint",
-        "nonce",
-        "issuedAt"
-      ],
+      "required": ["domain"],
       "properties": {
-        "protocolVersion": { "const": 1 },
-        "originDomain": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
-        },
-        "recipientDomain": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
-        },
-        "pairwiseServerId": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$"
-        },
-        "rootKeyFingerprint": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/rootFingerprint"
-        },
-        "nonce": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/base64UrlNonce"
-        },
-        "issuedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "startChangeId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
-        }
+        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" }
       },
       "additionalProperties": false
     },
-    "igniteClaim": {
-      "allOf": [{ "$ref": "#/$defs/claim" }, { "required": ["startChangeId"] }]
-    },
-    "signedClaim": {
+    "recognizeOk": {
       "type": "object",
-      "required": [
-        "protocolVersion",
-        "originDomain",
-        "recipientDomain",
-        "pairwiseServerId",
-        "rootKeyFingerprint",
-        "nonce",
-        "issuedAt",
-        "keyId",
-        "signature"
-      ],
+      "required": ["ok"],
+      "properties": { "ok": { "const": true } },
+      "additionalProperties": false
+    },
+    "healthResult": {
+      "type": "object",
+      "required": ["status"],
       "properties": {
-        "protocolVersion": { "const": 1 },
-        "originDomain": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
-        },
-        "recipientDomain": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
-        },
-        "pairwiseServerId": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$"
-        },
-        "rootKeyFingerprint": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/rootFingerprint"
-        },
-        "nonce": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/base64UrlNonce"
-        },
-        "issuedAt": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
-        },
-        "startChangeId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
-        },
-        "keyId": { "type": "string", "minLength": 3 },
-        "signature": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/base64Ed25519Signature"
-        }
+        "status": { "enum": ["available", "degraded", "unavailable"] }
       },
       "additionalProperties": false
     },
@@ -92,9 +29,7 @@
       "type": "object",
       "required": ["origin", "stateFeedRev", "messageFeedRev"],
       "properties": {
-        "origin": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/domain"
-        },
+        "origin": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
         "stateFeedRev": {
           "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },

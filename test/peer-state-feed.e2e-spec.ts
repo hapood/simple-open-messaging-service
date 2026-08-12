@@ -32,7 +32,7 @@ describe('per-peer state feed', () => {
     membership = mod.get(GroupMembershipStateService);
     await database.db
       .insert(federatedPeer)
-      .values(DOMAINS.map((domain) => ({ domain, trustLevel: 'trusted' })))
+      .values(DOMAINS.map((domain) => ({ domain, trustLevel: 'available' })))
       .onConflictDoNothing();
   });
 
@@ -131,7 +131,7 @@ describe('per-peer state feed', () => {
     await feed.serve(DOMAINS[0], 4n);
     await expect(feed.serve(DOMAINS[0], 0n)).rejects.toMatchObject({
       bizCode: expect.anything(),
-      status: 409,
+      status: 200,
     });
   });
 

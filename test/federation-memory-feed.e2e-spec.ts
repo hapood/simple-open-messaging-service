@@ -44,7 +44,7 @@ describe('bounded in-memory federation message feed', () => {
     const now = new Date();
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
     const [alice, bob] = await database.db
       .insert(user)

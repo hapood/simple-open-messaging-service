@@ -13,7 +13,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { createHash, createHmac, hkdfSync } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
@@ -24,6 +24,10 @@ import {
   loadFederationConfig,
   type FederationConfig,
 } from './federation.config.js';
+import {
+  signingCertificateStatement,
+  type SigningKeyCertificate,
+} from './federation-certificate.js';
 
 interface StoredIdentityKey {
   keyId: string;
@@ -33,7 +37,7 @@ interface StoredIdentityKey {
 }
 
 interface StoredSigningKey extends StoredIdentityKey {
-  status: 'active';
+  status: 'active' | 'published';
 }
 
 interface StoredKeyFileV1 {
@@ -93,6 +97,7 @@ export class KeypairService implements OnApplicationBootstrap {
         this.keyFile = this.createFresh(path);
       } else {
         this.keyFile = this.readAndValidate(path);
+        this.keyFile = this.separateLegacySigningKey(path, this.keyFile);
       }
 
       const keyFile = this.keyFile;
@@ -180,6 +185,28 @@ export class KeypairService implements OnApplicationBootstrap {
     return this.keyFile!.rootKey.publicKey;
   }
 
+  getSigningKeyCertificates(): SigningKeyCertificate[] {
+    this.assertAvailable();
+    return this.keyFile!.signingKeys.map((key) => {
+      const notBefore = Date.parse(key.createdAt);
+      const unsigned = {
+        keyId: key.keyId,
+        ed25519: key.publicKey,
+        notBefore,
+        notAfter: 253_402_300_799_999,
+      };
+      return {
+        ...unsigned,
+        authorizationSignature: Buffer.from(
+          ed25519.sign(
+            Buffer.from(signingCertificateStatement(unsigned)),
+            fromB64(this.keyFile!.rootKey.privateKey),
+          ),
+        ).toString('base64'),
+      };
+    });
+  }
+
   getCreatedAt(): string {
     return this.activeKey().createdAt;
   }
@@ -187,23 +214,6 @@ export class KeypairService implements OnApplicationBootstrap {
   getRootKeyFingerprint(): string {
     this.assertAvailable();
     return this.fingerprint(this.keyFile!.rootKey.publicKey);
-  }
-
-  getPairwiseServerId(peerDomain: string): string {
-    this.assertAvailable();
-    const rootSeed = fromB64(this.keyFile!.rootKey.privateKey);
-    const identityKey = Buffer.from(
-      hkdfSync(
-        'sha256',
-        rootSeed,
-        Buffer.alloc(0),
-        'soms-pairwise-identity-v1',
-        32,
-      ),
-    );
-    return createHmac('sha256', identityKey)
-      .update(normalizeDomain(peerDomain), 'utf8')
-      .digest('base64url');
   }
 
   private activeKey(): StoredSigningKey {
@@ -233,14 +243,16 @@ export class KeypairService implements OnApplicationBootstrap {
   }
 
   private createFresh(path: string): StoredKeyFileV1 {
-    const privateKey = ed25519.utils.randomSecretKey();
-    const publicKey = ed25519.getPublicKey(privateKey);
+    const rootPrivateKey = ed25519.utils.randomSecretKey();
+    const rootPublicKey = ed25519.getPublicKey(rootPrivateKey);
+    const signingPrivateKey = ed25519.utils.randomSecretKey();
+    const signingPublicKey = ed25519.getPublicKey(signingPrivateKey);
     const createdAt = new Date().toISOString();
     const domain = normalizeDomain(this.config.domain);
     const rootKey: StoredIdentityKey = {
       keyId: `${domain}/root-1`,
-      publicKey: b64(publicKey),
-      privateKey: b64(privateKey),
+      publicKey: b64(rootPublicKey),
+      privateKey: b64(rootPrivateKey),
       createdAt,
     };
     const keyFile: StoredKeyFileV1 = {
@@ -249,8 +261,10 @@ export class KeypairService implements OnApplicationBootstrap {
       rootKey,
       signingKeys: [
         {
-          ...rootKey,
           keyId: `${domain}/key-1`,
+          publicKey: b64(signingPublicKey),
+          privateKey: b64(signingPrivateKey),
+          createdAt,
           status: 'active',
         },
       ],
@@ -260,6 +274,44 @@ export class KeypairService implements OnApplicationBootstrap {
       `Generated new S2S identity at ${path}. BACK THIS FILE UP — loss is not recoverable online.`,
     );
     return keyFile;
+  }
+
+  /**
+   * The pre-certificate implementation reused the root key as its HTTP signing key. Preserve the
+   * immutable root while replacing that obsolete signing role before this node publishes a v1
+   * discovery document. Old signing material is intentionally not carried forward: it never had a
+   * v1 root-authorized certificate and the removed handshake is not a compatibility surface.
+   */
+  private separateLegacySigningKey(
+    path: string,
+    keyFile: StoredKeyFileV1,
+  ): StoredKeyFileV1 {
+    const active = keyFile.signingKeys.find((key) => key.status === 'active')!;
+    if (active.publicKey !== keyFile.rootKey.publicKey) return keyFile;
+
+    const privateKey = ed25519.utils.randomSecretKey();
+    const domain = normalizeDomain(keyFile.domain);
+    let sequence = 1;
+    const existingIds = new Set(keyFile.signingKeys.map((key) => key.keyId));
+    while (existingIds.has(`${domain}/key-${sequence}`)) sequence += 1;
+    const upgraded: StoredKeyFileV1 = {
+      ...keyFile,
+      signingKeys: [
+        {
+          keyId: `${domain}/key-${sequence}`,
+          publicKey: b64(ed25519.getPublicKey(privateKey)),
+          privateKey: b64(privateKey),
+          createdAt: new Date().toISOString(),
+          status: 'active',
+        },
+      ],
+    };
+    this.validateKeyFile(upgraded);
+    this.writeAtomically(path, upgraded);
+    this.logger.warn(
+      'Separated the legacy root/signing key roles while preserving the root identity',
+    );
+    return upgraded;
   }
 
   private readAndValidate(path: string): StoredKeyFileV1 {
@@ -284,15 +336,23 @@ export class KeypairService implements OnApplicationBootstrap {
       typeof keyFile.domain !== 'string' ||
       !keyFile.rootKey ||
       !Array.isArray(keyFile.signingKeys) ||
-      keyFile.signingKeys.length !== 1
+      keyFile.signingKeys.length === 0
     ) {
       throw new Error('invalid S2S key file structure');
     }
-    const active = keyFile.signingKeys[0];
     this.validateKey(keyFile.rootKey, 'root');
-    this.validateKey(active, 'signing');
-    if (active.status !== 'active')
-      throw new Error('signing key is not active');
+    for (const key of keyFile.signingKeys) this.validateKey(key, 'signing');
+    if (
+      keyFile.signingKeys.filter((key) => key.status === 'active').length !== 1
+    ) {
+      throw new Error('S2S identity must have exactly one active signing key');
+    }
+    if (
+      new Set(keyFile.signingKeys.map((key) => key.keyId)).size !==
+      keyFile.signingKeys.length
+    ) {
+      throw new Error('S2S signing key IDs must be unique');
+    }
   }
 
   private validateKey(key: StoredIdentityKey, label: string): void {

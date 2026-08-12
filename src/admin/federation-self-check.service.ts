@@ -551,7 +551,7 @@ export class FederationSelfCheckService {
     }
     const req: SignedRequest = {
       method: 'POST',
-      url: new URL(`https://${authority}/s2s/v1/ignite`),
+      url: new URL(`https://${authority}/s2s/v1/recognize`),
       body: '{"probe":"self-check"}',
     };
     const headers = await this.signature.signOutbound(req);

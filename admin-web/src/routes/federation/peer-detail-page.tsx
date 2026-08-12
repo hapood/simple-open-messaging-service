@@ -45,7 +45,7 @@ export function PeerDetailPage() {
   const { data: quotaNodes, isLoading: quotaLoading } = useQuotaNodes();
   const quotaNode = quotaNodes?.find((node) => node.domain === d);
 
-  const blocked = peer?.trustLevel === 'blocked';
+  const blocked = peer?.trustLevel === 'halted' && peer.haltCode === 50009;
   const onToggleBlock = async () => {
     try {
       if (blocked) {

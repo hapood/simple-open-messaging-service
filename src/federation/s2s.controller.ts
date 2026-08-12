@@ -62,7 +62,7 @@ export class S2sController {
 
   /** Receive ephemeral state/miss source HWMs; actual data remains pull-only. */
   @Post('feed-revisions')
-  @HttpCode(HttpStatus.ACCEPTED)
+  @HttpCode(HttpStatus.OK)
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
     const body = req.body as {

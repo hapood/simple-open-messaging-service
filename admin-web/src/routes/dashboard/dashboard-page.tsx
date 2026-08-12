@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
+import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   Activity,
   ArrowRight,
@@ -11,21 +11,24 @@ import {
   UserPlus,
   UsersRound,
   XCircle,
-} from 'lucide-react'
-import { useDashboard } from '@/hooks/use-dashboard'
-import type { DashboardFederation } from '@/types/api'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Timestamp } from '@/components/common/timestamp'
-import { formatApiError } from '@/lib/format-error'
+} from 'lucide-react';
+import { useDashboard } from '@/hooks/use-dashboard';
+import type { DashboardFederation } from '@/types/api';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Timestamp } from '@/components/common/timestamp';
+import { formatApiError } from '@/lib/format-error';
 
 /** Compact human byte size: "1.2 GB" / "512 MB" / "0 B". */
 function formatBytes(bytes: number): string {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
-  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+  );
+  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 function MetricTile({
@@ -34,10 +37,10 @@ function MetricTile({
   sub,
   to,
 }: {
-  label: string
-  value: ReactNode
-  sub?: ReactNode
-  to: string
+  label: string;
+  value: ReactNode;
+  sub?: ReactNode;
+  to: string;
 }) {
   return (
     <Link
@@ -49,34 +52,41 @@ function MetricTile({
         <div className="text-3xl font-semibold tabular-nums">{value}</div>
         <ArrowRight className="mb-1 size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
       </div>
-      {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
+      {sub ? (
+        <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+      ) : null}
     </Link>
-  )
+  );
 }
 
 const FED_ROWS: { key: keyof DashboardFederation; tone: string }[] = [
-  { key: 'trusted', tone: 'text-emerald-600 dark:text-emerald-400' },
-  { key: 'demoted', tone: 'text-amber-600 dark:text-amber-400' },
-  { key: 'pending', tone: 'text-muted-foreground' },
-  { key: 'blocked', tone: 'text-destructive' },
-]
+  { key: 'unrecognized', tone: 'text-muted-foreground' },
+  { key: 'establishing', tone: 'text-blue-600 dark:text-blue-400' },
+  { key: 'available', tone: 'text-emerald-600 dark:text-emerald-400' },
+  { key: 'degraded', tone: 'text-amber-600 dark:text-amber-400' },
+  { key: 'halted', tone: 'text-destructive' },
+];
 
 /** Landing overview. Tiles + federation breakdown + the last admin actions (sourced from
  *  AdminActionLog, written by the Phase 1 audit interceptor). Polled every 15s by useDashboard. */
 export function DashboardPage() {
-  const { t } = useTranslation()
-  const { data, isLoading, error } = useDashboard()
+  const { t } = useTranslation();
+  const { data, isLoading, error } = useDashboard();
   // An initial request error leaves `data` undefined while React Query sets
   // `isLoading` to false. Keep rendering placeholders until data exists so the
   // error banner can be shown without dereferencing an absent response.
-  const loading = isLoading || !data
+  const loading = isLoading || !data;
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('dashboard.title')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t('dashboard.desc')}</p>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t('dashboard.title')}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t('dashboard.desc')}
+          </p>
         </div>
         <span className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
           <span className="size-1.5 rounded-full bg-emerald-500" />
@@ -94,22 +104,42 @@ export function DashboardPage() {
         <MetricTile
           to="/connections"
           label={t('dashboard.tile.onlineNow')}
-          value={loading ? <Skeleton className="h-8 w-16" /> : data!.online.uniqueUsers}
+          value={
+            loading ? (
+              <Skeleton className="h-8 w-16" />
+            ) : (
+              data!.online.uniqueUsers
+            )
+          }
         />
         <MetricTile
           to="/connections"
           label={t('dashboard.tile.onlineConnections')}
-          value={loading ? <Skeleton className="h-8 w-16" /> : data!.online.totalConnections}
+          value={
+            loading ? (
+              <Skeleton className="h-8 w-16" />
+            ) : (
+              data!.online.totalConnections
+            )
+          }
         />
         <MetricTile
           to="/sessions"
           label={t('dashboard.tile.activeSessions')}
-          value={loading ? <Skeleton className="h-8 w-16" /> : data!.activeSessions}
+          value={
+            loading ? <Skeleton className="h-8 w-16" /> : data!.activeSessions
+          }
         />
         <MetricTile
           to="/media"
           label={t('dashboard.tile.storageUsage')}
-          value={loading ? <Skeleton className="h-8 w-20" /> : formatBytes(Number(data!.media.bytes))}
+          value={
+            loading ? (
+              <Skeleton className="h-8 w-20" />
+            ) : (
+              formatBytes(Number(data!.media.bytes))
+            )
+          }
           sub={
             loading
               ? undefined
@@ -124,7 +154,9 @@ export function DashboardPage() {
       <section>
         <div className="mb-3">
           <h2 className="font-semibold">{t('dashboard.workflows.title')}</h2>
-          <p className="text-sm text-muted-foreground">{t('dashboard.workflows.desc')}</p>
+          <p className="text-sm text-muted-foreground">
+            {t('dashboard.workflows.desc')}
+          </p>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
           <WorkflowCard
@@ -188,9 +220,16 @@ export function DashboardPage() {
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-2">
             {FED_ROWS.map((r) => (
-              <div key={r.key} className="flex items-center justify-between rounded-md border px-3 py-2">
-                <span className="text-sm text-muted-foreground">{t(`federation.status.${r.key}`)}</span>
-                <span className={`text-lg font-semibold tabular-nums ${r.tone}`}>
+              <div
+                key={r.key}
+                className="flex items-center justify-between rounded-md border px-3 py-2"
+              >
+                <span className="text-sm text-muted-foreground">
+                  {t(`federation.status.${r.key}`)}
+                </span>
+                <span
+                  className={`text-lg font-semibold tabular-nums ${r.tone}`}
+                >
                   {loading ? '—' : data!.federation[r.key]}
                 </span>
               </div>
@@ -233,7 +272,10 @@ export function DashboardPage() {
                         {a.targetLabel ?? a.targetId}
                       </span>
                     ) : null}
-                    <Badge variant="outline" className="ml-auto shrink-0 text-[10px]">
+                    <Badge
+                      variant="outline"
+                      className="ml-auto shrink-0 text-[10px]"
+                    >
                       {a.adminRole}
                     </Badge>
                     <span className="shrink-0 text-xs text-muted-foreground">
@@ -247,16 +289,16 @@ export function DashboardPage() {
         </Card>
       </div>
     </div>
-  )
+  );
 }
 
 type WorkflowAction = {
-  to: string
-  icon: typeof Activity
-  title: string
-  desc: string
-  primary?: boolean
-}
+  to: string;
+  icon: typeof Activity;
+  title: string;
+  desc: string;
+  primary?: boolean;
+};
 
 function WorkflowCard({
   icon: Icon,
@@ -264,10 +306,10 @@ function WorkflowCard({
   desc,
   actions,
 }: {
-  icon: typeof Activity
-  title: string
-  desc: string
-  actions: WorkflowAction[]
+  icon: typeof Activity;
+  title: string;
+  desc: string;
+  actions: WorkflowAction[];
 }) {
   return (
     <Card className="gap-0 py-0">
@@ -281,31 +323,43 @@ function WorkflowCard({
         </div>
       </div>
       <div className="grid gap-2 p-3 sm:grid-cols-3">
-        {actions.map(({ to, icon: ActionIcon, title: actionTitle, desc: actionDesc, primary }) => (
-          <Link
-            key={`${to}-${actionTitle}`}
-            to={to}
-            className={[
-              'group rounded-lg p-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              primary ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-muted',
-            ].join(' ')}
-          >
-            <ActionIcon className="mb-3 size-4" />
-            <span className="flex items-center gap-1 text-sm font-medium">
-              {actionTitle}
-              <ArrowRight className="size-3.5 transition group-hover:translate-x-0.5" />
-            </span>
-            <span
+        {actions.map(
+          ({
+            to,
+            icon: ActionIcon,
+            title: actionTitle,
+            desc: actionDesc,
+            primary,
+          }) => (
+            <Link
+              key={`${to}-${actionTitle}`}
+              to={to}
               className={[
-                'mt-1 block text-xs leading-relaxed',
-                primary ? 'text-primary-foreground/75' : 'text-muted-foreground',
+                'group rounded-lg p-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                primary
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'hover:bg-muted',
               ].join(' ')}
             >
-              {actionDesc}
-            </span>
-          </Link>
-        ))}
+              <ActionIcon className="mb-3 size-4" />
+              <span className="flex items-center gap-1 text-sm font-medium">
+                {actionTitle}
+                <ArrowRight className="size-3.5 transition group-hover:translate-x-0.5" />
+              </span>
+              <span
+                className={[
+                  'mt-1 block text-xs leading-relaxed',
+                  primary
+                    ? 'text-primary-foreground/75'
+                    : 'text-muted-foreground',
+                ].join(' ')}
+              >
+                {actionDesc}
+              </span>
+            </Link>
+          ),
+        )}
       </div>
     </Card>
-  )
+  );
 }

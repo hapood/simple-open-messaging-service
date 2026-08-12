@@ -9,9 +9,8 @@
 本文以“每个 peer 一份、按状态 key 压缩、携带完整快照”的持久 feed 取代聊天打开时的联邦
 关系/profile/meta 探测。
 
-本文只替换
-[节点身份连续性与持久消息发现设计](./identity-and-durable-discovery-design.md)中由聊天消息承担
-关系动作、删除关系后再懒查询权威状态，以及 profile/group meta revision 二次查询的部分。
+本文替换早期实现中由聊天消息承担关系动作、删除关系后再懒查询权威状态，以及 profile/group meta
+revision 二次查询的部分。
 现有消息 `/message-feed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
 不因本设计删除或复用。状态 feed 有独立的表、rev、HWM 和 pull cursor。
 

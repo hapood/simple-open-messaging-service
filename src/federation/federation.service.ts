@@ -7,7 +7,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mintUlid,
   normalizeAccount,
@@ -97,12 +97,8 @@ export type {
   S2SCallOp,
 } from '../calls/federated-call-protocol.js';
 
-import {
-  FederationIdentityService,
-  type SignedFederationIdentity,
-} from './federation-identity.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
-import { FederationIgniteService } from './federation-ignite.service.js';
+import { FederationRecognitionService } from './federation-recognition.service.js';
 import {
   FEDERATED_MESSAGE_CONTENT_TYPES,
   type FederationMessageFeedPage,
@@ -129,13 +125,9 @@ import {
   selectFederationProtocolVersion,
 } from './federation-protocol.js';
 
-/**
- * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
- * 404 Not Found or 410 Gone, NOT 401/403/5xx which DO mark the peer demoted). Thrown by getSigned so the
- * caller can branch on `status` — e.g. the per-author group pull reacts to 410 GONE
- * (FEDERATION_GROUP_AUTHOR_LEFT) by soft-leaving the author instead of treating it as a transport error.
- * Carries the parsed body's business `code` (if any) for diagnostics. See design-review item C2.
- */
+/** A failed S2S HTTP response or an HTTP 200 business result. HTTP status carries only transport,
+ * authentication, temporary availability, or peer-relationship semantics; `code` carries the
+ * operation result and stable diagnostic detail. */
 export class S2sResponseError extends Error {
   readonly status: number;
   readonly code?: number;
@@ -416,9 +408,8 @@ export class FederationService {
     // than a direct injection — FederationService must NOT inject CallsService (that would cycle: the
     // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
     private readonly eventEmitter: EventEmitter2,
-    private readonly federationIdentity: FederationIdentityService,
+    private readonly recognition: FederationRecognitionService,
     private readonly federationCursor: FederationCursorService,
-    private readonly federationInit: FederationIgniteService,
     private readonly downloadScheduler: FederationDownloadScheduler,
     private readonly stateFeedPull: PeerStateFeedPullService,
     private readonly stateFeed: PeerStateFeedService,
@@ -1404,9 +1395,8 @@ export class FederationService {
 
   /**
    * Shared signed-POST transport: sign the (method, path, authority, body) tuple, POST, and apply the
-   * trust-lifecycle wiring — `markContactSuccess` on 200/202/204/409 (delivered or idempotent),
-   * `markDemoted` on network failure or non-success status (self-heal on next contact). Throws on any
-   * non-success. Extracted so the friend-op POSTs and the Step 2 path POSTs share one transport.
+   * lifecycle wiring: network failure/503 degrades, a registered fatal 409 halts, and all HTTP 200
+   * business outcomes leave lifecycle unchanged.
    */
   private async sendSignedPost(
     url: URL,
@@ -1421,7 +1411,7 @@ export class FederationService {
     });
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await this.discovery.request(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body,
@@ -1438,9 +1428,9 @@ export class FederationService {
       );
     }
     const status = res.status;
-    if (status === 200 || status === 202 || status === 204 || status === 409) {
-      await this.markContactSuccess(peerDomain); // delivered or idempotent → advance liveness
-      if (status === 200 || status === 202) {
+    if (status >= 200 && status < 300) {
+      await this.markContactSuccess(peerDomain);
+      if (status !== HttpStatus.NO_CONTENT) {
         const envelope = (await res.json().catch(() => undefined)) as
           | { code?: unknown; data?: unknown }
           | undefined;
@@ -1457,22 +1447,21 @@ export class FederationService {
       }
       return;
     }
-    // Trust/server failure (401/403 = signature/trust rejected; 5xx = peer broken) → demote so the
-    // reconnect sweep self-heals. A quota refusal (429/413) or resource response (400/404/410) means the
-    // peer is HEALTHY and answered — do NOT demote (a quota hit must never demote; see QuotaService).
-    // Mirrors getSigned; surface a typed S2sResponseError so a caller can branch on the status.
-    if (status === 401 || status === 403 || status >= 500) {
+    const errBody = await res.json().catch(() => undefined);
+    const code = typeof errBody?.code === 'number' ? errBody.code : undefined;
+    if (status === HttpStatus.SERVICE_UNAVAILABLE) {
       await this.markDemoted(
         peerDomain,
         `POST HTTP ${status}`,
         operationStartedAt,
       );
+    } else if (status === HttpStatus.CONFLICT && this.isFatalPeerCode(code)) {
+      await this.markPeerHalted(peerDomain, code, errBody?.message);
     }
-    const errBody = await res.json().catch(() => undefined);
     throw new S2sResponseError(
       `S2S POST to ${peerDomain} rejected: HTTP ${status}`,
       status,
-      typeof errBody?.code === 'number' ? errBody.code : undefined,
+      code,
       errBody?.data,
     );
   }
@@ -1493,7 +1482,7 @@ export class FederationService {
     });
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await this.discovery.request(url, {
         method: 'GET',
         headers: { ...headers },
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
@@ -1510,22 +1499,21 @@ export class FederationService {
     }
     if (!res.ok) {
       const status = res.status;
-      // Peer/trust failure (401/403 = signature/trust rejected — the sweep re-handshakes; 5xx = peer
-      // broken) → demote so the reconnect sweep self-heals. Resource responses (400/404/410/…) mean the
-      // peer is healthy and answered — do NOT demote; surface a typed error so the caller can react
-      // (e.g. 410 GONE = the author left). See design-review item C2.
-      if (status === 401 || status === 403 || status >= 500) {
+      const body = await res.json().catch(() => undefined);
+      const code = typeof body?.code === 'number' ? body.code : undefined;
+      if (status === HttpStatus.SERVICE_UNAVAILABLE) {
         await this.markDemoted(
           peerDomain,
           `GET ${path} HTTP ${status}`,
           operationStartedAt,
         );
+      } else if (status === HttpStatus.CONFLICT && this.isFatalPeerCode(code)) {
+        await this.markPeerHalted(peerDomain, code, body?.message);
       }
-      const body = await res.json().catch(() => undefined);
       throw new S2sResponseError(
         `S2S GET ${path} from ${peerDomain} rejected: HTTP ${status}`,
         status,
-        typeof body?.code === 'number' ? body.code : undefined,
+        code,
         body?.data,
       );
     }
@@ -1535,7 +1523,7 @@ export class FederationService {
       if (declared > maxResponseBytes) {
         throw new S2sResponseError(
           `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
-          HttpStatus.PAYLOAD_TOO_LARGE,
+          HttpStatus.OK,
           BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
         );
       }
@@ -1548,7 +1536,7 @@ export class FederationService {
       if (Buffer.byteLength(text) > maxResponseBytes) {
         throw new S2sResponseError(
           `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
-          HttpStatus.PAYLOAD_TOO_LARGE,
+          HttpStatus.OK,
           BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
         );
       }
@@ -1575,86 +1563,66 @@ export class FederationService {
     return (parsed?.data ?? parsed) as T;
   }
 
-  // ─── trust establishment (ignite handshake) ──────────────────────────────────
+  // ─── bidirectional server recognition ─────────────────────────────────────────
 
   /**
-   * Ensure mutual trust with a peer domain before any resolve/friend-op traffic. Idempotent: a no-op if
-   * the domain is already trusted. Otherwise the mutual ignite handshake proves
-   * we control our domain (the peer fetches OUR .well-known to verify), they auto-accept us, and we
-   * trust them back so our guard accepts their inbound and our signed GETs to them succeed. Throws on
-   * any failure (peer unreachable / not a SOMS peer / init rejected) — the caller surfaces
-   * FEDERATION_DELIVERY_FAILED so the user retries. No dangling trust: we add them to our allow-list
-   * only AFTER their /init accepts us.
-   *
-   * Triggered on-demand by the federated resolve path (a local user searching account@<untrusted-domain>).
-   * The reverse direction (their user searches ours) is covered by our inbound /init endpoint auto-accepting them.
+   * Establish or recover the two directional recognition facts before ordinary data-plane traffic.
    */
   async ensurePeerTrusted(domain: string): Promise<void> {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (
-      existing?.trustLevel === 'identity_lost' ||
-      existing?.trustLevel === 'reset_in_progress'
-    ) {
+    if (existing?.resetInProgress) {
       throw new BusinessException(
-        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-        `${domain} identity is locked pending reset`,
-        HttpStatus.LOCKED,
-      );
-    }
-    if (existing?.trustLevel === 'trusted') {
-      await this.verifyPeerIdentity(domain);
-      return;
-    }
-    if (existing?.trustLevel === 'blocked') {
-      // Admin intent — refuse to (re-)handshake. Surfaced as FEDERATION_PEER_BLOCKED (distinct from a
-      // delivery failure) so the client can show "blocked by your admin" rather than "unreachable".
-      throw new BusinessException(
-        BusinessCode.FEDERATION_PEER_BLOCKED,
-        `${domain} is blocked by an admin`,
-        HttpStatus.FORBIDDEN,
-      );
-    }
-    if (existing?.trustLevel === 'demoted') {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
-        `${domain} is temporarily unavailable pending signed heartbeat recovery`,
+        BusinessCode.INTERNAL,
+        `${domain} federation relationship is under administrative maintenance`,
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
-    // Only a new/pending peer bootstraps mutual trust and pins the signed pairwise identity.
-    await this.sendInit(domain);
+    if (existing?.trustLevel === 'available') {
+      return;
+    }
+    if (existing?.trustLevel === 'halted') {
+      const code = [
+        BusinessCode.FEDERATION_PEER_BLOCKED,
+        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
+      ].includes(existing.haltCode as BusinessCode)
+        ? existing.haltCode!
+        : BusinessCode.FEDERATION_IDENTITY_MISMATCH;
+      throw new BusinessException(
+        code,
+        existing.haltReason ?? `${domain} federation relationship is halted`,
+        HttpStatus.CONFLICT,
+      );
+    }
+    await this.recognition.recover(domain);
   }
 
   /**
    * Recover one reconnect-sweep candidate without confusing availability with identity bootstrap.
-   * A pending first contact may retry the atomic/idempotent /ignite. A demoted established peer must
-   * prove the already-pinned identity; it can never silently re-bootstrap.
+   * Retry missing Recognize facts or a degraded transport without replacing the pinned root.
    */
   async recoverPeerTrust(domain: string): Promise<void> {
     const peer = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
       columns: { trustLevel: true },
     });
-    if (peer?.trustLevel === 'pending') {
-      await this.ensurePeerTrusted(domain);
-      return;
-    }
-    if (peer?.trustLevel !== 'demoted') {
+    if (
+      !peer ||
+      !['unrecognized', 'establishing', 'degraded'].includes(peer.trustLevel)
+    ) {
       throw new BusinessException(
-        BusinessCode.FEDERATION_PEER_NOT_TRUSTED,
+        BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
         `${domain} is not eligible for automatic recovery`,
         HttpStatus.CONFLICT,
       );
     }
-    await this.verifyPeerIdentity(domain);
-    await this.markRecovered(domain);
+    await this.recognition.recognize(domain);
   }
 
-  /** Whether mutual trust with a peer domain is ALREADY established — a pure local lookup of the
-   *  FederatedPeer allow-list (a row at trustLevel 'trusted'). No network, no side effects. Our own
-   *  domain always reads trusted (a account@<our-domain> query is a local lookup, never a handshake).
+  /** Whether mutual recognition with a peer domain is already available — a pure local lookup with no
+   *  network or side effects. Our own domain always reads available because it is a local lookup.
    *
    *  Used by the user-facing pre-flight (POST /user/peer-trust-status) so the client can tell
    *  FIRST-CONTACT — a handshake IS expected during the upcoming resolve, so show a "Connecting to
@@ -1667,16 +1635,16 @@ export class FederationService {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    return existing?.trustLevel === 'trusted';
+    return existing?.trustLevel === 'available';
   }
 
   // ─── trust lifecycle (state machine + audit log) ──────────────────────────────
   //
   // FederatedPeer holds the CURRENT state (the cheap read path); FederatedPeerEvent is the append-only
   // log of every transition (the admin timeline). FederationService is the single owner: every
-  // transition — runtime (init, op success/failure) and admin (block/unblock) — flows through these
-  // methods, so the row + the event stay consistent. State machine:
-  //   pending ──ignite ok──► trusted ──op failed──► demoted ──identity proof ok──► trusted …
+  // transition — recognition convergence, transport health and admin actions — flows through these
+  // methods, so the row + the event stay consistent. Recognition facts remain authoritative when a
+  // transport failure temporarily moves a healthy peer to degraded.
 
   /** Best-practice liveness watermark window. "Last successful contact" is an admin observability
    *  signal whose consumer needs MINUTE granularity (is this peer up?), not sub-second — so write
@@ -1703,6 +1671,11 @@ export class FederationService {
    *  identity continuity and normal signed data requests provide liveness; advancing here is the
    *  higher-fidelity supplement that records every real successful contact. */
   async markContactSuccess(domain: string): Promise<void> {
+    try {
+      await this.recognition.markReachable(domain);
+    } catch {
+      // Reachability bookkeeping is secondary to the completed operation.
+    }
     const now = Date.now();
     const last = this.lastSuccessSentAt.get(domain);
     if (
@@ -1718,7 +1691,7 @@ export class FederationService {
         .where(
           and(
             eq(tables.federatedPeer.domain, domain),
-            ne(tables.federatedPeer.trustLevel, 'reset_in_progress'),
+            eq(tables.federatedPeer.resetInProgress, false),
             or(
               isNull(tables.federatedPeer.lastSuccessAt),
               lt(
@@ -1733,11 +1706,10 @@ export class FederationService {
     }
   }
 
-  /** Record a failed signed S2S op. Always refreshes the latest failure (demotedAt + demoteReason) so
-   *  the admin sees the most recent error; if the peer was `trusted` or `pending`, this is a real
-   *  trusted→demoted transition — flip the state, bump demotionCount and log a `demoted` event.
+  /** Record a failed signed S2S op. Always refreshes the latest failure metadata; an available→degraded
+   *  transition bumps the historical demotion counter and event while retaining recognition facts.
    *  Pinned signing keys are continuity evidence and must never be purged by a transient failure.
-   *  `blocked`, `identity_lost` and `reset_in_progress` are durable policy/maintenance states → no-op. */
+   *  `halted` and an active reset are durable policy/maintenance gates → no-op. */
   async markDemoted(
     domain: string,
     reason: string,
@@ -1747,6 +1719,7 @@ export class FederationService {
       const [existing] = await tx
         .select({
           trustLevel: tables.federatedPeer.trustLevel,
+          resetInProgress: tables.federatedPeer.resetInProgress,
           lastSuccessAt: tables.federatedPeer.lastSuccessAt,
         })
         .from(tables.federatedPeer)
@@ -1755,24 +1728,21 @@ export class FederationService {
         .limit(1);
       if (
         !existing ||
-        existing.trustLevel === 'blocked' ||
-        existing.trustLevel === 'identity_lost' ||
-        existing.trustLevel === 'reset_in_progress' ||
+        existing.trustLevel === 'halted' ||
+        existing.resetInProgress ||
         (operationStartedAt !== undefined &&
           existing.lastSuccessAt !== null &&
           existing.lastSuccessAt > operationStartedAt)
       )
         return;
-      const transitioned =
-        existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
+      const transitioned = existing.trustLevel === 'available';
       await tx
         .update(tables.federatedPeer)
         .set({
+          trustLevel: 'degraded',
+          remoteServiceReachable: false,
           ...(transitioned
-            ? {
-                trustLevel: 'demoted' as const,
-                demotionCount: sql`${tables.federatedPeer.demotionCount} + 1`,
-              }
+            ? { demotionCount: sql`${tables.federatedPeer.demotionCount} + 1` }
             : {}),
           demotedAt: new Date(),
           demoteReason: reason.slice(0, 255),
@@ -1787,63 +1757,104 @@ export class FederationService {
     });
   }
 
-  /** Promote a demoted peer only after its pinned identity and signed heartbeat have succeeded. */
+  /** Compatibility wrapper for callers that observed a successful signed round trip. */
   async markRecovered(domain: string): Promise<void> {
-    const now = new Date();
-    const transitioned = await this.database.db.transaction(async (tx) => {
-      const [peer] = await tx
-        .update(tables.federatedPeer)
-        .set({
-          trustLevel: 'trusted',
-          lastSuccessAt: now,
-          demotedAt: null,
-          demoteReason: null,
-        })
-        .where(
-          and(
-            eq(tables.federatedPeer.domain, domain),
-            eq(tables.federatedPeer.trustLevel, 'demoted'),
-          ),
-        )
-        .returning({ domain: tables.federatedPeer.domain });
-      if (!peer) return false;
-      await tx.insert(tables.federatedPeerEvent).values({
-        domain,
-        type: 'recovered',
-      });
-      return true;
-    });
-    if (transitioned) this.lastSuccessSentAt.set(domain, now.getTime());
+    await this.recognition.markReachable(domain);
   }
 
-  /** Admin block: forbid federation with a peer (ensurePeerTrusted refuses to re-handshake; the inbound
-   *  guard rejects it since trustLevel !== 'trusted'). Idempotent. Logs a `blocked` event. */
+  private isFatalPeerCode(code: unknown): code is number {
+    return [
+      BusinessCode.FEDERATION_PEER_BLOCKED,
+      BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+      BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
+    ].includes(code as BusinessCode);
+  }
+
+  private async markPeerHalted(
+    domain: string,
+    code: number,
+    message: unknown,
+  ): Promise<void> {
+    const reason =
+      typeof message === 'string'
+        ? message
+        : `peer returned fatal federation code ${code}`;
+    await this.database.db
+      .update(tables.federatedPeer)
+      .set({
+        trustLevel: 'halted',
+        remoteServiceReachable: false,
+        haltedAt: new Date(),
+        haltCode: code,
+        haltReason: reason.slice(0, 255),
+      })
+      .where(eq(tables.federatedPeer.domain, domain));
+    await this.logEvent(domain, 'halted', reason);
+  }
+
+  /** Admin block: forbid federation with a peer; recognition and ordinary inbound traffic both reject
+   *  this durable policy state. Idempotent. Logs a `blocked` event. */
   async markBlocked(domain: string, note?: string): Promise<void> {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (existing?.trustLevel === 'blocked') return;
+    if (
+      existing?.trustLevel === 'halted' &&
+      existing.haltCode === BusinessCode.FEDERATION_PEER_BLOCKED
+    )
+      return;
     const now = new Date();
     await this.database.db
       .insert(tables.federatedPeer)
-      .values({ domain, trustLevel: 'blocked', blockedAt: now })
+      .values({
+        domain,
+        trustLevel: 'halted',
+        haltedAt: now,
+        haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+        haltReason: note ?? 'blocked by local policy',
+      })
       .onConflictDoUpdate({
         target: tables.federatedPeer.domain,
-        set: { trustLevel: 'blocked', blockedAt: now },
+        set: {
+          trustLevel: 'halted',
+          haltedAt: now,
+          haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+          haltReason: note ?? 'blocked by local policy',
+        },
       });
-    await this.logEvent(domain, 'blocked', note);
+    await this.logEvent(domain, 'halted', note ?? 'blocked by local policy');
   }
 
-  /** Admin unblock: move the peer to `pending` so the next contact re-runs the ignite handshake to
-   *  re-establish trust (it is NOT auto-re-trusted). Logs an `unblocked` event. No-op if not blocked. */
+  /** Admin unblock reopens recognition without fabricating either directional confirmation. */
   async markUnblocked(domain: string): Promise<void> {
     const existing = await this.database.db.query.federatedPeer.findFirst({
       where: eq(tables.federatedPeer.domain, domain),
     });
-    if (!existing || existing.trustLevel !== 'blocked') return;
+    if (
+      !existing ||
+      existing.trustLevel !== 'halted' ||
+      existing.haltCode !== BusinessCode.FEDERATION_PEER_BLOCKED ||
+      existing.resetInProgress
+    )
+      return;
+    const trustLevel = !existing.identityPinnedAt
+      ? 'unrecognized'
+      : existing.recognizesPeer &&
+          existing.outboundRecognitionConfirmed &&
+          existing.inboundRecognitionConfirmed &&
+          existing.localServiceAvailable
+        ? existing.remoteServiceReachable
+          ? 'available'
+          : 'degraded'
+        : 'establishing';
     await this.database.db
       .update(tables.federatedPeer)
-      .set({ trustLevel: 'pending', blockedAt: null })
+      .set({
+        trustLevel,
+        haltedAt: null,
+        haltCode: null,
+        haltReason: null,
+      })
       .where(eq(tables.federatedPeer.domain, domain));
     await this.logEvent(domain, 'unblocked');
   }
@@ -1906,114 +1917,15 @@ export class FederationService {
     });
   }
 
-  /** Send a signed identity claim and pin the peer's signed response. */
-  private async sendInit(peerDomain: string): Promise<void> {
-    const preUpgradeKeys =
-      await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
-    const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}/s2s/v1/ignite`);
-    const localStartChangeId =
-      await this.federationCursor.prepareHandshakeStart(peerDomain);
-    const claim = this.federationIdentity.createClaim(
-      peerDomain,
-      undefined,
-      localStartChangeId,
-    );
-    const body = JSON.stringify(claim);
-    const headers = await this.signature.signOutbound({
-      method: 'POST',
-      url,
-      body,
-    });
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
-        body,
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
-      });
-    } catch (e) {
-      throw new Error(
-        `S2S init to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
-      );
-    }
-    if (res.status !== 200 && res.status !== 202) {
-      throw new Error(`S2S init to ${peerDomain} rejected: HTTP ${res.status}`);
-    }
-    const response = (await res.json()) as SignedFederationIdentity;
-    await this.verifyAndPinIdentityResponse(
-      peerDomain,
-      claim.nonce,
-      response,
-      preUpgradeKeys,
-      true,
-    );
-  }
-
-  /** Reconnect identity check. A contradictory, correctly signed response permanently locks the peer. */
-  async verifyPeerIdentity(peerDomain: string): Promise<void> {
-    const operationStartedAt = new Date();
-    const preUpgradeKeys =
-      await this.federationIdentity.getPreUpgradeCachedKeys(peerDomain);
-    const nonce = randomBytes(24).toString('base64url');
-    const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}/s2s/v1/identity`);
-    url.searchParams.set('nonce', nonce);
-    const headers = await this.signature.signOutbound({
-      method: 'GET',
-      url,
-      body: '',
-    });
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'GET',
-        headers,
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
-      });
-    } catch (error) {
-      await this.markDemoted(
-        peerDomain,
-        `GET identity network/timeout: ${(error as Error).message}`,
-        operationStartedAt,
-      );
-      throw new Error(
-        `S2S identity from ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
-      );
-    }
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403 || res.status >= 500) {
-        await this.markDemoted(
-          peerDomain,
-          `GET identity HTTP ${res.status}`,
-          operationStartedAt,
-        );
-      }
-      throw new Error(
-        `S2S identity from ${peerDomain} rejected: HTTP ${res.status}`,
-      );
-    }
-    const response = (await res.json()) as SignedFederationIdentity;
-    await this.verifyAndPinIdentityResponse(
-      peerDomain,
-      nonce,
-      response,
-      preUpgradeKeys,
-      false,
-    );
-  }
-
   /**
    * Administrator-only, non-destructive recovery after a transient DNS/SRV hijack caused identity loss.
-   * The operation never adopts what DNS currently serves: it succeeds only when well-known, the detached
-   * identity proof, pairwise id, root fingerprint and signing key all match the evidence pinned before the
-   * incident. Cursors, mirrors, authorization and trustedAt are preserved.
+   * The operation never adopts what DNS currently serves: hostname-verified discovery must present the
+   * exact pinned root, while current signing certificates may legitimately differ through rotation.
    */
   async manuallyRecoverPinnedIdentity(
     peerDomain: string,
     confirmDomain: string,
-  ): Promise<{ domain: string; trustLevel: 'trusted' }> {
+  ): Promise<{ domain: string; trustLevel: 'degraded' }> {
     const domain = peerDomain.trim().toLowerCase().replace(/\.+$/, '');
     if (confirmDomain.trim().toLowerCase().replace(/\.+$/, '') !== domain) {
       throw new BusinessException(
@@ -2026,20 +1938,24 @@ export class FederationService {
       where: eq(tables.federatedPeer.domain, domain),
       columns: {
         trustLevel: true,
-        pairwiseServerId: true,
+        haltCode: true,
+        resetInProgress: true,
         rootKeyFingerprint: true,
+        rootPublicKey: true,
         identityPinnedAt: true,
       },
     });
     if (
-      peer?.trustLevel !== 'identity_lost' ||
+      peer?.trustLevel !== 'halted' ||
+      peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
+      peer.resetInProgress ||
       !peer.identityPinnedAt ||
-      !peer.pairwiseServerId ||
-      !peer.rootKeyFingerprint
+      !peer.rootKeyFingerprint ||
+      !peer.rootPublicKey
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-        `${domain} is not an identity-lost peer with complete pinned evidence`,
+        `${domain} is not an idle identity-mismatch halted peer with complete pinned evidence`,
         HttpStatus.CONFLICT,
       );
     }
@@ -2047,27 +1963,11 @@ export class FederationService {
     // The explicit admin action is also an instruction to discard a possibly polluted cached DNS route.
     this.discovery.invalidateBase(domain);
     const doc = await this.discovery.fetchWellKnown(domain);
-    const rootPublicKey = doc.rootKey?.ed25519;
-    const computedFingerprint = rootPublicKey
-      ? `sha256:${createHash('sha256')
-          .update(Buffer.from(rootPublicKey, 'base64'))
-          .digest('base64url')}`
-      : undefined;
-    const cachedKeys = await this.database.db.query.s2SKeyCache.findMany({
-      where: eq(tables.s2SKeyCache.domain, domain),
-      columns: { keyId: true, publicKey: true },
-    });
     const publishedKey = doc.keys[0];
     const originalIdentityReturned =
       selectFederationProtocolVersion(doc.protocolVersions) ===
         FEDERATION_PROTOCOL_VERSION &&
-      doc.rootKey?.fingerprint === peer.rootKeyFingerprint &&
-      computedFingerprint === peer.rootKeyFingerprint &&
-      doc.keys.length === 1 &&
-      publishedKey?.ed25519 === rootPublicKey &&
-      cachedKeys.length === 1 &&
-      cachedKeys[0]?.keyId === publishedKey?.keyId &&
-      cachedKeys[0]?.publicKey === publishedKey?.ed25519;
+      doc.rootKey.ed25519 === peer.rootPublicKey;
     if (!originalIdentityReturned || !publishedKey) {
       throw new BusinessException(
         BusinessCode.FEDERATION_IDENTITY_MISMATCH,
@@ -2076,71 +1976,26 @@ export class FederationService {
       );
     }
 
-    const nonce = randomBytes(24).toString('base64url');
-    const base = await this.discovery.resolveBase(domain);
-    const url = new URL(`${base}/s2s/v1/identity`);
-    url.searchParams.set('nonce', nonce);
-    const headers = await this.signature.signOutbound({
-      method: 'GET',
-      url,
-      body: '',
-    });
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'GET',
-        headers,
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
-      });
-    } catch (error) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_DELIVERY_FAILED,
-        `identity recovery probe for ${domain} failed: ${(error as Error).message}`,
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
-    }
-    if (!res.ok) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
-        `identity recovery probe for ${domain} returned HTTP ${res.status}`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    const response = (await res.json()) as SignedFederationIdentity;
-    const claim = this.federationIdentity.verifySignedClaim(
-      response,
-      domain,
-      this.config.domain,
-      nonce,
-      Uint8Array.from(Buffer.from(publishedKey.ed25519, 'base64')),
-    );
-    if (
-      claim.pairwiseServerId !== peer.pairwiseServerId ||
-      claim.rootKeyFingerprint !== peer.rootKeyFingerprint
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-        `${domain} signed proof does not match the original pinned identity`,
-        HttpStatus.CONFLICT,
-      );
-    }
-
-    await this.discovery.cacheKeys(domain, doc.keys);
+    await this.discovery.cacheDocument(domain, doc);
     await this.database.db.transaction(async (tx) => {
       const [locked] = await tx
         .select({
           trustLevel: tables.federatedPeer.trustLevel,
-          pairwiseServerId: tables.federatedPeer.pairwiseServerId,
+          haltCode: tables.federatedPeer.haltCode,
+          resetInProgress: tables.federatedPeer.resetInProgress,
           rootKeyFingerprint: tables.federatedPeer.rootKeyFingerprint,
+          rootPublicKey: tables.federatedPeer.rootPublicKey,
         })
         .from(tables.federatedPeer)
         .where(eq(tables.federatedPeer.domain, domain))
         .for('update')
         .limit(1);
       if (
-        locked?.trustLevel !== 'identity_lost' ||
-        locked.pairwiseServerId !== claim.pairwiseServerId ||
-        locked.rootKeyFingerprint !== claim.rootKeyFingerprint
+        locked?.trustLevel !== 'halted' ||
+        locked.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
+        locked.resetInProgress ||
+        locked.rootKeyFingerprint !== peer.rootKeyFingerprint ||
+        locked.rootPublicKey !== peer.rootPublicKey
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,
@@ -2151,9 +2006,11 @@ export class FederationService {
       await tx
         .update(tables.federatedPeer)
         .set({
-          trustLevel: 'trusted',
-          identityLostAt: null,
-          identityLostReason: null,
+          trustLevel: 'degraded',
+          remoteServiceReachable: false,
+          haltedAt: null,
+          haltCode: null,
+          haltReason: null,
           demotedAt: null,
           demoteReason: null,
           lastSuccessAt: new Date(),
@@ -2165,75 +2022,7 @@ export class FederationService {
         reason: 'administrator verified the original pinned identity',
       });
     });
-    return { domain, trustLevel: 'trusted' };
-  }
-
-  private async verifyAndPinIdentityResponse(
-    peerDomain: string,
-    nonce: string,
-    response: SignedFederationIdentity,
-    preUpgradeKeys: string[],
-    initializeCursors: boolean,
-  ): Promise<void> {
-    const doc = await this.discovery.fetchWellKnown(peerDomain);
-    const rootPublicKey = doc.rootKey?.ed25519;
-    const computedFingerprint = rootPublicKey
-      ? `sha256:${createHash('sha256')
-          .update(Buffer.from(rootPublicKey, 'base64'))
-          .digest('base64url')}`
-      : undefined;
-    if (
-      selectFederationProtocolVersion(doc.protocolVersions) !==
-        FEDERATION_PROTOCOL_VERSION ||
-      doc.rootKey?.fingerprint !== response.rootKeyFingerprint ||
-      computedFingerprint !== response.rootKeyFingerprint ||
-      doc.keys.length !== 1 ||
-      doc.keys[0]?.ed25519 !== rootPublicKey
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
-        `well-known identity does not match response from ${peerDomain}`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    const signingKey = doc.keys.find((key) => key.keyId === response.keyId);
-    if (!signingKey) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
-        `identity response key is not published by ${peerDomain}`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    const claim = this.federationIdentity.verifySignedClaim(
-      response,
-      peerDomain,
-      this.config.domain,
-      nonce,
-      Uint8Array.from(Buffer.from(signingKey.ed25519, 'base64')),
-    );
-    await this.discovery.cacheKeys(peerDomain, doc.keys);
-    const legacyContinuityProven =
-      rootPublicKey !== undefined && preUpgradeKeys.includes(rootPublicKey);
-    if (initializeCursors) {
-      if (claim.startChangeId === undefined) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_IDENTITY_PROOF_INVALID,
-          `S2S init response from ${peerDomain} has no startChangeId`,
-          HttpStatus.UNAUTHORIZED,
-        );
-      }
-      await this.federationInit.pinResponse({
-        domain: peerDomain,
-        claim,
-        legacyContinuityProven,
-      });
-    } else {
-      await this.federationIdentity.pinOrVerify(
-        peerDomain,
-        claim,
-        legacyContinuityProven,
-      );
-    }
+    return { domain, trustLevel: 'degraded' };
   }
 
   /** POST /s2s/v1/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
@@ -2600,13 +2389,13 @@ export class FederationService {
       return await fn();
     } catch (error) {
       // A peer restart can make both sides demote each other: its startup pull reaches us while we
-      // still have it demoted, so it receives FEDERATION_PEER_NOT_TRUSTED and demotes us in turn.
+      // its recognition facts are incomplete, so it receives FEDERATION_RECOGNITION_REQUIRED.
       // Only this explicit trust-state response is recoverable here. The pinned-identity signed
       // heartbeat restores mutual reachability, after which the original operation is tried once.
       // Other 401/403 responses (bad signatures, identity changes, admin policy) remain terminal.
       if (
         error instanceof S2sResponseError &&
-        error.code === BusinessCode.FEDERATION_PEER_NOT_TRUSTED
+        error.code === BusinessCode.FEDERATION_RECOGNITION_REQUIRED
       ) {
         await this.recoverPeerTrust(domain);
         return fn();
@@ -2657,6 +2446,7 @@ export class FederationService {
           federationTruncated: tables.messageThread.federationTruncated,
           federationVersion: tables.messageThread.federationVersion,
           trustLevel: tables.federatedPeer.trustLevel,
+          resetInProgress: tables.federatedPeer.resetInProgress,
         })
         .from(tables.messageThread)
         .innerJoin(
@@ -2668,13 +2458,12 @@ export class FederationService {
       if (
         !state ||
         state.federationTruncated ||
-        state.trustLevel === 'reset_in_progress' ||
-        state.trustLevel === 'identity_lost'
+        state.trustLevel === 'halted' ||
+        state.resetInProgress
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
           `federation thread ${threadId} is unavailable for ${peerDomain}`,
-          HttpStatus.LOCKED,
         );
       }
       return state.federationVersion;
@@ -2695,6 +2484,7 @@ export class FederationService {
         federationTruncated: tables.messageThread.federationTruncated,
         federationVersion: tables.messageThread.federationVersion,
         trustLevel: tables.federatedPeer.trustLevel,
+        resetInProgress: tables.federatedPeer.resetInProgress,
       })
       .from(tables.messageThread)
       .innerJoin(
@@ -2707,13 +2497,12 @@ export class FederationService {
       !state ||
       state.federationTruncated ||
       state.federationVersion !== expectedFederationVersion ||
-      state.trustLevel === 'reset_in_progress' ||
-      state.trustLevel === 'identity_lost'
+      state.trustLevel === 'halted' ||
+      state.resetInProgress
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `stale federation response for thread ${threadId} from ${peerDomain}`,
-        HttpStatus.LOCKED,
       );
     }
   }
@@ -2725,12 +2514,22 @@ export class FederationService {
       );
       const result = await tx.execute<{
         trustLevel: string;
+        resetInProgress: boolean;
         resetGeneration: number;
         rootKeyFingerprint: string | null;
+        recognizesPeer: boolean;
+        outboundRecognitionConfirmed: boolean;
+        inboundRecognitionConfirmed: boolean;
+        localServiceAvailable: boolean;
       }>(sql`
         SELECT peer."trustLevel",
+               peer."resetInProgress",
                COALESCE(reset."resetGeneration", 0)::int AS "resetGeneration",
-               peer."rootKeyFingerprint"
+               peer."rootKeyFingerprint",
+               peer."recognizesPeer",
+               peer."outboundRecognitionConfirmed",
+               peer."inboundRecognitionConfirmed",
+               peer."localServiceAvailable"
         FROM "FederatedPeer" peer
         LEFT JOIN "FederatedPeerReset" reset ON reset.domain = peer.domain
         WHERE peer.domain = ${domain}
@@ -2738,13 +2537,17 @@ export class FederationService {
       const state = result.rows[0];
       if (
         !state ||
-        state.trustLevel !== 'trusted' ||
+        !['available', 'degraded'].includes(state.trustLevel) ||
+        state.resetInProgress ||
+        !state.recognizesPeer ||
+        !state.outboundRecognitionConfirmed ||
+        !state.inboundRecognitionConfirmed ||
+        !state.localServiceAvailable ||
         !state.rootKeyFingerprint
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
           `federation peer ${domain} is unavailable`,
-          HttpStatus.LOCKED,
         );
       }
       return {
@@ -2764,12 +2567,22 @@ export class FederationService {
     );
     const result = await tx.execute<{
       trustLevel: string;
+      resetInProgress: boolean;
       resetGeneration: number;
       rootKeyFingerprint: string | null;
+      recognizesPeer: boolean;
+      outboundRecognitionConfirmed: boolean;
+      inboundRecognitionConfirmed: boolean;
+      localServiceAvailable: boolean;
     }>(sql`
       SELECT peer."trustLevel",
+             peer."resetInProgress",
              COALESCE(reset."resetGeneration", 0)::int AS "resetGeneration",
-             peer."rootKeyFingerprint"
+             peer."rootKeyFingerprint",
+             peer."recognizesPeer",
+             peer."outboundRecognitionConfirmed",
+             peer."inboundRecognitionConfirmed",
+             peer."localServiceAvailable"
       FROM "FederatedPeer" peer
       LEFT JOIN "FederatedPeerReset" reset ON reset.domain = peer.domain
       WHERE peer.domain = ${token.domain}
@@ -2777,14 +2590,18 @@ export class FederationService {
     const state = result.rows[0];
     if (
       !state ||
-      state.trustLevel !== 'trusted' ||
+      !['available', 'degraded'].includes(state.trustLevel) ||
+      state.resetInProgress ||
+      !state.recognizesPeer ||
+      !state.outboundRecognitionConfirmed ||
+      !state.inboundRecognitionConfirmed ||
+      !state.localServiceAvailable ||
       state.resetGeneration !== token.resetGeneration ||
       state.rootKeyFingerprint !== token.rootKeyFingerprint
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `stale federation response from ${token.domain}`,
-        HttpStatus.LOCKED,
       );
     }
   }
@@ -4637,19 +4454,25 @@ export class FederationService {
     };
   }
 
-  /** Domains needing recovery (pending | demoted) — the reconnect sweep's work list. */
+  /** Domains with incomplete recognition or degraded reachability. */
   async listRecoverablePeerDomains(): Promise<string[]> {
     const rows = await this.database.db.query.federatedPeer.findMany({
-      where: inArray(tables.federatedPeer.trustLevel, ['pending', 'demoted']),
+      where: inArray(tables.federatedPeer.trustLevel, [
+        'unrecognized',
+        'degraded',
+      ]),
       columns: { domain: true },
     });
     return rows.map((r) => r.domain);
   }
 
-  /** Trusted peers participating in startup and periodic global-HWM reconciliation. */
+  /** Fully recognized peers participating in startup and periodic reconciliation. */
   async listTrustedPeerDomains(): Promise<string[]> {
     const rows = await this.database.db.query.federatedPeer.findMany({
-      where: eq(tables.federatedPeer.trustLevel, 'trusted'),
+      where: inArray(tables.federatedPeer.trustLevel, [
+        'available',
+        'degraded',
+      ]),
       columns: { domain: true },
     });
     return rows.map((row) => row.domain);
@@ -6334,7 +6157,7 @@ export class FederationService {
     });
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await this.discovery.request(url, {
         method: 'GET',
         headers: { ...headers, range: `bytes=${start}-${end}` },
         signal: AbortSignal.timeout(this.config.mediaChunkTimeoutSec * 1000),

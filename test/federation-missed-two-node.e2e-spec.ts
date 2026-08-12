@@ -243,7 +243,7 @@ describe('federation durable missed transport (two nodes)', () => {
     // is crash recovery, not breaker backoff.
     await appA.database
       .update(federatedPeer)
-      .set({ trustLevel: 'trusted', demotedAt: null, demoteReason: null })
+      .set({ trustLevel: 'available', demotedAt: null, demoteReason: null })
       .where(eq(federatedPeer.domain, FED_DOMAIN_B));
     proxy.clearRequestLog();
     await appB.start();
@@ -255,7 +255,7 @@ describe('federation durable missed transport (two nodes)', () => {
             (entry) =>
               entry.method === 'GET' &&
               entry.path.startsWith('/s2s/v1/') &&
-              !entry.path.startsWith('/s2s/v1/identity'),
+              !entry.path.startsWith('/s2s/v1/healthy'),
           );
         expect(signedGets[0]).toMatchObject({
           path: expect.stringMatching(/^\/s2s\/v1\/state-feed\?/),

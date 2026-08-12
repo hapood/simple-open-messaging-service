@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, gt, max, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -37,6 +37,7 @@ export class DeletedMessageService {
         federationTruncated: messageThread.federationTruncated,
         federationVersion: messageThread.federationVersion,
         trustLevel: federatedPeer.trustLevel,
+        resetInProgress: federatedPeer.resetInProgress,
       })
       .from(messageThread)
       .innerJoin(federatedPeer, eq(federatedPeer.domain, peerDomain))
@@ -46,13 +47,12 @@ export class DeletedMessageService {
       !state ||
       state.federationTruncated ||
       state.federationVersion !== expectedFederationVersion ||
-      state.trustLevel === 'reset_in_progress' ||
-      state.trustLevel === 'identity_lost'
+      state.resetInProgress ||
+      state.trustLevel === 'halted'
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `stale federation deletion response for thread ${threadId}`,
-        HttpStatus.LOCKED,
       );
     }
   }

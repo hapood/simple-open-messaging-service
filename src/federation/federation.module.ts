@@ -7,7 +7,7 @@ import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
-import { S2sIgniteController } from './s2s-ignite.controller.js';
+import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
 import { InviteModule } from '../invite/invite.module.js';
 import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
@@ -16,9 +16,8 @@ import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
-import { FederationIdentityService } from './federation-identity.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
-import { FederationIgniteService } from './federation-ignite.service.js';
+import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
@@ -28,6 +27,7 @@ import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
 import { FederationMemoryFeedService } from './federation-memory-feed.service.js';
 import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
+import { S2sSignatureGuard } from './s2s-signature.guard.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -37,8 +37,7 @@ import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js'
  * is provided globally by DatabaseModule.
  *
  * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
- * allow-list-gated via S2sSignatureGuard) and S2sIgniteController (POST /s2s/v1/ignite — the trust bootstrap,
- * NOT allow-list-gated since it IS the trust step; verifies via S2sVerifyService directly).
+ * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Healthy).
  */
 @Global()
 @Module({
@@ -54,17 +53,17 @@ import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js'
     LinkPreviewModule,
     ForwardBundleModule,
   ],
-  controllers: [WellKnownController, S2sController, S2sIgniteController],
+  controllers: [WellKnownController, S2sController, S2sRecognitionController],
   providers: [
     KeypairService,
     SignatureService,
     DiscoveryService,
     S2sVerifyService,
+    S2sSignatureGuard,
     FederationService,
     FederationReconnectService,
-    FederationIdentityService,
     FederationCursorService,
-    FederationIgniteService,
+    FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageFeedPullService,
     FederationMemoryFeedService,
@@ -80,9 +79,8 @@ import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js'
     SignatureService,
     DiscoveryService,
     FederationService,
-    FederationIdentityService,
     FederationCursorService,
-    FederationIgniteService,
+    FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageFeedPullService,
     FederationMemoryFeedService,

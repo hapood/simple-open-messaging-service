@@ -439,15 +439,16 @@
   },
   "federation": {
     "title": "联邦",
-    "desc": "信任白名单中的对端服务器及其生命周期：信任 → 降级（签名调用失败，下次连接会重新握手）→ 重新信任，以及管理员手动屏蔽的域。点开某个对端可查看完整时间线。",
+    "desc": "对端服务器及其 Federation v1 双向认可生命周期。点开节点可查看认可事实、可达性与完整时间线。",
     "searchPlaceholder": "搜索域名",
     "tabs": { "peers": "节点", "selfCheck": "自检" },
     "status": {
       "all": "全部",
-      "trusted": "已信任",
-      "demoted": "已降级",
-      "pending": "待握手",
-      "blocked": "已屏蔽"
+      "available": "可用",
+      "establishing": "正在建立",
+      "degraded": "已降级",
+      "unrecognized": "未认可",
+      "halted": "已停机"
     },
     "col": {
       "domain": "域名",
@@ -486,7 +487,7 @@
       "discovered": "发现对端",
       "trusted": "建立信任",
       "demoted": "连接丢失 / 降级",
-      "blocked": "管理员屏蔽",
+      "halted": "通信已停止",
       "unblocked": "管理员取消屏蔽"
     },
     "detail": {

@@ -15,8 +15,7 @@ import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
  * peers derive them from the resolved base URL as `${base}/s2s/v1/<path>`, the same way the
  * Step 2 pull routes are already resolved.
  *
- * `keys` remains an array for wire compatibility, but this protocol version publishes exactly one
- * key. Replacing it is identity loss; online key rotation is intentionally unsupported.
+ * `keys` contains root-authorized signing certificates and may overlap during online rotation.
  */
 @Public()
 @Raw()
@@ -32,15 +31,9 @@ export class WellKnownController {
       software: `soms/${SERVER_VERSION}`,
       protocolVersions: [...FEDERATION_PROTOCOL_VERSIONS],
       rootKey: {
-        fingerprint: this.keypair.getRootKeyFingerprint(),
         ed25519: this.keypair.getRootPublicKeyB64(),
       },
-      keys: [
-        {
-          keyId: this.keypair.getKeyId(),
-          ed25519: this.keypair.getPublicKeyB64(),
-        },
-      ],
+      keys: this.keypair.getSigningKeyCertificates(),
     };
   }
 }

@@ -45,8 +45,7 @@ export class HealthResponseDto {
  * Public liveness probe.
  *
  * Distinct from the other two "is the server alive" surfaces in this codebase:
- *  - nonce-bound `GET /s2s/v1/identity` is the signed federation continuity/recovery check
- *    between trusted servers — it proves identity, not just uptime.
+ *  - signed `POST /s2s/v1/healthy` is the privacy-safe federation recognition/reachability view.
  *  - The SSE `event: ping` heartbeat only fires on an already-established, AUTHENTICATED stream.
  *
  * `/health` is the one probe an UNAUTHENTICATED client can hit pre-login — notably the bundled Tauri /

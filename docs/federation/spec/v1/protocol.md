@@ -1,8 +1,8 @@
 # SOMS Federation Protocol v1
 
-状态：`REVIEW`
-协议标识：`1`
-S2S API 前缀：`/s2s/v1`
+- 状态：`REVIEW`
+- 协议标识：`1`
+- S2S API 前缀：`/s2s/v1`
 
 本文是 Federation v1 的基础协议，定义版本、HTTP 接口面（HTTP surface）、传输、Federation 共享类型
 （Shared Federation Types）、
@@ -16,7 +16,8 @@ S2S API 前缀：`/s2s/v1`
 ## 0. 规范文档与优先级（Normative Documents and Precedence）
 
 Federation v1 的规范性要求由本文及其明确引用的 [传输与安全](./transport-security.md)、
-[服务器认可](./recognition.md)、State Feed、Message Feed、通话、resource 与错误码文档共同组成。本文负责
+[服务器认可](./recognition.md)、[State Feed](./state-feed.md)、[Message Feed](./message-feed.md)、
+[通话](./calls.md)与[错误码](./errors.md)文档共同组成。本文负责
 共享协议契约（protocol contract）；operation 文档可以（MAY）在
 不改变本文安全底线的前提下收紧它所属 operation 的字段、状态和授权要求。如果两份
 规范性正文对同一外部可观察协议行为给出不同要求，这是规范缺陷，实现必须（MUST）以 fail-closed 方式处理，不得（MUST NOT）自行
@@ -28,24 +29,23 @@ Federation v1 的规范性要求由本文及其明确引用的 [传输与安全]
 
 ## 1. 范围、角色与术语（Scope, Roles, and Terminology）
 
-- **server**：实现 Federation v1、发送或接收 S2S 请求的协议参与者。
-- **server domain**：server 的稳定 Federation identity，以 canonical `Domain` 表示。DNS、SRV 解析出的
-  host、port 或 IP 只决定连接位置，不是 server domain。
-- **peer**：相对于本 server，正在建立或已经建立双向认可关系（bidirectional recognition relationship）的远端 server。
-- **origin**：某个群身份及其 roster 的权威 server。它是身份授权角色，不是每条消息作者或
-  每次传输的 publisher 的同义词。
-- **mirror**：非 origin server 保存的群副本。
-- **publisher**：在某个 operation 或同步方向中提供 feed、resource 或 authoritative state 的 server。
-- **consumer**：在某个 operation 或同步方向中请求、验证并提交 publisher 数据的 server。同一个
-  server 在不同 operation 或相反同步方向中可以（MAY）同时承担 publisher 和 consumer。
-- **durable fact**：由 server 持久保存的业务事实，例如关系方向、群 roster 快照或消息副本。它的
-  正确性和生命周期由业务状态决定，不依赖 revision hint 是否送达。
-- **durable change**：publisher 为特定 peer 持久分配、用于发现或同步 durable fact 的有序 feed
-  记录。它拥有 source revision，并按 cursor、确认和 retention 规则提供；删除 change 不等于删除
-  对应的 durable fact。
-- **revision hint**：只负责唤醒 consumer 的非持久、可丢失通知。
-- **cursor**：consumer 已安全提交的 source revision；不能因提示或失败响应提前推进。
-- **reset**：管理员授权的 destructive identity lifecycle；普通断线或 DNS 变化不属于 reset。
+- **服务器（server）**：实现 Federation v1、发送或接收 S2S 请求的协议参与者。
+- **服务器域名（server domain）**：服务器的稳定联邦身份，以规范化 `Domain` 表示。DNS、SRV 解析出的
+  主机、端口或 IP 只决定连接位置，不是服务器域名。
+- **对等节点（peer）**：相对于本服务器，正在建立或已经建立双向认可关系的远端服务器。
+- **源站（origin）**：某个群身份及其成员名册（roster）的权威服务器。它是身份授权角色，不是每条消息
+  作者或每次传输的发布方的同义词。
+- **镜像（mirror）**：非源站服务器保存的群副本。
+- **发布方（publisher）**：在某个操作或同步方向中提供源（feed）、资源或权威状态的服务器。
+- **消费方（consumer）**：在某个操作或同步方向中请求、验证并提交发布方数据的服务器。同一服务器在
+  不同操作或相反同步方向中可以（MAY）同时承担发布方和消费方。
+- **持久事实（durable fact）**：由服务器持久保存的业务事实，例如关系方向、群成员名册快照或消息副本。
+  它的正确性和生命周期由业务状态决定，不依赖修订提示是否送达。
+- **持久变更（durable change）**：发布方为特定对等节点持久分配、用于发现或同步持久事实的有序源记录。
+  它拥有源修订号（source revision），并按游标、确认和保留规则提供；删除变更不等于删除对应的持久事实。
+- **修订提示（revision hint）**：只负责唤醒消费方的非持久、可丢失通知。
+- **游标（cursor）**：消费方已安全提交的源修订号；不能因提示或失败响应提前推进。
+- **重置（reset）**：管理员授权的破坏性身份生命周期；普通断线或 DNS 变化不属于重置。
 - **传输格式（wire format）**：通过 HTTP 实际传输的 method、path、query、header 和 body bytes 的表示形式；不包括
   数据库结构、内部 object 或本地执行方式。
 
@@ -63,15 +63,14 @@ Federation v1 的所有 S2S 数据面端点都位于 `/s2s/v1/*`。公开发现�
 不得（MUST NOT）发布只实现了部分必选行为的主版本。
 
 调用方必须（MUST）先读取 `protocolVersions`，取双方版本数组交集的最高值 `V`，再按 `V` 的规范验证
-well-known 的共享字段和版本附加字段。交集为空则不建立联邦。选定版本由 `/s2s/v<V>` 路径明确表达，
-实现不得（MUST NOT）在各个 state、message 或 command body 中重复版本字段。选定版本由 S2S path 中的
-`/s2s/v<major>` 表达；Recognize body 不重复协议版本。
+well-known 的共享字段和版本附加字段。交集为空则不建立联邦。选定版本由 `/s2s/v<V>` 路径明确表达；
+各 state、message 或 command body 不得（MUST NOT）重复版本字段，Recognize body 也不重复协议版本。
 
 除永久必选的 `protocolVersions` 外，后续主版本应该（SHOULD）保留语义兼容的共享字段，并可以（MAY）
 在同一 well-known object 中增加字段。同名字段在 `protocolVersions` 声明的所有主版本中必须（MUST）
 保持相同类型和语义；若含义改变，新的主版本必须（MUST）使用新字段名。某个主版本新增的字段只由
 选择该主版本的握手解释；选择 v1 的实现必须（MUST）忽略 v1 未定义的字段，且不得（MUST NOT）让它们
-改变 v1 的身份、授权、endpoint 或安全行为。
+改变 v1 的身份、授权、接口或安全行为。
 
 可选的 `software` 只用于运维诊断。consumer 不得（MUST NOT）根据产品名、软件版本或构建号启用、禁用或
 改变 v1 protocol behavior。实现只有在完整支持本规范的全部必选行为时，才可以（MAY）在
@@ -79,17 +78,17 @@ well-known 的共享字段和版本附加字段。交集为空则不建立联邦
 
 每个 `/s2s/v<major>` handler 必须（MUST）只接受本节点当前发布的主版本，不得（MUST NOT）把不支持的版本透明降级到
 另一版本。节点从一次成功的 well-known refresh 得知某个已知 peer 与本节点不再存在共同版本后，
-必须（MUST）停止向该 peer 发送并拒绝该 peer 的普通数据面请求；实现可以（MAY）重新协商其他共同版本或主动断开
-连接，但不得（MUST NOT）因此删除 identity pin、cursor、mirror 或 authorization。节点不需要在每个请求前刷新
-well-known；刷新频率和连接生命周期由实现决定，并且必须（MUST）有缓存、退避和限速以避免放大流量。
+必须（MUST）记录版本原因、进入 `halted`、停止自动通信并拒绝该 peer 的普通数据面，但不得（MUST NOT）因此删除
+identity pin、cursor、mirror 或 authorization。如何恢复属于本地管理行为。节点不需要在每个请求前刷新
+well-known；刷新频率和连接生命周期由实现决定，但请求行为不得（MUST NOT）形成紧密轮询或流量放大。
 
 请求到达语法可识别但本节点未启用的 `/s2s/v<major>` 时，节点必须（MUST）拒绝，并应该（SHOULD）返回
-HTTP `400` 和 `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`；不得（MUST NOT）把它路由到其他主版本的 handler。
+HTTP `409` 和 `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`；不得（MUST NOT）把它路由到其他主版本的 handler。
 
-v1 不使用 capability negotiation，也没有可选 endpoint 分支。增加可选响应字段必须（MUST）先满足对应
-object 的兼容规则；删除或重命名字段、改变字段含义、改变 endpoint、鉴权、状态码、幂等或 cursor
+v1 不使用 capability negotiation，也没有可选接口（endpoint）分支。增加可选响应字段必须（MUST）先满足对应
+object 的兼容规则；删除或重命名字段、改变字段含义、改变接口、鉴权、状态码、幂等或 cursor
 语义均属于不兼容变化，必须（MUST）使用新的 `/s2s/v2` 主版本。错误修订、非规范性说明和不改变
-外部可观察协议行为的实现优化 可以（MAY）在 v1 内发布。
+外部可观察协议行为的实现优化可以（MAY）在 v1 内发布。
 
 ## 3. Federation v1 HTTP 接口面（HTTP Surface）
 
@@ -102,7 +101,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变 
 | `GET`  | `/.well-known/soms`                 | 公开 TLS           | 无 query、无 body         | `200`       | 裸 discovery object    |
 | `POST` | `/s2s/v1/recognize`                 | bootstrap signed   | JSON signer domain        | `200`       | 裸 recognize OK        |
 | `POST` | `/s2s/v1/healthy`                   | status signed      | JSON signer domain        | `200`       | 裸 privacy-safe status |
-| `POST` | `/s2s/v1/feed-revisions`            | lightweight signed | JSON revision hint        | `202`       | success ack envelope   |
+| `POST` | `/s2s/v1/feed-revisions`            | lightweight signed | JSON revision hint        | `200`       | success ack envelope   |
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed  | feed query                | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/message-feed`              | recognized signed  | feed query                | `200`       | success data envelope  |
 | `POST` | `/s2s/v1/call`                      | recognized signed  | JSON call frame           | `200`       | success data envelope  |
@@ -119,17 +118,16 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变 
   尚未收敛的 peer 可以（MAY）得到 `degraded`，未知、未被本方认可或无权请求者统一得到 privacy-safe
   `unavailable`，不得（MUST NOT）借查询触发首次认可。
 - **lightweight signed**：只用于 `feed-revisions`。接收方在返回该 signer 的 Recognize `OK` 前必须（MUST）
-  原子开放该方向门禁；signer 只有收到 `OK` 后才可以（MAY）发送。它不要求完整 healthy，但不能授权其他数据面。
+  原子开放该方向门禁；signer 只有收到 `OK` 后才可以（MAY）发送。它不要求完整 `available`，但不能授权其他数据面。
 - **recognized signed**：signer 必须（MUST）已有 pinned root、完整双向认可事实和当前有效的 signing key
   certificate，并通过 operation 自身的业务授权。接收方不得（MUST NOT）仅因本地缓存的可用性视图为
   `degraded` 而拒绝请求；成功验证并处理的请求/响应往返可以（MAY）按 recognition.md 清除纯传输降级。
-  `blocked`、`identity_lost` 和 `incompatible` 仍是协议或策略硬门禁。Call 对已有活动
+  `halted` 仍是协议或策略硬门禁，具体原因保留在 lifecycle 之外。Call 对已有活动
   binding 的安全终止规则由 calls.md 进一步定义。
 
-上述硬门禁必须（MUST）保留各自的 wire 结果，不得（MUST NOT）合并成通用“未信任”错误：`blocked` 使用
-`FEDERATION_PEER_BLOCKED`，`identity_lost` 使用 identity 错误，`incompatible` 使用
-`FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`。三者的 retry、管理员动作和 identity 安全含义不同。
-
+上述硬门禁必须（MUST）保留导致 `halted` 的具体 wire 结果，不得（MUST NOT）合并成通用“未信任”错误：policy block
+使用 `FEDERATION_PEER_BLOCKED`，identity contradiction 使用 identity 错误，版本不兼容使用
+`FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`。它们共享一个“停止自动通信”的 lifecycle，但原因和安全含义仍不同。
 
 `media/:digest` 的 digest 是资源 path parameter；消息 author/thread/source-seq 和可选 bundle
 binding 是严格 query contract。请求者 domain 只从验证后的 HTTP Message Signature 得出，不接受
@@ -140,18 +138,17 @@ binding 是严格 query contract。请求者 domain 只从验证后的 HTTP Mess
 `recognize`、`healthy` 的字段、双向状态、pin、重试、隐私与完整 HTTP 示例由
 [Federation v1 服务器认可](./recognition.md) 定义。
 
-内部 peer lifecycle 是 `unrecognized`、`degraded`、`healthy`、`blocked`、`identity_lost` 或
-`incompatible`。它与 Healthy 返回的隐私投影视图不是同一个枚举：
+本地 peer lifecycle 是 `unrecognized`、`establishing`、`available`、`degraded` 或 `halted`。它与 Healthy 返回的
+`available | degraded | unavailable` 隐私投影不是同一个枚举：
 
 - `unrecognized` 表示尚无可用的 pinned/recognition identity。
-- `degraded` 是身份已认可但双向确认/服务可用性尚未收敛，或发生临时传输故障的可恢复状态；主动发起方
-  必须（MUST）在发送第一个 Recognize HTTP request 前进入该状态。
-- `healthy` 是双向认可和双方服务准备均确认的完整可用状态。
-- `blocked` 是管理员策略明确阻止；`identity_lost` 是 pinned root identity 冲突；两者都不是网络降级。
-- `incompatible` 表示当前没有共同协议版本；版本重新出现时可以（MAY）在保留身份和认可事实的前提下恢复。
+- `establishing` 是 root 已固定，但双向 Recognize 或服务准备事实尚未收敛；主动发起方必须（MUST）在发送
+  第一个 Recognize HTTP request 前进入该状态。
+- `available` 是双向认可、服务准备和可达性全部收敛的完整可用状态。
+- `degraded` 是双向认可已建立，但当前可达性发生可重试故障的状态。
+- `halted` 是可验证硬失败后的统一非自动恢复状态；具体 HTTP 错误或本地安全原因单独保留，等待管理员处理。
 
-
-`healthy`/`degraded` 是本地可用性与调度信息，不单独构成普通 operation 的授权条件。operation gate 必须
+`available`/`degraded` 是本地可用性与调度信息，不单独构成普通 operation 的授权条件。operation gate 必须
 （MUST）由 pinned identity、方向确认事实、版本、策略和业务授权共同计算；完整状态和转换以
 recognition.md 为准。
 
@@ -159,15 +156,16 @@ Recognize 接收方必须（MUST）在返回 `OK` 前原子开放该方向的 `f
 Recognize 的 server 必须（MUST）在发出 HTTP request 前完成本地服务准备，使对方随后发起的 Healthy
 查询至少返回 `degraded`，而不是 `unavailable`。具体提交边界和竞态时序以 recognition.md 为准。
 
-## 4. Well-Known 与密钥（Well-Known and Keys)
+## 4. 公开发现与密钥（Well-Known and Keys）
 
 发现文档、root identity、signing key certificate 与轮换的规范性定义见
 [传输与安全](./transport-security.md)第 1 节。
 
-## 5. 网络、TLS 与 Authority（Network, TLS, and Authority)
+## 5. 网络、TLS 与逻辑权威（Network, TLS, and Authority）
 
 SRV、连接目标、TLS hostname、logical authority、redirect 和身份恢复的规范性定义见
 [传输与安全](./transport-security.md)第 2 节。
+
 ## 6. 通用协议规则（Common Protocol Rules）
 
 ### 6.1 JSON 编码与对象规则（JSON Encoding and Object Rules）
@@ -183,7 +181,7 @@ operation 明确允许，非有限 number、非安全整数和未知字段必须
 普通 JSON object 的 member 顺序没有业务语义；只有明确要求 canonical JSON 或固定字段顺序签名的
 operation 可以（MAY）将序列化顺序纳入 digest 或 detached signature。
 
-### 6.2 Federation 共享类型（Shared Federation Types）
+### 6.2 联邦共享类型（Shared Federation Types）
 
 operation 引用下表类型时，必须（MUST）遵守其格式、范围和规范化要求，不得（MUST NOT）重新定义或放宽。
 
@@ -211,33 +209,12 @@ v1 on the wire 只接受上表的规范化 `Domain` 和 `Account`。发送方必
 或其他非规范形式的 transmitted `Domain`/`Account`，不得（MUST NOT）在接收后小写化、修剪或通过宽松
 规范化把两个不同 transmitted value 当作同一身份。数据库 ID 不得（MUST NOT）作为 server 间身份坐标。
 
-### 6.3 请求构造总览（Request Construction Overview)
+### 6.3 已签名请求的构造与验证（Signed Request Construction and Verification）
 
-请求构造的规范性定义见 [传输与安全](./transport-security.md)第 3 节。
+请求目标、body digest、必选 header、HTTP Message Signature、验证顺序和固定示例的唯一规范性定义见
+[传输与安全](./transport-security.md)第 3 节。operation 文档只定义 method、path/query 参数、body shape
+和鉴权上下文，不得（MUST NOT）另设签名 profile 或改变共享验证顺序。
 
-### 6.4 请求目标构造（Request Target Construction)
-
-规范性定义见 [传输与安全](./transport-security.md)第 3.1 节。
-
-### 6.5 请求体与内容摘要（Request Body and Content Digest)
-
-规范性定义见 [传输与安全](./transport-security.md)第 3.2 节。
-
-### 6.6 已签名请求头（Signed Request Headers)
-
-规范性定义见 [传输与安全](./transport-security.md)第 3.3 节。
-
-### 6.7 HTTP 消息签名构造（HTTP Message Signature Construction)
-
-规范性定义见 [传输与安全](./transport-security.md)第 3.4 节。
-
-### 6.8 验证顺序与失败边界（Verification Order and Failure Boundaries)
-
-规范性定义见 [传输与安全](./transport-security.md)第 3.5 节。
-
-### 6.9 完整已签名请求示例（Complete Signed Request Example)
-
-固定示例见 [传输与安全](./transport-security.md)第 3.6 节。
 ## 7. 响应、错误与调用方动作（Responses, Errors, and Caller Actions）
 
 ### 7.1 媒体类型与响应种类（Media Types and Response Kinds）
@@ -291,8 +268,8 @@ operation 规范 必须（MUST）明确定义 `data: null`。
 
 ### 7.4 重试与提交边界（Retry and Commit Boundaries）
 
-`feed-revisions` 成功返回 202；这表示 revision hint 已被接受，不表示对端 durable feed 已完全排空。
-`call` 在 frame 已完成同步验证和临时状态处理后返回 200；它不表示 endpoint 已收到事件或媒体已连通。
+`feed-revisions` 成功返回 HTTP `200`；这表示 revision hint 已被接受，不表示对端 durable feed 已完全排空。
+`call` 在 frame 已完成同步验证和临时状态处理后返回 200；它不表示终端已收到事件或媒体已连通。
 网络错误、无法解析的 proxy response 和允许重试的 `5xx` 可以（MAY）使用完全相同的业务请求重试，
 但必须（MUST）重新生成 `Date`、`created`、`expires` 和 HTTP signature。malformed、binding、authorization 和
 identity conflict 不得（MUST NOT）原样无限重试。`Retry-After` 出现时必须（MUST）是非负十进制 delta-seconds；
@@ -326,7 +303,7 @@ hint 或普通消息 payload。
 各自的 thread audience 验证；message-feed allocation 不能替代媒体或 forward bundle 的资源授权。
 服务器本地的群容量、quota 和保留策略不是 protocol constant。
 
-## 9. Feed、投递、Cursor 与媒体恢复（Feeds, Delivery, Cursors, and Media Recovery）
+## 9. 数据源、投递、游标与媒体恢复（Feeds, Delivery, Cursors, and Media Recovery）
 
 以下发布、恢复与防回环规则是 v1 contract：
 
@@ -352,7 +329,7 @@ page 与 cursor 必须（MUST）在一个事务中提交。重复 page 必须（
 严格递增，不要求连续；`scannedThrough` 和下一条 item ID 都可以（MAY）跨越任意大的已删除或未分配空洞。
 
 publisher 可以（MAY）物理删除已确认 cursor 之前的 message-feed change。若 peer 长期不消费，publisher
-也 可以（MAY）按本地保留策略丢弃仍未确认的旧 allocation；这不删除 publisher 的 Message 正文。强制截断
+也可以（MAY）按本地保留策略丢弃仍未确认的旧 allocation；这不删除 publisher 的 Message 正文。强制截断
 必须（MUST）原子抬高 retained floor、acknowledged cursor 和 served cursor。旧 `after` 必须（MUST）返回
 `FEDERATION_MISSED_CURSOR_INVALID`，其 `data.startChangeId` 与 `data.availableCursor` 指向新的
 可用起点。consumer 验证新 floor 单调前进且不超过 `allocatedThrough` 后，必须（MUST）原子更新本地 cursor
@@ -379,21 +356,17 @@ cursor；任务必须（MUST）可由持久状态恢复。forward bundle 是有�
 在线轮换的请求签名 key。普通传输降级（transport degradation）必须（MUST）保留 identity pin、双向确认事实和同步状态，
 不得（MUST NOT）自动重新 Recognize 或改写首次确认时间。
 
-任何 pinned root identity contradiction 必须（MUST）原子进入 fail-closed `identity_lost` 状态。不允许当前
+任何 pinned root identity contradiction 必须（MUST）保留旧 pin、记录原因并原子进入 fail-closed `halted`。不允许当前
 域名控制者、未经 pinned root 授权的 signing key、裸删 peer row 或普通重新发现继承旧授权。
 
-若 DNS 或证书配置修复后再次发现原 pinned root，管理员可按第 5 节通过 HTTPS well-known 执行
-非破坏性恢复。该操作不得（MUST NOT）更换 root identity 或既有双向认可事实，但允许 signing certificate 集合
-已经发生正常轮换。只有管理员 destructive reset 可以（MAY）冻结并删除该 peer 的 cursor、mirror、
-authorization 和关联状态，并授予一次 fresh bidirectional Recognize。reset 必须（MUST）可在崩溃后继续；一次性 re-init
-权限消费后不能复用。
+`halted` 之后的诊断、恢复、重置或重新认可属于本地管理行为，v1 不定义其端点或流程。在管理员明确处理前
+不得（MUST NOT）自动恢复通信；任何新 root 都不得（MUST NOT）自动继承旧 identity 的认可事实或业务授权。
 
 ## 11. 合规性与发布（Conformance and Publication）
 
 第 0 节的规范性文档集合定义 v1 合规性；JSON Schema、HTTP manifest、正反向量和离线
 conformance CLI 与正文一同发布，作为非规范性验证资源。工具与正文冲突时以正文为准并修复工具。
 
-Conformance 不是 v1 endpoint、协商能力或节点运行时前提，协议也不规定实现者必须（MUST）使用哪种测试
+Conformance 不是 v1 接口、协商能力或节点运行时前提，协议也不规定实现者必须（MUST）使用哪种测试
 设施。随附 CLI 可检查 JSON shape、固定签名向量和 HTTP surface；事务、身份连续性与状态收敛仍需
-实现者自行验证。SOMS 另外使用 unit、数据库和项目内双节点 E2E 检查自身实现，这些测试不是其他
-实现必须（MUST）复制的协议组成部分。
+实现者自行验证，具体测试策略不属于协议组成部分。

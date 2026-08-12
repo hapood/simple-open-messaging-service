@@ -38,16 +38,11 @@
       }
     },
     {
-      "name": "identity timestamps cannot be ISO strings",
-      "schema": "urn:soms:federation:v1:identity#/$defs/claim",
+      "name": "recognize rejects unknown nonce fields",
+      "schema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
       "value": {
-        "protocolVersion": 1,
-        "originDomain": "a.example",
-        "recipientDomain": "b.example",
-        "pairwiseServerId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "rootKeyFingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "nonce": "abcdefghijklmnopqrstuv",
-        "issuedAt": "2026-01-01T00:00:00.000Z"
+        "domain": "a.example",
+        "nonce": "abcdefghijklmnopqrstuv"
       }
     },
     {

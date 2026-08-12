@@ -211,8 +211,11 @@ export async function configureApp(
   app.setGlobalPrefix(CLIENT_API_PREFIX, {
     exclude: [
       { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
-      { path: `${FEDERATION_API_PREFIX}/ignite`, method: RequestMethod.POST },
-      { path: `${FEDERATION_API_PREFIX}/identity`, method: RequestMethod.GET },
+      {
+        path: `${FEDERATION_API_PREFIX}/recognize`,
+        method: RequestMethod.POST,
+      },
+      { path: `${FEDERATION_API_PREFIX}/healthy`, method: RequestMethod.POST },
       {
         path: `${FEDERATION_API_PREFIX}/feed-revisions`,
         method: RequestMethod.POST,

@@ -194,7 +194,7 @@ export class PeerStateFeedService {
           throw new BusinessException(
             BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
             'state feed is not initialized',
-            HttpStatus.CONFLICT,
+            HttpStatus.OK,
           );
         }
         const stateFeedRev = target.allocatedThrough;
@@ -206,7 +206,7 @@ export class PeerStateFeedService {
           throw new BusinessException(
             BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
             'after is outside the state feed range',
-            HttpStatus.CONFLICT,
+            HttpStatus.OK,
           );
         }
         const rows = await tx
@@ -235,9 +235,9 @@ export class PeerStateFeedService {
           const itemBytes = Buffer.byteLength(JSON.stringify(item));
           if (itemBytes > ITEM_BYTES)
             throw new BusinessException(
-              BusinessCode.FEDERATION_MALFORMED,
+              BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
               'state feed item exceeds byte limit',
-              HttpStatus.PAYLOAD_TOO_LARGE,
+              HttpStatus.OK,
             );
           if (items.length > 0 && bytes + itemBytes > PAGE_BYTES) break;
           items.push(item);
@@ -267,7 +267,7 @@ export class PeerStateFeedService {
         throw new BusinessException(
           BusinessCode.FEDERATION_MISSED_CONCURRENT,
           `another state feed request for ${peerDomain} is running`,
-          HttpStatus.CONFLICT,
+          HttpStatus.OK,
         );
       }
       throw error;

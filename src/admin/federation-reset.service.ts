@@ -10,7 +10,7 @@ import { ThreadRevisionService } from '../thread-revision/thread-revision.servic
 
 export interface FederationResetPreview {
   domain: string;
-  identityLostReason: string | null;
+  haltReason: string | null;
   foreignUserCount: number;
   participantCount: number;
   affectedThreadCount: number;
@@ -19,7 +19,6 @@ export interface FederationResetPreview {
   userBlockCount: number;
   deletionCursorCount: number;
   keyCacheCount: number;
-  nonceCount: number;
   friendOperationCount: number;
   warning: string;
 }
@@ -32,7 +31,7 @@ export interface FederationResetStartResult {
 
 type PreviewRow = Omit<
   FederationResetPreview,
-  'domain' | 'identityLostReason' | 'warning'
+  'domain' | 'haltReason' | 'warning'
 >;
 
 const normalizeDomain = (value: string): string =>
@@ -72,9 +71,11 @@ export class FederationResetService implements OnModuleInit {
       );
       const peerResult = await tx.execute<{
         trustLevel: string;
-        identityLostReason: string | null;
+        haltCode: number | null;
+        resetInProgress: boolean;
+        haltReason: string | null;
       }>(sql`
-        SELECT "trustLevel", "identityLostReason"
+        SELECT "trustLevel", "haltCode", "resetInProgress", "haltReason"
         FROM "FederatedPeer"
         WHERE domain = ${normalized}
         FOR UPDATE
@@ -87,10 +88,14 @@ export class FederationResetService implements OnModuleInit {
           HttpStatus.NOT_FOUND,
         );
       }
-      if (peer.trustLevel !== 'identity_lost') {
+      if (
+        peer.trustLevel !== 'halted' ||
+        peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
+        peer.resetInProgress
+      ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-          'only an identity_lost peer can be reset',
+          'only an idle identity-mismatch halted peer can be reset',
           HttpStatus.CONFLICT,
         );
       }
@@ -118,14 +123,13 @@ export class FederationResetService implements OnModuleInit {
              OR b."blockedId" IN (SELECT id FROM remote_users)) AS "userBlockCount",
           (SELECT count(*)::int FROM "FederationDeletedCursor" WHERE "peerDomain" = ${normalized}) AS "deletionCursorCount",
           (SELECT count(*)::int FROM "S2SKeyCache" WHERE domain = ${normalized}) AS "keyCacheCount",
-          (SELECT count(*)::int FROM "S2SIdentityNonce" WHERE "originDomain" = ${normalized}) AS "nonceCount",
           0::int AS "friendOperationCount"
       `);
       const counts = result.rows[0];
       if (!counts) throw new Error('federation reset preview returned no row');
       return {
         domain: normalized,
-        identityLostReason: peer.identityLostReason,
+        haltReason: peer.haltReason,
         ...counts,
         warning:
           'Preview only. A later reset will permanently remove this peer identity and associated authorization data.',
@@ -156,7 +160,7 @@ export class FederationResetService implements OnModuleInit {
     const active = await this.database.db.execute<{ domain: string }>(sql`
       SELECT domain
       FROM "FederatedPeer"
-      WHERE "trustLevel" = 'reset_in_progress'
+      WHERE "resetInProgress" = true
       LIMIT 1
     `);
     const domain = active.rows[0]?.domain;
@@ -306,15 +310,17 @@ export class FederationResetService implements OnModuleInit {
       );
       const peerResult = await tx.execute<{
         trustLevel: string;
+        resetInProgress: boolean;
         resetGeneration: number;
       }>(sql`
-        SELECT "trustLevel", "resetGeneration"
+        SELECT "trustLevel", "resetInProgress", "resetGeneration"
         FROM "FederatedPeer"
         WHERE domain = ${domain}
         FOR UPDATE
       `);
       const peer = peerResult.rows[0];
-      if (!peer || peer.trustLevel !== 'reset_in_progress') return;
+      if (!peer || peer.trustLevel !== 'halted' || !peer.resetInProgress)
+        return;
 
       const pending = await this.countPendingThreads(tx, domain);
       if (pending !== 0) return;
@@ -379,9 +385,6 @@ export class FederationResetService implements OnModuleInit {
       await tx.execute(
         sql`DELETE FROM "FederationDeletedCursor" WHERE "peerDomain" = ${domain}`,
       );
-      await tx.execute(
-        sql`DELETE FROM "S2SIdentityNonce" WHERE "originDomain" = ${domain}`,
-      );
       await tx.execute(sql`DELETE FROM "S2SKeyCache" WHERE domain = ${domain}`);
       await tx.execute(
         sql`DELETE FROM "QuotaDailyUsage" WHERE domain = ${domain}`,
@@ -414,7 +417,7 @@ export class FederationResetService implements OnModuleInit {
   }
 
   /**
-   * Freezes one identity-lost peer and snapshots its current thread set into the retained thread
+   * Freezes one identity-mismatch halted peer and snapshots its current thread set into the retained thread
    * shells. Cleanup itself is deliberately outside this short transaction and is safely resumable by
    * repeatedly selecting related rows where federationTruncated=false.
    */
@@ -440,10 +443,12 @@ export class FederationResetService implements OnModuleInit {
           const peers = await tx.execute<{
             domain: string;
             trustLevel: string;
+            haltCode: number | null;
+            resetInProgress: boolean;
           }>(sql`
-        SELECT domain, "trustLevel"
+        SELECT domain, "trustLevel", "haltCode", "resetInProgress"
         FROM "FederatedPeer"
-        WHERE domain = ${normalized} OR "trustLevel" = 'reset_in_progress'
+        WHERE domain = ${normalized} OR "resetInProgress" = true
         FOR UPDATE
       `);
           const peer = peers.rows.find((row) => row.domain === normalized);
@@ -454,9 +459,7 @@ export class FederationResetService implements OnModuleInit {
               HttpStatus.NOT_FOUND,
             );
           }
-          const active = peers.rows.find(
-            (row) => row.trustLevel === 'reset_in_progress',
-          );
+          const active = peers.rows.find((row) => row.resetInProgress);
           if (active) {
             if (active.domain === normalized) {
               const pending = await this.countPendingThreads(tx, normalized);
@@ -472,10 +475,13 @@ export class FederationResetService implements OnModuleInit {
               HttpStatus.CONFLICT,
             );
           }
-          if (peer.trustLevel !== 'identity_lost') {
+          if (
+            peer.trustLevel !== 'halted' ||
+            peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH
+          ) {
             throw new BusinessException(
               BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-              'only an identity_lost peer can be reset',
+              'only an identity-mismatch halted peer can be reset',
               HttpStatus.CONFLICT,
             );
           }
@@ -506,8 +512,9 @@ export class FederationResetService implements OnModuleInit {
       `);
           await tx.execute(sql`
         UPDATE "FederatedPeer"
-        SET "trustLevel" = 'reset_in_progress',
-            "resetAt" = CURRENT_TIMESTAMP
+        SET "resetInProgress" = true,
+            "resetAt" = CURRENT_TIMESTAMP,
+            "haltReason" = COALESCE("haltReason", 'destructive reset in progress')
         WHERE domain = ${normalized}
       `);
           await tx.execute(sql`

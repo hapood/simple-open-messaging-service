@@ -37,7 +37,7 @@ describe('FederationMessageFeedPullService', () => {
     await database.pool.query('TRUNCATE TABLE "FederatedPeer" CASCADE');
     await database.db.insert(federatedPeer).values({
       domain: peerDomain,
-      trustLevel: 'trusted',
+      trustLevel: 'available',
     });
     await database.db.insert(federationPullCursor).values({ peerDomain });
   });

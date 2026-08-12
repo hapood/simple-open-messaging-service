@@ -1,5 +1,6 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { BusinessCode } from '../common/business-code.js';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { signingCertificateStatement } from './federation-certificate.js';
 
 process.env.SOMS_DOMAIN = 'local.example';
 
@@ -9,117 +10,79 @@ beforeAll(async () => {
   ({ DiscoveryService } = await import('./discovery.service.js'));
 }, 30_000);
 
-function makeService(options: {
-  pinned: boolean;
-  cachedKeys: Array<{ keyId: string; publicKey: string }>;
-}) {
-  const updateSet = vi.fn();
-  const updateWhere = vi.fn().mockResolvedValue(undefined);
-  updateSet.mockReturnValue({ where: updateWhere });
-  const eventValues = vi.fn().mockResolvedValue(undefined);
-  const cacheConflictUpdate = vi.fn().mockResolvedValue(undefined);
-  const cacheConflict = vi
-    .fn()
-    .mockReturnValue({ onConflictDoUpdate: cacheConflictUpdate });
-  const insert = vi.fn((table: { keyId?: unknown }) => ({
-    values: table.keyId ? cacheConflict : eventValues,
-  }));
-  const tx = {
-    query: {
-      federatedPeer: {
-        findFirst: vi.fn().mockResolvedValue({
-          domain: 'peer.example',
-          trustLevel: 'trusted',
-          identityPinnedAt: options.pinned ? new Date() : null,
-        }),
-      },
-      s2SKeyCache: {
-        findMany: vi.fn().mockResolvedValue(options.cachedKeys),
-      },
-    },
-    update: vi.fn().mockReturnValue({ set: updateSet }),
-    insert,
+function certificate(rootPrivateKey: Uint8Array, keyId: string, seed: number) {
+  const privateKey = Uint8Array.from(
+    { length: 32 },
+    (_, index) => seed + index,
+  );
+  const unsigned = {
+    keyId,
+    ed25519: Buffer.from(ed25519.getPublicKey(privateKey)).toString('base64'),
+    notBefore: 1_700_000_000_000,
+    notAfter: 1_800_000_000_000,
   };
-  const database = {
-    db: {
-      transaction: vi.fn(async (fn: (value: typeof tx) => unknown) => fn(tx)),
-    },
-  };
-  const keypair = { getStatus: () => ({ available: true }) };
   return {
-    service: new DiscoveryService(database as never, keypair as never),
-    updateSet,
-    eventValues,
-    cacheConflictUpdate,
+    ...unsigned,
+    authorizationSignature: Buffer.from(
+      ed25519.sign(
+        Buffer.from(signingCertificateStatement(unsigned)),
+        rootPrivateKey,
+      ),
+    ).toString('base64'),
   };
 }
 
-const key = {
-  keyId: 'peer.example/key-1',
-  ed25519: Buffer.alloc(32, 7).toString('base64'),
-};
+function service() {
+  return new DiscoveryService({} as never, {} as never);
+}
 
-describe('DiscoveryService single-key continuity', () => {
-  it('refreshes only fetchedAt when the pinned key is unchanged', async () => {
-    const { service, updateSet, cacheConflictUpdate } = makeService({
-      pinned: true,
-      cachedKeys: [{ keyId: key.keyId, publicKey: key.ed25519 }],
+describe('DiscoveryService root-authorized signing certificates', () => {
+  const rootPrivateKey = Uint8Array.from({ length: 32 }, (_, index) => index);
+  const rootPublicKey = Buffer.from(
+    ed25519.getPublicKey(rootPrivateKey),
+  ).toString('base64');
+
+  it('accepts an overlap set for online signing-key rotation', () => {
+    const document = service().validateWellKnown('peer.example', {
+      protocolVersions: [1],
+      rootKey: { ed25519: rootPublicKey },
+      keys: [
+        certificate(rootPrivateKey, 'peer.example/key-1', 32),
+        certificate(rootPrivateKey, 'peer.example/key-2', 64),
+      ],
     });
-
-    await service.cacheKeys('peer.example', [key]);
-
-    expect(updateSet).not.toHaveBeenCalled();
-    expect(cacheConflictUpdate).toHaveBeenCalledWith({
-      target: expect.any(Array),
-      set: { fetchedAt: expect.any(Date) },
-    });
+    expect(document.keys.map((key) => key.keyId)).toEqual([
+      'peer.example/key-1',
+      'peer.example/key-2',
+    ]);
   });
 
-  it('locks a pinned peer instead of overwriting the same keyId', async () => {
-    const { service, updateSet, eventValues, cacheConflictUpdate } =
-      makeService({
-        pinned: true,
-        cachedKeys: [
-          {
-            keyId: key.keyId,
-            publicKey: Buffer.alloc(32, 8).toString('base64'),
-          },
-        ],
-      });
-
-    await expect(
-      service.cacheKeys('peer.example', [key]),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-    });
-    expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ trustLevel: 'identity_lost' }),
-    );
-    expect(eventValues).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'identity_lost' }),
-    );
-    expect(cacheConflictUpdate).not.toHaveBeenCalled();
+  it('rejects a certificate not authorized by the published root', () => {
+    const otherRoot = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+    expect(() =>
+      service().validateWellKnown('peer.example', {
+        protocolVersions: [1],
+        rootKey: { ed25519: rootPublicKey },
+        keys: [certificate(otherRoot, 'peer.example/key-1', 32)],
+      }),
+    ).toThrow('invalid signing certificate');
   });
 
-  it('rejects a second published key for a pinned peer', async () => {
-    const { service, updateSet } = makeService({
-      pinned: true,
-      cachedKeys: [{ keyId: key.keyId, publicKey: key.ed25519 }],
-    });
-
-    await expect(
-      service.cacheKeys('peer.example', [
-        key,
-        {
-          keyId: 'peer.example/key-2',
-          ed25519: Buffer.alloc(32, 9).toString('base64'),
-        },
-      ]),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-    });
-    expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ trustLevel: 'identity_lost' }),
-    );
+  it('rejects duplicate key IDs and cross-domain certificates', () => {
+    const key = certificate(rootPrivateKey, 'peer.example/key-1', 32);
+    expect(() =>
+      service().validateWellKnown('peer.example', {
+        protocolVersions: [1],
+        rootKey: { ed25519: rootPublicKey },
+        keys: [key, key],
+      }),
+    ).toThrow('invalid signing certificate');
+    expect(() =>
+      service().validateWellKnown('peer.example', {
+        protocolVersions: [1],
+        rootKey: { ed25519: rootPublicKey },
+        keys: [certificate(rootPrivateKey, 'other.example/key-1', 32)],
+      }),
+    ).toThrow('invalid signing certificate');
   });
 });

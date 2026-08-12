@@ -7,30 +7,34 @@
         "software": "example/1.0",
         "protocolVersions": [1, 2],
         "rootKey": {
-          "fingerprint": "sha256:Zmh6rfhivXdsj8GLjp-OIAiXFIVu4jOzkCpZHQ1fKSU",
-          "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
         },
         "keys": [
           {
             "keyId": "a.example/key-1",
-            "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            "ed25519": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+            "notBefore": 1699990000000,
+            "notAfter": 1800000000000,
+            "authorizationSignature": "sfjYJ8fpmatbR3e2S0rflH8CgsPqBnDxvKoTrH2gwVXW00Xb8BNz4YA75j9pwF8beG8qV6DPalT4j7j2UAdkCw=="
           }
         ]
       }
     },
     {
-      "name": "ignite identity claim",
-      "schema": "urn:soms:federation:v1:identity#/$defs/igniteClaim",
+      "name": "recognize request",
+      "schema": "urn:soms:federation:v1:identity#/$defs/recognizeRequest",
       "value": {
-        "protocolVersion": 1,
-        "originDomain": "a.example",
-        "recipientDomain": "b.example",
-        "pairwiseServerId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "rootKeyFingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "nonce": "abcdefghijklmnopqrstuv",
-        "issuedAt": 1700000000000,
-        "startChangeId": "0"
+        "domain": "a.example"
       }
+    },
+    {
+      "name": "healthy result",
+      "schema": "urn:soms:federation:v1:identity#/$defs/healthResult",
+      "values": [
+        { "status": "available" },
+        { "status": "degraded" },
+        { "status": "unavailable" }
+      ]
     },
     {
       "name": "feed revision wake-up",

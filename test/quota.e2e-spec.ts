@@ -23,7 +23,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     database = mod.get(DatabaseService);
     await database.pool.query(
       'INSERT INTO "FederatedPeer" (domain, "trustLevel") VALUES ($1, $2) ON CONFLICT (domain) DO NOTHING',
-      [PEER, 'trusted'],
+      [PEER, 'available'],
     );
   });
 
@@ -68,7 +68,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     await quota.setLimits(PEER, { dailyRequestLimit: 0 });
     await expect(quota.peek(PEER, 'requests')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-      status: 403,
+      status: 200,
       data: { category: 'requests' },
     });
     await expect(quota.tick(PEER, 'requests')).rejects.toMatchObject({
@@ -89,7 +89,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     await quota.setLimits(PEER, { dailyFileLimit: 0 });
     await expect(quota.peek(PEER, 'files')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-      status: 403,
+      status: 200,
       data: { category: 'files' },
     });
   });
@@ -103,7 +103,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     await quota.tick(PEER, 'messages');
     const nodes = await quota.listNodes();
     expect(nodes).toHaveLength(1);
-    expect(nodes[0]).toMatchObject({ domain: PEER, trustLevel: 'trusted' });
+    expect(nodes[0]).toMatchObject({ domain: PEER, trustLevel: 'available' });
     expect(nodes[0].usage?.messages.count).toBe(1);
     expect(nodes[0].usage?.files.limit).toBeGreaterThan(0);
   });
@@ -167,7 +167,9 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
       bizCode: BusinessCode.QUOTA_EXCEEDED,
       data: { category: 'files' },
     });
-    await expect(quota.preCheckFile(localUserId, 0, 4n)).resolves.toBeUndefined();
+    await expect(
+      quota.preCheckFile(localUserId, 0, 4n),
+    ).resolves.toBeUndefined();
   });
 
   it('does not expose personal quota for a federated user stub', async () => {
