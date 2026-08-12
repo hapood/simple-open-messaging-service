@@ -9,7 +9,7 @@
 //   FED_PORT_A / FED_PORT_B — BOTH apps' loopback ports (known up front so TestDiscoveryService.portMap
 //     is complete in each process; loopback avoids /etc/hosts, SRV, or stubbing fetch).
 // The app prints `FED_APP_READY <port>` on stdout once listening; the harness awaits that. SIGTERM →
-// graceful app.close() (the demote test stops appB this way to force a real ECONNREFUSED on appA).
+// graceful app.close() (the degradation test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
 import { Controller, Get, Query } from '@nestjs/common';
 import { Public } from '../src/common/public.decorator.js';

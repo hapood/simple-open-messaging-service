@@ -179,6 +179,33 @@
       "name": "success is not an error envelope",
       "schema": "urn:soms:federation:v1:error",
       "value": { "code": 0, "message": "ok" }
+    },
+    {
+      "name": "quota error omits its structured data",
+      "schema": "urn:soms:federation:v1:error",
+      "value": { "code": 50011, "message": "peer quota exceeded" }
+    },
+    {
+      "name": "ordinary error carries unregistered structured data",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50007,
+        "message": "malformed",
+        "data": { "reason": "extra" }
+      }
+    },
+    {
+      "name": "cursor error violates cross-field ordering",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "requested cursor is below retained floor",
+        "data": {
+          "startChangeId": "101",
+          "availableCursor": "100",
+          "allocatedThrough": "250"
+        }
+      }
     }
   ]
 }

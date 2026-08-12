@@ -16,6 +16,7 @@ function makeStubs() {
     messageThread: { findUnique: vi.fn() },
     threadParticipant: { findMany: vi.fn() },
     message: { findMany: vi.fn() },
+    mediaAsset: { findFirst: vi.fn() },
     federationDeletedCursor: { findFirst: vi.fn().mockResolvedValue(null) },
     deletedParticipant: { findFirst: vi.fn() },
   };
@@ -27,6 +28,10 @@ function makeStubs() {
   const eventEmitter = {
     emitAsync: vi.fn().mockResolvedValue(undefined),
     emit: vi.fn(),
+  };
+  const recognition = {
+    markReachable: vi.fn(),
+    markTransportDegraded: vi.fn(),
   };
   const database = {
     db: {
@@ -51,6 +56,9 @@ function makeStubs() {
               user: row.creatorItem,
             })),
         },
+        mediaAsset: {
+          findFirst: store.mediaAsset.findFirst,
+        },
       },
     },
   };
@@ -70,10 +78,7 @@ function makeStubs() {
     {} as never, // messageVisibility
     deletedMessages as never,
     eventEmitter as never,
-    {
-      markReachable: vi.fn(),
-      markTransportDegraded: vi.fn(),
-    } as never, // recognition
+    recognition as never,
     { readAllocatedThrough: vi.fn().mockResolvedValue(0n) } as never, // federationCursor
     {} as never, // downloadScheduler
     {} as never, // stateFeedPull
@@ -87,6 +92,7 @@ function makeStubs() {
     sse,
     deletedMessages,
     eventEmitter,
+    recognition,
   };
 }
 
@@ -112,7 +118,7 @@ describe('FederationService inbound call preflight', () => {
 
 describe('FederationService optional range digest', () => {
   function target() {
-    const { svc } = makeStubs();
+    const { svc, recognition } = makeStubs();
     const privateService = svc as unknown as {
       signature: { signOutbound: () => Record<string, string> };
       requestRangeUnit: (
@@ -123,7 +129,7 @@ describe('FederationService optional range digest', () => {
       ) => Promise<{ contentDigest?: string }>;
     };
     privateService.signature = { signOutbound: () => ({}) };
-    return privateService;
+    return { privateService, recognition };
   }
 
   it('accepts a valid 206 range when the peer omits the optional digest', async () => {
@@ -134,7 +140,7 @@ describe('FederationService optional range digest', () => {
       }),
     );
     await expect(
-      target().requestRangeUnit(
+      target().privateService.requestRangeUnit(
         new URL('https://peer.test/file'),
         'peer.test',
         0,
@@ -155,7 +161,7 @@ describe('FederationService optional range digest', () => {
       }),
     );
     await expect(
-      target().requestRangeUnit(
+      target().privateService.requestRangeUnit(
         new URL('https://peer.test/file'),
         'peer.test',
         0,
@@ -163,6 +169,148 @@ describe('FederationService optional range digest', () => {
       ),
     ).rejects.toThrow('invalid Content-Digest');
     fetchMock.mockRestore();
+  });
+
+  it('surfaces an HTTP 200 JSON NOT_FOUND as a business error without demoting', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: BusinessCode.NOT_FOUND,
+          message: 'file unavailable',
+          data: null,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const { privateService, recognition } = target();
+    await expect(
+      privateService.requestRangeUnit(
+        new URL('https://peer.test/file'),
+        'peer.test',
+        0,
+        2,
+      ),
+    ).rejects.toMatchObject({ status: 200, code: BusinessCode.NOT_FOUND });
+    expect(recognition.markReachable).toHaveBeenCalledOnce();
+    expect(recognition.markTransportDegraded).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
+  });
+
+  it('accepts only the registered JSON envelope for a 416 response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
+          message: 'requested range is not satisfiable',
+          data: null,
+        }),
+        {
+          status: 416,
+          headers: {
+            'content-type': 'application/json',
+            'content-range': 'bytes */3',
+          },
+        },
+      ),
+    );
+    await expect(
+      target().privateService.requestRangeUnit(
+        new URL('https://peer.test/file'),
+        'peer.test',
+        3,
+        5,
+      ),
+    ).rejects.toMatchObject({
+      status: 416,
+      code: BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
+    });
+    fetchMock.mockRestore();
+  });
+});
+
+describe('FederationService JSON error data', () => {
+  it('preserves structured data from an HTTP 200 business error', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
+          message: 'peer quota exceeded',
+          data: { category: 'messages', limit: 1000, retryAfter: 60 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const { svc } = makeStubs();
+    const target = svc as unknown as {
+      signature: { signOutbound: () => Record<string, string> };
+      discovery: {
+        resolveBase: (domain: string) => Promise<string>;
+        request: typeof fetch;
+      };
+      getSigned(path: string, domain: string): Promise<unknown>;
+    };
+    target.signature = { signOutbound: () => ({}) };
+    target.discovery = {
+      resolveBase: async () => 'https://peer.test',
+      request: (...args) => fetch(...args),
+    };
+
+    await expect(
+      target.getSigned('/resource', 'peer.test'),
+    ).rejects.toMatchObject({
+      status: 200,
+      code: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
+      data: { category: 'messages', limit: 1000, retryAfter: 60 },
+    });
+    fetchMock.mockRestore();
+  });
+});
+
+describe('FederationService CAS error classification', () => {
+  const digest = 'f'.repeat(64);
+
+  function target() {
+    const { svc, store } = makeStubs();
+    return {
+      resolveCasFile: (
+        svc as unknown as {
+          resolveCasFile(
+            value: string,
+          ): Promise<{ absPath: string; bytes: number }>;
+        }
+      ).resolveCasFile.bind(svc),
+      store,
+    };
+  }
+
+  it('reports a missing database record as the NOT_FOUND business outcome', async () => {
+    const { resolveCasFile, store } = target();
+    store.mediaAsset.findFirst.mockResolvedValueOnce(undefined);
+
+    await expect(resolveCasFile(digest)).rejects.toMatchObject({
+      status: 200,
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+  });
+
+  it('reports a missing CAS file as the NOT_FOUND business outcome', async () => {
+    const { resolveCasFile, store } = target();
+    store.mediaAsset.findFirst.mockResolvedValueOnce({ bytes: 1n });
+
+    await expect(resolveCasFile(digest)).rejects.toMatchObject({
+      status: 200,
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+  });
+
+  it('reports an indeterminate database failure as a retryable service error', async () => {
+    const { resolveCasFile, store } = target();
+    store.mediaAsset.findFirst.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(resolveCasFile(digest)).rejects.toMatchObject({
+      status: 503,
+      bizCode: BusinessCode.INTERNAL,
+    });
   });
 });
 

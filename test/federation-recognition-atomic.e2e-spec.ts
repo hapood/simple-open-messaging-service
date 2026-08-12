@@ -5,6 +5,7 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
+  federatedPeerEvent,
   federationPullCursor,
   federationServeCursor,
   peerStateFeedPullCursor,
@@ -34,12 +35,20 @@ describe('FederationRecognitionService atomic commit', () => {
   });
 
   beforeEach(async () => {
+    await database.pool.query(
+      'DELETE FROM "FederatedPeerEvent" WHERE domain = $1',
+      [domain],
+    );
     await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
       domain,
     ]);
   });
 
   afterAll(async () => {
+    await database.pool.query(
+      'DELETE FROM "FederatedPeerEvent" WHERE domain = $1',
+      [domain],
+    );
     await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
       domain,
     ]);
@@ -69,7 +78,7 @@ describe('FederationRecognitionService atomic commit', () => {
         where: eq(federatedPeer.domain, domain),
       }),
     ).toMatchObject({
-      trustLevel: 'degraded',
+      trustLevel: 'establishing',
       rootPublicKey,
       inboundRecognitionConfirmed: true,
       lightweightInboundReady: true,
@@ -142,5 +151,40 @@ describe('FederationRecognitionService atomic commit', () => {
         .from(peerStateFeedTarget)
         .where(eq(peerStateFeedTarget.peerDomain, domain)),
     ).toEqual([]);
+  });
+
+  it('counts and logs only the available to degraded transition', async () => {
+    await database.db.insert(federatedPeer).values({
+      domain,
+      trustLevel: 'available',
+      rootPublicKey,
+      identityPinnedAt: new Date(),
+      recognizesPeer: true,
+      outboundRecognitionConfirmed: true,
+      inboundRecognitionConfirmed: true,
+      localServiceAvailable: true,
+      remoteServiceReachable: true,
+    });
+    const recognition = service(new PeerStateFeedService(database));
+
+    await recognition.markTransportDegraded(domain, 'first failure');
+    await recognition.markTransportDegraded(domain, 'retry failure');
+
+    expect(
+      await database.db.query.federatedPeer.findFirst({
+        where: eq(federatedPeer.domain, domain),
+      }),
+    ).toMatchObject({
+      trustLevel: 'degraded',
+      remoteServiceReachable: false,
+      degradationCount: 1,
+      degradationReason: 'retry failure',
+    });
+    expect(
+      await database.db
+        .select()
+        .from(federatedPeerEvent)
+        .where(eq(federatedPeerEvent.domain, domain)),
+    ).toMatchObject([{ type: 'degraded', reason: 'first failure' }]);
   });
 });

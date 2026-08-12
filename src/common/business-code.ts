@@ -93,24 +93,23 @@ export enum BusinessCode {
   FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
   FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
   FEDERATION_DUPLICATE = 50004, // (origin, opId) already applied (HTTP 200 idempotent result)
-  FEDERATION_MALFORMED = 50007, // malformed Signature-Input / friend-op payload (401, no retry)
+  FEDERATION_MALFORMED = 50007, // malformed HTTP/header/query/JSON or operation payload (400, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
   FEDERATION_PEER_BLOCKED = 50009, // registered fatal federation relationship conflict (HTTP 409)
   FEDERATION_GROUP_AUTHOR_LEFT = 50010, // retained business code for a remote group author that has left
   FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 200; the
   // body carries {category, limit, retryAfter = seconds to 00:00 UTC}). Returned on
-  // state/message/media ingestion refuses internally (no peer-visible status). NEVER demotes the peer —
-  // 429 is outside the demote set in getSigned/sendSignedPost. See src/quota/.
+  // state/message/media ingestion refuses internally (no peer-visible status). NEVER degrades the peer —
+  // 429 is outside the degradation set in getSigned/sendSignedPost. See src/quota/.
   FEDERATION_PAYLOAD_TOO_LARGE = 50012, // a parsed federation item exceeds its operation limit → HTTP 200
-  // (permanent for that item; the body carries {category, limit, received}). Refused
-  // at ingest before any disk write. NEVER demotes the peer.
+  // (permanent for that item; v1 defines no structured data for this code). Refused at ingest before
+  // any disk write. NEVER degrades the peer.
   FEDERATION_CAPABILITY_DISABLED = 50013, // the peer administrator set this category's effective limit/cap to 0.
   // This is a stable business refusal (HTTP 200), not a depleted daily budget: retrying after midnight
-  // cannot help. The body carries {category}; NEVER demotes the peer.
+  // cannot help. The body carries {category}; NEVER degrades the peer.
   FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local federation service cannot sign safely (HTTP 503)
   FEDERATION_IDENTITY_MISMATCH = 50015, // registered fatal root identity conflict (HTTP 409)
   FEDERATION_PEER_IDENTITY_LOST = 50016, // internal/local diagnostic; not a Federation v1 wire code
-  FEDERATION_IDENTITY_PROOF_INVALID = 50017, // malformed, stale, replayed, or incorrectly signed identity proof (401)
   FEDERATION_MISSED_CONCURRENT = 50018, // another /missed request is running (HTTP 200); retry after it completes
   FEDERATION_MISSED_CURSOR_INVALID = 50019, // invalid /missed cursor (HTTP 200); data returns the usable cursor
   FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = 50020, // registered fatal version conflict (HTTP 409)
@@ -130,4 +129,36 @@ export enum BusinessCode {
   CALL_TERMINATED = 70008, // a federated call already reached another terminal outcome; stop dependent frames.
   // Thrown by the caller's server when the S2S `incoming` POST fails; the `unreachable` terminal
   // bubble is already written before this surfaces to the caller's client.
+}
+
+/**
+ * Exact Federation v1 wire registry. BusinessCode also contains local-client and internal diagnostic
+ * values which MUST NOT cross the S2S boundary; keeping the protocol subset as an enum lets the
+ * conformance CLI compare code, normative Markdown, and error.schema.json without heuristics.
+ */
+export enum FederationV1WireErrorCode {
+  VALIDATION_FAILED = BusinessCode.VALIDATION_FAILED,
+  NOT_FOUND = BusinessCode.NOT_FOUND,
+  FORBIDDEN = BusinessCode.FORBIDDEN,
+  RATE_LIMITED = BusinessCode.RATE_LIMITED,
+  INTERNAL = BusinessCode.INTERNAL,
+  FEDERATION_RECOGNITION_REQUIRED = BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
+  FEDERATION_BAD_SIGNATURE = BusinessCode.FEDERATION_BAD_SIGNATURE,
+  FEDERATION_BINDING_VIOLATION = BusinessCode.FEDERATION_BINDING_VIOLATION,
+  FEDERATION_MALFORMED = BusinessCode.FEDERATION_MALFORMED,
+  FEDERATION_PEER_BLOCKED = BusinessCode.FEDERATION_PEER_BLOCKED,
+  FEDERATION_GROUP_AUTHOR_LEFT = BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT,
+  FEDERATION_QUOTA_EXCEEDED = BusinessCode.FEDERATION_QUOTA_EXCEEDED,
+  FEDERATION_PAYLOAD_TOO_LARGE = BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+  FEDERATION_CAPABILITY_DISABLED = BusinessCode.FEDERATION_CAPABILITY_DISABLED,
+  FEDERATION_LOCAL_IDENTITY_LOST = BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
+  FEDERATION_IDENTITY_MISMATCH = BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+  FEDERATION_MISSED_CONCURRENT = BusinessCode.FEDERATION_MISSED_CONCURRENT,
+  FEDERATION_MISSED_CURSOR_INVALID = BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
+  FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
+  FEDERATION_RANGE_NOT_SATISFIABLE = BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
+  CALL_NOT_ALLOWED = BusinessCode.CALL_NOT_ALLOWED,
+  CALL_BUSY = BusinessCode.CALL_BUSY,
+  CALL_CANCELLED = BusinessCode.CALL_CANCELLED,
+  CALL_TERMINATED = BusinessCode.CALL_TERMINATED,
 }

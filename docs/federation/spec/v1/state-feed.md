@@ -1,6 +1,6 @@
 # Federation v1 State Feed
 
-状态：`FINAL`
+状态：`REVIEW`
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义 `GET /s2s/v1/state-feed` 的完整 wire schema 与合并语义。通用身份、签名、错误和

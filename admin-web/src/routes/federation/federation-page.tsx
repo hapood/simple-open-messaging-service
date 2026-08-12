@@ -135,7 +135,7 @@ export function FederationPage() {
               </TableHead>
               <TableHead>{t('federation.col.lastSuccess')}</TableHead>
               <TableHead className="w-20">
-                {t('federation.col.demotions')}
+                {t('federation.col.degradations')}
               </TableHead>
               <TableHead>{t('federation.col.created')}</TableHead>
               <TableHead className="w-10" />
@@ -172,7 +172,7 @@ export function FederationPage() {
                     <Timestamp value={p.lastSuccessAt} />
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {p.demotionCount}
+                    {p.degradationCount}
                   </TableCell>
                   <TableCell>
                     <Timestamp value={p.createdAt} />

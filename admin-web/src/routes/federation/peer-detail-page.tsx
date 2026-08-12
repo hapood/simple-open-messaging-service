@@ -126,20 +126,20 @@ export function PeerDetailPage() {
                   <Meta label={t('federation.meta.lastSuccessAt')}>
                     <Timestamp value={peer.lastSuccessAt} />
                   </Meta>
-                  <Meta label={t('federation.meta.demotedAt')}>
-                    <Timestamp value={peer.demotedAt} />
+                  <Meta label={t('federation.meta.degradedAt')}>
+                    <Timestamp value={peer.degradedAt} />
                   </Meta>
-                  <Meta label={t('federation.meta.demotionCount')}>
-                    {peer.demotionCount}
+                  <Meta label={t('federation.meta.degradationCount')}>
+                    {peer.degradationCount}
                   </Meta>
                   <Meta label={t('federation.meta.addedBy')}>
                     {peer.addedBy ?? t('federation.meta.auto')}
                   </Meta>
-                  {peer.demoteReason ? (
+                  {peer.degradationReason ? (
                     <div className="col-span-2 md:col-span-3">
                       <Meta label={t('federation.meta.lastError')}>
                         <span className="break-all text-destructive">
-                          {peer.demoteReason}
+                          {peer.degradationReason}
                         </span>
                       </Meta>
                     </div>

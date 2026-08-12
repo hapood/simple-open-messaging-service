@@ -1,6 +1,6 @@
 # Federation v1 Message Feed
 
-状态：`FINAL`
+状态：`REVIEW`
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义 `GET /s2s/v1/message-feed` 的完整 page、message、content、media 与
@@ -78,8 +78,10 @@ interface FederatedMessage {
 - `changeId` 是对目标 peer 的 feed allocation cursor。
 - GROUP identity 由 `thread.account/domain` 标识。P2P `participants` MUST 恰好包含两个不同 address，
   且包含 author；顺序无语义。
-- `seq` 是当前 publisher 副本的 thread-local sequence；只用于该 publisher 的排序与精确资源授权。
-- `originSeq` 是作者 server 首次发布时分配的稳定、非负安全整数。relay 不得改写。
+- `seq` 是当前 publisher 副本的 thread-local sequence，只用于该 publisher 的 page 内排序和展示坐标；
+  不得把它当作跨 publisher identity。
+- `originSeq` 是作者 server 首次发布时分配的稳定、非负安全整数。relay 不得改写；资源接口的 `seq`
+  query 使用该值，与 outer message 的 `author` 共同形成精确资源授权坐标。
 - `createdAt` 是当前 publisher 持久化该副本的 epoch-ms；`updatedAt >= createdAt`。
 - `clientMessageId` 是作者提供的幂等 key 或 `null`；不得把它当作跨作者全局 identity。
 - `content` MUST 是 JSON object 的 UTF-8 JSON 编码字符串。consumer 先解析外层 page，再按
@@ -139,7 +141,7 @@ interface TextContent {
 
 所有 `url` 是 publisher 的 CAS 展示路径，其中 64 位 digest MUST 与对应 `assets[].digest` 相同。
 consumer 下载并验证 bytes 后 MAY 重写为自己的本地路径。URL/query 不是资源 identity，也不得替代
-`GET /media/:digest` 的精确消息授权参数。
+`GET /s2s/v1/media/:digest` 的精确消息授权参数；完整 HTTP operation 见[资源接口](./resources.md)第 3 节。
 
 publisher 必须通过 signer 的 thread audience 授权资源访问，并验证 digest 与精确消息的绑定；
 不得使用内存 message-feed allocation 作为下载授权，因为 feed 引用可以在消息
@@ -290,6 +292,7 @@ interface ForwardCardContent {
 `GET /s2s/v1/forward-bundles/:bundleId` 获取；卡片计数不得替代 closure 验证。
 closure 下载同样必须 join signer 的 thread audience 并验证 bundle 与可见 FORWARD message 的绑定，
 不得依赖 message-feed change 是否仍保留。
+完整 HTTP operation、资源上限、错误与原子提交要求见[资源接口](./resources.md)第 4 节。
 
 ```ts
 interface ForwardWireClosure {

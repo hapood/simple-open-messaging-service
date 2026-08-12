@@ -238,12 +238,16 @@ describe('federation durable missed transport (two nodes)', () => {
       ),
     );
     proxy.blockGetFile(true);
-    // Deliberately taking B offline makes A's circuit breaker demote it. Restore transport health in
+    // Deliberately taking B offline makes A's circuit breaker mark it degraded. Restore transport health in
     // the fixture before B starts, so B's startup HWM reconciliation is accepted by A. The test target
     // is crash recovery, not breaker backoff.
     await appA.database
       .update(federatedPeer)
-      .set({ trustLevel: 'available', demotedAt: null, demoteReason: null })
+      .set({
+        trustLevel: 'available',
+        degradedAt: null,
+        degradationReason: null,
+      })
       .where(eq(federatedPeer.domain, FED_DOMAIN_B));
     proxy.clearRequestLog();
     await appB.start();

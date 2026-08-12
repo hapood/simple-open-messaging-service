@@ -28,7 +28,7 @@ import {
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a
  * fresh friend pair erin@appA / frank@appB). Kept separate from test/federation.e2e-spec.ts so the
- * call scenarios run in clean trust + a live P2P edge (the main suite's late tests block/demote the
+ * call scenarios run in clean trust + a live P2P edge (the main suite's late tests halt/degrade the
  * peer + sever edges, which would make `initiate` return CALL_NOT_ALLOWED).
  *
  * Validates the full cross-server relay: initiate → S2S `incoming` → appB mirror + ring → accept →

@@ -6,7 +6,6 @@ import {
   Post,
   HttpCode,
   HttpStatus,
-  Param,
   Query,
   Req,
   Res,
@@ -29,6 +28,16 @@ import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
+import {
+  parseFederationResourceRequest,
+  parseFederationRange,
+  requireAccount,
+  requireBundleId,
+  requireDomain,
+  requireSafeDecimal,
+  requireSha256Hex,
+  requireUserAccount,
+} from './federation-resource-request.js';
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
@@ -42,10 +51,10 @@ import { FEDERATION_API_PREFIX } from './federation-protocol.js';
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
  * outcomes (a lookup target that doesn't exist) are HTTP 200 + code NOT_FOUND — same envelope, non-zero
- * code — NOT an HTTP 404; only the protocol/security layer keeps its HTTP status (401 binding mismatch,
- * 410 group-author-left, 400 malformed params, 5xx). getFile is the one exception: it is @Raw (binary
- * octet-stream via reply.hijack) and its errors keep their HTTP status because its client classifies by
- * status. RFC 9421 request-signing covers the REQUEST (which is unchanged); response bodies are not signed.
+ * code — NOT an HTTP 404; only the protocol/security layer keeps its registered HTTP status (400, 401,
+ * 409, 503). getFile is the raw-body exception: successful media is binary 200/206 and an unsatisfiable
+ * Range is JSON 416, while ordinary business errors remain JSON HTTP 200. RFC 9421 request-signing covers
+ * the REQUEST (which is unchanged); response bodies are not signed.
  */
 @Public()
 @Controller(FEDERATION_API_PREFIX)
@@ -139,11 +148,18 @@ export class S2sController {
   }
 
   @Get('users/:account')
-  async getUserProfile(@Param('account') account: string) {
+  async getUserProfile(@Req() req: FastifyRequest) {
+    const parsed = parseFederationResourceRequest(req, {
+      pathPrefix: '/s2s/v1/users/',
+      pathName: 'account',
+    });
+    const account = requireUserAccount(parsed.pathValue, 'account');
     // The endpoint serves OUR users only, so the domain is implicitly ours. The account is the sole
     // path segment — no `@`-joined address on the wire (the `@` is a UI input aid, split client-side).
     const address: S2SAddress = { account, domain: this.federation.ourDomain };
-    const profile = await this.federation.getLocalUserProfile(address);
+    const profile = await this.resourceOperation(() =>
+      this.federation.getLocalUserProfile(address),
+    );
     if (!profile) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
       // the global AllExceptionsFilter renders the envelope. The peer's getSigned detects the non-zero code.
@@ -178,48 +194,48 @@ export class S2sController {
    *  octet-stream (incidental). The 206 path uses `reply.hijack()` to bypass @fastify/compress (which
    *  would re-encode the body and break byte-exactness) + interceptors — same pattern as the SSE
    *  hijack in events.controller.ts. Authz (resolveMediaFile) runs before any bytes go out. */
-  @Raw() // binary octet-stream via reply.hijack — stays outside the ApiResult envelope; its errors keep HTTP status (the client classifies by status).
+  @Raw() // Successful bodies bypass ApiResult; pre-stream BusinessException responses still use their registered JSON status/code.
   @Get('media/:digest')
-  async getFile(
-    @Req() req: FastifyRequest,
-    @Res() reply: FastifyReply,
-    @Param('digest') digest?: string,
-    @Query('fromAccount') fromAccount?: string,
-    @Query('fromDomain') fromDomain?: string,
-    @Query('toAccount') toAccount?: string,
-    @Query('seq') seqParam?: string,
-    @Query('bundleId') bundleId?: string,
-  ) {
-    const signer = this.signerDomain(req);
-    const seq = Number(seqParam);
-    if (
-      !digest ||
-      !/^[a-f0-9]{64}$/.test(digest) ||
-      !fromAccount ||
-      !fromDomain ||
-      !toAccount ||
-      !Number.isInteger(seq) ||
-      seq < 0
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing or invalid message media authorization parameters',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const { absPath, bytes } = await this.federation.resolveMediaFile(
-      fromAccount,
-      toAccount,
-      fromDomain,
-      signer,
-      digest,
-      seq,
-      bundleId,
+  async getFile(@Req() req: FastifyRequest, @Res() reply: FastifyReply) {
+    const parsed = parseFederationResourceRequest(req, {
+      pathPrefix: '/s2s/v1/media/',
+      pathName: 'digest',
+      query: [
+        { name: 'fromAccount' },
+        { name: 'fromDomain' },
+        { name: 'toAccount' },
+        { name: 'seq' },
+        { name: 'bundleId', optional: true },
+      ],
+    });
+    const digest = requireSha256Hex(parsed.pathValue, 'digest');
+    const fromAccount = requireUserAccount(
+      parsed.query.fromAccount,
+      'fromAccount',
     );
-    const range = parseRange(req.headers.range, bytes);
-    if (range === null) {
-      // No Range (or unsupported form): serve the full file as 200. Advertise Accept-Ranges so a peer
-      // that didn't ask this time knows it can next time.
+    const fromDomain = requireDomain(parsed.query.fromDomain, 'fromDomain');
+    const toAccount = requireAccount(parsed.query.toAccount, 'toAccount');
+    const seq = requireSafeDecimal(parsed.query.seq, 'seq');
+    const bundleId =
+      parsed.query.bundleId === undefined
+        ? undefined
+        : requireBundleId(parsed.query.bundleId);
+    const signer = this.signerDomain(req);
+    const { absPath, bytes } = await this.resourceOperation(() =>
+      this.federation.resolveMediaFile(
+        fromAccount,
+        toAccount,
+        fromDomain,
+        signer,
+        digest,
+        seq,
+        bundleId,
+      ),
+    );
+    const range = parseFederationRange(req.headers.range, bytes);
+    if (range.kind === 'none') {
+      // No Range: serve the full file as 200. Advertise Accept-Ranges so a peer that didn't ask this
+      // time knows it can next time.
       reply
         .header('content-type', 'application/octet-stream')
         .header('content-length', String(bytes))
@@ -227,18 +243,32 @@ export class S2sController {
         .header('cache-control', 'no-store');
       return reply.send(createReadStream(absPath));
     }
-    if (range === 'unsatisfiable') {
+    if (range.kind === 'malformed') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'Range must be one valid bytes range',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (range.kind === 'unsatisfiable') {
       reply
         .code(416)
+        .header('content-type', 'application/json')
         .header('content-range', `bytes */${bytes}`)
         .header('cache-control', 'no-store')
-        .send();
+        .send({
+          code: BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
+          message: 'requested range is not satisfiable',
+          data: null,
+        });
       return;
     }
     // Optional extra integrity signal. It costs an additional disk pass, so NAS deployments default it
     // off. Receivers always verify a supplied value and still verify the final whole-file CAS digest.
-    let chunkDigest: string | undefined;
-    if (await this.settings.isFederationChunkDigestEnabled()) {
+    const chunkDigest = await this.resourceOperation(async () => {
+      if (!(await this.settings.isFederationChunkDigestEnabled())) {
+        return undefined;
+      }
       const chunkHash = createHash('sha256');
       for await (const piece of createReadStream(absPath, {
         start: range.start,
@@ -246,8 +276,8 @@ export class S2sController {
       })) {
         chunkHash.update(piece);
       }
-      chunkDigest = `sha-256=:${chunkHash.digest('base64')}:`;
-    }
+      return `sha-256=:${chunkHash.digest('base64')}:`;
+    });
     // Single byte range → 206. Hijack the raw response: the byte-exact partial body MUST pass through
     // untouched (compress must not gzip it, interceptors must not touch it).
     reply.hijack();
@@ -272,57 +302,32 @@ export class S2sController {
   /** JSONB is serialized as ordinary UTF-8 application/json. The response contains the root plus the
    * complete child-bundle closure; binary assets remain resumable /media/:digest transfers. */
   @Get('forward-bundles/:bundleId')
-  getForwardBundle(
-    @Req() req: FastifyRequest,
-    @Param('bundleId') bundleId: string,
-  ) {
-    return this.federation.serveForwardBundleClosure(
-      bundleId,
-      this.signerDomain(req),
+  async getForwardBundle(@Req() req: FastifyRequest) {
+    const parsed = parseFederationResourceRequest(req, {
+      pathPrefix: '/s2s/v1/forward-bundles/',
+      pathName: 'bundleId',
+    });
+    const bundleId = requireBundleId(parsed.pathValue);
+    return this.resourceOperation(() =>
+      this.federation.serveForwardBundleClosure(
+        bundleId,
+        this.signerDomain(req),
+      ),
     );
   }
-}
 
-/** Parse a single HTTP `Range: bytes=` request header against a known total size. Returns:
- *  - `{start,end}` for a single satisfiable byte range (server-side clamped to total-1, RFC 7233 §4.2);
- *  - `null` when there is no Range header, it isn't a `bytes=` range, or it's a multi-range list
- *    (unsupported here — the caller falls back to a full 200);
- *  - `'unsatisfiable'` when the range is syntactically valid but outside the resource (→ 416).
- *  Only the single-range forms the federation receiver emits are honored; anything else degrades
- *  gracefully to a full 200 rather than risking a mis-parsed slice. */
-function parseRange(
-  rangeHeader: string | string[] | undefined,
-  total: number,
-): { start: number; end: number } | null | 'unsatisfiable' {
-  if (!Number.isFinite(total) || total <= 0) return null;
-  const header = Array.isArray(rangeHeader) ? rangeHeader[0] : rangeHeader;
-  if (!header) return null;
-  const m = /^bytes=(.*)$/i.exec(header);
-  if (!m) return null;
-  const spec = m[1].trim();
-  if (spec.includes(',')) return null; // multi-range unsupported → full 200
-  const dash = spec.indexOf('-');
-  if (dash < 0) return null;
-  const left = spec.slice(0, dash);
-  const right = spec.slice(dash + 1);
-  let start: number;
-  let end: number;
-  if (left === '') {
-    // Suffix form `bytes=-N` → last N bytes.
-    const n = Number(right);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    start = Math.max(0, total - n);
-    end = total - 1;
-  } else {
-    const s = Number(left);
-    if (!Number.isFinite(s) || s < 0 || !Number.isInteger(s)) return null;
-    start = s;
-    end =
-      right === ''
-        ? total - 1 // Open-ended `bytes=start-`
-        : Math.min(Number(right), total - 1); // `bytes=start-end`, clamped
-    if (!Number.isFinite(end) || !Number.isInteger(end)) return null;
+  /** Resource operations expose only the v1 service-unavailable status for failures whose resource
+   * state could not be determined. Known BusinessException outcomes retain their exact status/code. */
+  private async resourceOperation<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof BusinessException) throw error;
+      throw new BusinessException(
+        BusinessCode.INTERNAL,
+        'federation resource temporarily unavailable',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
   }
-  if (start >= total || start > end) return 'unsatisfiable';
-  return { start, end };
 }

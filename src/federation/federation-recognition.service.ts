@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -259,8 +259,8 @@ export class FederationRecognitionService {
         .set({
           remoteServiceReachable: true,
           lastSuccessAt: now,
-          demotedAt: null,
-          demoteReason: null,
+          degradedAt: null,
+          degradationReason: null,
           trustLevel: this.lifecycle(next),
         })
         .where(eq(tables.federatedPeer.domain, normalized));
@@ -283,8 +283,8 @@ export class FederationRecognitionService {
         .set({
           remoteServiceReachable: true,
           lastSuccessAt: new Date(),
-          demotedAt: null,
-          demoteReason: null,
+          degradedAt: null,
+          degradationReason: null,
           trustLevel: this.lifecycle({
             ...peer,
             remoteServiceReachable: true,
@@ -294,11 +294,24 @@ export class FederationRecognitionService {
     });
   }
 
-  async markTransportDegraded(domain: string, reason: string): Promise<void> {
+  async markTransportDegraded(
+    domain: string,
+    reason: string,
+    operationStartedAt?: Date,
+  ): Promise<void> {
     const normalized = this.normalizeDomain(domain);
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
-      if (!peer || peer.trustLevel === 'halted' || peer.resetInProgress) return;
+      if (
+        !peer ||
+        peer.trustLevel === 'halted' ||
+        peer.resetInProgress ||
+        (operationStartedAt !== undefined &&
+          peer.lastSuccessAt !== null &&
+          peer.lastSuccessAt > operationStartedAt)
+      )
+        return;
+      const transitioned = peer.trustLevel === 'available';
       await tx
         .update(tables.federatedPeer)
         .set({
@@ -307,10 +320,21 @@ export class FederationRecognitionService {
             remoteServiceReachable: false,
           }),
           remoteServiceReachable: false,
-          demotedAt: new Date(),
-          demoteReason: reason.slice(0, 255),
+          ...(transitioned
+            ? {
+                degradationCount: sql`${tables.federatedPeer.degradationCount} + 1`,
+              }
+            : {}),
+          degradedAt: new Date(),
+          degradationReason: reason.slice(0, 255),
         })
         .where(eq(tables.federatedPeer.domain, normalized));
+      if (transitioned)
+        await tx.insert(tables.federatedPeerEvent).values({
+          domain: normalized,
+          type: 'degraded',
+          reason: reason.slice(0, 255),
+        });
     });
   }
 
@@ -371,8 +395,8 @@ export class FederationRecognitionService {
           remoteServiceReachable: true,
           reverseRecognitionPending: false,
           lastSuccessAt: now,
-          demotedAt: null,
-          demoteReason: null,
+          degradedAt: null,
+          degradationReason: null,
           trustLevel: this.lifecycle({
             ...peer,
             outboundRecognitionConfirmed: true,

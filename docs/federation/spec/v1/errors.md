@@ -83,7 +83,7 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 | 10000 | `VALIDATION_FAILED`                       |  200 | 修正业务请求；不得（MUST NOT）原样重试。                                                                                           |
 | 10001 | `NOT_FOUND`                               |  200 | 当前资源不存在；仅在业务状态改变后重试。                                                                                           |
 | 10004 | `FORBIDDEN`                               |  200 | 当前业务身份无权访问资源；不得（MUST NOT）原样重试。                                                                               |
-| 10005 | `RATE_LIMITED`                            |  503 | 对端临时限流；按结构化重试信息或本地退避重试。                                                                                     |
+| 10005 | `RATE_LIMITED`                            |  503 | 对端临时限流；按本地有上限、带 jitter 的退避策略重试。                                                                             |
 | 10999 | `INTERNAL`                                |  503 | 保留 pin 和 cursor，退避重试。                                                                                                     |
 | 50001 | `FEDERATION_RECOGNITION_REQUIRED`         |  401 | 缺少 operation 所需的 pinned identity 或双向认可事实；停止数据面请求并补齐缺失认可。纯传输 `degraded` 不得（MUST NOT）产生此错误。 |
 | 50002 | `FEDERATION_BAD_SIGNATURE`                |  401 | 停止原样重试并审计 signature、digest、keyId 或 certificate；不得（MUST NOT）接受响应数据。                                         |
@@ -116,8 +116,15 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 
 ```ts
 interface FederationQuotaExceededData {
+  category: "messages" | "files" | "requests" | "signals";
+  // 该 category 当前生效的非负、安全整数上限。
+  limit: SafeInteger;
   // 非负整数 delta-seconds；从完整接收响应时开始计算。
   retryAfter: SafeInteger;
+}
+
+interface FederationCapabilityDisabledData {
+  category: "messages" | "files" | "requests" | "signals";
 }
 
 interface FederationMissedCursorInvalidData {
@@ -128,7 +135,9 @@ interface FederationMissedCursorInvalidData {
 }
 ```
 
-`FEDERATION_QUOTA_EXCEEDED` 必须（MUST）携带 `FederationQuotaExceededData`。
+`FEDERATION_QUOTA_EXCEEDED` 必须（MUST）携带 `FederationQuotaExceededData`，其中 `limit >= 0`、
+`retryAfter >= 0`。`FEDERATION_CAPABILITY_DISABLED` 必须（MUST）携带
+`FederationCapabilityDisabledData`。
 `FEDERATION_MISSED_CURSOR_INVALID` 必须（MUST）携带 `FederationMissedCursorInvalidData`，并满足
 `startChangeId <= availableCursor <= allocatedThrough`。consumer 还必须（MUST）验证新的 floor 相对本地已知
 floor 单调前进；任一检查失败都不得（MUST NOT）推进 cursor。
@@ -139,10 +148,10 @@ floor 单调前进；任一检查失败都不得（MUST NOT）推进 cursor。
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"code":50011,"message":"peer quota exceeded","data":{"retryAfter":60}}
+{"code":50011,"message":"peer quota exceeded","data":{"category":"messages","limit":1000,"retryAfter":60}}
 ```
 
-该业务结果的有效退避是 `60` 秒。Cursor 截断示例是：
+该业务结果表示 `messages` 的当前上限为 `1000`，有效退避是 `60` 秒。Cursor 截断示例是：
 
 ```json
 {
@@ -197,6 +206,18 @@ Block、identity contradiction、协议版本、local identity、业务 quota �
 
 `media` 的不可满足 Range 使用 HTTP `416` 和 `FEDERATION_RANGE_NOT_SATISFIABLE`，`data` 为 `null`，
 并按 media operation 要求发送 `Content-Range: bytes */<current-length>`；这不表示资源本身不存在。
+[资源接口第 3.3 节](./resources.md#33-媒体错误)进一步区分 audience/message proof 不足的 `FORBIDDEN`、
+digest binding 或 CAS blob 不存在的 `NOT_FOUND`、不可满足 Range 与临时存储故障。前三者不得（MUST NOT）
+使 peer degraded；只有注册的 HTTP `503` 可用性失败触发该 lifecycle 动作。
+
+media 的 HTTP `200` 可能是 `application/octet-stream` 完整资源成功，也可能是 `application/json` 非零业务
+error envelope。consumer 必须（MUST）同时按请求是否携带 Range、HTTP status、`Content-Type` 与 envelope
+判别，不得（MUST NOT）把 JSON error bytes 写入 CAS。response header 已发送后发生的 stream failure 不再
+具有可发送 JSON error 的边界；publisher 必须终止 stream，consumer 必须丢弃不完整 range 并通过长度与
+digest 校验发现失败。
+
+资源 `NOT_FOUND` 对应的 mirror message 如何展示、保留或标记属于 consumer 本地策略；它本身不是 message
+删除或 tombstone。具体边界见 resources.md 第 3.3、4.4 节。
 
 未列出的 SOMS 本地客户端业务码不属于 Federation v1 wire registry，S2S publisher 不得（MUST NOT）把它们
 作为协议错误发送。增加新的稳定错误语义属于 additive v1 修订；改变已有 code 的含义、重试性或 identity

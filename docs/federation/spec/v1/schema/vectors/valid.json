@@ -357,7 +357,7 @@
       }
     },
     {
-      "name": "empty forward closure",
+      "name": "minimal forward closure",
       "schema": "urn:soms:federation:v1:forward-bundle",
       "value": {
         "schemaVersion": 1,
@@ -365,14 +365,25 @@
         "bundles": [
           {
             "id": "b1",
-            "depth": 0,
+            "depth": 1,
             "manifestDigest": "0000000000000000000000000000000000000000000000000000000000000000",
             "manifest": {
               "schemaVersion": 1,
               "bundleId": "b1",
-              "depth": 0,
+              "depth": 1,
               "children": [],
-              "messages": []
+              "messages": [
+                {
+                  "sender": {
+                    "displayName": "Alice",
+                    "account": "alice",
+                    "domain": "a.example"
+                  },
+                  "contentType": "PURE_TEXT",
+                  "content": "{\"text\":\"hello\"}",
+                  "sentAt": 1
+                }
+              ]
             },
             "assets": []
           }
@@ -395,6 +406,37 @@
       "name": "error envelope",
       "schema": "urn:soms:federation:v1:error",
       "value": { "code": 50007, "message": "malformed" }
+    },
+    {
+      "name": "quota error envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50011,
+        "message": "peer quota exceeded",
+        "data": { "category": "messages", "limit": 1000, "retryAfter": 60 }
+      }
+    },
+    {
+      "name": "capability-disabled error envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50013,
+        "message": "federation capability disabled",
+        "data": { "category": "files" }
+      }
+    },
+    {
+      "name": "cursor-floor error envelope",
+      "schema": "urn:soms:federation:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "requested cursor is below retained floor",
+        "data": {
+          "startChangeId": "101",
+          "availableCursor": "120",
+          "allocatedThrough": "250"
+        }
+      }
     }
   ]
 }

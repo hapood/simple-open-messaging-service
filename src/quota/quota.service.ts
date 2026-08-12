@@ -34,7 +34,7 @@ import { BreakerFlags, type BreakerDim } from './breaker-flags.js';
  * over-limit increment rolls back → exact count (not the doc's ±1 slop) on the federation path.
  *
  * Federation callers return quota/capability outcomes as HTTP 200 business codes; these capacity
- * responses never demote the peer.
+ * responses never degrade the peer.
  */
 @Injectable()
 export class QuotaService implements OnModuleInit {
@@ -339,7 +339,8 @@ export class QuotaService implements OnModuleInit {
 
   /**
    * Strict-before file claim gate: refuse to start a download/upload if it would push file cnt OR file total
-   * size over today's effective limit. Throws FEDERATION_QUOTA_EXCEEDED (429; never demotes the peer) and marks the
+   * size over today's effective limit. Throws FEDERATION_QUOTA_EXCEEDED (HTTP 200 business result; never degrades
+   * the peer) and marks the
    * breaker. The read-then-check is not atomic with the subsequent {@link tickFileBytes}, but tickFileBytes
    * re-marks on the increment, so the worst case under concurrency is one extra claim before the breaker trips.
    */

@@ -43,7 +43,7 @@ describe('S2sRecognitionController Healthy privacy projection', () => {
 });
 
 describe('FederationRecognitionService health transitions', () => {
-  it('demotes local availability when Healthy returns unavailable', async () => {
+  it('degrades local availability when Healthy returns unavailable', async () => {
     const service = new FederationRecognitionService(
       {} as never,
       {} as never,
@@ -51,13 +51,13 @@ describe('FederationRecognitionService health transitions', () => {
       {} as never,
       {} as never,
     );
-    const demote = vi
+    const degrade = vi
       .spyOn(service, 'markTransportDegraded')
       .mockResolvedValue(undefined);
 
     await service.applyHealthResult('peer.example', 'unavailable');
 
-    expect(demote).toHaveBeenCalledExactlyOnceWith(
+    expect(degrade).toHaveBeenCalledExactlyOnceWith(
       'peer.example',
       'Healthy unavailable',
     );

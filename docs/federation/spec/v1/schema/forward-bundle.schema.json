@@ -47,7 +47,7 @@
         "sentAt": {
           "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
         },
-        "childBundleId": { "type": "string", "minLength": 1 },
+        "childBundleId": { "type": "string", "minLength": 1, "maxLength": 26 },
         "quote": {
           "type": "object",
           "required": ["preview"],
@@ -73,15 +73,17 @@
       ],
       "properties": {
         "schemaVersion": { "const": 1 },
-        "bundleId": { "type": "string", "minLength": 1 },
-        "depth": { "type": "integer", "minimum": 0 },
+        "bundleId": { "type": "string", "minLength": 1, "maxLength": 26 },
+        "depth": { "type": "integer", "minimum": 1, "maximum": 3 },
         "children": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
+          "items": { "type": "string", "minLength": 1, "maxLength": 26 }
         },
         "messages": {
           "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
           "items": { "$ref": "#/$defs/manifestMessage" }
         }
       },
@@ -91,8 +93,8 @@
       "type": "object",
       "required": ["id", "depth", "manifestDigest", "manifest", "assets"],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "depth": { "type": "integer", "minimum": 0 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 26 },
+        "depth": { "type": "integer", "minimum": 1, "maximum": 3 },
         "manifestDigest": {
           "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
         },
@@ -106,10 +108,11 @@
   "required": ["schemaVersion", "rootBundleId", "bundles", "assets"],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "rootBundleId": { "type": "string", "minLength": 1 },
+    "rootBundleId": { "type": "string", "minLength": 1, "maxLength": 26 },
     "bundles": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 500,
       "items": { "$ref": "#/$defs/bundle" }
     },
     "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } },

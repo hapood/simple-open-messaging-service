@@ -3,6 +3,16 @@
   "$id": "urn:soms:federation:v1:http-parameters",
   "title": "Federation v1 normalized HTTP path/query parameter objects",
   "$defs": {
+    "userProfileParameters": {
+      "type": "object",
+      "required": ["account"],
+      "properties": {
+        "account": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+        }
+      },
+      "additionalProperties": false
+    },
     "feedQuery": {
       "type": "object",
       "required": ["after"],
@@ -20,12 +30,23 @@
       "properties": {
         "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
         "fromAccount": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/account"
+          "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
         },
         "fromDomain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
         "toAccount": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
-        "seq": { "type": "string", "pattern": "^(?:0|[1-9][0-9]*)$" },
-        "bundleId": { "type": "string", "minLength": 1 }
+        "seq": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]{0,15})$"
+        },
+        "bundleId": { "type": "string", "minLength": 1, "maxLength": 26 }
+      },
+      "additionalProperties": false
+    },
+    "forwardBundleParameters": {
+      "type": "object",
+      "required": ["bundleId"],
+      "properties": {
+        "bundleId": { "type": "string", "minLength": 1, "maxLength": 26 }
       },
       "additionalProperties": false
     }

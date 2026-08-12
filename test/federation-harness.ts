@@ -243,7 +243,7 @@ interface FedAppConfig {
 
 /** Boot one app in a subprocess. `start()` forks test/federation-app.main.ts (via tsx) with the app's
  *  env, awaits `FED_APP_READY <port>` on stdout, and exposes a test-process Drizzle client for assertions.
- *  `stop()` SIGTERMs the child (used by the demote test to force a real ECONNREFUSED); `restart()`
+ *  `stop()` SIGTERMs the child (used by the degradation test to force a real ECONNREFUSED); `restart()`
  *  re-forks on the same port (used by the re-handshake test). */
 function makeFedApp(cfg: FedAppConfig): FedApp {
   const pool = new Pool({ connectionString: cfg.dbUrl });

@@ -8,7 +8,7 @@ import { BusinessCode } from './business-code.js';
  * structured payload is passed) at the given httpStatus — **default 200**. Business outcomes return
  * HTTP 200 + business code by convention, including not-found and authorization denials (FORBIDDEN):
  * a missing resource or a "not friends" refusal is a business answer, not a protocol error, so it
- * must NOT demote a federated peer. Federation v1 reserves non-200 JSON statuses for protocol shape
+ * must NOT degrade a federated peer. Federation v1 reserves non-200 JSON statuses for protocol shape
  * (`400`), authentication/binding (`401`), fatal peer-relationship conflict (`409`), and temporary
  * service unavailability (`503`). Its transports change lifecycle only for `503`, or for `409` paired
  * with a registered fatal code; an HTTP 200 business refusal never changes peer lifecycle.

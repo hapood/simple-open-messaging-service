@@ -17,7 +17,7 @@
 
 Federation v1 的规范性要求由本文及其明确引用的 [传输与安全](./transport-security.md)、
 [服务器认可](./recognition.md)、[State Feed](./state-feed.md)、[Message Feed](./message-feed.md)、
-[通话](./calls.md)与[错误码](./errors.md)文档共同组成。本文负责
+[资源接口](./resources.md)、[通话](./calls.md)与[错误码](./errors.md)文档共同组成。本文负责
 共享协议契约（protocol contract）；operation 文档可以（MAY）在
 不改变本文安全底线的前提下收紧它所属 operation 的字段、状态和授权要求。如果两份
 规范性正文对同一外部可观察协议行为给出不同要求，这是规范缺陷，实现必须（MUST）以 fail-closed 方式处理，不得（MUST NOT）自行
@@ -129,10 +129,8 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 使用 `FEDERATION_PEER_BLOCKED`，identity contradiction 使用 identity 错误，版本不兼容使用
 `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`。它们共享一个“停止自动通信”的 lifecycle，但原因和安全含义仍不同。
 
-`media/:digest` 的 digest 是资源 path parameter；消息 author/thread/source-seq 和可选 bundle
-binding 是严格 query contract。请求者 domain 只从验证后的 HTTP Message Signature 得出，不接受
-调用方重复声明。服务端必须（MUST）证明该精确消息已经通过 durable discovery allocation 交付给签名 peer，
-且 digest 属于该消息或它绑定的 forward closure。
+三个资源 operation 的 path/query、响应、授权、Range、closure 和错误契约由
+[资源接口](./resources.md)完整定义；HTTP surface 表及本节概要不得覆盖其字段级要求。
 
 未列入本节完整 surface 的路径不属于 Federation v1。
 `recognize`、`healthy` 的字段、双向状态、pin、重试、隐私与完整 HTTP 示例由
@@ -195,6 +193,7 @@ operation 引用下表类型时，必须（MUST）遵守其格式、范围和规
 | `DecimalString`          | 字面值 `"0"` 或不以 `0` 开头的非空 ASCII 十进制 digit string；不得（MUST NOT）改用 JSON number                                       |
 | `PositiveDecimalString`  | 首字符为 `1..9`、后续字符为 `0..9` 的非空 string                                                                                     |
 | `SafeInteger`            | JSON integer，范围 `0..9007199254740991`                                                                                             |
+| `PositiveSafeInteger`    | JSON integer，范围 `1..9007199254740991`                                                                                             |
 | `EpochMilliseconds`      | Unix epoch milliseconds，编码为 `SafeInteger`                                                                                        |
 | `Sha256Hex`              | `^[a-f0-9]{64}$`                                                                                                                     |
 | `Base64Ed25519Key`       | RFC 4648 padded base64，解码后恰好 32 bytes                                                                                          |

@@ -8,12 +8,90 @@
     "code": {
       "enum": [
         10000, 10001, 10004, 10005, 10999, 50001, 50002, 50003, 50007, 50009,
-        50010, 50011, 50012, 50013, 50014, 50015, 50017, 50018, 50019, 50020,
-        50021, 70001, 70004, 70007, 70008
+        50010, 50011, 50012, 50013, 50014, 50015, 50018, 50019, 50020, 50021,
+        70001, 70004, 70007, 70008
       ]
     },
     "message": { "type": "string" },
     "data": true
   },
-  "additionalProperties": false
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "properties": {
+        "code": { "const": 50011 },
+        "data": { "$ref": "#/$defs/quotaExceededData" }
+      },
+      "required": ["data"]
+    },
+    {
+      "properties": {
+        "code": { "const": 50013 },
+        "data": { "$ref": "#/$defs/capabilityDisabledData" }
+      },
+      "required": ["data"]
+    },
+    {
+      "properties": {
+        "code": { "const": 50019 },
+        "data": { "$ref": "#/$defs/missedCursorInvalidData" }
+      },
+      "required": ["data"]
+    },
+    {
+      "properties": {
+        "code": {
+          "not": { "enum": [50011, 50013, 50019] }
+        },
+        "data": { "type": "null" }
+      }
+    }
+  ],
+  "$defs": {
+    "quotaCategory": {
+      "enum": ["messages", "files", "requests", "signals"]
+    },
+    "quotaExceededData": {
+      "type": "object",
+      "required": ["category", "limit", "retryAfter"],
+      "properties": {
+        "category": { "$ref": "#/$defs/quotaCategory" },
+        "limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "retryAfter": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilityDisabledData": {
+      "type": "object",
+      "required": ["category"],
+      "properties": {
+        "category": { "$ref": "#/$defs/quotaCategory" }
+      },
+      "additionalProperties": false
+    },
+    "missedCursorInvalidData": {
+      "type": "object",
+      "required": ["startChangeId", "availableCursor", "allocatedThrough"],
+      "properties": {
+        "startChangeId": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        },
+        "availableCursor": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        },
+        "allocatedThrough": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
 }

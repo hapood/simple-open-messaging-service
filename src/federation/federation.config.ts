@@ -26,7 +26,7 @@ export interface FederationConfig {
   mediaChunkTimeoutSec: number;
   /** Step 2 media fetch: consecutive chunk failures (network stall, body abort) before giving up
    *  best-effort on a digest — the message stays inert (no MediaAsset, no render) for a later retry,
-   *  and the peer is NOT demoted (a transfer stall is not a trust failure). */
+   *  and the peer is NOT degraded (a transfer stall is not a trust failure). */
   mediaMaxChunkRetries: number;
   /** dev-only: allow plain http:// for localhost federation testing (never in production). */
   allowInsecureHttp: boolean;

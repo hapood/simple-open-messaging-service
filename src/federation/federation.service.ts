@@ -1383,7 +1383,7 @@ export class FederationService {
 
   /** Sign + synchronously POST an arbitrary JSON body to a peer S2S path (`${base}${path}`). The single
    *  signed-POST entry for every outbound S2S op — friend-request / friend-approve (Step 1) AND the
-   *  discovery HWM push. Same liveness/demote wiring as getSigned. */
+   *  discovery HWM push. Same liveness/degradation wiring as getSigned. */
   private async postSigned(
     path: string,
     body: string,
@@ -1418,7 +1418,7 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(
+      await this.recognition.markTransportDegraded(
         peerDomain,
         `POST network/timeout: ${(e as Error).message}`,
         operationStartedAt,
@@ -1450,7 +1450,7 @@ export class FederationService {
     const errBody = await res.json().catch(() => undefined);
     const code = typeof errBody?.code === 'number' ? errBody.code : undefined;
     if (status === HttpStatus.SERVICE_UNAVAILABLE) {
-      await this.markDemoted(
+      await this.recognition.markTransportDegraded(
         peerDomain,
         `POST HTTP ${status}`,
         operationStartedAt,
@@ -1488,7 +1488,7 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(
+      await this.recognition.markTransportDegraded(
         peerDomain,
         `GET ${path} network/timeout: ${(e as Error).message}`,
         operationStartedAt,
@@ -1502,7 +1502,7 @@ export class FederationService {
       const body = await res.json().catch(() => undefined);
       const code = typeof body?.code === 'number' ? body.code : undefined;
       if (status === HttpStatus.SERVICE_UNAVAILABLE) {
-        await this.markDemoted(
+        await this.recognition.markTransportDegraded(
           peerDomain,
           `GET ${path} HTTP ${status}`,
           operationStartedAt,
@@ -1549,15 +1549,15 @@ export class FederationService {
     // Success bodies are ApiResult envelopes { code, message, data }. A non-zero code is a business
     // outcome delivered at HTTP 200 (a lookup target that doesn't exist → NOT_FOUND); the peer is healthy
     // and answered (markContactSuccess above already advanced liveness), so surface it as a typed
-    // S2sResponseError WITHOUT demoting — callers' catch logic keeps working. Unwrapping `data` here means
+    // S2sResponseError WITHOUT degrading — callers' catch logic keeps working. Unwrapping `data` here means
     // every getSigned caller still receives the typed payload (res.messages / res.profileRev / …), not the
-    // envelope — no call site changes. The !res.ok branch above still carries 400/401/410/5xx (notably the
-    // 410 group-author-left leave signal, which the consumer detects via S2sResponseError.status).
+    // envelope — no call site changes. The !res.ok branch above carries the registered protocol statuses.
     if (typeof parsed?.code === 'number' && parsed.code !== BusinessCode.OK) {
       throw new S2sResponseError(
         `S2S GET ${path} from ${peerDomain} business error: code ${parsed.code}`,
         res.status,
         parsed.code,
+        parsed.data,
       );
     }
     return (parsed?.data ?? parsed) as T;
@@ -1665,8 +1665,8 @@ export class FederationService {
    *  for state transitions only, keeping the log low-volume). Best-effort: a write failure is swallowed
    *  so a DB hiccup can never break the caller's real S2S op.
    *
-   *  Observability-only: NO state machine consumes lastSuccessAt. Demotion is failure-driven (the
-   *  matched markDemoted on a failed op), NOT staleness-driven; the reconnect sweep + slowPoll select
+   *  Observability-only: NO state machine consumes lastSuccessAt. Degradation is failure-driven (the
+   *  matched markTransportDegraded on a failed op), NOT staleness-driven; the reconnect sweep + slowPoll select
    *  targets by trustLevel, never by this watermark. So this write is benign bookkeeping — the explicit
    *  identity continuity and normal signed data requests provide liveness; advancing here is the
    *  higher-fidelity supplement that records every real successful contact. */
@@ -1704,57 +1704,6 @@ export class FederationService {
     } catch {
       // Best-effort liveness watermark — never break the caller's op.
     }
-  }
-
-  /** Record a failed signed S2S op. Always refreshes the latest failure metadata; an available→degraded
-   *  transition bumps the historical demotion counter and event while retaining recognition facts.
-   *  Pinned signing keys are continuity evidence and must never be purged by a transient failure.
-   *  `halted` and an active reset are durable policy/maintenance gates → no-op. */
-  async markDemoted(
-    domain: string,
-    reason: string,
-    operationStartedAt?: Date,
-  ): Promise<void> {
-    await this.database.db.transaction(async (tx) => {
-      const [existing] = await tx
-        .select({
-          trustLevel: tables.federatedPeer.trustLevel,
-          resetInProgress: tables.federatedPeer.resetInProgress,
-          lastSuccessAt: tables.federatedPeer.lastSuccessAt,
-        })
-        .from(tables.federatedPeer)
-        .where(eq(tables.federatedPeer.domain, domain))
-        .for('update')
-        .limit(1);
-      if (
-        !existing ||
-        existing.trustLevel === 'halted' ||
-        existing.resetInProgress ||
-        (operationStartedAt !== undefined &&
-          existing.lastSuccessAt !== null &&
-          existing.lastSuccessAt > operationStartedAt)
-      )
-        return;
-      const transitioned = existing.trustLevel === 'available';
-      await tx
-        .update(tables.federatedPeer)
-        .set({
-          trustLevel: 'degraded',
-          remoteServiceReachable: false,
-          ...(transitioned
-            ? { demotionCount: sql`${tables.federatedPeer.demotionCount} + 1` }
-            : {}),
-          demotedAt: new Date(),
-          demoteReason: reason.slice(0, 255),
-        })
-        .where(eq(tables.federatedPeer.domain, domain));
-      if (transitioned)
-        await tx.insert(tables.federatedPeerEvent).values({
-          domain,
-          type: 'demoted',
-          reason: reason.slice(0, 255),
-        });
-    });
   }
 
   /** Compatibility wrapper for callers that observed a successful signed round trip. */
@@ -2011,8 +1960,8 @@ export class FederationService {
           haltedAt: null,
           haltCode: null,
           haltReason: null,
-          demotedAt: null,
-          demoteReason: null,
+          degradedAt: null,
+          degradationReason: null,
           lastSuccessAt: new Date(),
         })
         .where(eq(tables.federatedPeer.domain, domain));
@@ -2225,8 +2174,8 @@ export class FederationService {
    *  must not exhaust the budget). The `tick` happens in CallsService AFTER the in-memory call-state
    *  guard, so a retried `incoming` (fresh UUID) burns no quota. No persistent callSid table — the
    *  receiver's call state machine + the callSid-keyed bubble write make replays idempotent. The
-   *  not-found / not-friends rejects use HTTP 404 (NOT in postSigned's success- or demote-sets → the
-   *  sender throws without demoting a healthy peer). */
+   *  not-found / not-friends rejects use HTTP 404 (NOT in postSigned's success- or degradation-sets → the
+   *  sender throws without degrading a healthy peer). */
   async handleCallFrame(
     body: unknown,
     peerDomain: string,
@@ -2376,8 +2325,8 @@ export class FederationService {
 
   /**
    * Unified pre-flight for every Step 2 outbound op: ensure trust is current BEFORE running, so a
-   * demoted/blocked peer is caught up front (not only after a failure). The op itself (sendSignedPost
-   * / getSigned) already calls markDemoted on failure → self-heal on the next reconnect-sweep tick.
+   * degraded/halted peer is caught up front (not only after a failure). The op itself (sendSignedPost
+   * / getSigned) already calls markTransportDegraded on failure → self-heal on the next reconnect-sweep tick.
    * Throws FEDERATION_PEER_BLOCKED if the peer is admin-blocked.
    */
   private async withTrustedPeer<T>(
@@ -2388,7 +2337,7 @@ export class FederationService {
     try {
       return await fn();
     } catch (error) {
-      // A peer restart can make both sides demote each other: its startup pull reaches us while we
+      // A peer restart can make both sides mark each other degraded: its startup pull reaches us while we
       // its recognition facts are incomplete, so it receives FEDERATION_RECOGNITION_REQUIRED.
       // Only this explicit trust-state response is recoverable here. The pinned-identity signed
       // heartbeat restores mutual reachability, after which the original operation is tried once.
@@ -4736,13 +4685,25 @@ export class FederationService {
   private async resolveCasFile(
     digest: string,
   ): Promise<{ absPath: string; bytes: number }> {
-    const asset = await this.database.db.query.mediaAsset.findFirst({
-      where: and(
-        eq(tables.mediaAsset.digest, digest),
-        eq(tables.mediaAsset.isDeleted, false),
-      ),
-      columns: { bytes: true },
-    });
+    let asset: { bytes: bigint } | undefined;
+    try {
+      asset = await this.database.db.query.mediaAsset.findFirst({
+        where: and(
+          eq(tables.mediaAsset.digest, digest),
+          eq(tables.mediaAsset.isDeleted, false),
+        ),
+        columns: { bytes: true },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Unable to verify media asset ${digest}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw new BusinessException(
+        BusinessCode.INTERNAL,
+        'media storage unavailable',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
     if (!asset) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
     }
@@ -4756,8 +4717,28 @@ export class FederationService {
     );
     try {
       const s = await stat(absPath);
+      if (!s.isFile() || BigInt(s.size) !== asset.bytes) {
+        this.logger.warn(`Media asset ${digest} failed its CAS size check`);
+        throw new BusinessException(
+          BusinessCode.INTERNAL,
+          'media storage unavailable',
+          HttpStatus.SERVICE_UNAVAILABLE,
+        );
+      }
       return { absPath, bytes: s.size };
-    } catch {
+    } catch (error) {
+      if (error instanceof BusinessException) throw error;
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        this.logger.warn(
+          `Unable to inspect media asset ${digest}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        throw new BusinessException(
+          BusinessCode.INTERNAL,
+          'media storage unavailable',
+          HttpStatus.SERVICE_UNAVAILABLE,
+        );
+      }
       throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable');
     }
   }
@@ -6045,10 +6026,10 @@ export class FederationService {
    * partial/duplicated slice, and resume is byte-exact. Offset advances by the peer's returned
    * Content-Range (the server may clamp the tail, RFC 7233 §4.2), NOT by the requested window.
    *
-   * Demote policy is STATUS-based (the fetch-throws-vs-body-abort proxy is unreliable at the header
-   * boundary): a fetch rejection or 401/403/5xx → peer unreachable/rejecting → markDemoted + throw. A
-   * 416 / other 4xx (non-auth) → throw WITHOUT demoting (offset wrong or file gone — not a trust
-   * failure). A body-read error AFTER a 2xx → retry the same unit, NO demote (peer alive; lost a
+   * Degradation policy is STATUS-based (the fetch-throws-vs-body-abort proxy is unreliable at the header
+   * boundary): a fetch rejection or 5xx → peer unreachable → markTransportDegraded + throw. Registered 200
+   * business errors and 400/401/416 reject only this transfer without degrading. A body-read error AFTER
+   * a 206 → retry the same unit, NO degradation (peer alive; lost a
    * stream). After mediaMaxChunkRetries consecutive failures → give up (throw; localizeMedia leaves it
    * inert). markContactSuccess fires ONCE per digest (after the first 2xx headers). If the peer returns
    * A peer that ignores Range and returns 200 is rejected: federation media requires exact resumable
@@ -6094,7 +6075,7 @@ export class FederationService {
       let unitLen = unit.end - unit.start + 1;
 
       // Accumulate the unit body with retry-on-abort. A body-read error or a byte-count mismatch
-      // discards the partial buffer and re-requests the SAME range; NO demote (the peer already
+      // discards the partial buffer and re-requests the SAME range; NO degradation (the peer already
       // returned 2xx headers — it is alive, we just lost a stream).
       let buf: Buffer = Buffer.alloc(0);
       let retries = 0;
@@ -6135,7 +6116,7 @@ export class FederationService {
 
   /** One signed Range GET to /media/:digest, with status-based classification (see fetchMediaChunks). Returns
    *  the Response + parsed Content-Range bounds and optional per-unit Content-Digest. Throws — with
-   *  markDemoted for auth/transport failures — on
+   *  markTransportDegraded for auth/transport failures — on
    *  anything that isn't 200/206. The raw query is covered by the request signature. */
   private async requestRangeUnit(
     url: URL,
@@ -6163,7 +6144,7 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.mediaChunkTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(
+      await this.recognition.markTransportDegraded(
         peerDomain,
         `GET media network/timeout: ${(e as Error).message}`,
         operationStartedAt,
@@ -6173,13 +6154,27 @@ export class FederationService {
       );
     }
     if (res.status === 200) {
-      throw new Error('S2S media peer ignored required Range request');
+      await this.markContactSuccess(peerDomain);
+      const error = await this.readMediaErrorEnvelope(res);
+      if (error) {
+        throw new S2sResponseError(
+          `S2S media from ${peerDomain} returned business code ${error.code}`,
+          res.status,
+          error.code,
+          error.data,
+        );
+      }
+      throw new S2sResponseError(
+        'S2S media peer ignored required Range request',
+        res.status,
+        BusinessCode.FEDERATION_MALFORMED,
+      );
     }
     if (res.status === 206) {
       const cr = res.headers.get('content-range') ?? '';
       const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(cr);
       if (!m) {
-        await this.markDemoted(
+        await this.recognition.markTransportDegraded(
           peerDomain,
           `GET media 206 unparseable Content-Range: ${cr}`,
           operationStartedAt,
@@ -6214,21 +6209,75 @@ export class FederationService {
         contentDigest: contentDigestHeader ?? undefined,
       };
     }
-    // Auth/transport failures demote (peer unreachable / rejecting our signature); other 4xx (416/400/404)
-    // fail this digest WITHOUT demoting (range/offset issue or file gone — not a trust failure).
-    if (res.status === 401 || res.status === 403 || res.status >= 500) {
-      await this.markDemoted(
+    const error = await this.readMediaErrorEnvelope(res);
+    const code = error?.code;
+    if (res.status === HttpStatus.SERVICE_UNAVAILABLE || res.status >= 500) {
+      await this.recognition.markTransportDegraded(
         peerDomain,
         `GET media HTTP ${res.status}`,
         operationStartedAt,
       );
-      throw new Error(
-        `S2S media from ${peerDomain} rejected: HTTP ${res.status}`,
-      );
+    } else if (
+      res.status === HttpStatus.CONFLICT &&
+      this.isFatalPeerCode(code)
+    ) {
+      await this.markPeerHalted(peerDomain, code, error?.message);
     }
-    throw new Error(
-      `S2S media from ${peerDomain} HTTP ${res.status} (no demote)`,
+    if (res.status === HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE) {
+      const contentRange = res.headers.get('content-range') ?? '';
+      if (
+        code !== BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE ||
+        !/^bytes \*\/\d+$/.test(contentRange)
+      ) {
+        throw new S2sResponseError(
+          'S2S media returned malformed 416 response',
+          res.status,
+          BusinessCode.FEDERATION_MALFORMED,
+        );
+      }
+    }
+    throw new S2sResponseError(
+      `S2S media from ${peerDomain} rejected: HTTP ${res.status}`,
+      res.status,
+      code,
+      error?.data,
     );
+  }
+
+  private async readMediaErrorEnvelope(
+    res: Response,
+  ): Promise<{ code: number; message?: string; data?: unknown } | undefined> {
+    const contentType = (res.headers.get('content-type') ?? '')
+      .split(';', 1)[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== 'application/json') return undefined;
+    const text = await res.text();
+    if (Buffer.byteLength(text) > 64 * 1024) return undefined;
+    try {
+      const parsed = JSON.parse(text) as {
+        code?: unknown;
+        message?: unknown;
+        data?: unknown;
+      };
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        typeof parsed.code !== 'number' ||
+        !Number.isSafeInteger(parsed.code) ||
+        parsed.code === BusinessCode.OK ||
+        typeof parsed.message !== 'string'
+      ) {
+        return undefined;
+      }
+      return {
+        code: parsed.code,
+        message: parsed.message,
+        data: parsed.data,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   /** Iterate a fetch Response web body as Buffer chunks. Node's global ReadableStream (undici) is

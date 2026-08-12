@@ -1,6 +1,6 @@
 # SOMS Federation v1 通话信令（Call Signaling）
 
-状态：`FINAL`
+状态：`REVIEW`
 
 本文定义 SOMS 服务器之间一对一通话的完整协议契约（protocol contract）。Federation v1 只定义签名的
 `POST /s2s/v1/call` 和其中的 SOMS 生命周期事件；媒体、SDP、ICE、STUN 和 TURN 遵循第 13 节列出的
@@ -35,11 +35,14 @@ WebRTC/JSEP 不定义 SOMS 使用的应用层信令传输，因此 `/s2s/v1/call
 - **主叫服务器（caller server）**：托管主叫用户账号、发送 `incoming` 并仲裁权威生命周期的服务器。
 - **被叫服务器（callee server）**：托管被叫用户账号、接收 `incoming` 并参与该通话临时信令状态的服务器。
 - **终端（endpoint）**：产生或消费 WebRTC 信令与媒体的通话参与端；按角色称为主叫终端或被叫终端。
-- **callSid**：主叫终端为每次新通话生成的 UUID，是通话关联键；生成方终身不得（MUST NOT）主动复用。
-- **`signal.payload.id`**：signal 产生方为每个逻辑 signal 生成的 UUID，是该 signal 的幂等键。
+- **callSid**：每次新通话在联邦传输（wire）上使用的 UUID，是通话关联键。主叫服务器必须（MUST）保证不同
+  通话不复用该值，并在重试同一通话时保持该值不变。
+- **`signal.payload.id`**：每个逻辑 signal 在联邦传输上使用的 UUID，是该 signal 的幂等键。发送服务器
+  必须（MUST）保证同一通话中的不同逻辑 signal 使用不同值，并在重试同一 signal 时保持该值不变。
   `callSid` 和 `signal.payload.id` 都使用 `common.schema.json#/$defs/canonicalUuid` 的 grammar：符合
   RFC 9562、版本字段为 1..8、RFC variant，并使用带连字符的 `8-4-4-4-12` 小写规范形式。v1 不根据
-  UUID 版本改变行为；生成方必须（MUST）保证实际唯一性。大写或无连字符写法不合法。
+  UUID 版本改变行为。本文不规定 ID 由终端还是服务器生成；服务器始终对其发送到联邦传输的 ID 负责。
+  大写或无连字符写法不合法。
 
 只有 `incoming` 携带账号，且账号位于其 closed `payload` 中：
 
@@ -392,15 +395,14 @@ string，`T` 是终端对该字符串
 终端 signaling state 恢复
 `stable` 后创建下一轮 offer；callee 每收到一个合法 offer 至多产生一个 answer。
 
-`payload.id` 是端到端幂等键：产生逻辑 signal 的终端必须（MUST）生成新 ID，并在重试同一 signal 时复用它；
-caller/callee server 必须（MUST）将该 ID 原样放入 S2S Call Frame，接收 server 再把同一 ID 原样投递给目标
-终端，任何一层都不得（MUST NOT）重新生成或改写。
+`payload.id` 是 signal 的幂等键。发送服务器必须（MUST）保证新逻辑 signal 使用该通话中尚未使用的 ID；
+重试同一 signal 时必须（MUST）复用原 ID 并保持 body 一致。本文不规定该 ID 最初由终端还是服务器生成。
 
-接收 server 对同一 `(signer domain, callSid, payload.id)` 只处理最先接受的 signal；以后相同 ID 的
-signal 无论 body 是否相同都必须（MUST）返回 `200/code=0` 且不得（MUST NOT）再次投递。接收一侧也必须（MUST）在调用
-WebRTC API 或应用 `video-state` 前，按 `(callSid, payload.id)` 只应用第一次投递。两端都可以（MAY）
-在通话进入 terminal 后释放 seen-ID 集合。生成方负责保证同一 ID 的重试 body 一致；接收方不得（MUST NOT）通过比较
-后续 body 改写或否定已经接受的第一条 signal。WebRTC/JSEP 不提供该应用层去重能力。
+接收服务器对同一 `(signer domain, callSid, payload.id)` 只接受第一个 signal；以后相同 ID 的 signal
+无论 body 是否相同都必须（MUST）返回 `200/code=0` 并作为 no-op 处理，不得（MUST NOT）再次产生该 signal 的
+应用层效果。接收服务器不得（MUST NOT）通过比较后续 body 改写或否定已经接受的第一条 signal。通话进入
+terminal 后，仍必须（MUST）在第 10 节定义的 tombstone 有效期内保留处理 signal retry 所需的幂等信息。
+WebRTC/JSEP 本身不提供这项应用层去重能力。
 
 ICE 可以（MAY）相对 offer/answer 乱序到达。联邦服务器不得（MUST NOT）根据 JSEP 到达顺序拒绝、重排或解释 ICE，只按
 外层 binding、shape 和 `payload.id` 执行校验与幂等，并原样转发；终端根据本地 WebRTC signaling
@@ -453,23 +455,23 @@ tombstone 至少保存第 7、8 节执行幂等所需的信息。tombstone 存�
 
 `Signature-Input` 的 `expires` 仍受主协议 `created + 300` 上限约束；发送方设置更大的值会在业务处理前被
 拒绝。任一端提交或获知 terminal 后，必须（MUST）原子停止并取消该 `callSid` 的所有非 terminal 待发送和
-重试工作，不得（MUST NOT）通过生成新签名继续重放旧 `incoming` 或 signal。结合生成方终身不复用 UUID
-`callSid` 的要求，墓碑只负责吸收仍处于已签名有效窗口内的在途重放，不承担永久 call ID 注册表的作用。
+重试工作，不得（MUST NOT）通过生成新签名继续重放旧 `incoming` 或 signal。结合主叫服务器不得为其他通话
+复用 `callSid` 的要求，墓碑只负责吸收仍处于已签名有效窗口内的在途重放，不承担永久 call ID 注册表的作用。
 
 服务器重启可以（MAY）丢失活动媒体状态，但必须（MUST）保留尚未到期的 tombstone；v1 不提供活动通话恢复操作。
 
-callee server 必须（MUST）分别设置未接听超时和接听后的建链超时；caller server 必须（MUST）分别设置更长的对应安全
-超时。进入 `accepted` 后，未接听期限不再适用，并开始适用建链期限。具体时长属于本地参数，
-但 caller safety timeout 必须（MUST）大于对应 callee timeout 加一次 S2S request timeout 和允许的时钟余量。
+caller server 和 callee server 都必须（MUST）分别设置有限的未接听超时和接听后建链超时，避免通话无限停留在
+活动阶段。进入 `accepted` 后，未接听期限不再适用，并开始适用建链期限。具体时长属于本地参数；v1 不规定双方
+对应超时的长短关系，实现不得（MUST NOT）依赖某一方的计时器先触发。双方超时形成的竞态按第 6、7 节收敛。
 
 超时产生的 protocol operation 固定如下；首次超时进入 terminal，并按第 6、7 节参与终态竞态：
 
-| 超时                            | 产生方        | 必须（MUST）发送的 frame |
-| ------------------------------- | ------------- | ------------------------ |
-| callee 未接听超时               | callee server | `missed`                 |
-| caller 未接听安全超时           | caller server | `cancelled`              |
-| callee 接听后媒体未建链超时     | callee server | `ended(timeout)`         |
-| caller 接听后媒体未建链安全超时 | caller server | `ended(timeout)`         |
+| 超时                        | 产生方        | 必须（MUST）发送的 frame |
+| --------------------------- | ------------- | ------------------------ |
+| callee 未接听超时           | callee server | `missed`                 |
+| caller 未接听超时           | caller server | `cancelled`              |
+| callee 接听后媒体未建链超时 | callee server | `ended(timeout)`         |
+| caller 接听后媒体未建链超时 | caller server | `ended(timeout)`         |
 
 ## 11. 验证顺序、错误与调用方动作（Verification Order, Errors, and Caller Actions）
 

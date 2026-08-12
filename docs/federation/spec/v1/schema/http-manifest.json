@@ -86,6 +86,13 @@
       "path": "/s2s/v1/users/:account",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/userProfileParameters",
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
       "responseSchema": "urn:soms:federation:v1:profile",
       "responseEnvelope": true
     },
@@ -96,7 +103,13 @@
       "authentication": "recognized-http-message-signature",
       "successStatus": [200, 206],
       "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/mediaParameters",
-      "requestHeaders": ["Range"],
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature",
+        "Range"
+      ],
       "responseMediaType": "application/octet-stream",
       "responseHeaders": [
         "Content-Length",
@@ -111,6 +124,13 @@
       "path": "/s2s/v1/forward-bundles/:bundleId",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/forwardBundleParameters",
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
       "responseSchema": "urn:soms:federation:v1:forward-bundle",
       "responseEnvelope": true
     }

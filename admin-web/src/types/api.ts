@@ -245,9 +245,9 @@ export interface FederatedPeer {
   createdAt: number;
   trustedAt: number | null; // start of the current trust epoch
   lastSuccessAt: number | null; // last successful signed S2S op (liveness watermark, ±60s)
-  demotedAt: number | null; // last trusted→demoted transition
-  demoteReason: string | null; // latest failure message
-  demotionCount: number; // how many times demoted — flakiness signal
+  degradedAt: number | null; // last available→degraded transition
+  degradationReason: string | null; // latest failure message
+  degradationCount: number; // how many times degraded — flakiness signal
   haltedAt: number | null;
   haltCode: number | null;
   haltReason: string | null;
@@ -321,7 +321,7 @@ export interface ContinueQuotaInput {
 export type FederationPeerEventType =
   | 'discovered'
   | 'trusted'
-  | 'demoted'
+  | 'degraded'
   | 'halted'
   | 'unblocked';
 
@@ -329,7 +329,7 @@ export interface FederatedPeerEvent {
   id: number;
   domain: string;
   type: FederationPeerEventType;
-  reason: string | null; // demoted: failure message; halted: persisted stop reason
+  reason: string | null; // degraded: failure message; halted: persisted stop reason
   createdAt: number;
 }
 

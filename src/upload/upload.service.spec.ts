@@ -14,6 +14,8 @@ const PNG = Buffer.from([
 const EBML = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00]);
 /** 'OggS' — a native audio container. */
 const OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53]);
+const ONE_PIXEL_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlS8AAAAASUVORK5CYII=';
 
 const mediaMetadata = {
   fromBuffer: vi.fn(async (_buf: Buffer, intent: string) =>
@@ -79,6 +81,51 @@ describe('UploadService.detectFamily — magic-byte family resolution', () => {
     expect(svc.detectFamily(Buffer.from([0x00, 0x00, 0x00, 0x00]))).toBe(
       'FILE',
     );
+  });
+});
+
+describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
+  function target() {
+    const svc = new UploadService({} as never, mediaMetadata as never);
+    vi.spyOn(svc, 'saveAvatars').mockResolvedValue(
+      '/uploads/avatars/avatar-512.webp',
+    );
+    return svc;
+  }
+
+  it('accepts canonical base64 whose declared dimensions match the image', async () => {
+    const svc = target();
+    await expect(
+      svc.saveAvatarFromWire({ b64: ONE_PIXEL_PNG_BASE64, w: 1, h: 1 }),
+    ).resolves.toBe('/uploads/avatars/avatar-512.webp');
+    expect(svc.saveAvatars).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed or non-canonical base64 before localization', async () => {
+    const svc = target();
+    await expect(
+      svc.saveAvatarFromWire({ b64: 'not base64', w: 1, h: 1 }),
+    ).rejects.toThrow('base64 is invalid');
+    expect(svc.saveAvatars).not.toHaveBeenCalled();
+  });
+
+  it('rejects declared dimensions that differ from decoded image metadata', async () => {
+    const svc = target();
+    await expect(
+      svc.saveAvatarFromWire({ b64: ONE_PIXEL_PNG_BASE64, w: 2, h: 1 }),
+    ).rejects.toThrow('dimensions do not match');
+    expect(svc.saveAvatars).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe dimensions without 32-bit coercion', async () => {
+    const svc = target();
+    await expect(
+      svc.saveAvatarFromWire({
+        b64: ONE_PIXEL_PNG_BASE64,
+        w: Number.MAX_SAFE_INTEGER + 1,
+        h: 1,
+      }),
+    ).rejects.toThrow('dimensions are invalid');
   });
 });
 

@@ -16,15 +16,16 @@ import {
   FEDERATION_PROTOCOL_VERSION,
   selectFederationProtocolVersion,
 } from '../src/federation/federation-protocol.js';
+import { FederationV1WireErrorCode } from '../src/common/business-code.js';
 
-const specDir = join(
+const normativeSpecDir = join(
   process.cwd(),
   'docs',
   'federation',
   'spec',
   'v1',
-  'schema',
 );
+const specDir = join(normativeSpecDir, 'schema');
 
 interface Vector {
   name: string;
@@ -147,6 +148,29 @@ function semanticValid(schema: string, value: unknown): boolean {
       )
     );
   }
+  if (schema === 'urn:soms:federation:v1:error') {
+    const error = value as {
+      code?: number;
+      data?: {
+        startChangeId?: string;
+        availableCursor?: string;
+        allocatedThrough?: string;
+      };
+    };
+    if (error.code !== 50019) return true;
+    const { startChangeId, availableCursor, allocatedThrough } =
+      error.data ?? {};
+    if (
+      startChangeId === undefined ||
+      availableCursor === undefined ||
+      allocatedThrough === undefined
+    )
+      return false;
+    return (
+      BigInt(startChangeId) <= BigInt(availableCursor) &&
+      BigInt(availableCursor) <= BigInt(allocatedThrough)
+    );
+  }
   return true;
 }
 
@@ -249,6 +273,55 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
   }
 }
 
+async function validateErrorRegistry(): Promise<void> {
+  const markdown = await readFile(join(normativeSpecDir, 'errors.md'), 'utf8');
+  const heading = '## 稳定错误码注册表（Stable Code Registry）';
+  const start = markdown.indexOf(heading);
+  if (start < 0)
+    throw new Error('errors.md is missing the stable code registry');
+  const section = markdown.slice(start + heading.length).split('\n## ')[0];
+  const documented = new Map<number, string>();
+  for (const match of section.matchAll(
+    /^\|\s*(\d+)\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|/gm,
+  )) {
+    const code = Number(match[1]);
+    if (documented.has(code))
+      throw new Error(`errors.md repeats stable code ${code}`);
+    documented.set(code, match[2]);
+  }
+  if (documented.size === 0)
+    throw new Error('errors.md stable code registry is empty');
+
+  const errorSchema = (await json(join(specDir, 'error.schema.json'))) as {
+    properties: { code: { enum: number[] } };
+  };
+  const schemaCodes = errorSchema.properties.code.enum;
+  const codeEntries = Object.entries(FederationV1WireErrorCode).filter(
+    (entry): entry is [string, number] => typeof entry[1] === 'number',
+  );
+  const codeRegistry = new Map(codeEntries.map(([name, code]) => [code, name]));
+  const documentedCodes = [...documented.keys()];
+  const codeEnumCodes = [...codeRegistry.keys()];
+
+  const sameCodes = (left: number[], right: number[]) =>
+    left.length === right.length && left.every((code, i) => code === right[i]);
+  if (
+    !sameCodes(documentedCodes, schemaCodes) ||
+    !sameCodes(documentedCodes, codeEnumCodes)
+  ) {
+    throw new Error(
+      `Federation v1 error code drift: errors.md=${documentedCodes.join(',')} schema=${schemaCodes.join(',')} code=${codeEnumCodes.join(',')}`,
+    );
+  }
+  for (const [code, name] of documented) {
+    if (codeRegistry.get(code) !== name) {
+      throw new Error(
+        `Federation v1 error name drift for ${code}: errors.md=${name} code=${codeRegistry.get(code) ?? '<missing>'}`,
+      );
+    }
+  }
+}
+
 async function validateSignatureVector(file: string): Promise<void> {
   const vector = (await json(join(specDir, 'vectors', file))) as {
     privateKeyBase64: string;
@@ -328,6 +401,7 @@ async function main(): Promise<void> {
     return;
   }
   await validateManifest(ajv);
+  await validateErrorRegistry();
   await validateVectors(ajv);
   await validateSignatureVector('http-message-signature.json');
   await validateSignatureVector('call-http-message-signature.json');

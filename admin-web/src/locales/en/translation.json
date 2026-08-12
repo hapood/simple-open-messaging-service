@@ -458,7 +458,7 @@
       "domain": "Domain",
       "status": "Status",
       "lastSuccess": "Last Success",
-      "demotions": "Demotions",
+      "degradations": "Degradations",
       "created": "Discovered"
     },
     "action": {
@@ -476,8 +476,8 @@
       "createdAt": "Discovered",
       "trustedAt": "Trusted since",
       "lastSuccessAt": "Last successful contact",
-      "demotedAt": "Demoted at",
-      "demotionCount": "Demotion count",
+      "degradedAt": "Degraded at",
+      "degradationCount": "Degradation count",
       "addedBy": "Set by",
       "auto": "auto (init)",
       "lastError": "Last failure"
@@ -489,7 +489,7 @@
     "event": {
       "discovered": "Discovered",
       "trusted": "Trust established",
-      "demoted": "Connection lost / demoted",
+      "degraded": "Connection lost / degraded",
       "halted": "Communication halted",
       "unblocked": "Unblocked by admin"
     },

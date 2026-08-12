@@ -35,7 +35,8 @@ import { FederationResetService } from './federation-reset.service.js';
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state +
  * its append-only event timeline (the trust→connection-loss process), plus Block/Unblock as the
  * persistent admin control (a blocked peer is refused federation until unblocked). The runtime trust
- * state machine itself — markTrusted / markDemoted / markContactSuccess — lives in FederationService
+ * state machine itself — recognition, transport degradation and contact recovery — lives in the
+ * federation services
  * and is driven by the S2S I/O paths; these endpoints only read it and flip the blocked bit.
  *
  * Block/Unblock are SUPER_ADMIN-only (high-impact: refuses federation for a whole domain) and audited.
@@ -93,7 +94,7 @@ export class AdminFederationController {
   @Post('admin/federation/peers/:domain/events')
   @ApiOperation({
     summary:
-      'A peer trust-lifecycle event timeline (trust → demote → re-trust …)',
+      'A peer trust-lifecycle event timeline (available → degraded → available …)',
   })
   async peerEvents(
     @Param('domain') domain: string,

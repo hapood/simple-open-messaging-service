@@ -455,7 +455,7 @@
       "status": "状态",
       "quota": "额度状态",
       "lastSuccess": "最近成功",
-      "demotions": "降级次数",
+      "degradations": "降级次数",
       "created": "发现时间"
     },
     "action": {
@@ -473,8 +473,8 @@
       "createdAt": "发现时间",
       "trustedAt": "信任起始于",
       "lastSuccessAt": "最近成功联系",
-      "demotedAt": "降级时间",
-      "demotionCount": "降级次数",
+      "degradedAt": "降级时间",
+      "degradationCount": "降级次数",
       "addedBy": "操作者",
       "auto": "自动（init）",
       "lastError": "最近错误"
@@ -486,7 +486,7 @@
     "event": {
       "discovered": "发现对端",
       "trusted": "建立信任",
-      "demoted": "连接丢失 / 降级",
+      "degraded": "连接丢失 / 降级",
       "halted": "通信已停止",
       "unblocked": "管理员取消屏蔽"
     },

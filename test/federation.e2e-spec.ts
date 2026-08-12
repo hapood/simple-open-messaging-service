@@ -829,13 +829,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(afterFeedGc.body.status).toBe(200);
   });
 
-  it('Step 2: a dropped media chunk resumes from its offset (no demote, byte-exact)', async () => {
+  it('Step 2: a dropped media chunk resumes from its offset (no degradation, byte-exact)', async () => {
     await ensureAliceAndBobAreFriends();
     const imageBytes = await makePng(190, 48);
 
     // Arm the S2S proxy (on appB→appA) to truncate the FIRST media `bytes=0-` response mid-stream —
     // a simulated network drop. appB must discard the partial unit + re-request the SAME range (resume),
-    // NOT demote appA. The proxy preserves the signed Host, so signatures still verify at appA.
+    // NOT degrade appA. The proxy preserves the signed Host, so signatures still verify at appA.
     proxy.armGetFileTruncation();
 
     const { url, size, digest } = await sendFederatedImage(imageBytes, 48);
@@ -2167,10 +2167,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(json.code).toBe(BusinessCode.FEDERATION_RECOGNITION_REQUIRED);
   });
 
-  // ─── trust lifecycle: demote on failure → re-handshake → block ───────────────────────────────
+  // ─── trust lifecycle: degrade on failure → re-handshake → halt ───────────────────────────────
   // These run after the friend-flow tests; aaa↔bbb are still mutually trusted (unfriending above is
-  // local-only and does not demote). They drive the state machine through real signed S2S traffic:
-  // a dead loopback URL forces a network failure → markDemoted; restoring it → ensurePeerTrusted
+  // local-only and does not degrade). They drive the state machine through real signed S2S traffic:
+  // a dead loopback URL forces a network failure → markTransportDegraded; restoring it → ensurePeerTrusted
   // re-handshakes → markTrusted; markBlocked → resolve surfaces FEDERATION_PEER_BLOCKED.
 
   it('degrades a healthy peer on transport failure while retaining certificates', async () => {
@@ -2185,8 +2185,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(keysBefore.length).toBeGreaterThan(0);
 
     // STOP appB, then resolve a user which is not already localized. Resolving bob again would now be a
-    // local cache hit and deliberately performs no network request, so it cannot exercise demotion.
-    // The uncached lookup reaches fetchRemoteUser and gets a real ECONNREFUSED → markDemoted(DOM_B).
+    // local cache hit and deliberately performs no network request, so it cannot exercise degradation.
+    // The uncached lookup reaches fetchRemoteUser and gets a real ECONNREFUSED → markTransportDegraded(DOM_B).
     await appB.stop();
     try {
       const res = await request(appA.baseUrl)
@@ -2198,33 +2198,35 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
       // A reconnect ping already in flight when stop() began may finish just after the failed GET and
       // temporarily recover the peer. Once that bounded race has drained, a second operation leaves the
-      // peer stably demoted (or fails fast because it already is demoted).
+      // peer stably degraded (or fails fast because it already is degraded).
       await new Promise((resolve) => setTimeout(resolve, 250));
       await request(appA.baseUrl)
         .post('/api/v1/user/resolve')
         .set('Authorization', `Bearer ${tokenA}`)
         .send({ account: 'still-unreachable', domain: DOM_B });
 
-      // aaa demoted bbb: state flipped, count bumped and the event is logged. Pinned keys are continuity
+      // aaa marked bbb degraded: state flipped, count bumped and the event is logged. Pinned keys are continuity
       // evidence, so a transient outage must retain them for the signed-heartbeat recovery below.
       const peerAfter = await appA.database.query.federatedPeer.findFirst({
         where: eq(federatedPeer.domain, DOM_B),
       });
       expect(peerAfter?.trustLevel).toBe('degraded');
       expect(peerAfter?.remoteServiceReachable).toBe(false);
-      expect(peerAfter?.demotionCount).toBeGreaterThanOrEqual(1);
-      expect(peerAfter?.demotedAt).not.toBeNull();
-      expect(peerAfter?.demoteReason).toMatch(/network\/timeout|HTTP 5\d\d/);
+      expect(peerAfter?.degradationCount).toBeGreaterThanOrEqual(1);
+      expect(peerAfter?.degradedAt).not.toBeNull();
+      expect(peerAfter?.degradationReason).toMatch(
+        /network\/timeout|HTTP 5\d\d/,
+      );
 
-      const demotedEvent =
+      const degradedEvent =
         await appA.database.query.federatedPeerEvent.findFirst({
           where: and(
             eq(federatedPeerEvent.domain, DOM_B),
-            eq(federatedPeerEvent.type, 'demoted'),
+            eq(federatedPeerEvent.type, 'degraded'),
           ),
         });
-      expect(demotedEvent).toBeDefined();
-      expect(demotedEvent!.reason).toMatch(/network\/timeout|HTTP 5\d\d/);
+      expect(degradedEvent).toBeDefined();
+      expect(degradedEvent!.reason).toMatch(/network\/timeout|HTTP 5\d\d/);
 
       const keysAfter = await appA.database.query.s2SKeyCache.findMany({
         where: eq(s2SKeyCache.domain, DOM_B),
@@ -2249,8 +2251,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set({
         trustLevel: 'degraded',
         remoteServiceReachable: false,
-        demotedAt: new Date(),
-        demoteReason: 'deterministic identity recovery fixture',
+        degradedAt: new Date(),
+        degradationReason: 'deterministic identity recovery fixture',
       })
       .where(eq(federatedPeer.domain, DOM_B));
     const res = await request(appA.baseUrl)
@@ -2265,8 +2267,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(peer?.trustLevel).toBe('available');
     expect(peer?.remoteServiceReachable).toBe(true);
-    expect(peer?.demotedAt).toBeNull();
-    expect(peer?.demoteReason).toBeNull();
+    expect(peer?.degradedAt).toBeNull();
+    expect(peer?.degradationReason).toBeNull();
     expect(peer?.identityPinnedAt?.getTime()).toBe(
       beforeRecovery?.identityPinnedAt?.getTime(),
     );
@@ -2280,7 +2282,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const types = (eventsRes.body.data as { type: string }[]).map(
       (e) => e.type,
     );
-    expect(types).toContain('demoted');
+    expect(types).toContain('degraded');
   });
 
   it('lets a super-admin recover identity loss only after the exact original pin returns', async () => {
@@ -2397,7 +2399,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.body.code).toBe(BusinessCode.FEDERATION_PEER_BLOCKED);
 
     // Admin reads (the admin page's data sources, via their real routes): the list filters by state; the
-    // timeline (newest-first) carries the full discovered → trusted → demoted → trusted → blocked process.
+    // timeline (newest-first) carries the full discovered → trusted → degraded → trusted → blocked process.
     const listRes = await request(appA.baseUrl)
       .post('/api/v1/admin/federation/peers')
       .set('Cookie', adminCookieA)
@@ -2414,13 +2416,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({ take: 50 });
     const types = (tlRes.body.data as { type: string }[]).map((e) => e.type);
     expect(types).toContain('discovered');
-    expect(types).toContain('demoted');
+    expect(types).toContain('degraded');
     expect(types[0]).toBe('halted');
   });
 
   // This destructive lifecycle now has its own isolated fixture in federation-reset.e2e-spec.ts.
   it.skip('destructively resets identity-lost peer data and permits one fresh init without inheriting authorization (covered independently)', async () => {
-    // Make this destructive lifecycle test independent of the preceding network-demotion test. A restart
+    // Make this destructive lifecycle test independent of the preceding network-degradation test. A restart
     // also gives the in-memory bbb fixture a new physical key, matching the same-domain replacement case
     // that reset is designed to permit only after all old authorization has been removed.
     await appB.restart();

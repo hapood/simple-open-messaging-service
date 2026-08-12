@@ -31,7 +31,8 @@ npm run federation:conformance
 ```
 
 它会编译全部 Schema、校验正反向量、验证 message `content` 的二次解析、检查严格递增版本数组、
-核对 HTTP manifest 的完整 v1 surface 与实现版本常量，并验证固定签名向量。仓库单测另外把 manifest、
+核对 HTTP manifest 的完整 v1 surface 与实现版本常量，严格比较错误码正文注册表、error Schema 与代码
+wire enum，并验证固定签名向量。仓库单测另外把 manifest、
 Schema enum、规范正文和 Nest route metadata 相互比对，防止发布制品与实现漂移。
 
 第三方实现可以验证自己的 JSON：

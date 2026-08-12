@@ -16,10 +16,11 @@ wire 字段、枚举、HTTP header、标准名和稳定错误码（stable code�
 2. [传输与安全](./transport-security.md)：well-known、根密钥/签名密钥（root/signing key）、SRV、TLS、逻辑权威（authority）、摘要（digest）和 HTTP Message Signature。
 3. [服务器认可](./recognition.md)：双向 Recognize、根公钥固定（root public key pinning）、Healthy 可用性查询、降级状态、时序和失败处理。
 4. [状态源（State Feed）](./state-feed.md)：完整分页（page）、五种状态事件（state event）与字段级合并语义。
-5. [消息源（Message Feed）](./message-feed.md)：完整分页、10 种联邦消息类型、媒体和转发。
-6. [语音与视频通话](./calls.md)：WebRTC 标准栈、S2S 帧（frame）、状态机与 AUDIO→VIDEO 升级。
-7. [错误码注册表](./errors.md)：稳定错误码、HTTP 状态（status）、重试与身份动作（identity action）。
-8. [机器可读发布包](./schema/README.md)：JSON Schema、HTTP 清单（manifest）、正反向量与一致性测试 CLI（conformance CLI）。
+5. [消息源（Message Feed）](./message-feed.md)：完整分页与 10 种联邦消息类型。
+6. [资源接口](./resources.md)：用户资料、媒体 bytes 与转发 closure 的参数、响应、授权和错误契约。
+7. [语音与视频通话](./calls.md)：WebRTC 标准栈、S2S 帧（frame）、状态机与 AUDIO→VIDEO 升级。
+8. [错误码注册表](./errors.md)：稳定错误码、HTTP 状态（status）、重试与身份动作（identity action）。
+9. [机器可读发布包](./schema/README.md)：JSON Schema、HTTP 清单（manifest）、正反向量与一致性测试 CLI（conformance CLI）。
 
 主协议定义共享规则；传输与安全文档定义所有操作（operation）共用的发现、TLS 和签名配置（profile）；
 其余 operation 文档只定义自己的 body、授权、状态与幂等语义。operation 文档可以收紧共享规则，但不能

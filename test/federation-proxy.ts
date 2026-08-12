@@ -1,6 +1,6 @@
 // A lightweight one-way HTTP relay for the federation e2e: appB → appA. It exists for ONE purpose —
 // fault injection on the resume test. localhost never drops bytes, so to exercise appB's resumable
-// media transport (mid-stream stall → re-request the SAME range, no demote) the test must inject a
+// media transport (mid-stream stall → re-request the SAME range, no degradation) the test must inject a
 // truncation. Rather than stub appB's in-process fetch (impossible across processes) or add a test
 // branch to production media handling, this proxy sits on the path and can drop a response mid-stream.
 //
@@ -163,9 +163,9 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
             if (shouldTruncate) {
               // Send the 206 HEADERS (appA's Content-Range advertises the full unit), relay only a FEW body
               // bytes, then END cleanly (a FIN — NOT a socket destroy). appB's fetch RESOLVES (2xx) so it is
-              // NOT a demote-able network failure; its body read then yields a byte-count mismatch
+              // NOT a peer-degrading network failure; its body read then yields a byte-count mismatch
               // (buf.length < unitLen) → fetchMediaChunks discards the partial unit + re-requests the SAME
-              // range (resume). A destroy/RST would reject the fetch → markDemoted (wrong). Capped at 8 bytes
+              // range (resume). A destroy/RST would reject the fetch → markTransportDegraded (wrong). Capped at 8 bytes
               // so the unit (chunkBytes=64) is guaranteed incomplete even if the first chunk is a full unit.
               res.writeHead(upRes.statusCode ?? 206, upRes.headers);
               let relayedFirst = false;

@@ -1107,7 +1107,9 @@ export class UploadService {
           if (!partialLost && finalPartSize === offset) break;
           storageRestarts += 1;
           if (storageRestarts > 2) {
-            throw new Error('CAS partial repeatedly disappeared during download');
+            throw new Error(
+              'CAS partial repeatedly disappeared during download',
+            );
           }
           await unlinkAsync(part).catch(() => {});
           await unlinkAsync(resume).catch(() => {});
@@ -1245,9 +1247,15 @@ export class UploadService {
     w: number;
     h: number;
   }): Promise<string> {
-    const w = avatar.w | 0;
-    const h = avatar.h | 0;
-    if (w > 0 && h > 0 && w * h > UploadService.MAX_AVATAR_PIXELS) {
+    if (
+      !Number.isSafeInteger(avatar.w) ||
+      avatar.w <= 0 ||
+      !Number.isSafeInteger(avatar.h) ||
+      avatar.h <= 0
+    ) {
+      throw new Error('federated avatar dimensions are invalid');
+    }
+    if (avatar.w * avatar.h > UploadService.MAX_AVATAR_PIXELS) {
       throw new Error('federated avatar too large in pixels');
     }
     // Pre-decode byte cap: reject BEFORE `Buffer.from` allocates, so a trusted-but-broken peer can't
@@ -1256,10 +1264,30 @@ export class UploadService {
     // metadata read remains the authoritative pixel-bomb check; this is the byte-bomb guard. A round
     // 1 MiB cap (~18× a real representative) avoids the imprecise base64 4/3 ceil math. Trusted-peer
     // path only — low threat, but cheap defense-in-depth. See design-review item C3.
+    if (
+      typeof avatar.b64 !== 'string' ||
+      avatar.b64.length < 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        avatar.b64,
+      )
+    ) {
+      throw new Error('federated avatar base64 is invalid');
+    }
     if (avatar.b64.length > UploadService.MAX_AVATAR_WIRE_B64_LEN) {
       throw new Error('federated avatar too large in bytes');
     }
     const buf = Buffer.from(avatar.b64, 'base64');
+    if (buf.length === 0 || buf.toString('base64') !== avatar.b64) {
+      throw new Error('federated avatar base64 is not canonical');
+    }
+    const metadata = await sharp(buf).metadata();
+    if (
+      metadata.width !== avatar.w ||
+      metadata.height !== avatar.h ||
+      metadata.width * metadata.height > UploadService.MAX_AVATAR_PIXELS
+    ) {
+      throw new Error('federated avatar dimensions do not match image');
+    }
     return this.saveAvatars(buf);
   }
 }
