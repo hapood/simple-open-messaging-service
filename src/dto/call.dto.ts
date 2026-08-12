@@ -79,13 +79,13 @@ export class AnswerCallDto extends CallSidDto {}
  *  arrived). Body is just `callSid` (same shape as {@link AnswerCallDto}); the call does NOT transition. */
 export class RingingCallDto extends CallSidDto {}
 
-/** Either party reports the media leg is up (DTLS-SRTP connected). This is the real connect authority —
+/** The callee reports the media leg is up (DTLS-SRTP connected). This is the real connect authority —
  *  the basis for the call record's `startedAt`/duration (NOT `/calls/accept`, which only means the
- *  callee answered). Idempotent: the second party's report is a no-op. */
+ *  callee answered). A caller report and a repeated callee report are idempotent no-ops. */
 export class ConnectedCallDto extends CallSidDto {}
 
-/** Permanently upgrade an established AUDIO call to VIDEO. This transition is idempotent and one-way for
- *  the lifetime of the call; turning a camera off later pauses only that participant's video track. */
+/** The caller permanently commits an established AUDIO call's upgrade to VIDEO. This transition is
+ *  idempotent and one-way; turning a camera off later pauses only that participant's video track. */
 export class UpgradeCallVideoDto extends CallSidDto {}
 
 /** The callee declines an incoming ring. */

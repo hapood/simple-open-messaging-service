@@ -250,7 +250,7 @@ rows with independent notes and revisions; group invitation and join intent are 
 
 1:1 audio/video calls. The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On a terminal state `CallsService` authors a `ContentType.CALL` chat bubble (bilateral).
 
-- `POST /calls/initiate` `{ peerUserId, type }` → `callSid` (`70001` not friends · `70004` busy).
+- `POST /calls/initiate` `{ callSid, calleeUserId, callType }` → `{ callSid, threadId }` (`70001` not friends · `70004` busy).
 - `POST /calls/{accept, ringing, connected, decline, cancel, end, signal}` drive the FSM (`70002` not found · `70003` not a participant · `70005` invalid transition).
 - `GET /calls/ice-servers` — TURN/STUN helper (TURN off by default; misconfig throws).
 - `GET /calls/:callSid/signaling` — caller-side answer fetch.

@@ -16,7 +16,7 @@ function serviceWithPost(post: (...args: unknown[]) => Promise<void>) {
   };
 }
 
-const params = (op: 'accepted' | 'connected') => ({
+const params = (op: 'ringing' | 'accepted' | 'connected') => ({
   fromLocalUserId: 1,
   to: { account: 'bob', domain: 'b.example' },
   callSid: '550e8400-e29b-41d4-a716-446655440000',
@@ -37,6 +37,37 @@ const answerParams = () => ({
 });
 
 describe('Federation call lifecycle ordering', () => {
+  it('does not let an in-flight or failed advisory ringing block accepted', async () => {
+    let releaseRinging!: () => void;
+    const ringingGate = new Promise<void>((resolve) => {
+      releaseRinging = resolve;
+    });
+    let failRinging = false;
+    const order: string[] = [];
+    const { service } = serviceWithPost(async (frame) => {
+      const op = (frame as { op: string }).op;
+      order.push(op);
+      if (op === 'ringing') {
+        await ringingGate;
+        if (failRinging) throw new Error('ringing delivery failed');
+      }
+    });
+
+    const ringing = service.sendCallFrame(params('ringing'), 'b.example');
+    await vi.waitFor(() => expect(order).toEqual(['ringing']));
+    await expect(
+      service.sendCallFrame(params('accepted'), 'b.example'),
+    ).resolves.toBeUndefined();
+    expect(order).toEqual(['ringing', 'accepted']);
+
+    failRinging = true;
+    releaseRinging();
+    await expect(ringing).rejects.toThrow('ringing delivery failed');
+    await expect(
+      service.sendCallFrame(params('accepted'), 'b.example'),
+    ).resolves.toBeUndefined();
+  });
+
   it('does not send connected until accepted has completed', async () => {
     let releaseAccepted!: () => void;
     const acceptedGate = new Promise<void>((resolve) => {

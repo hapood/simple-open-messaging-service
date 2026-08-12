@@ -30,9 +30,9 @@ export function iceServersFromResponse(
 }
 
 interface StagedSignaling {
-  offer: string | null;
-  answer: string | null;
-  ice: string[];
+  offer: { id: string; payload: string } | null;
+  answer: { id: string; payload: string } | null;
+  ice: Array<{ id: string; payload: string }>;
 }
 
 export const WEB_RECONNECT_BACKSTOP_MS = 15_000;
@@ -215,9 +215,15 @@ export class WebCallAdapter implements CallAdapter {
         const staged = await this.get<StagedSignaling>(
           `calls/${callSid}/signaling`,
         );
-        if (staged?.offer) await this.applyOffer(staged.offer);
-        for (const candidate of staged?.ice ?? [])
-          await this.applyIce(candidate);
+        if (staged?.offer && !this.seenSignalIds.has(staged.offer.id)) {
+          this.seenSignalIds.add(staged.offer.id);
+          await this.applyOffer(staged.offer.payload);
+        }
+        for (const candidate of staged?.ice ?? []) {
+          if (this.seenSignalIds.has(candidate.id)) continue;
+          this.seenSignalIds.add(candidate.id);
+          await this.applyIce(candidate.payload);
+        }
       }
       await this.flushPendingIce();
     } catch (error) {
@@ -380,14 +386,19 @@ export class WebCallAdapter implements CallAdapter {
       const staged = await this.get<StagedSignaling>(
         `calls/${callSid}/signaling`,
       );
-      if (staged?.answer) {
+      if (staged?.answer && !this.seenSignalIds.has(staged.answer.id)) {
+        this.seenSignalIds.add(staged.answer.id);
         await this.pc.setRemoteDescription({
           type: 'answer',
-          sdp: staged.answer,
+          sdp: staged.answer.payload,
         });
         this.update({ phase: 'connecting', step: 'answer-received' });
       }
-      for (const candidate of staged?.ice ?? []) await this.applyIce(candidate);
+      for (const candidate of staged?.ice ?? []) {
+        if (this.seenSignalIds.has(candidate.id)) continue;
+        this.seenSignalIds.add(candidate.id);
+        await this.applyIce(candidate.payload);
+      }
     } catch (error) {
       console.warn('[call:web] staged answer fetch failed', error);
     }
@@ -471,7 +482,11 @@ export class WebCallAdapter implements CallAdapter {
             ? 'reconnecting'
             : this.state.phase,
     });
-    if (state === 'connected' && !this.connectedReported) {
+    if (
+      state === 'connected' &&
+      !this.state.isCaller &&
+      !this.connectedReported
+    ) {
       this.cancelNegotiationBackstop();
       this.cancelReconnectBackstop();
       this.iceRestartTried = false;

@@ -187,7 +187,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         const staged = await request(appB.baseUrl)
           .get(`/api/v1/calls/${callSid}/signaling`)
           .set('Authorization', `Bearer ${tokenFrank}`);
-        return staged.body.data?.offer === 'OFFER_SDP'
+        return staged.body.data?.offer?.payload === 'OFFER_SDP'
           ? staged.body.data
           : null;
       });
@@ -216,7 +216,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         const staged = await request(appA.baseUrl)
           .get(`/api/v1/calls/${callSid}/signaling`)
           .set('Authorization', `Bearer ${tokenErin}`);
-        return staged.body.data?.answer === 'ANSWER_SDP'
+        return staged.body.data?.answer?.payload === 'ANSWER_SDP'
           ? staged.body.data
           : null;
       });

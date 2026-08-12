@@ -407,8 +407,12 @@ object CallController {
                         SomsLog.i(TAG) { "media connected (sid=$callSid)" }
                         pushSnapshot()
                     }
-                    val sid = callSid ?: return
-                    callExecutor.execute { postConnected(sid) }
+                    // SOMS uses the callee's first media-up observation as the single authoritative
+                    // connected timestamp. The caller waits for CALL_EVENT{connected} from the server.
+                    if (!isCaller) {
+                        val sid = callSid ?: return
+                        callExecutor.execute { postConnected(sid) }
+                    }
                 }
                 PeerConnection.PeerConnectionState.DISCONNECTED -> {
                     // Transient (a blip / handoff). Do NOT fail immediately — GATHER_CONTINUALLY regathers on a
@@ -531,13 +535,22 @@ object CallController {
     private fun fetchAndApplyStaged(connection: PeerConnection, sid: String) {
         val staged = fetchSignaling(sid) ?: return
         val half = if (isCaller) "answer" else "offer"
-        val sdp = staged.optString(half, "")
-        if (sdp.isEmpty()) return
+        val sdpSignal = staged.optJSONObject(half) ?: return
+        val sdpId = sdpSignal.optString("id")
+        val sdp = sdpSignal.optString("payload")
+        if (sdpId.isEmpty() || sdp.isEmpty()) return
         val iceCount = staged.optJSONArray("ice")?.length() ?: 0
         SomsLog.i(TAG) { "applied staged $half from server (+$iceCount ICE)" }
-        applySignal(connection, half, sdp)
+        if (seenSignalIds.add(sdpId)) applySignal(connection, half, sdp)
         val ice = staged.optJSONArray("ice")
-        if (ice != null) for (i in 0 until ice.length()) applySignal(connection, "ice", ice.getString(i))
+        if (ice != null) for (i in 0 until ice.length()) {
+            val signal = ice.optJSONObject(i) ?: continue
+            val id = signal.optString("id")
+            val payload = signal.optString("payload")
+            if (id.isNotEmpty() && payload.isNotEmpty() && seenSignalIds.add(id)) {
+                applySignal(connection, "ice", payload)
+            }
+        }
     }
 
     /** GET /calls/:callSid/signaling → the staged offer + caller ICE for the callee (the server's
@@ -600,12 +613,21 @@ object CallController {
                 }
             }
             "connected" -> {
-                if (CallFsm.nextPhase(phase, isCaller, "connected") != null) {
+                val next = CallFsm.nextPhase(phase, isCaller, "connected")
+                val authoritativeStartedAt = obj.optLong("startedAt", 0L)
+                var changed = false
+                if (next != null) {
                     phase = "connected"
-                    startedAt = obj.optLong("startedAt", System.currentTimeMillis())
                     step = ""
-                    pushSnapshot()
+                    changed = true
                 }
+                // The local PeerConnection may already have moved the UI to connected. Still replace its
+                // provisional timestamp with the callee-authoritative server event so both endpoints agree.
+                if (authoritativeStartedAt > 0L && startedAt != authoritativeStartedAt) {
+                    startedAt = authoritativeStartedAt
+                    changed = true
+                }
+                if (changed) pushSnapshot()
             }
             "video-upgraded" -> {
                 callType = "VIDEO"

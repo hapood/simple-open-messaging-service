@@ -65,7 +65,10 @@ describe('WebCallAdapter multi-device ownership', () => {
   });
 
   it('applies the first endpoint delivery of a signal ID only once', async () => {
-    const adapter = new WebCallAdapter({} as HttpClient, IDLE_CALL);
+    const adapter = new WebCallAdapter(
+      { post: () => of({ code: 0, message: '' }) } as unknown as HttpClient,
+      IDLE_CALL,
+    );
     adapter.applyLifecycle({
       ...IDLE_CALL,
       phase: 'connected',

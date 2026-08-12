@@ -1,16 +1,17 @@
 # Federation v1 机器可读发布包
 
-状态：`FINAL`
+状态：`REVIEW`
 
-本目录作为非规范性验证资源与五份 v1 规范正文一起发布，使用 JSON Schema Draft 2020-12。正文定义
+本目录作为非规范性验证资源与 v1 规范正文一起发布，使用 JSON Schema Draft 2020-12。正文定义
 事务、权限、签名、cursor 和状态机语义；Schema 定义可机械检查的 JSON shape。二者冲突时以正文
 为准并修复发布包。
 
 ## 文件
 
-- `common.schema.json`：identity、时间、cursor、digest、address 等公共 scalar。
+- `common.schema.json`：identity、时间、cursor、digest、address 等 Federation 共享类型。
 - `discovery.schema.json`：`/.well-known/soms`，包括多版本 `protocolVersions`。
-- `identity.schema.json`：ignite/identity claim 与 feed revision hint。
+- `identity.schema.json`：当前仍包含旧 Ignite identity claim 与 feed revision hint；Recognize/Healthy shape
+  将在正文定稿后的 schema 漂移收敛阶段替换。
 - `state-feed.schema.json`：完整 page 与五种 event body。
 - `message-feed.schema.json`：完整 page、outer message、thread 和 asset descriptor。
 - `message-content.schema.json`：二次解析后的 11 种 message content。

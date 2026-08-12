@@ -42,7 +42,9 @@ export class CallsController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/initiate')
-  @ApiOperation({ summary: 'Initiate a 1:1 call (rings the callee in-band + to all devices)' })
+  @ApiOperation({
+    summary: 'Initiate a 1:1 call (rings the callee in-band + to all devices)',
+  })
   async initiate(@Request() req: FastifyRequest, @Body() dto: InitiateCallDto) {
     return this.calls.initiate(req.user.userId, dto);
   }
@@ -53,7 +55,10 @@ export class CallsController {
   @HttpCode(HttpStatus.OK)
   @Post('calls/accept')
   @ApiOperation({ summary: 'Accept an incoming call (callee)' })
-  async accept(@Request() req: FastifyRequest, @Body() dto: AnswerCallDto): Promise<void> {
+  async accept(
+    @Request() req: FastifyRequest,
+    @Body() dto: AnswerCallDto,
+  ): Promise<void> {
     await this.calls.accept(req.user.userId, dto.callSid);
   }
 
@@ -62,8 +67,14 @@ export class CallsController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/ringing')
-  @ApiOperation({ summary: 'Acknowledge the incoming ring is alerting the callee (callee device)' })
-  async ringing(@Request() req: FastifyRequest, @Body() dto: RingingCallDto): Promise<void> {
+  @ApiOperation({
+    summary:
+      'Acknowledge the incoming ring is alerting the callee (callee device)',
+  })
+  async ringing(
+    @Request() req: FastifyRequest,
+    @Body() dto: RingingCallDto,
+  ): Promise<void> {
     await this.calls.ringing(req.user.userId, dto.callSid);
   }
 
@@ -72,8 +83,13 @@ export class CallsController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/connected')
-  @ApiOperation({ summary: 'Report the media leg is up (either party) — the real connect marker' })
-  async connected(@Request() req: FastifyRequest, @Body() dto: ConnectedCallDto): Promise<void> {
+  @ApiOperation({
+    summary: 'Report the media leg is up (callee-authoritative connect marker)',
+  })
+  async connected(
+    @Request() req: FastifyRequest,
+    @Body() dto: ConnectedCallDto,
+  ): Promise<void> {
     await this.calls.connected(req.user.userId, dto.callSid);
   }
 
@@ -82,7 +98,9 @@ export class CallsController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/upgrade-video')
-  @ApiOperation({ summary: 'Permanently upgrade an established audio call to video' })
+  @ApiOperation({
+    summary: 'Caller commits an established audio call upgrade to video',
+  })
   async upgradeVideo(
     @Request() req: FastifyRequest,
     @Body() dto: UpgradeCallVideoDto,
@@ -96,7 +114,10 @@ export class CallsController {
   @HttpCode(HttpStatus.OK)
   @Post('calls/decline')
   @ApiOperation({ summary: 'Decline an incoming call (callee)' })
-  async decline(@Request() req: FastifyRequest, @Body() dto: DeclineCallDto): Promise<void> {
+  async decline(
+    @Request() req: FastifyRequest,
+    @Body() dto: DeclineCallDto,
+  ): Promise<void> {
     await this.calls.decline(req.user.userId, dto.callSid);
   }
 
@@ -105,8 +126,13 @@ export class CallsController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/cancel')
-  @ApiOperation({ summary: 'Cancel a ringing call before the callee answers (caller)' })
-  async cancel(@Request() req: FastifyRequest, @Body() dto: CancelCallDto): Promise<void> {
+  @ApiOperation({
+    summary: 'Cancel a ringing call before the callee answers (caller)',
+  })
+  async cancel(
+    @Request() req: FastifyRequest,
+    @Body() dto: CancelCallDto,
+  ): Promise<void> {
     await this.calls.cancel(req.user.userId, dto.callSid);
   }
 
@@ -116,7 +142,10 @@ export class CallsController {
   @HttpCode(HttpStatus.OK)
   @Post('calls/end')
   @ApiOperation({ summary: 'End a connected call (either party)' })
-  async end(@Request() req: FastifyRequest, @Body() dto: EndCallDto): Promise<void> {
+  async end(
+    @Request() req: FastifyRequest,
+    @Body() dto: EndCallDto,
+  ): Promise<void> {
     await this.calls.end(req.user.userId, dto.callSid, dto.endReason);
   }
 
@@ -125,14 +154,21 @@ export class CallsController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('calls/signal')
-  @ApiOperation({ summary: 'Relay one WebRTC signaling frame (offer/answer/ICE) to the peer' })
-  async signal(@Request() req: FastifyRequest, @Body() dto: SignalCallDto): Promise<void> {
+  @ApiOperation({
+    summary: 'Relay one WebRTC signaling frame (offer/answer/ICE) to the peer',
+  })
+  async signal(
+    @Request() req: FastifyRequest,
+    @Body() dto: SignalCallDto,
+  ): Promise<void> {
     await this.calls.signal(req.user.userId, dto);
   }
 
   @ApiBearerAuth()
   @Get('calls/ice-servers')
-  @ApiOperation({ summary: 'WebRTC ICE servers (STUN + time-limited TURN REST credentials)' })
+  @ApiOperation({
+    summary: 'WebRTC ICE servers (STUN + time-limited TURN REST credentials)',
+  })
   async iceServers(@Request() req: FastifyRequest) {
     // buildIceServers throws a server error on a PARTIAL TURN config (URLs without the REST secret,
     // or vice-versa) — a deployment misconfiguration fails loud rather than handing the client a
@@ -146,9 +182,13 @@ export class CallsController {
   @ApiBearerAuth()
   @Get('calls/:callSid/signaling')
   @ApiOperation({
-    summary: 'Fetch the staged setup signaling (offer/ICE) — for a peer that was offline when it trickled',
+    summary:
+      'Fetch the staged setup signaling (offer/ICE) — for a peer that was offline when it trickled',
   })
-  async signaling(@Request() req: FastifyRequest, @Param('callSid') callSid: string) {
+  async signaling(
+    @Request() req: FastifyRequest,
+    @Param('callSid') callSid: string,
+  ) {
     return this.calls.signaling(req.user.userId, callSid);
   }
 }

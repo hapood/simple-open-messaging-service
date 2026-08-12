@@ -31,7 +31,7 @@ export interface CallSnapshot {
   isCaller: boolean;
   /** The last advisory media state from the PC (new/gathering/connecting/connected/disconnected/failed). */
   mediaState: string;
-  /** Connect epoch-ms (0 until connected) — the timer starts here (== POST /calls/connected). */
+  /** Connect epoch-ms (0 until connected) — authoritative value comes from the callee's /calls/connected. */
   startedAt: number;
   muted: boolean;
   /** Whether this side is currently capturing/sending camera video. Turning it off never downgrades a

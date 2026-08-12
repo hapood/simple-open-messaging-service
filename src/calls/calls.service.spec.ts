@@ -173,7 +173,7 @@ describe('CallsService.initiate', () => {
 
     expect(m.sse.onCallSignal).toHaveBeenCalledTimes(1);
     expect(svc.signaling(2, 'cs1')).toEqual({
-      offer: 'OFFER_SDP',
+      offer: { id: 'signal-retry', payload: 'OFFER_SDP' },
       ice: [],
     });
   });
@@ -396,7 +396,7 @@ describe('CallsService terminal bubble persistence', () => {
       callType: 'VIDEO',
     });
     await svc.accept(2, 'cs1'); // answered — NOT connected yet (no startedAt)
-    await svc.connected(1, 'cs1'); // media up → startedAt stamped
+    await svc.connected(2, 'cs1'); // callee confirms media up → startedAt stamped
     await svc.end(1, 'cs1', 'completed');
     const c = lastBubbleContent(m)!;
     expect(c).toMatchObject({
@@ -475,7 +475,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     );
   });
 
-  it('accept on a non-ringing call is not found', async () => {
+  it('a repeated accept after acceptance is an idempotent no-op', async () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
@@ -483,12 +483,10 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1'); // → accepted
-    await expect(svc.accept(2, 'cs1')).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
-    );
+    await expect(svc.accept(2, 'cs1')).resolves.toBeUndefined();
   });
 
-  it('ringing by a non-callee is rejected; ringing on a non-ringing call is not found', async () => {
+  it('ringing by a non-callee is rejected; a historical ringing ack is a no-op', async () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
@@ -499,9 +497,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
     );
     await svc.accept(2, 'cs1'); // → accepted (no longer ringing)
-    await expect(svc.ringing(2, 'cs1')).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
-    );
+    await expect(svc.ringing(2, 'cs1')).resolves.toBeUndefined();
   });
 
   it('decline by a non-callee is rejected', async () => {
@@ -528,7 +524,21 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     );
   });
 
-  it('end on a ringing (not-yet-connected) call is not found', async () => {
+  it('requires end rather than cancel after accepted', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await svc.accept(2, 'cs1');
+    await expect(svc.cancel(1, 'cs1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    await expect(svc.end(1, 'cs1')).resolves.toBeUndefined();
+  });
+
+  it('end on a ringing call is an invalid transition', async () => {
     const { svc } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
@@ -536,7 +546,7 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
       callType: 'AUDIO',
     });
     await expect(svc.end(1, 'cs1')).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
     );
   });
 
@@ -561,10 +571,10 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
-    await svc.connected(1, 'cs1');
+    await svc.connected(2, 'cs1');
     m.sse.onCallEvent.mockClear();
 
-    await svc.upgradeVideo(2, 'cs1');
+    await svc.upgradeVideo(1, 'cs1');
     await svc.upgradeVideo(1, 'cs1');
 
     const upgraded = m.sse.onCallEvent.mock.calls.filter(
@@ -593,9 +603,9 @@ describe('CallsService.accept / decline / cancel / end guards', () => {
     });
     await svc.accept(2, 'cs1');
     await expect(svc.upgradeVideo(1, 'cs1')).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
     );
-    await svc.connected(1, 'cs1');
+    await svc.connected(2, 'cs1');
     await expect(svc.upgradeVideo(99, 'cs1')).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
     );
@@ -706,7 +716,7 @@ describe('CallsService ringing timeout', () => {
     vi.useRealTimers();
   });
 
-  it('flips ringing → missed after the timeout, fans `missed` to the CALLER only, writes the bubble', async () => {
+  it('flips ringing → missed after the timeout, dismisses both sides, and writes the bubble', async () => {
     const { svc, m } = mkService();
     await svc.initiate(1, {
       callSid: 'cs1',
@@ -717,8 +727,8 @@ describe('CallsService ringing timeout', () => {
 
     await vi.advanceTimersByTimeAsync(45_000);
 
-    // missed → caller only (the callee learns of the missed call from the bubble).
-    expect(eventRecipients(m)).toEqual([1]);
+    // Both sides (including sibling devices) must leave the live ringing UI.
+    expect(eventRecipients(m).sort()).toEqual([1, 2]);
     expect(m.sse.onCallEvent.mock.calls[0][1]).toMatchObject({
       type: 'missed',
     });
@@ -744,6 +754,25 @@ describe('CallsService ringing timeout', () => {
 
     // Connected → no timeout terminal write fired.
     expect(m.messages.writeMsgToThread).not.toHaveBeenCalled();
+  });
+
+  it('maps an accepted connect timeout to ended(timeout) for both local participants', async () => {
+    const { svc, m } = mkService();
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+    await svc.accept(2, 'cs1');
+    m.sse.onCallEvent.mockClear();
+
+    await vi.advanceTimersByTimeAsync(45_000);
+
+    expect(eventRecipients(m).sort()).toEqual([1, 2]);
+    for (const [, event] of m.sse.onCallEvent.mock.calls) {
+      expect(event).toMatchObject({ type: 'ended', endReason: 'timeout' });
+    }
+    expect(lastBubbleContent(m)?.status).toBe('failed');
   });
 
   it('an answered-but-never-connected call times out → failed (a connection failure, NOT missed)', async () => {
@@ -1291,8 +1320,8 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     });
     // The local callee fetches the staged offer and caller ICE.
     expect(svc.signaling(2, 'cs1')).toEqual({
-      offer: 'OFFER_SDP',
-      ice: ['ICE_1'],
+      offer: { id: 'offer-1', payload: 'OFFER_SDP' },
+      ice: [{ id: 'ice-1', payload: 'ICE_1' }],
     });
   });
 
@@ -1321,7 +1350,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 
     expect(m.sse.onCallSignal).toHaveBeenCalledTimes(1);
     expect(m.quota.tick).toHaveBeenCalledTimes(1);
-    expect(svc.signaling(2, 'cs1')).toEqual({ offer: 'FIRST', ice: [] });
+    expect(svc.signaling(2, 'cs1')).toEqual({
+      offer: { id: 'same-id', payload: 'FIRST' },
+      ice: [],
+    });
   });
 
   it('allows caller cancellation to win after the callee accepted locally', async () => {
@@ -1479,6 +1511,60 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 });
 
 describe('CallsService signaling store-and-forward', () => {
+  it('applies the shared offer/answer/video-state direction and phase policy to local calls', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, {
+      callSid: 'cs1',
+      calleeUserId: 2,
+      callType: 'AUDIO',
+    });
+
+    await expect(
+      svc.signal(2, {
+        id: 'bad-offer',
+        callSid: 'cs1',
+        toUserId: 1,
+        kind: 'offer',
+        payload: 'SDP',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    await expect(
+      svc.signal(2, {
+        id: 'early-answer',
+        callSid: 'cs1',
+        toUserId: 1,
+        kind: 'answer',
+        payload: 'SDP',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    await expect(
+      svc.signal(1, {
+        id: 'early-video-state',
+        callSid: 'cs1',
+        toUserId: 2,
+        kind: 'video-state',
+        payload: '{"enabled":true}',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+
+    await svc.accept(2, 'cs1');
+    await expect(
+      svc.signal(2, {
+        id: 'answer-1',
+        callSid: 'cs1',
+        toUserId: 1,
+        kind: 'answer',
+        payload: 'SDP',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('stages the offer + caller ICE for the callee to GET (an offline callee still gets them on accept)', async () => {
     const { svc } = mkService();
     await svc.initiate(1, {
@@ -1509,8 +1595,11 @@ describe('CallsService signaling store-and-forward', () => {
     });
     // The callee fetches → the offer + the caller's ICE.
     expect(svc.signaling(2, 'cs1')).toEqual({
-      offer: 'OFFER_SDP',
-      ice: ['ICE_1', 'ICE_2'],
+      offer: { id: 'offer-1', payload: 'OFFER_SDP' },
+      ice: [
+        { id: 'ice-1', payload: 'ICE_1' },
+        { id: 'ice-2', payload: 'ICE_2' },
+      ],
     });
   });
 
@@ -1521,6 +1610,7 @@ describe('CallsService signaling store-and-forward', () => {
       calleeUserId: 2,
       callType: 'AUDIO',
     });
+    await svc.accept(2, 'cs1');
     await svc.signal(2, {
       id: 'answer-1',
       callSid: 'cs1',
@@ -1536,8 +1626,8 @@ describe('CallsService signaling store-and-forward', () => {
       payload: 'CALLEE_ICE',
     });
     expect(svc.signaling(1, 'cs1')).toEqual({
-      answer: 'ANSWER_SDP',
-      ice: ['CALLEE_ICE'],
+      answer: { id: 'answer-1', payload: 'ANSWER_SDP' },
+      ice: [{ id: 'ice-1', payload: 'CALLEE_ICE' }],
     });
   });
 
@@ -1562,7 +1652,9 @@ describe('CallsService signaling store-and-forward', () => {
       kind: 'ice',
       payload: 'ICE_X',
     }); // retransmit
-    expect(svc.signaling(2, 'cs1').ice).toEqual(['ICE_X']);
+    expect(svc.signaling(2, 'cs1').ice).toEqual([
+      { id: 'ice-retry', payload: 'ICE_X' },
+    ]);
   });
 
   it('clears the staged signaling on connect (media up → setup consumed)', async () => {
@@ -1580,7 +1672,7 @@ describe('CallsService signaling store-and-forward', () => {
       payload: 'OFFER_SDP',
     });
     await svc.accept(2, 'cs1');
-    await svc.connected(1, 'cs1'); // media up
+    await svc.connected(2, 'cs1'); // callee confirms media up
     expect(svc.signaling(2, 'cs1')).toEqual({ offer: null, ice: [] });
   });
 
@@ -1649,7 +1741,7 @@ describe('CallsService active-call registry (HELLO activeCall)', () => {
       callType: 'AUDIO',
     });
     await svc.accept(2, 'cs1');
-    await svc.connected(1, 'cs1');
+    await svc.connected(2, 'cs1');
     expect(callState.get(1)).toMatchObject({ state: 'connected' });
     expect(callState.get(1)?.startedAt).toBeTypeOf('number');
   });

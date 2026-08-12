@@ -33,6 +33,13 @@ import {
   type CallOutcome,
 } from './call-content.js';
 import type { CallSignalKind } from './federated-call-protocol.js';
+import {
+  decideCallTransition,
+  decideVideoUpgrade,
+  isEndReasonAllowed,
+  isSignalAllowed,
+  timeoutLifecycle,
+} from './call-state-machine.js';
 
 /** Server-side ringing timeout on the CALLEE's server: a RINGING call flips to MISSED if the callee
  *  does not answer. The caller's client also has its own (UI) timeout; this is the authoritative
@@ -48,6 +55,10 @@ const FED_SAFETY_NET_MS = 60_000;
 const FED_CONNECT_SAFETY_NET_MS = 60_000;
 const CALL_TOMBSTONE_MAX_MS = 300_000;
 type TerminalCallOp = 'declined' | 'cancelled' | 'missed' | 'ended';
+interface StagedCallSignal {
+  id: string;
+  payload: string;
+}
 
 /** The live (in-memory) state of one in-flight call. Only `ringing` / `accepted` are live; every
  *  terminal transition writes a CALL Message bubble (persisted on the caller server only)
@@ -88,12 +99,12 @@ interface LiveCall {
    *  CALLEE to fetch; the callee's answer + ICE for the CALLER. Each server stages for its LOCAL participant
    *  (caller server for the caller, callee server for the callee), so an offline callee still gets an
    *  earlier offer on accept via GET /calls/:sid/signaling — no client-side re-offer hack. Cleared on
-   *  `connected` (media up → setup consumed) and on release (call ends). ICE payloads are stored as the raw
-   *  client JSON strings, deduped. */
-  pendingOffer?: string;
-  pendingAnswer?: string;
-  pendingOfferIce: string[];
-  pendingAnswerIce: string[];
+   *  `connected` (media up → setup consumed) and on release (call ends). Every staged item retains its
+   *  endpoint-authored signal ID so pull fallback and realtime delivery share one dedup key. */
+  pendingOffer?: StagedCallSignal;
+  pendingAnswer?: StagedCallSignal;
+  pendingOfferIce: StagedCallSignal[];
+  pendingAnswerIce: StagedCallSignal[];
   /** Endpoint-authored IDs already accepted through the local HTTP API, scoped by sender. */
   localSignalIds: Set<string>;
   seenSignalIds: Set<string>;
@@ -331,7 +342,7 @@ export class CallsService implements OnModuleDestroy {
           ? ` state=${call.state} caller=${call.callerId} callee=${call.calleeId}`
           : ''),
     );
-    if (!call || call.state !== 'ringing') {
+    if (!call) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_FOUND,
         'no ringing call',
@@ -343,7 +354,19 @@ export class CallsService implements OnModuleDestroy {
         'only the callee can accept',
       );
     }
+    if (call.terminal) {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call ended');
+    }
+    const decision = decideCallTransition(call.state, 'accepted');
+    if (decision === 'noop') return;
+    if (decision === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `cannot accept while ${call.state}`,
+      );
+    }
     call.state = 'accepted';
+    this.syncCallState(call);
     this.armConnectTimer(call);
     this.notifyBoth(call, 'accepted', { threadId: call.threadId });
   }
@@ -358,7 +381,7 @@ export class CallsService implements OnModuleDestroy {
    *  frame to the caller server (handled inbound by {@link onInboundRinging}). */
   async ringing(calleeId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    if (!call || call.state !== 'ringing') {
+    if (!call) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_FOUND,
         'no ringing call',
@@ -370,31 +393,41 @@ export class CallsService implements OnModuleDestroy {
         'only the callee can ack ringing',
       );
     }
+    if (call.terminal) {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call ended');
+    }
+    const decision = decideCallTransition(call.state, 'ringing');
+    if (decision === 'noop') return;
     if (call.ringingAcked) return; // another of the callee's devices already acked — no-op
     call.ringingAcked = true;
     this.notifyBoth(call, 'ringing', { threadId: call.threadId });
   }
 
-  /** A client reports that its media leg is up. For a federated call only the callee server is
-   *  authoritative and relays connected/startedAt; a caller-side report waits for that frame. */
+  /** A client reports that its media leg is up. The callee endpoint is authoritative for both local and
+   *  federated calls; a caller-side report is an advisory no-op and waits for the callee's event. */
   async connected(userId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    if (!call || call.state === 'connected') return; // gone, or the other party already reported connect
-    if (call.state !== 'accepted') {
-      throw new BusinessException(
-        BusinessCode.CALL_NOT_FOUND,
-        'call not answered',
-      );
-    }
+    if (!call) return;
     if (userId !== call.callerId && userId !== call.calleeId) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_PARTICIPANT,
         'not a party to this call',
       );
     }
-    if (call.peerDomain && call.localRole === 'caller') {
-      return; // Federation v1 assigns connected/startedAt authority to the callee server.
+    if (call.terminal) {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call ended');
     }
+    const decision = decideCallTransition(call.state, 'connected');
+    if (decision === 'noop') return;
+    if (decision === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `cannot connect while ${call.state}`,
+      );
+    }
+    // The callee endpoint is the single connected/startedAt authority for local
+    // and federated calls. A caller report is an idempotent advisory no-op.
+    if (userId !== call.calleeId) return;
     call.state = 'connected';
     call.startedAt = Date.now();
     this.clearStaged(call); // media is up — the setup signaling is consumed, drop the staged store
@@ -409,7 +442,7 @@ export class CallsService implements OnModuleDestroy {
    *  upgrade. */
   async upgradeVideo(userId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
-    if (!call || call.state !== 'connected') {
+    if (!call) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_FOUND,
         'no connected call to upgrade',
@@ -421,13 +454,27 @@ export class CallsService implements OnModuleDestroy {
         'not a party to this call',
       );
     }
-    if (call.peerDomain && call.localRole === 'callee') {
+    if (call.terminal) {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call ended');
+    }
+    if (userId !== call.callerId) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_PARTICIPANT,
-        'the caller server is the federated video-upgrade authority',
+        'only the caller can commit a video upgrade',
       );
     }
-    if (call.callType === 'VIDEO') return;
+    const decision = decideVideoUpgrade(
+      call.state,
+      call.initialCallType,
+      call.callType,
+    );
+    if (decision === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `cannot upgrade video while ${call.state}`,
+      );
+    }
+    if (decision === 'noop') return;
     call.callType = 'VIDEO';
     this.syncCallState(call);
     this.notifyBoth(call, 'video-upgraded', {
@@ -443,11 +490,18 @@ export class CallsService implements OnModuleDestroy {
     this.logger.debug(
       `[call] decline calleeId=${calleeId} sid=${callSid} state=${call?.state ?? 'null'}`,
     );
-    if (!call || call.state !== 'ringing') return; // already resolved — idempotent no-op
+    if (!call) return; // already resolved — idempotent no-op
     if (call.calleeId !== calleeId) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_PARTICIPANT,
         'only the callee can decline',
+      );
+    }
+    if (call.terminal) return;
+    if (decideCallTransition(call.state, 'declined') === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `cannot decline while ${call.state}`,
       );
     }
     call.terminal = { op: 'declined', endReason: null };
@@ -469,11 +523,18 @@ export class CallsService implements OnModuleDestroy {
     this.logger.debug(
       `[call] cancel callerId=${callerId} sid=${callSid} state=${call?.state ?? 'null'}`,
     );
-    if (!call || call.state !== 'ringing') return; // already resolved — idempotent no-op
+    if (!call) return; // already resolved — idempotent no-op
     if (call.callerId !== callerId) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_PARTICIPANT,
         'only the caller can cancel',
+      );
+    }
+    if (call.terminal) return;
+    if (decideCallTransition(call.state, 'cancelled') === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `cannot cancel while ${call.state}; use end after accepted`,
       );
     }
     call.terminal = { op: 'cancelled', endReason: null };
@@ -501,16 +562,18 @@ export class CallsService implements OnModuleDestroy {
     this.logger.debug(
       `[call] end userId=${userId} sid=${callSid} state=${call?.state ?? 'null'} reason=${endReason ?? ''}`,
     );
-    if (!call || (call.state !== 'accepted' && call.state !== 'connected')) {
-      throw new BusinessException(
-        BusinessCode.CALL_NOT_FOUND,
-        'no answered call to end',
-      );
-    }
+    if (!call) return; // terminal retry — no second observable effect
     if (userId !== call.callerId && userId !== call.calleeId) {
       throw new BusinessException(
         BusinessCode.CALL_NOT_PARTICIPANT,
         'not a party to this call',
+      );
+    }
+    if (call.terminal) return;
+    if (decideCallTransition(call.state, 'ended') === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `cannot end while ${call.state}`,
       );
     }
     const normalizedEndReason: 'completed' | 'timeout' | 'failed' =
@@ -569,20 +632,21 @@ export class CallsService implements OnModuleDestroy {
         'relay target is not the call peer',
       );
     }
-    if (
-      call.peerDomain &&
-      ((dto.kind === 'offer' && call.localRole !== 'caller') ||
-        (dto.kind === 'answer' && call.localRole !== 'callee'))
-    ) {
-      throw new BusinessException(
-        BusinessCode.CALL_NOT_PARTICIPANT,
-        'federated offers are caller-authored and answers are callee-authored',
-      );
+    if (call.terminal) {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'call ended');
     }
     const localSignalKey = `${fromUserId}:${dto.id}`;
     if (call.localSignalIds.has(localSignalKey)) return;
+    const senderRole =
+      fromUserId === call.callerId ? ('caller' as const) : ('callee' as const);
+    if (!isSignalAllowed(call.state, senderRole, dto.kind)) {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        `${dto.kind} is not valid from ${senderRole} while ${call.state}`,
+      );
+    }
     call.localSignalIds.add(localSignalKey);
-    this.stage(call, fromUserId, dto.kind, dto.payload); // store-and-forward: a peer offline now can GET it later
+    this.stage(call, fromUserId, dto.id, dto.kind, dto.payload); // store-and-forward: a peer offline now can GET it later
     if (call.peerDomain) {
       // Federated: relay over S2S to the peer server (the foreign participant isn't on this server).
       // Fire-and-forget: a dropped ICE candidate is harmless (the client re-gathers / retries).
@@ -822,8 +886,18 @@ export class CallsService implements OnModuleDestroy {
    *  No startedAt, no timer clear (media may still fail). Idempotent. */
   private async onInboundAccepted(frame: S2SCallFrame): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
-    if (!call || call.state !== 'ringing') return; // already resolved / accepted
+    if (!call) return;
+    const decision = decideCallTransition(call.state, 'accepted');
+    if (decision === 'noop') return;
+    if (decision === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `accepted is not valid while ${call.state}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     call.state = 'accepted';
+    this.syncCallState(call);
     this.armConnectTimer(call);
     this.emit(this.localUserId(call), 'accepted', {
       callSid: call.callSid,
@@ -837,7 +911,9 @@ export class CallsService implements OnModuleDestroy {
    *  (a replayed frame is a no-op). */
   private async onInboundRinging(frame: S2SCallFrame): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
-    if (!call || call.state !== 'ringing') return; // already resolved
+    if (!call) return;
+    const decision = decideCallTransition(call.state, 'ringing');
+    if (decision === 'noop') return;
     if (call.ringingAcked) return; // already relayed — idempotent
     call.ringingAcked = true;
     this.emit(this.localUserId(call), 'ringing', {
@@ -854,8 +930,9 @@ export class CallsService implements OnModuleDestroy {
   ): void {
     const call = this.activeCalls.get(frame.callSid);
     if (!call) return;
-    if (call.state === 'connected') return; // first startedAt wins
-    if (call.state !== 'accepted') {
+    const decision = decideCallTransition(call.state, 'connected');
+    if (decision === 'noop') return; // first startedAt wins
+    if (decision === 'invalid') {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'connected requires an accepted call',
@@ -867,7 +944,10 @@ export class CallsService implements OnModuleDestroy {
     this.clearStaged(call); // the caller server clears its staged signaling on connect too
     this.syncCallState(call);
     this.clearRingTimer(frame.callSid);
-    this.emit(this.localUserId(call), 'connected', { callSid: call.callSid });
+    this.emit(this.localUserId(call), 'connected', {
+      callSid: call.callSid,
+      startedAt: call.startedAt,
+    });
   }
 
   /** Federated peer permanently upgraded the live call to video. The frame is idempotent and carries no
@@ -878,21 +958,19 @@ export class CallsService implements OnModuleDestroy {
   ): void {
     const call = this.activeCalls.get(frame.callSid);
     if (!call) return;
-    if (call.state !== 'connected') {
+    const decision = decideVideoUpgrade(
+      call.state,
+      call.initialCallType,
+      call.callType,
+    );
+    if (decision === 'invalid') {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'video-upgraded requires a connected call',
+        'video-upgraded is not valid for the current call state/type',
         HttpStatus.BAD_REQUEST,
       );
     }
-    if (call.callType === 'VIDEO') {
-      if (call.initialCallType === 'AUDIO') return;
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'an initially VIDEO call cannot be video-upgraded',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+    if (decision === 'noop') return;
     call.callType = 'VIDEO';
     this.syncCallState(call);
     this.emit(localUserId, 'video-upgraded', {
@@ -910,16 +988,12 @@ export class CallsService implements OnModuleDestroy {
     if (!call) return;
     if (call.seenSignalIds.has(frame.payload.id)) return;
     const kind = frame.payload.kind;
-    const legalPhase =
-      kind === 'video-state'
-        ? call.state === 'connected'
-        : kind === 'answer'
-          ? call.state === 'accepted' || call.state === 'connected'
-          : true;
-    if (!legalPhase) {
+    const senderRole =
+      call.localRole === 'callee' ? ('caller' as const) : ('callee' as const);
+    if (!isSignalAllowed(call.state, senderRole, kind)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `${kind} is not valid while ${call.state}`,
+        `${kind} is not valid from ${senderRole} while ${call.state}`,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -928,7 +1002,13 @@ export class CallsService implements OnModuleDestroy {
     const localUserId = this.localUserId(call);
     const peerStubId =
       call.localRole === 'caller' ? call.calleeId : call.callerId;
-    this.stage(call, peerStubId, frame.payload.kind, frame.payload.data);
+    this.stage(
+      call,
+      peerStubId,
+      frame.payload.id,
+      frame.payload.kind,
+      frame.payload.data,
+    );
     this.sse.onCallSignal(localUserId, {
       event: 'CALL_SIGNAL',
       id: frame.payload.id,
@@ -949,29 +1029,25 @@ export class CallsService implements OnModuleDestroy {
   ): Promise<void> {
     const call = this.activeCalls.get(frame.callSid);
     if (!call) return; // already resolved — idempotent no-op
+    const decision = decideCallTransition(call.state, frame.op, {
+      allowAcceptedCancel: true,
+    });
+    if (decision === 'invalid') {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${frame.op} is not valid while ${call.state}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     if (frame.op === 'ended') {
       const reason = frame.payload.endReason;
-      const legalReason =
-        (call.state === 'accepted' &&
-          (reason === 'timeout' || reason === 'failed')) ||
-        (call.state === 'connected' &&
-          (reason === 'completed' || reason === 'failed'));
-      if (!legalReason) {
+      if (!isEndReasonAllowed(call.state, reason)) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
           'ended reason is not valid for the active call state',
           HttpStatus.BAD_REQUEST,
         );
       }
-    } else if (
-      call.state !== 'ringing' &&
-      !(frame.op === 'cancelled' && call.state === 'accepted')
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        `${frame.op} is only valid while ringing`,
-        HttpStatus.BAD_REQUEST,
-      );
     }
     call.terminal = {
       op: frame.op,
@@ -1179,19 +1255,21 @@ export class CallsService implements OnModuleDestroy {
   private stage(
     call: LiveCall,
     senderId: number,
+    id: string,
     kind: string,
     payload: string,
   ): void {
+    const signal = { id, payload };
     if (kind === 'offer') {
-      call.pendingOffer = payload;
+      call.pendingOffer = signal;
     } else if (kind === 'answer') {
-      call.pendingAnswer = payload;
+      call.pendingAnswer = signal;
     } else if (kind === 'ice') {
       const list =
         senderId === call.callerId
           ? call.pendingOfferIce
           : call.pendingAnswerIce;
-      if (!list.includes(payload)) list.push(payload);
+      if (!list.some((item) => item.id === id)) list.push(signal);
     }
   }
 
@@ -1209,7 +1287,11 @@ export class CallsService implements OnModuleDestroy {
   signaling(
     userId: number,
     callSid: string,
-  ): { offer?: string | null; answer?: string | null; ice: string[] } {
+  ): {
+    offer?: StagedCallSignal | null;
+    answer?: StagedCallSignal | null;
+    ice: StagedCallSignal[];
+  } {
     const call = this.activeCalls.get(callSid);
     if (!call) {
       throw new BusinessException(
@@ -1374,16 +1456,20 @@ export class CallsService implements OnModuleDestroy {
     const call = this.activeCalls.get(callSid);
     if (!call || call.state === 'connected') return; // gone, or connected (timer was cleared — defensive)
     const status: CallOutcome = call.state === 'ringing' ? 'missed' : 'failed';
+    const timeout = timeoutLifecycle(call.state);
+    const eventExtra =
+      timeout.endReason === null ? {} : { endReason: timeout.endReason };
     if (call.peerDomain) {
       const terminalOp: TerminalCallOp =
-        call.state === 'accepted'
-          ? 'ended'
-          : call.localRole === 'caller'
-            ? 'cancelled'
-            : 'missed';
-      const endReason = terminalOp === 'ended' ? 'timeout' : null;
+        timeout.operation === 'missed' && call.localRole === 'caller'
+          ? 'cancelled'
+          : timeout.operation;
+      const endReason = timeout.endReason;
       call.terminal = { op: terminalOp, endReason };
-      this.emit(this.localUserId(call), status, { callSid });
+      this.emit(this.localUserId(call), timeout.operation, {
+        callSid,
+        ...eventExtra,
+      });
       await this.saveTombstone(
         call,
         terminalOp,
@@ -1395,10 +1481,10 @@ export class CallsService implements OnModuleDestroy {
       if (call.localRole === 'caller') await this.persistTerminal(call, status);
     } else {
       call.terminal = {
-        op: status === 'missed' ? 'missed' : 'ended',
-        endReason: status === 'failed' ? 'failed' : null,
+        op: timeout.operation,
+        endReason: timeout.endReason,
       };
-      this.emit(call.callerId, status, { callSid });
+      this.notifyBoth(call, timeout.operation, eventExtra);
       this.release(call);
       await this.persistTerminal(call, status);
     }

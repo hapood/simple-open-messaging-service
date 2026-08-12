@@ -385,12 +385,12 @@ export class FederationService {
   private readonly batchSyncLocks = new KeyedMutex();
   /** Serializes inbound frames that may establish the same call binding, closing concurrent incoming races. */
   private readonly callInboundLocks = new KeyedMutex();
-  /** Per-call lifecycle tail. State-changing HTTP requests are emitted in creation order; signal
-   *  frames wait for the current lifecycle tail but do not serialize the ICE burst with each other. */
+  /** Per-call state-changing lifecycle tail. Advisory `ringing` bypasses it; signal frames wait for the
+   *  current state-changing tail but do not serialize the ICE burst with each other. */
   private readonly callLifecycleTails = new Map<string, Promise<void>>();
   /** In-flight SDP answers. `connected` must not overtake the answer it confirms; ICE remains parallel. */
   private readonly callAnswerDeliveries = new Map<string, Set<Promise<void>>>();
-  /** Last failed lifecycle op per call. A dependent op cannot overtake it; the same op may retry. */
+  /** Last failed state-changing lifecycle op per call. Advisory `ringing` is never recorded here. */
   private readonly callLifecycleFailures = new Map<
     string,
     { op: S2SCallOp; error: unknown }
@@ -2245,6 +2245,12 @@ export class FederationService {
     peerDomain: string,
   ): Promise<void> {
     const queueKey = `${peerDomain}\u0000${params.callSid}`;
+    // `ringing` is advisory and does not change the call phase. It must not delay or poison `accepted`:
+    // the endpoint may acknowledge alerting and accept concurrently, and a late ringing frame is a
+    // historical no-op at an already-accepted receiver.
+    if (params.op === 'ringing') {
+      return this.postCallFrame(params, peerDomain);
+    }
     const previous = this.callLifecycleTails.get(queueKey);
     const failed = this.callLifecycleFailures.get(queueKey);
     if (params.op === 'incoming') {

@@ -47,7 +47,7 @@
   // Sits on the brand-gradient panel: white text + larger sizes + a layered logo drop-shadow
   // (matches the pre-migration look). CSS variables pierce into <app-brand-logo> — no ::ng-deep needed.
   app-brand-logo {
-    --bl-word: 28px;
+    --bl-word: 27px;
     --bl-tag: 14px;
     --bl-word-color: #ffffff;
     --bl-tag-color: rgba(255, 255, 255, 0.85);
