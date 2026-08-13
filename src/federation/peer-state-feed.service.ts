@@ -4,6 +4,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
   peerStateFeed,
+  peerStateFeedVersion,
   peerStateFeedTarget,
   peerStateEventType,
 } from '../database/schema.js';
@@ -24,8 +25,10 @@ export type PeerStateBody = Record<string, unknown>;
 export interface PeerStateFeedWrite {
   peerDomain: string;
   account: string;
+  domain: string;
   eventType: PeerStateEventType;
   subjectAccount?: string;
+  subjectDomain?: string;
   revision: number;
   body: PeerStateBody;
 }
@@ -33,14 +36,16 @@ export interface PeerStateFeedWrite {
 export interface PeerStateFeedPage {
   items: Array<{
     account: string;
+    domain: string;
     eventType: PeerStateEventType;
     subjectAccount: string;
+    subjectDomain: string;
     revision: string;
-    rev: string;
+    feedId: string;
     body: unknown;
   }>;
   scannedThrough: string;
-  stateFeedRev: string;
+  stateFeedEndId: string;
   hasMore: boolean;
 }
 
@@ -72,8 +77,10 @@ export class PeerStateFeedService {
     const ordered = [...writes].sort(
       (a, b) =>
         a.peerDomain.localeCompare(b.peerDomain) ||
+        a.domain.localeCompare(b.domain) ||
         a.account.localeCompare(b.account) ||
         a.eventType.localeCompare(b.eventType) ||
+        (a.subjectDomain ?? '').localeCompare(b.subjectDomain ?? '') ||
         (a.subjectAccount ?? '').localeCompare(b.subjectAccount ?? ''),
     );
     for (const write of ordered) {
@@ -89,13 +96,17 @@ export class PeerStateFeedService {
         throw new Error('invalid peer state feed write');
       }
       const subjectAccount = write.subjectAccount ?? '';
+      const subjectDomain = write.subjectDomain ?? '';
       const directional =
-        write.eventType === 'P2P_META' ||
+        write.eventType === 'P2P_INTENT' ||
         write.eventType === 'GROUP_INVITE_INTENT' ||
         write.eventType === 'GROUP_JOIN_INTENT';
-      if (directional !== (subjectAccount !== '')) {
+      if (
+        !write.domain ||
+        directional !== (subjectAccount !== '' && subjectDomain !== '')
+      ) {
         throw new Error(
-          'directional state requires subjectAccount and snapshots forbid it',
+          'state address key is incomplete or has an invalid directional subject',
         );
       }
       await this.initializePeerInTx(tx, write.peerDomain);
@@ -114,8 +125,10 @@ export class PeerStateFeedService {
           and(
             eq(peerStateFeed.peerDomain, write.peerDomain),
             eq(peerStateFeed.account, write.account),
+            eq(peerStateFeed.domain, write.domain),
             eq(peerStateFeed.eventType, write.eventType),
             eq(peerStateFeed.subjectAccount, subjectAccount),
+            eq(peerStateFeed.subjectDomain, subjectDomain),
           ),
         )
         .limit(1);
@@ -135,8 +148,10 @@ export class PeerStateFeedService {
         .values({
           peerDomain: write.peerDomain,
           account: write.account,
+          domain: write.domain,
           eventType: write.eventType,
           subjectAccount,
+          subjectDomain,
           revision: write.revision,
           rev: allocated.rev,
           body,
@@ -145,8 +160,10 @@ export class PeerStateFeedService {
           target: [
             peerStateFeed.peerDomain,
             peerStateFeed.account,
+            peerStateFeed.domain,
             peerStateFeed.eventType,
             peerStateFeed.subjectAccount,
+            peerStateFeed.subjectDomain,
           ],
           set: {
             revision: write.revision,
@@ -155,6 +172,17 @@ export class PeerStateFeedService {
             updatedAt: new Date(),
           },
         });
+      await tx.insert(peerStateFeedVersion).values({
+        peerDomain: write.peerDomain,
+        feedId: allocated.rev,
+        account: write.account,
+        domain: write.domain,
+        eventType: write.eventType,
+        subjectAccount,
+        subjectDomain,
+        revision: write.revision,
+        body,
+      });
       result.set(write.peerDomain, allocated.rev);
     }
     return result;
@@ -169,10 +197,33 @@ export class PeerStateFeedService {
     return target?.rev ?? 0n;
   }
 
+  async rejectMissingAfter(peerDomain: string): Promise<never> {
+    const [target] = await this.database.db
+      .select({
+        retainedAfter: peerStateFeedTarget.retainedAfter,
+        acknowledgedThrough: peerStateFeedTarget.acknowledgedThrough,
+      })
+      .from(peerStateFeedTarget)
+      .where(eq(peerStateFeedTarget.peerDomain, peerDomain))
+      .limit(1);
+    if (!target) throw new Error(`peer ${peerDomain} has no state feed`);
+    const resumeAfter =
+      target.retainedAfter > target.acknowledgedThrough
+        ? target.retainedAfter
+        : target.acknowledgedThrough;
+    throw new BusinessException(
+      BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      'after is required; resume from the available state cursor',
+      HttpStatus.OK,
+      { resumeAfter: resumeAfter.toString() },
+    );
+  }
+
   async serve(
     peerDomain: string,
     after: bigint,
     requestedTake?: number,
+    through?: bigint,
   ): Promise<PeerStateFeedPage> {
     const take = requestedTake ?? DEFAULT_TAKE;
     if (!Number.isInteger(take) || take < 1 || take > MAX_TAKE) {
@@ -191,45 +242,88 @@ export class PeerStateFeedService {
           .for('update', { noWait: true })
           .limit(1);
         if (!target) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
-            'state feed is not initialized',
-            HttpStatus.OK,
+          throw new Error(
+            `peer ${peerDomain} has no initialized state-feed target`,
           );
         }
-        const stateFeedRev = target.allocatedThrough;
-        if (
-          after < target.startRev ||
-          after < target.acknowledgedThrough ||
-          after > stateFeedRev
-        ) {
+        const stateFeedEndId = target.allocatedThrough;
+        if (through !== undefined && through < after) {
           throw new BusinessException(
-            BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
-            'after is outside the state feed range',
-            HttpStatus.OK,
+            BusinessCode.FEDERATION_MALFORMED,
+            'through must be greater than or equal to after',
+            HttpStatus.BAD_REQUEST,
           );
         }
-        const rows = await tx
+        const availableCursor =
+          target.retainedAfter > target.acknowledgedThrough
+            ? target.retainedAfter
+            : target.acknowledgedThrough;
+        if (after < availableCursor) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+            'requested state cursor is below the retained floor',
+            HttpStatus.OK,
+            { resumeAfter: availableCursor.toString() },
+          );
+        }
+        const requestedScanEnd =
+          through === undefined || through > stateFeedEndId
+            ? stateFeedEndId
+            : through;
+        const validCursor =
+          after === availableCursor ||
+          after === target.acknowledgedThrough ||
+          after === target.lastServedThrough;
+        if (!validCursor || after > stateFeedEndId) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
+            'after is neither the confirmed nor last served state cursor',
+            HttpStatus.OK,
+            {
+              acknowledgedThrough: target.acknowledgedThrough.toString(),
+              lastServedThrough: target.lastServedThrough.toString(),
+            },
+          );
+        }
+        const retry =
+          after === target.acknowledgedThrough &&
+          target.lastServedThrough > target.acknowledgedThrough;
+        const scanEnd = retry ? target.lastServedScanEnd : requestedScanEnd;
+        const replayEnd = retry ? target.lastServedThrough : scanEnd;
+        const rawRows = await tx
           .select()
-          .from(peerStateFeed)
+          .from(peerStateFeedVersion)
           .where(
             and(
-              eq(peerStateFeed.peerDomain, peerDomain),
-              gt(peerStateFeed.rev, after),
-              lte(peerStateFeed.rev, stateFeedRev),
+              eq(peerStateFeedVersion.peerDomain, peerDomain),
+              gt(peerStateFeedVersion.feedId, after),
+              lte(peerStateFeedVersion.feedId, replayEnd),
             ),
           )
-          .orderBy(asc(peerStateFeed.rev))
-          .limit(take + 1);
+          .orderBy(asc(peerStateFeedVersion.feedId))
+          .limit(retry ? MAX_TAKE + 1 : take + 1);
+        const scanRows = retry ? rawRows : rawRows.slice(0, take);
+        const latestByKey = new Map<string, (typeof scanRows)[number]>();
+        for (const row of scanRows) {
+          latestByKey.set(
+            `${row.domain}\u0000${row.account}\u0000${row.eventType}\u0000${row.subjectDomain}\u0000${row.subjectAccount}`,
+            row,
+          );
+        }
+        const rows = [...latestByKey.values()].sort((a, b) =>
+          a.feedId < b.feedId ? -1 : a.feedId > b.feedId ? 1 : 0,
+        );
         const items: PeerStateFeedPage['items'] = [];
         let bytes = 0;
         for (const row of rows.slice(0, take)) {
           const item = {
             account: row.account,
+            domain: row.domain,
             eventType: row.eventType,
             subjectAccount: row.subjectAccount,
+            subjectDomain: row.subjectDomain,
             revision: row.revision.toString(),
-            rev: row.rev.toString(),
+            feedId: row.feedId.toString(),
             body: row.body,
           };
           const itemBytes = Buffer.byteLength(JSON.stringify(item));
@@ -244,28 +338,37 @@ export class PeerStateFeedService {
           bytes += itemBytes;
         }
         const last = items.at(-1);
-        const hasMore = rows.length > items.length;
-        const scannedThrough =
-          hasMore && last ? BigInt(last.rev) : stateFeedRev;
+        let scannedThrough: bigint;
+        if (retry) {
+          scannedThrough = target.lastServedThrough;
+        } else if (items.length < rows.length && last) {
+          scannedThrough = BigInt(last.feedId);
+        } else if (rawRows.length > take) {
+          scannedThrough = scanRows.at(-1)?.feedId ?? after;
+        } else {
+          scannedThrough = scanEnd;
+        }
+        const hasMore = scannedThrough < scanEnd;
         await tx
           .update(peerStateFeedTarget)
           .set({
-            acknowledgedThrough: after,
+            acknowledgedThrough: retry ? target.acknowledgedThrough : after,
             lastServedThrough: scannedThrough,
+            lastServedScanEnd: scanEnd,
             updatedAt: new Date(),
           })
           .where(eq(peerStateFeedTarget.peerDomain, peerDomain));
         return {
           items,
           scannedThrough: scannedThrough.toString(),
-          stateFeedRev: stateFeedRev.toString(),
+          stateFeedEndId: stateFeedEndId.toString(),
           hasMore,
         };
       });
     } catch (error) {
       if (hasPostgresErrorCode(error, PG_LOCK_NOT_AVAILABLE)) {
         throw new BusinessException(
-          BusinessCode.FEDERATION_MISSED_CONCURRENT,
+          BusinessCode.FEDERATION_FEED_REQUEST_IN_PROGRESS,
           `another state feed request for ${peerDomain} is running`,
           HttpStatus.OK,
         );

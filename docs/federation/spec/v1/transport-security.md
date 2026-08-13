@@ -369,15 +369,15 @@ hostname 的 TLS 连接提供。media operation 另行定义的 response digest 
 `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`，不得（MUST NOT）将对应测试 private key 用于生产：
 
 ```http
-POST /s2s/v1/feed-revisions HTTP/1.1
+POST /s2s/v1/feed-heads HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
-Content-Digest: sha-256=:HL1+FDa+Gn829ivsfgBhN6ZULEerCbKiuBrUCGDY31g=:
+Content-Digest: sha-256=:jyei18yIj1UN70jxngwvAzEHm+S2VRlxbpRtAv4Wp3k=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:m8rhpn3mHHKY2x64/Cw9eATf2/wQEQ/qLACDL5VG7GcYlXu1IdxuRCTZvPEZrQyz9Z6ycnb1LcNtZI5nbFyYAw==:
+Signature: sig1=:YB4YJhZ8Gx8fq4WI2wOszIppKsOZzrmiFMTcPoQqcS0Y9A/x0jPmwO4JrO+gAf17L01xosGsj4ppscoHdHPRAw==:
 
-{"origin":"a.example","stateFeedRev":"12","messageFeedRev":"34"}
+{"origin":"a.example","stateFeedEndId":"12","messageFeedEndId":"34","tombstoneFeedEndId":"9"}
 ```
 
 body 最后一行的精确 UTF-8 bytes 同时用于 `Content-Digest` 和签名；示例排版中的末尾换行不属于 body。

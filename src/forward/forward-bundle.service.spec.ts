@@ -524,9 +524,9 @@ describe('ForwardBundleService', () => {
 
   it.each([
     [
-      'non-canonical message id',
+      'non-positive message id',
       {
-        id: 2,
+        id: 0,
         sender: { displayName: 'A', account: 'a', domain: 'peer.test' },
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'hello' }),

@@ -7,7 +7,7 @@ import type { KeypairService } from './keypair.service.js';
 describe('SignatureService (RFC 9421 + Ed25519)', () => {
   const req = {
     method: 'POST',
-    url: new URL('https://peer.com/s2s/v1/feed-revisions?cursor=abc%2D1'),
+    url: new URL('https://peer.com/s2s/v1/feed-heads?cursor=abc%2D1'),
     body: '{"hi":1}',
   };
 

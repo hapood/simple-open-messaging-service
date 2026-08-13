@@ -5,7 +5,7 @@
 - A withdrawn message is a deleted message. `Message.isDeleted=true` is authoritative for reads; clients do not render a placeholder.
 - An effective moderation report uses the same deletion log with type `REPORT`. A report that only changes the reporter's local visibility is not a federated deletion.
 - Federation propagation depends on whether the remote node is entitled to replicate the conversation, not on whether the reason is `WITHDRAW` or `REPORT`.
-- Only the message creator's home server may authorize a federated deletion. A group origin may relay an author's tombstone, but it does not acquire deletion authority.
+- P2P withdrawal authority is the creator's home server. A group origin is the authority for its accepted group timeline: a foreign author submits a withdrawal, and the origin validates and directly publishes the resulting group deletion.
 - The stable federated target is `(thread, creator account, creator domain, originSeq)`. A receiver's local `Message.seq` is never sent or persisted in the federated tombstone.
 
 ## Local flow
@@ -18,9 +18,18 @@ The browser and native clients persist tombstones in their ordinary message stor
 
 ## Federation flow
 
-Federation v1 does not define a message-deletion endpoint or deletion feed. The former standalone deletion
-endpoint proposal is not part of the published surface and must not be exposed.
-The message feed skips messages that were already deleted at its origin. Propagating a deletion after the
-remote peer has received the original message is deliberately outside the v1 wire contract; local
-`FederatedMessageTombstone` concurrency rules remain implementation detail and do not create an interoperable
-S2S API.
+Federation v1 propagates withdrawals and effective moderation deletions through the durable
+`GET /s2s/v1/message-tombstone-feed`; see the normative
+[Message Tombstone Feed](./federation/spec/v1/message-tombstone-feed.md). The ordinary message feed keeps
+authored message bodies immutable and does not encode deletion through `updatedAt` or a special content type.
+
+Both `WITHDRAW` and `REPORT` remove the target at the receiver. A report that only changes the reporter's
+local visibility is not federated. P2P uses the author's home server; a group uses its origin as timeline
+authority after validating a foreign author's withdrawal submission. Mirrors never republish either fact.
+The stable target is `(thread, creator, originSeq)`, and tombstone authorization uses an exact durable
+`(peer, message)` delivery proof, so leave/rejoin gaps do not expose targets a peer never received.
+
+The message and tombstone feeds use independent per-peer feed-ID spaces, allocators, ACKs, retention floors
+and pull cursors. Recovery drains state, then
+tombstones, then messages. Message insertion and tombstone application serialize on the same stable identity,
+so message-first and tombstone-first delivery both converge without resurrection.

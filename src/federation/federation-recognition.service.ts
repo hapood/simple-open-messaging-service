@@ -514,6 +514,14 @@ export class FederationRecognitionService {
     domain: string,
   ): Promise<void> {
     await this.cursor.initializePeerInTx(tx, domain, 0n);
+    await tx
+      .insert(tables.federationTombstoneServeCursor)
+      .values({ peerDomain: domain })
+      .onConflictDoNothing();
+    await tx
+      .insert(tables.federationTombstonePullCursor)
+      .values({ peerDomain: domain })
+      .onConflictDoNothing();
     await this.stateFeed.initializePeerInTx(tx, domain);
     await tx
       .insert(tables.peerStateFeedPullCursor)

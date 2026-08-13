@@ -103,7 +103,7 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    const lightweight = req.url?.startsWith('/s2s/v1/feed-revisions');
+    const lightweight = req.url?.startsWith('/s2s/v1/feed-heads');
     const admitted = lightweight
       ? peer.inboundRecognitionConfirmed && peer.lightweightInboundReady
       : peer.recognizesPeer &&

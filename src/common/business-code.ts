@@ -110,10 +110,13 @@ export enum BusinessCode {
   FEDERATION_LOCAL_IDENTITY_LOST = 50014, // local federation service cannot sign safely (HTTP 503)
   FEDERATION_IDENTITY_MISMATCH = 50015, // registered fatal root identity conflict (HTTP 409)
   FEDERATION_PEER_IDENTITY_LOST = 50016, // internal/local diagnostic; not a Federation v1 wire code
-  FEDERATION_MISSED_CONCURRENT = 50018, // another /missed request is running (HTTP 200); retry after it completes
-  FEDERATION_MISSED_CURSOR_INVALID = 50019, // invalid /missed cursor (HTTP 200); data returns the usable cursor
+  FEDERATION_FEED_REQUEST_IN_PROGRESS = 50018, // another request for this peer/feed is running (HTTP 200)
+  FEDERATION_FEED_CURSOR_UNAVAILABLE = 50019, // missing/expired feed cursor; data returns { resumeAfter }
   FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = 50020, // registered fatal version conflict (HTTP 409)
   FEDERATION_RANGE_NOT_SATISFIABLE = 50021,
+  FEDERATION_FEED_CURSOR_MISMATCH = 50022, // after is neither the confirmed nor last served cursor
+  FEDERATION_PROFILE_NOT_DISCLOSED = 50023, // the user has chosen not to disclose the public profile
+  // to this peer. A publisher MAY return NOT_FOUND instead to avoid revealing whether the account exists.
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)
@@ -153,10 +156,12 @@ export enum FederationV1WireErrorCode {
   FEDERATION_CAPABILITY_DISABLED = BusinessCode.FEDERATION_CAPABILITY_DISABLED,
   FEDERATION_LOCAL_IDENTITY_LOST = BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
   FEDERATION_IDENTITY_MISMATCH = BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-  FEDERATION_MISSED_CONCURRENT = BusinessCode.FEDERATION_MISSED_CONCURRENT,
-  FEDERATION_MISSED_CURSOR_INVALID = BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
+  FEDERATION_FEED_REQUEST_IN_PROGRESS = BusinessCode.FEDERATION_FEED_REQUEST_IN_PROGRESS,
+  FEDERATION_FEED_CURSOR_UNAVAILABLE = BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
   FEDERATION_PROTOCOL_VERSION_UNSUPPORTED = BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
   FEDERATION_RANGE_NOT_SATISFIABLE = BusinessCode.FEDERATION_RANGE_NOT_SATISFIABLE,
+  FEDERATION_FEED_CURSOR_MISMATCH = BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
+  FEDERATION_PROFILE_NOT_DISCLOSED = BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
   CALL_NOT_ALLOWED = BusinessCode.CALL_NOT_ALLOWED,
   CALL_BUSY = BusinessCode.CALL_BUSY,
   CALL_CANCELLED = BusinessCode.CALL_CANCELLED,

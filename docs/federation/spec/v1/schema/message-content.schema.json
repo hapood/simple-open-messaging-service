@@ -18,14 +18,7 @@
             },
             "author": { "type": "string" },
             "body": { "type": "string" },
-            "contentType": { "type": "string" },
-            "image": { "type": "string" },
-            "imageLabel": { "type": "string" },
-            "imageIdentity": { "type": "string" },
-            "imageSize": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
-            },
-            "imageShape": { "enum": ["thumbnail", "avatar"] }
+            "contentType": { "type": "string" }
           },
           "additionalProperties": false
         }
@@ -34,11 +27,15 @@
     },
     "image": {
       "type": "object",
-      "required": ["url", "w", "h", "size"],
+      "required": ["digest", "w", "h", "size"],
       "properties": {
-        "url": { "type": "string", "minLength": 1 },
-        "w": { "$ref": "#/$defs/positiveNumber" },
-        "h": { "$ref": "#/$defs/positiveNumber" },
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
+        "w": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+        },
+        "h": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+        },
         "size": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
         }
@@ -47,9 +44,9 @@
     },
     "file": {
       "type": "object",
-      "required": ["url", "name", "size", "mimeType"],
+      "required": ["digest", "name", "size", "mimeType"],
       "properties": {
-        "url": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "size": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
@@ -60,25 +57,29 @@
     },
     "video": {
       "type": "object",
-      "required": ["url", "name", "size", "mimeType", "w", "h", "duration"],
+      "required": ["digest", "name", "size", "mimeType", "w", "h", "duration"],
       "properties": {
-        "url": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "size": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
         },
         "mimeType": { "type": "string", "minLength": 1 },
-        "w": { "$ref": "#/$defs/positiveNumber" },
-        "h": { "$ref": "#/$defs/positiveNumber" },
+        "w": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+        },
+        "h": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+        },
         "duration": { "$ref": "#/$defs/positiveNumber" }
       },
       "additionalProperties": false
     },
     "audio": {
       "type": "object",
-      "required": ["url", "name", "size", "mimeType", "duration"],
+      "required": ["digest", "name", "size", "mimeType", "duration"],
       "properties": {
-        "url": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
         "name": { "type": "string", "minLength": 1 },
         "size": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
@@ -92,15 +93,21 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["kind", "url", "size", "w", "h"],
+          "required": ["kind", "digest", "size", "w", "h"],
           "properties": {
             "kind": { "const": "IMAGE" },
-            "url": { "type": "string" },
+            "digest": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+            },
             "size": {
               "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
             },
-            "w": { "$ref": "#/$defs/positiveNumber" },
-            "h": { "$ref": "#/$defs/positiveNumber" }
+            "w": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+            },
+            "h": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+            }
           },
           "additionalProperties": false
         },
@@ -108,7 +115,7 @@
           "type": "object",
           "required": [
             "kind",
-            "url",
+            "digest",
             "size",
             "name",
             "mimeType",
@@ -118,24 +125,39 @@
           ],
           "properties": {
             "kind": { "const": "VIDEO" },
-            "url": { "type": "string" },
+            "digest": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+            },
             "size": {
               "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
             },
             "name": { "type": "string" },
             "mimeType": { "type": "string" },
-            "w": { "$ref": "#/$defs/positiveNumber" },
-            "h": { "$ref": "#/$defs/positiveNumber" },
+            "w": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+            },
+            "h": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+            },
             "duration": { "$ref": "#/$defs/positiveNumber" }
           },
           "additionalProperties": false
         },
         {
           "type": "object",
-          "required": ["kind", "url", "size", "name", "mimeType", "duration"],
+          "required": [
+            "kind",
+            "digest",
+            "size",
+            "name",
+            "mimeType",
+            "duration"
+          ],
           "properties": {
             "kind": { "const": "AUDIO" },
-            "url": { "type": "string" },
+            "digest": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+            },
             "size": {
               "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
             },
@@ -147,10 +169,12 @@
         },
         {
           "type": "object",
-          "required": ["kind", "url", "size", "name", "mimeType"],
+          "required": ["kind", "digest", "size", "name", "mimeType"],
           "properties": {
             "kind": { "const": "FILE" },
-            "url": { "type": "string" },
+            "digest": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+            },
             "size": {
               "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
             },
@@ -181,37 +205,34 @@
         "title": { "type": "string" },
         "description": { "type": "string" },
         "siteName": { "type": "string" },
-        "image": { "type": "string" },
-        "favicon": { "type": "string" }
+        "imageDigest": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+        },
+        "faviconDigest": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
+        }
       },
       "additionalProperties": false
     },
     "invite": {
       "type": "object",
-      "required": [
-        "type",
-        "from",
-        "group",
-        "groupName",
-        "groupDomain",
-        "groupIsLocal"
-      ],
+      "required": ["type", "from", "group", "groupName", "groupDomain"],
       "properties": {
         "type": { "const": "GROUP_INVITE" },
-        "from": { "type": "string" },
-        "group": { "type": "string", "pattern": "^!" },
+        "from": { "$ref": "urn:soms:federation:v1:common#/$defs/userAccount" },
+        "group": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+        },
         "groupName": { "type": "string" },
-        "groupAvatar": { "type": "string" },
         "groupDomain": {
           "$ref": "urn:soms:federation:v1:common#/$defs/domain"
-        },
-        "groupIsLocal": { "type": "boolean" }
+        }
       },
       "additionalProperties": false
     },
     "call": {
       "type": "object",
-      "required": ["type", "callType", "status", "caller", "callee"],
+      "required": ["type", "callType", "status", "caller", "callee", "endedAt"],
       "properties": {
         "type": { "const": "CALL" },
         "callType": { "enum": ["AUDIO", "VIDEO"] },
@@ -237,11 +258,39 @@
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
         }
       },
-      "dependentRequired": {
-        "startedAt": ["endedAt", "durationMs"],
-        "endedAt": ["startedAt", "durationMs"],
-        "durationMs": ["startedAt", "endedAt"]
-      },
+      "allOf": [
+        {
+          "oneOf": [
+            { "required": ["startedAt", "durationMs"] },
+            {
+              "not": {
+                "anyOf": [
+                  { "required": ["startedAt"] },
+                  { "required": ["durationMs"] }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["cancelled", "declined", "missed", "unreachable"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["startedAt"] },
+                { "required": ["durationMs"] }
+              ]
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "forward": {
@@ -255,11 +304,16 @@
       ],
       "properties": {
         "version": { "const": 1 },
-        "bundleId": { "type": "string", "minLength": 1 },
+        "bundleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 26,
+          "pattern": "^[^/\\u0000]+$"
+        },
         "summaryLines": {
           "type": "array",
           "maxItems": 3,
-          "items": { "type": "string" }
+          "items": { "type": "string", "minLength": 1 }
         },
         "messageCount": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"

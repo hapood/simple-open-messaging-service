@@ -39,7 +39,10 @@ describe('FederationMessageFeedPullService', () => {
       domain: peerDomain,
       trustLevel: 'available',
     });
-    await database.db.insert(federationPullCursor).values({ peerDomain });
+    // These tests exercise normal paging after the explicit no-after bootstrap has completed.
+    await database.db
+      .insert(federationPullCursor)
+      .values({ peerDomain, initialized: true });
   });
 
   afterAll(async () => {
@@ -48,20 +51,17 @@ describe('FederationMessageFeedPullService', () => {
 
   const page = (
     scannedThrough: bigint,
-    allocatedThrough: bigint,
-    changeIds: bigint[] = [],
+    feedIds: bigint[] = [],
     hasMore = false,
   ): FederationMessageFeedPage => ({
     scannedThrough: scannedThrough.toString(),
-    allocatedThrough: allocatedThrough.toString(),
     hasMore,
-    degradation: null,
-    messages: changeIds.map((changeId) => ({
-      changeId: changeId.toString(),
+    messages: feedIds.map((feedId) => ({
+      feedId: feedId.toString(),
       thread: { type: 'P2P', participants: [] },
       author: { account: 'alice', domain: peerDomain },
-      seq: Number(changeId),
-      originSeq: Number(changeId),
+      seq: Number(feedId),
+      originSeq: Number(feedId),
       contentType: 'PURE_TEXT',
       content: '{}',
       createdAt: 0,
@@ -73,17 +73,17 @@ describe('FederationMessageFeedPullService', () => {
   });
 
   it('keeps pulling through a final empty acknowledgement page', async () => {
-    const requested: bigint[] = [];
+    const requested: Array<bigint | undefined> = [];
     const applied: string[][] = [];
     const callbacks: FederationMessageFeedPullCallbacks = {
       fetch: async (after) => {
         requested.push(after);
-        if (after === 0n) return page(2n, 5n, [1n, 2n], true);
-        if (after === 2n) return page(5n, 5n, [3n, 5n]);
-        return page(5n, 5n);
+        if (after === 0n) return page(2n, [1n, 2n], true);
+        if (after === 2n) return page(5n, [3n, 5n]);
+        return page(5n);
       },
       apply: async (_tx, value) => {
-        applied.push(value.messages.map((item) => item.changeId));
+        applied.push(value.messages.map((item) => item.feedId));
       },
     };
 
@@ -94,11 +94,11 @@ describe('FederationMessageFeedPullService', () => {
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
-    expect(cursor).toMatchObject({ remoteHwm: 5n });
+    expect(cursor).toMatchObject({ committedThrough: 5n });
   });
 
   it('observes a push arriving during the final request and continues', async () => {
-    const requested: bigint[] = [];
+    const requested: Array<bigint | undefined> = [];
     let pushed = false;
     let callbacks!: FederationMessageFeedPullCallbacks;
     callbacks = {
@@ -108,9 +108,9 @@ describe('FederationMessageFeedPullService', () => {
           pushed = true;
           await service.advertise(peerDomain, 1n);
           void service.run(peerDomain, callbacks);
-          return page(0n, 0n);
+          return page(0n);
         }
-        return after === 0n ? page(1n, 1n, [1n]) : page(1n, 1n);
+        return after === 0n ? page(1n, [1n]) : page(1n);
       },
       apply: async () => undefined,
     };
@@ -121,7 +121,7 @@ describe('FederationMessageFeedPullService', () => {
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
-    expect(cursor?.remoteHwm).toBe(1n);
+    expect(cursor?.committedThrough).toBe(1n);
   });
 
   it('coalesces a burst of wake-ups and replays the highest HWM after the in-flight fetch', async () => {
@@ -129,7 +129,7 @@ describe('FederationMessageFeedPullService', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const requested: bigint[] = [];
+    const requested: Array<bigint | undefined> = [];
     let activeFetches = 0;
     let maxActiveFetches = 0;
     let first = true;
@@ -142,9 +142,9 @@ describe('FederationMessageFeedPullService', () => {
           if (first) {
             first = false;
             await gate;
-            return page(0n, 0n);
+            return page(0n);
           }
-          return after === 0n ? page(100n, 100n) : page(100n, 100n);
+          return page(100n);
         } finally {
           activeFetches--;
         }
@@ -166,13 +166,13 @@ describe('FederationMessageFeedPullService', () => {
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
-    expect(cursor?.remoteHwm).toBe(100n);
+    expect(cursor?.committedThrough).toBe(100n);
   });
 
-  it('rolls back remoteHwm when applying a page fails', async () => {
+  it('rolls back committedThrough when applying a page fails', async () => {
     await expect(
       service.run(peerDomain, {
-        fetch: async () => page(1n, 1n, [1n]),
+        fetch: async () => page(1n, [1n]),
         apply: async () => {
           throw new Error('apply failed');
         },
@@ -182,6 +182,6 @@ describe('FederationMessageFeedPullService', () => {
     const cursor = await database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
     });
-    expect(cursor?.remoteHwm).toBe(0n);
+    expect(cursor?.committedThrough).toBe(0n);
   });
 });

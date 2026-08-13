@@ -16,6 +16,7 @@ import {
   useMediaTaskProgress,
   useResumableUploads,
   useAbortResumableUpload,
+  usePendingFederatedDeletions,
 } from '@/hooks/use-media';
 import { useIsSuperAdmin } from '@/hooks/use-me';
 import { Badge } from '@/components/ui/badge';
@@ -38,11 +39,14 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { TableBodyState } from '@/components/common/table-state';
+import { Pagination } from '@/components/common/pagination';
+import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
 import { useLogStream } from '@/hooks/use-log-stream';
 import { LogLine } from '@/routes/logs/log-line';
 
 type GcAction = 'gc' | 'reconcile' | 'avatars' | 'forwardBundles';
+const PENDING_DELETION_PAGE_SIZE = 20;
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
@@ -89,6 +93,14 @@ export function MediaPage() {
   const terminatePending = useForceTerminatePending();
   const resumableUploads = useResumableUploads(isSuper);
   const abortUpload = useAbortResumableUpload();
+  const [pendingDeletionPage, setPendingDeletionPage] = useState(0);
+  const pendingFederatedDeletions = usePendingFederatedDeletions(
+    {
+      skip: pendingDeletionPage * PENDING_DELETION_PAGE_SIZE,
+      take: PENDING_DELETION_PAGE_SIZE,
+    },
+    isSuper,
+  );
   const cancelTask = useCancelMediaTask();
   const currentTask = useCurrentMediaTask(isSuper);
   const [pending, setPending] = useState<GcAction | null>(null);
@@ -390,6 +402,113 @@ export function MediaPage() {
               </Table>
             </CardContent>
           </Card>
+
+          {isSuper ? (
+            <Card>
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <div>
+                  <CardTitle>{t('media.pendingFederatedDeletionTitle')}</CardTitle>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {t('media.pendingFederatedDeletionDesc')}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pendingFederatedDeletions.isFetching}
+                  onClick={() => void pendingFederatedDeletions.refetch()}
+                >
+                  {pendingFederatedDeletions.isFetching && (
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                  )}
+                  {t('media.uploadRefresh')}
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>{t('media.pendingDeletionTarget')}</TableHead>
+                      <TableHead>{t('media.pendingDeletionThread')}</TableHead>
+                      <TableHead>{t('media.pendingDeletionPublisher')}</TableHead>
+                      <TableHead>{t('media.pendingDeletionType')}</TableHead>
+                      <TableHead>{t('media.pendingDeletionReceived')}</TableHead>
+                      <TableHead>{t('media.pendingDeletionMatch')}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableBodyState
+                      loading={pendingFederatedDeletions.isLoading}
+                      error={pendingFederatedDeletions.error}
+                      empty={!pendingFederatedDeletions.data?.list.length}
+                      colSpan={6}
+                      emptyMessage={t('media.pendingFederatedDeletionEmpty')}
+                    >
+                      {pendingFederatedDeletions.data?.list.map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell>
+                            <div className="font-mono text-xs">
+                              {item.creator.account}@{item.creator.domain}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              originSeq {item.originSeq}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-mono text-xs">
+                              {item.thread.type} #{item.thread.id}
+                            </div>
+                            {item.thread.group ? (
+                              <div className="text-xs text-muted-foreground">
+                                {item.thread.group.account}@{item.thread.group.domain}
+                              </div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>
+                            <div>{item.sourceDomain}</div>
+                            <div className="font-mono text-xs text-muted-foreground">
+                              feedId {item.remoteFeedId}
+                              {item.authorityDomain !== item.sourceDomain
+                                ? ` · authority ${item.authorityDomain}`
+                                : ''}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{item.type}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Timestamp value={item.receivedAt} />
+                          </TableCell>
+                          <TableCell>
+                            {item.matchedMessage ? (
+                              <Badge variant="destructive">
+                                {t('media.pendingDeletionUnexpectedMatch', {
+                                  seq: item.matchedMessage.seq,
+                                })}
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary">
+                                {t('media.pendingDeletionWaiting')}
+                              </Badge>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBodyState>
+                  </TableBody>
+                </Table>
+                <div className="flex justify-end text-sm">
+                  <Pagination
+                    page={pendingDeletionPage}
+                    total={pendingFederatedDeletions.data?.total ?? 0}
+                    pageSize={PENDING_DELETION_PAGE_SIZE}
+                    onPageChange={setPendingDeletionPage}
+                    disabled={pendingFederatedDeletions.isFetching}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
 
           {isSuper ? (
             <Card>

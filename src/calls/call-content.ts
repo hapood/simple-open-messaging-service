@@ -100,9 +100,7 @@ export function buildFederatedCallContent(
     callee,
     ...(local.startedAt === undefined ? {} : { startedAt: local.startedAt }),
     ...(local.endedAt === undefined ? {} : { endedAt: local.endedAt }),
-    ...(local.durationMs === undefined
-      ? {}
-      : { durationMs: local.durationMs }),
+    ...(local.durationMs === undefined ? {} : { durationMs: local.durationMs }),
   } satisfies FederatedCallContent);
 }
 
@@ -140,7 +138,17 @@ export function parseFederatedCallContent(
     sameFederatedCallAddress(caller, callee) ||
     (record['startedAt'] !== undefined && !isFiniteMs(record['startedAt'])) ||
     (record['endedAt'] !== undefined && !isFiniteMs(record['endedAt'])) ||
-    (record['durationMs'] !== undefined && !isFiniteMs(record['durationMs']))
+    (record['durationMs'] !== undefined && !isFiniteMs(record['durationMs'])) ||
+    !isFiniteMs(record['endedAt']) ||
+    (record['startedAt'] === undefined) !==
+      (record['durationMs'] === undefined) ||
+    (isFiniteMs(record['startedAt']) &&
+      (record['endedAt'] < record['startedAt'] ||
+        record['durationMs'] !== record['endedAt'] - record['startedAt'])) ||
+    (['cancelled', 'declined', 'missed', 'unreachable'].includes(
+      record['status'],
+    ) &&
+      (record['startedAt'] !== undefined || record['durationMs'] !== undefined))
   ) {
     return null;
   }
@@ -166,9 +174,7 @@ function parseFederatedCallAddress(
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).some(
-      (key) => key !== 'account' && key !== 'domain',
-    ) ||
+    Object.keys(record).some((key) => key !== 'account' && key !== 'domain') ||
     typeof record['account'] !== 'string' ||
     record['account'].length === 0 ||
     typeof record['domain'] !== 'string' ||
@@ -214,7 +220,10 @@ export function parseCallContent(content: string): CallContent | null {
   } = obj as Record<string, unknown>;
   if (type !== 'CALL') return null;
   if (callType !== 'AUDIO' && callType !== 'VIDEO') return null;
-  if (typeof status !== 'string' || !CALL_OUTCOMES.includes(status as CallOutcome)) {
+  if (
+    typeof status !== 'string' ||
+    !CALL_OUTCOMES.includes(status as CallOutcome)
+  ) {
     return null;
   }
   // typeof narrows from unknown → number; Number.isInteger then rejects non-integers.
@@ -224,6 +233,18 @@ export function parseCallContent(content: string): CallContent | null {
   if (startedAt !== undefined && !isFiniteMs(startedAt)) return null;
   if (endedAt !== undefined && !isFiniteMs(endedAt)) return null;
   if (durationMs !== undefined && !isFiniteMs(durationMs)) return null;
+  if (!isFiniteMs(endedAt)) return null;
+  if ((startedAt === undefined) !== (durationMs === undefined)) return null;
+  if (
+    isFiniteMs(startedAt) &&
+    (endedAt < startedAt || durationMs !== endedAt - startedAt)
+  )
+    return null;
+  if (
+    ['cancelled', 'declined', 'missed', 'unreachable'].includes(status) &&
+    (startedAt !== undefined || durationMs !== undefined)
+  )
+    return null;
   const out: CallContent = {
     type: 'CALL',
     callType,

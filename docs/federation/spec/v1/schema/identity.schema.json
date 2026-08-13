@@ -25,15 +25,23 @@
       },
       "additionalProperties": false
     },
-    "feedRevisionHint": {
+    "feedHeadHint": {
       "type": "object",
-      "required": ["origin", "stateFeedRev", "messageFeedRev"],
+      "required": [
+        "origin",
+        "stateFeedEndId",
+        "messageFeedEndId",
+        "tombstoneFeedEndId"
+      ],
       "properties": {
         "origin": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
-        "stateFeedRev": {
+        "stateFeedEndId": {
           "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },
-        "messageFeedRev": {
+        "messageFeedEndId": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        },
+        "tombstoneFeedEndId": {
           "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         }
       },

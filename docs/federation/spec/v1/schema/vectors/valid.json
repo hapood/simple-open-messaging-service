@@ -37,12 +37,13 @@
       ]
     },
     {
-      "name": "feed revision wake-up",
-      "schema": "urn:soms:federation:v1:identity#/$defs/feedRevisionHint",
+      "name": "feed head wake-up",
+      "schema": "urn:soms:federation:v1:identity#/$defs/feedHeadHint",
       "value": {
         "origin": "a.example",
-        "stateFeedRev": "12",
-        "messageFeedRev": "34"
+        "stateFeedEndId": "12",
+        "messageFeedEndId": "34",
+        "tombstoneFeedEndId": "9"
       }
     },
     {
@@ -52,24 +53,41 @@
         "items": [
           {
             "account": "alice",
+            "domain": "a.example",
             "eventType": "PROFILE",
             "subjectAccount": "",
+            "subjectDomain": "",
             "revision": "2",
-            "rev": "1",
+            "feedId": "1",
             "body": {
-              "domain": "a.example",
-              "name": "Alice",
+              "displayName": "Alice",
               "bio": "",
               "avatar": null,
               "deleted": false
             }
           },
           {
+            "account": "carol",
+            "domain": "c.example",
+            "eventType": "MEMBER_PROFILE",
+            "subjectAccount": "",
+            "subjectDomain": "",
+            "revision": "4",
+            "feedId": "2",
+            "body": {
+              "availability": "AVAILABLE",
+              "displayName": "Carol",
+              "avatar": null
+            }
+          },
+          {
             "account": "alice",
-            "eventType": "P2P_META",
+            "domain": "a.example",
+            "eventType": "P2P_INTENT",
             "subjectAccount": "bob",
+            "subjectDomain": "b.example",
             "revision": "3",
-            "rev": "2",
+            "feedId": "3",
             "body": {
               "status": "REQUESTED",
               "note": "hello",
@@ -79,25 +97,28 @@
           },
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
+            "domain": "a.example",
             "eventType": "GROUP_INVITE_INTENT",
             "subjectAccount": "bob",
+            "subjectDomain": "b.example",
             "revision": "1",
-            "rev": "3",
+            "feedId": "4",
             "body": {
-              "status": "MEMBER",
+              "status": "ACCEPTED",
               "note": "",
               "requestedAt": 1700000000000,
               "expiresAt": null,
-              "owner": { "account": "alice", "domain": "a.example" },
-              "sinceSeq": -1
+              "owner": { "account": "alice", "domain": "a.example" }
             }
           },
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
+            "domain": "a.example",
             "eventType": "GROUP_JOIN_INTENT",
             "subjectAccount": "bob",
+            "subjectDomain": "b.example",
             "revision": "1",
-            "rev": "4",
+            "feedId": "5",
             "body": {
               "status": "REQUESTED",
               "note": "",
@@ -107,14 +128,17 @@
           },
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
+            "domain": "a.example",
             "eventType": "GROUP_META",
             "subjectAccount": "",
+            "subjectDomain": "",
             "revision": "4",
-            "rev": "5",
+            "feedId": "6",
             "body": {
               "active": true,
               "dissolved": false,
               "owner": { "account": "alice", "domain": "a.example" },
+              "membersCanInvite": true,
               "members": [
                 { "account": "alice", "domain": "a.example", "role": "OWNER" },
                 { "account": "bob", "domain": "b.example", "role": "MEMBER" }
@@ -122,8 +146,8 @@
             }
           }
         ],
-        "scannedThrough": "5",
-        "stateFeedRev": "5",
+        "scannedThrough": "6",
+        "stateFeedEndId": "6",
         "hasMore": false
       }
     },
@@ -133,7 +157,7 @@
       "value": {
         "messages": [
           {
-            "changeId": "1",
+            "feedId": "1",
             "thread": {
               "type": "P2P",
               "participants": [
@@ -148,21 +172,24 @@
             "content": "{\"text\":\"hello\"}",
             "createdAt": 1700000000000,
             "updatedAt": 1700000000000,
-            "clientMessageId": "m1",
+            "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
             "assets": []
           }
         ],
         "scannedThrough": "1",
-        "allocatedThrough": "1",
-        "hasMore": false,
-        "degradation": null
+        "hasMore": false
       }
     },
     {
       "name": "all message content discriminators",
       "schema": "urn:soms:federation:v1:message-content",
       "values": [
-        { "contentType": "PURE_TEXT", "content": { "text": "hello" } },
+        {
+          "contentType": "PURE_TEXT",
+          "content": {
+            "text": "hello [@Bob](soms://user/bob%40b.example?v=1)"
+          }
+        },
         {
           "contentType": "INVITE",
           "content": {
@@ -170,18 +197,22 @@
             "from": "alice",
             "group": "!group",
             "groupName": "Group",
-            "groupDomain": "a.example",
-            "groupIsLocal": true
+            "groupDomain": "a.example"
           }
         },
         {
           "contentType": "IMAGE",
-          "content": { "url": "/asset/0", "w": 1, "h": 1, "size": 1 }
+          "content": {
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+            "w": 1,
+            "h": 1,
+            "size": 1
+          }
         },
         {
           "contentType": "VIDEO",
           "content": {
-            "url": "/asset/0",
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "v",
             "size": 1,
             "mimeType": "video/webm",
@@ -193,7 +224,7 @@
         {
           "contentType": "FILE",
           "content": {
-            "url": "/asset/0",
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "f",
             "size": 1,
             "mimeType": "application/octet-stream"
@@ -202,7 +233,7 @@
         {
           "contentType": "AUDIO",
           "content": {
-            "url": "/asset/0",
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "a",
             "size": 1,
             "mimeType": "audio/opus",
@@ -244,7 +275,13 @@
           "contentType": "GALLERY",
           "content": {
             "items": [
-              { "kind": "IMAGE", "url": "/asset/0", "size": 1, "w": 1, "h": 1 }
+              {
+                "kind": "IMAGE",
+                "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+                "size": 1,
+                "w": 1,
+                "h": 1
+              }
             ]
           }
         }
@@ -352,7 +389,6 @@
         "domain": "a.example",
         "displayName": "Alice",
         "avatar": null,
-        "bio": "",
         "profileRev": 1
       }
     },
@@ -366,7 +402,7 @@
           {
             "id": "b1",
             "depth": 1,
-            "manifestDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "manifestDigest": "9879e786f60d6c4550e5c9609410c33affc459c43ae28afda29e3f59e0815428",
             "manifest": {
               "schemaVersion": 1,
               "bundleId": "b1",
@@ -374,6 +410,7 @@
               "children": [],
               "messages": [
                 {
+                  "id": 1,
                   "sender": {
                     "displayName": "Alice",
                     "account": "alice",
@@ -431,11 +468,7 @@
       "value": {
         "code": 50019,
         "message": "requested cursor is below retained floor",
-        "data": {
-          "startChangeId": "101",
-          "availableCursor": "120",
-          "allocatedThrough": "250"
-        }
+        "data": { "resumeAfter": "120" }
       }
     }
   ]

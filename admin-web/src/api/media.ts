@@ -76,6 +76,37 @@ export interface ResumableUploadSession {
   updatedAt: string;
 }
 
+export interface PendingFederatedDeletion {
+  id: string;
+  thread: {
+    id: number;
+    type: 'P2P' | 'GROUP';
+    group?: { account: string; domain: string };
+  };
+  creator: { id: number; account: string; domain: string };
+  originSeq: number;
+  authorityDomain: string;
+  sourceDomain: string;
+  remoteFeedId: string;
+  type: 'WITHDRAW' | 'REPORT';
+  deletedAt: number;
+  receivedAt: number;
+  updatedAt: number;
+  matchedMessage: { seq: number; isDeleted: boolean } | null;
+}
+
+export interface PendingFederatedDeletionPage {
+  list: PendingFederatedDeletion[];
+  total: number;
+}
+
+export function listPendingFederatedDeletions(params: {
+  skip: number;
+  take: number;
+}): Promise<PendingFederatedDeletionPage> {
+  return request('/admin/media/pending-federated-deletions', params);
+}
+
 export function reconcileMedia(): Promise<MediaGcTask> {
   return request<MediaGcTask>('/admin/media/reconcile');
 }

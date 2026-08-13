@@ -217,7 +217,7 @@ export async function configureApp(
       },
       { path: `${FEDERATION_API_PREFIX}/healthy`, method: RequestMethod.POST },
       {
-        path: `${FEDERATION_API_PREFIX}/feed-revisions`,
+        path: `${FEDERATION_API_PREFIX}/feed-heads`,
         method: RequestMethod.POST,
       },
       {

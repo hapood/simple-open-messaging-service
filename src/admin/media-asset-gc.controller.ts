@@ -1,6 +1,7 @@
 import { Public } from '../common/public.decorator.js';
 import {
   Controller,
+  Body,
   Get,
   Param,
   Post,
@@ -22,6 +23,7 @@ import { MediaAssetGcService } from './media-asset-gc.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { ResumableUploadService } from '../upload/resumable-upload.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { AdminListPendingFederatedDeletionsDto } from './media-gc.dto.js';
 
 /**
  * Admin-only media garbage-collection endpoints. Not exposed to regular users. The primary trigger
@@ -160,6 +162,18 @@ export class MediaAssetGcController {
   })
   inbox() {
     return this.gc.listInboxState();
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/media/pending-federated-deletions')
+  @ApiOperation({
+    summary:
+      'List federated deletion facts still awaiting their local message',
+  })
+  pendingFederatedDeletions(
+    @Body() dto: AdminListPendingFederatedDeletionsDto,
+  ) {
+    return this.gc.listPendingFederatedDeletions(dto.skip, dto.take);
   }
 
   @Audit('media.inbox.retry', {

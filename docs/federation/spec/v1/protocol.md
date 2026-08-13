@@ -17,6 +17,7 @@
 
 Federation v1 的规范性要求由本文及其明确引用的 [传输与安全](./transport-security.md)、
 [服务器认可](./recognition.md)、[State Feed](./state-feed.md)、[Message Feed](./message-feed.md)、
+[Message Tombstone Feed](./message-tombstone-feed.md)、
 [资源接口](./resources.md)、[通话](./calls.md)与[错误码](./errors.md)文档共同组成。本文负责
 共享协议契约（protocol contract）；operation 文档可以（MAY）在
 不改变本文安全底线的前提下收紧它所属 operation 的字段、状态和授权要求。如果两份
@@ -33,17 +34,26 @@ Federation v1 的规范性要求由本文及其明确引用的 [传输与安全]
 - **服务器域名（server domain）**：服务器的稳定联邦身份，以规范化 `Domain` 表示。DNS、SRV 解析出的
   主机、端口或 IP 只决定连接位置，不是服务器域名。
 - **对等节点（peer）**：相对于本服务器，正在建立或已经建立双向认可关系的远端服务器。
-- **源站（origin）**：某个群身份及其成员名册（roster）的权威服务器。它是身份授权角色，不是每条消息
-  作者或每次传输的发布方的同义词。
-- **镜像（mirror）**：非源站服务器保存的群副本。
+- **源站（origin）**：某个群身份、成员名册以及该群已接受 timeline（包括删除终态）的唯一权威服务器。
+  第三方域成员仍是消息作者，但其 home server 只能向 origin 提交；只有 origin 能向群 mirror 发布已接受事实。
+- **镜像（mirror）**：非源站服务器保存的群副本。mirror 只从 origin 消费该群的权威状态、消息和删除，
+  不得把收到的群事实继续发布给第三个 peer。
+- **提交（submission）**：成员 home server 向群 origin 发送本域成员的消息或撤回请求。提交不是面向群
+  mirror 的权威事实；origin 必须先验证并持久接受，才可进入权威分发。
+- **权威分发（authoritative distribution）**：群 origin 把已接受的群事实直接发布给持有该群 mirror 的
+  peer。它不是任意 peer 间的 relay，也不存在 mirror-to-mirror 的下一跳。
 - **发布方（publisher）**：在某个操作或同步方向中提供源（feed）、资源或权威状态的服务器。
 - **消费方（consumer）**：在某个操作或同步方向中请求、验证并提交发布方数据的服务器。同一服务器在
   不同操作或相反同步方向中可以（MAY）同时承担发布方和消费方。
+
+Federation v1 的数据平面采用固定权威拓扑：P2P authored message/withdraw 由作者 home server 直接发布给
+对端；群数据只有“成员 home → origin”的提交腿和“origin → mirrors”的权威分发腿。识别关系形成 mesh
+连接能力，不表示任意已识别 peer 可以转发另一个 authority 的事实。
 - **持久事实（durable fact）**：由服务器持久保存的业务事实，例如关系方向、群成员名册快照或消息副本。
   它的正确性和生命周期由业务状态决定，不依赖修订提示是否送达。
 - **持久变更（durable change）**：发布方为特定对等节点持久分配、用于发现或同步持久事实的有序源记录。
   它拥有源修订号（source revision），并按游标、确认和保留规则提供；删除变更不等于删除对应的持久事实。
-- **修订提示（revision hint）**：只负责唤醒消费方的非持久、可丢失通知。
+- **Feed-head 提示（feed-head hint）**：携带一致的 feed inclusive 终点，只负责唤醒消费方，可丢失。
 - **游标（cursor）**：消费方已安全提交的源修订号；不能因提示或失败响应提前推进。
 - **重置（reset）**：管理员授权的破坏性身份生命周期；普通断线或 DNS 变化不属于重置。
 - **传输格式（wire format）**：通过 HTTP 实际传输的 method、path、query、header 和 body bytes 的表示形式；不包括
@@ -92,7 +102,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 
 ## 3. Federation v1 HTTP 接口面（HTTP Surface）
 
-下表是完整 v1 surface；同步面严格只有两个 GET feed 和一个 POST revision hint。
+下表是完整 v1 surface；同步面包含三个 GET feed 和一个 POST feed-head hint。
 `鉴权上下文` 决定签名验证时如何获取 key 以及哪些 peer 状态可以（MAY）调用 operation；它不改变
 第 6 节的签名 wire format。
 
@@ -101,9 +111,10 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 | `GET`  | `/.well-known/soms`                 | 公开 TLS           | 无 query、无 body         | `200`       | 裸 discovery object    |
 | `POST` | `/s2s/v1/recognize`                 | bootstrap signed   | JSON signer domain        | `200`       | 裸 recognize OK        |
 | `POST` | `/s2s/v1/healthy`                   | status signed      | JSON signer domain        | `200`       | 裸 privacy-safe status |
-| `POST` | `/s2s/v1/feed-revisions`            | lightweight signed | JSON revision hint        | `200`       | success ack envelope   |
+| `POST` | `/s2s/v1/feed-heads`                | lightweight signed | JSON feed-head hint       | `200`       | success ack envelope   |
 | `GET`  | `/s2s/v1/state-feed`                | recognized signed  | feed query                | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/message-feed`              | recognized signed  | feed query                | `200`       | success data envelope  |
+| `GET`  | `/s2s/v1/message-tombstone-feed`    | recognized signed  | feed query                | `200`       | success data envelope  |
 | `POST` | `/s2s/v1/call`                      | recognized signed  | JSON call frame           | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/users/:account`            | recognized signed  | path account              | `200`       | success data envelope  |
 | `GET`  | `/s2s/v1/media/:digest`             | recognized signed  | path/query/optional Range | `200`/`206` | raw bytes              |
@@ -117,7 +128,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 - **status signed**：只用于 `healthy`。接收方只使用已有的 pinned/recognition identity 尝试验签；已认可但
   尚未收敛的 peer 可以（MAY）得到 `degraded`，未知、未被本方认可或无权请求者统一得到 privacy-safe
   `unavailable`，不得（MUST NOT）借查询触发首次认可。
-- **lightweight signed**：只用于 `feed-revisions`。接收方在返回该 signer 的 Recognize `OK` 前必须（MUST）
+- **lightweight signed**：只用于 `feed-heads`。接收方在返回该 signer 的 Recognize `OK` 前必须（MUST）
   原子开放该方向门禁；signer 只有收到 `OK` 后才可以（MAY）发送。它不要求完整 `available`，但不能授权其他数据面。
 - **recognized signed**：signer 必须（MUST）已有 pinned root、完整双向认可事实和当前有效的 signing key
   certificate，并通过 operation 自身的业务授权。接收方不得（MUST NOT）仅因本地缓存的可用性视图为
@@ -150,7 +161,7 @@ object 的兼容规则；删除或重命名字段、改变字段含义、改变�
 （MUST）由 pinned identity、方向确认事实、版本、策略和业务授权共同计算；完整状态和转换以
 recognition.md 为准。
 
-Recognize 接收方必须（MUST）在返回 `OK` 前原子开放该方向的 `feed-revisions` 接收门禁。发送反向
+Recognize 接收方必须（MUST）在返回 `OK` 前原子开放该方向的 `feed-heads` 接收门禁。发送反向
 Recognize 的 server 必须（MUST）在发出 HTTP request 前完成本地服务准备，使对方随后发起的 Healthy
 查询至少返回 `degraded`，而不是 `unavailable`。具体提交边界和竞态时序以 recognition.md 为准。
 
@@ -191,6 +202,7 @@ operation 引用下表类型时，必须（MUST）遵守其格式、范围和规
 | `Account`                | `UserAccount` 或 `GroupAccount`；大小写敏感且只接受上述小写形式；operation 必须（MUST）拒绝不符合其资源类型的 account                |
 | `Address`                | closed JSON object `{ "account": Account, "domain": Domain }`                                                                        |
 | `DecimalString`          | 字面值 `"0"` 或不以 `0` 开头的非空 ASCII 十进制 digit string；不得（MUST NOT）改用 JSON number                                       |
+| `SignedDecimalString`    | 字面值 `"0"`，或可选 `-` 加不以 `0` 开头的非空 ASCII 十进制 digit string；禁止 `-0`，不得（MUST NOT）改用 JSON number                |
 | `PositiveDecimalString`  | 首字符为 `1..9`、后续字符为 `0..9` 的非空 string                                                                                     |
 | `SafeInteger`            | JSON integer，范围 `0..9007199254740991`                                                                                             |
 | `PositiveSafeInteger`    | JSON integer，范围 `1..9007199254740991`                                                                                             |
@@ -207,6 +219,25 @@ v1 on the wire 只接受上表的规范化 `Domain` 和 `Account`。发送方必
 在进入 S2S 边界前由发送方完成确定性规范化或拒绝。接收方必须（MUST）拒绝含大写字母、空白、Unicode
 或其他非规范形式的 transmitted `Domain`/`Account`，不得（MUST NOT）在接收后小写化、修剪或通过宽松
 规范化把两个不同 transmitted value 当作同一身份。数据库 ID 不得（MUST NOT）作为 server 间身份坐标。
+
+#### 6.2.1 Account 永久绑定（Permanent Account Binding）
+
+`Address` 是跨时间的永久身份坐标，不是可重新分配的显示名或可回收的用户名。一个 domain
+首次将 `{ account, domain }` 作为某个用户或群的身份发布后：
+
+- 该 `Address` 必须（MUST）在任何时刻都指向同一个逻辑实体，且其资源类型（用户或群）不得
+  （MUST NOT）改变。
+- 用户或群的 `account` 不得（MUST NOT）重命名、迁移或原地替换。改变 display name、profile、群主、
+  roster 或其他可变属性不改变该绑定。
+- 用户被删除、停用、无法再访问或以其他方式消失，以及群被解散、删除或不再可访问后，其
+  `Address` 仍必须（MUST）永久保留绑定并视为已占用；不得（MUST NOT）释放、回收或重新分配给
+  任何新用户或新群。
+- 实现可以（MAY）不再对外返回已消失实体的 profile 或业务资源，但必须（MUST）持久保留足以防止
+  `Address` 被再次分配的占用记录（tombstone/reservation）。物理删除业务资料不得（MUST NOT）删除该占用事实。
+
+因此，consumer 看到同一 `Address` 的后续资料或群状态时，必须（MUST）将其解释为原实体的状态演进，
+不得（MUST NOT）将其解释为 account 已转让给新实体。如果实现无法确认该永久绑定，必须（MUST）
+fail closed，不得（MUST NOT）通过创建新实体来解决冲突。
 
 ### 6.3 已签名请求的构造与验证（Signed Request Construction and Verification）
 
@@ -252,7 +283,7 @@ binary body 后追加 JSON。
 }
 ```
 
-v1 中 `feed-revisions` 是 ack operation。其他 operation 不得（MUST NOT）自行省略 `data`；如果其语义上没有结果，
+v1 中 `feed-heads` 是 ack operation。其他 operation 不得（MUST NOT）自行省略 `data`；如果其语义上没有结果，
 operation 规范 必须（MUST）明确定义 `data: null`。
 
 ### 7.3 错误响应封装（Error Envelope）
@@ -267,7 +298,7 @@ operation 规范 必须（MUST）明确定义 `data: null`。
 
 ### 7.4 重试与提交边界（Retry and Commit Boundaries）
 
-`feed-revisions` 成功返回 HTTP `200`；这表示 revision hint 已被接受，不表示对端 durable feed 已完全排空。
+`feed-heads` 成功返回 HTTP `200`；这表示 feed-head hint 已被接受，不表示对端 durable feed 已完全排空。
 `call` 在 frame 已完成同步验证和临时状态处理后返回 200；它不表示终端已收到事件或媒体已连通。
 网络错误、无法解析的 proxy response 和允许重试的 `5xx` 可以（MAY）使用完全相同的业务请求重试，
 但必须（MUST）重新生成 `Date`、`created`、`expires` 和 HTTP signature。malformed、binding、authorization 和
@@ -280,14 +311,15 @@ cursor 只能在 response 完整验证且本地副作用与 cursor 同事务提�
 
 ## 8. 持久状态与生命周期（Durable State and Lifecycle）
 
-`state-feed` 承载 `PROFILE`、`P2P_META`、`GROUP_INVITE_INTENT`、`GROUP_JOIN_INTENT` 和
+`state-feed` 承载 home-owned `PROFILE`、source-scoped `MEMBER_PROFILE`、三个统一语义的方向 intent 和
 origin-authoritative `GROUP_META`。方向事实按 stable key 与 business revision 合并；相同或更旧
-revision 是完整 no-op。P2P 只有双方方向均为 `FRIEND` 才成立；群 roster 最终以 origin 的
+revision 是完整 no-op。P2P 只有双方方向均为 `ACCEPTED` 才成立；群 roster 最终以 origin 的
 `GROUP_META` 为准。
 
-`state-feed` 的完整 page、五种 event body、字段约束与合并语义由
+`state-feed` 的完整 page、六种 event body、字段约束与合并语义由
 [Federation v1 State Feed](./state-feed.md) 定义；`message-feed` 的完整 page、10 种 content type、
-媒体与转发由 [Federation v1 Message Feed](./message-feed.md) 定义。二者与本文
+媒体与转发由 [Federation v1 Message Feed](./message-feed.md) 定义；撤回与生效治理删除由
+[Federation v1 Message Tombstone Feed](./message-tombstone-feed.md) 定义。三者与本文
 共同构成 v1 规范性正文，概要不能覆盖其字段级要求。
 
 一对一实时通话采用 WebRTC media/JSEP，并以签名 `/s2s/v1/call` frame 承载 SOMS 联邦信令。完整 HTTP
@@ -317,29 +349,103 @@ hint 或普通消息 payload。
   X 的哪条发布已被接收，`createdAt` 给出 publisher 的持久化时间。
 - consumer 收到 self-authored item 时 必须（MUST）用稳定 `(thread, author, originSeq)` 坐标关联原发布，
   不得（MUST NOT）创建重复消息。consumer 如何保存或展示回执属于本地实现，不属于 protocol contract。
-- publisher 从 peer X 拉取由其他 domain authored 的 relay 消息时，不得（MUST NOT）把同一 change 直接
-  反射回 X；这不阻止它向作者服务器或其他已授权 audience 分配该消息。
+- 群 origin 从成员 home server 接收第三方 authored submission 后，必须先验证作者、群成员资格和内容并
+  持久接受；随后只能由 origin 向各 mirror 权威分发。mirror 只接受已知 group origin 作为该群分发 source，
+  不得继续发布给其他 peer。v1 不携带 author server 的端到端 message signature；mirror 信任的是已认证
+  group origin 对已接受群 timeline 的权威断言，而不是任意 thread participant 的转述。
+- `(thread, author, originSeq)` 标识的 v1 authored message 不可变；重复副本的 authored content、资源和
+  identity 字段必须语义相同。v1 不用 publisher-local `updatedAt` 表达编辑、撤回或删除；撤回与生效
+  治理删除通过独立 `message-tombstone-feed` 表达。
 
-`state-feed` 与 `message-feed` query 均包含必选 `after` 和可选 `take`。page 返回 source HWM、
-`scannedThrough` 和 `hasMore`；consumer 从已提交 cursor 开始，先完整排空 state，再拉 message。
-page 与 cursor 必须（MUST）在一个事务中提交。重复 page 必须（MUST）幂等；空 page 也可确认并推进到 source HWM。
-同一 `after` 可以（MAY）用于重试；低于 source 已确认 cursor 或 retained floor 的回溯必须（MUST）被拒绝。高于已
-确认 cursor 且不超过 `allocatedThrough` 的请求表示 caller 主动确认跳过该区间。change ID 只要求
+### 9.1 Feed 坐标词汇
+
+本规范中的 feed 坐标统一采用以下术语；不得用未限定含义的 `HWM` 同时指代其中多个值：
+
+- `feedId`：source 在一个 feed 坐标空间中分配的单调 item ID。state、message 与 tombstone 使用三个
+  彼此独立的 per-peer 空间；协议不规定初始值，也不要求连续。
+- `after`：consumer 已原子提交的 exclusive cursor。consumer 侧持久字段名为 `committedThrough`。
+- `through`：一次有界排空的 inclusive 上界；它不表示确认。
+- `scannedThrough`：page 已连续扫描完成的 inclusive 边界，也是成功提交后下一次请求的 `after`。
+- `retainedAfter`：source 内部仍可服务的 retained-history exclusive floor；不是 wire 字段。
+- `acknowledgedThrough`：source 已从请求 `after` 观察到的 consumer 确认位置。
+- `resumeAfter = max(retainedAfter, acknowledgedThrough)`：50019 返回的下一次可用 exclusive cursor。
+- `allocatedThrough`：source 曾分配的最大 feed 坐标，即 allocation upper bound；
+  它单调且可以落在空洞上。
+- `stateFeedEndId` / `messageFeedEndId` / `tombstoneFeedEndId`：feed-heads 发布的三个独立 inclusive drain
+  barrier 坐标。它们是排空目标，不是 consumer cursor。
+- `lastServedThrough`：source 最近成功服务的 `scannedThrough`，用于重放和确认校验。
+
+数据库或实现注释需要使用 “allocation upper bound”“drain barrier” 或 “committed cursor”等限定词；
+`HWM` 仅可作为带限定语的解释性简称，不是协议字段名。thread 内的 message `seq` 上界属于另一个坐标
+空间，必须称为 thread sequence upper bound，不得与 federation feed 坐标混用。
+
+### 9.2 通用 Feed 规则
+
+三个 feed 的 `after` 都可省略以查询当前可用起点，此时 source 返回
+`FEDERATION_FEED_CURSOR_UNAVAILABLE` 和 `resumeAfter`，不返回 page。省略 `after` 时不得携带其他 page
+参数。三个 feed 都可包含
+可选 `take` 和 inclusive feed-ID 上界 `through`。`take` 只是 consumer 建议扫描数，source 应参考但
+可根据服务能力采用不同页大小；各 feed 的精确规则由其 operation 定义。带 `through` 的连续分页必须
+保持该值不变；它只限制读取窗口，不是
+确认、删除或历史降级操作。三个 feed 各有独立 per-peer allocator、retention、ACK 和 pull cursor。page 返回 `scannedThrough` 和 `hasMore`；
+consumer 从已提交 cursor 开始，先完整排空 state，再拉 tombstone 和 message。
+
+所有 feed-ID 窗口统一使用左开右闭区间。请求 `after=A&through=T` 表示 `(A, T]`：`A` 已由 consumer
+提交，必须排除；`T` 是本轮包含的上界。page 的实际完成窗口是 `(after, scannedThrough]`，因此
+`feedId === scannedThrough` 被包含，`feedId === after` 不得再次应用。`through` 省略时只表示本次请求使用
+source 冻结的当前 `*FeedEndId`，不改变左开右闭规则。本文中 HTTP byte range、时间区间及其他非 feed
+坐标不受本约定约束。
+
+page 与 cursor 必须（MUST）在一个事务中提交。重复 page 必须（MUST）幂等；空 page 也可通过 `scannedThrough` 确认并推进。
+同一 `after` 可以（MAY）用于重试。三个 feed 都禁止 consumer fast-forward；各 feed 的 retention/ACK 规则以对应 operation
+文档为准。feed ID 只要求
 严格递增，不要求连续；`scannedThrough` 和下一条 item ID 都可以（MAY）跨越任意大的已删除或未分配空洞。
 
-publisher 可以（MAY）物理删除已确认 cursor 之前的 message-feed change。若 peer 长期不消费，publisher
-也可以（MAY）按本地保留策略丢弃仍未确认的旧 allocation；这不删除 publisher 的 Message 正文。强制截断
-必须（MUST）原子抬高 retained floor、acknowledged cursor 和 served cursor。旧 `after` 必须（MUST）返回
-`FEDERATION_MISSED_CURSOR_INVALID`，其 `data.startChangeId` 与 `data.availableCursor` 指向新的
-可用起点。consumer 验证新 floor 单调前进且不超过 `allocatedThrough` 后，必须（MUST）原子更新本地 cursor
-并从 `availableCursor` 继续；不得（MUST NOT）要求 source 恢复已被策略删除的 change。
+publisher 可以（MAY）物理删除已确认 cursor 之前的 message-feed allocation。若 peer 长期不消费，publisher
+也可以（MAY）按本地保留策略丢弃仍未确认的旧 message allocation，并抬高内部 `retainedAfter`。当请求的
+`after` 低于 `resumeAfter` 时，publisher 返回 `FEDERATION_FEED_CURSOR_UNAVAILABLE`；consumer 验证后原子
+采用响应中的 `resumeAfter` 并继续，不执行全量同步。state 与 tombstone 的保留规则由各自 operation 定义。
 
-`feed-revisions` 只携带 `origin`、`stateFeedRev` 和 `messageFeedRev`。提示可以（MAY）丢失、重复、乱序；
-consumer 对 revision 取 max，并通过启动和周期 reconciliation 主动拉取两个 feed。进程恢复时先确认
-已缓存 peer 的 root identity 和可用 signing certificate，再依次排空 `state-feed` 与
-`message-feed`。
+`feed-heads` 只携带 `origin`、`stateFeedEndId`、`messageFeedEndId` 和 `tombstoneFeedEndId`。publisher MUST
+从同一个已提交的 per-peer 同步视图读取三者，并把 `(S, M, D)` 作为不可拆分的 drain barrier 发布。每个
+barrier MUST 满足：所有 message `feedId <= M` 与 tombstone `feedId <= D` 都能够仅依赖 state
+`feedId <= S` 的投影完成身份解析、关系判断和历史 audience 验证。
 
-媒体消息可先作为 durable pending work 提交，再通过 `media/:digest` Range 下载。下载授权 必须（MUST）
+publisher MUST 先持久提交业务状态及其 state-feed allocation，再允许依赖该状态的数据 change 推进到
+可被 barrier 捕获的 data feed end。并发业务提交、buffer fill、重启恢复和 hint 发送都不得使
+`messageFeedEndId` 或 `tombstoneFeedEndId` 越过尚未进入对应 `stateFeedEndId` 的依赖。hint 只负责唤醒，可以丢失、重复或乱序；它不能成为上述一致性的
+唯一载体。
+
+consumer 收到 barrier `(S, M, D)` 后 MUST 按以下有界顺序排空：
+
+```text
+state-feed?through=S
+message-tombstone-feed?through=D
+message-feed?through=M
+```
+
+只有 durable state cursor 已提交到 `S`，才可以请求或应用该轮 `M`、`D` 窗口；message cursor 到达 `M`
+且 tombstone cursor 到达 `D` 后，该 barrier 才算排空。consumer 不得用当前无界 source end coordinate
+或 hint 到达顺序代替 `through`。并发到达的新 barrier 进入后续排空轮次，不得改变正在进行的 `(S, M, D)` 窗口。
+
+P2P audience 关闭时，`P2P_INTENT(REVOKED).messageFeedEndId` 记录该原子关闭点已经向目标 peer 可见的
+message-feed feed-ID inclusive 上界。属于该次已关闭关系的既有 allocation 只有在
+`feedId <= messageFeedEndId` 时才位于该历史边界内；该值是整个 per-peer feed 的坐标，边界位置可以属于
+其他 thread 或空洞，但不能属于独立的 tombstone feed。详细字段约束见 [State Feed](./state-feed.md#51-p2p)。consumer 因自身
+方向状态或本地策略丢弃单条消息时，仍 MUST 继续处理同页其他消息并提交 feed cursor。
+
+publisher 形成 barrier 后，必须保留足以完成这些有界读取的 state 版本与未确认 data allocation。
+state stable key 在 `S` 之后被覆盖时，`through=S` 仍必须得到截至 `S` 的最后有效版本；否则 publisher
+必须返回可重试的 `INTERNAL` 并停止该 barrier 的数据 feed，不能返回看似完整的空洞或要求 consumer
+cursor 前跳。具体版本表、snapshot、锁和队列实现不属于协议要求。
+
+consumer 可以对重复或乱序 barrier 的两个坐标分别取数值最大值，因为 publisher 的 feed-end barrier 单调且更大的
+state 上界只能提供更多依赖状态；合并结果仍必须作为一个新 `(maxS, maxM)` barrier 按上述顺序排空。
+启动和周期 reconciliation 即使没有收到 hint，也 MUST 读取当前一致 barrier 并执行相同流程。进程恢复
+时先确认已缓存 peer 的 root identity 和可用 signing certificate，再开始排空。
+
+媒体 content 只携带显式 digest，不携带 publisher 展示或下载 URL。媒体消息可先作为 durable pending
+work 提交，再由 consumer 按 outer message 授权坐标构造 `media/:digest` Range 请求。下载授权 必须（MUST）
 实时 join signer 对应的 thread audience，并验证 digest 与精确 Message 或其 forward closure 的绑定；
 不得（MUST NOT）依赖可能已被 GC 的 message-feed change。下载失败或 quota pause 不得（MUST NOT）回滚已经提交的 feed
 cursor；任务必须（MUST）可由持久状态恢复。forward bundle 是有界、不可变、按 digest 验证的 closure。

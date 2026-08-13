@@ -167,7 +167,7 @@ describe('federation durable missed transport (two nodes)', () => {
               where: eq(federationPullCursor.peerDomain, FED_DOMAIN_B),
             });
           expect(source?.allocatedThrough).toBeGreaterThan(0n);
-          expect(pulled?.remoteHwm).toBe(source?.allocatedThrough);
+          expect(pulled?.committedThrough).toBe(source?.allocatedThrough);
         },
         { timeout: 10_000 },
       );

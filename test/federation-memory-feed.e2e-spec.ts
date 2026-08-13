@@ -5,8 +5,8 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   federatedPeer,
-  federationAudienceEpoch,
-  federationThreadCheckpoint,
+  federationMessageDelivery,
+  federationMessageFeedAllocation,
   message,
   messageThread,
   threadAudience,
@@ -17,6 +17,10 @@ import { FederationCursorService } from '../src/federation/federation-cursor.ser
 import { FederationMemoryFeedService } from '../src/federation/federation-memory-feed.service.js';
 import { FederationFeedFillState } from '../src/federation/federation-memory-feed.service.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
+import {
+  closeFederatedAudienceInTx,
+  openFederatedAudienceInTx,
+} from '../src/federation/federation-audience.js';
 
 describe('bounded in-memory federation message feed', () => {
   let mod: TestingModule;
@@ -83,14 +87,14 @@ describe('bounded in-memory federation message feed', () => {
         updatedAt: now,
       },
     ]);
-    await database.db
+    const [audience] = await database.db
       .insert(threadAudience)
-      .values({ targetDomain: peerDomain, threadId: thread.id });
-    const [epoch] = await database.db
-      .select()
-      .from(federationAudienceEpoch)
-      .where(eq(federationAudienceEpoch.peerDomain, peerDomain));
-    expect(epoch.fromSeq).toBe(0);
+      .values({
+        targetDomain: peerDomain,
+        threadId: thread.id,
+        messageScannedThroughSeq: -1,
+      })
+      .returning();
     const [stored] = await database.db
       .insert(message)
       .values({
@@ -108,33 +112,41 @@ describe('bounded in-memory federation message feed', () => {
       .where(eq(messageThread.id, thread.id));
     const cursor = new FederationCursorService(database);
     await cursor.initializePeer(peerDomain, 0n);
-    return { cursor, epoch, stored, thread };
+    return { cursor, audience, stored, thread, alice, bob };
   }
 
-  it('rebuilds, serves and durably checkpoints an audience epoch', async () => {
-    const { cursor, epoch } = await seed();
+  it('rebuilds, serves and durably advances the current audience', async () => {
+    const { cursor, audience } = await seed();
     const memory = new FederationMemoryFeedService(database);
     const feed = new FederationMessageFeedService(cursor, memory);
 
     await Promise.all([
       memory.fill(peerDomain),
-      memory.offerCommitted(peerDomain, epoch.threadId, 0),
+      memory.offerCommitted(peerDomain, audience.threadId, 0),
     ]);
     const first = await feed.serve(peerDomain, 0n);
     expect(first.messages).toHaveLength(1);
     expect(first.messages[0]).toMatchObject({
-      changeId: '1',
+      feedId: '1',
       seq: 0,
       contentType: 'PURE_TEXT',
     });
 
     const final = await feed.serve(peerDomain, 1n);
     expect(final.messages).toEqual([]);
-    const [checkpoint] = await database.db
+    const [advanced] = await database.db
       .select()
-      .from(federationThreadCheckpoint)
-      .where(eq(federationThreadCheckpoint.epochId, epoch.id));
-    expect(checkpoint.acknowledgedSeq).toBe(0);
+      .from(threadAudience)
+      .where(eq(threadAudience.id, audience.id));
+    expect(advanced.messageScannedThroughSeq).toBe(0);
+    expect(
+      await database.db
+        .select()
+        .from(federationMessageFeedAllocation),
+    ).toHaveLength(0);
+    expect(
+      await database.db.select().from(federationMessageDelivery),
+    ).toHaveLength(1);
 
     const restarted = new FederationMemoryFeedService(database);
     await restarted.fill(peerDomain);
@@ -148,7 +160,7 @@ describe('bounded in-memory federation message feed', () => {
       new FederationMemoryFeedService(database),
     );
     const first = await firstProcess.serve(peerDomain, 0n);
-    expect(first.messages[0].changeId).toBe('1');
+    expect(first.messages[0].feedId).toBe('1');
 
     const restarted = new FederationMessageFeedService(
       cursor,
@@ -156,35 +168,106 @@ describe('bounded in-memory federation message feed', () => {
     );
     const replay = await restarted.serve(peerDomain, 0n);
     expect(replay.messages).toHaveLength(1);
-    expect(replay.messages[0]).toMatchObject({ seq: 0, changeId: '2' });
+    expect(replay.messages[0]).toMatchObject({ seq: 0, feedId: '1' });
   });
 
-  it('closes and reopens immutable audience epochs at thread seq boundaries', async () => {
-    const { thread } = await seed();
+  it('reopens the same audience at the latest committed thread boundary', async () => {
+    const { thread, stored } = await seed();
+    await database.db.transaction((tx) =>
+      closeFederatedAudienceInTx(tx, peerDomain, thread.id),
+    );
+    await database.db.insert(message).values({
+      seq: 1,
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'gap' }),
+      threadId: thread.id,
+      creator: stored.creator,
+      updatedAt: new Date(),
+    });
     await database.db
-      .update(threadAudience)
-      .set({ deliverThroughChangeId: 0n })
-      .where(eq(threadAudience.targetDomain, peerDomain));
-    await database.db
-      .update(threadAudience)
-      .set({ deliverThroughChangeId: null })
-      .where(eq(threadAudience.targetDomain, peerDomain));
+      .update(messageThread)
+      .set({ curSeq: 1 })
+      .where(eq(messageThread.id, thread.id));
+    await database.db.transaction((tx) =>
+      openFederatedAudienceInTx(tx, peerDomain, thread.id),
+    );
 
-    const epochs = await database.db
+    const [audience] = await database.db
       .select()
-      .from(federationAudienceEpoch)
-      .where(eq(federationAudienceEpoch.peerDomain, peerDomain));
-    expect(epochs).toHaveLength(2);
-    expect(epochs[0]).toMatchObject({
+      .from(threadAudience)
+      .where(eq(threadAudience.targetDomain, peerDomain));
+    expect(audience).toMatchObject({
       threadId: thread.id,
-      fromSeq: 0,
-      throughSeq: 0,
+      deliverThroughChangeId: null,
+      messageScannedThroughSeq: 1,
     });
-    expect(epochs[1]).toMatchObject({
-      threadId: thread.id,
-      fromSeq: 1,
-      throughSeq: null,
+  });
+
+  it('bounds a fill turn and rotates to another audience on the next turn', async () => {
+    const { cursor, stored, thread, alice, bob } = await seed();
+    await database.db.execute(sql`
+      INSERT INTO "Message" (seq, "contentType", content, "threadId", creator, "updatedAt")
+      SELECT value, 'PURE_TEXT', '{"text":"bulk"}', ${thread.id}, ${stored.creator}, CURRENT_TIMESTAMP
+      FROM generate_series(1, 600) AS value
+    `);
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 600 })
+      .where(eq(messageThread.id, thread.id));
+
+    const now = new Date();
+    const [otherThread] = await database.db
+      .insert(messageThread)
+      .values({ type: 'P2P', updatedAt: now })
+      .returning();
+    await database.db.insert(threadParticipant).values([
+      {
+        userId: alice.id,
+        threadId: otherThread.id,
+        joinedAt: now,
+        updatedAt: now,
+      },
+      {
+        userId: bob.id,
+        threadId: otherThread.id,
+        joinedAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await database.db.insert(threadAudience).values({
+      targetDomain: peerDomain,
+      threadId: otherThread.id,
+      messageScannedThroughSeq: -1,
     });
+    await database.db.insert(message).values({
+      seq: 0,
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'other thread' }),
+      threadId: otherThread.id,
+      creator: alice.id,
+      updatedAt: now,
+    });
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 0 })
+      .where(eq(messageThread.id, otherThread.id));
+
+    const memory = new FederationMemoryFeedService(database);
+    await expect(memory.fillQuantum(peerDomain, 200)).resolves.toEqual({
+      state: FederationFeedFillState.NEEDS_FILL,
+      work: 200,
+    });
+    expect(memory.size(peerDomain)).toBe(200);
+
+    await expect(memory.fillQuantum(peerDomain, 200)).resolves.toMatchObject({
+      state: FederationFeedFillState.NEEDS_FILL,
+      work: 200,
+    });
+    expect((await memory.readAfter(peerDomain, 200n, 1))[0]).toMatchObject({
+      feedId: 201n,
+      threadId: otherThread.id,
+    });
+    expect(await cursor.readAllocatedThrough(peerDomain)).toBe(400n);
   });
 
   it('freezes at 10,000 and resumes filling only after peer acknowledgement', async () => {
@@ -209,8 +292,8 @@ describe('bounded in-memory federation message feed', () => {
     expect(first.messages).toHaveLength(200);
     const second = await feed.serve(peerDomain, 200n, 200);
     expect(second.messages).toHaveLength(200);
-    expect(await cursor.readAllocatedThrough(peerDomain)).toBe(10_001n);
-    expect(memory.size(peerDomain)).toBe(9_801);
-    expect(memory.state(peerDomain)).toBe(FederationFeedFillState.CAUGHT_UP);
+    expect(await cursor.readAllocatedThrough(peerDomain)).toBe(10_000n);
+    expect(memory.size(peerDomain)).toBe(9_800);
+    expect(memory.state(peerDomain)).toBe(FederationFeedFillState.NEEDS_FILL);
   });
 });

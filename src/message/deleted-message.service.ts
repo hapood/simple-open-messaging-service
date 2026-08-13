@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, gt, max, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -294,125 +294,206 @@ export class DeletedMessageService {
     sourceDomain: string;
     remoteDeletedId: bigint;
     type: MessageDeleteType;
+    authorityDeletedAt?: Date;
+    allowPending?: boolean;
+    federationSourceDomain?: string | null;
     cursor: { peerDomain: string; streamAccount: string; streamKind: string };
     expectedFederationVersion: number;
   }) {
-    return this.database.db.transaction(async (tx) => {
-      await this.assertFederatedResponseWritable(
-        tx,
-        params.threadId,
-        params.sourceDomain,
-        params.expectedFederationVersion,
-      );
-      await DeletedMessageService.lockFederatedIdentity(
-        tx,
-        params.threadId,
-        params.creatorId,
-        params.originSeq,
-      );
-      await tx
-        .insert(federatedMessageTombstone)
-        .values({
-          threadId: params.threadId,
-          creatorId: params.creatorId,
-          originSeq: params.originSeq,
-          authorityDomain: params.authorityDomain,
-          sourceDomain: params.sourceDomain,
-          remoteDeletedId: params.remoteDeletedId,
-          type: params.type,
-          updatedAt: new Date(),
-        })
-        .onConflictDoNothing();
+    return this.database.db.transaction((tx) =>
+      this.applyFederatedInTx(tx, params),
+    );
+  }
 
-      const target = await tx.query.message.findFirst({
-        where: and(
-          eq(message.threadId, params.threadId),
-          eq(message.creator, params.creatorId),
-          eq(message.originSeq, params.originSeq),
-        ),
-        columns: { seq: true, isDeleted: true },
-      });
-      let localDeletedId: bigint | null = null;
-      if (target) {
-        const now = new Date();
+  async applyFederatedInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      creatorId: number;
+      originSeq: number;
+      authorityDomain: string;
+      sourceDomain: string;
+      remoteDeletedId: bigint;
+      type: MessageDeleteType;
+      authorityDeletedAt?: Date;
+      /** Group origins reject unmatched member submissions instead of treating them as facts. */
+      allowPending?: boolean;
+      /** Null means this server accepted the deletion as its own authoritative group fact. */
+      federationSourceDomain?: string | null;
+      cursor?: {
+        peerDomain: string;
+        streamAccount: string;
+        streamKind: string;
+      };
+      expectedFederationVersion: number;
+    },
+  ) {
+    await this.assertFederatedResponseWritable(
+      tx,
+      params.threadId,
+      params.sourceDomain,
+      params.expectedFederationVersion,
+    );
+    await DeletedMessageService.lockFederatedIdentity(
+      tx,
+      params.threadId,
+      params.creatorId,
+      params.originSeq,
+    );
+    const target = await tx.query.message.findFirst({
+      where: and(
+        eq(message.threadId, params.threadId),
+        eq(message.creator, params.creatorId),
+        eq(message.originSeq, params.originSeq),
+      ),
+      columns: { seq: true, isDeleted: true },
+    });
+    const pending = await tx.query.federatedMessageTombstone.findFirst({
+      where: and(
+        eq(federatedMessageTombstone.threadId, params.threadId),
+        eq(federatedMessageTombstone.creatorId, params.creatorId),
+        eq(federatedMessageTombstone.originSeq, params.originSeq),
+      ),
+      columns: {
+        authorityDomain: true,
+        type: true,
+        authorityDeletedAt: true,
+      },
+    });
+    if (
+      pending &&
+      (pending.authorityDomain !== params.authorityDomain ||
+        pending.type !== params.type ||
+        (params.authorityDeletedAt !== undefined &&
+          pending.authorityDeletedAt.getTime() !==
+            params.authorityDeletedAt.getTime()))
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'federated tombstone conflicts with an existing stable fact',
+        HttpStatus.BAD_REQUEST,
+      );
+
+    if (!target) {
+      if (params.allowPending === false)
+        throw new BusinessException(
+          BusinessCode.FEDERATION_BINDING_VIOLATION,
+          'group origin cannot accept a deletion for an unknown message',
+          HttpStatus.BAD_REQUEST,
+        );
+      if (!pending)
         await tx
-          .update(message)
-          .set({ isDeleted: true, updatedAt: now })
-          .where(
-            and(
-              eq(message.threadId, params.threadId),
-              eq(message.creator, params.creatorId),
-              eq(message.originSeq, params.originSeq),
-            ),
-          );
-        const [created] = await tx
-          .insert(deletedMessage)
+          .insert(federatedMessageTombstone)
           .values({
             threadId: params.threadId,
-            seq: target.seq,
+            creatorId: params.creatorId,
+            originSeq: params.originSeq,
+            authorityDomain: params.authorityDomain,
+            sourceDomain: params.sourceDomain,
+            remoteDeletedId: params.remoteDeletedId,
             type: params.type,
+            authorityDeletedAt: params.authorityDeletedAt ?? new Date(),
+            updatedAt: new Date(),
+          })
+          .onConflictDoNothing();
+    }
+    let localDeletedId: bigint | null = null;
+    if (target) {
+      const now = new Date();
+      await tx
+        .update(message)
+        .set({ isDeleted: true, updatedAt: now })
+        .where(
+          and(
+            eq(message.threadId, params.threadId),
+            eq(message.creator, params.creatorId),
+            eq(message.originSeq, params.originSeq),
+          ),
+        );
+      const [created] = await tx
+        .insert(deletedMessage)
+        .values({
+          threadId: params.threadId,
+          seq: target.seq,
+          type: params.type,
+          federationSourceDomain:
+            params.federationSourceDomain === undefined
+              ? params.sourceDomain
+              : params.federationSourceDomain,
+          updatedAt: now,
+        })
+        .onConflictDoNothing({
+          target: [deletedMessage.threadId, deletedMessage.seq],
+        })
+        .returning({ id: deletedMessage.id });
+      localDeletedId = created?.id ?? null;
+      // This table is only an unmatched-deletion inbox. Once the target exists, DeletedMessage is
+      // the durable local fact and the pending row must disappear in the same transaction.
+      await tx
+        .delete(federatedMessageTombstone)
+        .where(
+          and(
+            eq(federatedMessageTombstone.threadId, params.threadId),
+            eq(federatedMessageTombstone.creatorId, params.creatorId),
+            eq(federatedMessageTombstone.originSeq, params.originSeq),
+          ),
+        );
+      if (!target.isDeleted) {
+        const replacement = await tx.query.message.findFirst({
+          where: and(
+            eq(message.threadId, params.threadId),
+            eq(message.isDeleted, false),
+          ),
+          orderBy: [desc(message.createdAt), desc(message.id)],
+        });
+        await tx
+          .update(messageThread)
+          .set({
+            lastMessageSeq: replacement?.seq ?? null,
+            lastMessagePreview: replacement
+              ? derivePreview(replacement.contentType, replacement.content)
+              : null,
+            lastMessageAt: replacement?.createdAt ?? null,
             updatedAt: now,
           })
-          .onConflictDoNothing({
-            target: [deletedMessage.threadId, deletedMessage.seq],
-          })
-          .returning({ id: deletedMessage.id });
-        localDeletedId = created?.id ?? null;
-        if (!target.isDeleted) {
-          const replacement = await tx.query.message.findFirst({
-            where: and(
-              eq(message.threadId, params.threadId),
-              eq(message.isDeleted, false),
-            ),
-            orderBy: [desc(message.createdAt), desc(message.id)],
-          });
-          await tx
-            .update(messageThread)
-            .set({
-              lastMessageSeq: replacement?.seq ?? null,
-              lastMessagePreview: replacement
-                ? derivePreview(replacement.contentType, replacement.content)
-                : null,
-              lastMessageAt: replacement?.createdAt ?? null,
-              updatedAt: now,
-            })
-            .where(eq(messageThread.id, params.threadId));
-        }
+          .where(eq(messageThread.id, params.threadId));
       }
+    }
 
-      // Download-inbox (§12.8): if the deleted message is still staged, terminate its logical download
-      // without destroying resumable digest state. Another authorized message may reference the same
-      // digest later, so FileSyncProgress and the shared CAS partial are retained for inspection/reuse.
-      // TOMBSTONED is a protocol terminal, distinct from an operator-retryable transfer failure. The
-      // advisory lock serializes this with promotion; the message tombstone prevents replay re-staging.
-      const staged = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(pendingMedia.threadId, params.threadId),
-          eq(pendingMedia.creatorId, params.creatorId),
-          eq(pendingMedia.originSeq, params.originSeq),
-        ),
-        columns: { batchId: true },
-      });
-      if (staged) {
-        await tx
-          .update(fileSyncProgress)
-          .set({
-            status: 'TOMBSTONED',
-            errorKind: 'SOURCE_MESSAGE_DELETED',
-            updatedAt: new Date(),
-          })
-          .where(eq(fileSyncProgress.batchId, staged.batchId));
-        await tx
-          .update(pendingMedia)
-          .set({
-            status: 'tombstoned',
-            anyFailed: true,
-            failReason: 'SOURCE_MESSAGE_DELETED',
-            updatedAt: new Date(),
-          })
-          .where(eq(pendingMedia.batchId, staged.batchId));
-      }
+    // Download-inbox (§12.8): if the deleted message is still staged, terminate its logical download
+    // without destroying resumable digest state. Another authorized message may reference the same
+    // digest later, so FileSyncProgress and the shared CAS partial are retained for inspection/reuse.
+    // TOMBSTONED is a protocol terminal, distinct from an operator-retryable transfer failure. The
+    // advisory lock serializes this with promotion; the message tombstone prevents replay re-staging.
+    const staged = await tx.query.pendingMedia.findFirst({
+      where: and(
+        eq(pendingMedia.threadId, params.threadId),
+        eq(pendingMedia.creatorId, params.creatorId),
+        eq(pendingMedia.originSeq, params.originSeq),
+      ),
+      columns: { batchId: true },
+    });
+    if (staged) {
+      await tx
+        .update(fileSyncProgress)
+        .set({
+          status: 'TOMBSTONED',
+          errorKind: 'SOURCE_MESSAGE_DELETED',
+          updatedAt: new Date(),
+        })
+        .where(eq(fileSyncProgress.batchId, staged.batchId));
+      await tx
+        .update(pendingMedia)
+        .set({
+          status: 'tombstoned',
+          anyFailed: true,
+          failReason: 'SOURCE_MESSAGE_DELETED',
+          updatedAt: new Date(),
+        })
+        .where(eq(pendingMedia.batchId, staged.batchId));
+    }
 
+    if (params.cursor) {
       await tx
         .insert(federationDeletedCursor)
         .values({
@@ -435,9 +516,9 @@ export class DeletedMessageService {
             updatedAt: new Date(),
           },
         });
-      return target && localDeletedId !== null
-        ? { id: localDeletedId.toString(), seq: target.seq }
-        : null;
-    });
+    }
+    return target && localDeletedId !== null
+      ? { id: localDeletedId.toString(), seq: target.seq }
+      : null;
   }
 }

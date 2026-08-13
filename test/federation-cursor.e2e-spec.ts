@@ -53,24 +53,39 @@ describe('FederationCursorService', () => {
     await setAllocatedThrough(8n);
     await expect(service.prepareLocalStart(peerDomain)).resolves.toBe(0n);
     await expect(service.initializePeer(peerDomain, 11n)).resolves.toEqual({
-      localStartChangeId: 0n,
-      remoteStartChangeId: 11n,
+      localRetainedAfter: 0n,
+      remoteRetainedAfter: 11n,
     });
 
     await setAllocatedThrough(9n);
     await expect(service.initializePeer(peerDomain, 11n)).resolves.toEqual({
-      localStartChangeId: 0n,
-      remoteStartChangeId: 11n,
+      localRetainedAfter: 0n,
+      remoteRetainedAfter: 11n,
     });
     await expect(service.initializePeer(peerDomain, 12n)).resolves.toEqual({
-      localStartChangeId: 0n,
-      remoteStartChangeId: 11n,
+      localRetainedAfter: 0n,
+      remoteRetainedAfter: 11n,
     });
 
     const [pull] = await database.db.select().from(federationPullCursor);
     expect(pull).toMatchObject({
-      startChangeId: 11n,
-      remoteHwm: 11n,
+      retainedAfter: 11n,
+      committedThrough: 11n,
+    });
+  });
+
+  it('returns the current resume cursor when after is omitted', async () => {
+    await service.initializePeer(peerDomain, 0n);
+    await setAllocatedThrough(10n);
+    await service.servePage(peerDomain, 0n, async () => ({
+      value: null,
+      scannedThrough: 8n,
+    }));
+
+    await expect(service.rejectMissingAfter(peerDomain)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      status: 200,
+      data: { resumeAfter: '0' },
     });
   });
 
@@ -78,7 +93,7 @@ describe('FederationCursorService', () => {
     await service.initializePeer(peerDomain, 0n);
     await setAllocatedThrough(10n);
     const first = await service.servePage(peerDomain, 0n, async (context) => {
-      expect(context.retry).toBe(true);
+      expect(context.retry).toBe(false);
       return { value: ['first'], scannedThrough: 5n };
     });
     expect(first.value).toEqual(['first']);
@@ -96,41 +111,49 @@ describe('FederationCursorService', () => {
 
     const [cursor] = await database.db.select().from(federationServeCursor);
     expect(cursor).toMatchObject({
-      startChangeId: 0n,
+      retainedAfter: 0n,
       acknowledgedThrough: 5n,
       lastServedThrough: 8n,
     });
   });
 
-  it('allows forward jumps but rejects rollback and values beyond the source HWM', async () => {
+  it('rejects fast-forward and only accepts the acknowledged or last-served cursor', async () => {
     await service.initializePeer(peerDomain, 0n);
     await setAllocatedThrough(10n);
     await service.servePage(peerDomain, 0n, async () => ({
       value: null,
       scannedThrough: 5n,
     }));
-    await service.servePage(peerDomain, 7n, async () => ({
-      value: null,
-      scannedThrough: 8n,
-    }));
-
-    for (const after of [0n, 6n, 11n]) {
+    for (const after of [6n, 7n, 11n]) {
       await expect(
         service.servePage(peerDomain, after, async () => ({
           value: null,
           scannedThrough: after,
         })),
       ).rejects.toMatchObject({
-        bizCode: BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
+        bizCode: BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
         status: 200,
         data: {
-          requestedCursor: after.toString(),
-          availableCursor: '7',
-          startChangeId: '0',
-          allocatedThrough: '10',
+          acknowledgedThrough: '0',
+          lastServedThrough: '5',
         },
       });
     }
+
+    await expect(service.servePage(peerDomain, 5n, async () => ({
+      value: null,
+      scannedThrough: 8n,
+    }))).resolves.toMatchObject({ scannedThrough: 8n });
+
+    await expect(
+      service.servePage(peerDomain, 0n, async () => ({
+        value: null,
+        scannedThrough: 0n,
+      })),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      data: { resumeAfter: '5' },
+    });
   });
 
   it('rolls back the implicit acknowledgement when page scanning fails', async () => {
@@ -180,14 +203,8 @@ describe('FederationCursorService', () => {
         scannedThrough: 3n,
       })),
     ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MISSED_CONCURRENT,
+      bizCode: BusinessCode.FEDERATION_FEED_REQUEST_IN_PROGRESS,
       status: 200,
-      data: {
-        requestedCursor: '0',
-        availableCursor: '0',
-        startChangeId: '0',
-        allocatedThrough: '3',
-      },
     });
     releaseFirst();
     await expect(first).resolves.toEqual({

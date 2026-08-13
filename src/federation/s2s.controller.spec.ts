@@ -10,15 +10,47 @@ function target() {
       bytes: 16,
     }),
   };
+  const messageFeed = {
+    rejectMissingAfter: vi.fn().mockRejectedValue(
+      Object.assign(new Error('after is required'), {
+        bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+        status: 200,
+      }),
+    ),
+  };
+  const tombstoneFeed = {
+    rejectMissingAfter: vi.fn().mockRejectedValue(
+      Object.assign(new Error('after is required'), {
+        bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+        status: 200,
+      }),
+    ),
+  };
+  const peerStateFeed = {
+    rejectMissingAfter: vi.fn().mockRejectedValue(
+      Object.assign(new Error('after is required'), {
+        bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+        status: 200,
+      }),
+    ),
+  };
   const controller = new S2sController(
     federation as never,
+    messageFeed as never,
+    {} as never,
+    tombstoneFeed as never,
     {} as never,
     {} as never,
-    {} as never,
-    {} as never,
+    peerStateFeed as never,
     {} as never,
   );
-  return { controller, federation };
+  return {
+    controller,
+    federation,
+    messageFeed,
+    tombstoneFeed,
+    peerStateFeed,
+  };
 }
 
 function mediaRequest(range: string): FastifyRequest {
@@ -94,5 +126,58 @@ describe('S2sController federation media errors', () => {
       bizCode: BusinessCode.INTERNAL,
       status: 503,
     });
+  });
+});
+
+describe('S2sController message-feed bootstrap', () => {
+  it('returns the cursor business result when after is omitted', async () => {
+    const { controller, messageFeed } = target();
+    const req = {
+      query: {},
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(controller.getMissed(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      status: 200,
+    });
+    expect(messageFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
+  });
+
+  it('rejects pagination controls without after', async () => {
+    const { controller, messageFeed } = target();
+    const req = {
+      query: { take: '100' },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(
+      controller.getMissed(req, undefined, '100'),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(messageFeed.rejectMissingAfter).not.toHaveBeenCalled();
+  });
+});
+
+describe('S2sController state and tombstone feed bootstrap', () => {
+  it('uses the same no-after positioning contract for both feeds', async () => {
+    const { controller, tombstoneFeed, peerStateFeed } = target();
+    const req = {
+      query: {},
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(controller.getMessageTombstones(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      status: 200,
+    });
+    await expect(controller.getStateFeed(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      status: 200,
+    });
+    expect(tombstoneFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
+    expect(peerStateFeed.rejectMissingAfter).toHaveBeenCalledWith('a.example');
   });
 });

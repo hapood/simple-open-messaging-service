@@ -8,6 +8,7 @@ import {
   group,
   friendPair,
   friendRequest,
+  federationP2PHistoryGrant,
   groupMembershipRequest,
   messageThread,
   threadAudience,
@@ -25,6 +26,10 @@ import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { assertServerGroupCapacityInTx } from '../group/group-capacity.js';
+import {
+  closeFederatedAudienceInTx,
+  openFederatedAudienceInTx,
+} from '../federation/federation-audience.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -155,7 +160,16 @@ export class InviteService {
           AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
       `);
     }
-    await this.reconcileFriendPairInTx(tx, actorUserId, peerUserId);
+    const pairEffect = await this.reconcileFriendPairInTx(
+      tx,
+      actorUserId,
+      peerUserId,
+    );
+    if (!wantsFriend && pairEffect.threadId !== undefined) {
+      await tx
+        .delete(federationP2PHistoryGrant)
+        .where(eq(federationP2PHistoryGrant.threadId, pairEffect.threadId));
+    }
   }
 
   /** Rejection/deletion closes only the actor's direction. The opposite request remains valid and may
@@ -728,14 +742,7 @@ export class InviteService {
         const groupAccount = groupState?.account ?? null;
         const groupDomain = groupState?.domain ?? null;
         if (groupDomain && groupDomain !== 'local') {
-          await tx
-            .insert(threadAudience)
-            .values({
-              targetDomain: groupDomain,
-              localUserId: null,
-              threadId: threadRow.id,
-            })
-            .onConflictDoNothing();
+          await openFederatedAudienceInTx(tx, groupDomain, threadRow.id);
         }
         return {
           kind: 'GROUP',
@@ -1105,9 +1112,8 @@ export class InviteService {
     }
     if (!desiredActive && current.active) {
       if (current.threadId !== null) {
-        // Serialize against message creation. A writer that committed before
-        // this lock is included in the boundary; one arriving afterwards sees
-        // the closed participants and must roll back.
+        // Relationship-write gate: message creation updates this row before re-checking participant
+        // access. This lock is not needed by the audience/feed boundary itself.
         await tx
           .select({ id: messageThread.id })
           .from(messageThread)
@@ -1142,21 +1148,33 @@ export class InviteService {
     };
   }
 
-  /** Close every P2P subscription. The federation epoch trigger captures the current thread seq. */
+  /** Close every P2P subscription at an exact message-feed boundary. */
   private async closeP2PAudiencesInTx(
     tx: DatabaseTransaction,
     threadId: number,
   ): Promise<void> {
+    const peers = await tx
+      .select({ domain: threadAudience.targetDomain })
+      .from(threadAudience)
+      .where(
+        and(
+          eq(threadAudience.threadId, threadId),
+          sql`${threadAudience.targetDomain} <> 'local'`,
+        ),
+      );
+    for (const peer of peers)
+      await closeFederatedAudienceInTx(tx, peer.domain, threadId);
     await tx.execute(sql`
       UPDATE "ThreadAudience" audience
       SET "deliverThroughChangeId" = 0
       WHERE audience."threadId" = ${threadId}
+        AND audience."targetDomain" = 'local'
         AND audience."deliverThroughChangeId" IS NULL
     `);
   }
 
-  /** Re-open the retained relationship epoch. History stays on the same
-   * thread; only future discovery allocation resumes after the old boundary. */
+  /** Re-open the retained relationship. History stays on the same thread; only messages committed
+   * after this transition enter the peer feed. */
   private async reactivateP2PFriendshipInTx(
     tx: DatabaseTransaction,
     threadId: number,
@@ -1167,7 +1185,6 @@ export class InviteService {
       .select({ id: messageThread.id })
       .from(messageThread)
       .where(eq(messageThread.id, threadId))
-      .for('update')
       .limit(1);
     if (!locked) throw new Error('retained P2P thread disappeared');
     const restored = await tx
@@ -1190,14 +1207,30 @@ export class InviteService {
     await tx
       .update(threadAudience)
       .set({ deliverThroughChangeId: null })
-      .where(eq(threadAudience.threadId, threadId));
+      .where(
+        and(
+          eq(threadAudience.threadId, threadId),
+          eq(threadAudience.targetDomain, 'local'),
+        ),
+      );
+    const peers = await tx
+      .select({ domain: threadAudience.targetDomain })
+      .from(threadAudience)
+      .where(
+        and(
+          eq(threadAudience.threadId, threadId),
+          sql`${threadAudience.targetDomain} <> 'local'`,
+        ),
+      );
+    for (const peer of peers)
+      await openFederatedAudienceInTx(tx, peer.domain, threadId);
     return threadId;
   }
 
   /** Create the P2P MessageThread + both active participants and durable discovery audiences. A fresh threadId means brand-new
    *  participant rows even when re-friending (the old soft-left thread stays, filtered out by
    *  findP2PThreadBetween's leftAt:null check). Since the thread is empty and cannot contain an old
-   *  relationship's history, message id 0 is the exact lower bound for this access epoch. */
+   *  relationship's history, so each remote scan starts at the empty thread's current seq. */
   private async createP2PFriendshipInTx(
     tx: DatabaseTransaction,
     userAId: number,
@@ -1260,15 +1293,63 @@ export class InviteService {
           .filter((domain) => domain !== 'local'),
       ),
     ];
-    await tx.insert(threadAudience).values([
-      ...localAudience,
-      ...peerDomains.map((targetDomain) => ({
-        targetDomain,
-        localUserId: null,
-        threadId: thread.id,
-      })),
-    ]);
+    if (localAudience.length > 0)
+      await tx.insert(threadAudience).values(localAudience);
+    for (const peerDomain of peerDomains)
+      await openFederatedAudienceInTx(tx, peerDomain, thread.id);
     return thread.id;
+  }
+
+  /** Materialize a retained read-only P2P shell for history authorized by a compacted remote
+   * REVOKED snapshot. This never activates FriendPair or grants write access. */
+  async ensureP2PHistoryThreadInTx(
+    tx: DatabaseTransaction,
+    localUserId: number,
+    peerUserId: number,
+  ): Promise<number> {
+    await this.lockFriendPairInTx(tx, localUserId, peerUserId);
+    const low = Math.min(localUserId, peerUserId);
+    const high = Math.max(localUserId, peerUserId);
+    const [pair] = await tx
+      .select({ threadId: friendPair.threadId })
+      .from(friendPair)
+      .where(
+        and(eq(friendPair.userLowId, low), eq(friendPair.userHighId, high)),
+      )
+      .limit(1);
+    if (pair?.threadId !== null && pair?.threadId !== undefined)
+      return pair.threadId;
+
+    const threadId = await this.createP2PFriendshipInTx(
+      tx,
+      localUserId,
+      peerUserId,
+    );
+    const now = new Date();
+    await tx
+      .update(threadParticipant)
+      .set({
+        leftAt: now,
+        recognizesFriend: false,
+        updatedAt: now,
+      })
+      .where(eq(threadParticipant.threadId, threadId));
+    await tx
+      .update(threadAudience)
+      .set({ deliverThroughChangeId: 0n })
+      .where(
+        and(
+          eq(threadAudience.threadId, threadId),
+          sql`${threadAudience.targetDomain} <> 'local'`,
+        ),
+      );
+    await tx
+      .update(friendPair)
+      .set({ active: false, threadId, updatedAt: now })
+      .where(
+        and(eq(friendPair.userLowId, low), eq(friendPair.userHighId, high)),
+      );
+    return threadId;
   }
 
   private parseInviteId(s: string): bigint {

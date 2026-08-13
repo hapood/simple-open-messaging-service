@@ -12,7 +12,7 @@
 本文替换早期实现中由聊天消息承担关系动作、删除关系后再懒查询权威状态，以及 profile/group meta
 revision 二次查询的部分。
 现有消息 `/message-feed`、`ThreadAudience`、消息删除、`leaveId`/消息交付边界继续服务于聊天消息，
-不因本设计删除或复用。状态 feed 有独立的表、rev、HWM 和 pull cursor。
+不因本设计删除或复用。状态 feed 有独立的表、rev allocation upper bound 和 pull cursor。
 
 ## 1. 最终原则
 
@@ -22,7 +22,7 @@ revision 二次查询的部分。
 3. 同一 peer、同一状态 key 只保留最新 item。中间 revision 可以压缩，最终快照不能丢。
 4. PROFILE item 携带头像；GROUP_META 只携带完整 roster/role/owner/active 快照，不重复头像。
 5. 业务状态、业务 revision、peer rev 和 feed item 必须在同一数据库事务中提交。
-6. push/SSE 只是可丢失、可重复、可乱序的唤醒；持久 feed、HWM 和 cursor 提供完整性。
+6. push/SSE 只是可丢失、可重复、可乱序的唤醒；持久 feed、`allocatedThrough` 和 committed cursor 提供完整性。
 7. 删除 federated peer 时级联删除该 peer 的 feed、allocator 和 pull cursor。
 
 ## 2. 权威模型
@@ -131,7 +131,7 @@ PeerStateFeedTarget
 ```
 
 每个 peer 独立分配 rev，避免所有服务器状态变更竞争一个全局 allocator。不能使用 PostgreSQL
-sequence、`MAX(rev)` 或提交顺序不受事务约束的自增值作为安全 HWM。
+sequence、`MAX(rev)` 或提交顺序不受事务约束的自增值作为安全分配上界。
 
 ### 4.3 Pull cursor
 
@@ -140,7 +140,7 @@ sequence、`MAX(rev)` 或提交顺序不受事务约束的自增值作为安全 
 ```text
 PeerStateFeedPullCursor
 - peerDomain primary key FK -> FederatedPeer.domain ON DELETE CASCADE
-- remoteHwm bigint NOT NULL DEFAULT 0
+- committedThrough bigint NOT NULL DEFAULT 0
 - updatedAt
 ```
 
@@ -289,8 +289,8 @@ GET /s2s/v1/state-feed?after=120&take=100
 4. item 原地更新到更高 rev 会留下空洞；cursor 依据 `scannedThrough` 推进，不能依据最后返回 item。
 5. 达到行数或字节预算时，`scannedThrough` 为已经完整检查的最后边界；未达到预算时可直接推进到
    固定的 `allocatedThrough`。
-6. `after` 倒退、超过源 HWM、item 无序或页面边界非法时，按 missed API 的同类错误拒绝。
-7. wake-up 丢失后，peer 初始化、进程重启、连接恢复及低频 reconciliation 必须主动查询 HWM/drain。
+6. `after` 倒退、超过 source allocation upper bound、item 无序或页面边界非法时，按 missed API 的同类错误拒绝。
+7. wake-up 丢失后，peer 初始化、进程重启、连接恢复及低频 reconciliation 必须主动查询 feed end 并 drain。
 
 ## 8. 接收端原子性
 
@@ -301,7 +301,7 @@ GET /s2s/v1/state-feed?after=120&take=100
 2. 按稳定 key 比较 remote revision；相同/更旧 revision 幂等跳过；
 3. 应用完整 profile/P2P/group 快照；
 4. 更新 `remoteProfileRev` 或对应 remote meta revision；
-5. 推进 `PeerStateFeedPullCursor.remoteHwm = scannedThrough`；
+5. 推进 `PeerStateFeedPullCursor.committedThrough = scannedThrough`；
 6. 提交后向本地客户端发送轻量刷新事件。
 
 任何格式或一致性错误使整页回滚，cursor 不推进。因为 body 已经完整，页事务中不再发起 profile、
@@ -337,7 +337,7 @@ avatar、关系或群 meta 的二次远程请求。
 继续保留：
 
 - 申请、接受、拒绝、删除好友等业务 command；
-- 消息 `/message-feed`、bounded memory buffer、`ThreadAudience`、message HWM/cursor；
+- 消息 `/message-feed`、bounded memory buffer、`ThreadAudience`、message allocation upper bound/cursor；
 - 消息删除、`leaveId` 及现有消息交付机制；
 - federation identity、签名、trust、reset 和 quota 约束。
 
@@ -346,7 +346,7 @@ avatar、关系或群 meta 的二次远程请求。
 1. 新增 schema、迁移、Drizzle relations 和约束。
 2. 实现 peer 内 allocator、事务 upsert service 和提交后 wake-up。
 3. 接入所有 revision 增长点：用户/群 profile、好友双方认可、入退/踢群、角色、群主、解散/删除。
-4. 实现 S2S HWM/feed API、receiver drain、cursor 和本地应用事务。
+4. 实现 S2S feed-end API、receiver drain、cursor 和本地应用事务。
 5. 双轨运行并对比旧查询与 feed 状态；不得先删旧兜底。
 6. 完成验收后删除旧 revision/profile/meta 查询和额外同步 POST。
 7. 更新 federation API、overview、数据库文档和最终 JSON Schema。
@@ -358,8 +358,8 @@ avatar、关系或群 meta 的二次远程请求。
 - 双方都认可才成为好友；任意一方 false 立即解除。
 - 延迟旧 `true` 不能覆盖较新 `false`。
 - 重复 command/revision 不增长 rev。
-- 事务回滚不暴露 rev/HWM/item；不能发生先分配后晚提交导致 cursor 跳过。
-- wake-up 丢失、重复、乱序以及进程重启后仍能依靠 HWM 拉齐。
+- 事务回滚不暴露 rev/allocation upper bound/item；不能发生先分配后晚提交导致 cursor 跳过。
+- wake-up 丢失、重复、乱序以及进程重启后仍能依靠 durable feed end 拉齐。
 - 快慢 peer 相互独立；一个 peer 不得读取另一个 peer feed。
 - 群最后一个远端成员主动退出或被踢仍收到最终 GROUP_META。
 - 多 peer 群更新按固定锁序完成且无死锁。

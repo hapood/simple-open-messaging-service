@@ -3,6 +3,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
+import { BusinessCode } from '../src/common/business-code.js';
 import {
   federatedPeer,
   mediaAsset,
@@ -96,7 +97,12 @@ describe('FederationMessageFeedService', () => {
       .values({
         seq: 0,
         contentType: 'IMAGE',
-        content: JSON.stringify({ url: '/uploads/cas/aa/file.png' }),
+        content: JSON.stringify({
+          url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
+          w: 40,
+          h: 30,
+          size: 123,
+        }),
         threadId: thread.id,
         creator: author.id,
         updatedAt: now,
@@ -119,7 +125,8 @@ describe('FederationMessageFeedService', () => {
     });
 
     await cursor.initializePeer(peerDomain, 0n);
-    return { author, msg, thread };
+    await memory.fill(peerDomain);
+    return { author, remote, msg, thread };
   }
 
   it('returns bodies and asset descriptors from the memory feed', async () => {
@@ -128,12 +135,10 @@ describe('FederationMessageFeedService', () => {
 
     expect(page).toMatchObject({
       scannedThrough: '1',
-      allocatedThrough: '1',
       hasMore: false,
-      degradation: null,
       messages: [
         {
-          changeId: '1',
+          feedId: '1',
           thread: {
             type: 'P2P',
             participants: expect.arrayContaining([
@@ -145,16 +150,30 @@ describe('FederationMessageFeedService', () => {
           seq: 0,
           originSeq: 0,
           contentType: 'IMAGE',
-          assets: [{ digest: 'a'.repeat(64), bytes: '123', status: 'READY' }],
+          content: expect.any(String),
+          assets: [{ digest: 'a'.repeat(64), bytes: 123, status: 'READY' }],
         },
       ],
     });
+    expect(JSON.parse(page.messages[0].content)).toEqual({
+      digest: 'a'.repeat(64),
+      w: 40,
+      h: 30,
+      size: 123,
+    });
   });
 
-  it('enforces the hard page-size bound', async () => {
-    await expect(service.serve(peerDomain, 0n, 201)).rejects.toMatchObject({
-      status: 400,
+  it('treats take above the preferred capacity as an advisory value', async () => {
+    await seedP2pChange();
+    await expect(service.serve(peerDomain, 0n, 201)).resolves.toMatchObject({
+      scannedThrough: '1',
     });
+  });
+
+  it('rejects a trunc boundary before the acknowledged cursor', async () => {
+    await expect(
+      service.serve(peerDomain, 2n, undefined, 1n),
+    ).rejects.toMatchObject({ status: 400 });
   });
 
   it('binds each signed peer to only its own discovery target', async () => {
@@ -172,13 +191,7 @@ describe('FederationMessageFeedService', () => {
     ]);
 
     expect(allocated.messages).toHaveLength(1);
-    expect(isolated).toEqual({
-      messages: [],
-      scannedThrough: '0',
-      allocatedThrough: '0',
-      hasMore: false,
-      degradation: null,
-    });
+    expect(isolated).toMatchObject({ messages: [], scannedThrough: '0' });
   });
 
   it('skips deleted messages while acknowledging their allocated change ids', async () => {
@@ -193,10 +206,41 @@ describe('FederationMessageFeedService', () => {
     expect(page).toEqual({
       messages: [],
       scannedThrough: '1',
-      allocatedThrough: '1',
       hasMore: false,
-      degradation: null,
     });
+  });
+
+  it('advances through messages authored by an excluding pull peer', async () => {
+    const { remote, thread } = await seedP2pChange();
+    const now = new Date();
+    await database.db.insert(message).values({
+      seq: 1,
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'self-authored' }),
+      threadId: thread.id,
+      creator: remote.id,
+      updatedAt: now,
+      originSeq: 1,
+    });
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 1 })
+      .where(eq(messageThread.id, thread.id));
+    await memory.fill(peerDomain);
+
+    const first = await service.serve(peerDomain, 0n, 1, undefined, true);
+    const second = await service.serve(
+      peerDomain,
+      BigInt(first.scannedThrough),
+      1,
+      undefined,
+      true,
+    );
+
+    expect(first.hasMore).toBe(true);
+    expect(second.messages).toEqual([]);
+    expect(second.scannedThrough).toBe('2');
+    expect(second.hasMore).toBe(false);
   });
 
   it('paginates surviving messages by memory change id', async () => {
@@ -229,21 +273,30 @@ describe('FederationMessageFeedService', () => {
       .update(messageThread)
       .set({ curSeq: 2 })
       .where(eq(messageThread.id, thread.id));
+    await memory.fill(peerDomain);
 
     const first = await service.serve(peerDomain, 0n, 2);
     const second = await service.serve(peerDomain, 2n, 2);
 
-    expect(first.messages.map((item) => item.changeId)).toEqual(['1', '2']);
+    expect(first.messages.map((item) => item.feedId)).toEqual(['1', '2']);
     expect(first).toMatchObject({
       scannedThrough: '2',
-      allocatedThrough: '3',
       hasMore: true,
     });
-    expect(second.messages.map((item) => item.changeId)).toEqual(['3']);
+    expect(second.messages.map((item) => item.feedId)).toEqual(['3']);
     expect(second).toMatchObject({
       scannedThrough: '3',
-      allocatedThrough: '3',
       hasMore: false,
+    });
+
+    // The preceding request with after=2 already ACKed those entries source-side. A later stale
+    // request receives the exact durable position it must resume from instead of a silent empty page.
+    await expect(
+      service.serve(peerDomain, 0n, undefined, 2n),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      status: 200,
+      data: { resumeAfter: '2' },
     });
   });
 });

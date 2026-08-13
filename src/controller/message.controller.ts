@@ -151,6 +151,7 @@ export class MessageController {
     // stream and the durable deletion stream, so reusing it keeps delivery lossy-safe without making
     // the push itself authoritative.
     void this.federation.notifyOnSend(req.user.userId, dto.threadId, dto.seq);
+    void this.federation.signalDeletionOutbound(dto.threadId, dto.seq);
     return deleted;
   }
 

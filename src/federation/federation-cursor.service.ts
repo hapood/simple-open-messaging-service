@@ -28,14 +28,14 @@ export class FederationCursorError extends Error {
 
 export interface FederationCursorInitialization {
   /** Initial floor this server exposes to the peer; retention may raise it later. */
-  localStartChangeId: bigint;
+  localRetainedAfter: bigint;
   /** Initial floor the peer exposes to this server; a cursor-reset response may raise it later. */
-  remoteStartChangeId: bigint;
+  remoteRetainedAfter: bigint;
 }
 
 export interface ServePageContext {
   tx: DatabaseTransaction;
-  /** Stable source HWM captured while the peer cursor row is locked. */
+  /** Stable source allocation upper bound captured while the peer cursor row is locked. */
   allocatedThrough: bigint;
   after: bigint;
   acknowledgedThrough: bigint;
@@ -50,7 +50,7 @@ export interface ServePageContext {
 
 export interface ServePageResult<T> {
   value: T;
-  /** Last change id examined, including filtered/deleted changes. */
+  /** Last feed ID examined, including filtered/deleted entries. */
   scannedThrough: bigint;
 }
 
@@ -63,7 +63,7 @@ export interface ServePageResult<T> {
 export class FederationCursorService {
   constructor(private readonly database: DatabaseService) {}
 
-  /** Current source-side HWM for one peer. The row is created atomically during /init. */
+  /** Current source-side allocation upper bound for one peer. The row is created atomically during /init. */
   async readAllocatedThrough(peerDomain: string): Promise<bigint> {
     const [row] = await this.database.db
       .select({ allocatedThrough: federationServeCursor.allocatedThrough })
@@ -77,6 +77,28 @@ export class FederationCursorService {
       );
     }
     return row.allocatedThrough;
+  }
+
+  /** Bootstrap discovery for callers that do not yet have a message-feed cursor. Always responds
+   * with the standard cursor-invalid business result and the exact exclusive cursor to use next. */
+  async rejectMissingAfter(peerDomain: string): Promise<never> {
+    const current = await this.readCurrentCursor(peerDomain);
+    if (!current) {
+      throw new FederationCursorError(
+        'NOT_INITIALIZED',
+        `peer ${peerDomain} has no initialized serve cursor`,
+      );
+    }
+    const availableCursor =
+      current.retainedAfter > current.acknowledgedThrough
+        ? current.retainedAfter
+        : current.acknowledgedThrough;
+    throw new BusinessException(
+      BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+      'after is required; resume from the available cursor',
+      HttpStatus.OK,
+      { resumeAfter: availableCursor.toString() },
+    );
   }
 
   /** Creates (once) and returns the local floor that must be sent in the handshake request. */
@@ -98,19 +120,19 @@ export class FederationCursorService {
 
   async initializePeer(
     peerDomain: string,
-    remoteStartChangeId: bigint,
+    remoteRetainedAfter: bigint,
   ): Promise<FederationCursorInitialization> {
     return this.database.db.transaction((tx) =>
-      this.initializePeerInTx(tx, peerDomain, remoteStartChangeId),
+      this.initializePeerInTx(tx, peerDomain, remoteRetainedAfter),
     );
   }
 
   async initializePeerInTx(
     tx: DatabaseTransaction,
     peerDomain: string,
-    remoteStartChangeId: bigint,
+    remoteRetainedAfter: bigint,
   ): Promise<FederationCursorInitialization> {
-    const localStartChangeId = await this.prepareLocalStartInTx(tx, peerDomain);
+    const localRetainedAfter = await this.prepareLocalStartInTx(tx, peerDomain);
     const [serve] = await tx
       .select()
       .from(federationServeCursor)
@@ -126,20 +148,20 @@ export class FederationCursorService {
       .for('update')
       .limit(1);
     if (!pull) {
-      this.assertNonNegative(remoteStartChangeId, 'remote startChangeId');
+      this.assertNonNegative(remoteRetainedAfter, 'remote retainedAfter');
       [pull] = await tx
         .insert(federationPullCursor)
         .values({
           peerDomain,
-          startChangeId: remoteStartChangeId,
-          remoteHwm: remoteStartChangeId,
+          retainedAfter: remoteRetainedAfter,
+          committedThrough: remoteRetainedAfter,
         })
         .returning();
     }
     if (!pull) throw new Error('federation pull cursor could not be created');
     return {
-      localStartChangeId,
-      remoteStartChangeId: pull.startChangeId,
+      localRetainedAfter,
+      remoteRetainedAfter: pull.retainedAfter,
     };
   }
 
@@ -152,7 +174,7 @@ export class FederationCursorService {
       .values({
         peerDomain,
         allocatedThrough: 0n,
-        startChangeId: 0n,
+        retainedAfter: 0n,
         acknowledgedThrough: 0n,
         lastServedThrough: 0n,
       })
@@ -165,7 +187,7 @@ export class FederationCursorService {
       .for('update')
       .limit(1);
     if (!serve) throw new Error('federation serve cursor could not be created');
-    return serve.startChangeId;
+    return serve.retainedAfter;
   }
 
   async servePage<T>(
@@ -188,30 +210,44 @@ export class FederationCursorService {
           );
         }
 
-        if (
-          after < cursor.startChangeId ||
-          after < cursor.acknowledgedThrough ||
-          after > cursor.allocatedThrough
-        ) {
+        const availableCursor =
+          cursor.retainedAfter > cursor.acknowledgedThrough
+            ? cursor.retainedAfter
+            : cursor.acknowledgedThrough;
+        if (after < availableCursor) {
           throw new BusinessException(
-            BusinessCode.FEDERATION_MISSED_CURSOR_INVALID,
-            `after is outside the allowed cursor range for ${peerDomain}`,
+            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+            `requested cursor is below the retained floor for ${peerDomain}`,
             HttpStatus.OK,
-            this.cursorErrorData(
-              after,
-              cursor.startChangeId,
-              cursor.acknowledgedThrough,
-              cursor.allocatedThrough,
-            ),
+            { resumeAfter: availableCursor.toString() },
+          );
+        }
+        const validCursor =
+          after === availableCursor ||
+          after === cursor.acknowledgedThrough ||
+          after === cursor.lastServedThrough;
+        if (!validCursor || after > cursor.allocatedThrough) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_FEED_CURSOR_MISMATCH,
+            'after is neither the confirmed nor last served message cursor',
+            HttpStatus.OK,
+            {
+              acknowledgedThrough: cursor.acknowledgedThrough.toString(),
+              lastServedThrough: cursor.lastServedThrough.toString(),
+            },
           );
         }
 
-        const retry = after === cursor.acknowledgedThrough;
+        const effectiveAfter = after;
+        const effectiveAllocatedThrough = cursor.allocatedThrough;
+        const retry =
+          effectiveAfter === cursor.acknowledgedThrough &&
+          cursor.lastServedThrough > cursor.acknowledgedThrough;
         const result = await scan({
           tx,
-          allocatedThrough: cursor.allocatedThrough,
-          after,
-          acknowledgedThrough: after,
+          allocatedThrough: effectiveAllocatedThrough,
+          after: effectiveAfter,
+          acknowledgedThrough: effectiveAfter,
           previouslyServedThrough: cursor.lastServedThrough,
           retry,
           degradation:
@@ -225,13 +261,13 @@ export class FederationCursorService {
                 }
               : null,
         });
-        if (result.scannedThrough < after) {
+        if (result.scannedThrough < effectiveAfter) {
           throw new FederationCursorError(
             'INVALID_SCANNED_THROUGH',
             'scannedThrough cannot move behind the request cursor',
           );
         }
-        if (result.scannedThrough > cursor.allocatedThrough) {
+        if (result.scannedThrough > effectiveAllocatedThrough) {
           throw new FederationCursorError(
             'INVALID_SCANNED_THROUGH',
             'scannedThrough cannot move beyond the allocated HWM',
@@ -241,7 +277,8 @@ export class FederationCursorService {
         await tx
           .update(federationServeCursor)
           .set({
-            acknowledgedThrough: after,
+            allocatedThrough: effectiveAllocatedThrough,
+            acknowledgedThrough: effectiveAfter,
             lastServedThrough: result.scannedThrough,
             updatedAt: new Date(),
           })
@@ -250,43 +287,20 @@ export class FederationCursorService {
       });
     } catch (error) {
       if (hasPostgresErrorCode(error, PG_LOCK_NOT_AVAILABLE)) {
-        const current = await this.readCurrentCursor(peerDomain);
         throw new BusinessException(
-          BusinessCode.FEDERATION_MISSED_CONCURRENT,
+          BusinessCode.FEDERATION_FEED_REQUEST_IN_PROGRESS,
           `another missed request for ${peerDomain} is still running`,
           HttpStatus.OK,
-          current
-            ? this.cursorErrorData(
-                after,
-                current.startChangeId,
-                current.acknowledgedThrough,
-                current.allocatedThrough,
-              )
-            : { requestedCursor: after.toString() },
         );
       }
       throw error;
     }
   }
 
-  private cursorErrorData(
-    requested: bigint,
-    start: bigint,
-    available: bigint,
-    allocated: bigint,
-  ) {
-    return {
-      requestedCursor: requested.toString(),
-      availableCursor: available.toString(),
-      startChangeId: start.toString(),
-      allocatedThrough: allocated.toString(),
-    };
-  }
-
   private async readCurrentCursor(peerDomain: string) {
     const [row] = await this.database.db
       .select({
-        startChangeId: federationServeCursor.startChangeId,
+        retainedAfter: federationServeCursor.retainedAfter,
         acknowledgedThrough: federationServeCursor.acknowledgedThrough,
         allocatedThrough: federationServeCursor.allocatedThrough,
       })

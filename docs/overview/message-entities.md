@@ -27,9 +27,11 @@ types can be added without changing the outer grammar:
 [#发布计划](soms://topic/release?v=1)
 ```
 
-Version 1 initially authors only `user` entities. Unknown types and versions
-must degrade to their readable fallback and must never make a message
-unrenderable.
+Version 1 authors `user` and `audience/all` mention entities. `audience/all` is
+valid only in a group conversation. Unknown types and versions must degrade to
+their readable fallback and must never make a message unrenderable. The
+normative federation wire rules live in
+[Federation v1 Message](../federation/spec/v1/message.md#51-inline-entity-与-mention).
 
 ## Escaping and authorship
 

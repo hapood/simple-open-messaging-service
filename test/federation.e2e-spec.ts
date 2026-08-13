@@ -965,7 +965,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ name: 'fed-group', inviteUserIds: [bobStubIdOnA] });
     expect(create.status).toBe(200);
-    expect(create.body.code).toBe(BusinessCode.OK);
+    expect(create.body.code, JSON.stringify(create.body)).toBe(BusinessCode.OK);
     const groupThreadA = create.body.data.threadId as number;
 
     // The group account (groupUser.account == the group !account) — the on-wire group address.
@@ -2148,16 +2148,17 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const authority = `127.0.0.1:${appA.port}`;
     const body = JSON.stringify({
       origin: `${DOM_A}-evil`,
-      stateFeedRev: '1',
-      messageFeedRev: '1',
+      stateFeedEndId: '1',
+      messageFeedEndId: '1',
+      tombstoneFeedEndId: '1',
     });
     const headers = await evilSig.signOutbound({
       method: 'POST',
-      url: new URL(`http://${authority}/s2s/v1/feed-revisions`),
+      url: new URL(`http://${authority}/s2s/v1/feed-heads`),
       body,
     });
 
-    const res = await fetch(`http://${authority}/s2s/v1/feed-revisions`, {
+    const res = await fetch(`http://${authority}/s2s/v1/feed-heads`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body,

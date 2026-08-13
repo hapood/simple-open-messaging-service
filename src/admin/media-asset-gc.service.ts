@@ -10,6 +10,7 @@ import { join } from 'path';
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'fs';
 import { promisify } from 'util';
 import { and, asc, count, desc, eq, inArray, lt, ne, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import {
   DatabaseService,
   type Database,
@@ -20,7 +21,10 @@ import {
   forwardBundleAsset,
   forwardBundleDependency,
   fileSyncProgress,
+  federatedMessageTombstone,
   mediaAsset,
+  message,
+  messageThread,
   pendingMedia,
   user,
 } from '../database/schema.js';
@@ -390,6 +394,92 @@ export class MediaAssetGcService {
           errorKind: f.errorKind,
           updatedAt: f.updatedAt,
         })),
+      })),
+    };
+  }
+
+  /** Read-only GC inspection view. A row normally means the authoritative deletion arrived before
+   * its message. matchedMessage is deliberately returned as a diagnostic: once projection cleanup is
+   * implemented, matched rows should be removed transactionally and therefore normally stay absent. */
+  async listPendingFederatedDeletions(skip: number, take: number) {
+    const creator = alias(user, 'pending_deletion_creator');
+    const groupIdentity = alias(user, 'pending_deletion_group');
+    const predicate = and(
+      eq(message.threadId, federatedMessageTombstone.threadId),
+      eq(message.creator, federatedMessageTombstone.creatorId),
+      eq(message.originSeq, federatedMessageTombstone.originSeq),
+    );
+    const [totalRow, rows] = await Promise.all([
+      this.database.db
+        .select({ value: count() })
+        .from(federatedMessageTombstone),
+      this.database.db
+        .select({
+          id: federatedMessageTombstone.id,
+          threadId: federatedMessageTombstone.threadId,
+          threadType: messageThread.type,
+          groupAccount: groupIdentity.account,
+          groupDomain: groupIdentity.domain,
+          creatorId: federatedMessageTombstone.creatorId,
+          creatorAccount: creator.account,
+          creatorDomain: creator.domain,
+          originSeq: federatedMessageTombstone.originSeq,
+          authorityDomain: federatedMessageTombstone.authorityDomain,
+          sourceDomain: federatedMessageTombstone.sourceDomain,
+          remoteFeedId: federatedMessageTombstone.remoteDeletedId,
+          type: federatedMessageTombstone.type,
+          deletedAt: federatedMessageTombstone.authorityDeletedAt,
+          receivedAt: federatedMessageTombstone.createdAt,
+          updatedAt: federatedMessageTombstone.updatedAt,
+          matchedSeq: message.seq,
+          matchedDeleted: message.isDeleted,
+        })
+        .from(federatedMessageTombstone)
+        .innerJoin(
+          creator,
+          eq(creator.id, federatedMessageTombstone.creatorId),
+        )
+        .innerJoin(
+          messageThread,
+          eq(messageThread.id, federatedMessageTombstone.threadId),
+        )
+        .leftJoin(groupIdentity, eq(groupIdentity.id, messageThread.groupUserId))
+        .leftJoin(message, predicate)
+        .orderBy(
+          desc(federatedMessageTombstone.createdAt),
+          desc(federatedMessageTombstone.id),
+        )
+        .offset(skip)
+        .limit(take),
+    ]);
+    return {
+      total: totalRow[0]?.value ?? 0,
+      list: rows.map((row) => ({
+        id: row.id.toString(),
+        thread: {
+          id: row.threadId,
+          type: row.threadType,
+          ...(row.groupAccount
+            ? { group: { account: row.groupAccount, domain: row.groupDomain } }
+            : {}),
+        },
+        creator: {
+          id: row.creatorId,
+          account: row.creatorAccount,
+          domain: row.creatorDomain,
+        },
+        originSeq: row.originSeq,
+        authorityDomain: row.authorityDomain,
+        sourceDomain: row.sourceDomain,
+        remoteFeedId: row.remoteFeedId.toString(),
+        type: row.type,
+        deletedAt: row.deletedAt.getTime(),
+        receivedAt: row.receivedAt.getTime(),
+        updatedAt: row.updatedAt.getTime(),
+        matchedMessage:
+          row.matchedSeq === null
+            ? null
+            : { seq: row.matchedSeq, isDeleted: row.matchedDeleted ?? false },
       })),
     };
   }

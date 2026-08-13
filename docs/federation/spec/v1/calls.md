@@ -56,17 +56,17 @@ WebRTC/JSEP 不定义 SOMS 使用的应用层信令传输，因此 `/s2s/v1/call
 
 ## 3. HTTP 操作（HTTP Operation）
 
-| 项目                   | 值                                                                        |
-| ---------------------- | ------------------------------------------------------------------------- |
-| 方法（Method）                         | `POST`                                                                    |
-| 路径（Path）                           | `/s2s/v1/call`                                                            |
-| 查询（Query）                          | 不允许查询参数                                                            |
-| 请求媒体类型（Request media type）     | `application/json`，UTF-8                                                 |
-| 请求认证（Request authentication）     | Federation v1 HTTP Message Signature（RFC 9421、Ed25519）                 |
-| 签名方要求（Signer requirement）       | 使用主协议 `recognized signed` 上下文；纯传输 `degraded` 不是协议拒绝条件 |
-| 请求体（Request body）                 | 第 4 节定义的一个封闭 Call Frame JSON 对象                                |
-| 成功（Success）                        | HTTP `200`，JSON 成功封装                                                 |
-| 错误（Error）                          | 第 11 节及 Federation v1 错误码注册表                                     |
+| 项目                               | 值                                                                        |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| 方法（Method）                     | `POST`                                                                    |
+| 路径（Path）                       | `/s2s/v1/call`                                                            |
+| 查询（Query）                      | 不允许查询参数                                                            |
+| 请求媒体类型（Request media type） | `application/json`，UTF-8                                                 |
+| 请求认证（Request authentication） | Federation v1 HTTP Message Signature（RFC 9421、Ed25519）                 |
+| 签名方要求（Signer requirement）   | 使用主协议 `recognized signed` 上下文；纯传输 `degraded` 不是协议拒绝条件 |
+| 请求体（Request body）             | 第 4 节定义的一个封闭 Call Frame JSON 对象                                |
+| 成功（Success）                    | HTTP `200`，JSON 成功封装                                                 |
+| 错误（Error）                      | 第 11 节及 Federation v1 错误码注册表                                     |
 
 请求必须（MUST）携带 `Content-Type`、`Date`、`Content-Digest`、`Signature-Input` 和 `Signature`。这些 header
 的精确格式、签名组件顺序、时间窗口和原始 body digest 规则由主协议第 6 节统一定义，不能为 call

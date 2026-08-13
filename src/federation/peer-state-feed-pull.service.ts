@@ -6,9 +6,10 @@ import {
 } from '../database/database.service.js';
 import { peerStateFeedPullCursor } from '../database/schema.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
+import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 
 export interface PeerStateFeedPullCallbacks {
-  fetch(after: bigint): Promise<PeerStateFeedPage>;
+  fetch(after?: bigint): Promise<PeerStateFeedPage>;
   apply(tx: DatabaseTransaction, page: PeerStateFeedPage): Promise<void>;
   afterCommit?(page: PeerStateFeedPage): Promise<void> | void;
 }
@@ -60,17 +61,19 @@ export class PeerStateFeedPullService {
     for (;;) {
       const applied = await this.applyOnePage(peerDomain, callbacks);
       if (!applied) return;
+      if (!applied.page) continue;
       await callbacks.afterCommit?.(applied.page);
       if (applied.hasMore || applied.scannedThrough > applied.requestedAfter)
         continue;
       const cursor =
         await this.database.db.query.peerStateFeedPullCursor.findFirst({
           where: eq(peerStateFeedPullCursor.peerDomain, peerDomain),
-          columns: { remoteHwm: true },
+          columns: { committedThrough: true },
         });
       if (!cursor) return;
       const advertised = this.advertised.get(peerDomain);
-      if (advertised !== undefined && advertised > cursor.remoteHwm) continue;
+      if (advertised !== undefined && advertised > cursor.committedThrough)
+        continue;
       if (advertised !== undefined) this.advertised.delete(peerDomain);
       if (this.pending.delete(peerDomain)) continue;
       return;
@@ -92,33 +95,67 @@ export class PeerStateFeedPullService {
         .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain))
         .limit(1);
       if (!cursor) return null;
-      const page = await callbacks.fetch(cursor.remoteHwm);
+      let page: PeerStateFeedPage;
+      try {
+        page = await callbacks.fetch(
+          cursor.initialized ? cursor.committedThrough : undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
+        if (
+          error.resumeAfter < 0n ||
+          (cursor.initialized && error.resumeAfter <= cursor.committedThrough)
+        ) {
+          throw new Error('peer returned an invalid state-feed resume cursor');
+        }
+        await tx
+          .update(peerStateFeedPullCursor)
+          .set({
+            initialized: true,
+            committedThrough: error.resumeAfter,
+            updatedAt: new Date(),
+          })
+          .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain));
+        return {
+          requestedAfter: cursor.committedThrough,
+          scannedThrough: error.resumeAfter,
+          hasMore: true,
+          page: null,
+        };
+      }
+      if (!cursor.initialized) {
+        throw new Error('peer returned a state page without bootstrap cursor');
+      }
       const scannedThrough = this.parseRev(
         page.scannedThrough,
         'scannedThrough',
       );
-      const sourceRev = this.parseRev(page.stateFeedRev, 'stateFeedRev');
+      const sourceEndId = this.parseRev(page.stateFeedEndId, 'stateFeedEndId');
       if (
-        scannedThrough < cursor.remoteHwm ||
-        scannedThrough > sourceRev ||
-        (page.hasMore && scannedThrough === cursor.remoteHwm)
+        scannedThrough < cursor.committedThrough ||
+        scannedThrough > sourceEndId ||
+        (page.hasMore && scannedThrough === cursor.committedThrough)
       )
         throw new Error('peer returned an invalid state feed boundary');
-      let previous = cursor.remoteHwm;
+      let previous = cursor.committedThrough;
       for (const item of page.items) {
-        const rev = this.parseRev(item.rev, 'item.rev');
+        const feedId = this.parseRev(item.feedId, 'item.feedId');
         this.parseRev(item.revision, 'item.revision');
-        if (rev <= previous || rev > scannedThrough)
+        if (feedId <= previous || feedId > scannedThrough)
           throw new Error('peer returned unordered state feed items');
-        previous = rev;
+        previous = feedId;
       }
       await callbacks.apply(tx, page);
       await tx
         .update(peerStateFeedPullCursor)
-        .set({ remoteHwm: scannedThrough, updatedAt: new Date() })
+        .set({
+          initialized: true,
+          committedThrough: scannedThrough,
+          updatedAt: new Date(),
+        })
         .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain));
       return {
-        requestedAfter: cursor.remoteHwm,
+        requestedAfter: cursor.committedThrough,
         scannedThrough,
         hasMore: page.hasMore,
         page,

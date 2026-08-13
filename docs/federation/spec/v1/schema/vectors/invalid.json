@@ -52,13 +52,14 @@
         "items": [
           {
             "account": "alice",
+            "domain": "a.example",
             "eventType": "PROFILE",
             "subjectAccount": "bob",
+            "subjectDomain": "b.example",
             "revision": "1",
-            "rev": "1",
+            "feedId": "1",
             "body": {
-              "domain": "a.example",
-              "name": "Alice",
+              "displayName": "Alice",
               "bio": "",
               "avatar": null,
               "deleted": false
@@ -66,7 +67,7 @@
           }
         ],
         "scannedThrough": "1",
-        "stateFeedRev": "1",
+        "stateFeedEndId": "1",
         "hasMore": false
       }
     },
@@ -74,6 +75,71 @@
       "name": "unknown message content type",
       "schema": "urn:soms:federation:v1:message-content",
       "value": { "contentType": "STICKER", "content": {} }
+    },
+    {
+      "name": "media content rejects publisher display URL",
+      "schema": "urn:soms:federation:v1:message-content",
+      "value": {
+        "contentType": "IMAGE",
+        "content": { "url": "/asset/0", "w": 1, "h": 1, "size": 1 }
+      }
+    },
+    {
+      "name": "invite rejects publisher-local fields",
+      "schema": "urn:soms:federation:v1:message-content",
+      "value": {
+        "contentType": "INVITE",
+        "content": {
+          "type": "GROUP_INVITE",
+          "from": "alice",
+          "group": "!group",
+          "groupName": "Group",
+          "groupDomain": "a.example",
+          "groupIsLocal": true
+        }
+      }
+    },
+    {
+      "name": "terminal call content requires endedAt",
+      "schema": "urn:soms:federation:v1:message-content",
+      "value": {
+        "contentType": "CALL",
+        "content": {
+          "type": "CALL",
+          "callType": "AUDIO",
+          "status": "completed",
+          "caller": { "account": "alice", "domain": "a.example" },
+          "callee": { "account": "bob", "domain": "b.example" }
+        }
+      }
+    },
+    {
+      "name": "unconnected call outcome rejects duration",
+      "schema": "urn:soms:federation:v1:message-content",
+      "value": {
+        "contentType": "CALL",
+        "content": {
+          "type": "CALL",
+          "callType": "AUDIO",
+          "status": "cancelled",
+          "caller": { "account": "alice", "domain": "a.example" },
+          "callee": { "account": "bob", "domain": "b.example" },
+          "startedAt": 1,
+          "endedAt": 2,
+          "durationMs": 1
+        }
+      }
+    },
+    {
+      "name": "message page rejects retired page fields",
+      "schema": "urn:soms:federation:v1:message-feed",
+      "value": {
+        "messages": [],
+        "scannedThrough": "0",
+        "allocatedThrough": "0",
+        "hasMore": false,
+        "degradation": null
+      }
     },
     {
       "name": "connected call requires startedAt",
@@ -195,16 +261,12 @@
       }
     },
     {
-      "name": "cursor error violates cross-field ordering",
+      "name": "cursor error uses obsolete fields",
       "schema": "urn:soms:federation:v1:error",
       "value": {
         "code": 50019,
         "message": "requested cursor is below retained floor",
-        "data": {
-          "startChangeId": "101",
-          "availableCursor": "100",
-          "allocatedThrough": "250"
-        }
+        "data": { "availableCursor": "100" }
       }
     }
   ]

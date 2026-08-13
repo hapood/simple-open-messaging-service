@@ -21,7 +21,7 @@ import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { UserService } from '../user/user.service.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { user } from '../database/schema.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
@@ -356,6 +356,41 @@ export class GroupController {
   ) {
     const me = req.user.userId;
     const rows = await this.participantService.getRosters(dto.threadIds);
+    const scopedProfiles = dto.threadIds.length
+      ? await this.database.db.execute<{
+          threadId: number;
+          userId: number;
+          displayName: string;
+          avatar: string | null;
+        }>(sql`
+          SELECT thread.id AS "threadId", member_u.id AS "userId",
+            profile."displayName", profile.avatar
+          FROM "MessageThread" thread
+          JOIN "User" group_u ON group_u.id = thread."groupUserId"
+          JOIN "ThreadParticipant" participant ON participant."threadId" = thread.id
+            AND participant."leftAt" IS NULL
+          JOIN "User" member_u ON member_u.id = participant."userId"
+          JOIN "FederatedMemberProfile" profile
+            ON profile."sourcePeerDomain" = group_u.domain
+           AND profile."memberAccount" = member_u.account
+           AND profile."memberDomain" = CASE
+             WHEN member_u."isForeigner" THEN member_u.domain
+             ELSE COALESCE((SELECT domain FROM "LocalFederationIdentity" LIMIT 1), 'local')
+           END
+           AND profile.availability = 'AVAILABLE'
+          WHERE thread.id IN (${sql.join(
+            dto.threadIds.map((threadId) => sql`${threadId}`),
+            sql`, `,
+          )})
+            AND group_u.domain <> 'local'
+        `)
+      : { rows: [] };
+    const scopedByMember = new Map(
+      scopedProfiles.rows.map((profile) => [
+        `${profile.threadId}:${profile.userId}`,
+        profile,
+      ]),
+    );
     // Group by threadId; keep only threads where the caller is an active member (roster contains me).
     const byThread = new Map<number, Array<(typeof rows)[number]>>();
     for (const r of rows) {
@@ -366,19 +401,22 @@ export class GroupController {
     return [...byThread.entries()]
       .filter(([, members]) => members.some((m) => m.userId === me))
       .map(([threadId, members]) => {
-        const mapped = members.map((r) => ({
-          userId: r.userId,
-          account: r.user.account,
-          name: r.user.name,
-          avatar: r.user.avatar,
-          // Pass through verbatim — a local member's User.domain is already '' (not the 'local' sentinel),
-          // so the badge self-hides for locals and shows the peer domain for federated stubs.
-          isForeigner: r.user.isForeigner,
-          domain: r.user.domain,
-          role: r.role,
-          joinedAt: r.joinedAt,
-          isOwner: r.role === GroupRole.OWNER,
-        }));
+        const mapped = members.map((r) => {
+          const scoped = scopedByMember.get(`${threadId}:${r.userId}`);
+          return {
+            userId: r.userId,
+            account: r.user.account,
+            name: scoped?.displayName ?? r.user.name,
+            avatar: scoped?.avatar ?? r.user.avatar,
+            // Pass through verbatim — a local member's User.domain is already '' (not the 'local' sentinel),
+            // so the badge self-hides for locals and shows the peer domain for federated stubs.
+            isForeigner: r.user.isForeigner,
+            domain: r.user.domain,
+            role: r.role,
+            joinedAt: r.joinedAt,
+            isOwner: r.role === GroupRole.OWNER,
+          };
+        });
         // Owner first, then admins, then members; within a role, by join time.
         mapped.sort(
           (a, b) =>

@@ -28,6 +28,8 @@ import { GroupMembershipStateService } from '../group/group-membership-state.ser
 import { FederationMemoryFeedService } from './federation-memory-feed.service.js';
 import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
+import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
+import { FederationMessageTombstonePullService } from './federation-message-tombstone-pull.service.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -66,6 +68,8 @@ import { S2sSignatureGuard } from './s2s-signature.guard.js';
     FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageFeedPullService,
+    FederationMessageTombstoneFeedService,
+    FederationMessageTombstonePullService,
     FederationMemoryFeedService,
     FederationFeedFulfiller,
     FederationDownloadScheduler,
@@ -83,6 +87,8 @@ import { S2sSignatureGuard } from './s2s-signature.guard.js';
     FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageFeedPullService,
+    FederationMessageTombstoneFeedService,
+    FederationMessageTombstonePullService,
     FederationMemoryFeedService,
     FederationFeedFulfiller,
     FederationDownloadScheduler,

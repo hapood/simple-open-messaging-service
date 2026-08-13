@@ -1,5 +1,5 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { HttpStatus, Injectable, Optional } from '@nestjs/common';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -13,15 +13,24 @@ import {
 import { ContentType } from '../database/enums.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { FederationCursorService } from './federation-cursor.service.js';
-import { FederationMemoryFeedService } from './federation-memory-feed.service.js';
+import {
+  FederationFeedFillState,
+  FederationMemoryFeedService,
+} from './federation-memory-feed.service.js';
+import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js';
+import type { FederationBufferedChange } from './federation-change-buffer.js';
 import { loadFederationConfig } from './federation.config.js';
 import {
   buildFederatedCallContent,
   parseCallContent,
 } from '../calls/call-content.js';
+import {
+  authoredMessageSnapshot,
+  toFederatedMessageContent,
+} from './federated-message-content.js';
 
-export const FEDERATION_MISSED_DEFAULT_PAGE_SIZE = 100;
-export const FEDERATION_MISSED_MAX_PAGE_SIZE = 200;
+export const FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE = 100;
+export const FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE = 200;
 export const FEDERATED_MESSAGE_CONTENT_TYPES: ContentType[] = Object.values(
   ContentType,
 ).filter((type) => type !== ContentType.SYSTEM);
@@ -31,12 +40,12 @@ const REQUEST_TIMEOUT_MS = 15_000;
 
 export interface FederationMessageFeedAsset {
   digest: string;
-  bytes: string;
+  bytes: number;
   status: 'READY' | 'DELETED';
 }
 
 export interface FederationMessageFeedMessage {
-  changeId: string;
+  feedId: string;
   thread:
     | { type: 'GROUP'; account: string; domain: string }
     | {
@@ -62,40 +71,86 @@ export interface FederationMessageFeedMessage {
 export interface FederationMessageFeedPage {
   messages: FederationMessageFeedMessage[];
   scannedThrough: string;
-  allocatedThrough: string;
   hasMore: boolean;
-  degradation: {
-    kind: 'HISTORY_TRUNCATED';
-    truncatedThrough: string;
-    since: number;
-  } | null;
+  retryAfterMs?: number;
 }
+
+interface FeedSnapshotCache {
+  after: bigint;
+  take: number;
+  trunc?: bigint;
+  excludeSelf: boolean;
+  refs: FederationBufferedChange[];
+}
+
+const FEDERATION_FILL_RETRY_AFTER_MS = 100;
 
 @Injectable()
 export class FederationMessageFeedService {
   private readonly localDomain = loadFederationConfig().domain;
+  private readonly snapshots = new Map<string, FeedSnapshotCache>();
 
   constructor(
     private readonly cursor: FederationCursorService,
     private readonly memoryFeed: FederationMemoryFeedService,
+    @Optional() private readonly fulfiller?: FederationFeedFulfiller,
   ) {}
+
+  rejectMissingAfter(peerDomain: string): Promise<never> {
+    return this.cursor.rejectMissingAfter(peerDomain);
+  }
 
   async serve(
     peerDomain: string,
     after: bigint,
     requestedTake?: number,
+    trunc?: bigint,
+    excludeSelf = false,
   ): Promise<FederationMessageFeedPage> {
     const take = this.pageSize(requestedTake);
+    if (trunc !== undefined && trunc < after) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'trunc must be greater than or equal to after',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     return this.memoryFeed.runExclusive(peerDomain, async () => {
+      // Reconstruct durable unacknowledged allocations and discover committed backlog before the
+      // cursor transaction freezes this request's allocation upper bound. Never retire here: the
+      // durable audience progress must advance in that transaction before memory entries disappear.
       await this.memoryFeed.fillWhileLocked(peerDomain);
-      const page = await this.serveWithCursor(peerDomain, after, take);
-      this.memoryFeed.retireWhileLocked(peerDomain, after);
-      await this.memoryFeed.fillWhileLocked(peerDomain);
-      const allocatedThrough =
-        await this.cursor.readAllocatedThrough(peerDomain);
-      if (allocatedThrough > BigInt(page.scannedThrough)) {
-        page.allocatedThrough = allocatedThrough.toString();
+      const { page, acknowledgedThrough } = await this.serveWithCursor(
+        peerDomain,
+        after,
+        take,
+        trunc,
+        excludeSelf,
+      );
+      const retiredAfter = this.memoryFeed.retireWhileLocked(
+        peerDomain,
+        acknowledgedThrough,
+      );
+      if (retiredAfter > 0) {
+        this.snapshots.delete(peerDomain);
+        this.fulfiller?.schedule(peerDomain);
+      }
+      const endId = await this.cursor.readAllocatedThrough(peerDomain);
+      const requestEnd = trunc === undefined || trunc > endId ? endId : trunc;
+      const fillState = this.memoryFeed.state(peerDomain);
+      if (
+        requestEnd > BigInt(page.scannedThrough) ||
+        fillState === FederationFeedFillState.NEEDS_FILL ||
+        fillState === FederationFeedFillState.FILLING
+      ) {
         page.hasMore = true;
+      }
+      if (
+        page.hasMore &&
+        page.messages.length === 0 &&
+        BigInt(page.scannedThrough) === after
+      ) {
+        page.retryAfterMs = FEDERATION_FILL_RETRY_AFTER_MS;
       }
       return page;
     });
@@ -105,12 +160,25 @@ export class FederationMessageFeedService {
     peerDomain: string,
     after: bigint,
     take: number,
-  ): Promise<FederationMessageFeedPage> {
+    trunc?: bigint,
+    excludeSelf = false,
+  ): Promise<{
+    page: FederationMessageFeedPage;
+    acknowledgedThrough: bigint;
+  }> {
     const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    let acknowledgedThrough = after;
     const result = await this.cursor.servePage(
       peerDomain,
       after,
-      async ({ tx, allocatedThrough, degradation }) => {
+      async ({
+        tx,
+        allocatedThrough,
+        after: effectiveAfter,
+        retry,
+        previouslyServedThrough,
+      }) => {
+        acknowledgedThrough = effectiveAfter;
         // Both settings are transaction-local. statement_timeout cancels a slow page SQL; the idle
         // timeout is only a final safety net if application code stops progressing after BEGIN.
         await tx.execute(
@@ -123,16 +191,26 @@ export class FederationMessageFeedService {
         );
         this.assertBeforeDeadline(deadline);
 
-        const memoryRefs = this.memoryFeed.readAfterWhileLocked(
+        const boundedEnd = retry
+          ? previouslyServedThrough
+          : trunc === undefined || trunc > allocatedThrough
+            ? allocatedThrough
+            : trunc;
+        const effectiveAllocatedThrough =
+          boundedEnd < effectiveAfter ? effectiveAfter : boundedEnd;
+        const memoryRefs = this.readSnapshot(
           peerDomain,
-          after,
+          effectiveAfter,
           take,
+          trunc,
+          excludeSelf,
+          effectiveAllocatedThrough,
         );
-        await this.memoryFeed.acknowledgeInTx(tx, peerDomain, after);
+        await this.memoryFeed.acknowledgeInTx(tx, peerDomain, effectiveAfter);
         const memoryScannedThrough =
           memoryRefs.length === take
-            ? memoryRefs.at(-1)!.changeId
-            : allocatedThrough;
+            ? memoryRefs.at(-1)!.feedId
+            : effectiveAllocatedThrough;
 
         const changes =
           memoryRefs.length === 0
@@ -148,6 +226,8 @@ export class FederationMessageFeedService {
                   createdAt: message.createdAt,
                   updatedAt: message.updatedAt,
                   clientMessageId: message.clientMessageId,
+                  federationAuthoredSnapshot:
+                    message.federationAuthoredSnapshot,
                   threadType: messageThread.type,
                   groupUserId: messageThread.groupUserId,
                   authorAccount: user.account,
@@ -174,7 +254,7 @@ export class FederationMessageFeedService {
                   return memoryRefs
                     .map((entry) => {
                       const row = byId.get(entry.messageId);
-                      return row ? { ...row, changeId: entry.changeId } : null;
+                      return row ? { ...row, feedId: entry.feedId } : null;
                     })
                     .filter(
                       (row): row is NonNullable<typeof row> => row !== null,
@@ -244,7 +324,7 @@ export class FederationMessageFeedService {
           const list = assets.get(row.messageId) ?? [];
           list.push({
             digest: row.digest,
-            bytes: row.bytes.toString(),
+            bytes: Number(row.bytes),
             status: row.status,
           });
           assets.set(row.messageId, list);
@@ -273,6 +353,7 @@ export class FederationMessageFeedService {
         // allocates its own unrelated local seq. Resolve all quoted targets for the page in one query.
         const quoteRefs = new Map<string, { threadId: number; seq: number }>();
         for (const row of changes) {
+          if (row.federationAuthoredSnapshot) continue;
           if (row.contentType !== ContentType.PURE_TEXT) continue;
           const quoteSeq = parseTextMessageContent(row.content)?.quote?.seq;
           if (quoteSeq !== undefined) {
@@ -318,71 +399,101 @@ export class FederationMessageFeedService {
           ]),
         );
 
-        const messages = changes.map((row): FederationMessageFeedMessage => {
-          const group = row.groupUserId
-            ? groups.get(row.groupUserId)
-            : undefined;
-          if (row.threadType === 'GROUP' && !group) {
-            throw new Error(
-              `group identity missing for thread ${row.threadId}`,
-            );
-          }
-          const quoteSeq =
-            row.contentType === ContentType.PURE_TEXT
-              ? parseTextMessageContent(row.content)?.quote?.seq
+        const messages = changes
+          .filter((row) => !excludeSelf || row.authorDomain !== peerDomain)
+          .map((row): FederationMessageFeedMessage => {
+            const group = row.groupUserId
+              ? groups.get(row.groupUserId)
               : undefined;
-          const quoteTarget =
-            quoteSeq === undefined
-              ? undefined
-              : quoteTargets.get(`${row.threadId}\u0000${quoteSeq}`);
-          if (quoteSeq !== undefined && !quoteTarget) {
-            throw new Error(
-              `quoted message ${row.threadId}/${quoteSeq} is missing`,
-            );
-          }
-          const author = {
-            account: row.authorAccount,
-            domain: this.wireDomain(row.authorDomain),
-          };
-          const thread: FederationMessageFeedMessage['thread'] = group
-            ? { type: 'GROUP', ...group }
-            : {
-                type: 'P2P',
-                participants: participants.get(row.threadId) ?? [],
-              };
-          let content = row.content;
-          if (row.contentType === ContentType.CALL) {
-            const local = parseCallContent(row.content);
-            const callee =
-              thread.type === 'P2P'
-                ? thread.participants.find(
-                    (participant) =>
-                      participant.account !== author.account ||
-                      participant.domain !== author.domain,
-                  )
-                : undefined;
-            if (!local || !callee) {
+            if (row.threadType === 'GROUP' && !group) {
               throw new Error(
-                `CALL message ${row.threadId}/${row.seq} has no valid federation projection`,
+                `group identity missing for thread ${row.threadId}`,
               );
             }
-            content = buildFederatedCallContent(local, author, callee);
-          }
-          return {
-            changeId: row.changeId.toString(),
-            thread,
-            author,
-            seq: row.seq,
-            originSeq: row.originSeq ?? row.seq,
-            contentType: row.contentType,
-            content,
-            createdAt: row.createdAt.getTime(),
-            updatedAt: row.updatedAt.getTime(),
-            clientMessageId: row.clientMessageId,
-            ...(quoteTarget ? { quoteTarget } : {}),
-            assets: assets.get(row.messageId) ?? [],
-          };
-        });
+            const quoteSeq =
+              !row.federationAuthoredSnapshot &&
+              row.contentType === ContentType.PURE_TEXT
+                ? parseTextMessageContent(row.content)?.quote?.seq
+                : undefined;
+            const quoteTarget =
+              row.federationAuthoredSnapshot?.quoteTarget ??
+              (quoteSeq === undefined
+                ? undefined
+                : quoteTargets.get(`${row.threadId}\u0000${quoteSeq}`));
+            if (quoteSeq !== undefined && !quoteTarget) {
+              throw new Error(
+                `quoted message ${row.threadId}/${quoteSeq} is missing`,
+              );
+            }
+            const author = {
+              account: row.authorAccount,
+              domain: this.wireDomain(row.authorDomain),
+            };
+            const thread: FederationMessageFeedMessage['thread'] = group
+              ? { type: 'GROUP', ...group }
+              : {
+                  type: 'P2P',
+                  participants: participants.get(row.threadId) ?? [],
+                };
+            let content =
+              row.federationAuthoredSnapshot?.content ??
+              toFederatedMessageContent(row.contentType, row.content);
+            if (
+              !row.federationAuthoredSnapshot &&
+              row.contentType === ContentType.CALL
+            ) {
+              const local = parseCallContent(row.content);
+              const callee =
+                thread.type === 'P2P'
+                  ? thread.participants.find(
+                      (participant) =>
+                        participant.account !== author.account ||
+                        participant.domain !== author.domain,
+                    )
+                  : undefined;
+              if (!local || !callee) {
+                throw new Error(
+                  `CALL message ${row.threadId}/${row.seq} has no valid federation projection`,
+                );
+              }
+              content = buildFederatedCallContent(local, author, callee);
+            }
+            return {
+              feedId: row.feedId.toString(),
+              thread,
+              author,
+              seq: row.seq,
+              originSeq: row.originSeq ?? row.seq,
+              contentType: row.contentType,
+              content,
+              createdAt: row.createdAt.getTime(),
+              updatedAt: row.updatedAt.getTime(),
+              clientMessageId: row.federationAuthoredSnapshot
+                ? row.federationAuthoredSnapshot.clientMessageId
+                : row.clientMessageId,
+              ...(quoteTarget ? { quoteTarget } : {}),
+              assets:
+                row.federationAuthoredSnapshot?.assets ??
+                assets.get(row.messageId) ??
+                [],
+            };
+          });
+        for (const row of changes) {
+          if (row.federationAuthoredSnapshot) continue;
+          const item = messages.find(
+            (messageItem) => messageItem.feedId === row.feedId.toString(),
+          );
+          if (!item) continue;
+          await tx
+            .update(message)
+            .set({ federationAuthoredSnapshot: authoredMessageSnapshot(item) })
+            .where(
+              and(
+                eq(message.id, row.messageId),
+                isNull(message.federationAuthoredSnapshot),
+              ),
+            );
+        }
         this.assertBeforeDeadline(deadline);
         const scannedThrough = memoryScannedThrough;
         return {
@@ -390,36 +501,59 @@ export class FederationMessageFeedService {
           value: {
             messages,
             scannedThrough: scannedThrough.toString(),
-            allocatedThrough: allocatedThrough.toString(),
-            hasMore: scannedThrough < allocatedThrough,
-            degradation: degradation
-              ? {
-                  kind: degradation.kind,
-                  truncatedThrough: degradation.truncatedThrough.toString(),
-                  since: degradation.since.getTime(),
-                }
-              : null,
+            hasMore: scannedThrough < effectiveAllocatedThrough,
           },
         };
       },
     );
-    return result.value;
+    return { page: result.value, acknowledgedThrough };
   }
 
   private pageSize(value?: number): number {
-    if (value === undefined) return FEDERATION_MISSED_DEFAULT_PAGE_SIZE;
-    if (
-      !Number.isInteger(value) ||
-      value < 1 ||
-      value > FEDERATION_MISSED_MAX_PAGE_SIZE
-    ) {
+    if (value === undefined) return FEDERATION_MESSAGE_FEED_DEFAULT_PAGE_SIZE;
+    if (!Number.isSafeInteger(value) || value < 1) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `take must be an integer from 1 to ${FEDERATION_MISSED_MAX_PAGE_SIZE}`,
+        'take must be a positive safe integer',
         HttpStatus.BAD_REQUEST,
       );
     }
-    return value;
+    return Math.min(value, FEDERATION_MESSAGE_FEED_MAX_PAGE_SIZE);
+  }
+
+  private readSnapshot(
+    peerDomain: string,
+    after: bigint,
+    take: number,
+    trunc: bigint | undefined,
+    excludeSelf: boolean,
+    requestEnd: bigint,
+  ): FederationBufferedChange[] {
+    const cached = this.snapshots.get(peerDomain);
+    if (
+      cached?.after === after &&
+      cached.take === take &&
+      cached.trunc === trunc &&
+      cached.excludeSelf === excludeSelf
+    ) {
+      return cached.refs.slice();
+    }
+    const refs = this.memoryFeed
+      .readAfterWhileLocked(peerDomain, after, take)
+      .filter((entry) => entry.feedId <= requestEnd)
+      .slice();
+    if (refs.length > 0) {
+      this.snapshots.set(peerDomain, {
+        after,
+        take,
+        trunc,
+        excludeSelf,
+        refs: refs.slice(),
+      });
+    } else {
+      this.snapshots.delete(peerDomain);
+    }
+    return refs;
   }
 
   private assertBeforeDeadline(deadline: number): void {

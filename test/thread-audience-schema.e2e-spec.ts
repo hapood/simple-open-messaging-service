@@ -145,12 +145,12 @@ describe('ThreadAudience schema', () => {
     const cursorChecks = new Map(
       cursorConstraints.rows.map((row) => [row.conname, row.definition]),
     );
-    expect(cursorChecks.get('FederationPullCursor_remoteHwm_check')).toContain(
-      'startChangeId',
-    );
+    expect(
+      cursorChecks.get('FederationPullCursor_committedThrough_check'),
+    ).toContain('retainedAfter');
     expect(
       cursorChecks.get('FederationServeCursor_acknowledgedThrough_check'),
-    ).toContain('startChangeId');
+    ).toContain('retainedAfter');
     expect(
       cursorChecks.get('FederationServeCursor_lastServedThrough_check'),
     ).toContain('acknowledgedThrough');

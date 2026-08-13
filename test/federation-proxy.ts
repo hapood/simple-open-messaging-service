@@ -37,7 +37,7 @@ export interface S2sProxy {
    * relationship-closing state snapshot is applied before its inclusive final message boundary. */
   blockMessageFeed: (blocked: boolean) => void;
   blockedMessageFeedCount: () => number;
-  /** Hold state-feed GETs while feed-revisions wake-ups continue. Used to prove
+  /** Hold state-feed GETs while feed-heads wake-ups continue. Used to prove
    * a mirror does not activate a join before the origin confirms GROUP_META. */
   blockStateFeed: (blocked: boolean) => void;
   blockedStateFeedCount: () => number;

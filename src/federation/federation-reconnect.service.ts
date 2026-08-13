@@ -70,8 +70,13 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   }
 
   private async reconcile(domain: string): Promise<void> {
-    await this.federation.pullStateFromPeer(domain);
-    await this.federation.pullMissedFromPeer(this.missedPull, domain);
+    const stateRevision = await this.federation.pullStateFromPeer(domain);
+    await this.federation.pullTombstonesFromPeer(domain, stateRevision);
+    await this.federation.pullMissedFromPeer(
+      this.missedPull,
+      domain,
+      stateRevision,
+    );
   }
 
   private async sweep(): Promise<void> {
@@ -96,7 +101,12 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private async recover(domain: string): Promise<void> {
     await this.federation.recoverPeerTrust(domain);
     await this.federation.pushDiscoveryHwm(domain);
-    await this.federation.pullStateFromPeer(domain);
-    await this.federation.pullMissedFromPeer(this.missedPull, domain);
+    const stateRevision = await this.federation.pullStateFromPeer(domain);
+    await this.federation.pullTombstonesFromPeer(domain, stateRevision);
+    await this.federation.pullMissedFromPeer(
+      this.missedPull,
+      domain,
+      stateRevision,
+    );
   }
 }

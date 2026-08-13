@@ -52,6 +52,7 @@ describe('per-peer state feed', () => {
         {
           peerDomain: DOMAINS[0],
           account: 'alice',
+          domain: 'local.test',
           eventType: 'PROFILE',
           revision: 1,
           body: { name: 'A' },
@@ -61,6 +62,7 @@ describe('per-peer state feed', () => {
         {
           peerDomain: DOMAINS[0],
           account: 'alice',
+          domain: 'local.test',
           eventType: 'PROFILE',
           revision: 2,
           body: { name: 'B', updatedAt: wireTime, opaqueRevision: 9n },
@@ -70,6 +72,7 @@ describe('per-peer state feed', () => {
         {
           peerDomain: DOMAINS[0],
           account: 'alice',
+          domain: 'local.test',
           eventType: 'PROFILE',
           revision: 1,
           body: { name: 'stale' },
@@ -77,12 +80,12 @@ describe('per-peer state feed', () => {
       ]);
     });
     const page = await feed.serve(DOMAINS[0], 0n);
-    expect(page.stateFeedRev).toBe('2');
+    expect(page.stateFeedEndId).toBe('2');
     expect(page.scannedThrough).toBe('2');
     expect(page.items).toMatchObject([
       {
         revision: '2',
-        rev: '2',
+        feedId: '2',
         body: {
           name: 'B',
           updatedAt: wireTime.getTime(),
@@ -98,22 +101,27 @@ describe('per-peer state feed', () => {
         {
           peerDomain: DOMAINS[0],
           account: 'alice',
+          domain: 'local.test',
           subjectAccount: 'bob',
-          eventType: 'P2P_META',
+          subjectDomain: DOMAINS[0],
+          eventType: 'P2P_INTENT',
           revision: 1,
           body: { recognizesFriend: true },
         },
         {
           peerDomain: DOMAINS[0],
           account: 'alice',
+          domain: 'local.test',
           subjectAccount: 'carol',
-          eventType: 'P2P_META',
+          subjectDomain: DOMAINS[0],
+          eventType: 'P2P_INTENT',
           revision: 1,
           body: { recognizesFriend: false },
         },
         {
           peerDomain: DOMAINS[1],
           account: 'alice',
+          domain: 'local.test',
           eventType: 'PROFILE',
           revision: 1,
           body: { name: 'private-to-b' },
@@ -142,6 +150,7 @@ describe('per-peer state feed', () => {
           {
             peerDomain: DOMAINS[1],
             account: 'rollback',
+            domain: 'local.test',
             eventType: 'PROFILE',
             revision: 1,
             body: {},
@@ -170,6 +179,7 @@ describe('per-peer state feed', () => {
         {
           peerDomain: domain,
           account: 'alice',
+          domain: 'local.test',
           eventType: 'PROFILE',
           revision: 1,
           body: {},

@@ -4,17 +4,21 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { federationPullCursor } from '../database/schema.js';
+import {
+  federationPullCursor,
+  peerStateFeedPullCursor,
+} from '../database/schema.js';
 import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
+import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 
 export interface FederationMessageFeedPullCallbacks {
-  fetch(after: bigint): Promise<FederationMessageFeedPage>;
-  /** Apply the complete page in the same transaction that advances remoteHwm. */
+  fetch(after?: bigint, through?: bigint): Promise<FederationMessageFeedPage>;
+  /** Apply the complete page in the same transaction that advances committedThrough. */
   apply(
     tx: DatabaseTransaction,
     page: FederationMessageFeedPage,
   ): Promise<void>;
-  /** Runs only after the page transaction (including remoteHwm) committed successfully. */
+  /** Runs only after the page transaction (including committedThrough) committed successfully. */
   afterCommit?(page: FederationMessageFeedPage): Promise<void> | void;
 }
 
@@ -23,17 +27,6 @@ interface AppliedPage {
   scannedThrough: bigint;
   hasMore: boolean;
   page: FederationMessageFeedPage | null;
-}
-
-export class RemoteMessageFeedCursorResetError extends Error {
-  constructor(
-    public readonly startChangeId: bigint,
-    public readonly availableCursor: bigint,
-    public readonly allocatedThrough: bigint,
-  ) {
-    super('remote message-feed cursor floor advanced');
-    this.name = 'RemoteMessageFeedCursorResetError';
-  }
 }
 
 /**
@@ -47,17 +40,27 @@ export class FederationMessageFeedPullService {
   private readonly running = new Map<string, Promise<void>>();
   private readonly pending = new Set<string>();
   private readonly advertised = new Map<string, bigint>();
-  private readonly observedDegradation = new Map<string, string>();
+  private readonly requiredState = new Map<string, bigint>();
 
   constructor(private readonly database: DatabaseService) {}
 
   /** Coalesce an ephemeral push/HWM observation. Recovery sends a fresh wake-up after restart. */
-  advertise(peerDomain: string, allocatedThrough: bigint): void {
+  advertise(
+    peerDomain: string,
+    allocatedThrough: bigint,
+    requiredStateRevision = 0n,
+  ): void {
     if (allocatedThrough < 0n)
       throw new Error('advertised HWM must be non-negative');
     const current = this.advertised.get(peerDomain);
     if (current === undefined || allocatedThrough > current) {
       this.advertised.set(peerDomain, allocatedThrough);
+      this.requiredState.set(peerDomain, requiredStateRevision);
+    } else if (allocatedThrough === current) {
+      const state = this.requiredState.get(peerDomain) ?? 0n;
+      if (requiredStateRevision > state) {
+        this.requiredState.set(peerDomain, requiredStateRevision);
+      }
     }
   }
 
@@ -82,7 +85,7 @@ export class FederationMessageFeedPullService {
             // transient apply failure must stop this drain, not become an unhandled rejection that
             // terminates the API process; the next HWM push/reconnect wake-up retries durably.
             this.logger.warn(
-              `missed drain failed for ${peerDomain}: ${(error as Error).message}`,
+              `message-feed drain failed for ${peerDomain}: ${(error as Error).message}`,
             );
           });
         });
@@ -103,8 +106,8 @@ export class FederationMessageFeedPullService {
 
       if (applied.page) await callbacks.afterCommit?.(applied.page);
 
-      // The source discarded an over-limit backlog and supplied a new floor. The local cursor reset
-      // committed atomically below; immediately retry from that floor without publishing page effects.
+      // A valid 50019 reset is committed atomically by applyOnePage. Retry immediately from the
+      // supplied floor without applying or publishing a synthetic page.
       if (!applied.page) continue;
 
       // A data-bearing final page is not acknowledged at the source until we request once more with
@@ -116,11 +119,12 @@ export class FederationMessageFeedPullService {
       const cursor = await this.readCursor(peerDomain);
       if (!cursor) return; // reset removed the peer while the request was in flight
       const advertised = this.advertised.get(peerDomain);
-      if (advertised !== undefined && advertised > cursor.remoteHwm) {
+      if (advertised !== undefined && advertised > cursor.committedThrough) {
         this.pending.delete(peerDomain);
         continue;
       }
       if (advertised !== undefined) this.advertised.delete(peerDomain);
+      this.requiredState.delete(peerDomain);
       if (this.pending.delete(peerDomain)) continue;
       return;
     }
@@ -143,73 +147,99 @@ export class FederationMessageFeedPullService {
         .limit(1);
       if (!cursor) return null;
 
+      const advertised = this.advertised.get(peerDomain);
+      const requiredState = this.requiredState.get(peerDomain) ?? 0n;
+      if (advertised !== undefined && requiredState > 0n) {
+        const [stateCursor] = await tx
+          .select({
+            committedThrough: peerStateFeedPullCursor.committedThrough,
+          })
+          .from(peerStateFeedPullCursor)
+          .where(eq(peerStateFeedPullCursor.peerDomain, peerDomain))
+          .limit(1);
+        if (!stateCursor || stateCursor.committedThrough < requiredState)
+          return null;
+      }
+      const trunc =
+        cursor.initialized &&
+        advertised !== undefined &&
+        advertised >= cursor.committedThrough
+          ? advertised
+          : undefined;
       let page: FederationMessageFeedPage;
       try {
-        page = await callbacks.fetch(cursor.remoteHwm);
+        page = await callbacks.fetch(
+          cursor.initialized ? cursor.committedThrough : undefined,
+          trunc,
+        );
       } catch (error) {
-        if (!(error instanceof RemoteMessageFeedCursorResetError)) throw error;
+        if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
+        if (error.resumeAfter < 0n) {
+          throw new Error(
+            'peer returned a negative message-feed resume cursor',
+          );
+        }
         if (
-          error.startChangeId < cursor.startChangeId ||
-          error.availableCursor < error.startChangeId ||
-          error.availableCursor <= cursor.remoteHwm ||
-          error.availableCursor > error.allocatedThrough
+          cursor.initialized &&
+          (error.resumeAfter < cursor.retainedAfter ||
+            error.resumeAfter <= cursor.committedThrough)
         ) {
           throw new Error('peer returned an invalid message-feed cursor reset');
         }
         await tx
           .update(federationPullCursor)
           .set({
-            startChangeId: error.startChangeId,
-            remoteHwm: error.availableCursor,
+            initialized: true,
+            retainedAfter: error.resumeAfter,
+            committedThrough: error.resumeAfter,
             updatedAt: new Date(),
           })
           .where(eq(federationPullCursor.peerDomain, peerDomain));
         this.logger.warn(
-          `message-feed history for ${peerDomain} was truncated; resumed at ${error.availableCursor.toString()}`,
+          cursor.initialized
+            ? `message-feed history for ${peerDomain} is unavailable before ${error.resumeAfter.toString()}; resumed from that cursor`
+            : `initialized message-feed cursor for ${peerDomain} at ${error.resumeAfter.toString()}`,
         );
         return {
-          requestedAfter: cursor.remoteHwm,
-          scannedThrough: error.availableCursor,
+          requestedAfter: cursor.committedThrough,
+          scannedThrough: error.resumeAfter,
           hasMore: true,
           page: null,
         };
+      }
+      if (!cursor.initialized) {
+        throw new Error(
+          'peer returned a message page without bootstrap cursor',
+        );
       }
       const scannedThrough = this.parseCursor(
         page.scannedThrough,
         'scannedThrough',
       );
-      const allocatedThrough = this.parseCursor(
-        page.allocatedThrough,
-        'allocatedThrough',
-      );
-      this.validateDegradation(peerDomain, page, allocatedThrough);
-      if (
-        scannedThrough < cursor.remoteHwm ||
-        scannedThrough > allocatedThrough ||
-        (page.hasMore && scannedThrough === cursor.remoteHwm)
-      ) {
-        throw new Error('peer returned an invalid missed page boundary');
+      if (scannedThrough < cursor.committedThrough) {
+        throw new Error('peer returned an invalid message-feed page boundary');
       }
 
-      let previousChangeId = cursor.remoteHwm;
+      let previousFeedId = cursor.committedThrough;
       for (const item of page.messages) {
-        const changeId = this.parseCursor(item.changeId, 'message.changeId');
-        if (changeId <= previousChangeId || changeId > scannedThrough) {
-          throw new Error('peer returned unordered missed messages');
+        const feedId = this.parseCursor(item.feedId, 'message.feedId');
+        if (feedId <= previousFeedId || feedId > scannedThrough) {
+          throw new Error('peer returned unordered message-feed items');
         }
-        previousChangeId = changeId;
+        previousFeedId = feedId;
       }
 
       await callbacks.apply(tx, page);
       await tx
         .update(federationPullCursor)
         .set({
-          remoteHwm: scannedThrough,
+          initialized: true,
+          committedThrough: scannedThrough,
           updatedAt: new Date(),
         })
         .where(eq(federationPullCursor.peerDomain, peerDomain));
       return {
-        requestedAfter: cursor.remoteHwm,
+        requestedAfter: cursor.committedThrough,
         scannedThrough,
         hasMore: page.hasMore,
         page,
@@ -220,42 +250,14 @@ export class FederationMessageFeedPullService {
   private async readCursor(peerDomain: string) {
     return this.database.db.query.federationPullCursor.findFirst({
       where: eq(federationPullCursor.peerDomain, peerDomain),
-      columns: { remoteHwm: true },
+      columns: { committedThrough: true },
     });
   }
 
   private parseCursor(value: string, name: string): bigint {
-    if (!/^(0|[1-9]\d*)$/.test(value)) {
+    if (!/^(0|-?[1-9]\d*)$/.test(value)) {
       throw new Error(`invalid ${name}`);
     }
     return BigInt(value);
-  }
-
-  private validateDegradation(
-    peerDomain: string,
-    page: FederationMessageFeedPage,
-    allocatedThrough: bigint,
-  ): void {
-    if (page.degradation === null) return;
-    if (
-      page.degradation.kind !== 'HISTORY_TRUNCATED' ||
-      !Number.isSafeInteger(page.degradation.since) ||
-      page.degradation.since < 0
-    ) {
-      throw new Error('peer returned an invalid message-feed degradation');
-    }
-    const truncatedThrough = this.parseCursor(
-      page.degradation.truncatedThrough,
-      'degradation.truncatedThrough',
-    );
-    if (truncatedThrough > allocatedThrough) {
-      throw new Error('peer returned an invalid message-feed degradation');
-    }
-    const signature = `${page.degradation.kind}:${truncatedThrough.toString()}:${page.degradation.since}`;
-    if (this.observedDegradation.get(peerDomain) === signature) return;
-    this.observedDegradation.set(peerDomain, signature);
-    this.logger.warn(
-      `message-feed history for ${peerDomain} was truncated through ${truncatedThrough.toString()} at ${new Date(page.degradation.since).toISOString()}`,
-    );
   }
 }

@@ -40,7 +40,7 @@ describe('Federation v1 protocol documentation', () => {
   });
 
   it('lists every message content type exactly once', () => {
-    expect(documentedUnion(readSpec('message-feed.md'), 'ContentType')).toEqual(
+    expect(documentedUnion(readSpec('message.md'), 'ContentType')).toEqual(
       FEDERATED_MESSAGE_CONTENT_TYPES,
     );
   });
@@ -114,9 +114,10 @@ describe('Federation v1 protocol documentation', () => {
       'GET /.well-known/soms',
       'POST /s2s/v1/recognize',
       'POST /s2s/v1/healthy',
-      'POST /s2s/v1/feed-revisions',
+      'POST /s2s/v1/feed-heads',
       'GET /s2s/v1/state-feed',
       'GET /s2s/v1/message-feed',
+      'GET /s2s/v1/message-tombstone-feed',
       'POST /s2s/v1/call',
       'GET /s2s/v1/users/:account',
       'GET /s2s/v1/media/:digest',

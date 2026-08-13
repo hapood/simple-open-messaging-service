@@ -3,14 +3,7 @@
   "$id": "urn:soms:federation:v1:profile",
   "title": "GET /s2s/v1/users/:account response data",
   "type": "object",
-  "required": [
-    "account",
-    "domain",
-    "displayName",
-    "avatar",
-    "bio",
-    "profileRev"
-  ],
+  "required": ["account", "domain", "displayName", "avatar", "profileRev"],
   "properties": {
     "account": {
       "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
@@ -41,7 +34,6 @@
         { "type": "null" }
       ]
     },
-    "bio": { "type": "string", "maxLength": 120 },
     "profileRev": {
       "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
     }

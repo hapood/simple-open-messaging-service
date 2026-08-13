@@ -60,7 +60,7 @@ describe('ThreadParticipantService.endP2P transaction boundary', () => {
       tx.update.mock.invocationCallOrder[0],
     );
     expect(tx.update).toHaveBeenCalledTimes(3);
-    expect(tx.delete).not.toHaveBeenCalled();
+    expect(tx.delete).toHaveBeenCalledTimes(1); // revoke any remote history-only grant
     expect(revisions.recordThreadDeleteInTx).toHaveBeenCalledWith(tx, 1, 10);
     expect(revisions.recordThreadAddInTx).toHaveBeenCalledWith(tx, 2, 10);
     expect(revisions.notifyThreadRevision).toHaveBeenCalledTimes(2);

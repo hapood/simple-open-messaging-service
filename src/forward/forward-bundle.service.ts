@@ -22,6 +22,11 @@ import {
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
 import {
+  federatedContentDigests,
+  fromFederatedMessageContent,
+  toFederatedMessageContent,
+} from '../federation/federated-message-content.js';
+import {
   extractDigestEntries,
   extractDigests,
   parseFileExt,
@@ -58,8 +63,8 @@ export interface ForwardAssetDocument {
 }
 
 export interface ForwardManifestMessage {
-  /** Canonical 1-based Bundle-local id. Optional in the type only for pre-quote v1 bundles. */
-  id?: number;
+  /** Positive Bundle-local identity used only by quotes within this manifest. */
+  id: number;
   sender: {
     displayName: string;
     account: string;
@@ -630,11 +635,22 @@ export class ForwardBundleService {
     const byId = new Map(rows.map((row) => [row.id, row]));
     const bundles = orderedIds.map((id) => {
       const row = byId.get(id)!;
+      const storedManifest = row.manifest as unknown as ForwardManifest;
+      const manifest: ForwardManifest = {
+        ...storedManifest,
+        messages: storedManifest.messages.map((message) => ({
+          ...message,
+          content: projectForwardContentToWire(
+            message.contentType,
+            message.content,
+          ),
+        })),
+      };
       return {
         id: row.id,
         depth: row.depth,
-        manifestDigest: row.manifestDigest,
-        manifest: row.manifest as unknown as ForwardManifest,
+        manifestDigest: digestManifest(manifest),
+        manifest,
         assets: row.forwardBundleAssets.map((asset) =>
           this.assetDocument(asset),
         ),
@@ -717,17 +733,14 @@ export class ForwardBundleService {
         throw this.invalidWire('forward manifest digest mismatch');
       }
       for (const asset of bundle.assets) this.validateWireAsset(asset);
-      // v1 bundles created before quote snapshots had no message ids. Continue accepting that legacy
-      // shape; once any id is present, the complete manifest must use the canonical 1-based sequence.
-      const usesMessageIds = bundle.manifest.messages.some(
-        (message) => message.id !== undefined,
-      );
-      for (const [
-        messageIndex,
-        message,
-      ] of bundle.manifest.messages.entries()) {
+      const messageIds = new Set<number>();
+      const expectedAssetDigests = new Set<string>();
+      const childReferences: string[] = [];
+      for (const message of bundle.manifest.messages) {
         if (
-          (usesMessageIds && message.id !== messageIndex + 1) ||
+          !Number.isSafeInteger(message.id) ||
+          message.id < 1 ||
+          messageIds.has(message.id) ||
           typeof message.content !== 'string' ||
           typeof message.contentType !== 'string' ||
           typeof message.sender?.displayName !== 'string' ||
@@ -739,6 +752,54 @@ export class ForwardBundleService {
         ) {
           throw this.invalidWire('invalid forward message descriptor');
         }
+        messageIds.add(message.id);
+        if (!isFederatedContentType(message.contentType)) {
+          throw this.invalidWire('invalid forward content type');
+        }
+        if (message.sender.avatarDigest !== undefined) {
+          if (!/^[0-9a-f]{64}$/.test(message.sender.avatarDigest)) {
+            throw this.invalidWire('invalid forward sender avatar digest');
+          }
+          expectedAssetDigests.add(message.sender.avatarDigest);
+        }
+        try {
+          for (const digest of federatedContentDigests(
+            message.contentType,
+            message.content,
+          )) {
+            expectedAssetDigests.add(digest);
+          }
+          projectForwardContentFromWire(message.contentType, message.content);
+        } catch {
+          throw this.invalidWire('invalid forward message content');
+        }
+        if (message.childBundleId !== undefined) {
+          if (message.contentType !== ContentType.FORWARD) {
+            throw this.invalidWire(
+              'forward child is attached to a non-FORWARD message',
+            );
+          }
+          let card: unknown;
+          try {
+            card = JSON.parse(message.content);
+          } catch {
+            throw this.invalidWire('invalid inner FORWARD card');
+          }
+          if (
+            !card ||
+            typeof card !== 'object' ||
+            Array.isArray(card) ||
+            (card as Record<string, unknown>)['bundleId'] !==
+              message.childBundleId
+          ) {
+            throw this.invalidWire(
+              'inner FORWARD card does not match its child',
+            );
+          }
+          childReferences.push(message.childBundleId);
+        } else if (message.contentType === ContentType.FORWARD) {
+          throw this.invalidWire('inner FORWARD message is missing its child');
+        }
         const mediaKind = forwardMediaKind(message.contentType);
         if (mediaKind) {
           let mediaContent: unknown;
@@ -747,15 +808,19 @@ export class ForwardBundleService {
           } catch {
             throw this.invalidWire('invalid forward media content');
           }
-          if (
-            typeof mediaContent !== 'object' ||
-            mediaContent === null ||
-            Array.isArray(mediaContent) ||
-            typeof (mediaContent as Record<string, unknown>)['url'] !== 'string'
-          ) {
+          if (typeof mediaContent !== 'object' || mediaContent === null) {
             throw this.invalidWire('invalid forward media content');
           }
-          const digests = extractDigests(message.content);
+          let localized: string;
+          try {
+            localized = projectForwardContentFromWire(
+              message.contentType,
+              message.content,
+            );
+          } catch {
+            throw this.invalidWire('invalid forward media content');
+          }
+          const digests = extractDigests(localized);
           if (
             digests.length !== 1 ||
             !bundle.assets.some(
@@ -785,7 +850,16 @@ export class ForwardBundleService {
           if (!galleryItems) {
             throw this.invalidWire('invalid forward gallery content');
           }
-          const galleryDigests = extractDigests(message.content);
+          let localized: string;
+          try {
+            localized = projectForwardContentFromWire(
+              message.contentType,
+              message.content,
+            );
+          } catch {
+            throw this.invalidWire('invalid forward gallery content');
+          }
+          const galleryDigests = extractDigests(localized);
           if (
             galleryDigests.length === 0 ||
             galleryDigests.some(
@@ -798,11 +872,31 @@ export class ForwardBundleService {
           }
         }
       }
-      const messageIds = new Set(
-        bundle.manifest.messages.flatMap((message) =>
-          message.id === undefined ? [] : [message.id],
-        ),
+      const declaredAssetDigests = new Set(
+        bundle.assets.map((asset) => asset.digest),
       );
+      if (
+        declaredAssetDigests.size !== bundle.assets.length ||
+        declaredAssetDigests.size !== expectedAssetDigests.size ||
+        [...expectedAssetDigests].some(
+          (digest) => !declaredAssetDigests.has(digest),
+        )
+      ) {
+        throw this.invalidWire('forward bundle assets do not match content');
+      }
+      if (
+        new Set(bundle.manifest.children).size !==
+          bundle.manifest.children.length ||
+        childReferences.length !== bundle.manifest.children.length ||
+        new Set(childReferences).size !== childReferences.length ||
+        childReferences.some(
+          (child) => !bundle.manifest.children.includes(child),
+        )
+      ) {
+        throw this.invalidWire(
+          'forward child references do not match children',
+        );
+      }
       if (
         bundle.manifest.messages.some((message) => {
           const quote = message.quote;
@@ -897,10 +991,9 @@ export class ForwardBundleService {
           children: wire.manifest.children.map((child) => idMap.get(child)!),
           messages: wire.manifest.messages.map((message) => ({
             ...message,
-            content: localizeForwardMediaContent(
+            content: projectForwardContentFromWire(
               message.contentType,
               message.content,
-              wire.assets,
             ),
             ...(message.childBundleId
               ? { childBundleId: idMap.get(message.childBundleId)! }
@@ -1138,7 +1231,7 @@ export class ForwardBundleService {
   }
 
   private assetKey(asset: ForwardAssetDocument): string {
-    return `${asset.kind}:${asset.digest}`;
+    return asset.digest;
   }
 
   private validateWireAsset(asset: ForwardAssetDocument): void {
@@ -1213,6 +1306,32 @@ function forwardMediaKind(
         : contentType === ContentType.AUDIO
           ? 'audio'
           : null;
+}
+
+function isFederatedContentType(value: string): value is ContentType {
+  return Object.values(ContentType).includes(value as ContentType);
+}
+
+function projectForwardContentToWire(
+  contentType: string,
+  content: string,
+): string {
+  if (!isFederatedContentType(contentType)) return content;
+  return toFederatedMessageContent(contentType, content);
+}
+
+function projectForwardContentFromWire(
+  contentType: string,
+  content: string,
+): string {
+  if (!isFederatedContentType(contentType)) {
+    throw new Error('invalid forward content type');
+  }
+  return fromFederatedMessageContent(
+    contentType,
+    content,
+    process.env.SOMS_DOMAIN ?? 'local',
+  );
 }
 
 /**

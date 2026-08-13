@@ -14,9 +14,10 @@ recognition facts. Wire identities are `{ account, domain }`; database ids never
 | ------ | ---------------------------- | ------------------------------------------------------------------------------ |
 | `POST` | `/recognize`                 | Confirm one recognition direction and schedule the reverse direction.          |
 | `POST` | `/healthy`                   | Return `healthy`, `degraded`, or privacy-preserving `unavailable`.             |
-| `POST` | `/feed-revisions`            | Ephemeral wake-up carrying decimal-string `stateFeedRev` and `messageFeedRev`. |
-| `GET`  | `/state-feed`                | Pull compacted relationship/profile/group state after a revision.              |
-| `GET`  | `/message-feed`              | Pull durable message discovery after a change revision.                        |
+| `POST` | `/feed-heads`                | Ephemeral wake-up carrying the three independent feed end IDs.                 |
+| `GET`  | `/state-feed`                | Pull compacted relationship/profile/group state after a feed ID.               |
+| `GET`  | `/message-feed`              | Pull durable message discovery after a feed ID.                                |
+| `GET`  | `/message-tombstone-feed`    | Pull durable withdrawals and effective moderation deletions.                   |
 | `POST` | `/call`                      | Ephemeral WebRTC lifecycle, SDP/ICE and video-upgrade signalling.              |
 | `GET`  | `/users/:account`            | Resolve a local user's public profile for first-contact lookup.                |
 | `GET`  | `/media/:digest`             | Exact-message-authorized range download of a content-addressed asset.          |
@@ -25,21 +26,27 @@ recognition facts. Wire identities are `{ account, domain }`; database ids never
 ## Wake-up and drain order
 
 ```text
-POST /feed-revisions
+POST /feed-heads
   → drain /state-feed completely
   → commit state page and state cursor atomically
+  → drain /message-tombstone-feed
+  → commit tombstone page and tombstone cursor atomically
   → drain /message-feed
   → commit message page and message cursor atomically
 ```
 
 The POST is only a hint. Lost, duplicated and out-of-order hints are safe because startup and periodic
-reconciliation directly request both feeds; each page carries its source HWM. Advertised revisions are
-max-coalesced and neither pull cursor may move backwards.
+reconciliation directly request all three feeds. Advertised end IDs are max-coalesced and no pull cursor
+may move backwards.
+
+State, message, and tombstone feeds each have an independent per-peer feed-ID allocator and independent
+ACK/pull cursors. A drain freezes `stateFeedEndId`, `tombstoneFeedEndId`, and `messageFeedEndId` as the
+respective `through` bounds; an ID from one feed has no ordering meaning in another feed.
 
 After a process restart the recovery sequence is:
 
 ```text
-POST /healthy → state feed → message feed
+POST /healthy → state feed → message tombstone feed → message feed
 ```
 
 `healthy` never establishes identity and never fetches an unknown signer's keys. Missing recognition
@@ -52,22 +59,25 @@ signing certificate. A genuinely new root still requires destructive reset and f
 
 Query parameters:
 
-- `after`: unsigned decimal revision already committed by the receiver.
-- `take`: page item limit, capped by the server.
+- `after`: exclusive feed cursor already committed by the receiver; omit it only for initial positioning.
+- `take`: preferred scan size, capped or adjusted by the server; requires `after`.
+- `through`: optional inclusive feed-ID upper bound; requires `after`.
 
-The response contains decimal strings `stateFeedRev`, `scannedThrough`, item `rev`, and business
-`revision`. Feed revisions/cursors are bigint because they are unbounded transport allocators. Business
-revisions are int because they belong to one bounded row and are validated as safe integers.
+A bootstrap request without `after` returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with an exclusive
+`resumeAfter`; it returns no page. A successful response contains decimal strings `stateFeedEndId`,
+`scannedThrough`, each item's `feedId`, and its independent business `revision`. Feed IDs and cursors are
+BigInt decimal strings. Business revisions belong to stable keys and are not feed cursors.
 
 Event keys and bodies:
 
 - `PROFILE(account)`: public profile snapshot, including avatar bytes; applies only when its business
   revision is strictly newer than `remoteProfileRev`.
-- `P2P_META(requester, target)`: one directed friend fact with `REQUESTED`, `FRIEND`, or `NOT_FRIEND`.
+- `MEMBER_PROFILE(account)`: source-scoped display snapshot for a person visible through an explicit source.
+- `P2P_INTENT(requester, target)`: one directed friend intent with `REQUESTED`, `ACCEPTED`, or `REVOKED`.
 - `GROUP_INVITE_INTENT(group, member)`: origin's directed invitation fact.
 - `GROUP_JOIN_INTENT(group, member)`: member's directed join/leave fact.
 - `GROUP_META(group)`: origin-authoritative roster and group snapshot. Meta JSON does not contain member
-  avatars; member profiles arrive as independently revisioned `PROFILE` items.
+  avatars; member profiles arrive as independently revisioned `MEMBER_PROFILE` items.
 
 The feed is compacted by `(peer, eventType, account, subjectAccount)`. A same or older business revision
 is a complete no-op: it does not rewrite the fact, refresh `updatedAt`, mutate a projection, allocate a
@@ -101,10 +111,13 @@ not a wire-protocol constant; a full origin rejects by returning ordinary author
 
 ## Message feed
 
-Query parameters are `after` and `take`. The response contains `allocatedThrough`, `scannedThrough`,
-ordered changes, and a required nullable `degradation` field. `degradation.kind = HISTORY_TRUNCATED`
-means the publisher explicitly discarded history through the reported cursor; this is an exceptional
-service degradation, not normal bounded-buffer behavior.
+Query parameters are optional `after`, `take`, `through`, and `excludeSelf`; the latter three require
+`after`. A bootstrap request without `after` returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the exact
+exclusive `resumeAfter` to persist and use next. `take` is the
+consumer's preferred scan size rather than a hard response limit; the source chooses the actual scan
+size according to its capacity. The response contains ordered `messages`, `scannedThrough`, `hasMore`,
+and optional `retryAfterMs`. If retained history moves beyond an old cursor, the source returns the same
+`resumeAfter` result; successful pages do not expose allocation upper bounds or degradation metadata.
 
 The feed is target-allocated, not filtered as “messages authored by someone else”. After SOMS commits a
 message fetched from its author server, it allocates that self-authored item back to the author as a
@@ -117,11 +130,9 @@ Messages carry stable author identity and source `originSeq`; receiver-local `se
 accepts only the content types defined by the federation schema and uniformly rejects unknown values.
 Group membership changes converge through `GROUP_META` and membership state.
 
-`after` may repeat the current acknowledged cursor for retry but cannot move behind the retained floor.
-Change IDs are strictly increasing, not contiguous. A full source buffer freezes new allocation and waits
-for acknowledgement; it does not normally prune unacknowledged history. An exceptional explicit history
-truncation raises the retained floor, returns `FEDERATION_MISSED_CURSOR_INVALID` to an old cursor, and is
-subsequently visible in every page's `degradation` field.
+`after` may equal the current acknowledged cursor for retry or the last served cursor to confirm it.
+Other values are rejected; callers cannot fast-forward. Feed IDs are strictly increasing but not contiguous,
+and unacknowledged per-peer allocations are durable so process restart replays the same ID.
 
 Media and forward-bundle authorization joins the signed peer's thread audience and then verifies the exact
 message-to-digest/bundle binding. It does not depend on a message-feed change remaining after acknowledgement.
@@ -135,17 +146,19 @@ item publisher's `createdAt` in those two columns. Other implementations may use
 event log, or no durable UI-facing receipt storage, provided their wire behavior and deduplication match
 the protocol.
 
-## Lightweight feed revision body
+## Lightweight feed head body
 
 ```ts
-type FeedRevisionHint = {
+type FeedHeadHint = {
   origin: string;
-  stateFeedRev: string;
-  messageFeedRev: string;
+  stateFeedEndId: string;
+  messageFeedEndId: string;
+  tombstoneFeedEndId: string;
 };
 ```
 
-Both revisions are unsigned decimal strings. `origin` must equal the verified signer domain.
+All three end IDs are BigInt decimal strings in independent feed spaces. `origin` must equal the verified
+signer domain. The hint is not an acknowledgement and does not authorize cursor movement.
 
 ## Calls
 

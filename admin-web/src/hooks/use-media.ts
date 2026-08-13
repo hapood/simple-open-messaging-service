@@ -13,6 +13,7 @@ import {
   getCurrentMediaTask,
   listResumableUploads,
   abortResumableUpload,
+  listPendingFederatedDeletions,
   type MediaGcTask,
 } from '@/api/media';
 import { API_BASE } from '@/lib/constants';
@@ -49,6 +50,18 @@ export function useResumableUploads(enabled: boolean) {
     queryFn: listResumableUploads,
     enabled,
     refetchInterval: enabled ? 5000 : false,
+  });
+}
+
+export function usePendingFederatedDeletions(
+  params: { skip: number; take: number },
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ['admin', 'media', 'pending-federated-deletions', params],
+    queryFn: () => listPendingFederatedDeletions(params),
+    enabled,
+    placeholderData: (previous) => previous,
   });
 }
 

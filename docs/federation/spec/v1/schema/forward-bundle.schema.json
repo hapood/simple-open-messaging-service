@@ -3,6 +3,12 @@
   "$id": "urn:soms:federation:v1:forward-bundle",
   "title": "GET /s2s/v1/forward-bundles/:bundleId response data",
   "$defs": {
+    "bundleId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 26,
+      "pattern": "^[^/\\u0000]+$"
+    },
     "asset": {
       "type": "object",
       "required": ["digest", "kind", "extension", "bytes"],
@@ -22,7 +28,7 @@
     },
     "manifestMessage": {
       "type": "object",
-      "required": ["sender", "contentType", "content", "sentAt"],
+      "required": ["id", "sender", "contentType", "content", "sentAt"],
       "properties": {
         "id": {
           "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
@@ -33,7 +39,7 @@
           "properties": {
             "displayName": { "type": "string" },
             "account": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
             },
             "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
             "avatarDigest": {
@@ -42,12 +48,25 @@
           },
           "additionalProperties": false
         },
-        "contentType": { "type": "string", "minLength": 1 },
+        "contentType": {
+          "enum": [
+            "PURE_TEXT",
+            "INVITE",
+            "IMAGE",
+            "VIDEO",
+            "FILE",
+            "AUDIO",
+            "LINK",
+            "CALL",
+            "FORWARD",
+            "GALLERY"
+          ]
+        },
         "content": { "type": "string" },
         "sentAt": {
           "$ref": "urn:soms:federation:v1:common#/$defs/epochMilliseconds"
         },
-        "childBundleId": { "type": "string", "minLength": 1, "maxLength": 26 },
+        "childBundleId": { "$ref": "#/$defs/bundleId" },
         "quote": {
           "type": "object",
           "required": ["preview"],
@@ -73,16 +92,16 @@
       ],
       "properties": {
         "schemaVersion": { "const": 1 },
-        "bundleId": { "type": "string", "minLength": 1, "maxLength": 26 },
+        "bundleId": { "$ref": "#/$defs/bundleId" },
         "depth": { "type": "integer", "minimum": 1, "maximum": 3 },
         "children": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 26 }
+          "items": { "$ref": "#/$defs/bundleId" }
         },
         "messages": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 100,
           "items": { "$ref": "#/$defs/manifestMessage" }
         }
@@ -93,7 +112,7 @@
       "type": "object",
       "required": ["id", "depth", "manifestDigest", "manifest", "assets"],
       "properties": {
-        "id": { "type": "string", "minLength": 1, "maxLength": 26 },
+        "id": { "$ref": "#/$defs/bundleId" },
         "depth": { "type": "integer", "minimum": 1, "maximum": 3 },
         "manifestDigest": {
           "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex"
@@ -108,7 +127,7 @@
   "required": ["schemaVersion", "rootBundleId", "bundles", "assets"],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "rootBundleId": { "type": "string", "minLength": 1, "maxLength": 26 },
+    "rootBundleId": { "$ref": "#/$defs/bundleId" },
     "bundles": {
       "type": "array",
       "minItems": 1,
@@ -121,7 +140,7 @@
       "required": ["threadId", "seq"],
       "properties": {
         "threadId": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
         },
         "seq": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"

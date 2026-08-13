@@ -11,9 +11,10 @@
 | `GET`  | `/.well-known/soms`                 | 公开服务器身份、公钥和能力发现。                    |
 | `POST` | `/s2s/v1/recognize`                 | 建立一个认可方向并持久调度反向认可。                |
 | `POST` | `/s2s/v1/healthy`                   | 查询既有认可关系的可用性，不为未知方取 key。        |
-| `POST` | `/s2s/v1/feed-revisions`            | 轻量 state/message source revision wake-up。        |
+| `POST` | `/s2s/v1/feed-heads`                | 轻量 state/message/tombstone feed end-ID wake-up。  |
 | `GET`  | `/s2s/v1/state-feed`                | PROFILE、好友方向事实、群方向事实和 origin 群快照。 |
 | `GET`  | `/s2s/v1/message-feed`              | durable message discovery feed。                    |
+| `GET`  | `/s2s/v1/message-tombstone-feed`    | durable message deletion tombstone feed。           |
 | `POST` | `/s2s/v1/call`                      | 临时 WebRTC 生命周期和 SDP/ICE relay。              |
 | `GET`  | `/s2s/v1/users/:account`            | 首次用户查询所需的完整公开 profile。                |
 | `GET`  | `/s2s/v1/media/:digest`             | 绑定精确消息/thread 所有权的 CAS Range 下载。       |
@@ -50,15 +51,16 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   成员 PROFILE。
 - 相同或更旧业务 revision 是完整 no-op：不写业务行、不刷新 `updatedAt`、不写投影、不生成
   feed、不触发下游。
-- per-peer feed 按 key 压缩，只保留最高业务 revision。feed revision/cursor 使用 bigint，业务
-  revision 使用 int。
+- per-peer state feed 按 key 压缩。transport `feedId`/cursor 使用 bigint，stable-key 业务
+  `revision` 使用 int；两者不可混用。
 - state feed page 与 receiver cursor 同事务提交；任一非法 state item 回滚整页。
 - message feed 逐条使用 savepoint 隔离；非法 message item 记 error 并跳过，页面内其余消息继续提交，
   cursor 仍推进到 `scannedThrough`。
 
 ## 消息与媒体
 
-- wake-up 不携正文；receiver 永远先拉 state，再拉 message feed。
+- wake-up 不携正文；receiver 冻结三个独立上界，并按 state、tombstone、message 顺序排空。
+- 三个 feed 的 `feedId` 空间、ACK 与 pull cursor 彼此独立；跨 feed 比较 ID 没有意义。
 - message discovery change 与 message/audience 原子提交。
 - feed 按目标 peer 分配。节点从作者服务器 X 拉取并提交消息后，将 self-authored item 分配回 X
   作为持久投递回执：`originSeq` 标识 X 发布的源序列，item `createdAt` 是接收节点的持久化时间；
@@ -75,8 +77,8 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   加配额后自动唤醒。
 - CAS 和 forward bundle 下载均验证精确消息/thread 所有权和 digest/bundle 绑定。
 - 资源授权实时 join signer 的 thread audience，不依赖可被 GC 的 message change。
-- 已确认 change 可物理清理；长期不消费的 peer 可按本地策略被强制推进 retained floor，旧 cursor
-  通过 `FEDERATION_MISSED_CURSOR_INVALID` 携带的新起点恢复。
+- 已确认 feed allocation 可物理清理；长期不消费的 peer 可按本地策略推进 message retained floor，旧
+  cursor 通过 `FEDERATION_FEED_CURSOR_UNAVAILABLE` 携带的 `resumeAfter` 恢复。
 
 ## 当前限制
 

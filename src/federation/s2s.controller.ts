@@ -24,6 +24,8 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageFeedPullService } from './federation-message-feed-pull.service.js';
+import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
+import { FederationMessageTombstonePullService } from './federation-message-tombstone-pull.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
@@ -46,7 +48,7 @@ import {
  * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
  * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
  * - GET  /s2s/v1/message-feed — durable message-discovery changes for the signed peer.
- * - POST /s2s/v1/feed-revisions — ephemeral state/message revision wake-up hint.
+ * - POST /s2s/v1/feed-heads — ephemeral state/message/tombstone feed-head wake-up hint.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -64,20 +66,23 @@ export class S2sController {
     private readonly federation: FederationService,
     private readonly messageFeed: FederationMessageFeedService,
     private readonly messageFeedPull: FederationMessageFeedPullService,
+    private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
+    private readonly tombstonePull: FederationMessageTombstonePullService,
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
     private readonly peerStateFeedPull: PeerStateFeedPullService,
   ) {}
 
-  /** Receive ephemeral state/miss source HWMs; actual data remains pull-only. */
-  @Post('feed-revisions')
+  /** Receive ephemeral state/message/tombstone feed heads; actual data remains pull-only. */
+  @Post('feed-heads')
   @HttpCode(HttpStatus.OK)
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
     const body = req.body as {
       origin?: unknown;
-      stateFeedRev?: unknown;
-      messageFeedRev?: unknown;
+      stateFeedEndId?: unknown;
+      messageFeedEndId?: unknown;
+      tombstoneFeedEndId?: unknown;
     };
     if (body.origin !== signer) {
       throw new BusinessException(
@@ -87,39 +92,118 @@ export class S2sController {
       );
     }
     if (
-      typeof body.stateFeedRev !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.stateFeedRev) ||
-      typeof body.messageFeedRev !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.messageFeedRev)
+      typeof body.stateFeedEndId !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(body.stateFeedEndId) ||
+      typeof body.messageFeedEndId !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(body.messageFeedEndId) ||
+      typeof body.tombstoneFeedEndId !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(body.tombstoneFeedEndId)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'stateFeedRev and messageFeedRev must be unsigned decimal strings',
+        'feed end IDs must be unsigned decimal strings',
         HttpStatus.BAD_REQUEST,
       );
     }
-    this.peerStateFeedPull.advertise(signer, BigInt(body.stateFeedRev));
-    this.messageFeedPull.advertise(signer, BigInt(body.messageFeedRev));
+    const stateFeedEndId = BigInt(body.stateFeedEndId);
+    const messageFeedEndId = BigInt(body.messageFeedEndId);
+    const tombstoneFeedEndId = BigInt(body.tombstoneFeedEndId);
+    this.peerStateFeedPull.advertise(signer, stateFeedEndId);
+    this.messageFeedPull.advertise(signer, messageFeedEndId, stateFeedEndId);
+    this.tombstonePull.advertise(signer, tombstoneFeedEndId, stateFeedEndId);
     // Wake-up is intentionally fire-and-forget: the durable cursor/page transaction owns recovery,
     // while this lightweight push returns promptly even when the peer has a large backlog.
     void this.federation
-      .pullStateFromPeer(signer)
+      .pullStateFromPeer(signer, stateFeedEndId)
       .then(() =>
-        this.federation.pullMissedFromPeer(this.messageFeedPull, signer),
+        this.federation.pullTombstonesFromPeer(signer, stateFeedEndId),
+      )
+      .then(() =>
+        this.federation.pullMissedFromPeer(
+          this.messageFeedPull,
+          signer,
+          stateFeedEndId,
+        ),
       )
       .catch(() => undefined);
   }
 
-  /** Durable cross-thread feed. changeId values stay decimal strings on the JSON wire. */
+  @Get('message-tombstone-feed')
+  async getMessageTombstones(
+    @Req() req: FastifyRequest,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+  ) {
+    this.assertQueryShape(req, ['after', 'take', 'through']);
+    const peerDomain = this.signerDomain(req);
+    if (afterParam === undefined) {
+      if (takeParam !== undefined || throughParam !== undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'take and through require after',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.tombstoneFeed.rejectMissingAfter(peerDomain);
+    }
+    const after = this.parseCursorBigInt(afterParam, 'after');
+    const take =
+      takeParam === undefined
+        ? undefined
+        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(throughParam, 'through');
+    return this.tombstoneFeed.serve(peerDomain, after, take, through);
+  }
+
+  /** Durable cross-thread feed. feedId values stay decimal strings on the JSON wire. */
   @Get('message-feed')
   async getMissed(
     @Req() req: FastifyRequest,
     @Query('after') afterParam?: string,
     @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+    @Query('excludeSelf') excludeSelfParam?: string,
   ) {
-    const after = this.parseUnsignedBigInt(afterParam, 'after');
-    const take = takeParam === undefined ? undefined : Number(takeParam);
-    return this.messageFeed.serve(this.signerDomain(req), after, take);
+    this.assertQueryShape(req, ['after', 'take', 'through', 'excludeSelf']);
+    const peerDomain = this.signerDomain(req);
+    if (afterParam === undefined) {
+      if (
+        takeParam !== undefined ||
+        throughParam !== undefined ||
+        excludeSelfParam !== undefined
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'take, through and excludeSelf require after',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.messageFeed.rejectMissingAfter(peerDomain);
+    }
+    const after = this.parseCursorBigInt(afterParam, 'after');
+    const take =
+      takeParam === undefined
+        ? undefined
+        : this.parsePositiveSafeIntegerQuery(takeParam, 'take');
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(throughParam, 'through');
+    const excludeSelf = this.parseOptionalBoolean(
+      excludeSelfParam,
+      'excludeSelf',
+    );
+    return this.messageFeed.serve(
+      peerDomain,
+      after,
+      take,
+      through,
+      excludeSelf,
+    );
   }
 
   @Get('state-feed')
@@ -127,10 +211,27 @@ export class S2sController {
     @Req() req: FastifyRequest,
     @Query('after') afterParam?: string,
     @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
   ) {
-    const after = this.parseUnsignedBigInt(afterParam, 'after');
+    this.assertQueryShape(req, ['after', 'take', 'through']);
+    const peerDomain = this.signerDomain(req);
+    if (afterParam === undefined) {
+      if (takeParam !== undefined || throughParam !== undefined) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'take and through require after',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.peerStateFeed.rejectMissingAfter(peerDomain);
+    }
+    const after = this.parseCursorBigInt(afterParam, 'after');
     const take = takeParam === undefined ? undefined : Number(takeParam);
-    return this.peerStateFeed.serve(this.signerDomain(req), after, take);
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(throughParam, 'through');
+    return this.peerStateFeed.serve(peerDomain, after, take, through);
   }
 
   @Post('call')
@@ -176,15 +277,65 @@ export class S2sController {
     return (req as FastifyRequest & { peer: { domain: string } }).peer.domain;
   }
 
-  private parseUnsignedBigInt(value: string | undefined, name: string): bigint {
-    if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) {
+  private assertQueryShape(req: FastifyRequest, allowedFields: string[]): void {
+    const query = req.query as Record<string, unknown>;
+    const allowed = new Set(allowedFields);
+    if (
+      !query ||
+      typeof query !== 'object' ||
+      Array.isArray(query) ||
+      Object.keys(query).some((field) => !allowed.has(field)) ||
+      Object.values(query).some((value) => typeof value !== 'string')
+    ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `${name} must be an unsigned decimal integer`,
+        'query contains unknown or repeated fields',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+  }
+
+  private parseCursorBigInt(value: string | undefined, name: string): bigint {
+    if (value === undefined || !/^(0|-?[1-9]\d*)$/.test(value)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a canonical decimal integer`,
         HttpStatus.BAD_REQUEST,
       );
     }
     return BigInt(value);
+  }
+
+  private parsePositiveSafeIntegerQuery(value: string, name: string): number {
+    if (!/^[1-9]\d*$/.test(value)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a canonical positive integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `${name} must be a positive safe integer`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return parsed;
+  }
+
+  private parseOptionalBoolean(
+    value: string | undefined,
+    name: string,
+  ): boolean {
+    if (value === undefined || value === 'false') return false;
+    if (value === 'true') return true;
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      `${name} must be true or false`,
+      HttpStatus.BAD_REQUEST,
+    );
   }
 
   /** GET /s2s/v1/media/:digest — stream a chat-media asset by sha256 digest,

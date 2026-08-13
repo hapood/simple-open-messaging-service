@@ -7,6 +7,7 @@ import {
 } from '../database/database.service.js';
 import {
   group,
+  federationP2PHistoryGrant,
   messageThread,
   threadAudience,
   threadParticipant,
@@ -18,6 +19,7 @@ import {
   ThreadRevisionService,
 } from '../thread-revision/thread-revision.service.js';
 import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
+import { closeFederatedAudienceInTx } from '../federation/federation-audience.js';
 
 /**
  * ThreadParticipant data layer.
@@ -339,14 +341,11 @@ export class ThreadParticipantService {
           FOR UPDATE
         `);
       }
-      // Message writes lock this same row while allocating seq. Taking the lock before mutation makes the
-      // audience boundary an exact cut: prior writes commit before MAX(id), later writes wait and
-      // receive ids outside the closed access epoch.
+      // This is the relationship-write gate, not a feed/audience lock. Message creation already
+      // updates this row to allocate seq and re-checks participant access afterwards. Holding it here
+      // makes an earlier authorized send finish first and a later send observe the closed participant.
       await tx.execute(sql`
-        SELECT id
-        FROM "MessageThread"
-        WHERE id = ${threadId}
-        FOR UPDATE
+        SELECT id FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE
       `);
       const callerHidden = await this.threadRevisionService.isThreadHiddenInTx(
         tx,
@@ -390,6 +389,28 @@ export class ThreadParticipantService {
       }
       const transitioned = ended.length > 0;
       const statePeers: string[] = [];
+      let revokedMessageFeedEndId: bigint | undefined;
+      if (transitioned) {
+        // Local visibility ends immediately. A remote audience is drained and closed by the helper;
+        // its returned feed ID is the exact inclusive delivery boundary carried by REVOKE.
+        await tx.execute(sql`
+          UPDATE "ThreadAudience" audience
+          SET "deliverThroughChangeId" = 0
+          WHERE audience."threadId" = ${threadId}
+            AND audience."targetDomain" = 'local'
+            AND audience."deliverThroughChangeId" IS NULL
+        `);
+        if (peer?.domain && peer.domain !== 'local') {
+          revokedMessageFeedEndId = await closeFederatedAudienceInTx(
+            tx,
+            peer.domain,
+            threadId,
+          );
+        }
+        await tx
+          .delete(federationP2PHistoryGrant)
+          .where(eq(federationP2PHistoryGrant.threadId, threadId));
+      }
       if (transitioned) {
         if (mine && peer) {
           const low = Math.min(callerUserId, peer.userId);
@@ -419,34 +440,30 @@ export class ThreadParticipantService {
             })
             .where(eq(threadParticipant.id, mine.id));
           if (relationshipRev !== undefined && peer.domain !== 'local') {
+            const localDomain = process.env.SOMS_DOMAIN;
+            if (!localDomain)
+              throw new Error('SOMS_DOMAIN is required for federation state');
             await this.stateFeed.writeManyInTx(tx, [
               {
                 peerDomain: peer.domain,
                 account: mine.account,
+                domain: localDomain,
                 subjectAccount: peer.account,
-                eventType: 'P2P_META',
+                subjectDomain: peer.domain,
+                eventType: 'P2P_INTENT',
                 revision: relationshipRev,
                 body: {
-                  status: 'NOT_FRIEND',
+                  status: 'REVOKED',
                   note: '',
                   requestedAt: null,
                   expiresAt: null,
+                  messageFeedEndId: (revokedMessageFeedEndId ?? 0n).toString(),
                 },
               },
             ]);
             statePeers.push(peer.domain);
           }
         }
-      }
-      if (transitioned) {
-        // Keep the row as a closed audience sentinel; federation epoch triggers capture the durable
-        // MessageThread.curSeq boundary independently of this legacy-named field.
-        await tx.execute(sql`
-          UPDATE "ThreadAudience" audience
-          SET "deliverThroughChangeId" = 0
-          WHERE audience."threadId" = ${threadId}
-            AND audience."deliverThroughChangeId" IS NULL
-        `);
       }
       const revisions: PendingThreadRevision[] = [];
       if (shouldDelete) {

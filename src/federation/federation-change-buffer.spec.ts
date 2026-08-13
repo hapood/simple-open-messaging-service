@@ -4,13 +4,12 @@ import {
   type FederationBufferedChange,
 } from './federation-change-buffer.js';
 
-function change(changeId: bigint): FederationBufferedChange {
+function change(feedId: bigint): FederationBufferedChange {
   return {
-    changeId,
-    epochId: 1n,
+    feedId,
     threadId: 2,
-    messageId: changeId + 100n,
-    messageSeq: Number(changeId),
+    messageId: feedId + 100n,
+    messageSeq: Number(feedId),
   };
 }
 
@@ -22,7 +21,7 @@ describe('FederationChangeBuffer', () => {
     expect(buffer.append(change(3n))).toBe(true);
     expect(buffer.append(change(4n))).toBe(false);
     expect(buffer.full).toBe(true);
-    expect(buffer.snapshot().map((entry) => entry.changeId)).toEqual([
+    expect(buffer.snapshot().map((entry) => entry.feedId)).toEqual([
       1n,
       2n,
       3n,
@@ -32,11 +31,11 @@ describe('FederationChangeBuffer', () => {
   it('reads exact retry pages without mutation', () => {
     const buffer = new FederationChangeBuffer(10, 2);
     for (let id = 1n; id <= 5n; id++) buffer.append(change(id));
-    expect(buffer.readAfter(2n, 2).map((entry) => entry.changeId)).toEqual([
+    expect(buffer.readAfter(2n, 2).map((entry) => entry.feedId)).toEqual([
       3n,
       4n,
     ]);
-    expect(buffer.readAfter(2n, 2).map((entry) => entry.changeId)).toEqual([
+    expect(buffer.readAfter(2n, 2).map((entry) => entry.feedId)).toEqual([
       3n,
       4n,
     ]);
@@ -46,14 +45,14 @@ describe('FederationChangeBuffer', () => {
   it('retires acknowledged chunks and accepts new tail entries', () => {
     const buffer = new FederationChangeBuffer(5, 2);
     for (let id = 1n; id <= 5n; id++) buffer.append(change(id));
-    expect(buffer.retireThrough(3n).map((entry) => entry.changeId)).toEqual([
+    expect(buffer.retireThrough(3n).map((entry) => entry.feedId)).toEqual([
       1n,
       2n,
       3n,
     ]);
     expect(buffer.append(change(6n))).toBe(true);
     expect(buffer.append(change(7n))).toBe(true);
-    expect(buffer.snapshot().map((entry) => entry.changeId)).toEqual([
+    expect(buffer.snapshot().map((entry) => entry.feedId)).toEqual([
       4n,
       5n,
       6n,

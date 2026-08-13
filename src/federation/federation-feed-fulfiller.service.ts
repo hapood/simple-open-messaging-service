@@ -9,11 +9,13 @@ import {
 } from './federation-memory-feed.service.js';
 import { FederationCursorService } from './federation-cursor.service.js';
 import { FEDERATION_MEMORY_FEED_ADVANCED } from './federation-memory-feed.events.js';
+import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 
 const MAX_CONCURRENT_PEERS = 4;
+export const FEDERATION_PEER_FILL_QUANTUM = 500;
 
-/** Fair, process-global startup scheduler. Runtime work is driven by transactional PostgreSQL message
- * notifications, active post-commit offers and peer ACKs; FULL/CAUGHT_UP peers are never polled. */
+/** Process-global round-robin scheduler. Each peer gets one bounded scan quantum before unfinished
+ * work returns to the queue tail. Runtime work is event-driven; FULL/CAUGHT_UP peers are not polled. */
 @Injectable()
 export class FederationFeedFulfiller implements OnModuleInit {
   private readonly logger = new Logger(FederationFeedFulfiller.name);
@@ -21,10 +23,12 @@ export class FederationFeedFulfiller implements OnModuleInit {
   private readonly queued = new Set<string>();
   private running = 0;
   private drainScheduled = false;
+  private readonly tombstoneFirst = new Set<string>();
 
   constructor(
     private readonly database: DatabaseService,
     private readonly memoryFeed: FederationMemoryFeedService,
+    private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
     private readonly cursor: FederationCursorService,
     private readonly events: EventEmitter2,
   ) {}
@@ -35,7 +39,10 @@ export class FederationFeedFulfiller implements OnModuleInit {
 
   schedule(peerDomain: string): void {
     if (
-      this.memoryFeed.state(peerDomain) !== FederationFeedFillState.NEEDS_FILL
+      this.memoryFeed.state(peerDomain) !==
+        FederationFeedFillState.NEEDS_FILL &&
+      this.tombstoneFeed.state(peerDomain) !==
+        FederationFeedFillState.NEEDS_FILL
     ) {
       return;
     }
@@ -47,7 +54,12 @@ export class FederationFeedFulfiller implements OnModuleInit {
 
   async fillNow(peerDomain: string): Promise<FederationFeedFillState> {
     this.queued.delete(peerDomain);
-    return this.memoryFeed.fill(peerDomain);
+    const messageState = await this.memoryFeed.fill(peerDomain);
+    const tombstoneState = await this.tombstoneFeed.fill(peerDomain);
+    return messageState === FederationFeedFillState.FULL ||
+      tombstoneState === FederationFeedFillState.FULL
+      ? FederationFeedFillState.FULL
+      : FederationFeedFillState.CAUGHT_UP;
   }
 
   private async scheduleStartupRebuild(): Promise<void> {
@@ -89,10 +101,53 @@ export class FederationFeedFulfiller implements OnModuleInit {
 
   private async fillAndNotify(peerDomain: string): Promise<void> {
     const before = await this.cursor.readAllocatedThrough(peerDomain);
-    await this.memoryFeed.fill(peerDomain);
+    let remaining = FEDERATION_PEER_FILL_QUANTUM;
+    const tombstoneFirst = this.tombstoneFirst.delete(peerDomain);
+    let messageState = this.memoryFeed.state(peerDomain);
+    let tombstoneState = this.tombstoneFeed.state(peerDomain);
+    if (tombstoneFirst) {
+      if (tombstoneState === FederationFeedFillState.NEEDS_FILL) {
+        const tombstones = await this.tombstoneFeed.fillQuantum(
+          peerDomain,
+          remaining,
+        );
+        tombstoneState = tombstones.state;
+        remaining -= tombstones.work;
+      }
+      if (messageState === FederationFeedFillState.NEEDS_FILL) {
+        const messages = await this.memoryFeed.fillQuantum(
+          peerDomain,
+          remaining,
+        );
+        messageState = messages.state;
+      }
+    } else {
+      if (messageState === FederationFeedFillState.NEEDS_FILL) {
+        const messages = await this.memoryFeed.fillQuantum(
+          peerDomain,
+          remaining,
+        );
+        messageState = messages.state;
+        remaining -= messages.work;
+      }
+      if (tombstoneState === FederationFeedFillState.NEEDS_FILL) {
+        const tombstones = await this.tombstoneFeed.fillQuantum(
+          peerDomain,
+          remaining,
+        );
+        tombstoneState = tombstones.state;
+      }
+      this.tombstoneFirst.add(peerDomain);
+    }
     const after = await this.cursor.readAllocatedThrough(peerDomain);
     if (after > before) {
       this.events.emit(FEDERATION_MEMORY_FEED_ADVANCED, { peerDomain });
+    }
+    if (
+      messageState === FederationFeedFillState.NEEDS_FILL ||
+      tombstoneState === FederationFeedFillState.NEEDS_FILL
+    ) {
+      this.schedule(peerDomain);
     }
   }
 }

@@ -6,9 +6,9 @@ import {
 import type { FederationMessageFeedPage } from './federation-message-feed.service.js';
 
 const item = (
-  changeId: string,
+  feedId: string,
 ): FederationMessageFeedPage['messages'][number] => ({
-  changeId,
+  feedId,
   thread: {
     type: 'P2P',
     participants: [
@@ -17,13 +17,12 @@ const item = (
     ],
   },
   author: { account: 'alice', domain: 'local.test' },
-  seq: Number(changeId),
-  originSeq: Number(changeId),
+  seq: Number(feedId),
+  originSeq: Number(feedId),
   contentType: 'PURE_TEXT',
-  content: JSON.stringify({ text: `message ${changeId}` }),
+  content: JSON.stringify({ text: `message ${feedId}` }),
   createdAt: Date.now(),
   updatedAt: Date.now(),
-  isDeleted: false,
   clientMessageId: null,
   assets: [],
 });
@@ -68,7 +67,6 @@ describe('federation message context isolation', () => {
         'group-origin.test',
         {
           scannedThrough: '1',
-          allocatedThrough: '1',
           hasMore: false,
           messages: [item('1')],
         },
@@ -123,7 +121,6 @@ describe('federation message context isolation', () => {
     };
     const page: FederationMessageFeedPage = {
       scannedThrough: '2',
-      allocatedThrough: '2',
       hasMore: false,
       messages: [item('1'), item('2')],
     };
@@ -139,7 +136,6 @@ describe('federation message context isolation', () => {
     expect(resolve).toHaveBeenCalledTimes(2);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('friend/thread is absent'),
-      expect.anything(),
     );
   });
 
@@ -155,6 +151,10 @@ describe('federation message context isolation', () => {
     });
     const malformed = item('1');
     malformed.originSeq = -1;
+    malformed.content = JSON.stringify({
+      text: 'secret-message-body-that-must-not-be-logged',
+    });
+    malformed.author.account = 'attacker\nforged-log-line';
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(
@@ -163,7 +163,6 @@ describe('federation message context isolation', () => {
         'peer.test',
         {
           scannedThrough: '1',
-          allocatedThrough: '1',
           hasMore: false,
           messages: [malformed],
         },
@@ -172,8 +171,12 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('ignored invalid federated message'),
-      expect.anything(),
     );
+    const logged = String(logger.error.mock.calls[0]?.[0]);
+    expect(logged).toContain('contentSha256');
+    expect(logged).toContain('contentBytes');
+    expect(logged).not.toContain('secret-message-body-that-must-not-be-logged');
+    expect(logged).not.toContain('attacker\nforged-log-line');
   });
 
   it.each(['SYSTEM', 'STICKER'])(
@@ -198,7 +201,6 @@ describe('federation message context isolation', () => {
           'peer.test',
           {
             scannedThrough: '1',
-            allocatedThrough: '1',
             hasMore: false,
             messages: [unknown],
           },
@@ -207,7 +209,6 @@ describe('federation message context isolation', () => {
       ).resolves.toEqual([]);
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining('unknown federated message content type'),
-        expect.anything(),
       );
     },
   );

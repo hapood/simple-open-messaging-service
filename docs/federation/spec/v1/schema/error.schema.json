@@ -9,7 +9,7 @@
       "enum": [
         10000, 10001, 10004, 10005, 10999, 50001, 50002, 50003, 50007, 50009,
         50010, 50011, 50012, 50013, 50014, 50015, 50018, 50019, 50020, 50021,
-        70001, 70004, 70007, 70008
+        50022, 50023, 70001, 70004, 70007, 70008
       ]
     },
     "message": { "type": "string" },
@@ -34,14 +34,21 @@
     {
       "properties": {
         "code": { "const": 50019 },
-        "data": { "$ref": "#/$defs/missedCursorInvalidData" }
+        "data": { "$ref": "#/$defs/feedCursorUnavailableData" }
+      },
+      "required": ["data"]
+    },
+    {
+      "properties": {
+        "code": { "const": 50022 },
+        "data": { "$ref": "#/$defs/feedCursorMismatchData" }
       },
       "required": ["data"]
     },
     {
       "properties": {
         "code": {
-          "not": { "enum": [50011, 50013, 50019] }
+          "not": { "enum": [50011, 50013, 50019, 50022] }
         },
         "data": { "type": "null" }
       }
@@ -77,17 +84,24 @@
       },
       "additionalProperties": false
     },
-    "missedCursorInvalidData": {
+    "feedCursorUnavailableData": {
       "type": "object",
-      "required": ["startChangeId", "availableCursor", "allocatedThrough"],
+      "required": ["resumeAfter"],
       "properties": {
-        "startChangeId": {
+        "resumeAfter": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "feedCursorMismatchData": {
+      "type": "object",
+      "required": ["acknowledgedThrough", "lastServedThrough"],
+      "properties": {
+        "acknowledgedThrough": {
           "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },
-        "availableCursor": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
-        },
-        "allocatedThrough": {
+        "lastServedThrough": {
           "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         }
       },

@@ -106,7 +106,7 @@ Healthy 的 `available | degraded | unavailable` 是上述本地状态和查询�
 （MUST NOT）仅按 `available`/`degraded` 标签授权：完整双向认可事实、pinned
 identity、共同版本、policy 和 operation 业务授权均有效时，纯传输 `degraded` peer 仍可以（MAY）发送和接收
 普通数据面。`establishing` peer 只能使用 `recognize`、`healthy` 和按方向开放的
-`feed-revisions`。
+`feed-heads`。
 
 本地 `available` 按下式计算：
 
@@ -168,7 +168,7 @@ operation gate 与 lifecycle 分开计算：
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `recognize`              | bootstrap signed 和对应 admission；不要求已有 lifecycle                                                             |
 | `healthy`                | status signed；失败统一投影为 `unavailable`                                                                         |
-| `feed-revisions`         | 该 signer 方向的 `lightweightInboundReady`                                                                          |
+| `feed-heads`             | 该 signer 方向的 `lightweightInboundReady`                                                                          |
 | 普通 recognized data     | pinned identity、双方 direction confirmation、共同版本、policy 和 operation 业务授权；纯传输 `degraded` 不关闭 gate |
 | 已有活动 call 的终止收敛 | calls.md 定义的现有 binding/tombstone 规则；不得仅因 health cache 降级而阻止                                        |
 
@@ -181,8 +181,8 @@ Recognize 发出后发生 timeout、DNS/TLS/connect failure、响应中断或可
 `degraded` 仅用于已完成双向认可、但当前可达性受损的 peer；握手未收敛使用 `establishing`。
 
 普通 feed、call、user、media 和 forward-bundle operation 使用 protocol.md 的 `recognized signed`
-鉴权上下文，不以本地缓存的 `available` 标签作为协议门禁。本文所说的轻量请求严格指 `feed-revisions`
-revision hint：接收方在发送 Recognize `OK` 前必须（MUST）准备好接收该 signer 的 `feed-revisions`；发送方
+鉴权上下文，不以本地缓存的 `available` 标签作为协议门禁。本文所说的轻量请求严格指 `feed-heads`
+feed-head hint：接收方在发送 Recognize `OK` 前必须（MUST）准备好接收该 signer 的 `feed-heads`；发送方
 只有收到 `OK` 后才可以（MAY）向该方向发送 hint。hint 可丢失且不携带 durable payload，因此这个方向性
 门禁不等于在握手未收敛时开放其他数据面。
 
@@ -257,7 +257,7 @@ serialization，但 digest 和签名必须（MUST）覆盖实际发送的精确 
 
 1. 固定或核对 A 的 root identity。
 2. 提交 `inboundRecognitionConfirmed`，且保留首次确认时间。
-3. 提交 `lightweightInboundReady`，使 A 在收到 `OK` 后立即发送的 `feed-revisions` 不会被尚未就绪的
+3. 提交 `lightweightInboundReady`，使 A 在收到 `OK` 后立即发送的 `feed-heads` 不会被尚未就绪的
    admission gate 拒绝。
 4. 确保反向 `B → A Recognize` 会被执行；崩溃恢复后也必须（MUST）能够继续该工作。
 5. 如果 B 在处理请求前已经存在 `recognizesPeer(A)`，B 必须（MUST）在返回 `OK` 前设置
@@ -295,7 +295,7 @@ B 成功提交 `A → B` 并返回第一次 `OK` 后，开始 `B → A` 前必�
 之前，B 必须（MUST）在一个事务中：
 
 1. 作出并持久化 `recognizesPeer(A)`；验证时使用的 A root 成为固定身份锚。
-2. 准备处理 A 随后可能到达的已授权请求，包括 `feed-revisions` 接收路径所需的状态。
+2. 准备处理 A 随后可能到达的已授权请求，包括 `feed-heads` 接收路径所需的状态。
 3. 设置 `localServiceAvailable`，使 A 随后的有效 Healthy 查询至少能够返回 `degraded`，而不是
    `unavailable`。
 4. 持久记录反向 Recognize 待发送工作，使崩溃不会留下“服务已经准备、但永远不发送反向认可”的状态。
@@ -317,7 +317,7 @@ sequenceDiagram
     A->>B: POST /s2s/v1/recognize {domain: a.example}
     Note over B: 获取 A well-known并验签<br/>原子提交 inboundRecognitionConfirmed<br/>与 lightweightInboundReady
     B-->>A: 200 {ok: true}
-    Note over A: 提交 outboundRecognitionConfirmed<br/>现在可向 B 发送 feed-revisions
+    Note over A: 提交 outboundRecognitionConfirmed<br/>现在可向 B 发送 feed-heads
 
     Note over B: 发送前固定 A root并完成服务准备<br/>Healthy 至少可返回 degraded
     B->>A: POST /s2s/v1/recognize {domain: b.example}

@@ -12,6 +12,7 @@ import { configureApp } from '../src/bootstrap';
 import { DatabaseService } from '../src/database/database.service';
 import {
   forwardBundle,
+  federatedMessageTombstone,
   mediaAsset,
   messageAsset,
   message,
@@ -73,6 +74,40 @@ describe('Media asset garbage collection', () => {
     );
     return { digest, absPath };
   }
+
+  it('lists pending federated deletions without mutating them', async () => {
+    const { threadId, userId } = await seedThreadAndUser();
+    const [pending] = await database.db
+      .insert(federatedMessageTombstone)
+      .values({
+        threadId,
+        creatorId: userId,
+        originSeq: 7,
+        authorityDomain: 'origin.test',
+        sourceDomain: 'origin.test',
+        remoteDeletedId: 42n,
+        type: 'WITHDRAW',
+      })
+      .returning();
+
+    const result = await gc.listPendingFederatedDeletions(0, 20);
+
+    expect(result.list).toContainEqual(
+      expect.objectContaining({
+        id: pending.id.toString(),
+        originSeq: 7,
+        authorityDomain: 'origin.test',
+        sourceDomain: 'origin.test',
+        remoteFeedId: '42',
+        matchedMessage: null,
+      }),
+    );
+    expect(
+      await database.db.query.federatedMessageTombstone.findFirst({
+        where: eq(federatedMessageTombstone.id, pending.id),
+      }),
+    ).toBeDefined();
+  });
 
   it('reaps a READY asset unused by messages or staging', async () => {
     const { digest, absPath } = await seedAsset('gc-orphan');

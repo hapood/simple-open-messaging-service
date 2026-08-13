@@ -63,7 +63,7 @@ GET /s2s/v1/users/:account
 | Query          | 不允许                                             |
 | Request body   | 第 1 节定义的零长度 body                           |
 | Success        | HTTP `200` success data envelope；data 见第 2.2 节 |
-| Business error | HTTP `200 NOT_FOUND`；其他公共错误见第 2.3 节      |
+| Business error | HTTP `200 NOT_FOUND` 或 `200 FEDERATION_PROFILE_NOT_DISCLOSED`；其他公共错误见第 2.3 节 |
 
 `account` 必须（MUST）是 `UserAccount`，不得（MUST NOT）是 `GroupAccount`。请求不得携带 query 或 body。
 该 operation 只解析 publisher 自己域名下的本地用户；请求者不得通过 path、query 或 header 指定另一
@@ -75,7 +75,7 @@ domain。任意已满足 `recognized signed` 的 peer 可以（MAY）查询该�
 成功为 HTTP `200`、`Content-Type: application/json`，`data` 是以下 closed object：
 
 ```ts
-interface UserProfile {
+interface PublicUserCard {
   account: UserAccount;
   domain: Domain;
   displayName: string;
@@ -84,7 +84,6 @@ interface UserProfile {
     w: PositiveSafeInteger;
     h: PositiveSafeInteger;
   };
-  bio: string;
   profileRev: SafeInteger;
 }
 ```
@@ -99,7 +98,6 @@ interface UserProfile {
 | `avatar`      | `null`，或下述 closed avatar object                                                 |
 | `avatar.b64`  | RFC 4648 padded Base64；长度 4–1,048,576 characters；严格解码后必须是非空图片 bytes |
 | `avatar.w/h`  | 各自为 `PositiveSafeInteger`；`w * h <= 16000000`                                   |
-| `bio`         | 0–120 个 Unicode code point                                                         |
 | `profileRev`  | `SafeInteger`；同一用户单调非递减                                                   |
 
 `account` 必须（MUST）等于规范化后的 path account，`domain` 必须（MUST）等于响应签名服务器的逻辑
@@ -108,13 +106,21 @@ authority。`avatar.b64` 是不带 `data:` prefix 的标准 Base64；解码必�
 把声明尺寸用于预分配或展示。`avatar: null` 明确表示没有头像。`profileRev` 是该用户资料的单调非递减修订号；同一
 `account/domain` 的较小或相等 revision 不得（MUST NOT）覆盖 consumer 已提交的较新资料。
 
-未知 data 字段必须（MUST）拒绝。consumer 不得（MUST NOT）根据头像声明尺寸、展示名或 bio 授予身份、
+未知 data 字段必须（MUST）拒绝。consumer 不得（MUST NOT）根据头像声明尺寸或展示名授予身份、
 关系或资源访问权限。
+
+本 operation 是按精确 account 查询的最小公共身份卡，只暴露定位与显示所需的 account、domain、展示名、
+头像和 revision。它不得返回 `bio`、关系方向、所属群、presence、联系方式、删除原因或其他 peer 的可见性
+信息。更完整的好友资料与群成员展示快照只通过 state-feed 在对应可见性成立时发布。v1 不提供模糊用户
+搜索或账号枚举 operation。
 
 ### 2.3 错误与提交
 
 - path account malformed：HTTP `400 FEDERATION_MALFORMED`。
 - 账号不是 publisher 的现存本地用户：HTTP `200 NOT_FOUND`。
+- 用户选择不向当前 peer 展示公开资料：publisher 可以（MAY）返回 HTTP
+  `200 FEDERATION_PROFILE_NOT_DISCLOSED`。为避免暴露账号是否存在，publisher 也可以（MAY）将该结果隐私合并为
+  HTTP `200 NOT_FOUND`；consumer 必须（MUST）接受两种行为，且不得（MUST NOT）据此判定账号是否存在。
 - 公共签名、认可、identity、策略及服务故障：按 errors.md。
 
 重复读取无副作用。consumer 必须（MUST）完整验证 envelope、字段、domain/account binding 与 Base64 后，
@@ -139,7 +145,7 @@ Signature: sig1=:7Sw4YpBdQ16AZg4H90xMjZc3FhFbBfIBmo9L1kEzvIbnUfI5hLNhF2U6bPdFx+V
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"code":0,"message":"successful","data":{"account":"alice","domain":"b.example","displayName":"Alice","avatar":null,"bio":"Available","profileRev":7}}
+{"code":0,"message":"successful","data":{"account":"alice","domain":"b.example","displayName":"Alice","avatar":null,"profileRev":7}}
 ```
 
 带头像的成功响应示例使用一个可严格解码的 1×1 PNG；`b64` 只包含 Base64 payload，不含
@@ -161,7 +167,6 @@ Content-Type: application/json
       "w": 1,
       "h": 1
     },
-    "bio": "Available",
     "profileRev": 8
   }
 }
@@ -207,6 +212,10 @@ GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAcco
 | `toAccount`   | query | 是   | `Account`；P2P 时为签名 peer 的接收者，群聊时为 `GroupAccount`                |
 | `seq`         | query | 是   | `DecimalString` 且数值不超过 `SafeInteger`；精确 outer message 的 `originSeq` |
 | `bundleId`    | query | 否   | 非空、26 字符以内的 opaque string；仅在 digest 来自该转发 closure 时出现      |
+
+Federated media content 不携带可下载 URL。consumer 必须先校验 content 中的显式 digest 与 outer
+`assets` descriptor，再只从 outer `FederatedMessage` 派生本表坐标；不得使用 publisher-local `seq`、
+`feedId`、展示 metadata 或自行猜测的 message 坐标。LINK 的页面 `url` 也不参与本 operation。
 
 query key 的 wire 顺序固定为 `fromAccount`、`fromDomain`、`toAccount`、`seq`、可选 `bundleId`；不得
 （MUST NOT）排序为其他顺序。`seq` 的数值范围是 `0..9007199254740991`。`bundleId` 按 UTF-8 编码后不得
@@ -333,14 +342,14 @@ path 解码后的 `bundleId` 按 UTF-8 编码不得超过 26 bytes，且不得�
 ### 4.2 成功响应与 closure 不变量
 
 成功为 HTTP `200`、`Content-Type: application/json`，`data` 是
-[Message Feed 第 10 节](./message-feed.md#10-forward)定义的 `ForwardWireClosure` closed object。该节列出的
+[Message 第 11 节](./message.md#11-forward)定义的 `ForwardWireClosure` closed object。该节列出的
 closure、bundle、manifest、message、sender、quote、asset 与 `accessContext` 字段、必选性和类型全部适用；
 除这些字段规则外，还必须（MUST）满足：
 
 - `rootBundleId` 必须等于 path `bundleId`，并且在 `bundles[].id` 中恰好出现一次。
 - `bundles[].id` 必须唯一；每个 `manifest.bundleId` 必须等于其 enclosing bundle 的 `id`。
 - `manifest.children` 中的每个 ID 必须在 `bundles` 中恰好解析一次；从 root 可达的 bundle 必须正好等于
-  返回集合，不得存在缺失 child、额外 bundle 或环。
+  返回集合，不得存在缺失 child、额外 bundle、环、重复 child 引用或多 parent child。
 - 每个 `manifestDigest` 必须等于对应 manifest 的 canonical JSON SHA-256；consumer 必须先验证 digest，
   再信任 messages、children 或 assets。
 - `bundles` 最多 500 项；每个 manifest 最多 100 条 message；closure UTF-8 JSON body 最多 2 MiB。
@@ -349,13 +358,14 @@ closure、bundle、manifest、message、sender、quote、asset 与 `accessContex
   `bundles[].depth` 与 `manifest.depth` 必须一致，root depth 不得超过 3。
 - 顶层 `assets` 必须是完整 closure 中资产的去重集合；每个 bundle 的 `assets` 只列出该 bundle manifest
   引用的资产。相同 digest 的 descriptor 必须一致。
+- consumer 通过 outer `ForwardCardContent` 获取 closure 时，所有 manifest 的 message 数之和必须等于
+  card `messageCount`，顶层去重 asset 数必须等于 card `assetCount`；不一致时拒绝整个 closure。
 - `accessContext` 若出现仅供诊断；consumer 不得（MUST NOT）用其中的本地 numeric ID 授权或定位自己的
   thread。
 
-本 operation 的 canonical manifest JSON 固定使用 UTF-8：object key 按 Unicode code point 升序排列且无
-重复；array 保持 wire 顺序；string 使用 JSON escaping；number 使用 JSON 的有限十进制表示；member、冒号
-和逗号之间不加入 whitespace。`manifestDigest` 是这组精确 bytes 的小写十六进制 SHA-256。consumer 不得
-（MUST NOT）直接对收到的、可能带缩进或不同 member 顺序的 response substring 计算 digest。
+canonical manifest 和 `manifestDigest` 唯一按 [Message 第 11.1 节](./message.md#111-manifest-canonicalization-与-digest)
+的 RFC 8785 JCS 规则及固定测试向量计算。consumer 不得（MUST NOT）直接对收到的、可能带缩进或不同
+member 顺序的 response substring 计算 digest。
 
 closure 是不可变 snapshot。对同一 publisher 与 `bundleId` 重复成功读取必须（MUST）返回语义相同、
 digest 相同的 closure。二进制资产不内联，使用第 3 节媒体 operation，并携带同一 `bundleId` 及原
@@ -494,7 +504,7 @@ Content-Type: application/json
 }
 ```
 
-`manifestDigest` 是上述 `manifest` 按 Message Feed 第 10 节 canonical JSON 规则序列化后的真实 SHA-256；
+`manifestDigest` 是上述 `manifest` 按 Message 第 11.1 节 JCS 规则序列化后的真实 SHA-256；
 HTTP 示例为了可读性使用缩进，这些响应 bytes 本身不参与 `manifestDigest`。不可见 bundle 的响应示例：
 
 ```http

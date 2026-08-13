@@ -112,10 +112,10 @@ function semanticValid(schema: string, value: unknown): boolean {
     const page = value as {
       hasMore?: boolean;
       scannedThrough?: string;
-      stateFeedRev?: string;
+      stateFeedEndId?: string;
       items?: Array<{ body?: Record<string, unknown> }>;
     };
-    if (!page.hasMore && page.scannedThrough !== page.stateFeedRev)
+    if (!page.hasMore && page.scannedThrough !== page.stateFeedEndId)
       return false;
     return (page.items ?? []).every(({ body = {} }) => {
       if (body.status !== 'REQUESTED') return true;
@@ -129,47 +129,36 @@ function semanticValid(schema: string, value: unknown): boolean {
   }
   if (schema === 'urn:soms:federation:v1:message-feed') {
     const page = value as {
-      hasMore?: boolean;
       scannedThrough?: string;
-      allocatedThrough?: string;
       messages?: Array<{
+        feedId: string;
         createdAt: number;
         updatedAt: number;
         contentType: string;
         content: string;
       }>;
     };
-    return (
-      (page.hasMore || page.scannedThrough === page.allocatedThrough) &&
-      (page.messages ?? []).every(
-        (message) =>
-          message.updatedAt >= message.createdAt &&
-          parsedContent(message.contentType, message.content) !== null,
-      )
-    );
+    if (page.scannedThrough === undefined) return false;
+    let previous: bigint | undefined;
+    return (page.messages ?? []).every((message) => {
+      const feedId = BigInt(message.feedId);
+      const ordered = previous === undefined || feedId > previous;
+      previous = feedId;
+      return (
+        ordered &&
+        feedId <= BigInt(page.scannedThrough!) &&
+        message.updatedAt >= message.createdAt &&
+        parsedContent(message.contentType, message.content) !== null
+      );
+    });
   }
   if (schema === 'urn:soms:federation:v1:error') {
     const error = value as {
       code?: number;
-      data?: {
-        startChangeId?: string;
-        availableCursor?: string;
-        allocatedThrough?: string;
-      };
+      data?: { resumeAfter?: string };
     };
     if (error.code !== 50019) return true;
-    const { startChangeId, availableCursor, allocatedThrough } =
-      error.data ?? {};
-    if (
-      startChangeId === undefined ||
-      availableCursor === undefined ||
-      allocatedThrough === undefined
-    )
-      return false;
-    return (
-      BigInt(startChangeId) <= BigInt(availableCursor) &&
-      BigInt(availableCursor) <= BigInt(allocatedThrough)
-    );
+    return error.data?.resumeAfter !== undefined;
   }
   return true;
 }
@@ -237,9 +226,10 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'GET /.well-known/soms',
     'POST /s2s/v1/recognize',
     'POST /s2s/v1/healthy',
-    'POST /s2s/v1/feed-revisions',
+    'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
     'GET /s2s/v1/message-feed',
+    'GET /s2s/v1/message-tombstone-feed',
     'POST /s2s/v1/call',
     'GET /s2s/v1/users/:account',
     'GET /s2s/v1/media/:digest',

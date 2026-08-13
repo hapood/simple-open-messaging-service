@@ -10,14 +10,15 @@
 
 - `common.schema.json`：identity、时间、cursor、digest、address 等 Federation 共享类型。
 - `discovery.schema.json`：`/.well-known/soms`，包括多版本 `protocolVersions`。
-- `identity.schema.json`：Recognize、Healthy 与 feed revision hint 的 closed JSON shape。
-- `state-feed.schema.json`：完整 page 与五种 event body。
+- `identity.schema.json`：Recognize、Healthy 与 feed-head hint 的 closed JSON shape。
+- `state-feed.schema.json`：完整 page 与六种 event body。
 - `message-feed.schema.json`：完整 page、outer message、thread 和 asset descriptor。
+- `message-tombstone-feed.schema.json`：撤回/治理删除 page、稳定 target 和 thread identity。
 - `message-content.schema.json`：二次解析后的 11 种 message content。
 - `call.schema.json`：全部 call lifecycle、signal，以及每个 op 的 closed 条件字段集合。
 - `profile.schema.json`、`forward-bundle.schema.json`、`error.schema.json`：其他 JSON operation。
 - `http-parameters.schema.json`：规范化后的 query/path 参数对象。
-- `http-manifest.json`：完整 10-operation surface、鉴权、status、media type 和 Schema 映射。
+- `http-manifest.json`：完整 11-operation surface、鉴权、status、media type 和 Schema 映射。
 - `vectors/valid.json`、`vectors/invalid.json`：正反 JSON 向量。
 - `vectors/http-message-signature.json`：通用固定 Ed25519 HTTP Message Signature 向量。
 - `vectors/call-http-message-signature.json`：完整签名 `/s2s/v1/call` 向量。

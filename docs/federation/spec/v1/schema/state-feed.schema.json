@@ -3,18 +3,24 @@
   "$id": "urn:soms:federation:v1:state-feed",
   "title": "GET /s2s/v1/state-feed response data",
   "$defs": {
-    "avatar": {
+    "profileAvatar": {
       "type": "object",
-      "required": ["digest", "mimeType", "base64"],
+      "required": ["digest", "mimeType", "base64", "width", "height"],
       "properties": {
         "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
         "mimeType": { "type": "string", "minLength": 1 },
-        "base64": { "type": "string" }
+        "base64": { "type": "string", "minLength": 4, "maxLength": 1048576 },
+        "width": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+        },
+        "height": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
+        }
       },
       "additionalProperties": false
     },
-    "intentBaseProperties": {
-      "status": { "enum": ["REQUESTED", "MEMBER", "NOT_MEMBER"] },
+    "intentProperties": {
+      "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
       "note": { "type": "string" },
       "requestedAt": {
         "oneOf": [
@@ -31,23 +37,42 @@
     },
     "profileBody": {
       "type": "object",
-      "required": ["domain", "name", "bio", "avatar", "deleted"],
+      "required": ["displayName", "bio", "avatar", "deleted"],
       "properties": {
-        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
-        "name": { "type": "string" },
+        "displayName": { "type": "string", "minLength": 1 },
         "bio": { "type": "string" },
         "avatar": {
-          "oneOf": [{ "$ref": "#/$defs/avatar" }, { "type": "null" }]
+          "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
         },
         "deleted": { "type": "boolean" }
       },
       "additionalProperties": false
     },
-    "p2pMetaBody": {
+    "memberProfileAvailableBody": {
+      "type": "object",
+      "required": ["availability", "displayName", "avatar"],
+      "properties": {
+        "availability": { "const": "AVAILABLE" },
+        "displayName": { "type": "string", "minLength": 1 },
+        "avatar": {
+          "oneOf": [{ "$ref": "#/$defs/profileAvatar" }, { "type": "null" }]
+        }
+      },
+      "additionalProperties": false
+    },
+    "memberProfileRemovedBody": {
+      "type": "object",
+      "required": ["availability"],
+      "properties": {
+        "availability": { "const": "REMOVED" }
+      },
+      "additionalProperties": false
+    },
+    "p2pIntentBody": {
       "type": "object",
       "required": ["status", "note", "requestedAt", "expiresAt"],
       "properties": {
-        "status": { "enum": ["REQUESTED", "FRIEND", "NOT_FRIEND"] },
+        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
         "note": { "type": "string" },
         "requestedAt": {
           "oneOf": [
@@ -64,11 +89,17 @@
             },
             { "type": "null" }
           ]
+        },
+        "messageFeedEndId": {
+          "$ref": "urn:soms:federation:v1:common#/$defs/signedDecimalString"
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "status": { "const": "REQUESTED" } } },
+          "if": {
+            "properties": { "status": { "const": "REQUESTED" } },
+            "required": ["status"]
+          },
           "then": {
             "properties": {
               "requestedAt": { "type": "integer" },
@@ -76,22 +107,23 @@
             }
           },
           "else": { "properties": { "expiresAt": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "REVOKED" } },
+            "required": ["status"]
+          },
+          "then": { "required": ["messageFeedEndId"] },
+          "else": { "not": { "required": ["messageFeedEndId"] } }
         }
       ],
       "additionalProperties": false
     },
     "groupInviteIntentBody": {
       "type": "object",
-      "required": [
-        "status",
-        "note",
-        "requestedAt",
-        "expiresAt",
-        "owner",
-        "sinceSeq"
-      ],
+      "required": ["status", "note", "requestedAt", "expiresAt", "owner"],
       "properties": {
-        "status": { "enum": ["REQUESTED", "MEMBER", "NOT_MEMBER"] },
+        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
         "note": { "type": "string" },
         "requestedAt": {
           "oneOf": [
@@ -109,16 +141,14 @@
             { "type": "null" }
           ]
         },
-        "owner": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
-        "sinceSeq": {
-          "type": "integer",
-          "minimum": -1,
-          "maximum": 9007199254740991
-        }
+        "owner": { "$ref": "urn:soms:federation:v1:common#/$defs/address" }
       },
       "allOf": [
         {
-          "if": { "properties": { "status": { "const": "REQUESTED" } } },
+          "if": {
+            "properties": { "status": { "const": "REQUESTED" } },
+            "required": ["status"]
+          },
           "then": {
             "properties": {
               "requestedAt": { "type": "integer" },
@@ -134,7 +164,7 @@
       "type": "object",
       "required": ["status", "note", "requestedAt", "expiresAt"],
       "properties": {
-        "status": { "enum": ["REQUESTED", "MEMBER", "NOT_MEMBER"] },
+        "status": { "enum": ["REQUESTED", "ACCEPTED", "REVOKED"] },
         "note": { "type": "string" },
         "requestedAt": {
           "oneOf": [
@@ -155,7 +185,10 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "status": { "const": "REQUESTED" } } },
+          "if": {
+            "properties": { "status": { "const": "REQUESTED" } },
+            "required": ["status"]
+          },
           "then": { "properties": { "requestedAt": { "type": "integer" } } },
           "else": { "properties": { "expiresAt": { "type": "null" } } }
         }
@@ -164,11 +197,23 @@
     },
     "groupMetaBody": {
       "type": "object",
-      "required": ["active", "dissolved", "owner", "members"],
+      "required": [
+        "active",
+        "dissolved",
+        "owner",
+        "membersCanInvite",
+        "members"
+      ],
       "properties": {
         "active": { "type": "boolean" },
         "dissolved": { "type": "boolean" },
-        "owner": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+        "owner": {
+          "oneOf": [
+            { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
+            { "type": "null" }
+          ]
+        },
+        "membersCanInvite": { "type": "boolean" },
         "members": {
           "type": "array",
           "items": {
@@ -176,7 +221,7 @@
             "required": ["account", "domain", "role"],
             "properties": {
               "account": {
-                "$ref": "urn:soms:federation:v1:common#/$defs/account"
+                "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
               },
               "domain": {
                 "$ref": "urn:soms:federation:v1:common#/$defs/domain"
@@ -189,8 +234,17 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "dissolved": { "const": true } } },
-          "then": { "properties": { "active": { "const": false } } }
+          "if": {
+            "properties": { "dissolved": { "const": true } },
+            "required": ["dissolved"]
+          },
+          "then": {
+            "properties": {
+              "active": { "const": false },
+              "owner": { "type": "null" },
+              "members": { "maxItems": 0 }
+            }
+          }
         }
       ],
       "additionalProperties": false
@@ -199,20 +253,24 @@
       "type": "object",
       "required": [
         "account",
+        "domain",
         "eventType",
         "subjectAccount",
+        "subjectDomain",
         "revision",
-        "rev",
+        "feedId",
         "body"
       ],
       "properties": {
         "account": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
+        "domain": { "$ref": "urn:soms:federation:v1:common#/$defs/domain" },
         "eventType": { "type": "string" },
         "subjectAccount": { "type": "string" },
+        "subjectDomain": { "type": "string" },
         "revision": {
           "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
         },
-        "rev": {
+        "feedId": {
           "$ref": "urn:soms:federation:v1:common#/$defs/positiveDecimalString"
         },
         "body": { "type": "object" }
@@ -225,6 +283,7 @@
           "properties": {
             "eventType": { "const": "PROFILE" },
             "subjectAccount": { "const": "" },
+            "subjectDomain": { "const": "" },
             "body": { "$ref": "#/$defs/profileBody" }
           },
           "unevaluatedProperties": false
@@ -232,20 +291,50 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
-            "eventType": { "const": "P2P_META" },
-            "subjectAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
             },
-            "body": { "$ref": "#/$defs/p2pMetaBody" }
+            "eventType": { "const": "MEMBER_PROFILE" },
+            "subjectAccount": { "const": "" },
+            "subjectDomain": { "const": "" },
+            "body": {
+              "oneOf": [
+                { "$ref": "#/$defs/memberProfileAvailableBody" },
+                { "$ref": "#/$defs/memberProfileRemovedBody" }
+              ]
+            }
           },
           "unevaluatedProperties": false
         },
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+            },
+            "eventType": { "const": "P2P_INTENT" },
+            "subjectAccount": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+            },
+            "subjectDomain": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
+            },
+            "body": { "$ref": "#/$defs/p2pIntentBody" }
+          },
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+            },
             "eventType": { "const": "GROUP_INVITE_INTENT" },
             "subjectAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+            },
+            "subjectDomain": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
             },
             "body": { "$ref": "#/$defs/groupInviteIntentBody" }
           },
@@ -254,9 +343,15 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+            },
             "eventType": { "const": "GROUP_JOIN_INTENT" },
             "subjectAccount": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/account"
+              "$ref": "urn:soms:federation:v1:common#/$defs/userAccount"
+            },
+            "subjectDomain": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/domain"
             },
             "body": { "$ref": "#/$defs/groupJoinIntentBody" }
           },
@@ -265,8 +360,12 @@
         {
           "$ref": "#/$defs/itemBase",
           "properties": {
+            "account": {
+              "$ref": "urn:soms:federation:v1:common#/$defs/groupAccount"
+            },
             "eventType": { "const": "GROUP_META" },
             "subjectAccount": { "const": "" },
+            "subjectDomain": { "const": "" },
             "body": { "$ref": "#/$defs/groupMetaBody" }
           },
           "unevaluatedProperties": false
@@ -275,13 +374,13 @@
     }
   },
   "type": "object",
-  "required": ["items", "scannedThrough", "stateFeedRev", "hasMore"],
+  "required": ["items", "scannedThrough", "stateFeedEndId", "hasMore"],
   "properties": {
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
       "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
     },
-    "stateFeedRev": {
+    "stateFeedEndId": {
       "$ref": "urn:soms:federation:v1:common#/$defs/decimalString"
     },
     "hasMore": { "type": "boolean" }

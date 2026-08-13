@@ -1,4 +1,4 @@
-# Federation v1 错误码注册表
+# SOMS Federation v1 错误码注册表
 
 状态：`REVIEW`
 规范性：本文分别定义 S2S HTTP 失败分类、HTTP `200` 业务结果、稳定 `code`、结构化 `data` 和调用方动作。
@@ -96,10 +96,12 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 | 50013 | `FEDERATION_CAPABILITY_DISABLED`          |  200 | 对端策略禁用该业务类别；停止自动重试，等待配置变化。                                                                               |
 | 50014 | `FEDERATION_LOCAL_IDENTITY_LOST`          |  503 | 对端暂时无法安全提供 federation 服务；保留原 pin 并退避重试。                                                                      |
 | 50015 | `FEDERATION_IDENTITY_MISMATCH`            |  409 | Fatal：保留原 pin，记录 identity contradiction 并进入 `halted`；不得（MUST NOT）自动采用新身份。                                   |
-| 50018 | `FEDERATION_MISSED_CONCURRENT`            |  200 | 保持 cursor，短暂退避后从同一 `after` 重试。                                                                                       |
-| 50019 | `FEDERATION_MISSED_CURSOR_INVALID`        |  200 | 不应用 page；验证新 floor 后原子采用 `data.availableCursor`，再从该 cursor 继续。                                                  |
+| 50018 | `FEDERATION_FEED_REQUEST_IN_PROGRESS`     |  200 | 同一 peer/feed 的另一请求尚未完成；保持 cursor，短暂退避后从同一 `after` 重试。                                                    |
+| 50019 | `FEDERATION_FEED_CURSOR_UNAVAILABLE`      |  200 | 不应用 page；验证并原子保存 `data.resumeAfter`，再将它作为下一次请求的 `after`。                                                   |
 | 50020 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` |  409 | Fatal：记录版本原因并进入 `halted`；不得（MUST NOT）透明降级。                                                                     |
 | 50021 | `FEDERATION_RANGE_NOT_SATISFIABLE`        |  416 | 当前单 Range 不可满足；按 media 规则读取 `Content-Range`，不得（MUST NOT）把资源解释为不存在。                                     |
+| 50022 | `FEDERATION_FEED_CURSOR_MISMATCH`         |  200 | 保留本地 cursor；请求值不是 source 已确认或最近服务的位置，停止自动同步并审计调用方 cursor。                                       |
+| 50023 | `FEDERATION_PROFILE_NOT_DISCLOSED`        |  200 | 用户选择不向当前 peer 展示公开资料；停止原样重试。publisher 可改用 `NOT_FOUND` 隐藏账号是否存在。                                 |
 | 70001 | `CALL_NOT_ALLOWED`                        |  200 | 未知 callSid，或隐私合并后的账号、关系、block、租户及呼叫准入失败；终止本次呼叫，不得（MUST NOT）把 peer 置为 degraded。           |
 | 70004 | `CALL_BUSY`                               |  200 | 对端参与者正忙；终止或稍后使用新 `callSid` 发起，不得（MUST NOT）重放同一 incoming frame。                                         |
 | 70007 | `CALL_CANCELLED`                          |  200 | 通话已由 caller 取消；本地收敛为 cancelled，停止媒体、计时器和依赖 frame，不得（MUST NOT）把 peer 置为 degraded。                  |
@@ -116,7 +118,7 @@ HTTP `409` 本身不足以触发 `halted`。只有 `FEDERATION_PEER_BLOCKED`、
 
 ```ts
 interface FederationQuotaExceededData {
-  category: "messages" | "files" | "requests" | "signals";
+  category: 'messages' | 'files' | 'requests' | 'signals';
   // 该 category 当前生效的非负、安全整数上限。
   limit: SafeInteger;
   // 非负整数 delta-seconds；从完整接收响应时开始计算。
@@ -124,23 +126,31 @@ interface FederationQuotaExceededData {
 }
 
 interface FederationCapabilityDisabledData {
-  category: "messages" | "files" | "requests" | "signals";
+  category: 'messages' | 'files' | 'requests' | 'signals';
 }
 
-interface FederationMissedCursorInvalidData {
-  // 均为 protocol.md DecimalString，按任意精度非负十进制整数比较。
-  startChangeId: DecimalString;
-  availableCursor: DecimalString;
-  allocatedThrough: DecimalString;
+interface FederationFeedCursorUnavailableData {
+  // 下一次请求必须原样用作 exclusive `after`。
+  resumeAfter: DecimalString;
+}
+
+interface FederationFeedCursorMismatchData {
+  acknowledgedThrough: DecimalString;
+  lastServedThrough: DecimalString;
 }
 ```
 
 `FEDERATION_QUOTA_EXCEEDED` 必须（MUST）携带 `FederationQuotaExceededData`，其中 `limit >= 0`、
 `retryAfter >= 0`。`FEDERATION_CAPABILITY_DISABLED` 必须（MUST）携带
 `FederationCapabilityDisabledData`。
-`FEDERATION_MISSED_CURSOR_INVALID` 必须（MUST）携带 `FederationMissedCursorInvalidData`，并满足
-`startChangeId <= availableCursor <= allocatedThrough`。consumer 还必须（MUST）验证新的 floor 相对本地已知
-floor 单调前进；任一检查失败都不得（MUST NOT）推进 cursor。
+`FEDERATION_FEED_CURSOR_UNAVAILABLE` 必须（MUST）携带
+`FederationFeedCursorUnavailableData`。省略 `after` 的 bootstrap 可以返回任意当前有效的非负
+`resumeAfter`；携带旧 `after` 时，consumer 还必须验证 `resumeAfter` 严格大于本地已提交 cursor。任一检查失败
+都不得（MUST NOT）推进 cursor。响应不暴露 feed end；排空上界只由 `feed-heads` 提供。
+
+`FEDERATION_FEED_CURSOR_MISMATCH` 适用于三个可靠 feed，必须（MUST）携带
+`FederationFeedCursorMismatchData`，并满足 `acknowledgedThrough <= lastServedThrough`。它不是可采用的新
+floor；consumer 不得将任一响应值写入本地 cursor，除非该值已经等于 consumer 自己持久保存的 cursor。
 
 完整 wire 示例：
 
@@ -157,11 +167,7 @@ Content-Type: application/json
 {
   "code": 50019,
   "message": "requested cursor is below retained floor",
-  "data": {
-    "startChangeId": "101",
-    "availableCursor": "120",
-    "allocatedThrough": "250"
-  }
+  "data": { "resumeAfter": "120" }
 }
 ```
 
@@ -171,16 +177,11 @@ Content-Type: application/json
 {
   "code": 50019,
   "message": "requested cursor is below retained floor",
-  "data": {
-    "startChangeId": "101",
-    "availableCursor": "100",
-    "allocatedThrough": "250"
-  }
+  "data": { "resumeAfter": "100" }
 }
 ```
 
-反例不满足 `startChangeId <= availableCursor`；consumer 必须（MUST）拒绝采用它。该反例用于防止实现只
-检查字段类型而遗漏跨字段不变量。
+假设 consumer 已提交到 `100`，反例的 `resumeAfter` 没有严格前进；consumer 必须（MUST）拒绝采用它。
 
 Federation v1 的业务配额只使用 `data.retryAfter`，不得（MUST NOT）为它发送 HTTP `Retry-After`，以免把业务
 结果误解成 HTTP 可用性失败。该值 malformed 时 consumer 必须（MUST）忽略它并使用本地有上限、带 jitter 的退避。

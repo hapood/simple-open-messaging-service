@@ -79,6 +79,10 @@ export class MessageReportAdminController {
         deletion.threadId,
         deletion.originSeq,
       );
+      void this.federation.signalDeletionOutbound(
+        deletion.threadId,
+        deletion.seq,
+      );
     }
     return result;
   }

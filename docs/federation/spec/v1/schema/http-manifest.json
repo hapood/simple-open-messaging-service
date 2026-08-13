@@ -34,13 +34,13 @@
       "responseSchema": "urn:soms:federation:v1:identity#/$defs/healthResult"
     },
     {
-      "id": "feedRevisions",
+      "id": "feedHeads",
       "method": "POST",
-      "path": "/s2s/v1/feed-revisions",
+      "path": "/s2s/v1/feed-heads",
       "authentication": "lightweight-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
-      "requestSchema": "urn:soms:federation:v1:identity#/$defs/feedRevisionHint"
+      "requestSchema": "urn:soms:federation:v1:identity#/$defs/feedHeadHint"
     },
     {
       "id": "stateFeed",
@@ -58,10 +58,20 @@
       "path": "/s2s/v1/message-feed",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
-      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/feedQuery",
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/messageFeedQuery",
       "responseSchema": "urn:soms:federation:v1:message-feed",
       "responseEnvelope": true,
       "secondaryContentSchema": "urn:soms:federation:v1:message-content"
+    },
+    {
+      "id": "messageTombstoneFeed",
+      "method": "GET",
+      "path": "/s2s/v1/message-tombstone-feed",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:soms:federation:v1:http-parameters#/$defs/tombstoneFeedQuery",
+      "responseSchema": "urn:soms:federation:v1:message-tombstone-feed",
+      "responseEnvelope": true
     },
     {
       "id": "call",

@@ -104,7 +104,7 @@ describe('federated message deletion transaction ordering', () => {
           eq(federatedMessageTombstone.creatorId, creatorId),
           eq(federatedMessageTombstone.originSeq, 7),
         ),
-        columns: { type: true },
+        columns: { type: true, sourceDomain: true },
       });
       const [{ curSeq: seq }] = await tx
         .update(messageThread)
@@ -131,11 +131,21 @@ describe('federated message deletion transaction ordering', () => {
             threadId,
             seq,
             type: tombstone.type,
+            federationSourceDomain: tombstone.sourceDomain,
             updatedAt: new Date(),
           })
           .onConflictDoNothing({
             target: [deletedMessage.threadId, deletedMessage.seq],
           });
+        await tx
+          .delete(federatedMessageTombstone)
+          .where(
+            and(
+              eq(federatedMessageTombstone.threadId, threadId),
+              eq(federatedMessageTombstone.creatorId, creatorId),
+              eq(federatedMessageTombstone.originSeq, 7),
+            ),
+          );
       }
       return created;
     });
@@ -172,7 +182,7 @@ describe('federated message deletion transaction ordering', () => {
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);
-    expect(state.tombstones).toHaveLength(1);
+    expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
     expect(state.logs[0]?.seq).toBe(state.stored?.seq);
     expect(state.cursor?.deletedHwm).toBe(10n);
@@ -195,7 +205,7 @@ describe('federated message deletion transaction ordering', () => {
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);
-    expect(state.tombstones).toHaveLength(1);
+    expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
     expect(state.cursor?.deletedHwm).toBe(11n);
   });
@@ -207,7 +217,7 @@ describe('federated message deletion transaction ordering', () => {
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);
-    expect(state.tombstones).toHaveLength(1);
+    expect(state.tombstones).toHaveLength(0);
     expect(state.logs).toHaveLength(1);
     expect(state.cursor?.deletedHwm).toBe(12n);
   });

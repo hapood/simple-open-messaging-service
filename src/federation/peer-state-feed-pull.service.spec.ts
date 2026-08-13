@@ -3,16 +3,24 @@ import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 
 function page(scannedThrough: string, hasMore = false): PeerStateFeedPage {
-  return { items: [], scannedThrough, stateFeedRev: scannedThrough, hasMore };
+  return {
+    items: [],
+    scannedThrough,
+    stateFeedEndId: scannedThrough,
+    hasMore,
+  };
 }
 
-function harness(remoteHwm = 0n) {
+function harness(committedThrough = 0n) {
   const order: string[] = [];
-  const limit = vi
-    .fn()
-    .mockResolvedValue([
-      { peerDomain: 'peer.test', remoteHwm, updatedAt: new Date() },
-    ]);
+  const limit = vi.fn().mockResolvedValue([
+    {
+      peerDomain: 'peer.test',
+      initialized: true,
+      committedThrough,
+      updatedAt: new Date(),
+    },
+  ]);
   const select = vi.fn(() => ({
     from: vi.fn(() => ({ where: vi.fn(() => ({ limit })) })),
   }));
@@ -29,7 +37,7 @@ function harness(remoteHwm = 0n) {
       ),
       query: {
         peerStateFeedPullCursor: {
-          findFirst: vi.fn().mockResolvedValue({ remoteHwm }),
+          findFirst: vi.fn().mockResolvedValue({ committedThrough }),
         },
       },
     },
@@ -77,15 +85,17 @@ describe('PeerStateFeedPullService atomic page application', () => {
           items: [
             {
               account: 'a',
+              domain: 'peer.test',
               eventType: 'PROFILE',
               subjectAccount: '',
+              subjectDomain: '',
               revision: '1',
-              rev: '2',
+              feedId: '2',
               body: {},
             },
           ],
           scannedThrough: '3',
-          stateFeedRev: '3',
+          stateFeedEndId: '3',
           hasMore: false,
         }),
         apply,

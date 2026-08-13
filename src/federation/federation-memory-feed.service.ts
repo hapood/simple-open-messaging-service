@@ -6,15 +6,18 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Pool, type Notification, type PoolClient } from 'pg';
-import { and, asc, eq, gt, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, lte, ne, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { ContentType } from '../database/enums.js';
 import {
   federatedPeer,
-  federationAudienceEpoch,
+  federationMessageFeedAllocation,
+  federationMessageDelivery,
   federationServeCursor,
-  federationThreadCheckpoint,
   message,
   messageThread,
+  threadAudience,
+  user,
 } from '../database/schema.js';
 import {
   DatabaseService,
@@ -34,6 +37,12 @@ export enum FederationFeedFillState {
   NEEDS_FILL = 'NEEDS_FILL',
   FILLING = 'FILLING',
   FULL = 'FULL',
+}
+
+export interface FederationFeedFillQuantumResult {
+  state: FederationFeedFillState;
+  /** Database scan work consumed by this turn. Empty audience probes count as one unit. */
+  work: number;
 }
 
 class AsyncMutex {
@@ -62,6 +71,7 @@ interface PeerMemoryFeed {
   state: FederationFeedFillState;
   initialized: boolean;
   resetGeneration: number | null;
+  nextAudienceId: bigint | null;
 }
 
 interface OfferResult {
@@ -69,9 +79,15 @@ interface OfferResult {
   advanced: boolean;
 }
 
+interface MessageAllocationCandidate {
+  messageId: bigint;
+  threadId: number;
+  messageSeq: number;
+}
+
 /**
- * Process-local source feed. PostgreSQL stores only reconstruction epochs/checkpoints and the small
- * peer cursor rows; message references remain in bounded chunked buffers until the peer acknowledges.
+ * Process-local cache over durable per-peer allocations. ThreadAudience carries only the current
+ * authorization's scan position. A separate durable delivery ledger authorizes later tombstones.
  */
 @Injectable()
 export class FederationMemoryFeedService
@@ -138,7 +154,20 @@ export class FederationMemoryFeedService
 
   fill(peerDomain: string): Promise<FederationFeedFillState> {
     const peer = this.peer(peerDomain);
-    return peer.mutex.run(() => this.fillInLock(peerDomain, peer));
+    return peer.mutex.run(
+      async () => (await this.fillInLock(peerDomain, peer)).state,
+    );
+  }
+
+  fillQuantum(
+    peerDomain: string,
+    maxWork: number,
+  ): Promise<FederationFeedFillQuantumResult> {
+    if (!Number.isInteger(maxWork) || maxWork < 0) {
+      throw new Error('fill quantum must be a non-negative integer');
+    }
+    const peer = this.peer(peerDomain);
+    return peer.mutex.run(() => this.fillInLock(peerDomain, peer, maxWork));
   }
 
   /** Hold the peer's process lock across cursor validation, durable ACK and response selection. */
@@ -147,7 +176,9 @@ export class FederationMemoryFeedService
   }
 
   fillWhileLocked(peerDomain: string): Promise<FederationFeedFillState> {
-    return this.fillInLock(peerDomain, this.peer(peerDomain));
+    return this.fillInLock(peerDomain, this.peer(peerDomain)).then(
+      (result) => result.state,
+    );
   }
 
   readAfterWhileLocked(
@@ -190,96 +221,9 @@ export class FederationMemoryFeedService
     return peer.mutex.run(async () => {
       const allocatedBefore = peer.buffer.allocatedThrough;
       await this.refreshPeerGenerationInLock(peerDomain, peer);
-      await this.initializeInLock(peerDomain, peer);
-      if (peer.state === FederationFeedFillState.NEEDS_FILL) {
-        await this.fillInLock(peerDomain, peer);
-      }
-      if (peer.buffer.full) {
-        peer.state = FederationFeedFillState.FULL;
-        return {
-          state: peer.state,
-          advanced: peer.buffer.allocatedThrough !== allocatedBefore,
-        };
-      }
-      const [epoch] = await this.database.db
-        .select({
-          id: federationAudienceEpoch.id,
-          acknowledgedSeq: federationThreadCheckpoint.acknowledgedSeq,
-        })
-        .from(federationAudienceEpoch)
-        .innerJoin(
-          federationThreadCheckpoint,
-          eq(federationThreadCheckpoint.epochId, federationAudienceEpoch.id),
-        )
-        .where(
-          and(
-            eq(federationAudienceEpoch.peerDomain, peerDomain),
-            eq(federationAudienceEpoch.threadId, threadId),
-            lte(federationAudienceEpoch.fromSeq, messageSeq),
-            or(
-              isNull(federationAudienceEpoch.throughSeq),
-              sql`${federationAudienceEpoch.throughSeq} >= ${messageSeq}`,
-            ),
-          ),
-        )
-        .orderBy(asc(federationAudienceEpoch.id))
-        .limit(1);
-      if (!epoch) {
-        return {
-          state: peer.state,
-          advanced: peer.buffer.allocatedThrough !== allocatedBefore,
-        };
-      }
-      const loaded = peer.loadedThrough.get(epoch.id) ?? epoch.acknowledgedSeq;
-      if (messageSeq <= loaded) {
-        return {
-          state: peer.state,
-          advanced: peer.buffer.allocatedThrough !== allocatedBefore,
-        };
-      }
-      // Include any predecessor whose post-commit hook was delayed. Per-thread seq makes this scan
-      // commit-safe, and assigning the complete range under the peer mutex prevents overtaking.
-      const rows = await this.database.db
-        .select({
-          messageId: message.id,
-          threadId: message.threadId,
-          messageSeq: message.seq,
-        })
-        .from(message)
-        .where(
-          and(
-            eq(message.threadId, threadId),
-            gt(message.seq, loaded),
-            lte(message.seq, messageSeq),
-            ne(message.contentType, ContentType.SYSTEM),
-          ),
-        )
-        .orderBy(asc(message.seq))
-        .limit(peer.buffer.capacity - peer.buffer.size);
-      const candidates = rows.filter(
-        (row) =>
-          !peer.messageKeys.has(
-            `${epoch.id.toString()}:${row.messageId.toString()}`,
-          ),
-      );
-      const allocated = await this.allocate(peerDomain, candidates.length);
-      for (let index = 0; index < candidates.length; index++) {
-        const row = candidates[index];
-        this.append(peer, {
-          changeId: allocated.first + BigInt(index),
-          epochId: epoch.id,
-          threadId: row.threadId,
-          messageId: row.messageId,
-          messageSeq: row.messageSeq,
-        });
-      }
-      const reached = rows.at(-1)?.messageSeq;
-      if (reached !== undefined) peer.loadedThrough.set(epoch.id, reached);
-      peer.state = peer.buffer.full
-        ? FederationFeedFillState.FULL
-        : reached === messageSeq
-          ? FederationFeedFillState.CAUGHT_UP
-          : FederationFeedFillState.NEEDS_FILL;
+      void threadId;
+      void messageSeq;
+      await this.fillInLock(peerDomain, peer);
       return {
         state: peer.state,
         advanced: peer.buffer.allocatedThrough !== allocatedBefore,
@@ -308,24 +252,15 @@ export class FederationMemoryFeedService
     await this.initializeInLock(peerDomain, peer);
     const acknowledged = peer.buffer
       .snapshot()
-      .filter((entry) => entry.changeId <= through);
-    const byEpoch = new Map<bigint, number>();
-    for (const entry of acknowledged) {
-      if (entry.epochId === 0n) continue;
-      byEpoch.set(
-        entry.epochId,
-        Math.max(byEpoch.get(entry.epochId) ?? -1, entry.messageSeq),
+      .filter((entry) => entry.feedId <= through);
+    await tx
+      .delete(federationMessageFeedAllocation)
+      .where(
+        and(
+          eq(federationMessageFeedAllocation.peerDomain, peerDomain),
+          lte(federationMessageFeedAllocation.feedId, through),
+        ),
       );
-    }
-    for (const [epochId, acknowledgedSeq] of byEpoch) {
-      await tx
-        .update(federationThreadCheckpoint)
-        .set({
-          acknowledgedSeq: sql`GREATEST(${federationThreadCheckpoint.acknowledgedSeq}, ${acknowledgedSeq})`,
-          updatedAt: new Date(),
-        })
-        .where(eq(federationThreadCheckpoint.epochId, epochId));
-    }
     return acknowledged;
   }
 
@@ -358,10 +293,11 @@ export class FederationMemoryFeedService
         buffer: new FederationChangeBuffer(FEDERATION_MEMORY_FEED_CAPACITY),
         mutex: new AsyncMutex(),
         messageKeys: new Set(),
-        loadedThrough: new Map(),
         state: FederationFeedFillState.NEEDS_FILL,
         initialized: false,
         resetGeneration: null,
+        loadedThrough: new Map(),
+        nextAudienceId: null,
       };
       this.peers.set(peerDomain, peer);
     }
@@ -371,20 +307,25 @@ export class FederationMemoryFeedService
   private async fillInLock(
     peerDomain: string,
     peer: PeerMemoryFeed,
-  ): Promise<FederationFeedFillState> {
+    maxWork = Number.MAX_SAFE_INTEGER,
+  ): Promise<FederationFeedFillQuantumResult> {
     try {
       await this.refreshPeerGenerationInLock(peerDomain, peer);
       await this.initializeInLock(peerDomain, peer);
+      await this.syncPersistedAllocationsInLock(peerDomain, peer);
       if (peer.buffer.full) {
         peer.state = FederationFeedFillState.FULL;
-        return peer.state;
+        return { state: peer.state, work: 0 };
       }
+      if (maxWork === 0) return { state: peer.state, work: 0 };
       peer.state = FederationFeedFillState.FILLING;
-      await this.fillEpochsInLock(peerDomain, peer);
+      const result = await this.fillAudiencesInLock(peerDomain, peer, maxWork);
       peer.state = peer.buffer.full
         ? FederationFeedFillState.FULL
-        : FederationFeedFillState.CAUGHT_UP;
-      return peer.state;
+        : result.hasMore
+          ? FederationFeedFillState.NEEDS_FILL
+          : FederationFeedFillState.CAUGHT_UP;
+      return { state: peer.state, work: result.work };
     } catch (error) {
       peer.state = FederationFeedFillState.NEEDS_FILL;
       throw error;
@@ -404,21 +345,18 @@ export class FederationMemoryFeedService
     }
     const threadId = Number(parsed.threadId);
     const messageSeq = Number(parsed.seq);
-    const epochs = await this.database.db
-      .selectDistinct({ peerDomain: federationAudienceEpoch.peerDomain })
-      .from(federationAudienceEpoch)
+    const audiences = await this.database.db
+      .selectDistinct({ peerDomain: threadAudience.targetDomain })
+      .from(threadAudience)
       .where(
         and(
-          eq(federationAudienceEpoch.threadId, threadId),
-          lte(federationAudienceEpoch.fromSeq, messageSeq),
-          or(
-            isNull(federationAudienceEpoch.throughSeq),
-            sql`${federationAudienceEpoch.throughSeq} >= ${messageSeq}`,
-          ),
+          eq(threadAudience.threadId, threadId),
+          isNull(threadAudience.localUserId),
+          isNull(threadAudience.deliverThroughChangeId),
         ),
       );
     await Promise.all(
-      epochs.map(async ({ peerDomain }) => {
+      audiences.map(async ({ peerDomain }) => {
         const result = await this.offerCommittedWithResult(
           peerDomain,
           threadId,
@@ -448,6 +386,49 @@ export class FederationMemoryFeedService
       .where(eq(federationServeCursor.peerDomain, peerDomain))
       .limit(1);
     if (!cursor) throw new Error(`peer ${peerDomain} has no serve cursor`);
+    const allocations = await this.database.db
+      .select({
+        feedId: federationMessageFeedAllocation.feedId,
+        threadId: federationMessageFeedAllocation.threadId,
+        messageId: federationMessageFeedAllocation.messageId,
+        messageSeq: federationMessageFeedAllocation.messageSeq,
+      })
+      .from(federationMessageFeedAllocation)
+      .innerJoin(
+        federationServeCursor,
+        eq(
+          federationServeCursor.peerDomain,
+          federationMessageFeedAllocation.peerDomain,
+        ),
+      )
+      .innerJoin(
+        message,
+        eq(message.id, federationMessageFeedAllocation.messageId),
+      )
+      .where(
+        and(
+          eq(federationMessageFeedAllocation.peerDomain, peerDomain),
+          gt(
+            federationMessageFeedAllocation.feedId,
+            federationServeCursor.acknowledgedThrough,
+          ),
+        ),
+      )
+      .orderBy(asc(federationMessageFeedAllocation.feedId))
+      .limit(peer.buffer.capacity + 1);
+    if (allocations.length > peer.buffer.capacity) {
+      throw new Error(
+        `peer ${peerDomain} has more unacknowledged message allocations than memory capacity`,
+      );
+    }
+    for (const allocation of allocations) {
+      this.append(peer, {
+        feedId: allocation.feedId,
+        threadId: allocation.threadId,
+        messageId: allocation.messageId,
+        messageSeq: allocation.messageSeq,
+      });
+    }
     peer.resetGeneration = cursor.resetGeneration;
     peer.initialized = true;
   }
@@ -471,93 +452,253 @@ export class FederationMemoryFeedService
     peer.buffer.clear();
     peer.messageKeys.clear();
     peer.loadedThrough.clear();
+    peer.nextAudienceId = null;
     peer.state = FederationFeedFillState.NEEDS_FILL;
     peer.initialized = false;
     peer.resetGeneration = null;
   }
 
-  private async fillEpochsInLock(
+  private async syncPersistedAllocationsInLock(
     peerDomain: string,
     peer: PeerMemoryFeed,
   ): Promise<void> {
-    const epochs = await this.database.db
+    if (peer.buffer.full) return;
+    const after = peer.buffer.allocatedThrough ?? 0n;
+    const allocations = await this.database.db
       .select({
-        id: federationAudienceEpoch.id,
-        threadId: federationAudienceEpoch.threadId,
-        fromSeq: federationAudienceEpoch.fromSeq,
-        throughSeq: federationAudienceEpoch.throughSeq,
-        acknowledgedSeq: federationThreadCheckpoint.acknowledgedSeq,
-        currentSeq: messageThread.curSeq,
+        feedId: federationMessageFeedAllocation.feedId,
+        threadId: federationMessageFeedAllocation.threadId,
+        messageId: federationMessageFeedAllocation.messageId,
+        messageSeq: federationMessageFeedAllocation.messageSeq,
       })
-      .from(federationAudienceEpoch)
+      .from(federationMessageFeedAllocation)
       .innerJoin(
-        federationThreadCheckpoint,
-        eq(federationThreadCheckpoint.epochId, federationAudienceEpoch.id),
+        federationServeCursor,
+        eq(
+          federationServeCursor.peerDomain,
+          federationMessageFeedAllocation.peerDomain,
+        ),
       )
+      .where(
+        and(
+          eq(federationMessageFeedAllocation.peerDomain, peerDomain),
+          gt(federationMessageFeedAllocation.feedId, after),
+          gt(
+            federationMessageFeedAllocation.feedId,
+            federationServeCursor.acknowledgedThrough,
+          ),
+        ),
+      )
+      .orderBy(asc(federationMessageFeedAllocation.feedId))
+      .limit(peer.buffer.capacity - peer.buffer.size);
+    allocations.forEach((allocation) => this.append(peer, allocation));
+  }
+
+  private async fillAudiencesInLock(
+    peerDomain: string,
+    peer: PeerMemoryFeed,
+    maxWork: number,
+  ): Promise<{ work: number; hasMore: boolean }> {
+    const groupIdentity = alias(user, 'message_feed_group_identity');
+    const audiences = await this.database.db
+      .select({
+        id: threadAudience.id,
+        threadId: threadAudience.threadId,
+        fromSeq: sql<number>`${threadAudience.messageScannedThroughSeq} + 1`,
+        throughSeq: threadAudience.deliverThroughChangeId,
+        acknowledgedSeq: threadAudience.messageScannedThroughSeq,
+        currentSeq: messageThread.curSeq,
+        groupDomain: groupIdentity.domain,
+      })
+      .from(threadAudience)
       .innerJoin(
         messageThread,
-        eq(messageThread.id, federationAudienceEpoch.threadId),
+        eq(messageThread.id, threadAudience.threadId),
       )
-      .where(eq(federationAudienceEpoch.peerDomain, peerDomain))
-      .orderBy(asc(federationAudienceEpoch.id));
+      .leftJoin(groupIdentity, eq(groupIdentity.id, messageThread.groupUserId))
+      .where(
+        and(
+          eq(threadAudience.targetDomain, peerDomain),
+          isNull(threadAudience.localUserId),
+          isNull(threadAudience.deliverThroughChangeId),
+        ),
+      )
+      .orderBy(asc(threadAudience.id));
 
-    for (const epoch of epochs) {
-      if (peer.buffer.full) return;
-      const loaded = peer.loadedThrough.get(epoch.id) ?? epoch.acknowledgedSeq;
-      const upper = epoch.throughSeq ?? epoch.currentSeq;
+    const startIndex =
+      peer.nextAudienceId === null
+        ? 0
+        : Math.max(
+            0,
+            audiences.findIndex(
+              (audience) => audience.id === peer.nextAudienceId,
+            ),
+          );
+    const ordered = audiences
+      .slice(startIndex)
+      .concat(audiences.slice(0, startIndex));
+    let work = 0;
+    let hasMore = false;
+
+    for (
+      let audienceIndex = 0;
+      audienceIndex < ordered.length;
+      audienceIndex++
+    ) {
+      const audience = ordered[audienceIndex];
+      peer.nextAudienceId =
+        ordered[(audienceIndex + 1) % ordered.length]?.id ?? null;
+      if (peer.buffer.full) return { work, hasMore: true };
+      const loaded =
+        peer.loadedThrough.get(audience.id) ??
+        audience.acknowledgedSeq ??
+        audience.currentSeq;
+      const upper = audience.currentSeq;
       if (loaded >= upper) continue;
-      const take = Math.min(
-        FILL_QUERY_SIZE,
-        peer.buffer.capacity - peer.buffer.size,
-      );
       let cursor = loaded;
       while (cursor < upper && !peer.buffer.full) {
+        if (work >= maxWork) {
+          hasMore = true;
+          break;
+        }
+        const take = Math.min(
+          FILL_QUERY_SIZE,
+          peer.buffer.capacity - peer.buffer.size,
+          maxWork - work,
+        );
         const rows = await this.database.db
           .select({
             messageId: message.id,
             threadId: message.threadId,
             messageSeq: message.seq,
+            contentType: message.contentType,
+            originSeq: message.originSeq,
+            creatorForeigner: user.isForeigner,
           })
           .from(message)
+          .innerJoin(user, eq(user.id, message.creator))
           .where(
             and(
-              eq(message.threadId, epoch.threadId),
+              eq(message.threadId, audience.threadId),
               gt(message.seq, cursor),
               lte(message.seq, upper),
-              ne(message.contentType, ContentType.SYSTEM),
             ),
           )
           .orderBy(asc(message.seq))
-          .limit(Math.min(take, peer.buffer.capacity - peer.buffer.size));
+          .limit(take);
+        work += Math.max(rows.length, 1);
         if (rows.length === 0) {
           cursor = upper;
-          peer.loadedThrough.set(epoch.id, upper);
+          peer.loadedThrough.set(audience.id, upper);
           break;
         }
         const candidates = rows.filter(
           (row) =>
+            row.contentType !== ContentType.SYSTEM &&
+            (audience.groupDomain === null ||
+              audience.groupDomain === 'local' ||
+              (!row.creatorForeigner && row.originSeq === null)) &&
             !peer.messageKeys.has(
-              `${epoch.id.toString()}:${row.messageId.toString()}`,
+              row.messageId.toString(),
             ),
         );
-        const allocated = await this.allocate(peerDomain, candidates.length);
-        for (let index = 0; index < candidates.length; index++) {
-          const row = candidates[index];
+        const allocated = await this.allocateOpenAudienceWhileLocked(
+          peerDomain,
+          audience.id,
+          candidates,
+          rows.at(-1)!.messageSeq,
+        );
+        if (!allocated) break;
+        for (const row of allocated) {
           this.append(peer, {
-            changeId: allocated.first + BigInt(index),
-            epochId: epoch.id,
+            feedId: row.feedId,
             threadId: row.threadId,
             messageId: row.messageId,
             messageSeq: row.messageSeq,
           });
         }
         cursor = rows.at(-1)!.messageSeq;
-        peer.loadedThrough.set(epoch.id, cursor);
+        peer.loadedThrough.set(audience.id, cursor);
+      }
+      if (cursor < upper) hasMore = true;
+      if (work >= maxWork) {
+        hasMore = true;
+        break;
       }
     }
+    return { work, hasMore };
   }
 
-  private async allocate(
+  /** Lock the current audience while assigning IDs and advancing its scan position. Closing the
+   * audience takes the same row lock after draining, so no allocation can cross the revoke boundary. */
+  private async allocateOpenAudienceWhileLocked(
+    peerDomain: string,
+    audienceId: bigint,
+    candidates: readonly MessageAllocationCandidate[],
+    scannedThrough: number,
+  ): Promise<Array<MessageAllocationCandidate & { feedId: bigint }> | null> {
+    return this.database.db.transaction(async (tx) => {
+      const [audience] = await tx
+        .select({ closedAt: threadAudience.deliverThroughChangeId })
+        .from(threadAudience)
+        .where(
+          and(
+            eq(threadAudience.id, audienceId),
+            eq(threadAudience.targetDomain, peerDomain),
+            isNull(threadAudience.localUserId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (!audience || audience.closedAt !== null) return null;
+      let first = 0n;
+      if (candidates.length > 0) {
+        const [allocated] = await tx
+          .update(federationServeCursor)
+          .set({
+            allocatedThrough: sql`${federationServeCursor.allocatedThrough} + ${candidates.length}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(federationServeCursor.peerDomain, peerDomain))
+          .returning({ last: federationServeCursor.allocatedThrough });
+        if (!allocated)
+          throw new Error(`peer ${peerDomain} has no discovery target`);
+        first = allocated.last - BigInt(candidates.length) + 1n;
+      }
+      const rows = candidates.map((candidate, index) => ({
+        ...candidate,
+        feedId: first + BigInt(index),
+      }));
+      if (rows.length > 0)
+        await tx.insert(federationMessageFeedAllocation).values(
+          rows.map((row) => ({
+            peerDomain,
+            feedId: row.feedId,
+            messageId: row.messageId,
+            threadId: row.threadId,
+            messageSeq: row.messageSeq,
+          })),
+        );
+      if (rows.length > 0)
+        await tx
+          .insert(federationMessageDelivery)
+          .values(
+            rows.map((row) => ({
+              peerDomain,
+              messageId: row.messageId,
+            })),
+          )
+          .onConflictDoNothing();
+      await tx
+        .update(threadAudience)
+        .set({ messageScannedThroughSeq: scannedThrough })
+        .where(eq(threadAudience.id, audienceId));
+      return rows;
+    });
+  }
+
+  /** Caller must hold this peer's runExclusive lock. Shared by message and tombstone buffers. */
+  async allocateSharedWhileLocked(
     peerDomain: string,
     count: number,
   ): Promise<{ first: bigint; last: bigint }> {
@@ -589,6 +730,6 @@ export class FederationMemoryFeedService
   }
 
   private messageKey(entry: FederationBufferedChange): string {
-    return `${entry.epochId.toString()}:${entry.messageId.toString()}`;
+    return entry.messageId.toString();
   }
 }

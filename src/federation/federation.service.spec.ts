@@ -423,7 +423,6 @@ describe('FederationService global missed transport', () => {
     const page = {
       messages: [],
       scannedThrough: '9',
-      allocatedThrough: '9',
       hasMore: false,
     };
     const order: string[] = [];
@@ -467,10 +466,9 @@ describe('FederationService global missed transport', () => {
   });
 
   it.each([
-    [-1n, 100],
     [0n, 0],
-    [0n, 201],
     [0n, 1.5],
+    [0n, Number.MAX_SAFE_INTEGER + 1],
   ])(
     'rejects invalid cursor/page input before network I/O',
     async (after, take) => {
