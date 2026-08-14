@@ -225,7 +225,7 @@ describe('per-peer state feed', () => {
           note: 'first',
           revision: 7,
           requestedAt: new Date('2026-01-01T00:00:00Z'),
-          expiresAt: null,
+          expiresAt: new Date('2026-01-08T00:00:00Z'),
         }),
       );
       const before = await database.db.query.groupMembershipRequest.findFirst({

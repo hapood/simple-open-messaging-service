@@ -76,7 +76,10 @@ describe('federated Address friend request without pre-accept stubs', () => {
         note: 'address request',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
-    expect(sent.body.data.inviteId).toMatch(/^f:[1-9]\d*$/);
+    expect(sent.body.data).toEqual({
+      account: 'address-bob',
+      domain: FED_DOMAIN_B,
+    });
 
     const incoming = await vi.waitFor(
       async () => {
@@ -109,7 +112,7 @@ describe('federated Address friend request without pre-accept stubs', () => {
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${bobToken}`)
-      .send({ inviteId: `f:${incoming.id.toString()}` });
+      .send({ account: 'address-alice', domain: FED_DOMAIN_A });
     expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
       BusinessCode.OK,
     );

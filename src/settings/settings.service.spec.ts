@@ -86,6 +86,14 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     await expect(s.isFederationChunkDigestEnabled()).resolves.toBe(false);
   });
 
+  it('defaults ordinary federation HTTP concurrency to global 16 and per-peer 8', async () => {
+    const s = await boot();
+    await expect(s.getFederationHttpLimits()).resolves.toEqual({
+      global: 16,
+      perPeer: 8,
+    });
+  });
+
   it('is unconfigured (null) when the file is malformed', async () => {
     const p = join(dir, 'bad.json');
     writeFileSync(p, '{not json');

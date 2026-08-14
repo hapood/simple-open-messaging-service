@@ -906,6 +906,14 @@
       "save": "保存",
       "saved": "下载并发限制已更新"
     },
+    "federationHttp": {
+      "title": "联邦 HTTP 并发",
+      "desc": "限制普通 S2S 请求的并发；节点间公平排队，附件下载使用独立限制。",
+      "global": "全局并发",
+      "perPeer": "单节点并发",
+      "save": "保存",
+      "saved": "联邦 HTTP 并发限制已更新"
+    },
     "vapid": {
       "title": "Web Push（VAPID）",
       "desc": "向浏览器推送服务认证本服务器的 VAPID 密钥对。存储于数据库，启用/轮换无需重新部署。",

@@ -13,10 +13,7 @@ import {
 } from './federation-protocol.js';
 
 function readSpec(name: string): string {
-  return readFileSync(
-    join(process.cwd(), 'docs', 'federation', 'spec', 'v1', name),
-    'utf8',
-  );
+  return readFileSync(join(process.cwd(), 'spec', 'v1', name), 'utf8');
 }
 
 function readSchema<T = Record<string, unknown>>(name: string): T {

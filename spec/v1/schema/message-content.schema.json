@@ -14,7 +14,7 @@
           "required": ["seq"],
           "properties": {
             "seq": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
             },
             "author": { "type": "string" },
             "body": { "type": "string" },

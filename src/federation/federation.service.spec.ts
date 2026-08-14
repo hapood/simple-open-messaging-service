@@ -66,7 +66,7 @@ function makeStubs() {
     database as never,
     {} as never, // signature
     {
-      waitForRequestSlot: async () => undefined,
+      acquireRequestSlot: async () => () => undefined,
       request: (...args: Parameters<typeof fetch>) => fetch(...args),
     } as never, // discovery
     {} as never, // upload
@@ -287,7 +287,7 @@ describe('FederationService JSON error data', () => {
       signature: { signOutbound: () => Record<string, string> };
       discovery: {
         resolveBase: (domain: string) => Promise<string>;
-        waitForRequestSlot: (domain: string) => Promise<void>;
+        acquireRequestSlot: (domain: string) => Promise<() => void>;
         request: typeof fetch;
       };
       getSigned(path: string, domain: string): Promise<unknown>;
@@ -295,7 +295,7 @@ describe('FederationService JSON error data', () => {
     target.signature = { signOutbound: () => ({}) };
     target.discovery = {
       resolveBase: async () => 'https://peer.test',
-      waitForRequestSlot: async () => undefined,
+      acquireRequestSlot: async () => () => undefined,
       request: (...args) => fetch(...args),
     };
 

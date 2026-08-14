@@ -201,7 +201,7 @@ describe('federated message deletion transaction ordering', () => {
     // the message-before-delete order without relying on a sleep or scheduler timing.
     releaseInsert();
     await expect(inserting).resolves.toMatchObject({ isDeleted: false });
-    await expect(deleting).resolves.toMatchObject({ seq: 0 });
+    await expect(deleting).resolves.toMatchObject({ seq: 1 });
 
     const state = await persistedState();
     expect(state.stored?.isDeleted).toBe(true);

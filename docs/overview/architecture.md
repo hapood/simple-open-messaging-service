@@ -184,7 +184,7 @@ Authentication reuses the same credential as HTTP — the global `SessionAuthGua
 
 ### HELLO handshake
 
-On connect, `SseService` pushes a `HELLO` frame carrying the newest-message cursor, `stateRevision`, and `activeCall`. The state range includes PROFILE, FRIEND_REQUEST, and thread ADD/DELETE entries. HELLO is load-bearing because state catch-up and missed-summary recovery start from durable local cursors.
+On connect, `SseService` pushes a `HELLO` frame carrying the newest-message cursor, `stateRevision`, and `activeCall`. The state range includes PROFILE, CLIENT_STATE, and thread ADD/DELETE entries. HELLO is load-bearing because state catch-up and missed-summary recovery start from durable local cursors.
 
 ### Heartbeat and Liveness
 
@@ -229,7 +229,7 @@ Friend and group requests are stored as independent directed facts:
 - **GROUP**: `GroupMembershipRequest` stores GROUP→USER invitation and USER→GROUP join directions. The
   group origin remains authoritative and activates mirrors through `GROUP_META`.
 
-The friend-request badge is derived from the latest FRIEND_REQUEST operation in the unified state delta versus a per-device seen revision stored in the local account database.
+The friend-request badge is derived from the revision of the latest incoming REQUESTED `P2P_INTENT` in the unified state delta versus a per-device seen revision stored in the local account database.
 
 ### Thread-list versioning
 

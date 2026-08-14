@@ -34,9 +34,9 @@ export function AdminLayout({ children }: { children: ReactNode }) {
         ].join(' ')}
       >
         <div className="flex items-center gap-2 px-2 py-3">
-          {/* Same H mark as the consumer web/app logo, on a violet tile to tell the
-              admin console apart at a glance. favicon.svg is the single brand
-              asset (also wired as the tab icon in index.html). The src must be
+          {/* Same H geometry as the consumer web/app logo, with a violet bubble
+              to tell the admin console apart at a glance. favicon.svg is the
+              Admin brand asset (also wired as the tab icon in index.html). The src must be
               prefixed with BASE_URL: Vite rewrites the <link> in index.html to
               the configured base (/admin/) but does NOT touch string literals in
               JSX, so a bare "/favicon.svg" would 404 in prod (host root serves

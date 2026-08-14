@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { Clock, Download, Globe, Loader2 } from 'lucide-react';
+import { Clock, Download, Globe, Loader2, Network } from 'lucide-react';
 import {
   useNotificationSettings,
   useSetFederationDownloadLimits,
+  useSetFederationHttpLimits,
   useSetOtpTtl,
 } from '@/hooks/use-settings';
 import { useMe } from '@/hooks/use-me';
@@ -34,10 +35,13 @@ export function SettingsPage() {
 
   const setOtpTtl = useSetOtpTtl();
   const setDownloadLimits = useSetFederationDownloadLimits();
+  const setHttpLimits = useSetFederationHttpLimits();
   const [ttlInput, setTtlInput] = useState('');
   const [globalDownloads, setGlobalDownloads] = useState('');
   const [peerDownloads, setPeerDownloads] = useState('');
   const [chunkDigestEnabled, setChunkDigestEnabled] = useState(false);
+  const [globalHttp, setGlobalHttp] = useState('');
+  const [peerHttp, setPeerHttp] = useState('');
   // Sync the TTL input from the server value (initial load + after a save invalidates + refetches).
   useEffect(() => {
     if (typeof data?.otpTtlMinutes === 'number')
@@ -50,6 +54,12 @@ export function SettingsPage() {
       setChunkDigestEnabled(data.federationDownloadLimits.chunkDigestEnabled);
     }
   }, [data?.federationDownloadLimits]);
+  useEffect(() => {
+    if (data?.federationHttpLimits) {
+      setGlobalHttp(String(data.federationHttpLimits.global));
+      setPeerHttp(String(data.federationHttpLimits.perPeer));
+    }
+  }, [data?.federationHttpLimits]);
 
   async function onSaveTtl() {
     const n = Number(ttlInput);
@@ -70,6 +80,18 @@ export function SettingsPage() {
         chunkDigestEnabled,
       });
       toast.success(t('settings.federationDownload.saved'));
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
+
+  async function onSaveHttpLimits() {
+    try {
+      await setHttpLimits.mutateAsync({
+        global: Math.trunc(Number(globalHttp)),
+        perPeer: Math.trunc(Number(peerHttp)),
+      });
+      toast.success(t('settings.federationHttp.saved'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -105,6 +127,66 @@ export function SettingsPage() {
           <span className="text-xs text-muted-foreground">
             {t('settings.identity.envNote')}
           </span>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Network className="size-4" />
+            {t('settings.federationHttp.title')}
+          </CardTitle>
+          <CardDescription>{t('settings.federationHttp.desc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <Label
+              htmlFor="http-global"
+              className="text-xs text-muted-foreground"
+            >
+              {t('settings.federationHttp.global')}
+            </Label>
+            <Input
+              id="http-global"
+              type="number"
+              min={1}
+              max={100}
+              value={globalHttp}
+              onChange={(e) => setGlobalHttp(e.target.value)}
+              className="w-28"
+              disabled={!canEdit}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label
+              htmlFor="http-peer"
+              className="text-xs text-muted-foreground"
+            >
+              {t('settings.federationHttp.perPeer')}
+            </Label>
+            <Input
+              id="http-peer"
+              type="number"
+              min={1}
+              max={100}
+              value={peerHttp}
+              onChange={(e) => setPeerHttp(e.target.value)}
+              className="w-28"
+              disabled={!canEdit}
+            />
+          </div>
+          <Button
+            size="sm"
+            onClick={onSaveHttpLimits}
+            disabled={
+              !canEdit || setHttpLimits.isPending || !globalHttp || !peerHttp
+            }
+          >
+            {setHttpLimits.isPending && (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            {t('settings.federationHttp.save')}
+          </Button>
         </CardContent>
       </Card>
 

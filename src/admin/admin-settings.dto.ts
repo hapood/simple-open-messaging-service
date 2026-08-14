@@ -80,3 +80,17 @@ export class FederationDownloadLimitsDto {
   @IsBoolean()
   chunkDigestEnabled!: boolean;
 }
+
+export class FederationHttpLimitsDto {
+  @ApiProperty({ example: 16, minimum: 1, maximum: 100 })
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  global!: number;
+
+  @ApiProperty({ example: 8, minimum: 1, maximum: 100 })
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  perPeer!: number;
+}

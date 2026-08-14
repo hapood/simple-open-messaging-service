@@ -9,7 +9,7 @@
       "properties": {
         "digest": { "$ref": "urn:soms:federation:v1:common#/$defs/sha256Hex" },
         "bytes": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
         },
         "status": { "enum": ["READY", "DELETED"] }
       },
@@ -35,7 +35,7 @@
         },
         "author": { "$ref": "urn:soms:federation:v1:common#/$defs/address" },
         "seq": {
-          "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
         },
         "originSeq": {
           "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
@@ -75,7 +75,7 @@
               "$ref": "urn:soms:federation:v1:common#/$defs/address"
             },
             "originSeq": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
             }
           },
           "additionalProperties": false

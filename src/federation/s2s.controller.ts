@@ -474,10 +474,10 @@ export class S2sController {
   }
 
   private parseThreadSequence(value: string, name: string): number {
-    if (!/^(?:0|-?[1-9]\d*)$/.test(value)) {
+    if (!/^(?:0|[1-9]\d*)$/.test(value)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `${name} must be a canonical integer`,
+        `${name} must be a canonical non-negative integer`,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -486,13 +486,6 @@ export class S2sController {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         `${name} must be a safe integer`,
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (parsed < -1) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        `${name} must be at least -1`,
         HttpStatus.BAD_REQUEST,
       );
     }

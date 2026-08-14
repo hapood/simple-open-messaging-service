@@ -1,4 +1,4 @@
-import { Component, input, signal, OnDestroy } from '@angular/core';
+import { Component, computed, input, signal, OnDestroy } from '@angular/core';
 import { Subject, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -6,7 +6,11 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
-import { UserService, User } from '../../services/user.service';
+import {
+  FederatedResolveStage,
+  UserService,
+  User,
+} from '../../services/user.service';
 import {
   displayUserAccount,
   displayUserName,
@@ -79,6 +83,10 @@ export class FriendRequestsComponent implements OnDestroy {
    *  instant the resolve settles. An already-trusted domain never sets this: its resolve is fast and
    *  stays on the plain "Searching…" hint. This is a known server-side fact, not a latency guess. */
   readonly connectingDomain = signal<string | null>(null);
+  readonly federationStage = signal<FederatedResolveStage>('DISCOVERING');
+  readonly federationStageKey = computed(
+    () => `friend.federationStage.${this.federationStage()}`,
+  );
   private trustSub: Subscription | undefined;
   private searchSub: Subscription | undefined;
   /** Exact account resolution always yields zero or one row. */
@@ -161,21 +169,25 @@ export class FriendRequestsComponent implements OnDestroy {
     // returns a transient id=0 card plus its Address-based relationship state.
     const runResolve = () => {
       this.searchSub = domain
-        ? this.userService.resolveFederatedUser({ account, domain }).subscribe({
-            next: ({ user, relationship }) => {
-              this.connectingDomain.set(null);
-              this.relationshipStates.set(new Map([[0, relationship]]));
-              this.localResults.set([user]);
-              this.addTabStatus.set(AddTabStatus.SUCCESS);
-            },
-            error: () => {
-              this.connectingDomain.set(null);
-              this.errMsg.set(
-                this.transloco.translate('friend.error.unknownError'),
-              );
-              this.addTabStatus.set(AddTabStatus.ERROR);
-            },
-          })
+        ? this.userService
+            .resolveFederatedUser({ account, domain }, (stage) =>
+              this.federationStage.set(stage),
+            )
+            .subscribe({
+              next: ({ user, relationship }) => {
+                this.connectingDomain.set(null);
+                this.relationshipStates.set(new Map([[0, relationship]]));
+                this.localResults.set([user]);
+                this.addTabStatus.set(AddTabStatus.SUCCESS);
+              },
+              error: () => {
+                this.connectingDomain.set(null);
+                this.errMsg.set(
+                  this.transloco.translate('friend.error.unknownError'),
+                );
+                this.addTabStatus.set(AddTabStatus.ERROR);
+              },
+            })
         : this.userService.resolveUser({ account }).subscribe({
             next: (res) => {
               this.connectingDomain.set(null);
@@ -206,6 +218,7 @@ export class FriendRequestsComponent implements OnDestroy {
         next: (res) => {
           if (res.code === 0 && !res.data!.trusted) {
             this.connectingDomain.set(domain);
+            this.federationStage.set('DISCOVERING');
           }
           runResolve();
         },
@@ -300,6 +313,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.searchSub?.unsubscribe();
     this.searchSub = undefined;
     this.connectingDomain.set(null);
+    this.federationStage.set('DISCOVERING');
   }
 
   /** Cancel button: abort the in-flight search and reset the Add tab to its initial state. */
@@ -316,7 +330,7 @@ export class FriendRequestsComponent implements OnDestroy {
 
   approve(index: number) {
     const req = this.pendingReqList()[index];
-    this.userService.acceptInvite({ inviteId: req.id }).subscribe((res) => {
+    this.userService.acceptInvite(this.inviteAction(req)).subscribe((res) => {
       const reqList = this.pendingReqList();
       if (res.code === 0) {
         // Optimistic "added": keep the row showing "Added" (status 1). Not persisted — next panel open
@@ -346,7 +360,7 @@ export class FriendRequestsComponent implements OnDestroy {
 
   decline(index: number) {
     const req = this.pendingReqList()[index];
-    this.userService.rejectInvite({ inviteId: req.id }).subscribe((res) => {
+    this.userService.rejectInvite(this.inviteAction(req)).subscribe((res) => {
       if (res.code === 0) {
         // Rejected: remove from the pending list (filter by id to avoid index drift).
         this.pendingReqList.set(
@@ -372,7 +386,7 @@ export class FriendRequestsComponent implements OnDestroy {
 
   cancelSent(index: number) {
     const req = this.sentReqList()[index];
-    this.userService.revokeInvite({ inviteId: req.id }).subscribe((res) => {
+    this.userService.revokeInvite(this.inviteAction(req)).subscribe((res) => {
       if (res.code === 0) {
         // Revoked: remove from the sent list (filter by id to avoid index drift).
         this.sentReqList.set(this.sentReqList().filter((r) => r.id !== req.id));
@@ -392,6 +406,14 @@ export class FriendRequestsComponent implements OnDestroy {
         );
       }
     });
+  }
+
+  private inviteAction(req: PendingReq):
+    | { inviteId: string }
+    | { account: string; domain: string } {
+    return req.isForeigner && req.account && req.domain
+      ? { account: req.account, domain: req.domain }
+      : { inviteId: req.id };
   }
 
   /** Incoming invite → pending-row (the peer is the inviter, fromUser). */
@@ -452,7 +474,7 @@ export class FriendRequestsComponent implements OnDestroy {
     if (tab === 2) this.loadOutgoingInvites();
   }
 
-  private loadIncomingInvites() {
+  private async loadIncomingInvites() {
     // Clear the previous snapshot before refreshing so stale requests never remain visible while the
     // newly displayed tab is loading.
     this.pendingReqList.set([]);
@@ -461,51 +483,33 @@ export class FriendRequestsComponent implements OnDestroy {
 
     // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
     // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
-    this.userService.listIncomingInvites().subscribe({
-      next: (res) => {
-        if (res.code !== 0) {
-          this.toPendingErrTxt.set(
-            this.transloco.translate('friend.error.unknownError'),
-          );
-        } else {
-          this.pendingReqList.set(
-            res.data!.map((inv) => this.inviteToPending(inv)),
-          );
-        }
-        this.pendingLoading.set(false);
-      },
-      error: () => {
-        this.toPendingErrTxt.set(
-          this.transloco.translate('friend.error.unknownError'),
-        );
-        this.pendingLoading.set(false);
-      },
-    });
+    try {
+      const invites = await this.userService.listLocalFriendInvites('INCOMING');
+      this.pendingReqList.set(invites.map((inv) => this.inviteToPending(inv)));
+    } catch {
+      this.toPendingErrTxt.set(
+        this.transloco.translate('friend.error.unknownError'),
+      );
+    } finally {
+      this.pendingLoading.set(false);
+    }
   }
 
-  private loadOutgoingInvites() {
+  private async loadOutgoingInvites() {
     this.sentReqList.set([]);
     this.sentErrTxt.set('');
     this.sentLoading.set(true);
 
-    this.userService.listOutgoingInvites().subscribe({
-      next: (res) => {
-        if (res.code !== 0) {
-          this.sentErrTxt.set(
-            this.transloco.translate('friend.error.unknownError'),
-          );
-        } else {
-          this.sentReqList.set(res.data!.map((inv) => this.inviteToSent(inv)));
-        }
-        this.sentLoading.set(false);
-      },
-      error: () => {
-        this.sentErrTxt.set(
-          this.transloco.translate('friend.error.unknownError'),
-        );
-        this.sentLoading.set(false);
-      },
-    });
+    try {
+      const invites = await this.userService.listLocalFriendInvites('OUTGOING');
+      this.sentReqList.set(invites.map((inv) => this.inviteToSent(inv)));
+    } catch {
+      this.sentErrTxt.set(
+        this.transloco.translate('friend.error.unknownError'),
+      );
+    } finally {
+      this.sentLoading.set(false);
+    }
   }
 
   ngOnInit() {

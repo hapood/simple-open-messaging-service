@@ -909,6 +909,14 @@
       "save": "Save",
       "saved": "Download concurrency limits updated"
     },
+    "federationHttp": {
+      "title": "Federation HTTP concurrency",
+      "desc": "Limit ordinary S2S request concurrency with fair peer scheduling. Attachment downloads use separate limits.",
+      "global": "Global concurrency",
+      "perPeer": "Per-peer concurrency",
+      "save": "Save",
+      "saved": "Federation HTTP concurrency limits updated"
+    },
     "vapid": {
       "title": "Web Push (VAPID)",
       "desc": "The VAPID keypair authenticating this server to browser push services. Stored in the database; enabling/rotating requires no redeploy.",

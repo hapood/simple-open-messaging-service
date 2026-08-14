@@ -118,7 +118,9 @@ describe('MessageService.attachMediaStatus', () => {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, isDeleted: false }]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ digest: DIG, isDeleted: false }]),
       },
     };
     const svc = new MessageService(
@@ -160,7 +162,9 @@ describe('MessageService.attachMediaStatus', () => {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, isDeleted: false }]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ digest: DIG, isDeleted: false }]),
       },
     };
     const svc = new MessageService(
@@ -201,7 +205,9 @@ describe('MessageService.attachMediaStatus', () => {
         findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]),
       },
       mediaAsset: {
-        findMany: vi.fn().mockResolvedValue([{ digest: DIG, isDeleted: false }]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ digest: DIG, isDeleted: false }]),
       },
     };
     const svc = new MessageService(
@@ -426,7 +432,7 @@ describe('MessageService.queryMessages quote previews', () => {
 });
 
 describe('MessageService.countUnreadByThread', () => {
-  it('counts from seq 0 for a null watermark and excludes the current user', async () => {
+  it('counts after cursor 0 for a null watermark and excludes the current user', async () => {
     const queryRaw = vi.fn().mockResolvedValue([
       { threadId: 7, unread: 2 },
       { threadId: 8, unread: 0 },

@@ -72,8 +72,13 @@ export class GroupMembershipStateService {
   }> {
     await this.lockPairInTx(tx, params.groupUserId, params.memberUserId);
     const desired = params.requested ? 'REQUESTED' : 'NOT_MEMBER';
+    // Use one application timestamp for both ends of the TTL invariant. PostgreSQL CURRENT_TIMESTAMP
+    // is fixed at transaction start, which can precede an expiresAt computed later in this transaction
+    // and make an exact seven-day request appear a few milliseconds too long.
+    const requestedAt = params.requested ? new Date() : null;
     const expiresAt = params.requested
-      ? (params.expiresAt ?? new Date(Date.now() + GROUP_REQUEST_TTL_MS))
+      ? (params.expiresAt ??
+        new Date(requestedAt!.getTime() + GROUP_REQUEST_TTL_MS))
       : null;
     const written = await tx.execute<RawGroupMembershipRequestState>(sql`
       INSERT INTO "GroupMembershipRequest" (
@@ -83,11 +88,11 @@ export class GroupMembershipStateService {
         ${params.direction}::"GroupMembershipDirection",
         ${desired}::"GroupMembershipRequestStatus",
         ${(params.note ?? '').slice(0, 255)}, 1,
-        ${params.requested ? new Date() : null}, ${expiresAt}, CURRENT_TIMESTAMP)
+        ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("groupUserId", "memberUserId", direction) DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
         revision = "GroupMembershipRequest".revision + 1,
-        "requestedAt" = CASE WHEN EXCLUDED.status = 'REQUESTED' THEN CURRENT_TIMESTAMP
+        "requestedAt" = CASE WHEN EXCLUDED.status = 'REQUESTED' THEN EXCLUDED."requestedAt"
                              ELSE "GroupMembershipRequest"."requestedAt" END,
         "expiresAt" = EXCLUDED."expiresAt", "updatedAt" = CURRENT_TIMESTAMP
       WHERE "GroupMembershipRequest".status IS DISTINCT FROM EXCLUDED.status

@@ -1,6 +1,6 @@
 # Federation v1 资源接口（Resources）
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义 Federation v1 的用户资料、媒体和转发包三个读取 operation。实现必须（MUST）同时遵守：
@@ -204,21 +204,21 @@ GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAcco
 
 参数是 closed set，且具有以下契约：
 
-| 参数          | 位置  | 必选 | grammar 与语义                                                                |
-| ------------- | ----- | ---- | ----------------------------------------------------------------------------- |
-| `digest`      | path  | 是   | `Sha256Hex`；所请求完整资源 bytes 的 SHA-256                                  |
-| `fromAccount` | query | 是   | `UserAccount`；精确消息作者 account                                           |
-| `fromDomain`  | query | 是   | `Domain`；精确消息作者 domain                                                 |
-| `toAccount`   | query | 是   | `Account`；P2P 时为签名 peer 的接收者，群聊时为 `GroupAccount`                |
-| `seq`         | query | 是   | `DecimalString` 且数值不超过 `SafeInteger`；精确 outer message 的 `originSeq` |
-| `bundleId`    | query | 否   | 非空、26 字符以内的 opaque string；仅在 digest 来自该转发 closure 时出现      |
+| 参数          | 位置  | 必选 | grammar 与语义                                                                        |
+| ------------- | ----- | ---- | ------------------------------------------------------------------------------------- |
+| `digest`      | path  | 是   | `Sha256Hex`；所请求完整资源 bytes 的 SHA-256                                          |
+| `fromAccount` | query | 是   | `UserAccount`；精确消息作者 account                                                   |
+| `fromDomain`  | query | 是   | `Domain`；精确消息作者 domain                                                         |
+| `toAccount`   | query | 是   | `Account`；P2P 时为签名 peer 的接收者，群聊时为 `GroupAccount`                        |
+| `seq`         | query | 是   | `PositiveDecimalString` 且数值不超过 `SafeInteger`；精确 outer message 的 `originSeq` |
+| `bundleId`    | query | 否   | 非空、26 字符以内的 opaque string；仅在 digest 来自该转发 closure 时出现              |
 
 Federated media content 不携带可下载 URL。consumer 必须先校验 content 中的显式 digest 与 outer
 `assets` descriptor，再只从 outer `FederatedMessage` 派生本表坐标；不得使用 publisher-local `seq`、
 `feedId`、展示 metadata 或自行猜测的 message 坐标。LINK 的页面 `url` 也不参与本 operation。
 
 query key 的 wire 顺序固定为 `fromAccount`、`fromDomain`、`toAccount`、`seq`、可选 `bundleId`；不得
-（MUST NOT）排序为其他顺序。`seq` 的数值范围是 `0..9007199254740991`。`bundleId` 按 UTF-8 编码后不得
+（MUST NOT）排序为其他顺序。`seq` 的数值范围是 `1..9007199254740991`。`bundleId` 按 UTF-8 编码后不得
 超过 26 bytes，且不得包含 NUL 或 `/`；需要 percent-encoding 的 byte 按传输与安全第 3.1 节处理。
 
 签名者 domain 只能（MUST）来自已验证的 HTTP Message Signature，不在 query 中重复声明。publisher 必须
@@ -385,7 +385,7 @@ FORWARD message 的精确授权坐标。
 | `fromAccount` | outer `FederatedMessage.author.account`                                                                |
 | `fromDomain`  | outer `FederatedMessage.author.domain`                                                                 |
 | `toAccount`   | P2P：outer `thread.participants` 中由 consumer signer domain 托管的账号；GROUP：outer `thread.account` |
-| `seq`         | outer `FederatedMessage.originSeq`，编码为 `DecimalString`                                             |
+| `seq`         | outer `FederatedMessage.originSeq`，编码为 `PositiveDecimalString`                                     |
 | `bundleId`    | outer `ForwardCardContent.bundleId`，且必须等于 closure `rootBundleId`                                 |
 
 `bundleId` 必须始终使用 remote root bundle ID；即使 asset 只由某个 child manifest 引用，也不得（MUST NOT）

@@ -567,7 +567,7 @@ export class ForwardBundleService {
         and(
           inArray(forwardMessage.bundleId, ancestorIds),
           eq(message.isDeleted, false),
-          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, -1)`,
+          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
         ),
       );
     let carrier: { threadId: number; seq: number } | null = null;

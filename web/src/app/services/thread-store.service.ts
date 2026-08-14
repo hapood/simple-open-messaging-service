@@ -494,8 +494,8 @@ export class ThreadRepository {
     const found = this._items().find((t) => t.threadId === threadId);
     if (!found) return false;
     const current = Math.max(
-      found.lastReadSeq ?? -1,
-      this.localStableReadSeq.get(threadId) ?? -1,
+      found.lastReadSeq ?? 0,
+      this.localStableReadSeq.get(threadId) ?? 0,
     );
     if (seq <= current) return false;
     this.noteLocalStableRead(threadId, seq);
@@ -1129,8 +1129,14 @@ export class ThreadRepository {
         // reload would then carry cursor > 0 too.)
         const bulkHydrate = cursor === 0;
         for (const op of delta) {
-          if (op.direction === 'FRIEND_REQUEST') {
-            this.userService.applyFriendRequestStateRevision(op.revision);
+          if (op.direction === 'CLIENT_STATE') {
+            // Persisted atomically by WebdbService. The friend-request dialog reads the compacted
+            // projection on demand, so no additional in-memory mirror is required here.
+            if (
+              op.body.status === 'REQUESTED' &&
+              op.body.subject.id === this.userService.sessionUserId()
+            )
+              this.userService.applyFriendRequestStateRevision(op.revision);
           } else if (op.direction === 'PROFILE') {
             this.userService.applyStateProfile(op.user);
             this.applyPeerProfile(op.user);

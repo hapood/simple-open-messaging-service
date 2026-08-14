@@ -23,8 +23,10 @@ import {
   GenerateVapidDto,
   OtpTtlDto,
   FederationDownloadLimitsDto,
+  FederationHttpLimitsDto,
 } from './admin-settings.dto.js';
 import { FederationDownloadScheduler } from '../federation/federation-download-scheduler.js';
+import { FederationHttpScheduler } from '../federation/federation-http-scheduler.js';
 
 /**
  * Admin-managed runtime settings — the DB-backed "Settings" console page. Today this is the Web Push
@@ -50,6 +52,7 @@ export class AdminSettingsController {
     private readonly settings: SettingsService,
     private readonly pushService: PushService,
     private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly httpScheduler: FederationHttpScheduler,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -60,10 +63,16 @@ export class AdminSettingsController {
       'Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain',
   })
   async getNotifications() {
-    const [vapid, otpTtlMinutes, federationDownloadLimits] = await Promise.all([
+    const [
+      vapid,
+      otpTtlMinutes,
+      federationDownloadLimits,
+      federationHttpLimits,
+    ] = await Promise.all([
       this.settings.getVapidDescriptor(),
       this.settings.getOtpTtlMinutes(),
       this.settings.getFederationDownloadLimits(),
+      this.settings.getFederationHttpLimits(),
     ]);
     return {
       vapid,
@@ -72,7 +81,19 @@ export class AdminSettingsController {
       somsDomain: this.settings.somsDomain,
       otpTtlMinutes,
       federationDownloadLimits,
+      federationHttpLimits,
     };
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('settings.federation-http.save')
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/settings/federation-http')
+  async setFederationHttpLimits(@Body() dto: FederationHttpLimitsDto) {
+    await this.settings.setFederationHttpLimits(dto.global, dto.perPeer);
+    this.httpScheduler.invalidateLimits();
+    return { global: dto.global, perPeer: dto.perPeer };
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

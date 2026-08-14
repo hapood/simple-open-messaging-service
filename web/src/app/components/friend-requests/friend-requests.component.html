@@ -107,6 +107,7 @@
       />
       <button
         mat-flat-button
+        color="primary"
         class="search-btn"
         type="submit"
         [disabled]="
@@ -136,13 +137,13 @@
         @case (AddTabStatus.SEARCHING) {
           @if (connectingDomain(); as dom) {
             <div class="connecting-banner">
-              <app-icon
-                [type]="AppIconType.GLOBE"
-                [style]="{ width: '18px', height: '18px' }"
-              ></app-icon>
-              <span class="connecting-text">{{
-                'friend.connecting' | transloco: { domain: dom }
-              }}</span>
+              <span class="connecting-pulse" aria-hidden="true"></span>
+              <span class="connecting-copy">
+                <span class="connecting-text">{{
+                  federationStageKey() | transloco: { domain: dom }
+                }}</span>
+                <span class="connecting-domain">{{ dom }}</span>
+              </span>
               <button
                 mat-button
                 class="connecting-cancel"

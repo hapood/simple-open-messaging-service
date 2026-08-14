@@ -8,6 +8,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { systemSetting } from '../database/schema.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { federationDownloadSettingKeys } from '../federation/federation-download-scheduler.js';
+import { federationHttpSettingKeys } from '../federation/federation-http-scheduler.js';
 import {
   type VapidConfig,
   type VapidHealthReport,
@@ -151,6 +152,41 @@ export class SettingsService implements OnModuleInit {
       perPeer: this.parseBoundedInt(peerRow?.value, 2, 1, 100),
       chunkDigestEnabled: chunkDigestRow?.value === 'true',
     };
+  }
+
+  async getFederationHttpLimits(): Promise<{
+    global: number;
+    perPeer: number;
+  }> {
+    const [globalRow, peerRow] = await Promise.all([
+      this.findSetting(federationHttpSettingKeys.globalLimit),
+      this.findSetting(federationHttpSettingKeys.peerLimit),
+    ]);
+    return {
+      global: this.parseBoundedInt(globalRow?.value, 16, 1, 100),
+      perPeer: this.parseBoundedInt(peerRow?.value, 8, 1, 100),
+    };
+  }
+
+  async setFederationHttpLimits(
+    global: number,
+    perPeer: number,
+  ): Promise<void> {
+    await this.database.db.transaction(async (tx) => {
+      const updatedAt = new Date();
+      for (const [key, value] of [
+        [federationHttpSettingKeys.globalLimit, global],
+        [federationHttpSettingKeys.peerLimit, perPeer],
+      ] as const) {
+        await tx
+          .insert(systemSetting)
+          .values({ key, value: String(value), updatedAt })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: String(value), updatedAt },
+          });
+      }
+    });
   }
 
   async isFederationChunkDigestEnabled(): Promise<boolean> {

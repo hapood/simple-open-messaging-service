@@ -1,6 +1,6 @@
 # SOMS Federation Protocol v1
 
-- 状态：`REVIEW`
+- 状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 - 协议标识：`1`
 - S2S API 前缀：`/s2s/v1`
 
@@ -25,7 +25,7 @@ Federation v1 的规范性要求由本文及其明确引用的 [传输与安全]
 选择较宽松的解释。
 
 `schema/` 中的 JSON Schema、HTTP manifest 和向量在 v1 文档收敛期间是验证制品，不能覆盖
-规范性正文。发布 `FINAL` 前，必须（MUST）将其与正文逐字段对齐，并由 conformance 检查
+规范性正文。发布 `v1.0 FINAL` 前，必须（MUST）将其与正文逐字段对齐，并由 conformance 检查
 防止漂移。
 
 ## 1. 范围、角色与术语（Scope, Roles, and Terminology）
@@ -43,6 +43,8 @@ Federation v1 的规范性要求由本文及其明确引用的 [传输与安全]
 - **权威分发（authoritative distribution）**：群 origin 把已接受的群事实直接发布给持有该群 mirror 的
   peer。它不是任意 peer 间的 relay，也不存在 mirror-to-mirror 的下一跳。
 - **发布方（publisher）**：在某个操作或同步方向中提供源（feed）、资源或权威状态的服务器。
+- **源节点（source）**：在 feed 或 query 语境下承担发布方角色的服务器。`source` 不是另一种身份或
+  信任角色；离开 feed/query 语境时使用 `publisher`。
 - **消费方（consumer）**：在某个操作或同步方向中请求、验证并提交发布方数据的服务器。同一服务器在
   不同操作或相反同步方向中可以（MAY）同时承担发布方和消费方。
 
@@ -53,7 +55,8 @@ Federation v1 的数据平面采用固定权威拓扑：P2P authored message/wit
 - **持久事实（durable fact）**：由服务器持久保存的业务事实，例如关系方向、群成员名册快照或消息副本。
   它的正确性和生命周期由业务状态决定，不依赖修订提示是否送达。
 - **持久变更（durable change）**：发布方为特定对等节点持久分配、用于发现或同步持久事实的有序源记录。
-  它拥有源修订号（source revision），并按游标、确认和保留规则提供；删除变更不等于删除对应的持久事实。
+  它拥有源修订号（source revision），并按 cursor 和压缩投影规则提供。读取不是确认（ACK）；删除源记录
+  也不等于删除对应的持久事实。
 - **Feed-head 提示（feed-head hint）**：携带一致的 feed inclusive 终点，只负责唤醒消费方，可丢失。
 - **游标（cursor）**：消费方已安全提交的源修订号；不能因提示或失败响应提前推进。
 - **重置（reset）**：管理员授权的破坏性身份生命周期；普通断线或 DNS 变化不属于重置。
@@ -379,9 +382,11 @@ hint 或普通消息 payload。
 - `messageEndSeq` / `tombstoneEndSeq`：某个 thread 可查询内容的 inclusive 上界；它们分属两个
   thread-local 坐标空间，不是 feed ID。
 
-feed cursor/end 使用非负十进制字符串，item ID 使用正整数字符串。`0` 可作为第一个 item 之前的
-exclusive cursor，但不是 item ID。SOMS 新 feed 从 `after=0` 开始；其他实现可在 bootstrap 时返回自己的
-非负 `resumeAfter`。
+feed 和 thread query 的 cursor/end 使用非负十进制字符串，item ID 与业务 sequence 使用正整数。
+`0` 表示第一个合法 ID 或 sequence 之前的 exclusive cursor，本身不是 item ID 或业务 sequence。
+实现可以（MAY）从大于 `1` 的值开始分配，也可以（MAY）保留空洞；只要已分配的值严格增加、永不复用，
+并且 bootstrap `resumeAfter` 不会使 consumer 漏掉当前应可见的数据。SOMS 新 feed 和 thread query 从
+`after=0` 开始；其他实现可以（MAY）返回满足上述条件的其他非负 `resumeAfter`。
 
 ### 9.2 通用 Feed 规则
 

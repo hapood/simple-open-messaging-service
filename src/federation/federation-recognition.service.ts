@@ -15,12 +15,24 @@ import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { SignatureService } from './signature.service.js';
 
 export type FederationHealthStatus = 'available' | 'degraded' | 'unavailable';
+export type FederationRecognitionStage =
+  | 'DISCOVERING'
+  | 'VERIFYING_IDENTITY'
+  | 'CONNECTING'
+  | 'WAITING_FOR_PEER';
 
 @Injectable()
 export class FederationRecognitionService {
   private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationRecognitionService.name);
   private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly progress = new Map<
+    string,
+    {
+      latest: FederationRecognitionStage;
+      listeners: Set<(stage: FederationRecognitionStage) => void>;
+    }
+  >();
 
   constructor(
     private readonly database: DatabaseService,
@@ -36,9 +48,46 @@ export class FederationRecognitionService {
     if (existing) return existing;
     const run = this.runRecognize(domain).finally(() => {
       if (this.inFlight.get(domain) === run) this.inFlight.delete(domain);
+      this.progress.delete(domain);
     });
     this.inFlight.set(domain, run);
     return run;
+  }
+
+  /** Observe the domain-level bootstrap only. A re-entrant caller immediately receives the latest
+   * stage of an already-running recognition, while account lookup/result data remains request-local. */
+  subscribeProgress(
+    peerDomain: string,
+    listener: (stage: FederationRecognitionStage) => void,
+  ): () => void {
+    const domain = this.normalizeDomain(peerDomain);
+    let state = this.progress.get(domain);
+    if (!state) {
+      state = { latest: 'DISCOVERING', listeners: new Set() };
+      this.progress.set(domain, state);
+    }
+    state.listeners.add(listener);
+    listener(state.latest);
+    return () => {
+      state?.listeners.delete(listener);
+      if (state?.listeners.size === 0 && !this.inFlight.has(domain)) {
+        this.progress.delete(domain);
+      }
+    };
+  }
+
+  private publishProgress(
+    domain: string,
+    stage: FederationRecognitionStage,
+  ): void {
+    let state = this.progress.get(domain);
+    if (!state) {
+      state = { latest: stage, listeners: new Set() };
+      this.progress.set(domain, state);
+    } else {
+      state.latest = stage;
+    }
+    for (const listener of state.listeners) listener(stage);
   }
 
   async recover(peerDomain: string): Promise<void> {
@@ -74,56 +123,60 @@ export class FederationRecognitionService {
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/healthy`);
     const body = JSON.stringify({ domain: this.config.domain });
-    await this.discovery.waitForRequestSlot(domain);
-    const headers = await this.signature.signOutbound({
-      method: 'POST',
-      url,
-      body,
-    });
-    let response: Response;
+    const release = await this.discovery.acquireRequestSlot(domain);
     try {
-      response = await this.discovery.request(url, {
+      const headers = await this.signature.signOutbound({
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
+        url,
         body,
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
-    } catch (error) {
-      await this.markTransportDegraded(
-        domain,
-        `Healthy network/timeout: ${(error as Error).message}`,
-      );
-      throw error;
-    }
-    if (response.status !== 200) {
-      if (response.status === HttpStatus.SERVICE_UNAVAILABLE) {
-        await this.markTransportDegraded(domain, 'Healthy HTTP 503');
+      let response: Response;
+      try {
+        response = await this.discovery.request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body,
+          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        });
+      } catch (error) {
+        await this.markTransportDegraded(
+          domain,
+          `Healthy network/timeout: ${(error as Error).message}`,
+        );
+        throw error;
       }
-      throw new Error(`Healthy ${domain} returned HTTP ${response.status}`);
+      if (response.status !== 200) {
+        if (response.status === HttpStatus.SERVICE_UNAVAILABLE) {
+          await this.markTransportDegraded(domain, 'Healthy HTTP 503');
+        }
+        throw new Error(`Healthy ${domain} returned HTTP ${response.status}`);
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        value = undefined;
+      }
+      const status =
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === 1 &&
+        ['available', 'degraded', 'unavailable'].includes(
+          String((value as { status?: unknown }).status),
+        )
+          ? ((value as { status: FederationHealthStatus })
+              .status as FederationHealthStatus)
+          : undefined;
+      if (!status) {
+        await this.markTransportDegraded(domain, 'Healthy malformed response');
+        throw new Error(`Healthy ${domain} returned malformed response`);
+      }
+      await this.applyHealthResult(domain, status);
+      return status;
+    } finally {
+      release();
     }
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch {
-      value = undefined;
-    }
-    const status =
-      value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      Object.keys(value).length === 1 &&
-      ['available', 'degraded', 'unavailable'].includes(
-        String((value as { status?: unknown }).status),
-      )
-        ? ((value as { status: FederationHealthStatus })
-            .status as FederationHealthStatus)
-        : undefined;
-    if (!status) {
-      await this.markTransportDegraded(domain, 'Healthy malformed response');
-      throw new Error(`Healthy ${domain} returned malformed response`);
-    }
-    await this.applyHealthResult(domain, status);
-    return status;
   }
 
   async acceptInbound(domain: string, doc: WellKnownDoc): Promise<void> {
@@ -141,6 +194,15 @@ export class FederationRecognitionService {
         return true;
       }
       const now = new Date();
+      const next = {
+        ...peer,
+        identityPinnedAt: peer?.identityPinnedAt ?? now,
+        inboundRecognitionConfirmed: true,
+        lightweightInboundReady: true,
+        localServiceAvailable:
+          peer?.localServiceAvailable || peer?.recognizesPeer || false,
+      };
+      const trustLevel = this.lifecycle(next);
       await tx
         .insert(tables.federatedPeer)
         .values({
@@ -166,14 +228,11 @@ export class FederationRecognitionService {
             localServiceAvailable:
               peer?.localServiceAvailable || peer?.recognizesPeer || false,
             reverseRecognitionPending: !peer?.outboundRecognitionConfirmed,
-            trustLevel: this.lifecycle({
-              ...peer,
-              identityPinnedAt: peer?.identityPinnedAt ?? now,
-              inboundRecognitionConfirmed: true,
-              lightweightInboundReady: true,
-              localServiceAvailable:
-                peer?.localServiceAvailable || peer?.recognizesPeer || false,
-            }),
+            trustLevel,
+            trustedAt:
+              trustLevel === 'available'
+                ? (peer?.trustedAt ?? now)
+                : peer?.trustedAt,
           },
         });
       await this.initializePeerInTx(tx, normalized);
@@ -255,6 +314,7 @@ export class FederationRecognitionService {
         ...peer,
         remoteServiceReachable: true,
       };
+      const trustLevel = this.lifecycle(next);
       await tx
         .update(tables.federatedPeer)
         .set({
@@ -262,7 +322,11 @@ export class FederationRecognitionService {
           lastSuccessAt: now,
           degradedAt: null,
           degradationReason: null,
-          trustLevel: this.lifecycle(next),
+          trustLevel,
+          trustedAt:
+            trustLevel === 'available'
+              ? (peer.trustedAt ?? now)
+              : peer.trustedAt,
         })
         .where(eq(tables.federatedPeer.domain, normalized));
     });
@@ -279,17 +343,23 @@ export class FederationRecognitionService {
         peer.resetInProgress
       )
         return;
+      const now = new Date();
+      const trustLevel = this.lifecycle({
+        ...peer,
+        remoteServiceReachable: true,
+      });
       await tx
         .update(tables.federatedPeer)
         .set({
           remoteServiceReachable: true,
-          lastSuccessAt: new Date(),
+          lastSuccessAt: now,
           degradedAt: null,
           degradationReason: null,
-          trustLevel: this.lifecycle({
-            ...peer,
-            remoteServiceReachable: true,
-          }),
+          trustLevel,
+          trustedAt:
+            trustLevel === 'available'
+              ? (peer.trustedAt ?? now)
+              : peer.trustedAt,
         })
         .where(eq(tables.federatedPeer.domain, normalized));
     });
@@ -340,74 +410,89 @@ export class FederationRecognitionService {
   }
 
   private async runRecognize(domain: string): Promise<void> {
+    this.publishProgress(domain, 'DISCOVERING');
+    await this.discovery.resolveBase(domain);
+    this.publishProgress(domain, 'VERIFYING_IDENTITY');
     const doc = await this.discovery.fetchWellKnown(domain);
     await this.prepareOutbound(domain, doc);
     await this.discovery.cacheDocument(domain, doc);
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
     const body = JSON.stringify({ domain: this.config.domain });
-    await this.discovery.waitForRequestSlot(domain);
-    const headers = await this.signature.signOutbound({
-      method: 'POST',
-      url,
-      body,
-    });
-    let response: Response;
+    const release = await this.discovery.acquireRequestSlot(domain);
     try {
-      response = await this.discovery.request(url, {
+      const headers = await this.signature.signOutbound({
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
+        url,
         body,
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
-    } catch (error) {
-      await this.markTransportDegraded(
-        domain,
-        `Recognize network/timeout: ${(error as Error).message}`,
-      );
-      throw error;
-    }
-    if (response.status !== 200)
-      await this.handleRecognizeHttpFailure(domain, response);
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch {
-      value = undefined;
-    }
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      Array.isArray(value) ||
-      Object.keys(value).length !== 1 ||
-      (value as { ok?: unknown }).ok !== true
-    ) {
-      await this.markTransportDegraded(domain, 'Recognize malformed OK');
-      throw new Error(`Recognize ${domain} returned malformed OK`);
-    }
-    await this.database.db.transaction(async (tx) => {
-      const peer = await this.lockPeer(tx, domain);
-      if (!peer) return;
-      const now = new Date();
-      await tx
-        .update(tables.federatedPeer)
-        .set({
+      let response: Response;
+      this.publishProgress(domain, 'CONNECTING');
+      try {
+        response = await this.discovery.request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body,
+          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        });
+      } catch (error) {
+        await this.markTransportDegraded(
+          domain,
+          `Recognize network/timeout: ${(error as Error).message}`,
+        );
+        throw error;
+      }
+      if (response.status !== 200)
+        await this.handleRecognizeHttpFailure(domain, response);
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        value = undefined;
+      }
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value) ||
+        Object.keys(value).length !== 1 ||
+        (value as { ok?: unknown }).ok !== true
+      ) {
+        await this.markTransportDegraded(domain, 'Recognize malformed OK');
+        throw new Error(`Recognize ${domain} returned malformed OK`);
+      }
+      await this.database.db.transaction(async (tx) => {
+        const peer = await this.lockPeer(tx, domain);
+        if (!peer) return;
+        const now = new Date();
+        const next = {
+          ...peer,
           outboundRecognitionConfirmed: true,
-          outboundRecognizedAt: peer.outboundRecognizedAt ?? now,
           remoteServiceReachable: true,
           reverseRecognitionPending: false,
-          lastSuccessAt: now,
-          degradedAt: null,
-          degradationReason: null,
-          trustLevel: this.lifecycle({
-            ...peer,
+        };
+        const trustLevel = this.lifecycle(next);
+        await tx
+          .update(tables.federatedPeer)
+          .set({
             outboundRecognitionConfirmed: true,
+            outboundRecognizedAt: peer.outboundRecognizedAt ?? now,
             remoteServiceReachable: true,
             reverseRecognitionPending: false,
-          }),
-        })
-        .where(eq(tables.federatedPeer.domain, domain));
-    });
+            lastSuccessAt: now,
+            degradedAt: null,
+            degradationReason: null,
+            trustLevel,
+            trustedAt:
+              trustLevel === 'available'
+                ? (peer.trustedAt ?? now)
+                : peer.trustedAt,
+          })
+          .where(eq(tables.federatedPeer.domain, domain));
+      });
+    } finally {
+      release();
+    }
+    this.publishProgress(domain, 'WAITING_FOR_PEER');
     await this.awaitBidirectionalConvergence(domain);
     // A destructive reset keeps a generation tombstone so in-flight pre-reset responses remain
     // fenced. Consume only its reinitialization flag after fresh bidirectional recognition has fully
@@ -472,6 +557,13 @@ export class FederationRecognitionService {
         return true;
       }
       const now = new Date();
+      const next = {
+        ...peer,
+        identityPinnedAt: peer?.identityPinnedAt ?? now,
+        recognizesPeer: true,
+        localServiceAvailable: true,
+      };
+      const trustLevel = this.lifecycle(next);
       await tx
         .insert(tables.federatedPeer)
         .values({
@@ -491,12 +583,11 @@ export class FederationRecognitionService {
             identityPinnedAt: peer?.identityPinnedAt ?? now,
             recognizesPeer: true,
             localServiceAvailable: true,
-            trustLevel: this.lifecycle({
-              ...peer,
-              identityPinnedAt: peer?.identityPinnedAt ?? now,
-              recognizesPeer: true,
-              localServiceAvailable: true,
-            }),
+            trustLevel,
+            trustedAt:
+              trustLevel === 'available'
+                ? (peer?.trustedAt ?? now)
+                : peer?.trustedAt,
           },
         });
       await this.initializePeerInTx(tx, domain);

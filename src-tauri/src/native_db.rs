@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 const DB_FILENAME: &str = "soms-local.sqlite3";
-const CACHE_SCHEMA_VERSION: i64 = 1;
+const CACHE_SCHEMA_VERSION: i64 = 2;
 
 fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -61,7 +61,7 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
 }
 
 fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
-    let version: i64 = conn
+    let mut version: i64 = conn
         .query_row(
             "SELECT CAST(value_json AS INTEGER) FROM client_preferences
              WHERE scope='cache' AND key='schemaVersion'",
@@ -69,6 +69,21 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
             |row| row.get(0),
         )
         .map_err(|e| format!("read native cache schema version: {e}"))?;
+    if version == 1 && CACHE_SCHEMA_VERSION == 2 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS friend_intents (
+               user_id INTEGER NOT NULL,
+               stable_key TEXT NOT NULL,
+               business_revision INTEGER NOT NULL,
+               payload_json TEXT NOT NULL,
+               PRIMARY KEY (user_id, stable_key)
+             );
+             UPDATE client_preferences SET value_json='2', updated_at=strftime('%s','now') * 1000
+             WHERE scope='cache' AND key='schemaVersion';",
+        )
+        .map_err(|e| format!("upgrade native cache schema v1 to v2: {e}"))?;
+        version = 2;
+    }
     if version != CACHE_SCHEMA_VERSION {
         return Err(format!(
             "native cache schema version mismatch: expected {CACHE_SCHEMA_VERSION}, got {version}"
@@ -77,6 +92,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     for object in [
         "threads",
         "profiles",
+        "friend_intents",
         "sync_state",
         "notification_global_state",
         "notification_thread_state",
@@ -128,6 +144,13 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           payload_json TEXT NOT NULL,
           profile_rev INTEGER NOT NULL,
           PRIMARY KEY (user_id, identity)
+        );
+        CREATE TABLE IF NOT EXISTS friend_intents (
+          user_id INTEGER NOT NULL,
+          stable_key TEXT NOT NULL,
+          business_revision INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          PRIMARY KEY (user_id, stable_key)
         );
         CREATE TABLE IF NOT EXISTS sync_state (
           user_id INTEGER NOT NULL,
@@ -194,6 +217,7 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
+         DROP TABLE IF EXISTS friend_intents;
          DROP TABLE IF EXISTS sync_state;
          DROP TABLE IF EXISTS notification_global_state;
          DROP TABLE IF EXISTS notification_thread_state;
@@ -364,6 +388,13 @@ pub(crate) struct ThreadDelta {
     user: Option<Value>,
     user_id: Option<i64>,
     revision: Option<i64>,
+    account: Option<String>,
+    domain: Option<String>,
+    event_type: Option<String>,
+    subject_account: Option<String>,
+    subject_domain: Option<String>,
+    business_revision: Option<i64>,
+    body: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -475,6 +506,29 @@ pub(crate) async fn native_db_threads(
 }
 
 #[tauri::command]
+pub(crate) async fn native_db_list_friend_intents(
+    app: tauri::AppHandle,
+    user_id: i64,
+) -> Result<Vec<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open(&app)?;
+        let mut stmt = conn
+            .prepare("SELECT payload_json FROM friend_intents WHERE user_id = ?1")
+            .map_err(|e| format!("prepare friend-intent read: {e}"))?;
+        let rows = stmt
+            .query_map([user_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("query friend intents: {e}"))?;
+        rows.map(|row| {
+            row.map_err(|e| format!("read friend intent: {e}"))
+                .and_then(parse_json)
+        })
+        .collect()
+    })
+    .await
+    .map_err(|e| format!("join friend-intent read: {e}"))?
+}
+
+#[tauri::command]
 pub(crate) async fn native_db_put_thread(
     app: tauri::AppHandle,
     user_id: i64,
@@ -557,6 +611,37 @@ pub(crate) async fn native_db_apply_thread_delta(
         let tx = conn.transaction().map_err(|e| format!("begin thread delta: {e}"))?;
         for op in delta {
             match op.direction.as_str() {
+                "CLIENT_STATE" => {
+                    let account = op.account.ok_or_else(|| "CLIENT_STATE has no account".to_string())?;
+                    let domain = op.domain.ok_or_else(|| "CLIENT_STATE has no domain".to_string())?;
+                    let event_type = op.event_type.ok_or_else(|| "CLIENT_STATE has no eventType".to_string())?;
+                    let subject_account = op.subject_account.ok_or_else(|| "CLIENT_STATE has no subjectAccount".to_string())?;
+                    let subject_domain = op.subject_domain.ok_or_else(|| "CLIENT_STATE has no subjectDomain".to_string())?;
+                    let business_revision = op.business_revision.ok_or_else(|| "CLIENT_STATE has no businessRevision".to_string())?;
+                    let body = op.body.ok_or_else(|| "CLIENT_STATE has no body".to_string())?;
+                    if event_type != "P2P_INTENT" { continue; }
+                    let stable_key = json_text(&serde_json::json!([
+                        domain.clone(), account.clone(), event_type,
+                        subject_domain.clone(), subject_account.clone()
+                    ]))?;
+                    let mut payload = body;
+                    let object = payload.as_object_mut().ok_or_else(|| "CLIENT_STATE body is not an object".to_string())?;
+                    object.insert("key".into(), Value::String(stable_key.clone()));
+                    object.insert("account".into(), Value::String(account));
+                    object.insert("domain".into(), Value::String(domain));
+                    object.insert("subjectAccount".into(), Value::String(subject_account));
+                    object.insert("subjectDomain".into(), Value::String(subject_domain));
+                    object.insert("businessRevision".into(), Value::from(business_revision));
+                    tx.execute(
+                        "INSERT INTO friend_intents(user_id, stable_key, business_revision, payload_json)
+                         VALUES(?1, ?2, ?3, ?4)
+                         ON CONFLICT(user_id, stable_key) DO UPDATE SET
+                           business_revision=excluded.business_revision,
+                           payload_json=excluded.payload_json
+                         WHERE excluded.business_revision > friend_intents.business_revision",
+                        params![user_id, stable_key, business_revision, json_text(&payload)?],
+                    ).map_err(|e| format!("apply client friend intent: {e}"))?;
+                }
                 "DELETE" => {
                     let thread_id = op.thread_id.ok_or_else(|| "DELETE delta has no threadId".to_string())?;
                     tx.execute(

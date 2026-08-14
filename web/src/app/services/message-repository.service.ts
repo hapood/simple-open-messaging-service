@@ -345,7 +345,8 @@ export class MessageRepository {
    * - latest `skip: 0` (init): always return after the local IDB read, including a valid empty result;
    *   backend revalidation is background-only and wakes the mounted kernel when it discovers data.
    * - `skip: 1` (getOlder/getNewer): cache-first when the held range is contiguous + the far boundary is
-   *   known (floor = seq 0 present; ceiling = maxSeenSeq); gap-fill from the API otherwise.
+   *   known (floor = seq 1 present; ceiling = maxSeenSeq); gap-fill from the API otherwise. A server may
+   *   start above 1, so only observing seq 1 proves the lower boundary locally.
    */
   async queryMessages(
     threadId: number,
@@ -377,7 +378,7 @@ export class MessageRepository {
         const oldestSeq = cached[cached.length - 1].seq;
         return {
           data: cached,
-          hasMore: oldestSeq > 0,
+          hasMore: oldestSeq > 1,
         };
       }
       if (localOnly) return { data: [], hasMore: false };
@@ -405,7 +406,7 @@ export class MessageRepository {
         const last = tail[tail.length - 1] ?? anchorRow;
         const hasMore =
           q.orderBy === 'desc'
-            ? last.seq > 0
+            ? last.seq > 1
             : this.maxSeenSeq.get(threadId) === undefined ||
               last.seq < this.maxSeenSeq.get(threadId)!;
         return { data: [anchorRow, ...tail], hasMore };
@@ -544,7 +545,7 @@ export class MessageRepository {
         if (q.truncate && cursor === q.truncateSeq) {
           reachedRequestedTruncate = true;
           hasMore = false;
-        } else if (q.orderBy === 'desc' && cursor === 0) {
+        } else if (q.orderBy === 'desc' && cursor === 1) {
           hasMore = false;
         } else if (
           q.orderBy === 'asc' &&
@@ -1006,10 +1007,11 @@ export class MessageRepository {
     }
     const lastSeq = cached[cached.length - 1].seq;
     if (orderBy === 'desc') {
-      // getOlder: the floor is seq 0 (per-thread seq is 0-indexed + monotonic, no deletion → no holes).
-      const reachedFloor = lastSeq === 0;
+      // getOlder: seq 1 is the protocol minimum. A server may start above 1 or leave gaps, so a larger
+      // value never proves that the cache has reached the lower boundary.
+      const reachedFloor = lastSeq === 1;
       const hit = cached.length === take || reachedFloor;
-      return { hit, hasMore: hit ? lastSeq > 0 : true };
+      return { hit, hasMore: hit ? lastSeq > 1 : true };
     }
     // getNewer: the ceiling is maxSeenSeq (the newest seq observed via NEW_MESSAGE / a backend page).
     const ceiling = this.maxSeenSeq.get(threadId);

@@ -139,6 +139,7 @@ import {
   type PeerStateFeedPage,
 } from './peer-state-feed.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { ClientStateFeedService } from '../thread-revision/client-state-feed.service.js';
 import { GroupMembershipStateService } from '../group/group-membership-state.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import {
@@ -460,6 +461,7 @@ export class FederationService {
     private readonly downloadScheduler: FederationDownloadScheduler,
     private readonly stateFeedPull: PeerStateFeedPullService,
     private readonly stateFeed: PeerStateFeedService,
+    private readonly clientStateFeed: ClientStateFeedService,
     private readonly groupMembershipState: GroupMembershipStateService,
     @Optional()
     private readonly tombstoneFeed?: FederationMessageTombstoneFeedService,
@@ -857,6 +859,7 @@ export class FederationService {
     peerUserId: number,
     wantsFriend: boolean,
     note = '',
+    clientRevisions?: PendingThreadRevision[],
   ): Promise<Map<string, bigint>> {
     const remote = await tx.query.user.findFirst({
       where: and(
@@ -873,13 +876,14 @@ export class FederationService {
       columns: { account: true },
     });
     if (!remote || !local) throw new Error('invalid federated friend intent');
-    await this.invite.writeLocalFriendIntentInTx(
+    const projected = await this.invite.writeLocalFriendIntentInTx(
       tx,
       localUserId,
       peerUserId,
       wantsFriend,
       note,
     );
+    clientRevisions?.push(...projected);
     const request = await tx.execute<{
       status: 'REQUESTED' | 'FRIEND' | 'NOT_FRIEND';
       note: string;
@@ -977,18 +981,19 @@ export class FederationService {
    * id-based friendship state machine can take over. */
   async acceptAddressedFriendRequest(
     localUserId: number,
-    inviteId: string,
+    remote: { account: string; domain: string },
   ): Promise<Map<string, bigint>> {
-    if (!/^f:[1-9]\d*$/.test(inviteId))
-      throw new BusinessException(
-        BusinessCode.INVITE_NOT_FOUND,
-        'request not found',
-      );
-    const id = BigInt(inviteId.slice(2));
-    let pendingRevision: PendingThreadRevision | undefined;
+    const remoteAccount = normalizeAccount(remote.account);
+    const remoteDomain = remote.domain.trim().toLowerCase();
+    const clientRevisions: PendingThreadRevision[] = [];
     const result = await this.database.db.transaction(async (tx) => {
       const request = await tx.query.federatedFriendRequest.findFirst({
-        where: eq(tables.federatedFriendRequest.id, id),
+        where: and(
+          eq(tables.federatedFriendRequest.localUserId, localUserId),
+          eq(tables.federatedFriendRequest.remoteAccount, remoteAccount),
+          eq(tables.federatedFriendRequest.remoteDomain, remoteDomain),
+          eq(tables.federatedFriendRequest.direction, 'INCOMING'),
+        ),
       });
       if (!request)
         throw new BusinessException(
@@ -1048,21 +1053,24 @@ export class FederationService {
         localUserId,
         remoteUserId,
         true,
+        '',
+        clientRevisions,
       );
       await tx
         .delete(tables.federatedFriendRequest)
-        .where(eq(tables.federatedFriendRequest.id, id));
-      pendingRevision = {
-        userId: localUserId,
-        revision: await this.threadRevisionService.recordFriendRequestStateInTx(
-          tx,
-          localUserId,
-        ),
-      };
+        .where(
+          and(
+            eq(tables.federatedFriendRequest.localUserId, localUserId),
+            eq(tables.federatedFriendRequest.remoteAccount, remoteAccount),
+            eq(tables.federatedFriendRequest.remoteDomain, remoteDomain),
+            eq(tables.federatedFriendRequest.direction, 'INCOMING'),
+          ),
+        );
       return state;
     });
-    if (pendingRevision)
-      this.threadRevisionService.notifyThreadRevision(pendingRevision);
+    clientRevisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
     return result;
   }
 
@@ -1070,19 +1078,20 @@ export class FederationService {
    * be omitted according to server capacity; the address intent row keeps the revision watermark. */
   async revokeAddressedFriendRequest(
     localUserId: number,
-    inviteId: string,
+    remote: { account: string; domain: string },
     direction: 'INCOMING' | 'OUTGOING',
   ): Promise<Map<string, bigint>> {
-    if (!/^f:[1-9]\d*$/.test(inviteId))
-      throw new BusinessException(
-        BusinessCode.INVITE_NOT_FOUND,
-        'request not found',
-      );
-    const id = BigInt(inviteId.slice(2));
-    let pendingRevision: PendingThreadRevision | undefined;
+    const remoteAccount = normalizeAccount(remote.account);
+    const remoteDomain = remote.domain.trim().toLowerCase();
+    const clientRevisions: PendingThreadRevision[] = [];
     const result = await this.database.db.transaction(async (tx) => {
       const request = await tx.query.federatedFriendRequest.findFirst({
-        where: eq(tables.federatedFriendRequest.id, id),
+        where: and(
+          eq(tables.federatedFriendRequest.localUserId, localUserId),
+          eq(tables.federatedFriendRequest.remoteAccount, remoteAccount),
+          eq(tables.federatedFriendRequest.remoteDomain, remoteDomain),
+          eq(tables.federatedFriendRequest.direction, direction),
+        ),
       });
       if (!request)
         throw new BusinessException(
@@ -1160,15 +1169,55 @@ export class FederationService {
           expiresAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(tables.federatedFriendRequest.id, id));
+        .where(
+          and(
+            eq(tables.federatedFriendRequest.localUserId, localUserId),
+            eq(tables.federatedFriendRequest.remoteAccount, remoteAccount),
+            eq(tables.federatedFriendRequest.remoteDomain, remoteDomain),
+            eq(tables.federatedFriendRequest.direction, direction),
+          ),
+        );
       const local = await tx.query.user.findFirst({
         where: and(
           eq(tables.user.id, localUserId),
           eq(tables.user.isForeigner, false),
         ),
-        columns: { account: true },
+        columns: {
+          id: true,
+          account: true,
+          name: true,
+          avatar: true,
+          domain: true,
+          isForeigner: true,
+        },
       });
       if (!local) throw new Error('local friend requester disappeared');
+      const clientRevision = await this.clientStateFeed.writeInTx(tx, {
+        userId: localUserId,
+        account: local.account,
+        domain: this.config.domain,
+        eventType: 'P2P_INTENT',
+        subjectAccount: request.remoteAccount,
+        subjectDomain: request.remoteDomain,
+        businessRevision: revision,
+        body: {
+          status: 'REVOKED',
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+          actor: local,
+          subject: {
+            id: 0,
+            account: request.remoteAccount,
+            name: request.displayName ?? request.remoteAccount,
+            avatar: request.avatar ?? '',
+            domain: request.remoteDomain,
+            isForeigner: true,
+          },
+        },
+      });
+      if (clientRevision !== null)
+        clientRevisions.push({ userId: localUserId, revision: clientRevision });
       const state = await this.stateFeed.writeManyInTx(tx, [
         {
           peerDomain: request.remoteDomain,
@@ -1186,17 +1235,11 @@ export class FederationService {
           },
         },
       ]);
-      pendingRevision = {
-        userId: localUserId,
-        revision: await this.threadRevisionService.recordFriendRequestStateInTx(
-          tx,
-          localUserId,
-        ),
-      };
       return state;
     });
-    if (pendingRevision)
-      this.threadRevisionService.notifyThreadRevision(pendingRevision);
+    clientRevisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
     return result;
   }
 
@@ -1317,14 +1360,20 @@ export class FederationService {
           : null,
       },
     );
+    if (!requested) {
+      // A local JOIN revocation closes the derived membership immediately on
+      // both an origin thread and a federated mirror. The remote branch must
+      // still publish its REVOKED intent below, but must not leave a stale
+      // active pair granting local group access while convergence is pending.
+      await this.groupMembershipState.setPairActiveInTx(
+        tx,
+        thread.groupUserId,
+        memberUserId,
+        false,
+      );
+    }
     if (groupUser.domain === 'local') {
       if (!requested) {
-        await this.groupMembershipState.setPairActiveInTx(
-          tx,
-          thread.groupUserId,
-          memberUserId,
-          false,
-        );
         return new Map();
       }
       if (!membership.shouldBeActive) return new Map();
@@ -1923,68 +1972,72 @@ export class FederationService {
     body: string,
     peerDomain: string,
   ): Promise<void> {
-    await this.discovery.waitForRequestSlot(peerDomain);
-    const operationStartedAt = new Date();
-    const headers = await this.signature.signOutbound({
-      method: 'POST',
-      url,
-      body,
-    });
-    let res: Response;
+    const release = await this.discovery.acquireRequestSlot(peerDomain);
     try {
-      res = await this.discovery.request(url, {
+      const operationStartedAt = new Date();
+      const headers = await this.signature.signOutbound({
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
+        url,
         body,
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
-    } catch (e) {
-      await this.recognition.markTransportDegraded(
-        peerDomain,
-        `POST network/timeout: ${(e as Error).message}`,
-        operationStartedAt,
-      );
-      throw new Error(
-        `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
-      );
-    }
-    const status = res.status;
-    if (status >= 200 && status < 300) {
-      await this.markContactSuccess(peerDomain);
-      if (status !== HttpStatus.NO_CONTENT) {
-        const envelope = (await res.json().catch(() => undefined)) as
-          | { code?: unknown; data?: unknown }
-          | undefined;
-        if (envelope?.code !== 0) {
-          throw new S2sResponseError(
-            `S2S POST to ${peerDomain} returned business code ${String(envelope?.code)}`,
-            status,
-            typeof envelope?.code === 'number'
-              ? envelope.code
-              : BusinessCode.FEDERATION_MALFORMED,
-            envelope?.data,
-          );
-        }
+      let res: Response;
+      try {
+        res = await this.discovery.request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body,
+          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        });
+      } catch (e) {
+        await this.recognition.markTransportDegraded(
+          peerDomain,
+          `POST network/timeout: ${(e as Error).message}`,
+          operationStartedAt,
+        );
+        throw new Error(
+          `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
+        );
       }
-      return;
-    }
-    const errBody = await res.json().catch(() => undefined);
-    const code = typeof errBody?.code === 'number' ? errBody.code : undefined;
-    if (status === HttpStatus.SERVICE_UNAVAILABLE) {
-      await this.recognition.markTransportDegraded(
-        peerDomain,
-        `POST HTTP ${status}`,
-        operationStartedAt,
+      const status = res.status;
+      if (status >= 200 && status < 300) {
+        await this.markContactSuccess(peerDomain);
+        if (status !== HttpStatus.NO_CONTENT) {
+          const envelope = (await res.json().catch(() => undefined)) as
+            | { code?: unknown; data?: unknown }
+            | undefined;
+          if (envelope?.code !== 0) {
+            throw new S2sResponseError(
+              `S2S POST to ${peerDomain} returned business code ${String(envelope?.code)}`,
+              status,
+              typeof envelope?.code === 'number'
+                ? envelope.code
+                : BusinessCode.FEDERATION_MALFORMED,
+              envelope?.data,
+            );
+          }
+        }
+        return;
+      }
+      const errBody = await res.json().catch(() => undefined);
+      const code = typeof errBody?.code === 'number' ? errBody.code : undefined;
+      if (status === HttpStatus.SERVICE_UNAVAILABLE) {
+        await this.recognition.markTransportDegraded(
+          peerDomain,
+          `POST HTTP ${status}`,
+          operationStartedAt,
+        );
+      } else if (status === HttpStatus.CONFLICT && this.isFatalPeerCode(code)) {
+        await this.markPeerHalted(peerDomain, code, errBody?.message);
+      }
+      throw new S2sResponseError(
+        `S2S POST to ${peerDomain} rejected: HTTP ${status}`,
+        status,
+        code,
+        errBody?.data,
       );
-    } else if (status === HttpStatus.CONFLICT && this.isFatalPeerCode(code)) {
-      await this.markPeerHalted(peerDomain, code, errBody?.message);
+    } finally {
+      release();
     }
-    throw new S2sResponseError(
-      `S2S POST to ${peerDomain} rejected: HTTP ${status}`,
-      status,
-      code,
-      errBody?.data,
-    );
   }
 
   /** GET a signed S2S endpoint (users / revision). Returns the parsed JSON. Throws on non-success. */
@@ -1995,94 +2048,101 @@ export class FederationService {
   ): Promise<T> {
     const base = await this.discovery.resolveBase(peerDomain);
     const url = new URL(`${base}${path}`);
-    await this.discovery.waitForRequestSlot(peerDomain);
-    const operationStartedAt = new Date();
-    const headers = await this.signature.signOutbound({
-      method: 'GET',
-      url,
-      body: '', // GET — the content-digest covers sha256("")
-    });
-    let res: Response;
+    const release = await this.discovery.acquireRequestSlot(peerDomain);
     try {
-      res = await this.discovery.request(url, {
+      const operationStartedAt = new Date();
+      const headers = await this.signature.signOutbound({
         method: 'GET',
-        headers: { ...headers },
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        url,
+        body: '', // GET — the content-digest covers sha256("")
       });
-    } catch (e) {
-      await this.recognition.markTransportDegraded(
-        peerDomain,
-        `GET ${path} network/timeout: ${(e as Error).message}`,
-        operationStartedAt,
-      );
-      throw new Error(
-        `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
-      );
-    }
-    if (!res.ok) {
-      const status = res.status;
-      const body = await res.json().catch(() => undefined);
-      const code = typeof body?.code === 'number' ? body.code : undefined;
-      if (status === HttpStatus.SERVICE_UNAVAILABLE) {
+      let res: Response;
+      try {
+        res = await this.discovery.request(url, {
+          method: 'GET',
+          headers: { ...headers },
+          signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        });
+      } catch (e) {
         await this.recognition.markTransportDegraded(
           peerDomain,
-          `GET ${path} HTTP ${status}`,
+          `GET ${path} network/timeout: ${(e as Error).message}`,
           operationStartedAt,
         );
-      } else if (status === HttpStatus.CONFLICT && this.isFatalPeerCode(code)) {
-        await this.markPeerHalted(peerDomain, code, body?.message);
-      }
-      throw new S2sResponseError(
-        `S2S GET ${path} from ${peerDomain} rejected: HTTP ${status}`,
-        status,
-        code,
-        body?.data,
-      );
-    }
-    await this.markContactSuccess(peerDomain);
-    if (maxResponseBytes !== undefined) {
-      const declared = Number(res.headers.get('content-length') ?? 0);
-      if (declared > maxResponseBytes) {
-        throw new S2sResponseError(
-          `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
-          HttpStatus.OK,
-          BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+        throw new Error(
+          `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
         );
       }
-    }
-    let boundedBody: unknown;
-    if (maxResponseBytes === undefined) {
-      boundedBody = await res.json();
-    } else {
-      const text = await res.text();
-      if (Buffer.byteLength(text) > maxResponseBytes) {
+      if (!res.ok) {
+        const status = res.status;
+        const body = await res.json().catch(() => undefined);
+        const code = typeof body?.code === 'number' ? body.code : undefined;
+        if (status === HttpStatus.SERVICE_UNAVAILABLE) {
+          await this.recognition.markTransportDegraded(
+            peerDomain,
+            `GET ${path} HTTP ${status}`,
+            operationStartedAt,
+          );
+        } else if (
+          status === HttpStatus.CONFLICT &&
+          this.isFatalPeerCode(code)
+        ) {
+          await this.markPeerHalted(peerDomain, code, body?.message);
+        }
         throw new S2sResponseError(
-          `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
-          HttpStatus.OK,
-          BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+          `S2S GET ${path} from ${peerDomain} rejected: HTTP ${status}`,
+          status,
+          code,
+          body?.data,
         );
       }
-      boundedBody = JSON.parse(text) as unknown;
+      await this.markContactSuccess(peerDomain);
+      if (maxResponseBytes !== undefined) {
+        const declared = Number(res.headers.get('content-length') ?? 0);
+        if (declared > maxResponseBytes) {
+          throw new S2sResponseError(
+            `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
+            HttpStatus.OK,
+            BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+          );
+        }
+      }
+      let boundedBody: unknown;
+      if (maxResponseBytes === undefined) {
+        boundedBody = await res.json();
+      } else {
+        const text = await res.text();
+        if (Buffer.byteLength(text) > maxResponseBytes) {
+          throw new S2sResponseError(
+            `S2S GET ${path} response exceeds ${maxResponseBytes} bytes`,
+            HttpStatus.OK,
+            BusinessCode.FEDERATION_PAYLOAD_TOO_LARGE,
+          );
+        }
+        boundedBody = JSON.parse(text) as unknown;
+      }
+      const parsed = boundedBody as {
+        code?: number;
+        data?: unknown;
+      };
+      // Success bodies are ApiResult envelopes { code, message, data }. A non-zero code is a business
+      // outcome delivered at HTTP 200 (a lookup target that doesn't exist → NOT_FOUND); the peer is healthy
+      // and answered (markContactSuccess above already advanced liveness), so surface it as a typed
+      // S2sResponseError WITHOUT degrading — callers' catch logic keeps working. Unwrapping `data` here means
+      // every getSigned caller still receives the typed payload (res.messages / res.profileRev / …), not the
+      // envelope — no call site changes. The !res.ok branch above carries the registered protocol statuses.
+      if (typeof parsed?.code === 'number' && parsed.code !== BusinessCode.OK) {
+        throw new S2sResponseError(
+          `S2S GET ${path} from ${peerDomain} business error: code ${parsed.code}`,
+          res.status,
+          parsed.code,
+          parsed.data,
+        );
+      }
+      return (parsed?.data ?? parsed) as T;
+    } finally {
+      release();
     }
-    const parsed = boundedBody as {
-      code?: number;
-      data?: unknown;
-    };
-    // Success bodies are ApiResult envelopes { code, message, data }. A non-zero code is a business
-    // outcome delivered at HTTP 200 (a lookup target that doesn't exist → NOT_FOUND); the peer is healthy
-    // and answered (markContactSuccess above already advanced liveness), so surface it as a typed
-    // S2sResponseError WITHOUT degrading — callers' catch logic keeps working. Unwrapping `data` here means
-    // every getSigned caller still receives the typed payload (res.messages / res.profileRev / …), not the
-    // envelope — no call site changes. The !res.ok branch above carries the registered protocol statuses.
-    if (typeof parsed?.code === 'number' && parsed.code !== BusinessCode.OK) {
-      throw new S2sResponseError(
-        `S2S GET ${path} from ${peerDomain} business error: code ${parsed.code}`,
-        res.status,
-        parsed.code,
-        parsed.data,
-      );
-    }
-    return (parsed?.data ?? parsed) as T;
   }
 
   // ─── bidirectional server recognition ─────────────────────────────────────────
@@ -3104,10 +3164,7 @@ export class FederationService {
     );
   }
 
-  private mapFeedCursorUnavailable(
-    error: unknown,
-    allowMessageBootstrap = false,
-  ): Error {
+  private mapFeedCursorUnavailable(error: unknown): Error {
     if (
       error instanceof S2sResponseError &&
       error.code === BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE
@@ -3121,11 +3178,7 @@ export class FederationService {
         Object.hasOwn(data, 'resumeAfter')
       ) {
         const value = (data as { resumeAfter?: unknown }).resumeAfter;
-        if (
-          typeof value === 'string' &&
-          (/^(0|[1-9]\d*)$/.test(value) ||
-            (allowMessageBootstrap && value === '-1'))
-        ) {
+        if (typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value)) {
           return new RemoteFeedCursorUnavailableError(BigInt(value));
         }
       }
@@ -3692,7 +3745,14 @@ export class FederationService {
         )
           throw new Error('invalid P2P_INTENT request timestamps');
         const [localUser] = await tx
-          .select({ id: tables.user.id, account: tables.user.account })
+          .select({
+            id: tables.user.id,
+            account: tables.user.account,
+            name: tables.user.name,
+            avatar: tables.user.avatar,
+            domain: tables.user.domain,
+            isForeigner: tables.user.isForeigner,
+          })
           .from(tables.user)
           .where(
             and(
@@ -3714,7 +3774,11 @@ export class FederationService {
           .limit(1);
         if (!localUser)
           throw new Error('P2P_INTENT local subject does not exist');
-        if (!remoteUser && body.status === 'REQUESTED') {
+        // Pending federation requests are keyed by immutable Address even when
+        // this server happens to have materialized the same remote account for
+        // another relationship. Stub existence must not switch persistence to
+        // the local numeric-id FriendRequest path.
+        if (body.status === 'REQUESTED') {
           const [profile] = await tx
             .select()
             .from(tables.federatedProfile)
@@ -3730,7 +3794,7 @@ export class FederationService {
             .limit(1);
           if (!profile || profile.deleted)
             throw new Error('P2P REQUESTED arrived without a live PROFILE');
-          const applied = await tx.execute<{ id: bigint }>(sql`
+          const applied = await tx.execute<{ revision: number }>(sql`
             INSERT INTO "FederatedFriendRequest" (
               "localUserId", "remoteAccount", "remoteDomain", direction, status,
               note, revision, "requestedAt", "expiresAt", "displayName", avatar,
@@ -3748,21 +3812,43 @@ export class FederationService {
               avatar = EXCLUDED.avatar, "profileRevision" = EXCLUDED."profileRevision",
               "updatedAt" = CURRENT_TIMESTAMP
             WHERE "FederatedFriendRequest".revision < EXCLUDED.revision
-            RETURNING id
+            RETURNING revision
           `);
-          if (applied.rows[0])
-            changed.push({
+          if (applied.rows[0]) {
+            const clientRevision = await this.clientStateFeed.writeInTx(tx, {
               userId: localUser.id,
-              revision:
-                await this.threadRevisionService.recordFriendRequestStateInTx(
-                  tx,
-                  localUser.id,
-                ),
+              account: normalizeAccount(item.account),
+              domain: peerDomain,
+              eventType: 'P2P_INTENT',
+              subjectAccount: localUser.account,
+              subjectDomain: this.config.domain,
+              businessRevision: revision,
+              body: {
+                status: 'REQUESTED',
+                note: body.note,
+                requestedAt: requestedAt?.getTime() ?? null,
+                expiresAt: expiresAt?.getTime() ?? null,
+                actor: {
+                  id: 0,
+                  account: normalizeAccount(item.account),
+                  name: profile.displayName,
+                  avatar: profile.avatar ?? '',
+                  domain: peerDomain,
+                  isForeigner: true,
+                },
+                subject: localUser,
+              },
             });
+            if (clientRevision !== null)
+              changed.push({ userId: localUser.id, revision: clientRevision });
+          }
           continue;
         }
-        if (!remoteUser && body.status === 'REVOKED') {
-          const revoked = await tx.execute<{ id: bigint }>(sql`
+        if (body.status === 'REVOKED') {
+          const revoked = await tx.execute<{
+            displayName: string | null;
+            avatar: string | null;
+          }>(sql`
             UPDATE "FederatedFriendRequest"
             SET status = 'REVOKED', revision = ${revision}, "requestedAt" = NULL,
               "expiresAt" = NULL, note = ${body.note}, "updatedAt" = CURRENT_TIMESTAMP
@@ -3770,18 +3856,43 @@ export class FederationService {
               AND "remoteDomain" = ${peerDomain}
               AND "remoteAccount" = ${normalizeAccount(item.account)}
               AND direction = 'INCOMING' AND revision < ${revision}
-            RETURNING id
+            RETURNING "displayName", avatar
           `);
-          if (revoked.rows[0])
-            changed.push({
+          if (revoked.rows[0]) {
+            const clientRevision = await this.clientStateFeed.writeInTx(tx, {
               userId: localUser.id,
-              revision:
-                await this.threadRevisionService.recordFriendRequestStateInTx(
-                  tx,
-                  localUser.id,
-                ),
+              account: normalizeAccount(item.account),
+              domain: peerDomain,
+              eventType: 'P2P_INTENT',
+              subjectAccount: localUser.account,
+              subjectDomain: this.config.domain,
+              businessRevision: revision,
+              body: {
+                status: 'REVOKED',
+                note: body.note,
+                requestedAt: null,
+                expiresAt: null,
+                actor: {
+                  id: 0,
+                  account: normalizeAccount(item.account),
+                  name:
+                    revoked.rows[0].displayName ??
+                    normalizeAccount(item.account),
+                  avatar: revoked.rows[0].avatar ?? '',
+                  domain: peerDomain,
+                  isForeigner: true,
+                },
+                subject: localUser,
+              },
             });
-          continue;
+            if (clientRevision !== null)
+              changed.push({ userId: localUser.id, revision: clientRevision });
+            continue;
+          }
+          // Without a materialized peer there is no established friendship
+          // state for this intent to revoke. A stale/no-op address revocation
+          // is complete here.
+          if (!remoteUser) continue;
         }
         if (!remoteUser && body.status === 'ACCEPTED') {
           const remoteUserId = await this.materializeFederatedUserInTx(
@@ -3892,16 +4003,8 @@ export class FederationService {
           ]);
           statePushDomains.push(...confirmation.keys());
         }
-        if (effect.requestCreated) {
-          changed.push({
-            userId: localUser.id,
-            revision:
-              await this.threadRevisionService.recordFriendRequestStateInTx(
-                tx,
-                localUser.id,
-              ),
-          });
-        }
+        void effect.requestCreated;
+        changed.push(...effect.clientRevisions);
         if (effect.threadId !== undefined && effect.added !== undefined) {
           changed.push({
             userId: localUser.id,
@@ -3972,7 +4075,7 @@ export class FederationService {
               typeof owner.account !== 'string' ||
               typeof owner.domain !== 'string' ||
               !Number.isSafeInteger(body.sinceSeq) ||
-              Number(body.sinceSeq) < -1))
+              Number(body.sinceSeq) < 0))
         )
           throw new Error('invalid group membership state body');
         const inviteDirection = item.eventType === 'GROUP_INVITE_INTENT';
@@ -4147,7 +4250,7 @@ export class FederationService {
         } else if (
           !inviteDirection &&
           membership.changed &&
-          body.status === 'NOT_MEMBER'
+          storageStatus === 'NOT_MEMBER'
         ) {
           const [originThread] = await tx
             .select({ id: tables.messageThread.id })
@@ -4891,12 +4994,12 @@ export class FederationService {
             ),
           );
         } catch (error) {
-          const mapped = this.mapFeedCursorUnavailable(error, true);
+          const mapped = this.mapFeedCursorUnavailable(error);
           if (mapped instanceof RemoteFeedCursorUnavailableError) {
             if (
               cursorCorrected ||
               mapped.resumeAfter === after ||
-              mapped.resumeAfter < -1n
+              mapped.resumeAfter < 0n
             )
               throw mapped;
             cursorCorrected = true;
@@ -4909,7 +5012,7 @@ export class FederationService {
         if (
           !Array.isArray(result.messages) ||
           typeof result.hasMore !== 'boolean' ||
-          !/^(?:-1|0|[1-9]\d*)$/.test(result.scannedThrough)
+          !/^(?:0|[1-9]\d*)$/.test(result.scannedThrough)
         )
           throw new Error('peer returned a malformed message query page');
         const scanned = BigInt(result.scannedThrough);
@@ -4954,10 +5057,7 @@ export class FederationService {
         ),
       );
     } catch (error) {
-      const mapped = this.mapFeedCursorUnavailable(
-        error,
-        path === '/s2s/v1/messages',
-      );
+      const mapped = this.mapFeedCursorUnavailable(error);
       if (mapped instanceof RemoteFeedCursorUnavailableError)
         return mapped.resumeAfter;
       this.throwIfThreadQueryForbidden(mapped, this.threadKey(thread));
@@ -5104,9 +5204,9 @@ export class FederationService {
           );
         if (
           !Number.isSafeInteger(item.originSeq) ||
-          item.originSeq < 0 ||
+          item.originSeq < 1 ||
           !Number.isSafeInteger(item.seq) ||
-          item.seq < 0
+          item.seq < 1
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
@@ -7016,7 +7116,7 @@ export class FederationService {
         for (const item of page.tombstones ?? []) {
           if (
             !Number.isSafeInteger(item.target.originSeq) ||
-            item.target.originSeq < 0 ||
+            item.target.originSeq < 1 ||
             !Number.isSafeInteger(item.deletedAt) ||
             item.deletedAt < 0 ||
             ![MessageDeleteType.WITHDRAW, MessageDeleteType.REPORT].includes(
@@ -7901,7 +8001,6 @@ export class FederationService {
     total: number;
     contentDigest?: string;
   }> {
-    await this.discovery.waitForRequestSlot(peerDomain);
     const operationStartedAt = new Date();
     const headers = await this.signature.signOutbound({
       method: 'GET',

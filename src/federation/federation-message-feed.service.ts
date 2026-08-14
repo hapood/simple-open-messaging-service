@@ -6,7 +6,6 @@ import { ContentType } from '../database/enums.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
-  federationMessageDelivery,
   federationMessageFeedIndex,
   federationServeCursor,
   mediaAsset,
@@ -174,7 +173,7 @@ export class FederationMessageFeedService {
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the message query cursor',
       HttpStatus.OK,
-      { resumeAfter: '-1' },
+      { resumeAfter: '0' },
     );
   }
 
@@ -186,22 +185,22 @@ export class FederationMessageFeedService {
     through?: number,
   ): Promise<FederationMessageQueryPage> {
     const take = this.pageSize(requestedTake);
-    if (after < -1 || (through !== undefined && through < -1))
+    if (after < 0 || (through !== undefined && through < 0))
       this.invalidThrough();
     if (through !== undefined && through < after) this.invalidThrough();
     const threadId = await this.resolveAuthorizedThread(peerDomain, selector);
     return this.database.db.transaction(async (tx) => {
-      const [tail] = await tx
-        .select({ end: sql<number>`COALESCE(MAX(${message.seq}), -1)` })
-        .from(federationMessageDelivery)
-        .innerJoin(message, eq(message.id, federationMessageDelivery.messageId))
+      const [projection] = await tx
+        .select({ end: federationMessageFeedIndex.messageEndSeq })
+        .from(federationMessageFeedIndex)
         .where(
           and(
-            eq(federationMessageDelivery.peerDomain, peerDomain),
-            eq(message.threadId, threadId),
+            eq(federationMessageFeedIndex.peerDomain, peerDomain),
+            eq(federationMessageFeedIndex.threadId, threadId),
           ),
-        );
-      const currentEnd = tail?.end ?? -1;
+        )
+        .limit(1);
+      const currentEnd = projection?.end ?? 0;
       if (after > currentEnd) {
         throw new BusinessException(
           BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -231,21 +230,25 @@ export class FederationMessageFeedService {
                 authorAccount: user.account,
                 authorDomain: user.domain,
               })
-              .from(federationMessageDelivery)
-              .innerJoin(
-                message,
-                eq(message.id, federationMessageDelivery.messageId),
-              )
+              .from(message)
               .innerJoin(messageThread, eq(messageThread.id, message.threadId))
               .innerJoin(user, eq(user.id, message.creator))
               .where(
                 and(
-                  eq(federationMessageDelivery.peerDomain, peerDomain),
                   eq(message.threadId, threadId),
                   gt(message.seq, after),
                   lte(message.seq, queryEnd),
                   eq(message.isDeleted, false),
                   ne(message.contentType, ContentType.SYSTEM),
+                  sql`NOT (
+                    ${messageThread.type} = 'GROUP'
+                    AND EXISTS (
+                      SELECT 1 FROM "User" group_user
+                      WHERE group_user.id = ${messageThread.groupUserId}
+                        AND group_user.domain <> 'local'
+                    )
+                    AND (${user.isForeigner} OR ${message.originSeq} IS NOT NULL)
+                  )`,
                 ),
               )
               .orderBy(asc(message.seq))
@@ -437,21 +440,11 @@ export class FederationMessageFeedService {
             WHERE thread.type = 'GROUP'
               AND group_user.account = ${selector.groupAccount}
               AND (CASE WHEN group_user.domain = 'local' THEN ${this.localDomain} ELSE group_user.domain END) = ${selector.groupDomain}
-              AND (
-                EXISTS (
-                  SELECT 1 FROM "ThreadAudience" audience
-                  WHERE audience."threadId" = thread.id
-                    AND audience."targetDomain" = ${peerDomain}
-                    AND audience."localUserId" IS NULL
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM "FederationMessageDelivery" delivery
-                  JOIN "Message" delivered_message
-                    ON delivered_message.id = delivery."messageId"
-                  WHERE delivery."peerDomain" = ${peerDomain}
-                    AND delivered_message."threadId" = thread.id
-                )
+              AND EXISTS (
+                SELECT 1 FROM "ThreadAudience" audience
+                WHERE audience."threadId" = thread.id
+                  AND audience."targetDomain" = ${peerDomain}
+                  AND audience."localUserId" IS NULL
               )
             LIMIT 1
           `)
@@ -459,21 +452,11 @@ export class FederationMessageFeedService {
             SELECT thread.id AS "threadId"
             FROM "MessageThread" thread
             WHERE thread.type = 'P2P'
-              AND (
-                EXISTS (
-                  SELECT 1 FROM "ThreadAudience" audience
-                  WHERE audience."threadId" = thread.id
-                    AND audience."targetDomain" = ${peerDomain}
-                    AND audience."localUserId" IS NULL
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM "FederationMessageDelivery" delivery
-                  JOIN "Message" delivered_message
-                    ON delivered_message.id = delivery."messageId"
-                  WHERE delivery."peerDomain" = ${peerDomain}
-                    AND delivered_message."threadId" = thread.id
-                )
+              AND EXISTS (
+                SELECT 1 FROM "ThreadAudience" audience
+                WHERE audience."threadId" = thread.id
+                  AND audience."targetDomain" = ${peerDomain}
+                  AND audience."localUserId" IS NULL
               )
               AND EXISTS (
                 SELECT 1 FROM "ThreadParticipant" participant
@@ -496,7 +479,7 @@ export class FederationMessageFeedService {
     if (threadId === undefined) {
       throw new BusinessException(
         BusinessCode.FORBIDDEN,
-        'the signed peer has neither current access nor a durable message delivery proof for this thread',
+        'the signed peer does not currently have access to this thread',
         HttpStatus.OK,
       );
     }

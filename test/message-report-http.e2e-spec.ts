@@ -77,8 +77,8 @@ describe('message report HTTP workflow', () => {
       .insert(messageThread)
       .values({
         type: 'P2P',
-        curSeq: 1,
-        lastMessageSeq: 1,
+        curSeq: 2,
+        lastMessageSeq: 2,
         lastMessagePreview: 'second',
         lastMessageAt: now,
         updatedAt: now,
@@ -90,19 +90,19 @@ describe('message report HTTP workflow', () => {
     ]);
     await database.db.insert(message).values([
       {
-        seq: 0,
+        seq: 1,
         threadId: thread.id,
         creator: creator.id,
-        originSeq: 0,
+        originSeq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'first' }),
         updatedAt: now,
       },
       {
-        seq: 1,
+        seq: 2,
         threadId: thread.id,
         creator: creator.id,
-        originSeq: 1,
+        originSeq: 2,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'second' }),
         updatedAt: now,
@@ -133,7 +133,7 @@ describe('message report HTTP workflow', () => {
     const created = await consumerPost(
       conversation.reporterToken,
       'message-reports',
-      { threadId: conversation.threadId, seqs: [0] },
+      { threadId: conversation.threadId, seqs: [1] },
     );
     expect(created.body.code).toBe(BusinessCode.OK);
     const reportId = created.body.data.reports[0].id as string;
@@ -164,7 +164,7 @@ describe('message report HTTP workflow', () => {
     const created = await consumerPost(
       conversation.reporterToken,
       'message-reports',
-      { threadId: conversation.threadId, seqs: [0, 1] },
+      { threadId: conversation.threadId, seqs: [1, 2] },
     );
     expect(created.body.code).toBe(BusinessCode.OK);
     expect(created.body.data.reports).toHaveLength(2);
@@ -215,8 +215,8 @@ describe('message report HTTP workflow', () => {
     expect(durable.body.code).toBe(BusinessCode.OK);
     expect(durable.body.data).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ seq: 0, type: MessageDeleteType.REPORT }),
         expect.objectContaining({ seq: 1, type: MessageDeleteType.REPORT }),
+        expect.objectContaining({ seq: 2, type: MessageDeleteType.REPORT }),
       ]),
     );
 

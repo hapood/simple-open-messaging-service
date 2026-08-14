@@ -288,8 +288,8 @@ export class FederationResetService implements OnModuleInit {
         UPDATE "MessageThread"
         SET "federationTruncated" = true,
             "federationVersion" = "federationVersion" + 1,
-            "curSeq" = -1,
-            "pullUntil" = -1,
+            "curSeq" = 0,
+            "pullUntil" = 0,
             "lastMessageSeq" = NULL,
             "lastMessagePreview" = NULL,
             "lastMessageAt" = NULL,

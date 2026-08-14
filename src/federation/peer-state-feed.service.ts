@@ -5,7 +5,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
   peerStateFeed,
-  peerStateFeedVersion,
   peerStateFeedTarget,
   peerStateEventType,
 } from '../database/schema.js';
@@ -199,17 +198,6 @@ export class PeerStateFeedService {
             updatedAt: new Date(),
           },
         });
-      await tx.insert(peerStateFeedVersion).values({
-        peerDomain: write.peerDomain,
-        feedId: allocated.rev,
-        account: write.account,
-        domain: write.domain,
-        eventType: write.eventType,
-        subjectAccount,
-        subjectDomain,
-        revision: write.revision,
-        body,
-      });
       result.set(write.peerDomain, allocated.rev);
     }
     return result;

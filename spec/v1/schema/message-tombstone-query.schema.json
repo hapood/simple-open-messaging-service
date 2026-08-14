@@ -21,7 +21,7 @@
               "$ref": "urn:soms:federation:v1:common#/$defs/address"
             },
             "originSeq": {
-              "$ref": "urn:soms:federation:v1:common#/$defs/safeNonNegativeInteger"
+              "$ref": "urn:soms:federation:v1:common#/$defs/positiveSafeInteger"
             }
           },
           "additionalProperties": false

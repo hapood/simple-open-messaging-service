@@ -430,8 +430,8 @@ describe('Media asset garbage collection', () => {
       .values({
         threadId,
         creator: userId,
-        seq: 0,
-        originSeq: 0,
+        seq: 1,
+        originSeq: 1,
         contentType: 'FILE',
         content: '{}',
         updatedAt: new Date(),

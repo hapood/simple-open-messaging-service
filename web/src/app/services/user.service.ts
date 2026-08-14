@@ -14,6 +14,7 @@ import {
 import { WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
+import { isTauri } from './runtime';
 
 export type { User } from './model';
 
@@ -21,6 +22,37 @@ export type FederatedResolveResult = {
   user: User;
   relationship: 'NONE' | 'OUTGOING_PENDING' | 'INCOMING_PENDING' | 'FRIEND';
 };
+export type FederatedResolveStage =
+  | 'DISCOVERING'
+  | 'VERIFYING_IDENTITY'
+  | 'CONNECTING'
+  | 'WAITING_FOR_PEER'
+  | 'FETCHING_USER';
+
+export interface ClientIntentUser {
+  id: number;
+  account: string;
+  name: string;
+  avatar: string;
+  domain: string;
+  isForeigner: boolean;
+}
+
+export interface ClientFriendIntent {
+  key: string;
+  account: string;
+  domain: string;
+  subjectAccount: string;
+  subjectDomain: string;
+  businessRevision: number;
+  inviteId?: string;
+  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  note: string;
+  requestedAt: number | null;
+  expiresAt: number | null;
+  actor: ClientIntentUser;
+  subject: ClientIntentUser;
+}
 
 /** One entry of the hydrated client-state delta (POST /user/query-state/delta). The server plans
  *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId only
@@ -45,7 +77,25 @@ export type HydratedThreadDeltaOp =
       threadIds: number[];
       revision: number;
     }
-  | { direction: 'FRIEND_REQUEST'; revision: number };
+  | {
+      direction: 'CLIENT_STATE';
+      revision: number;
+      account: string;
+      domain: string;
+      eventType: 'P2P_INTENT';
+      subjectAccount: string;
+      subjectDomain: string;
+      businessRevision: number;
+      body: Omit<
+        ClientFriendIntent,
+        | 'key'
+        | 'account'
+        | 'domain'
+        | 'subjectAccount'
+        | 'subjectDomain'
+        | 'businessRevision'
+      >;
+    };
 
 /** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
  *  userId (the session token is opaque, server-side-lookup only). Set on establishSession, cleared on
@@ -417,34 +467,98 @@ export class UserService {
 
   /** One-shot temporary SSE used only for federated exact resolve. Unsubscribing closes the stream;
    * the server emits exactly one resolved/failed terminal and never creates a User stub. */
-  resolveFederatedUser(params: { account: string; domain: string }) {
+  resolveFederatedUser(
+    params: { account: string; domain: string },
+    onProgress?: (stage: FederatedResolveStage) => void,
+  ): Observable<FederatedResolveResult> {
     const query = new URLSearchParams(params);
     // HttpClient is intentional: browser requests use the httpOnly cookie and
     // TauriHttpBackend routes native requests through Rust, which injects its
     // in-memory Bearer. The response is terminal and server-closed, so native
     // may safely deliver the complete SSE body as one IPC response.
-    return this.http
-      .get(`${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`, {
-        responseType: 'text',
-        headers: { Accept: 'text/event-stream' },
-      })
-      .pipe(
-        map((text) => {
-          for (const frame of text.split(/\r?\n\r?\n/)) {
+    if (isTauri())
+      return this.http
+        .get(
+          `${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`,
+          {
+            responseType: 'text',
+            headers: { Accept: 'text/event-stream' },
+          },
+        )
+        .pipe(
+          map((text) => {
+            for (const frame of text.split(/\r?\n\r?\n/)) {
+              const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim();
+              const data = /^data:\s*(.+)$/m.exec(frame)?.[1];
+              if (!event || !data) continue;
+              if (event === 'progress') {
+                onProgress?.(
+                  (JSON.parse(data) as { stage: FederatedResolveStage }).stage,
+                );
+              }
+              if (event === 'resolved')
+                return JSON.parse(data) as FederatedResolveResult;
+              if (event === 'failed')
+                throw new Error(
+                  (JSON.parse(data) as { reason?: string }).reason ??
+                    'federated resolve failed',
+                );
+            }
+            throw new Error('resolve stream ended without a terminal event');
+          }),
+        );
+
+    return new Observable<FederatedResolveResult>((subscriber) => {
+      const aborter = new AbortController();
+      void (async () => {
+        const response = await fetch(
+          `${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`,
+          {
+            signal: aborter.signal,
+            headers: { Accept: 'text/event-stream' },
+            cache: 'no-store',
+          },
+        );
+        if (!response.ok || !response.body) {
+          throw new Error(`federated resolve failed: HTTP ${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          let boundary: number;
+          while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
             const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim();
             const data = /^data:\s*(.+)$/m.exec(frame)?.[1];
             if (!event || !data) continue;
-            if (event === 'resolved')
-              return JSON.parse(data) as FederatedResolveResult;
-            if (event === 'failed')
+            if (event === 'progress') {
+              onProgress?.(
+                (JSON.parse(data) as { stage: FederatedResolveStage }).stage,
+              );
+            } else if (event === 'resolved') {
+              subscriber.next(JSON.parse(data) as FederatedResolveResult);
+              subscriber.complete();
+              return;
+            } else if (event === 'failed') {
               throw new Error(
                 (JSON.parse(data) as { reason?: string }).reason ??
                   'federated resolve failed',
               );
+            }
           }
-          throw new Error('resolve stream ended without a terminal event');
-        }),
-      );
+        }
+        throw new Error('resolve stream ended without a terminal event');
+      })().catch((error: unknown) => {
+        if (!aborter.signal.aborted) subscriber.error(error);
+      });
+      return () => aborter.abort();
+    });
   }
 
   /** Local user discovery (fuzzy over account OR display name, case-insensitive). Returns up to 20
@@ -502,25 +616,52 @@ export class UserService {
     >(`${apiPrefix()}/invite/friend-status`, params);
   }
 
-  /** Incoming pending friend invites (no params — backend hardcodes last-7-days, ≤200, friends filtered
-   *  out). The inviter profile is embedded on each row (fromUser). */
-  listIncomingInvites() {
-    return this.http.post<StandardResponse<Invite[]>>(
-      `${apiPrefix()}/invite/incoming`,
-      {},
+  /** Reads the compacted friend-intent projection already synchronized into the local database. */
+  async listLocalFriendInvites(
+    direction: 'INCOMING' | 'OUTGOING',
+  ): Promise<Invite[]> {
+    const me = this.sessionUserId();
+    if (me === null) return [];
+    const now = Date.now();
+    const intents = await this.webdb.getFriendIntents();
+    const accepted = new Set(
+      intents
+        .filter((intent) => intent.status !== 'REQUESTED')
+        .map(
+          (intent) =>
+            `${intent.account}\u0000${intent.domain}\u0000${intent.subjectAccount}\u0000${intent.subjectDomain}`,
+        ),
     );
-  }
-
-  /** My outgoing pending friend invites (same parameterless shape as incoming). */
-  listOutgoingInvites() {
-    return this.http.post<StandardResponse<Invite[]>>(
-      `${apiPrefix()}/invite/outgoing`,
-      {},
-    );
+    return intents
+      .filter(
+        (intent) =>
+          intent.status === 'REQUESTED' &&
+          intent.expiresAt !== null &&
+          intent.expiresAt > now &&
+          !accepted.has(
+            `${intent.subjectAccount}\u0000${intent.subjectDomain}\u0000${intent.account}\u0000${intent.domain}`,
+          ) &&
+          (direction === 'INCOMING'
+            ? intent.subject.id === me
+            : intent.actor.id === me),
+      )
+      .sort((a, b) => (b.requestedAt ?? 0) - (a.requestedAt ?? 0))
+      .map((intent) => ({
+        // Address-backed requests have no server-side invite id. The compacted key is only a stable
+        // client list identity; actions below send the peer Address instead.
+        id: intent.inviteId ?? intent.key,
+        kind: 'FRIEND',
+        fromUser: intent.actor,
+        toUser: intent.subject,
+        note: intent.note,
+        status: 'PENDING',
+        expiresAt: intent.expiresAt!,
+        createdAt: intent.requestedAt ?? 0,
+      }));
   }
 
   /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */
-  acceptInvite(params: { inviteId: string }) {
+  acceptInvite(params: { inviteId: string } | { account: string; domain: string }) {
     return this.http.post<StandardResponse<{ threadId?: number }>>(
       `${apiPrefix()}/invite/accept`,
       params,
@@ -535,7 +676,7 @@ export class UserService {
   }
 
   /** Reject an incoming invite by id. */
-  rejectInvite(params: { inviteId: string }) {
+  rejectInvite(params: { inviteId: string } | { account: string; domain: string }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/invite/reject`,
       params,
@@ -543,7 +684,7 @@ export class UserService {
   }
 
   /** Revoke my own outgoing invite by id. */
-  revokeInvite(params: { inviteId: string }) {
+  revokeInvite(params: { inviteId: string } | { account: string; domain: string }) {
     return this.http.post<StandardResponse>(
       `${apiPrefix()}/invite/revoke`,
       params,

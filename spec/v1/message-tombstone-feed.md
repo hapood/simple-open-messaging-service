@@ -1,6 +1,6 @@
 # SOMS Federation v1 Message Tombstone Feed and Query
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 规范性：本文全部为规范性要求。
 
 本文定义墓碑索引型压缩 feed `GET /s2s/v1/message-tombstone-feed` 和按 thread 读取权威

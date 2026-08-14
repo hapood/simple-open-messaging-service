@@ -59,6 +59,13 @@ export function setFederationDownloadLimits(
   });
 }
 
+export function setFederationHttpLimits(global: number, perPeer: number) {
+  return request<{ global: number; perPeer: number }>(
+    '/admin/settings/federation-http',
+    { global, perPeer },
+  );
+}
+
 /** Validate the configured VAPID keypair + transport status (deterministic, no network). */
 export function runVapidHealthCheck(): Promise<VapidHealthReport> {
   return request<VapidHealthReport>('/admin/settings/health-check');

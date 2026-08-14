@@ -1,7 +1,9 @@
-import { type ReactNode, createContext, useCallback, useContext, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { type ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { adminLogin, adminLoginVerify, adminLogout, webAuthnLoginBegin, webAuthnLoginFinish } from '@/api/auth'
 import { startAuthentication } from '@simplewebauthn/browser'
+import { getMe } from '@/api/me'
+import { queryClient } from '@/lib/query-client'
 
 /** Password-step outcome: either fully logged in (tokens stored), or a second-factor challenge to resolve
  *  next. `factors` tells the login page which affordances to show (TOTP/backup vs passkey). */
@@ -11,6 +13,8 @@ export type LoginStepResult =
 
 interface AuthContextValue {
   isAuthenticated: boolean
+  /** True while the existing httpOnly session is being verified on initial navigation. */
+  isChecking: boolean
   /** Login (password step): stores tokens + bumps state on success, or returns a second-factor challenge. */
   login: (account: string, password: string) => Promise<LoginStepResult>
   /** Verify the challenge with a TOTP or backup code → stores tokens + bumps state. */
@@ -25,11 +29,30 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
-  // The access token is in-memory and does not drive re-rendering (a transparent
-  // refresh must not trigger UI); a version bump refreshes isAuthenticated only on
-  // the discrete login/logout events.
-  const [version, setVersion] = useState(0)
-  const bump = useCallback(() => setVersion((v) => v + 1), [])
+  const { pathname } = useLocation()
+  const onLoginPage = pathname.endsWith('/login')
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>(
+    onLoginPage ? 'unauthenticated' : 'checking',
+  )
+
+  // The session cookie is httpOnly, so the browser cannot inspect it locally. Verify it before
+  // mounting any protected layout; otherwise the real console flashes until its first API call
+  // discovers the expired/missing session and redirects.
+  useEffect(() => {
+    if (onLoginPage || authState !== 'checking') return
+    let active = true
+    void queryClient
+      .fetchQuery({ queryKey: ['admin', 'me'], queryFn: () => getMe() })
+      .then(() => {
+        if (active) setAuthState('authenticated')
+      })
+      .catch(() => {
+        if (active) setAuthState('unauthenticated')
+      })
+    return () => {
+      active = false
+    }
+  }, [authState, onLoginPage])
 
   const login = useCallback(async (account: string, password: string): Promise<LoginStepResult> => {
     const data = await adminLogin(account, password)
@@ -37,16 +60,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Password verified, but a second factor is required before any session is issued.
       return { twoFactorRequired: true, challengeToken: data.challengeToken, factors: data.factors }
     }
-    bump()
+    setAuthState('authenticated')
     return { done: true }
-  }, [bump])
+  }, [])
 
   const verifyTwoFactor = useCallback(
     async (challengeToken: string, code?: string, backupCode?: string) => {
       await adminLoginVerify(challengeToken, code, backupCode)
-      bump()
+      setAuthState('authenticated')
     },
-    [bump],
+    [],
   )
 
   const verifyPasskey = useCallback(
@@ -55,28 +78,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // The browser drives the platform authenticator; the backend generated the options.
       const assertion = await startAuthentication({ optionsJSON: begin.options })
       await webAuthnLoginFinish(challengeToken, begin.pendingToken, assertion)
-      bump()
+      setAuthState('authenticated')
     },
-    [bump],
+    [],
   )
 
   const logout = useCallback(async () => {
     await adminLogout()
-    bump()
+    queryClient.removeQueries({ queryKey: ['admin'] })
+    setAuthState('unauthenticated')
     navigate('/login', { replace: true })
-  }, [bump, navigate])
+  }, [navigate])
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      isAuthenticated: window.location.pathname.endsWith('/login') ? version > 0 : true,
+      isAuthenticated: authState === 'authenticated',
+      isChecking: authState === 'checking',
       login,
       verifyTwoFactor,
       verifyPasskey,
       logout,
     }),
-    // `version` only exists to recompute isAuthenticated after login/logout.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [version, login, verifyTwoFactor, verifyPasskey, logout],
+    [authState, login, verifyTwoFactor, verifyPasskey, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

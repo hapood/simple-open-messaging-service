@@ -98,6 +98,10 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.searchUser();
 
     expect(component.connectingDomain()).toBe('peer.test');
+    const progress = userService.resolveFederatedUser.calls.mostRecent()
+      .args[1] as (stage: 'WAITING_FOR_PEER') => void;
+    progress('WAITING_FOR_PEER');
+    expect(component.federationStage()).toBe('WAITING_FOR_PEER');
     expect(component.addTabStatus()).toBe(AddTabStatus.SEARCHING);
     resolve.next({ user: remote, relationship: 'NONE' });
     resolve.complete();

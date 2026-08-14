@@ -291,6 +291,13 @@
     },
     "reasonPh": "添加备注（可选）",
     "connecting": "正在连接 {{domain}}…",
+    "federationStage": {
+      "DISCOVERING": "正在查找服务器…",
+      "VERIFYING_IDENTITY": "正在验证服务器身份…",
+      "CONNECTING": "正在建立安全连接…",
+      "WAITING_FOR_PEER": "正在等待对方确认…",
+      "FETCHING_USER": "正在查询用户…"
+    },
     "noPendingTitle": "暂无待处理请求",
     "noPendingSub": "你收到的好友请求会显示在这里。",
     "noSentTitle": "暂无已发送请求",
@@ -477,6 +484,7 @@
     "invitedBy": "{{name}} 邀请你",
     "validUntil": "有效期至 {{date}}",
     "groupInvitation": "群聊邀请",
+    "groupInviteExpired": "群聊邀请已过期",
     "inviteStatusValid": "有效",
     "inviteStatusExpired": "已过期",
     "joined": "已加入 ✓",

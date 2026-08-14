@@ -7,11 +7,11 @@ import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
   deletedMessage,
-  federationMessageDelivery,
   federationTombstoneFeedIndex,
   federationTombstoneServeCursor,
   message,
   messageThread,
+  threadAudience,
   threadParticipant,
   user,
 } from '../database/schema.js';
@@ -104,15 +104,13 @@ export class FederationMessageTombstoneFeedService {
           ),
         )
         .innerJoin(
-          federationMessageDelivery,
+          threadAudience,
           and(
-            eq(federationMessageDelivery.peerDomain, peerDomain),
-            eq(federationMessageDelivery.messageId, message.id),
+            eq(threadAudience.threadId, deletedMessage.threadId),
+            eq(threadAudience.targetDomain, peerDomain),
+            isNull(threadAudience.localUserId),
           ),
         )
-        // Delivery proof can be materialized after the deletion transaction (for example while
-        // draining an audience during relationship closure). Reconsider permanent local facts on
-        // every fill so advancing the global scan watermark can never hide a newly eligible proof.
         .where(isNull(deletedMessage.federationSourceDomain))
         .orderBy(asc(deletedMessage.id));
       const latest = new Map<number, bigint>();
@@ -256,13 +254,6 @@ export class FederationMessageTombstoneFeedService {
             eq(message.seq, deletedMessage.seq),
           ),
         )
-        .innerJoin(
-          federationMessageDelivery,
-          and(
-            eq(federationMessageDelivery.peerDomain, peerDomain),
-            eq(federationMessageDelivery.messageId, message.id),
-          ),
-        )
         .where(eq(deletedMessage.threadId, threadId));
       const currentEnd = tail?.end ?? 0n;
       if (after > currentEnd) {
@@ -295,13 +286,6 @@ export class FederationMessageTombstoneFeedService {
           ),
         )
         .innerJoin(user, eq(user.id, message.creator))
-        .innerJoin(
-          federationMessageDelivery,
-          and(
-            eq(federationMessageDelivery.peerDomain, peerDomain),
-            eq(federationMessageDelivery.messageId, message.id),
-          ),
-        )
         .where(
           and(
             eq(deletedMessage.threadId, threadId),
@@ -356,36 +340,20 @@ export class FederationMessageTombstoneFeedService {
             JOIN "User" group_user ON group_user.id = thread."groupUserId"
             WHERE thread.type = 'GROUP' AND group_user.account = ${selector.groupAccount}
               AND (CASE WHEN group_user.domain = 'local' THEN ${this.localDomain} ELSE group_user.domain END) = ${selector.groupDomain}
-              AND (
-                EXISTS (SELECT 1 FROM "ThreadAudience" audience
-                  WHERE audience."threadId" = thread.id
-                    AND audience."targetDomain" = ${peerDomain}
-                    AND audience."localUserId" IS NULL)
-                OR EXISTS (
-                  SELECT 1 FROM "FederationMessageDelivery" delivery
-                  JOIN "Message" delivered_message ON delivered_message.id = delivery."messageId"
-                  WHERE delivery."peerDomain" = ${peerDomain}
-                    AND delivered_message."threadId" = thread.id
-                )
-              )
+              AND EXISTS (SELECT 1 FROM "ThreadAudience" audience
+                WHERE audience."threadId" = thread.id
+                  AND audience."targetDomain" = ${peerDomain}
+                  AND audience."localUserId" IS NULL)
             LIMIT 1
           `)
         : await this.database.db.execute<{ threadId: number }>(sql`
             SELECT thread.id AS "threadId"
             FROM "MessageThread" thread
             WHERE thread.type = 'P2P'
-              AND (
-                EXISTS (SELECT 1 FROM "ThreadAudience" audience
-                  WHERE audience."threadId" = thread.id
-                    AND audience."targetDomain" = ${peerDomain}
-                    AND audience."localUserId" IS NULL)
-                OR EXISTS (
-                  SELECT 1 FROM "FederationMessageDelivery" delivery
-                  JOIN "Message" delivered_message ON delivered_message.id = delivery."messageId"
-                  WHERE delivery."peerDomain" = ${peerDomain}
-                    AND delivered_message."threadId" = thread.id
-                )
-              )
+              AND EXISTS (SELECT 1 FROM "ThreadAudience" audience
+                WHERE audience."threadId" = thread.id
+                  AND audience."targetDomain" = ${peerDomain}
+                  AND audience."localUserId" IS NULL)
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
                 WHERE p."threadId" = thread.id AND u.account = ${selector.account} AND u."isForeigner" = false)
               AND EXISTS (SELECT 1 FROM "ThreadParticipant" p JOIN "User" u ON u.id = p."userId"
@@ -397,7 +365,7 @@ export class FederationMessageTombstoneFeedService {
     if (threadId === undefined) {
       throw new BusinessException(
         BusinessCode.FORBIDDEN,
-        'the signed peer has neither current access nor a durable message delivery proof for this thread',
+        'the signed peer does not currently have access to this thread',
         HttpStatus.OK,
       );
     }

@@ -291,6 +291,13 @@
     },
     "reasonPh": "Add a note (optional)",
     "connecting": "Connecting to {{domain}}…",
+    "federationStage": {
+      "DISCOVERING": "Finding the server…",
+      "VERIFYING_IDENTITY": "Verifying the server…",
+      "CONNECTING": "Establishing a secure connection…",
+      "WAITING_FOR_PEER": "Waiting for the peer to confirm…",
+      "FETCHING_USER": "Looking up the user…"
+    },
     "noPendingTitle": "No pending requests",
     "noPendingSub": "Friend requests you receive will appear here.",
     "noSentTitle": "No sent requests",
@@ -477,6 +484,7 @@
     "invitedBy": "Invited by {{name}}",
     "validUntil": "Valid until {{date}}",
     "groupInvitation": "Group invitation",
+    "groupInviteExpired": "Group invitation expired",
     "inviteStatusValid": "Valid",
     "inviteStatusExpired": "Expired",
     "joined": "Joined ✓",

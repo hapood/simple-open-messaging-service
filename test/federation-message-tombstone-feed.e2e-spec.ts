@@ -8,7 +8,6 @@ import { MessageDeleteType } from '../src/database/enums.js';
 import {
   deletedMessage,
   federatedPeer,
-  federationMessageDelivery,
   federationTombstoneServeCursor,
   message,
   messageThread,
@@ -81,7 +80,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     const [target] = await database.db
       .insert(message)
       .values({
-        seq: 0,
+        seq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'deleted' }),
         threadId: thread.id,
@@ -91,15 +90,11 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         updatedAt: now,
       })
       .returning();
-    await database.db.insert(federationMessageDelivery).values({
-      peerDomain,
-      messageId: target.id,
-    });
     const [deletion] = await database.db
       .insert(deletedMessage)
       .values({
         threadId: thread.id,
-        seq: 0,
+        seq: 1,
         type: MessageDeleteType.WITHDRAW,
         createdAt: now,
         updatedAt: now,
@@ -142,13 +137,13 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         {
           deletionSeq: deletion.id.toString(),
           type: MessageDeleteType.WITHDRAW,
-          target: { originSeq: 0 },
+          target: { originSeq: 1 },
         },
       ],
     });
   });
 
-  it('keeps the compacted feed index and historical fact without source ACK cleanup', async () => {
+  it('keeps the compacted current-access feed index without source ACK cleanup', async () => {
     await seedDeletion();
     const first = await service.serve(peerDomain, 0n);
     const replay = await new FederationMessageTombstoneFeedService(
@@ -157,7 +152,7 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
     expect(replay).toEqual(first);
   });
 
-  it('keeps a delivered tombstone queryable after current audience closes', async () => {
+  it('rejects tombstone queries after current audience closes', async () => {
     const { thread } = await seedDeletion();
     await service.fill(peerDomain);
     await database.db
@@ -170,20 +165,14 @@ describe('FederationMessageTombstoneFeedService compacted feed', () => {
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0n,
       ),
-    ).resolves.toMatchObject({
-      scannedThrough: '1',
-      tombstones: [{ deletionSeq: '1' }],
-    });
-    await expect(service.serve(peerDomain, 0n)).resolves.toMatchObject({
-      items: [{ feedId: '1' }],
-    });
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
   });
 
-  it('does not publish a deletion without a permanent delivery proof', async () => {
-    const { target } = await seedDeletion();
+  it('does not publish a deletion without current audience access', async () => {
+    const { thread } = await seedDeletion();
     await database.db
-      .delete(federationMessageDelivery)
-      .where(eq(federationMessageDelivery.messageId, target.id));
+      .delete(threadAudience)
+      .where(eq(threadAudience.threadId, thread.id));
 
     await expect(service.serve(peerDomain, 0n)).resolves.toEqual({
       items: [],

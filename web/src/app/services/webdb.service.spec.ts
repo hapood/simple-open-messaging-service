@@ -82,6 +82,7 @@ describe('WebdbService', () => {
         .toBe('soms-webdb-u1');
       expect([...db!.objectStoreNames].sort()).toEqual([
         'avatars',
+        'friendIntents',
         'profiles',
         'settings',
         'threads',
@@ -93,7 +94,7 @@ describe('WebdbService', () => {
         'settings',
       ]);
       expect((await messageDb.get('settings', 'schemaVersion'))?.value).toBe(1);
-      expect(await webdb.getMeta('schemaVersion')).toBe(1);
+      expect(await webdb.getMeta('schemaVersion')).toBe(2);
       expect(webdb.ready()).toBe(true);
     });
 
@@ -142,7 +143,7 @@ describe('WebdbService', () => {
 
       await webdb.openForUser('1');
 
-      expect(await webdb.getMeta('schemaVersion')).toBe(1);
+      expect(await webdb.getMeta('schemaVersion')).toBe(2);
       expect(await webdb.getMeta('sentinel')).toBeUndefined();
     });
 
@@ -303,13 +304,80 @@ describe('WebdbService', () => {
       expect(await webdb.getMeta('stateRevision')).toBe(13);
     });
 
-    it('commits friend-request state in the same transaction as stateRevision', async () => {
+    it('upserts compacted friend intents by stable key and business revision', async () => {
       await webdb.openForUser('1');
+      const base = {
+        direction: 'CLIENT_STATE' as const,
+        revision: 2,
+        account: 'alice',
+        domain: 'local',
+        eventType: 'P2P_INTENT' as const,
+        subjectAccount: 'bob',
+        subjectDomain: 'peer.test',
+        body: {
+          status: 'REQUESTED' as const,
+          note: 'hello',
+          requestedAt: 10,
+          expiresAt: 20,
+          actor: {
+            id: 1,
+            account: 'alice',
+            name: 'Alice',
+            avatar: '',
+            domain: 'local',
+            isForeigner: false,
+          },
+          subject: {
+            id: 0,
+            account: 'bob',
+            name: 'Bob',
+            avatar: '',
+            domain: 'peer.test',
+            isForeigner: true,
+          },
+        },
+      };
+      await webdb.applyThreadDelta([{ ...base, businessRevision: 2 }], 2);
       await webdb.applyThreadDelta(
-        [{ direction: 'FRIEND_REQUEST', revision: 17 }],
-        17,
+        [
+          {
+            ...base,
+            businessRevision: 1,
+            body: { ...base.body, status: 'REVOKED' },
+          },
+        ],
+        3,
       );
+      expect(await webdb.getFriendIntents()).toEqual([
+        jasmine.objectContaining({
+          businessRevision: 2,
+          status: 'REQUESTED',
+          note: 'hello',
+        }),
+      ]);
+    });
 
+    it('derives an incoming friend-request badge from client state atomically', async () => {
+      await webdb.openForUser('1');
+      const op = {
+        direction: 'CLIENT_STATE' as const,
+        revision: 17,
+        account: 'remote',
+        domain: 'peer.test',
+        eventType: 'P2P_INTENT' as const,
+        subjectAccount: 'local',
+        subjectDomain: 'local',
+        businessRevision: 1,
+        body: {
+          status: 'REQUESTED' as const,
+          note: '',
+          requestedAt: 10,
+          expiresAt: 20,
+          actor: { id: 2, account: 'remote', name: 'Remote', avatar: '', domain: 'peer.test', isForeigner: true },
+          subject: { id: 1, account: 'local', name: 'Local', avatar: '', domain: 'local', isForeigner: false },
+        },
+      };
+      await webdb.applyThreadDelta([op], 17);
       expect(await webdb.getMeta('friendRequestStateRevision')).toBe(17);
       expect(await webdb.getMeta('stateRevision')).toBe(17);
     });

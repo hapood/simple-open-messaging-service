@@ -135,11 +135,18 @@ export async function resolveFederatedCard(
     .query({ account, domain })
     .set('Authorization', `Bearer ${token}`)
     .set('Accept', 'text/event-stream');
-  const event = /^event:\s*(resolved|failed)$/m.exec(response.text)?.[1] as
-    | 'resolved'
-    | 'failed'
-    | undefined;
-  const raw = /^data:\s*(.+)$/m.exec(response.text)?.[1];
+  const terminalFrame = response.text
+    .split(/\r?\n\r?\n/)
+    .map((frame) => ({
+      event: /^event:\s*(resolved|failed)$/m.exec(frame)?.[1] as
+        | 'resolved'
+        | 'failed'
+        | undefined,
+      raw: /^data:\s*(.+)$/m.exec(frame)?.[1],
+    }))
+    .find((frame) => frame.event !== undefined);
+  const event = terminalFrame?.event;
+  const raw = terminalFrame?.raw;
   if (response.status !== 200 || !event || !raw)
     throw new Error(`invalid federated resolve stream: ${response.text}`);
   return { event, data: JSON.parse(raw) as Record<string, unknown> };
@@ -180,24 +187,36 @@ export async function establishFederatedFriendship(params: {
   if (sent.body.code !== 0)
     throw new Error(`federated request failed: ${JSON.stringify(sent.body)}`);
 
-  let incomingId: string | undefined;
+  let incomingFound = false;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const incoming = await request(params.remote.baseUrl)
       .post('/api/v1/invite/incoming')
       .set('Authorization', `Bearer ${params.remoteToken}`)
       .send({});
-    incomingId = (
-      incoming.body.data as Array<{ id: string }> | undefined
-    )?.find((row) => row.id.startsWith('f:'))?.id;
-    if (incomingId) break;
+    const matching = (
+      incoming.body.data as
+        | Array<{
+            id: string | number;
+            fromUser?: { account?: string; domain?: string };
+            toUser?: { account?: string };
+          }>
+        | undefined
+    )?.find(
+      (row) =>
+        row.fromUser?.account === params.localAccount &&
+        row.fromUser?.domain === params.localDomain &&
+        row.toUser?.account === params.remoteAccount,
+    );
+    incomingFound = matching !== undefined;
+    if (incomingFound) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (!incomingId) throw new Error('federated request did not reach remote');
+  if (!incomingFound) throw new Error('federated request did not reach remote');
   const accepted = await request(params.remote.baseUrl)
     .post('/api/v1/invite/accept')
     .set('Authorization', `Bearer ${params.remoteToken}`)
-    .send({ inviteId: incomingId });
+    .send({ account: params.localAccount, domain: params.localDomain });
   if (accepted.body.code !== 0)
     throw new Error(
       `federated accept failed: ${JSON.stringify(accepted.body)}`,

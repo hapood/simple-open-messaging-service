@@ -588,7 +588,7 @@ describe('MessageRepository', () => {
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
-        data: [msg(42, 3), msg(42, 2), msg(42, 1)],
+        data: [msg(42, 4), msg(42, 3), msg(42, 2)],
         hasMore: true,
       }),
     );
@@ -603,7 +603,7 @@ describe('MessageRepository', () => {
       take: 3,
       orderBy: 'desc',
     });
-    expect(warm.data.map((m) => m.seq)).toEqual([3, 2, 1]);
+    expect(warm.data.map((m) => m.seq)).toEqual([4, 3, 2]);
     expect(warm.hasMore).toBe(true);
     await waitFor(() => queryMessageLogSpy.calls.count() === 1);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
@@ -611,7 +611,7 @@ describe('MessageRepository', () => {
     refresh$.next({
       code: 0,
       message: 'ok',
-      data: [msg(42, 4), msg(42, 3), msg(42, 2)],
+      data: [msg(42, 5), msg(42, 4), msg(42, 3)],
       hasMore: true,
     });
     refresh$.complete();
@@ -1043,28 +1043,28 @@ describe('MessageRepository', () => {
     expect(b.data[0].threadId).toBe(43);
   });
 
-  it('getOlder floor: a contiguous cache reaching seq 0 reports hasMore=false (no backend)', async () => {
-    // Seed [0,1,2] (the whole small thread) + establish hasMore via the seeding call.
+  it('getOlder floor: a confirmed cache reaching seq 1 reports hasMore=false (no backend)', async () => {
+    // Seed [1,2,3] (the whole small thread) + establish hasMore via the seeding call.
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({
         code: 0,
         message: 'ok',
-        data: [2, 1, 0].map((s) => msg(42, s)),
+        data: [3, 2, 1].map((s) => msg(42, s)),
         hasMore: false,
       }),
     );
     await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
     queryMessageLogSpy.calls.reset();
 
-    // getOlder(cursor=2, take=3): cache holds [0,1] below 2, contiguous to the floor (seq 0) → hit, hasMore=false.
+    // getOlder(cursor=3, take=3): cache holds [1,2] below 3, complete to the protocol floor → cache hit.
     const res = await repo.queryMessages(42, {
       skip: 1,
       take: 3,
-      lastSeq: 2,
+      lastSeq: 3,
       orderBy: 'desc',
     });
-    expect(res.data.map((m) => m.seq)).toEqual([1, 0]);
-    expect(res.hasMore).toBe(false); // reached seq 0 → no older
+    expect(res.data.map((m) => m.seq)).toEqual([2, 1]);
+    expect(res.hasMore).toBe(false); // reached the minimum message seq 1
     expect(queryMessageLogSpy).not.toHaveBeenCalled();
   });
 

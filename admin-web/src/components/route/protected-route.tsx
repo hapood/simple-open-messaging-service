@@ -1,12 +1,15 @@
-import { Outlet } from 'react-router-dom'
+import { Navigate, Outlet } from 'react-router-dom'
+import { useAuth } from '@/auth/auth-context'
 import { AdminLayout } from '@/components/layout/admin-layout'
 
-/**
- * Protected route: no refresh token → redirect to /login.
- * Refresh present but access expired/invalid → the API client transparently refreshes
- * on the first 401; if refresh also fails → forceLogout redirects to /login.
- */
+/** Protected route: verify the httpOnly admin session before mounting the console. */
 export function ProtectedRoute() {
+  const { isAuthenticated, isChecking } = useAuth()
+
+  // Render no console structure until the server has verified the httpOnly session cookie.
+  if (isChecking) return null
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+
   return (
     <AdminLayout>
       <Outlet />

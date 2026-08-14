@@ -90,7 +90,9 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   readonly errorMsg = signal('');
 
   readonly viewState = computed<ViewState>(() => {
-    if (this.notFound()) return 'invalid';
+    // A locally GC'd request cannot be distinguished from an expired request using the immutable
+    // message card alone. Treat absence as expiry; the card remains harmless and non-actionable.
+    if (this.notFound()) return 'expired';
     const d = this.detail();
     if (d === null) return 'loading';
     if (d.alreadyJoined) return 'joined';
@@ -144,14 +146,19 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
       this.notFound.set(true);
       return;
     }
-    const res = await firstValueFrom(
-      this.userService.getInviteDetail({ inviteId: id }),
-    );
-    if (res.code === 0 && res.data) {
-      this.detail.set(res.data);
-      this.notFound.set(false);
-    } else {
-      // INVITE_NOT_FOUND (or any error) → invalid (the dialog shows "invite expired").
+    try {
+      const res = await firstValueFrom(
+        this.userService.getInviteDetail({ inviteId: id }),
+      );
+      if (res.code === 0 && res.data) {
+        this.detail.set(res.data);
+        this.notFound.set(false);
+        return;
+      }
+      // Requests are locally garbage-collected after expiry. The immutable message card therefore
+      // degrades every missing detail to the same safe expired state.
+      this.notFound.set(true);
+    } catch {
       this.notFound.set(true);
     }
   }

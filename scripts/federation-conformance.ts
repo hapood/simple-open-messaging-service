@@ -18,13 +18,7 @@ import {
 } from '../src/federation/federation-protocol.js';
 import { FederationV1WireErrorCode } from '../src/common/business-code.js';
 
-const normativeSpecDir = join(
-  process.cwd(),
-  'docs',
-  'federation',
-  'spec',
-  'v1',
-);
+const normativeSpecDir = join(process.cwd(), 'spec', 'v1');
 const specDir = join(normativeSpecDir, 'schema');
 
 interface Vector {

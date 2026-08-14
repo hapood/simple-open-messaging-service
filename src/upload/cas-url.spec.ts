@@ -6,7 +6,7 @@ const bare = `/uploads/msg-assets/ab/ab/${digest}`;
 
 describe('contextual CAS URLs', () => {
   it('binds a bare URL to its carrier message', () => {
-    expect(contextualCasUrl(digest, 12, 0)).toBe(`${bare}?threadId=12&seq=0`);
+    expect(contextualCasUrl(digest, 12, 1)).toBe(`${bare}?threadId=12&seq=1`);
     expect(
       contextualizeCasUrls(JSON.stringify({ url: bare }), 12, 7),
     ).toContain(`${bare}?threadId=12&seq=7`);

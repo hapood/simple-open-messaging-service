@@ -12,6 +12,7 @@ import {
   user,
 } from '../src/database/schema.js';
 import { InviteService } from '../src/invite/invite.service.js';
+import { ClientStateFeedService } from '../src/thread-revision/client-state-feed.service.js';
 
 describe('federation directed-state boundaries', () => {
   let mod: TestingModule;
@@ -23,7 +24,12 @@ describe('federation directed-state boundaries', () => {
       imports: [DatabaseModule],
     }).compile();
     database = mod.get(DatabaseService);
-    invites = new InviteService(database, {} as never, {} as never);
+    invites = new InviteService(
+      database,
+      {} as never,
+      {} as never,
+      new ClientStateFeedService(),
+    );
   });
 
   afterAll(async () => mod.close());
@@ -242,9 +248,13 @@ describe('federation directed-state boundaries', () => {
       target.id,
       'same note',
     );
+    const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await database.db
       .update(groupMembershipRequest)
-      .set({ expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000) })
+      .set({
+        requestedAt,
+        expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+      })
       .where(eq(groupMembershipRequest.id, BigInt(firstId)));
     const secondId = await invites.createGroupInvite(
       owner.id,

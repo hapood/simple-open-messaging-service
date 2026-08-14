@@ -397,7 +397,8 @@ CREATE TABLE public."DeletedMessage" (
     type public."MessageDeleteType" NOT NULL,
     "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "federationSourceDomain" character varying(63)
+    "federationSourceDomain" character varying(63),
+    CONSTRAINT "DeletedMessage_seq_check" CHECK ((seq > 0))
 );
 
 
@@ -462,7 +463,6 @@ ALTER SEQUENCE public."DiagnosticsReport_id_seq" OWNED BY public."DiagnosticsRep
 --
 
 CREATE TABLE public."FederatedFriendRequest" (
-    id bigint NOT NULL,
     "localUserId" integer NOT NULL,
     "remoteAccount" character varying(31) NOT NULL,
     "remoteDomain" character varying(63) NOT NULL,
@@ -482,25 +482,6 @@ CREATE TABLE public."FederatedFriendRequest" (
     CONSTRAINT "FederatedFriendRequest_revision_check" CHECK (((revision >= 0) AND (("profileRevision" IS NULL) OR ("profileRevision" >= 0)))),
     CONSTRAINT "FederatedFriendRequest_status_check" CHECK (((status)::text = ANY ((ARRAY['REQUESTED'::character varying, 'REVOKED'::character varying])::text[])))
 );
-
-
---
--- Name: FederatedFriendRequest_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."FederatedFriendRequest_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: FederatedFriendRequest_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."FederatedFriendRequest_id_seq" OWNED BY public."FederatedFriendRequest".id;
 
 
 --
@@ -537,7 +518,8 @@ CREATE TABLE public."FederatedMessageTombstone" (
     type public."MessageDeleteType" NOT NULL,
     "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "authorityDeletedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    "authorityDeletedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederatedMessageTombstone_origin_seq_check" CHECK (("originSeq" > 0))
 );
 
 
@@ -741,17 +723,6 @@ CREATE TABLE public."FederationMemberProfileSource" (
 
 
 --
--- Name: FederationMessageDelivery; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationMessageDelivery" (
-    "peerDomain" character varying(63) NOT NULL,
-    "messageId" bigint NOT NULL,
-    "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-
---
 -- Name: FederationMessageFeedIndex; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -762,7 +733,7 @@ CREATE TABLE public."FederationMessageFeedIndex" (
     "messageEndSeq" integer NOT NULL,
     "updatedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "FederationMessageFeedIndex_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "FederationMessageFeedIndex_messageEndSeq_check" CHECK (("messageEndSeq" >= 0))
+    CONSTRAINT "FederationMessageFeedIndex_messageEndSeq_check" CHECK (("messageEndSeq" > 0))
 );
 
 
@@ -775,7 +746,7 @@ CREATE TABLE public."FederationMessageQueryCursor" (
     "threadKey" character varying(255) NOT NULL,
     "committedThrough" integer NOT NULL,
     "updatedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationMessageQueryCursor_committedThrough_check" CHECK (("committedThrough" >= '-1'::integer))
+    CONSTRAINT "FederationMessageQueryCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
 );
 
 
@@ -1000,17 +971,6 @@ CREATE TABLE public."FriendRequest" (
     "expiresAt" timestamp(3) without time zone,
     CONSTRAINT "FriendRequest_expiry_check" CHECK ((((status = 'REQUESTED'::public."FriendRequestStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status <> 'REQUESTED'::public."FriendRequestStatus") AND ("expiresAt" IS NULL)))),
     CONSTRAINT "FriendRequest_revision_check" CHECK (((revision >= 0) AND ("requesterUserId" <> "targetUserId")))
-);
-
-
---
--- Name: FriendRequestStateRevision; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FriendRequestStateRevision" (
-    "userId" integer NOT NULL,
-    revision integer NOT NULL,
-    CONSTRAINT "FriendRequestStateRevision_revision_check" CHECK ((revision > 0))
 );
 
 
@@ -1254,7 +1214,9 @@ CREATE TABLE public."Message" (
     "clientMessageId" character varying(36),
     "originSeq" integer,
     "originServerTime" timestamp(3) without time zone,
-    "federationAuthoredSnapshot" jsonb
+    "federationAuthoredSnapshot" jsonb,
+    CONSTRAINT "Message_origin_seq_check" CHECK (("originSeq" IS NULL OR "originSeq" > 0)),
+    CONSTRAINT "Message_seq_check" CHECK ((seq > 0))
 );
 
 
@@ -1317,12 +1279,12 @@ CREATE TABLE public."MessageThread" (
     type public."MessageThreadType" NOT NULL,
     "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) without time zone NOT NULL,
-    "curSeq" integer DEFAULT '-1'::integer NOT NULL,
+    "curSeq" integer DEFAULT 0 NOT NULL,
     "lastMessageSeq" integer,
     "lastMessagePreview" character varying(255),
     "lastMessageAt" timestamp(3) without time zone,
     "groupUserId" integer,
-    "pullUntil" integer DEFAULT '-1'::integer NOT NULL,
+    "pullUntil" integer DEFAULT 0 NOT NULL,
     "federationTruncated" boolean DEFAULT false NOT NULL,
     "federationVersion" integer DEFAULT 0 NOT NULL,
     CONSTRAINT "MessageThread_federationVersion_check" CHECK (("federationVersion" >= 0)),
@@ -1438,26 +1400,6 @@ CREATE TABLE public."PeerStateFeedTarget" (
 
 
 --
--- Name: PeerStateFeedVersion; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."PeerStateFeedVersion" (
-    "peerDomain" character varying(63) NOT NULL,
-    "feedId" bigint NOT NULL,
-    account character varying(31) NOT NULL,
-    "eventType" public."PeerStateEventType" NOT NULL,
-    "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
-    revision integer NOT NULL,
-    body jsonb NOT NULL,
-    "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    domain character varying(63) NOT NULL,
-    "subjectDomain" character varying(63) DEFAULT ''::character varying NOT NULL,
-    CONSTRAINT "PeerStateFeedVersion_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "PeerStateFeedVersion_revision_check" CHECK ((revision >= 0))
-);
-
-
---
 -- Name: PendingMedia; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1480,7 +1422,8 @@ CREATE TABLE public."PendingMedia" (
     "anyFailed" boolean DEFAULT false NOT NULL,
     "originDomain" character varying(63),
     "expectedFederationVersion" integer,
-    "federationAuthoredSnapshot" jsonb
+    "federationAuthoredSnapshot" jsonb,
+    CONSTRAINT "PendingMedia_origin_seq_check" CHECK (("originSeq" IS NULL OR "originSeq" > 0))
 );
 
 
@@ -1669,7 +1612,7 @@ CREATE TABLE public."ThreadAudience" (
     "threadId" integer NOT NULL,
     "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "messageScannedThroughSeq" integer,
-    CONSTRAINT "ThreadAudience_messageScannedThroughSeq_check" CHECK ((("messageScannedThroughSeq" IS NULL) OR ("messageScannedThroughSeq" >= '-1'::integer))),
+    CONSTRAINT "ThreadAudience_messageScannedThroughSeq_check" CHECK ((("messageScannedThroughSeq" IS NULL) OR ("messageScannedThroughSeq" >= 0))),
     CONSTRAINT "ThreadAudience_target_check" CHECK ((((("targetDomain")::text = 'local'::text) AND ("localUserId" IS NOT NULL)) OR ((("targetDomain")::text <> 'local'::text) AND ("localUserId" IS NULL))))
 );
 
@@ -1716,7 +1659,7 @@ CREATE TABLE public."ThreadParticipant" (
     "recognizesFriend" boolean DEFAULT true NOT NULL,
     "relationshipRev" integer DEFAULT 0 NOT NULL,
     blocked boolean DEFAULT false NOT NULL,
-    CONSTRAINT "ThreadParticipant_cleared_seq_check" CHECK ((("clearedSeq" IS NULL) OR ("clearedSeq" >= '-1'::integer))),
+    CONSTRAINT "ThreadParticipant_cleared_seq_check" CHECK ((("clearedSeq" IS NULL) OR ("clearedSeq" >= 0))),
     CONSTRAINT "ThreadParticipant_relationship_rev_check" CHECK (("relationshipRev" >= 0))
 );
 
@@ -1883,6 +1826,30 @@ CREATE TABLE public."User" (
     "readRevision" integer DEFAULT 0 NOT NULL,
     CONSTRAINT "User_isGroup_sigil_check" CHECK ((((account)::text ~~ '!%'::text) = "isGroup"))
 );
+
+
+--
+-- Name: ClientStateFeed; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ClientStateFeed" (
+    "userId" integer NOT NULL,
+    account character varying(31) NOT NULL,
+    domain character varying(63) NOT NULL,
+    "eventType" character varying(31) NOT NULL,
+    "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
+    "subjectDomain" character varying(63) DEFAULT ''::character varying NOT NULL,
+    "businessRevision" integer NOT NULL,
+    revision integer NOT NULL,
+    body jsonb NOT NULL,
+    "createdAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ClientStateFeed_pkey" PRIMARY KEY ("userId", account, domain, "eventType", "subjectAccount", "subjectDomain"),
+    CONSTRAINT "ClientStateFeed_business_revision_check" CHECK (("businessRevision" >= 0)),
+    CONSTRAINT "ClientStateFeed_revision_check" CHECK ((revision > 0))
+);
+
+CREATE INDEX "ClientStateFeed_user_revision_idx" ON public."ClientStateFeed" USING btree ("userId", revision);
 
 
 --
@@ -2075,13 +2042,6 @@ ALTER TABLE ONLY public."DeletedMessage" ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public."DiagnosticsReport" ALTER COLUMN id SET DEFAULT nextval('public."DiagnosticsReport_id_seq"'::regclass);
-
-
---
--- Name: FederatedFriendRequest id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedFriendRequest" ALTER COLUMN id SET DEFAULT nextval('public."FederatedFriendRequest_id_seq"'::regclass);
 
 
 --
@@ -2306,7 +2266,7 @@ ALTER TABLE ONLY public."DiagnosticsReport"
 --
 
 ALTER TABLE ONLY public."FederatedFriendRequest"
-    ADD CONSTRAINT "FederatedFriendRequest_pkey" PRIMARY KEY (id);
+    ADD CONSTRAINT "FederatedFriendRequest_pkey" PRIMARY KEY ("localUserId", "remoteDomain", "remoteAccount", direction);
 
 
 --
@@ -2379,14 +2339,6 @@ ALTER TABLE ONLY public."FederationMemberProfilePublication"
 
 ALTER TABLE ONLY public."FederationMemberProfileSource"
     ADD CONSTRAINT "FederationMemberProfileSource_pkey" PRIMARY KEY ("targetPeerDomain", "memberAccount", "memberDomain", "threadId");
-
-
---
--- Name: FederationMessageDelivery FederationMessageDelivery_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageDelivery"
-    ADD CONSTRAINT "FederationMessageDelivery_pkey" PRIMARY KEY ("peerDomain", "messageId");
 
 
 --
@@ -2518,14 +2470,6 @@ ALTER TABLE ONLY public."FriendPair"
 
 
 --
--- Name: FriendRequestStateRevision FriendRequestStateRevision_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FriendRequestStateRevision"
-    ADD CONSTRAINT "FriendRequestStateRevision_pkey" PRIMARY KEY ("userId");
-
-
---
 -- Name: FriendRequest FriendRequest_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2643,14 +2587,6 @@ ALTER TABLE ONLY public."PeerStateFeedPullCursor"
 
 ALTER TABLE ONLY public."PeerStateFeedTarget"
     ADD CONSTRAINT "PeerStateFeedTarget_pkey" PRIMARY KEY ("peerDomain");
-
-
---
--- Name: PeerStateFeedVersion PeerStateFeedVersion_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PeerStateFeedVersion"
-    ADD CONSTRAINT "PeerStateFeedVersion_pkey" PRIMARY KEY ("peerDomain", "feedId");
 
 
 --
@@ -2933,13 +2869,6 @@ CREATE INDEX "DiagnosticsReport_reporterUserId_idx" ON public."DiagnosticsReport
 --
 
 CREATE INDEX "DiagnosticsReport_status_idx" ON public."DiagnosticsReport" USING btree (status);
-
-
---
--- Name: FederatedFriendRequest_direction_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "FederatedFriendRequest_direction_key" ON public."FederatedFriendRequest" USING btree ("localUserId", "remoteDomain", "remoteAccount", direction);
 
 
 --
@@ -3241,13 +3170,6 @@ CREATE INDEX "Message_threadId_id_idx" ON public."Message" USING btree ("threadI
 --
 
 CREATE UNIQUE INDEX "Message_threadId_seq_key" ON public."Message" USING btree ("threadId", seq);
-
-
---
--- Name: PeerStateFeedVersion_peer_key_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "PeerStateFeedVersion_peer_key_idx" ON public."PeerStateFeedVersion" USING btree ("peerDomain", account, domain, "eventType", "subjectAccount", "subjectDomain", "feedId");
 
 
 --
@@ -3673,22 +3595,6 @@ ALTER TABLE ONLY public."FederationMemberProfileSource"
 
 
 --
--- Name: FederationMessageDelivery FederationMessageDelivery_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageDelivery"
-    ADD CONSTRAINT "FederationMessageDelivery_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES public."Message"(id) ON DELETE CASCADE;
-
-
---
--- Name: FederationMessageDelivery FederationMessageDelivery_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageDelivery"
-    ADD CONSTRAINT "FederationMessageDelivery_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
 -- Name: FederationMessageFeedIndex FederationMessageFeedIndex_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3830,14 +3736,6 @@ ALTER TABLE ONLY public."FriendPair"
 
 ALTER TABLE ONLY public."FriendPair"
     ADD CONSTRAINT "FriendPair_userLowId_fkey" FOREIGN KEY ("userLowId") REFERENCES public."User"(id) ON DELETE CASCADE;
-
-
---
--- Name: FriendRequestStateRevision FriendRequestStateRevision_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FriendRequestStateRevision"
-    ADD CONSTRAINT "FriendRequestStateRevision_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
 
 
 --
@@ -4001,14 +3899,6 @@ ALTER TABLE ONLY public."PeerStateFeedTarget"
 
 
 --
--- Name: PeerStateFeedVersion PeerStateFeedVersion_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PeerStateFeedVersion"
-    ADD CONSTRAINT "PeerStateFeedVersion_peerDomain_fkey" FOREIGN KEY ("peerDomain") REFERENCES public."FederatedPeer"(domain) ON DELETE CASCADE;
-
-
---
 -- Name: PeerStateFeed PeerStateFeed_peerDomain_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4118,6 +4008,14 @@ ALTER TABLE ONLY public."TwoFactorBackupCode"
 
 ALTER TABLE ONLY public."UploadSession"
     ADD CONSTRAINT "UploadSession_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: ClientStateFeed ClientStateFeed_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ClientStateFeed"
+    ADD CONSTRAINT "ClientStateFeed_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."User"(id) ON DELETE CASCADE;
 
 
 --

@@ -67,7 +67,7 @@ describe('FederationMessageFeedService compacted feed', () => {
       .returning();
     const [thread] = await database.db
       .insert(messageThread)
-      .values({ type: 'P2P', curSeq: -1, updatedAt: now })
+      .values({ type: 'P2P', curSeq: 0, updatedAt: now })
       .returning();
     await database.db.insert(threadParticipant).values([
       { userId: alice.id, threadId: thread.id, joinedAt: now, updatedAt: now },
@@ -76,7 +76,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await database.db.insert(threadAudience).values({
       targetDomain: peerDomain,
       threadId: thread.id,
-      messageScannedThroughSeq: -1,
+      messageScannedThroughSeq: 0,
     });
     await new FederationCursorService(database).initializePeer(peerDomain, 0n);
     return { alice, thread };
@@ -99,7 +99,7 @@ describe('FederationMessageFeedService compacted feed', () => {
     await indexer.fill(peerDomain);
   }
 
-  it('uses 0 as feed bootstrap and -1 as message-query bootstrap', async () => {
+  it('uses 0 as both feed and message-query bootstrap', async () => {
     await seed();
     await expect(service.rejectMissingAfter(peerDomain)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
@@ -115,44 +115,44 @@ describe('FederationMessageFeedService compacted feed', () => {
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       status: 200,
-      data: { resumeAfter: '-1' },
+      data: { resumeAfter: '0' },
     });
   });
 
-  it('serves only a compacted thread/end index and queries seq 0 separately', async () => {
+  it('serves only a compacted thread/end index and queries seq 1 separately', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 0);
+    await append(thread.id, alice.id, 1);
 
     const feed = await service.serve(peerDomain, 0n);
     expect(feed).toMatchObject({
       scannedThrough: '1',
       messageFeedEndId: '1',
       hasMore: false,
-      items: [{ feedId: '1', messageEndSeq: '0' }],
+      items: [{ feedId: '1', messageEndSeq: '1' }],
     });
     expect(feed).not.toHaveProperty('messages');
 
     const page = await service.query(
       peerDomain,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
-      -1,
-      undefined,
       0,
+      undefined,
+      1,
     );
     expect(page).toMatchObject({
-      scannedThrough: '0',
+      scannedThrough: '1',
       hasMore: false,
-      messages: [{ seq: 0, content: JSON.stringify({ text: 'message-0' }) }],
+      messages: [{ seq: 1, content: JSON.stringify({ text: 'message-1' }) }],
     });
   });
 
   it('replaces the per-thread index while keeping feed IDs increasing', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 0);
     await append(thread.id, alice.id, 1);
+    await append(thread.id, alice.id, 2);
 
     const page = await service.serve(peerDomain, 0n);
-    expect(page.items).toMatchObject([{ feedId: '2', messageEndSeq: '1' }]);
+    expect(page.items).toMatchObject([{ feedId: '2', messageEndSeq: '2' }]);
     expect(page.scannedThrough).toBe('2');
     expect(page.messageFeedEndId).toBe('2');
 
@@ -162,9 +162,9 @@ describe('FederationMessageFeedService compacted feed', () => {
     });
   });
 
-  it('keeps already-delivered history queryable after current audience closes', async () => {
+  it('revokes history access when the current audience closes', async () => {
     const { alice, thread } = await seed();
-    await append(thread.id, alice.id, 0);
+    await append(thread.id, alice.id, 1);
     await database.db
       .delete(threadAudience)
       .where(eq(threadAudience.targetDomain, peerDomain));
@@ -173,11 +173,10 @@ describe('FederationMessageFeedService compacted feed', () => {
       service.query(
         peerDomain,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
-        -1,
+        0,
       ),
-    ).resolves.toMatchObject({
-      scannedThrough: '0',
-      messages: [{ seq: 0 }],
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FORBIDDEN,
     });
   });
 });

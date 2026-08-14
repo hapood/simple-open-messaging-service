@@ -7,7 +7,7 @@ import {
   type IDBPTransaction,
 } from 'idb';
 import type { ConversationItem, DeletedMessageItem, Message } from './model';
-import type { HydratedThreadDeltaOp } from './user.service';
+import type { ClientFriendIntent, HydratedThreadDeltaOp } from './user.service';
 import type { MissedCursor } from './notification-descriptor.model';
 import { isTauri, tauriInvoke } from './runtime';
 
@@ -139,12 +139,29 @@ function messageCoverageKey(threadId: number): string {
   return `messageCoverage:${threadId}`;
 }
 
+function clientStateKey(op: {
+  domain: string;
+  account: string;
+  eventType: string;
+  subjectDomain: string;
+  subjectAccount: string;
+}): string {
+  return JSON.stringify([
+    op.domain,
+    op.account,
+    op.eventType,
+    op.subjectDomain,
+    op.subjectAccount,
+  ]);
+}
+
 /** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
 export interface WebdbSchema extends DBSchema {
   avatars: { key: string; value: AvatarRecord };
   profiles: { key: string; value: ProfileRecord };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: ConversationItem };
+  friendIntents: { key: string; value: ClientFriendIntent };
   settings: { key: string; value: MetaRecord };
 }
 
@@ -164,7 +181,8 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
+const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -409,7 +427,7 @@ export class WebdbService implements OnDestroy {
     try {
       if (
         (await db.get('settings', 'schemaVersion'))?.value !==
-        CACHE_SCHEMA_VERSION
+        MESSAGE_CACHE_SCHEMA_VERSION
       ) {
         db.close();
         throw new LocalCacheVersionMismatchError(name);
@@ -440,7 +458,13 @@ export class WebdbService implements OnDestroy {
   private async isCurrentSchema(
     db: IDBPDatabase<WebdbSchema>,
   ): Promise<boolean> {
-    const required = ['avatars', 'profiles', 'threads', 'settings'] as const;
+    const required = [
+      'avatars',
+      'profiles',
+      'threads',
+      'friendIntents',
+      'settings',
+    ] as const;
     if (required.some((store) => !db.objectStoreNames.contains(store)))
       return false;
     if (db.objectStoreNames.length !== required.length) return false;
@@ -462,6 +486,7 @@ export class WebdbService implements OnDestroy {
         db.createObjectStore('avatars', { keyPath: 'identity' });
         db.createObjectStore('profiles', { keyPath: 'identity' });
         db.createObjectStore('threads', { keyPath: 'threadId' });
+        db.createObjectStore('friendIntents', { keyPath: 'key' });
         db.createObjectStore('settings', { keyPath: 'key' });
         transaction.objectStore('settings').put({
           key: 'schemaVersion',
@@ -496,7 +521,7 @@ export class WebdbService implements OnDestroy {
         ]);
         transaction.objectStore('settings').put({
           key: 'schemaVersion',
-          value: CACHE_SCHEMA_VERSION,
+          value: MESSAGE_CACHE_SCHEMA_VERSION,
         });
       },
     });
@@ -514,7 +539,7 @@ export class WebdbService implements OnDestroy {
     try {
       if (
         (await db.get('settings', 'schemaVersion'))?.value !==
-        CACHE_SCHEMA_VERSION
+        MESSAGE_CACHE_SCHEMA_VERSION
       )
         return false;
       const indexes = db.transaction('messages').store.indexNames;
@@ -891,6 +916,19 @@ export class WebdbService implements OnDestroy {
     return this.runAccountOperation(() => this.getThreadsInternal());
   }
 
+  async getFriendIntents(): Promise<ClientFriendIntent[]> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null)
+        return tauriInvoke<ClientFriendIntent[]>(
+          'native_db_list_friend_intents',
+          {
+            userId: Number(this.currentUserId),
+          },
+        );
+      return (await this.db()).getAll('friendIntents');
+    });
+  }
+
   private async getThreadsInternal(): Promise<ConversationItem[]> {
     if (isTauri() && this.currentUserId != null) {
       return tauriInvoke<ConversationItem[]>('native_db_threads', {
@@ -975,15 +1013,33 @@ export class WebdbService implements OnDestroy {
     }
     const db = await this.db();
     const tx = db.transaction(
-      ['threads', 'profiles', 'avatars', 'settings'],
+      ['threads', 'profiles', 'avatars', 'friendIntents', 'settings'],
       'readwrite',
     );
     for (const op of delta) {
-      if (op.direction === 'FRIEND_REQUEST') {
-        await tx.objectStore('settings').put({
-          key: 'friendRequestStateRevision',
-          value: op.revision,
-        });
+      if (op.direction === 'CLIENT_STATE') {
+        if (op.eventType !== 'P2P_INTENT') continue;
+        const key = clientStateKey(op);
+        const store = tx.objectStore('friendIntents');
+        const previous = await store.get(key);
+        if (!previous || op.businessRevision > previous.businessRevision)
+          await store.put({
+            key,
+            account: op.account,
+            domain: op.domain,
+            subjectAccount: op.subjectAccount,
+            subjectDomain: op.subjectDomain,
+            businessRevision: op.businessRevision,
+            ...op.body,
+          });
+        if (
+          op.body.status === 'REQUESTED' &&
+          String(op.body.subject.id) === this.currentUserId
+        )
+          await tx.objectStore('settings').put({
+            key: 'friendRequestStateRevision',
+            value: op.revision,
+          });
         continue;
       }
       if (op.direction === 'PROFILE') {

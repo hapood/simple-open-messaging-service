@@ -350,7 +350,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             val seq = d.data.optInt("seq", -1)
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                if (tid >= 0) putExtra(EXTRA_THREAD_ID, tid.toString())
+                if (tid > 0) putExtra(EXTRA_THREAD_ID, tid.toString())
             }
             val pendingIntent = PendingIntent.getActivity(
                 ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -386,7 +386,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                         putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
                         putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
                         putExtra(SomsActionReceiver.EXTRA_IS_THREAD, true)
-                        if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
                         if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
                     },
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -420,7 +420,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                         putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
                         putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
                         putExtra(SomsActionReceiver.EXTRA_IS_THREAD, true) // #5: dismiss routes per-thread (in-memory), not tag-prefix
-                        if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
                         if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
                     },
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -517,8 +517,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             // notification id this action lives on (so dismiss cancels ITS OWN notification, not a hardcoded
             // one). For `dismiss` the routing data is the new HWM cursor `{threadId, seq}` — the receiver
             // advances the away-HWM to it + cancels the shade, pure frontend (no POST, no read-watermark
-            // change). A type:"text" action also collects an inline reply via RemoteInput. seq may legitimately
-            // be 0 (a thread's first message) → guard on the -1 sentinel (>= 0), never > 0.
+            // change). A type:"text" action also collects an inline reply via RemoteInput. Here seq is a
+            // cursor, so 0 means "before the first message"; it is never a message entity with seq 0.
             for ((idx, a) in d.actions.withIndex()) {
                 val pi = PendingIntent.getBroadcast(
                     ctx,
@@ -529,7 +529,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                         putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, AWAY_NOTIF_ID)
                         putExtra(SomsActionReceiver.EXTRA_IS_THREAD, false) // all-mode: dismiss advances the global HWM
                         val tid = d.data.optInt("threadId", -1)
-                        if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
                         val seq = d.data.optInt("seq", -1)
                         if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
                     },

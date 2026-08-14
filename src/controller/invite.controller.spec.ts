@@ -17,7 +17,7 @@ function makeController(isForeigner: boolean) {
         applyState: (transaction: typeof tx, toUserId: number) => Promise<void>,
       ) => applyState(tx, 9),
     ),
-    closeLocalFriendIntentInTx: vi.fn(),
+    writeLocalFriendIntentInTx: vi.fn().mockResolvedValue([]),
   };
   const federationService = {
     writeFriendIntentInTx: vi
@@ -29,9 +29,9 @@ function makeController(isForeigner: boolean) {
     {} as never,
     inviteService as never,
     {} as never,
-    {} as never,
     federationService as never,
     {} as never,
+    { notifyThreadRevision: vi.fn() } as never,
   );
   const request = { user: { userId: 7 } } as never;
   return { controller, inviteService, federationService, request, tx };
@@ -54,6 +54,8 @@ describe('InviteController.revokeInvite', () => {
       7,
       9,
       false,
+      '',
+      expect.any(Array),
     );
     expect(federationService.pushStateFeedDomains).toHaveBeenCalledWith(
       expect.anything(),
@@ -69,10 +71,11 @@ describe('InviteController.revokeInvite', () => {
 
     await controller.revokeInvite(request, { inviteId: '42' });
 
-    expect(inviteService.closeLocalFriendIntentInTx).toHaveBeenCalledWith(
+    expect(inviteService.writeLocalFriendIntentInTx).toHaveBeenCalledWith(
       tx,
       7,
       9,
+      false,
     );
     expect(federationService.writeFriendIntentInTx).not.toHaveBeenCalled();
     expect([

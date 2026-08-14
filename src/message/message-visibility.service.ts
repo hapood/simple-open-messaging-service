@@ -42,7 +42,7 @@ export class MessageVisibilityService {
           eq(message.threadId, threadId),
           eq(message.seq, seq),
           eq(message.isDeleted, false),
-          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, -1)`,
+          sql`${message.seq} > COALESCE(${threadParticipant.clearedSeq}, 0)`,
         ),
       )
       .limit(1);

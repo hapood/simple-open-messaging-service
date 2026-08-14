@@ -1,79 +1,36 @@
-# Message inline entities
+# SOMS message inline-entity implementation
 
-SOMS stores rich text entities inline in `Message.content`. The wire and storage
-format stays a string, so existing message replication and persistence do not
-need a second entity table.
+> This document describes the SOMS editor, storage, and rendering implementation. The normative
+> wire grammar, validation, escaping, and failure behavior are defined only by
+> [Federation v1 Message](../../spec/v1/message.md#51-inline-entity-与-mention).
 
-## Version 1 syntax
+SOMS stores rich-text entities inline in `Message.content`. The database keeps the serialized text;
+it does not maintain a second entity table. This is an implementation choice, not a Federation
+requirement.
 
-The generic form is:
+## Editor and serialization
 
-```text
-[<sigil><label>](soms://<entity-type>/<percent-encoded-id>?v=<version>)
-```
+An entity selected from the composer roster is represented as an editor mention node. The serializer
+emits the canonical v1 token defined by the protocol. Text typed or pasted by a user remains plain
+text, even if it resembles a valid entity token; the serializer escapes it according to the protocol.
 
-A user mention is:
-
-```text
-[@张三](soms://user/zhangsan%40example.com?v=1)
-```
-
-The readable prefix is deliberately `[@张三]`: text search can find the display
-snapshot, while the URI contains the stable canonical account. More entity
-types can be added without changing the outer grammar:
-
-```text
-[@所有人](soms://audience/all?v=1)
-[#发布计划](soms://topic/release?v=1)
-```
-
-Version 1 authors `user` and `audience/all` mention entities. `audience/all` is
-valid only in a group conversation. Unknown types and versions must degrade to
-their readable fallback and must never make a message unrenderable. The
-normative federation wire rules live in
-[Federation v1 Message](../federation/spec/v1/message.md#51-inline-entity-与-mention).
-
-## Escaping and authorship
-
-An entity selected from the composer roster is an editor mention node. Its
-serializer emits an unescaped entity:
-
-```text
-[@张三](soms://user/zhangsan%40example.com?v=1)
-```
-
-Text typed or pasted by a user remains text, even when it is byte-for-byte the
-same as the protocol. The plain-text serializer escapes the opening bracket:
-
-```text
-\[@张三](soms://user/zhangsan%40example.com?v=1)
-```
-
-Rendering removes that escape and shows the literal input. A literal backslash
-is encoded as `\\`. The codec must maintain this invariant:
+The local codec maintains this round-trip invariant:
 
 ```text
 toDisplayText(escapePlainText(input)) === input
 ```
 
-Only `\\` and `\[` have escape meaning. Other backslashes remain literal for
-compatibility with legacy text such as Windows paths.
+## Server integration
 
-Labels escape `\`, `[` and `]` with a preceding backslash. Entity IDs and query
-parameters use standard URI percent encoding.
+The SOMS server validates a user mention against the active thread audience before first persistence.
+For a group submission, the group origin validates the mention again against its authoritative group
+state. These checks implement the protocol rules; they do not define a second wire grammar.
 
-## Failure behavior
+The readable label is a display snapshot. SOMS may derive it from the current profile when composing
+a message, but identity and notification matching use the stable entity ID.
 
-- An incomplete or malformed token is ordinary text.
-- An escaped token is ordinary text.
-- A valid entity with an unknown type/version is exposed as a generic entity;
-  a consumer without a handler renders its sigil and label.
-- Parsing never returns HTML. UI clients create text nodes/components and must
-  not render message content through unsanitized `innerHTML`.
+## Rendering
 
-## Canonicalization
-
-Clients supply the stable account selected from the current group roster.
-Before persistence, the server will validate that account against the active
-roster and rewrite the label from the authoritative current profile. That
-integration is separate from the codec itself.
+The parser returns text and typed entity nodes, never HTML. The Angular client renders them with text
+nodes and components. Unknown or malformed input follows the fallback behavior defined by the
+normative specification.

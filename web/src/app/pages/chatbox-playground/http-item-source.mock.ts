@@ -81,7 +81,7 @@ const MAX_PAGE = 50;
  *
  * [Logical sequence] `sequence() = [...full, ...live]` ascending (oldest → newest): full = buildItems history,
  *  live = WS new messages from appendLive. cursorId (msgId) is located via findIndex in this sequence.
- *  - `full[k].id = k` (buildItems generation index, a numeric seq; stable and addressable).
+ *  - `full[k].id = k + 1` (a positive message seq; stable and addressable).
  *  - A live item's id = the caller-supplied msgId (playground allocateMsgId() autoincrement).
  *
  * [Cursors] getOlder(cursorId, count) takes `count` items BEFORE the cursor (older); getNewer takes AFTER (newer).
@@ -99,8 +99,8 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  the entry is removed from here — the real (with its fresh server msgId) is cached into `live` and reconciled
    *  onto the optimistic bubble by the kernel via the shared clientMessageId. */
   private readonly pending: CbItem<ChatItemData>[] = [];
-  /** Next server-assigned msgId (autoincrement, mirroring production `Message.seq`). Seeded to `total` so the first
-   *  send becomes `total`, continuing past buildItems history (`0..total-1`) without collision.
+  /** Next server-assigned msgId (autoincrement, mirroring production `Message.seq`). Seeded to `total + 1` so the first
+   *  send continues past buildItems history (`1..total`) without collision.
    *  {@link allocateMsgId} is the mock "server write" that mints the real seq for a confirmed optimistic send. */
   private nextMsgId: number;
   /** Simulated IO latency (ms); the playground adjusts it live (0/200/1s/5s) to test slow-loading behavior. */
@@ -132,7 +132,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.latency = latency;
     this.userService = userService;
     this.userId = userId;
-    this.nextMsgId = total; // first send → total, continuing the autoincrement past history
+    this.nextMsgId = total + 1;
   }
 
   /**
@@ -583,7 +583,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
         msgSinceDay++;
         const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
         const [rw, rh] = RATIOS[Math.floor(rand() * RATIOS.length)];
-        const id = items.length;
+        const id = items.length + 1;
         const imgs: AlbumImage[] = [
           {
             kind: 'image',
@@ -607,7 +607,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
       let text = PHRASES[(items.length * 7) % PHRASES.length];
       if (rand() < 0.3)
         text = `${PHRASES[(items.length * 7) % PHRASES.length]}. ${PHRASES[(items.length * 7 + 3) % PHRASES.length]}`;
-      const id = items.length;
+      const id = items.length + 1;
       items.push({
         id,
         data: makeSeedMsg(creator, text, 'PURE_TEXT', null, date, id),

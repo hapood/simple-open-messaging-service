@@ -123,7 +123,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### POST `/user/query-state/delta` — Client state delta
 
 - **Body**: `{ fromRevision: number, toRevision: number }` (revision range). Returns hydrated thread
-  ADD/DELETE, PROFILE/PROFILE_DELETE, MEMBER_PROFILE invalidation and FRIEND_REQUEST entries since the
+  ADD/DELETE, PROFILE/PROFILE_DELETE, MEMBER_PROFILE invalidation and compacted CLIENT_STATE entries since the
   client's `stateRevision` cursor. An ADD is an authoritative replacement snapshot and may represent a
   group/roster/role change or a per-user thread-setting/read-state change, not only a new conversation.
   The current user's own avatar/name/bio update is included as PROFILE in this same log.
@@ -177,11 +177,11 @@ rows with independent notes and revisions; group invitation and join intent are 
   lookup. The client is session-authenticated but does not sign this application or its snapshot.
 - The server does not create a target stub. A human foreign stub is created only after the peer publishes
   valid `ACCEPTED` state and a verified home-owned PROFILE is available.
-- Its returned `inviteId` is prefixed with `f:`; the existing accept/reject/revoke endpoints accept that id.
+- The response echoes `{ account, domain }`; no federated request id or foreign User stub is exposed.
 
 ### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
 
-- **Body**: `{ inviteId }`.
+- **Body**: local request `{ inviteId }`; pre-stub federated request `{ account, domain }`.
 - `accept`: authors the caller's reverse direction. A P2P thread becomes active only when both friend
   directions are effective in the same transaction; a federated group mirror becomes active only after
   the origin's state snapshot confirms membership.

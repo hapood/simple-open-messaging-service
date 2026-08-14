@@ -2,7 +2,7 @@
 
 > SOMS 协议/实现差距审计，更新于 2026-08-13。端点字段见
 > [S2S API](../api/federation-s2s-api.md)，规范要求见
-> [Federation v1](./spec/v1/README.md)。
+> [Federation v1](../../spec/v1/README.md)。
 
 ## 当前闭环
 
@@ -26,7 +26,7 @@ local business transaction
   → lightweight feed-heads wake-up
 ```
 
-v1 surface、字段、错误和恢复规则已并入[正式协议](./spec/v1/protocol.md)。下表 `CLOSED` 表示当前
+v1 surface、字段、错误和恢复规则已并入[正式协议](../../spec/v1/protocol.md)。下表 `CLOSED` 表示当前
 SOMS 实现已有对应生产者、消费者和回归证据；它不表示内部实现不能继续优化。
 
 ## Surface 审计

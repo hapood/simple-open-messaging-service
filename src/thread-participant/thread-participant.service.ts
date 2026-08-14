@@ -144,7 +144,7 @@ export class ThreadParticipantService {
       columns: { curSeq: true },
     });
     return this.updateParticipant(userId, threadId, {
-      clearedSeq: thread?.curSeq ?? -1,
+      clearedSeq: thread?.curSeq ?? 0,
     });
   }
 

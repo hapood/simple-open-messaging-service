@@ -49,8 +49,8 @@ describe('POST /thread/mark-read authoritative state', () => {
       .insert(messageThread)
       .values({
         type: 'P2P',
-        curSeq: 1004,
-        lastMessageSeq: 1004,
+        curSeq: 1005,
+        lastMessageSeq: 1005,
         lastMessageAt: now,
         updatedAt: now,
       })
@@ -61,23 +61,25 @@ describe('POST /thread/mark-read authoritative state', () => {
       { userId: peerId, threadId, updatedAt: now },
     ]);
     await database.db.insert(message).values(
-      Array.from({ length: 1005 }, (_, seq) => ({
-        threadId,
-        seq,
-        originSeq: seq,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({
-          text:
-            seq === 2
-              ? '[@所有人](soms://audience/all?v=1)'
-              : seq === 3
-                ? '[@Reader](soms://user/reader?v=1)'
-                : `message-${seq}`,
-        }),
-        // The viewer's own seq=1 message must never contribute to unreadCount.
-        creator: seq === 1 ? viewerId : peerId,
-        updatedAt: now,
-      })),
+      Array.from({ length: 1005 }, (_, index) => {
+        const seq = index + 1;
+        return {
+          threadId,
+          seq,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({
+            text:
+              seq === 2
+                ? '[@所有人](soms://audience/all?v=1)'
+                : seq === 3
+                  ? '[@Reader](soms://user/reader?v=1)'
+                  : `message-${seq}`,
+          }),
+          // The viewer's own seq=1 message must never contribute to unreadCount.
+          creator: seq === 1 ? viewerId : peerId,
+          updatedAt: now,
+        };
+      }),
     );
   });
 
@@ -96,14 +98,14 @@ describe('POST /thread/mark-read authoritative state', () => {
   }
 
   it('returns ACK-only, advances readRevision, and exposes authoritative state through read delta', async () => {
-    const capped = await commit(0);
+    const capped = await commit(1);
     expect(capped.body.code).toBe(0);
     expect(capped.body.data).toBeUndefined();
     const firstDelta = await readDelta(0, 1);
     expect(firstDelta.body.data.readRevision).toBe(1);
     expect(firstDelta.body.data.items[0]).toMatchObject({
       threadId,
-      lastReadSeq: 0,
+      lastReadSeq: 1,
       readRevision: 1,
       unreadCount: 1000,
     });
@@ -121,7 +123,7 @@ describe('POST /thread/mark-read authoritative state', () => {
           eq(threadParticipant.threadId, threadId),
         ),
       );
-    const monotonic = await commit(0);
+    const monotonic = await commit(1);
     expect(monotonic.body.data).toBeUndefined();
     const secondDelta = await readDelta(1, 2);
     expect(secondDelta.body.data.items[0]).toMatchObject({
@@ -131,14 +133,14 @@ describe('POST /thread/mark-read authoritative state', () => {
       mentionUnread: [],
     });
 
-    // Below the cap the response is exact: seq 1001..1004 are four peer-authored unread messages.
+    // Below the cap the response is exact: seq 1001..1005 are five peer-authored unread messages.
     const exact = await commit(1000);
     expect(exact.body.data).toBeUndefined();
     const thirdDelta = await readDelta(2, 3);
     expect(thirdDelta.body.data.items[0]).toMatchObject({
       lastReadSeq: 1000,
       readRevision: 3,
-      unreadCount: 4,
+      unreadCount: 5,
     });
 
     const [viewer, participant] = await Promise.all([

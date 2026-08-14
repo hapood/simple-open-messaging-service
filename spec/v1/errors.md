@@ -1,6 +1,6 @@
 # SOMS Federation v1 错误码注册表
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 规范性：本文分别定义 S2S HTTP 失败分类、HTTP `200` 业务结果、稳定 `code`、结构化 `data` 和调用方动作。
 
 ## 错误封装（Error Envelope）
@@ -144,8 +144,8 @@ interface FederationQueryRetryData {
 `FederationCapabilityDisabledData`。
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` 必须（MUST）携带
 `FederationFeedCursorUnavailableData`。省略 `after` 时，`resumeAfter` 必须是该 operation 当前有效的
-exclusive 起点；三个 feed 和 tombstone query 的起点非负，message query 可以使用 `-1` 表示 seq `0`
-之前。携带 `after` 时有且只有两种可采用的修正：旧 message 正文已清理时 `resumeAfter > after`；请求位置
+exclusive 起点；所有 operation 的起点都必须非负。携带 `after` 时有且只有两种可采用的修正：旧 message
+正文已清理时 `resumeAfter > after`；请求位置
 明显大于当前 operation end 时 `resumeAfter < after`。相等值无进展，必须拒绝。三个压缩 feed 不得因历史
 删除或压缩使用该结果；tombstone query 不得以清理为由跳过永久删除事实。
 

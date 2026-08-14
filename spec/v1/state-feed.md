@@ -1,6 +1,6 @@
 # SOMS Federation v1 State Feed
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义状态快照型压缩 feed `GET /s2s/v1/state-feed`。它与两个索引型 feed 共享
@@ -251,6 +251,13 @@ thread 关系关闭边界。收到 `REVOKED` 后，consumer MUST
 回退已提交的 thread-local query cursor。
 
 ### 5.2 群邀请与申请
+
+群邀请 MUST 通过邀请者与被邀请者已经成立的 P2P 会话发起；publisher 不得借群邀请绕过好友关系
+准入。因为该 P2P 关系已经成立，邀请者的 home `PROFILE` 在被邀请者节点上 MUST 已完成验证并物化。
+创建群邀请的业务事务 MUST 同时写入对应的 `GROUP_INVITE_INTENT` 和展示该邀请所需的群 `PROFILE`；
+若同一事务发布或重发引用 roster 的 `GROUP_META`，还 MUST 先写入该目标 peer 缺少或需要更新的
+`MEMBER_PROFILE`。事务提交后才能发送 state-feed push，consumer 不得依赖后续用户查询补齐邀请所需
+资料。
 
 `GROUP_INVITE_INTENT` body 额外携带创建惰性 mirror 所需的当前 owner：
 

@@ -43,6 +43,31 @@ describe('S2sRecognitionController Healthy privacy projection', () => {
 });
 
 describe('FederationRecognitionService health transitions', () => {
+  it('replays the latest recognition stage to re-entrant subscribers', () => {
+    const service = new FederationRecognitionService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribeFirst = service.subscribeProgress('peer.example', first);
+    (
+      service as unknown as {
+        publishProgress(domain: string, stage: 'WAITING_FOR_PEER'): void;
+      }
+    ).publishProgress('peer.example', 'WAITING_FOR_PEER');
+
+    const unsubscribeSecond = service.subscribeProgress('peer.example', second);
+
+    expect(first).toHaveBeenLastCalledWith('WAITING_FOR_PEER');
+    expect(second).toHaveBeenCalledExactlyOnceWith('WAITING_FOR_PEER');
+    unsubscribeFirst();
+    unsubscribeSecond();
+  });
+
   it('degrades local availability when Healthy returns unavailable', async () => {
     const service = new FederationRecognitionService(
       {} as never,

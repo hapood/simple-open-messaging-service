@@ -1,7 +1,7 @@
 # SOMS Federation S2S API
 
 > 当前 `/s2s/v1` 的非规范性 SOMS 实现参考。规范性 wire contract 以
-> [Federation Protocol v1](../federation/spec/v1/protocol.md) 为准。
+> [Federation Protocol v1](../../spec/v1/protocol.md) 为准。
 
 所有 S2S operation 使用 RFC 9421 HTTP Message Signature。`recognize` 建立双向认可，`healthy` 查询已固定
 identity 的可用性，普通数据 operation 需要已收敛的双向认可。

@@ -68,8 +68,8 @@ describe('notifications/action (descriptor button round-trip)', () => {
       .insert(messageThread)
       .values({
         type: 'P2P',
-        curSeq: 1,
-        lastMessageSeq: 1,
+        curSeq: 2,
+        lastMessageSeq: 2,
         lastMessageAt: now,
         updatedAt: now,
       })
@@ -79,13 +79,13 @@ describe('notifications/action (descriptor button round-trip)', () => {
       { userId: recipientId, threadId, updatedAt: now },
       { userId: peerId, threadId, updatedAt: now },
     ]);
-    // seq 0 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 1 =
-    // Alice's reply that arrives while away. /notifications/missed is pulled with since = seq 0.
+    // seq 1 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 2 =
+    // Alice's reply that arrives while away. /notifications/missed is pulled with since = seq 1.
     await database.db.insert(message).values([
       {
         threadId,
-        seq: 0,
-        originSeq: 0,
+        seq: 1,
+        originSeq: 1,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'yo' }),
         creator: recipientId,
@@ -94,8 +94,8 @@ describe('notifications/action (descriptor button round-trip)', () => {
       },
       {
         threadId,
-        seq: 1,
-        originSeq: 1,
+        seq: 2,
+        originSeq: 2,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'hi' }),
         creator: peerId,
@@ -113,14 +113,14 @@ describe('notifications/action (descriptor button round-trip)', () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/notifications/missed')
       .set(auth())
-      .send({ since: { threadId, seq: 0 } });
+      .send({ since: { threadId, seq: 1 } });
     const d = res.body.data.notifications[0];
     expect(d.kind).toBe('thread-message');
     expect(d.title).toBe('Alice');
     expect(d.body).toBe('Alice sent you a message');
     expect(d.messages).toEqual([
       expect.objectContaining({
-        seq: 1,
+        seq: 2,
         senderId: peerId,
         senderName: 'Alice',
         text: 'hi',
@@ -128,9 +128,9 @@ describe('notifications/action (descriptor button round-trip)', () => {
     ]);
     // The button is still authored by the server (each client renders it), but the tap is PURE frontend:
     // the client advances its away-HWM to this cursor + closes the shade — it never POSTs, never touches the
-    // read watermark. `data` is the new HWM target (the global newest covered message = Alice's seq 1).
+    // read watermark. `data` is the new HWM target (the global newest covered message = Alice's seq 2).
     expect(d.actions).toEqual([{ id: 'dismiss', title: 'Dismiss' }]);
-    expect(d.data).toEqual({ threadId, seq: 1 });
+    expect(d.data).toEqual({ threadId, seq: 2 });
   });
 
   it('reply creates a PURE_TEXT message from the recipient, fanned out like a normal send', async () => {
@@ -145,25 +145,25 @@ describe('notifications/action (descriptor button round-trip)', () => {
       });
     expect(act.body.code).toBe(0);
 
-    // A new message row exists: seq 2, creator = recipient, content trimmed. (seq 0 = the recipient's HWM
-    // baseline, seq 1 = Alice's reply, seq 2 = this inline reply.)
+    // A new message row exists: seq 3, creator = recipient, content trimmed. (seq 1 = the recipient's HWM
+    // baseline, seq 2 = Alice's reply, seq 3 = this inline reply.)
     const msgs = await database.db
       .select()
       .from(message)
       .where(eq(message.threadId, threadId))
       .orderBy(asc(message.seq));
-    expect(msgs.map((m) => m.seq)).toEqual([0, 1, 2]);
-    const reply = msgs.find((m) => m.seq === 2)!;
+    expect(msgs.map((m) => m.seq)).toEqual([1, 2, 3]);
+    const reply = msgs.find((m) => m.seq === 3)!;
     expect(reply.creator).toBe(recipientId);
     expect(reply.contentType).toBe(ContentType.PURE_TEXT);
     expect(JSON.parse(reply.content)).toEqual({ text: 'thanks' }); // trimmed
-    // The thread's lastMessageSeq advanced (the send pipeline allocated seq 2).
+    // The thread's lastMessageSeq advanced (the send pipeline allocated seq 3).
     const [thread] = await database.db
       .select()
       .from(messageThread)
       .where(eq(messageThread.id, threadId))
       .limit(1);
-    expect(thread?.lastMessageSeq).toBe(2);
+    expect(thread?.lastMessageSeq).toBe(3);
   });
 
   it('reply is refused for a thread the caller is not a member of (no message created)', async () => {

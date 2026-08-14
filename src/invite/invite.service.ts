@@ -22,6 +22,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { ClientStateFeedService } from '../thread-revision/client-state-feed.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { SystemMessageType } from '../message/system-message.js';
@@ -94,6 +95,7 @@ export class InviteService {
     private readonly database: DatabaseService,
     private readonly participantService: ThreadParticipantService,
     private readonly threadRevisionService: ThreadRevisionService,
+    private readonly clientStateFeed: ClientStateFeedService,
     @Optional() private readonly messages?: MessageService,
     @Optional()
     @Inject(forwardRef(() => MessageFanoutService))
@@ -118,14 +120,14 @@ export class InviteService {
         note: string;
       },
     ) => Promise<void>,
-  ): Promise<{ inviteId: string; created: boolean }> {
+  ): Promise<{ created: boolean }> {
     const account = normalizeAccount(remoteAccount);
     const trimmed = note.slice(0, 255);
     const now = new Date();
-    return this.database.db.transaction(async (tx) => {
+    let clientRevision: number | null = null;
+    const result = await this.database.db.transaction(async (tx) => {
       const [current] = await tx
         .select({
-          id: federatedFriendRequest.id,
           status: federatedFriendRequest.status,
           revision: federatedFriendRequest.revision,
           expiresAt: federatedFriendRequest.expiresAt,
@@ -146,12 +148,12 @@ export class InviteService {
         current.expiresAt !== null &&
         current.expiresAt > now
       ) {
-        return { inviteId: `f:${current.id.toString()}`, created: false };
+        return { created: false };
       }
       const requestedAt = now;
       const expiresAt = new Date(now.getTime() + INVITE_TTL_MS);
       const revision = (current?.revision ?? -1) + 1;
-      const [row] = await tx
+      await tx
         .insert(federatedFriendRequest)
         .values({
           localUserId,
@@ -184,12 +186,44 @@ export class InviteService {
             avatar: snapshot.avatar || null,
             updatedAt: now,
           },
-        })
-        .returning({ id: federatedFriendRequest.id });
-      if (!row) throw new Error('federated friend request write disappeared');
+        });
       await afterWrite(tx, { revision, requestedAt, expiresAt, note: trimmed });
-      return { inviteId: `f:${row.id.toString()}`, created: true };
+      const local = await tx.query.user.findFirst({
+        where: eq(user.id, localUserId),
+      });
+      if (!local) throw new Error('federated friend request owner missing');
+      clientRevision = await this.clientStateFeed.writeInTx(tx, {
+        userId: localUserId,
+        account: local.account,
+        domain: local.domain,
+        eventType: 'P2P_INTENT',
+        subjectAccount: account,
+        subjectDomain: remoteDomain,
+        businessRevision: revision,
+        body: {
+          status: 'REQUESTED',
+          note: trimmed,
+          requestedAt: requestedAt.getTime(),
+          expiresAt: expiresAt.getTime(),
+          actor: this.clientInviteUser(local),
+          subject: {
+            id: 0,
+            account,
+            name: snapshot.displayName?.slice(0, 30) || account,
+            avatar: snapshot.avatar || '',
+            domain: remoteDomain,
+            isForeigner: true,
+          },
+        },
+      });
+      return { created: true };
     });
+    if (clientRevision !== null)
+      this.threadRevisionService.notifyThreadRevision({
+        userId: localUserId,
+        revision: clientRevision,
+      });
+    return result;
   }
 
   /** Relationship state for an exact federated Address, including requests that intentionally have
@@ -244,7 +278,7 @@ export class InviteService {
     peerUserId: number,
     wantsFriend: boolean,
     note = '',
-  ): Promise<void> {
+  ): Promise<Array<{ userId: number; revision: number }>> {
     await this.lockFriendPairInTx(tx, actorUserId, peerUserId);
     const [opposite, peer] = await Promise.all([
       tx.query.friendRequest.findFirst({
@@ -284,7 +318,7 @@ export class InviteService {
       ON CONFLICT ("requesterUserId", "targetUserId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
         revision = "FriendRequest".revision + 1,
-        "requestedAt" = CASE WHEN EXCLUDED.status IN ('REQUESTED', 'FRIEND') THEN CURRENT_TIMESTAMP
+        "requestedAt" = CASE WHEN EXCLUDED.status IN ('REQUESTED', 'FRIEND') THEN EXCLUDED."requestedAt"
                              ELSE "FriendRequest"."requestedAt" END,
         "expiresAt" = EXCLUDED."expiresAt",
         "updatedAt" = CURRENT_TIMESTAMP
@@ -305,11 +339,81 @@ export class InviteService {
           AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
       `);
     }
-    const pairEffect = await this.reconcileFriendPairInTx(
-      tx,
-      actorUserId,
-      peerUserId,
-    );
+    await this.reconcileFriendPairInTx(tx, actorUserId, peerUserId);
+    return this.publishClientFriendPairInTx(tx, actorUserId, peerUserId);
+  }
+
+  private async publishClientFriendPairInTx(
+    tx: DatabaseTransaction,
+    firstUserId: number,
+    secondUserId: number,
+  ): Promise<Array<{ userId: number; revision: number }>> {
+    const [first, second, directions] = await Promise.all([
+      tx.query.user.findFirst({ where: eq(user.id, firstUserId) }),
+      tx.query.user.findFirst({ where: eq(user.id, secondUserId) }),
+      tx.query.friendRequest.findMany({
+        where: or(
+          and(
+            eq(friendRequest.requesterUserId, firstUserId),
+            eq(friendRequest.targetUserId, secondUserId),
+          ),
+          and(
+            eq(friendRequest.requesterUserId, secondUserId),
+            eq(friendRequest.targetUserId, firstUserId),
+          ),
+        ),
+      }),
+    ]);
+    if (!first || !second) throw new Error('client friend intent user missing');
+    const users = new Map([
+      [first.id, first],
+      [second.id, second],
+    ]);
+    const pending: Array<{ userId: number; revision: number }> = [];
+    for (const direction of directions) {
+      const actor = users.get(direction.requesterUserId)!;
+      const subject = users.get(direction.targetUserId)!;
+      const body = {
+        inviteId: direction.id.toString(),
+        status:
+          direction.status === 'FRIEND'
+            ? 'ACCEPTED'
+            : direction.status === 'NOT_FRIEND'
+              ? 'REVOKED'
+              : 'REQUESTED',
+        note: direction.note,
+        requestedAt: direction.requestedAt?.getTime() ?? null,
+        expiresAt: direction.expiresAt?.getTime() ?? null,
+        actor: this.clientInviteUser(actor),
+        subject: this.clientInviteUser(subject),
+      };
+      for (const owner of [actor, subject]) {
+        if (owner.isForeigner || owner.isDeleted) continue;
+        const revision = await this.clientStateFeed.writeInTx(tx, {
+          userId: owner.id,
+          account: actor.account,
+          domain: actor.domain,
+          eventType: 'P2P_INTENT',
+          subjectAccount: subject.account,
+          subjectDomain: subject.domain,
+          businessRevision: direction.revision,
+          body,
+        });
+        if (revision !== null) pending.push({ userId: owner.id, revision });
+      }
+    }
+    return pending;
+  }
+
+  private clientInviteUser(value: typeof user.$inferSelect) {
+    return {
+      id: value.id,
+      account: value.account,
+      name: value.name,
+      avatar: value.avatar,
+      domain: value.domain,
+      isForeigner: value.isForeigner,
+    };
   }
 
   /** Rejection/deletion closes only the actor's direction. The opposite request remains valid and may
@@ -427,37 +531,23 @@ export class InviteService {
           (before.expiresAt !== null && before.expiresAt <= new Date());
         if (afterInviteWrite) await afterInviteWrite(tx, created);
         else
-          await this.writeLocalFriendIntentInTx(
-            tx,
-            fromUserId,
-            toUserId,
-            true,
-            trimmed,
+          pendingRevisions.push(
+            ...(await this.writeLocalFriendIntentInTx(
+              tx,
+              fromUserId,
+              toUserId,
+              true,
+              trimmed,
+            )),
           );
-        const [request, target] = await Promise.all([
-          tx.query.friendRequest.findFirst({
-            where: and(
-              eq(friendRequest.requesterUserId, fromUserId),
-              eq(friendRequest.targetUserId, toUserId),
-            ),
-            columns: { id: true, status: true },
-          }),
-          tx.query.user.findFirst({
-            where: eq(user.id, toUserId),
-            columns: { isForeigner: true },
-          }),
-        ]);
+        const request = await tx.query.friendRequest.findFirst({
+          where: and(
+            eq(friendRequest.requesterUserId, fromUserId),
+            eq(friendRequest.targetUserId, toUserId),
+          ),
+          columns: { id: true, status: true },
+        });
         if (!request) throw new Error('friend request write disappeared');
-        if (created && request.status === 'REQUESTED' && !target?.isForeigner) {
-          pendingRevisions.push({
-            userId: toUserId,
-            revision:
-              await this.threadRevisionService.recordFriendRequestStateInTx(
-                tx,
-                toUserId,
-              ),
-          });
-        }
         const low = Math.min(fromUserId, toUserId);
         const high = Math.max(fromUserId, toUserId);
         const pair = await tx.query.friendPair.findFirst({
@@ -741,11 +831,13 @@ export class InviteService {
           if (afterFriendAccept)
             await afterFriendAccept(tx, friend.requesterUserId);
           else
-            await this.writeLocalFriendIntentInTx(
-              tx,
-              byUserId,
-              friend.requesterUserId,
-              true,
+            pendingRevisions.push(
+              ...(await this.writeLocalFriendIntentInTx(
+                tx,
+                byUserId,
+                friend.requesterUserId,
+                true,
+              )),
             );
           const pair = await tx.query.friendPair.findFirst({
             where: and(
@@ -946,6 +1038,7 @@ export class InviteService {
     ) => Promise<void>,
   ): Promise<void> {
     const id = this.parseInviteId(inviteId);
+    const pendingRevisions: Array<{ userId: number; revision: number }> = [];
     await this.database.db.transaction(async (tx) => {
       const request = await tx.query.friendRequest.findFirst({
         where: eq(friendRequest.id, id),
@@ -966,12 +1059,18 @@ export class InviteService {
       }
       if (afterReject) await afterReject(tx, request.requesterUserId);
       else
-        await this.closeLocalFriendIntentInTx(
-          tx,
-          byUserId,
-          request.requesterUserId,
+        pendingRevisions.push(
+          ...(await this.writeLocalFriendIntentInTx(
+            tx,
+            byUserId,
+            request.requesterUserId,
+            false,
+          )),
         );
     });
+    pendingRevisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
   }
 
   /** Revoke my own outgoing pending invite. */
@@ -981,6 +1080,7 @@ export class InviteService {
     afterRevoke?: (tx: DatabaseTransaction, toUserId: number) => Promise<void>,
   ): Promise<void> {
     const id = this.parseInviteId(inviteId);
+    const pendingRevisions: Array<{ userId: number; revision: number }> = [];
     await this.database.db.transaction(async (tx) => {
       const request = await tx.query.friendRequest.findFirst({
         where: eq(friendRequest.id, id),
@@ -1001,12 +1101,18 @@ export class InviteService {
       }
       if (afterRevoke) await afterRevoke(tx, request.targetUserId);
       else
-        await this.closeLocalFriendIntentInTx(
-          tx,
-          byUserId,
-          request.targetUserId,
+        pendingRevisions.push(
+          ...(await this.writeLocalFriendIntentInTx(
+            tx,
+            byUserId,
+            request.targetUserId,
+            false,
+          )),
         );
     });
+    pendingRevisions.forEach((pending) =>
+      this.threadRevisionService.notifyThreadRevision(pending),
+    );
   }
 
   /**
@@ -1078,7 +1184,8 @@ export class InviteService {
         isForeigner: true,
       };
       return {
-        id: `f:${row.id.toString()}`,
+        // List identity only. Mutations select this request by the explicit peer Address.
+        id: `${row.remoteDomain}\u0000${row.remoteAccount}`,
         kind: 'FRIEND' as const,
         fromUserId: direction === 'INCOMING' ? 0 : localUserId,
         toUserId: direction === 'INCOMING' ? localUserId : 0,
@@ -1142,6 +1249,7 @@ export class InviteService {
     changed: boolean;
     requestCreated: boolean;
     localStateRevision?: number;
+    clientRevisions: Array<{ userId: number; revision: number }>;
     threadId?: number;
     added?: boolean;
     removed?: boolean;
@@ -1170,7 +1278,8 @@ export class InviteService {
       WHERE "FriendRequest".revision < EXCLUDED.revision
       RETURNING revision
     `);
-    if (!applied.rows[0]) return { changed: false, requestCreated: false };
+    if (!applied.rows[0])
+      return { changed: false, requestCreated: false, clientRevisions: [] };
     let localStateRevision: number | undefined;
     if (desired === 'NOT_FRIEND') {
       const closed = await tx.execute<{ revision: number }>(sql`
@@ -1216,10 +1325,16 @@ export class InviteService {
       params.localUserId,
       params.peerUserId,
     );
+    const clientRevisions = await this.publishClientFriendPairInTx(
+      tx,
+      params.localUserId,
+      params.peerUserId,
+    );
     if (pairEffect.active) {
       return {
         changed: true,
         requestCreated: false,
+        clientRevisions,
         ...(localStateRevision === undefined ? {} : { localStateRevision }),
         threadId: pairEffect.threadId,
         added: pairEffect.transitioned,
@@ -1233,12 +1348,14 @@ export class InviteService {
           previous?.status !== 'REQUESTED' ||
           previous.expiresAt === null ||
           previous.expiresAt <= new Date(),
+        clientRevisions,
       };
     }
     void params.origin;
     return {
       changed: true,
       requestCreated: false,
+      clientRevisions,
       ...(localStateRevision === undefined ? {} : { localStateRevision }),
       ...(pairEffect.threadId === undefined
         ? {}

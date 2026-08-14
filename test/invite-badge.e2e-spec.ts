@@ -14,8 +14,8 @@ import { seedUserWithSession } from './seed';
 /**
  * Friend-request badge — the BACKEND half of the data contract.
  *
- * A new incoming request advances the recipient's unified stateRevision and appears as a FRIEND_REQUEST
- * state-delta operation. Reading is a device-local client cursor and has no server endpoint/state.
+ * A new incoming request advances the recipient's unified stateRevision and appears as a compacted
+ * CLIENT_STATE operation. Reading is a device-local client cursor and has no server endpoint/state.
  */
 describe('Friend-request client state e2e', () => {
   let app: INestApplication;
@@ -45,7 +45,7 @@ describe('Friend-request client state e2e', () => {
     await app.close();
   });
 
-  it('a FRIEND invite advances unified stateRevision and emits a FRIEND_REQUEST delta', async () => {
+  it('a FRIEND invite advances unified stateRevision and emits an incoming CLIENT_STATE delta', async () => {
     const http = app.getHttpServer();
 
     // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
@@ -82,6 +82,7 @@ describe('Friend-request client state e2e', () => {
       where: eq(user.id, inviteeId),
       columns: { threadRevision: true },
     });
+    // The compacted client intent itself drives the device-local notification watermark.
     expect(after!.threadRevision).toBe(before!.threadRevision + 1);
 
     const delta = await request(http)
@@ -92,10 +93,42 @@ describe('Friend-request client state e2e', () => {
         toRevision: after!.threadRevision,
       });
     expect(delta.body.code).toBe(0);
-    expect(delta.body.data).toContainEqual({
-      direction: 'FRIEND_REQUEST',
-      revision: after!.threadRevision,
+    expect(delta.body.data).toContainEqual(
+      expect.objectContaining({
+        direction: 'CLIENT_STATE',
+        account: 'inviter',
+        eventType: 'P2P_INTENT',
+        subjectAccount: 'invitee',
+        businessRevision: 1,
+        body: expect.objectContaining({
+          status: 'REQUESTED',
+          inviteId: invite.body.data.inviteId,
+        }),
+      }),
+    );
+
+    const accepted = await request(http)
+      .post('/api/v1/invite/accept')
+      .set(authB)
+      .send({ inviteId: invite.body.data.inviteId });
+    expect(accepted.body.code).toBe(0);
+    const acceptedHead = await database.db.query.user.findFirst({
+      where: eq(user.id, inviteeId),
+      columns: { threadRevision: true },
     });
+    const handledDelta = await request(http)
+      .post('/api/v1/user/query-state/delta')
+      .set(authB)
+      .send({
+        fromRevision: after!.threadRevision,
+        toRevision: acceptedHead!.threadRevision,
+      });
+    expect(handledDelta.body.data).toContainEqual(
+      expect.objectContaining({
+        direction: 'CLIENT_STATE',
+        body: expect.objectContaining({ status: 'ACCEPTED' }),
+      }),
+    );
   });
 
   it('does not activate two expired directions; newer revisions must renew both sides first', async () => {
@@ -172,6 +205,29 @@ describe('Friend-request client state e2e', () => {
       });
     });
 
+    pair = await database.db.query.friendPair.findFirst({
+      where: and(
+        eq(friendPair.userLowId, Math.min(a.id, b.id)),
+        eq(friendPair.userHighId, Math.max(a.id, b.id)),
+      ),
+    });
+    // The peer owns this direction. Its renewed REQUESTED state cannot be
+    // promoted locally; activation waits for the peer to synchronize FRIEND.
+    expect(pair?.active).toBe(false);
+    expect(pair?.threadId).toBeNull();
+
+    await database.db.transaction((tx) =>
+      invites.applyRemoteFriendIntentInTx(tx, {
+        localUserId: a.id,
+        peerUserId: b.id,
+        status: 'FRIEND',
+        note: 'renewed',
+        revision: 3,
+        requestedAt: new Date(),
+        expiresAt: null,
+        origin: 'peer.test',
+      }),
+    );
     pair = await database.db.query.friendPair.findFirst({
       where: and(
         eq(friendPair.userLowId, Math.min(a.id, b.id)),

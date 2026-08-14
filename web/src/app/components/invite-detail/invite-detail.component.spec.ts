@@ -97,6 +97,12 @@ describe('InviteDetailComponent federation confirmation', () => {
     expect(openChat).toHaveBeenCalledWith(12);
   });
 
+  it('treats a locally deleted invite as expired', () => {
+    component.notFound.set(true);
+
+    expect(component.viewState()).toBe('expired');
+  });
+
   it('shows the origin rejection reason and does not enter when the group is full', async () => {
     const reason = "Group has reached this server's 999-member limit.";
     joinGroupRequest.and.returnValue(of({ code: 40008, message: reason }));

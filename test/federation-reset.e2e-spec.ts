@@ -35,6 +35,7 @@ describe('Federation destructive reset', () => {
   let bobId: number;
   let oldBobStubId: number;
   let adminCookieA: string;
+  let adminCookieB: string;
   let affectedThreadId: number;
   let affectedThreadVersion: number;
 
@@ -51,6 +52,7 @@ describe('Federation destructive reset', () => {
     bobId = bob.id;
     tokenB = bob.token;
     adminCookieA = await getAdminCookie(appA, 'reset-admin');
+    adminCookieB = await getAdminCookie(appB, 'reset-admin');
     const friendship = await establishFederatedFriendship({
       local: appA,
       remote: appB,
@@ -94,13 +96,13 @@ describe('Federation destructive reset', () => {
         revision: 0,
       });
       await tx.insert(message).values({
-        seq: 0,
+        seq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'removed by federation reset' }),
         threadId: thread.id,
         creator: oldBobStubId,
         updatedAt: new Date(),
-        originSeq: 0,
+        originSeq: 1,
       });
     });
 
@@ -114,6 +116,18 @@ describe('Federation destructive reset', () => {
         haltReason: 'e2e simulated identity mismatch',
       })
       .where(eq(federatedPeer.domain, FED_DOMAIN_B));
+    // Fatal recognition is a bilateral administrative boundary. Make the
+    // remote half explicit instead of racing the asynchronous reverse
+    // Recognize callback that would normally halt it.
+    await appB.database
+      .update(federatedPeer)
+      .set({
+        trustLevel: 'halted',
+        haltedAt: new Date(),
+        haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        haltReason: 'e2e simulated reciprocal identity mismatch',
+      })
+      .where(eq(federatedPeer.domain, FED_DOMAIN_A));
   }, 120_000);
 
   afterAll(async () => {
@@ -128,7 +142,7 @@ describe('Federation destructive reset', () => {
       .set('Cookie', adminCookieA)
       .send();
     expect(preview.status).toBe(200);
-    expect(preview.body.data.affectedThreadCount).toBe(1);
+    expect(preview.body.data.affectedThreadCount).toBe(2);
 
     const started = await request(appA.baseUrl)
       .post(`/api/v1/admin/federation/peers/${FED_DOMAIN_B}/reset`)
@@ -138,7 +152,7 @@ describe('Federation destructive reset', () => {
     expect(started.body.data).toMatchObject({
       domain: FED_DOMAIN_B,
       status: 'reset_in_progress',
-      affectedThreadCount: 1,
+      affectedThreadCount: 2,
     });
 
     await vi.waitFor(
@@ -153,6 +167,25 @@ describe('Federation destructive reset', () => {
         ]);
         expect(peer).toBeUndefined();
         expect(tombstone?.reinitPending).toBe(true);
+      },
+      { timeout: 5000, interval: 100 },
+    );
+
+    // A fatal identity incident is bilateral: B has also halted A after the
+    // reverse Recognize received A's conflict response. A local reset cannot
+    // silently clear B's administrative boundary, so explicitly reset B too
+    // before attempting a fresh relationship.
+    const remoteStarted = await request(appB.baseUrl)
+      .post(`/api/v1/admin/federation/peers/${FED_DOMAIN_A}/reset`)
+      .set('Cookie', adminCookieB)
+      .send({ confirmDomain: FED_DOMAIN_A });
+    expect(remoteStarted.status).toBe(200);
+    await vi.waitFor(
+      async () => {
+        const peer = await appB.database.query.federatedPeer.findFirst({
+          where: eq(federatedPeer.domain, FED_DOMAIN_A),
+        });
+        expect(peer).toBeUndefined();
       },
       { timeout: 5000, interval: 100 },
     );

@@ -104,7 +104,7 @@ describe('MessageController.queryMessages truncation', () => {
     expect(result.truncated).toBe(false);
   });
 
-  it('preserves lastSeq=0 as a real keyset cursor', async () => {
+  it('accepts lastSeq=0 as the pre-first bootstrap cursor', async () => {
     const { controller, queryMessages, req } = setup([{ seq: 1 }]);
     await controller.queryMessages(req, dto({ lastSeq: 0 }));
     expect(queryMessages.mock.calls[0][1].cursor).toEqual({

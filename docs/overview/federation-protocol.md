@@ -83,7 +83,7 @@ Endpoints use WebRTC/JSEP. Signed `/s2s/v1/call` frames relay the transient life
 in-place AUDIO-to-VIDEO upgrade; terminal history is an ordinary `CALL` message pulled through the message
 feed. STUN/TURN selection and credentials stay between each endpoint and its home server. Federation relays
 the resulting ICE candidates, including TURN `relay` candidates, without a credential exchange or
-capability negotiation. See the normative [call specification](../federation/spec/v1/calls.md).
+capability negotiation. See the normative [call specification](../../spec/v1/calls.md).
 
 ## Current S2S surface
 

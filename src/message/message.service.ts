@@ -282,7 +282,8 @@ export class MessageService {
         // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
         // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
         // keeps curSeq == MAX(seq) by construction — no MAX() aggregate, no allocation race, no retry.
-        // 0-INDEXED: curSeq defaults to -1, so the first message gets seq 0.
+        // curSeq is the last allocated sequence and defaults to the pre-first cursor 0, so the
+        // first message gets seq 1. Implementations may retain a larger watermark after migration.
         const [{ curSeq: seq }] = await tx
           .update(messageThread)
           .set({ curSeq: sql`${messageThread.curSeq} + 1` })
@@ -1678,7 +1679,7 @@ export class MessageService {
   /**
    * Unread counts for a user across the given threads, in ONE query. Unread = messages authored by someone
    * else with a per-thread seq greater than the read watermark. A null watermark means "nothing read", so
-   * its lower bound is -1 (seq starts at 0). Excluding the caller here is a defensive invariant in addition
+   * its lower bound is 0 (message seq starts at 1). Excluding the caller here is a defensive invariant in addition
    * to the send transaction advancing their read cursor: it keeps counts correct if an older client, import,
    * or recovery path leaves that cursor behind. Uses the Message(threadId,seq) index for the range scan.
    * Threads with zero unread remain present because the message predicates stay on the LEFT JOIN.
@@ -1697,7 +1698,7 @@ export class MessageService {
         SELECT msg.seq
         FROM "Message" msg
         WHERE msg."threadId" = tp."threadId"
-          AND msg.seq > COALESCE(tp."lastReadSeq", -1)
+          AND msg.seq > COALESCE(tp."lastReadSeq", 0)
           AND msg.creator <> ${userId}
           AND msg."isDeleted" = false
         ORDER BY msg.seq ASC
@@ -1743,7 +1744,7 @@ export class MessageService {
         SELECT msg.seq, msg.content, msg."contentType"
         FROM "Message" msg
         WHERE msg."threadId" = tp."threadId"
-          AND msg.seq > COALESCE(tp."lastReadSeq", -1)
+          AND msg.seq > COALESCE(tp."lastReadSeq", 0)
           AND msg.creator <> ${userId}
           AND msg."isDeleted" = false
         ORDER BY msg.seq ASC
@@ -1790,7 +1791,7 @@ export class MessageService {
         RETURNING "readRevision", "threadRevision"
       ), advanced AS (
         UPDATE "ThreadParticipant" AS participant
-        SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", -1), ${localReadHwm}),
+        SET "lastReadSeq" = GREATEST(COALESCE("lastReadSeq", 0), ${localReadHwm}),
             "readRevision" = bumped."readRevision",
             "updatedAt" = CURRENT_TIMESTAMP
         FROM bumped
@@ -1881,7 +1882,7 @@ export class MessageService {
       : new Map();
     return participants.map((p) => ({
       threadId: p.threadId,
-      lastReadSeq: p.lastReadSeq ?? -1,
+      lastReadSeq: p.lastReadSeq ?? 0,
       readRevision: p.readRevision,
       unreadCount: attention.get(p.threadId)?.count ?? 0,
       mentionUnread: attention.get(p.threadId)?.mention ?? [],
@@ -1940,7 +1941,7 @@ export class MessageService {
          AND tp.muted = false
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m.id > ${globalSinceId}
-          AND m.seq > COALESCE(h.since_seq, -1)
+          AND m.seq > COALESCE(h.since_seq, 0)
           AND m.creator <> ${userId}
           AND m."isDeleted" = false
           ${hiddenClause}
@@ -2019,7 +2020,7 @@ export class MessageService {
         LEFT JOIN thread_hwm h ON h.tid = m."threadId"
         WHERE m."threadId" IN (${this.joinSql(threadIds)})
           AND m.id > ${globalSinceId}
-          AND m.seq > COALESCE(h.since_seq, -1)
+          AND m.seq > COALESCE(h.since_seq, 0)
           AND m.creator <> ${userId}
           AND m."isDeleted" = false
           ${hiddenClause}
@@ -2094,7 +2095,7 @@ export class MessageService {
       FROM "ThreadParticipant" tp
       JOIN "Message" m
         ON m."threadId" = tp."threadId"
-       AND m.seq > COALESCE(tp."lastReadSeq", -1)
+       AND m.seq > COALESCE(tp."lastReadSeq", 0)
        AND m.creator <> ${userId}
       WHERE tp."userId" = ${userId}
         AND tp."leftAt" IS NULL

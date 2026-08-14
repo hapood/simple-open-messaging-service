@@ -83,10 +83,11 @@ async function authorizeDigest(
     .insert(threadParticipant)
     .values({ userId, threadId: thread.id, updatedAt: now });
   // Allocate the per-thread seq the same way writeMsgToThread does (curSeq atomic increment), so the
-  // direct create mirrors a real send. originSeq == seq for a locally-authored message.
+  // direct create mirrors a real send. Locally-authored messages have no
+  // federation origin sequence.
   const [advanced] = await database
     .update(messageThread)
-    .set({ curSeq: 0 })
+    .set({ curSeq: 1 })
     .where(eq(messageThread.id, thread.id))
     .returning({ curSeq: messageThread.curSeq });
   const seq = advanced.curSeq;
@@ -98,7 +99,6 @@ async function authorizeDigest(
       threadId: thread.id,
       creator: userId,
       seq,
-      originSeq: seq,
       updatedAt: now,
     })
     .returning({ id: message.id });
@@ -125,7 +125,10 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .overrideProvider(MediaMetadataService)
       .useValue({
         fromBuffer: vi.fn(
-          async (_input: Buffer, intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE') =>
+          async (
+            _input: Buffer,
+            intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+          ) =>
             intent === 'IMAGE'
               ? { w: 1, h: 1 }
               : intent === 'VIDEO'

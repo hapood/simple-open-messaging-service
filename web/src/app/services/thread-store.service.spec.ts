@@ -791,12 +791,29 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(await (await webdb.db()).get('threads', 1)).toBeUndefined();
   });
 
-  it('applies a FRIEND_REQUEST op from the unified state delta', async () => {
+  it('derives an incoming friend-request badge from CLIENT_STATE', async () => {
     await populateViaDelta([p2p(1, 11)], 5);
     queryThreadDeltaSpy.and.returnValue(
       of({
         code: 0,
-        data: [{ direction: 'FRIEND_REQUEST', revision: 6 }],
+        data: [{
+          direction: 'CLIENT_STATE',
+          revision: 6,
+          account: 'remote',
+          domain: 'peer.test',
+          eventType: 'P2P_INTENT',
+          subjectAccount: 'local',
+          subjectDomain: 'local',
+          businessRevision: 1,
+          body: {
+            status: 'REQUESTED',
+            note: '',
+            requestedAt: 10,
+            expiresAt: 20,
+            actor: { id: 2, account: 'remote', name: 'Remote', avatar: '', domain: 'peer.test', isForeigner: true },
+            subject: { id: 1, account: 'local', name: 'Local', avatar: '', domain: 'local', isForeigner: false },
+          },
+        }],
       }),
     );
 

@@ -1,6 +1,6 @@
 # SOMS Federation v1 Message Feed and Query
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 规范性：本文全部为规范性要求。
 
 本文定义消息索引型压缩 feed `GET /s2s/v1/message-feed` 和按 thread 读取消息正文的
@@ -97,6 +97,7 @@ consumer MUST 验证 page，原子合并每个 thread 的最大 `messageEndSeq` 
 
 `GET /s2s/v1/messages` 使用 closed query。通用字段是 `after`、`through` 和 `take`；其中 `after`
 可选，`through` 是本次有界排空固定使用的 inclusive `messageEndSeq` 上界，`take` 是建议的最大返回消息数。
+`after` 与 `through` 使用非负 `DecimalString`，并且数值不得超过 `SafeInteger` 上限。
 `take` 和 `through` 只能在携带 `after` 时出现；携带 `through` 时必须满足 `through >= after`，否则返回
 `400 FEDERATION_MALFORMED`。thread 必须为下列
 两个互斥 shape 之一：
@@ -113,8 +114,8 @@ consumer MUST 验证 page，原子合并每个 thread 的最大 `messageEndSeq` 
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter }`，不返回消息。这个起点由 source 根据该 thread、已验证 peer、
 当前关系状态和保留策略定义。协议不要求它为 `0`。同一 account 重新建立好友关系或重新入群不会
 创建一个较小的 query 坐标空间，也不允许 consumer 用较小 `after` 替换本地已提交位置。
-当 thread seq 从 `0` 开始且 seq `0` 仍可查询时，SOMS source 返回 `"-1"`，从而保持 `(after, through]`
-并能在首次 query 返回 seq `0`。
+`0` 表示首个合法 message sequence 之前的 exclusive cursor。message sequence 的最小值为 `1`，但
+source 可以（MAY）从更大的值开始分配且不要求连续。SOMS source 在没有更高保留起点时返回 `"0"`。
 
 ### 2.2 Query page
 

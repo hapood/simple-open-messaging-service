@@ -2,12 +2,9 @@
 # Regenerate the web app icon set from web/public/logo.svg.
 # Requires rsvg-convert (librsvg) and ImageMagick.
 #
-# logo.svg is the ONE shared H mark (warm tile + bubble + connected M).
-# — also used directly by the in-app <app-brand-logo>. Three render variants:
-#
-#   * rounded   (logo.svg as-is)          -> favicon, icon-192/512 ("any")
-#   * full-bleed (rx stripped)            -> apple-touch-icon (iOS needs a solid bg)
-#   * maskable  (full tile + inner artwork @78%) -> maskable safe zone
+# logo.svg is the transparent Web H mark (bubble + connected M) and is also
+# used directly by the in-app <app-brand-logo>. Android and Admin deliberately
+# own separate sources under src-tauri/icons and admin-web/public respectively.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,31 +18,22 @@ command -v convert      >/dev/null || { echo "ImageMagick 'convert' is required"
 
 render() { rsvg-convert -w "$1" -h "$1" -f png -o "$2" "$3"; }
 
-# Derive full-bleed and maskable variants. Only the artwork after the tile rect
-# is scaled for maskable icons; the background must stay full bleed.
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-FB="$TMP/fullbleed.svg"
-sed 's/ rx="24"//' "$SRC" > "$FB"
-MASK="$TMP/maskable.svg"
-sed -e 's/ rx="24"//' \
-    -e '0,/<path/{s|<path|<g transform="translate(54 54) scale(0.78) translate(-54 -54)">\n  <path|}' \
-    -e 's|</svg>|  </g>\n</svg>|' \
-    "$SRC" > "$MASK"
 
 echo "Rendering web icons from $(basename "$SRC")"
-render 192 "$ICONS/icon-192.png"        "$SRC"   # rounded
-render 512 "$ICONS/icon-512.png"        "$SRC"   # rounded
-render 180 "$ICONS/apple-touch-icon.png" "$FB"   # full-bleed (iOS solid bg)
-echo "  icon-192 / icon-512 (rounded) · apple-touch-icon (full-bleed)"
+render 192 "$ICONS/icon-192.png"         "$SRC"
+render 512 "$ICONS/icon-512.png"         "$SRC"
+render 180 "$ICONS/apple-touch-icon.png" "$SRC"
+echo "  icon-192 / icon-512 / apple-touch-icon (transparent)"
 
-# favicon.ico — multi-resolution (16/32/48), rounded
+# favicon.ico — multi-resolution (16/32/48), transparent
 render 16 "$TMP/16.png" "$SRC"
 render 32 "$TMP/32.png" "$SRC"
 render 48 "$TMP/48.png" "$SRC"
 convert "$TMP/16.png" "$TMP/32.png" "$TMP/48.png" "$PUBLIC/favicon.ico"
-echo "  favicon.ico (16/32/48, rounded)"
+echo "  favicon.ico (16/32/48, transparent)"
 
-render 192 "$ICONS/icon-192-maskable.png" "$MASK"   # full-bleed + mark @78%
-render 512 "$ICONS/icon-512-maskable.png" "$MASK"
-echo "  icon-192-maskable / icon-512-maskable (full-bleed, artwork inside safe zone)"
+render 192 "$ICONS/icon-192-maskable.png" "$SRC"
+render 512 "$ICONS/icon-512-maskable.png" "$SRC"
+echo "  icon-192-maskable / icon-512-maskable (transparent)"
 echo "done."

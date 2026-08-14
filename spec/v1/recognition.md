@@ -1,6 +1,6 @@
 # SOMS Federation v1 服务器认可（Peer Recognition）
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 
 Operations：
 

@@ -87,6 +87,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let png2: Buffer; // second avatar (distinct color) for the re-pull test
   let firstGroupThreadA: number; // the first federated group's ORIGIN thread on appA (reused by later group tests)
   let firstMirrorBId: number; // that group's MIRROR thread on appB
+  let firstMirrorGroupUserBId: number; // mirror-local group identity; scopes directed membership rows
   let firstGroupAccount: string; // its `!account` (groupUser.account) — the on-wire group address
   let tokenDave: string; // dave @ appB — a SECOND local member of the same mirror (shared-mirror fan-out test)
   let daveLocalIdB: number;
@@ -165,6 +166,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const [row] = await app.database
       .select({
         id: messageThread.id,
+        groupUserId: messageThread.groupUserId,
         pullUntil: messageThread.pullUntil,
         account: user.account,
         domain: user.domain,
@@ -314,6 +316,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       where: eq(federatedPeer.domain, DOM_B),
     });
     expect(peerA?.trustLevel).toBe('available');
+    expect(peerA?.trustedAt).toBeInstanceOf(Date);
     expect(peerA).toMatchObject({
       recognizesPeer: true,
       outboundRecognitionConfirmed: true,
@@ -325,6 +328,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       where: eq(federatedPeer.domain, DOM_A),
     });
     expect(peerB?.trustLevel).toBe('available');
+    expect(peerB?.trustedAt).toBeInstanceOf(Date);
   });
 
   it('Address request carries PROFILE but creates stubs only after accept', async () => {
@@ -363,7 +367,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ inviteId: `f:${incoming.id.toString()}` });
+      .send({ account: 'alice', domain: DOM_A });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const [aliceStubB, bobStubA] = await vi.waitFor(
@@ -888,6 +892,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   });
 
   it('local profile edit advances the shared client state revision', async () => {
+    const before = await appA.database.query.user.findFirst({
+      where: eq(user.id, carolLocalIdA),
+      columns: { threadRevision: true },
+    });
+    expect(before).toBeDefined();
     const reader = await openSse(appA.baseUrl, tokenCarol);
     try {
       const res = await request(appA.baseUrl)
@@ -902,12 +911,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           typeof data === 'object' &&
           data !== null &&
           typeof (data as { stateRevision?: unknown }).stateRevision ===
-            'number',
+            'number' &&
+          (data as { stateRevision: number }).stateRevision >
+            before!.threadRevision,
       )) as { stateRevision?: number };
       expect(payload.stateRevision).toBeGreaterThan(0);
       const delta = await request(appA.baseUrl)
         .post('/api/v1/user/query-state/delta')
-        .set('Authorization', `Bearer ${tokenA}`)
+        .set('Authorization', `Bearer ${tokenCarol}`)
         .send({ fromRevision: 0, toRevision: payload.stateRevision });
       expect(delta.status).toBe(200);
       expect(delta.body.data).toEqual(
@@ -1158,6 +1169,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     firstGroupThreadA = groupThreadA;
     firstGroupAccount = groupAccount;
     firstMirrorBId = mirrorB.id;
+    firstMirrorGroupUserBId = mirrorB.groupUserId!;
   }, 60_000);
 
   it('Step 3: a group mirror converges without requiring chat-open recovery', async () => {
@@ -1444,6 +1456,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const joinDirection =
           await appB.database.query.groupMembershipRequest.findFirst({
             where: and(
+              eq(
+                groupMembershipRequest.groupUserId,
+                firstMirrorGroupUserBId,
+              ),
               eq(groupMembershipRequest.memberUserId, daveLocalIdB),
               eq(groupMembershipRequest.direction, 'JOIN'),
             ),
@@ -1451,7 +1467,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(joinDirection?.status).toBe('NOT_MEMBER');
 
         const pair = await appB.database.query.groupMembershipPair.findFirst({
-          where: eq(groupMembershipPair.memberUserId, daveLocalIdB),
+          where: and(
+            eq(groupMembershipPair.groupUserId, firstMirrorGroupUserBId),
+            eq(groupMembershipPair.memberUserId, daveLocalIdB),
+          ),
         });
         expect(pair?.active).toBe(false);
 
@@ -1511,11 +1530,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ groupId: firstGroupThreadA, userIds: [daveStubIdOnA] });
     expect(reinvite.body.code).toBe(BusinessCode.OK);
+    expect(
+      reinvite.body.data.invited,
+      JSON.stringify(reinvite.body),
+    ).toContain(daveStubIdOnA);
     await vi.waitFor(
       async () => {
         const requestRow =
           await appB.database.query.groupMembershipRequest.findFirst({
             where: and(
+              eq(
+                groupMembershipRequest.groupUserId,
+                firstMirrorGroupUserBId,
+              ),
               eq(groupMembershipRequest.memberUserId, daveLocalIdB),
               eq(groupMembershipRequest.direction, 'INVITE'),
             ),
@@ -1554,7 +1581,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
   });
 
-  it('last-member leave drains its inclusive boundary; rejoin resumes the same mirror without gap history', async () => {
+  it('last-member leave revokes blocked boundary access; rejoin resumes without gap history', async () => {
     // Leave dave first so bob's later leave is the last member from appB.
     const daveLeaveAgain = await request(appB.baseUrl)
       .post('/api/v1/group/leave')
@@ -1629,24 +1656,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       proxy.blockMessageFeed(false);
     }
 
-    // Although GROUP_META closed the mirror first, the permanent delivery proof
-    // keeps the already indexed final item queryable as a historical fact.
-    await vi.waitFor(
-      async () => {
-        expect(
-          await appB.database.query.message.findFirst({
-            where: and(
-              eq(message.threadId, firstMirrorBId),
-              eq(
-                message.content,
-                textContent('group-final-before-last-peer-leave'),
-              ),
-            ),
-          }),
-        ).toBeDefined();
-      },
-      { timeout: 5000, interval: 100 },
-    );
+    // Authorization is the origin's current audience fact. Once the last member leaves, a message
+    // that was blocked in transit is no longer queryable and must not arrive from historical state.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(
+      await appB.database.query.message.findFirst({
+        where: and(
+          eq(message.threadId, firstMirrorBId),
+          eq(
+            message.content,
+            textContent('group-final-before-last-peer-leave'),
+          ),
+        ),
+      }),
+    ).toBeUndefined();
 
     const targetBeforeGap =
       await appA.database.query.federationServeCursor.findFirst({

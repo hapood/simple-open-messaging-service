@@ -15,7 +15,7 @@ class NotifThreadLogicTest {
     @Test
     fun notifId_is_base_plus_threadId() {
         assertEquals(0x10000 + 7, NotifThreadLogic.notifId(0x10000, 7))
-        assertEquals(0x10000, NotifThreadLogic.notifId(0x10000, 0)) // seq 0 is legitimate
+        assertEquals(0x10001, NotifThreadLogic.notifId(0x10000, 1))
     }
 
     @Test

@@ -368,7 +368,7 @@ export const threadParticipant = pgTable(
       .onDelete('restrict'),
     check(
       'ThreadParticipant_cleared_seq_check',
-      sql`${table.clearedSeq} IS NULL OR ${table.clearedSeq} >= -1`,
+      sql`${table.clearedSeq} IS NULL OR ${table.clearedSeq} >= 0`,
     ),
     check(
       'ThreadParticipant_relationship_rev_check',
@@ -386,16 +386,12 @@ export const messageThread = pgTable(
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
     updatedAt: timestamp({ precision: 3, mode: 'date' }).notNull(),
-    curSeq: integer()
-      .default(sql`'-1'`)
-      .notNull(),
+    curSeq: integer().default(0).notNull(),
     lastMessageSeq: integer(),
     lastMessagePreview: varchar({ length: 255 }),
     lastMessageAt: timestamp({ precision: 3, mode: 'date' }),
     groupUserId: integer(),
-    pullUntil: integer()
-      .default(sql`'-1'`)
-      .notNull(),
+    pullUntil: integer().default(0).notNull(),
     /** Federation reset completion marker. The retained thread shell is invisible after truncation. */
     federationTruncated: boolean().default(false).notNull(),
     /** Invalidates asynchronous federation responses captured before a completed thread cleanup. */
@@ -424,7 +420,7 @@ export const messageThread = pgTable(
   ],
 );
 
-/** Current thread access. Historical federation visibility lives in FederationMessageDelivery. */
+/** Current thread access for a local user or a federated peer. */
 export const threadAudience = pgTable(
   'ThreadAudience',
   {
@@ -490,7 +486,7 @@ export const threadAudience = pgTable(
     ),
     check(
       'ThreadAudience_messageScannedThroughSeq_check',
-      sql`${table.messageScannedThroughSeq} IS NULL OR ${table.messageScannedThroughSeq} >= -1`,
+      sql`${table.messageScannedThroughSeq} IS NULL OR ${table.messageScannedThroughSeq} >= 0`,
     ),
   ],
 );
@@ -669,6 +665,11 @@ export const message = pgTable(
     }>(),
   },
   (table) => [
+    check('Message_seq_check', sql`${table.seq} > 0`),
+    check(
+      'Message_origin_seq_check',
+      sql`${table.originSeq} IS NULL OR ${table.originSeq} > 0`,
+    ),
     uniqueIndex('Message_clientMessageId_key').using(
       'btree',
       table.clientMessageId.asc().nullsLast().op('text_ops'),
@@ -739,6 +740,7 @@ export const deletedMessage = pgTable(
       .notNull(),
   },
   (table) => [
+    check('DeletedMessage_seq_check', sql`${table.seq} > 0`),
     uniqueIndex('DeletedMessage_threadId_seq_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -783,6 +785,10 @@ export const federatedMessageTombstone = pgTable(
       .notNull(),
   },
   (table) => [
+    check(
+      'FederatedMessageTombstone_origin_seq_check',
+      sql`${table.originSeq} > 0`,
+    ),
     uniqueIndex('FederatedMessageTombstone_target_key').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
@@ -1092,6 +1098,10 @@ export const pendingMedia = pgTable(
     expectedFederationVersion: integer(),
   },
   (table) => [
+    check(
+      'PendingMedia_origin_seq_check',
+      sql`${table.originSeq} IS NULL OR ${table.originSeq} > 0`,
+    ),
     index('PendingMedia_batchId_idx').on(table.batchId),
     uniqueIndex('PendingMedia_clientMessageId_key').using(
       'btree',
@@ -1363,25 +1373,52 @@ export const profileStateRevision = pgTable(
   ],
 );
 
-/** Latest incoming friend-request creation in the unified per-user client-state revision space.
- *  The row is compacted because clients only need the newest creation watermark; each device keeps its
- *  own acknowledged watermark locally. */
-export const friendRequestStateRevision = pgTable(
-  'FriendRequestStateRevision',
+/** Per-client compacted state projection. This is the device-facing analogue of PeerStateFeed:
+ * stable keys are overwritten only by a higher businessRevision, while revision is the owning
+ * user's unified client-state scan coordinate (User.threadRevision). Intent tombstones remain as
+ * REVOKED snapshots, so a client resuming from an older cursor can converge without a delete log. */
+export const clientStateFeed = pgTable(
+  'ClientStateFeed',
   {
-    userId: integer().primaryKey().notNull(),
+    userId: integer().notNull(),
+    account: varchar({ length: 31 }).notNull(),
+    domain: varchar({ length: 63 }).notNull(),
+    eventType: varchar({ length: 31 }).notNull(),
+    subjectAccount: varchar({ length: 31 }).default('').notNull(),
+    subjectDomain: varchar({ length: 63 }).default('').notNull(),
+    businessRevision: integer().notNull(),
     revision: integer().notNull(),
+    body: jsonb().notNull(),
+    createdAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
   },
   (table) => [
+    primaryKey({
+      columns: [
+        table.userId,
+        table.account,
+        table.domain,
+        table.eventType,
+        table.subjectAccount,
+        table.subjectDomain,
+      ],
+      name: 'ClientStateFeed_pkey',
+    }),
+    index('ClientStateFeed_user_revision_idx').on(table.userId, table.revision),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: 'FriendRequestStateRevision_userId_fkey',
+      name: 'ClientStateFeed_userId_fkey',
     }).onDelete('cascade'),
     check(
-      'FriendRequestStateRevision_revision_check',
-      sql`${table.revision} > 0`,
+      'ClientStateFeed_business_revision_check',
+      sql`${table.businessRevision} >= 0`,
     ),
+    check('ClientStateFeed_revision_check', sql`${table.revision} > 0`),
   ],
 );
 
@@ -1544,48 +1581,6 @@ export const peerStateFeed = pgTable(
       'PeerStateFeed_subject_check',
       sql`(${table.eventType} IN ('P2P_INTENT', 'GROUP_INVITE_INTENT', 'GROUP_JOIN_INTENT') AND ${table.subjectAccount} <> '' AND ${table.subjectDomain} <> '') OR (${table.eventType} NOT IN ('P2P_INTENT', 'GROUP_INVITE_INTENT', 'GROUP_JOIN_INTENT') AND ${table.subjectAccount} = '' AND ${table.subjectDomain} = '')`,
     ),
-  ],
-);
-
-/** Immutable state-feed allocations retained for bounded barrier replay. PeerStateFeed remains the
- * current compacted projection used to reject stale business revisions. */
-export const peerStateFeedVersion = pgTable(
-  'PeerStateFeedVersion',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
-    feedId: bigint({ mode: 'bigint' }).notNull(),
-    account: varchar({ length: 31 }).notNull(),
-    domain: varchar({ length: 63 }).notNull(),
-    eventType: peerStateEventType().notNull(),
-    subjectAccount: varchar({ length: 31 }).default('').notNull(),
-    subjectDomain: varchar({ length: 63 }).default('').notNull(),
-    revision: integer().notNull(),
-    body: jsonb().notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.peerDomain, table.feedId],
-      name: 'PeerStateFeedVersion_pkey',
-    }),
-    index('PeerStateFeedVersion_peer_key_idx').on(
-      table.peerDomain,
-      table.account,
-      table.domain,
-      table.eventType,
-      table.subjectAccount,
-      table.subjectDomain,
-      table.feedId,
-    ),
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'PeerStateFeedVersion_peerDomain_fkey',
-    }).onDelete('cascade'),
-    check('PeerStateFeedVersion_feedId_check', sql`${table.feedId} > 0`),
-    check('PeerStateFeedVersion_revision_check', sql`${table.revision} >= 0`),
   ],
 );
 
@@ -1773,7 +1768,6 @@ export const federatedProfile = pgTable(
 export const federatedFriendRequest = pgTable(
   'FederatedFriendRequest',
   {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     localUserId: integer().notNull(),
     remoteAccount: varchar({ length: 31 }).notNull(),
     remoteDomain: varchar({ length: 63 }).notNull(),
@@ -1794,12 +1788,15 @@ export const federatedFriendRequest = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('FederatedFriendRequest_direction_key').on(
-      table.localUserId,
-      table.remoteDomain,
-      table.remoteAccount,
-      table.direction,
-    ),
+    primaryKey({
+      columns: [
+        table.localUserId,
+        table.remoteDomain,
+        table.remoteAccount,
+        table.direction,
+      ],
+      name: 'FederatedFriendRequest_pkey',
+    }),
     index('FederatedFriendRequest_pending_idx').on(
       table.localUserId,
       table.direction,
@@ -1892,37 +1889,8 @@ export const federationMessageFeedIndex = pgTable(
     check('FederationMessageFeedIndex_feedId_check', sql`${table.feedId} > 0`),
     check(
       'FederationMessageFeedIndex_messageEndSeq_check',
-      sql`${table.messageEndSeq} >= 0`,
+      sql`${table.messageEndSeq} > 0`,
     ),
-  ],
-);
-
-/** Exact durable proof that a peer was allocated a message. Current audience membership is not an
- * adequate substitute after leave/rejoin gaps; tombstone authorization consults this ledger. */
-export const federationMessageDelivery = pgTable(
-  'FederationMessageDelivery',
-  {
-    peerDomain: varchar({ length: 63 }).notNull(),
-    messageId: bigint({ mode: 'bigint' }).notNull(),
-    createdAt: timestamp({ precision: 3, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.peerDomain, table.messageId],
-      name: 'FederationMessageDelivery_pkey',
-    }),
-    foreignKey({
-      columns: [table.peerDomain],
-      foreignColumns: [federatedPeer.domain],
-      name: 'FederationMessageDelivery_peerDomain_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.messageId],
-      foreignColumns: [message.id],
-      name: 'FederationMessageDelivery_messageId_fkey',
-    }).onDelete('cascade'),
   ],
 );
 
@@ -2161,7 +2129,7 @@ export const federationMessageQueryCursor = pgTable(
     }).onDelete('cascade'),
     check(
       'FederationMessageQueryCursor_committedThrough_check',
-      sql`${table.committedThrough} >= -1`,
+      sql`${table.committedThrough} >= 0`,
     ),
   ],
 );

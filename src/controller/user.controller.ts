@@ -33,6 +33,7 @@ import { messageThread, threadParticipant } from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
+import { ClientStateFeedService } from '../thread-revision/client-state-feed.service.js';
 import { planThreadDelta } from '../thread-revision/thread-delta.js';
 import { Public } from '../common/public.decorator.js';
 import { ApiResultResponse, envelope } from '../common/api-result.js';
@@ -63,6 +64,7 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { Raw } from '../common/raw.decorator.js';
 import { formatSseFrame, initSseResponse } from '../common/sse-stream.js';
+import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 
 /**
  * One entry of the unified client-state delta (`POST /user/query-state/delta`). ADD entries carry the fully
@@ -89,7 +91,16 @@ type HydratedThreadDeltaOp =
       threadIds: number[];
       revision: number;
     }
-  | { direction: 'FRIEND_REQUEST'; revision: number };
+  | {
+      direction: 'CLIENT_STATE';
+      account: string;
+      domain: string;
+      eventType: string;
+      subjectAccount: string;
+      subjectDomain: string;
+      businessRevision: number;
+      body: unknown;
+    };
 
 type ParticipantWithThread = typeof threadParticipant.$inferSelect & {
   thread: typeof messageThread.$inferSelect;
@@ -115,7 +126,9 @@ export class UserController {
     private readonly messageService: MessageService,
     private readonly userBlockService: UserBlockService,
     private readonly federationService: FederationService,
+    private readonly federationRecognition: FederationRecognitionService,
     private readonly threadRevisionService: ThreadRevisionService,
+    private readonly clientStateFeed: ClientStateFeedService,
     private readonly userQuotaService: UserQuotaService,
     private readonly inviteService: InviteService,
     @Optional()
@@ -372,29 +385,29 @@ export class UserController {
     const me = req.user.userId;
     // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
     // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
-    const [ops, profileOps, memberProfileOps, friendRequestRevision] =
-      await Promise.all([
-        this.threadRevisionService.queryDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-        this.threadRevisionService.queryProfileDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-        this.threadRevisionService.queryMemberProfileDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-        this.threadRevisionService.queryFriendRequestStateDelta(
-          me,
-          dto.fromRevision,
-          dto.toRevision,
-        ),
-      ]);
+    const [
+      ops,
+      profileOps,
+      memberProfileOps,
+      clientStateItems,
+    ] = await Promise.all([
+      this.threadRevisionService.queryDelta(
+        me,
+        dto.fromRevision,
+        dto.toRevision,
+      ),
+      this.threadRevisionService.queryProfileDelta(
+        me,
+        dto.fromRevision,
+        dto.toRevision,
+      ),
+      this.threadRevisionService.queryMemberProfileDelta(
+        me,
+        dto.fromRevision,
+        dto.toRevision,
+      ),
+      this.clientStateFeed.query(me, dto.fromRevision, dto.toRevision),
+    ]);
     const { addIds, removeIds } = planThreadDelta(ops);
     // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
     // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
@@ -447,18 +460,21 @@ export class UserController {
       }
     }
     return [
-      ...(friendRequestRevision === null
-        ? []
-        : [
-            {
-              direction: 'FRIEND_REQUEST' as const,
-              revision: friendRequestRevision,
-            },
-          ]),
       ...hydratedProfiles,
       ...memberProfileOps.map((op) => ({
         direction: 'MEMBER_PROFILE' as const,
         ...op,
+      })),
+      ...clientStateItems.map((item) => ({
+        direction: 'CLIENT_STATE' as const,
+        account: item.account,
+        domain: item.domain,
+        eventType: item.eventType,
+        subjectAccount: item.subjectAccount,
+        subjectDomain: item.subjectDomain,
+        businessRevision: item.businessRevision,
+        revision: item.revision,
+        body: item.body,
       })),
       ...adds.map((item) => ({
         threadId: item.threadId,
@@ -653,6 +669,13 @@ export class UserController {
       finish('failed', { reason: 'INVALID_ADDRESS' });
       return;
     }
+    const unsubscribeProgress = this.federationRecognition.subscribeProgress(
+      domain,
+      (stage) => {
+        if (!closed) reply.raw.write(formatSseFrame('progress', { stage }));
+      },
+    );
+    reply.raw.once('close', unsubscribeProgress);
     const deadline = new Promise<never>((_, reject) => {
       const handle = setTimeout(
         () => reject(new Error('resolve deadline exceeded')),
@@ -664,6 +687,11 @@ export class UserController {
       const profile = await Promise.race([
         (async () => {
           await this.federationService.ensurePeerTrusted(domain);
+          if (!closed) {
+            reply.raw.write(
+              formatSseFrame('progress', { stage: 'FETCHING_USER' }),
+            );
+          }
           return this.federationService.fetchRemoteUser({ account, domain });
         })(),
         deadline,
@@ -687,6 +715,8 @@ export class UserController {
               ? 'BLOCKED'
               : 'UNREACHABLE',
       });
+    } finally {
+      unsubscribeProgress();
     }
   }
 

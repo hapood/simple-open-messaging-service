@@ -2,7 +2,7 @@
 
 > 历史设计记录：规范目标已改为无 source-side consumer cursor，并通过 projection omission
 > 移除失去所有可见性来源的 `MEMBER_PROFILE`。实现以
-> [Federation v1 State Feed](./spec/v1/state-feed.md) 为准。
+> [Federation v1 State Feed](../../spec/v1/state-feed.md) 为准。
 
 > **状态：已实现**
 >

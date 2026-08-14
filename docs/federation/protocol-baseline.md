@@ -1,7 +1,7 @@
 # SOMS 联邦协议实现基线
 
 > 本文是 SOMS 的目标实现基线，当前代码尚待按此迁移；它不是第三方实现必须复制的数据模型。规范性 wire contract 以
-> [Federation Protocol v1](./spec/v1/protocol.md)为准；本文中的数据库字段、本地限制和后台任务
+> [Federation Protocol v1](../../spec/v1/protocol.md)为准；本文中的数据库字段、本地限制和后台任务
 > 仅用于解释本项目如何满足协议。详细实现字段见 [S2S API](../api/federation-s2s-api.md)。
 
 ## 公开 surface
@@ -49,6 +49,9 @@ pinning 和出站防火墙属于节点部署选择，不是 Federation v1 wire c
   origin 即使仍认为成员 active，也必须为新的 JOIN revision 重发 `GROUP_META`。
 - 群成员由 origin 的 INVITE 和 member 的 JOIN 两个方向组成，origin `GROUP_META` 是 roster
   的最终权威。
+- 群邀请只能经由邀请者与被邀请者已经成立的 P2P 会话发起；邀请事务同时写
+  `GROUP_INVITE_INTENT` 与所需群 `PROFILE`。同一事务若发布引用 roster 的 `GROUP_META`，必须先为
+  目标 peer 写齐对应 `MEMBER_PROFILE`，提交后才能发送 state-feed push。
 - `PROFILE` 独立带 revision；群 meta JSON 不嵌头像。群成员服务器可直接应用 origin relay 的
   成员 PROFILE。
 - 相同或更旧业务 revision 不改写 body；为维持 member-before-group 当前投影顺序，可以对语义相同的

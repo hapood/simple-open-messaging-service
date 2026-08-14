@@ -17,17 +17,23 @@
       ></app-icon>
     </button>
 
-    <div class="ivd-avatar">
-      <app-user-avatar
-        [type]="UserAvatarType.GROUP"
-        [name]="groupName() || '?'"
-        [identityId]="inviteId()"
-        [src]="groupAvatar()"
-      />
-    </div>
+    @if (!notFound()) {
+      <div class="ivd-avatar">
+        <app-user-avatar
+          [type]="UserAvatarType.GROUP"
+          [name]="groupName() || '?'"
+          [identityId]="inviteId()"
+          [src]="groupAvatar()"
+        />
+      </div>
+    }
 
     <h2 class="ivd-name">
-      {{ groupName() || ('common.unknown' | transloco) }}
+      @if (notFound()) {
+        {{ 'chat.groupInviteExpired' | transloco }}
+      } @else {
+        {{ groupName() || ('common.unknown' | transloco) }}
+      }
     </h2>
 
     @if (detail(); as d) {
@@ -80,7 +86,7 @@
         }
         @case ('expired') {
           <button mat-flat-button disabled>
-            {{ 'chat.expired' | transloco }}
+            {{ 'chat.groupInviteExpired' | transloco }}
           </button>
         }
         @case ('invalid') {

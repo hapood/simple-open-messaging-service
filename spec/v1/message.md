@@ -1,6 +1,6 @@
 # SOMS Federation v1 Message
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 规范性：本文全部为规范性要求，除非段落明确标记为“非规范性实现说明”。
 
 本文定义 message query 中每个 message 的 wire 结构、全部 `contentType`、接收处理方式和附件拉取。
@@ -40,10 +40,10 @@ consumer 对每个 item 的通用处理顺序：
 
 message wire 中没有客户端权威的 `date` 字段。顺序和时间只使用以下字段：
 
-- `seq`：当前 publisher 在把该 Message 副本写入其本地 thread 时分配的非负安全整数，表示该
+- `seq`：当前 publisher 在把该 Message 副本写入其本地 thread 时分配的正安全整数，表示该
   publisher 数据库中的 thread-local 落库顺序。它不是跨 server identity，也不保证群 origin 和
   consumer 使用相同值。consumer 落库时分配自己的本地 `seq`，不得强行复用 wire `seq`。
-- `originSeq`：author server 首次持久化该消息时分配的非负安全整数。它与 author/thread 一起构成
+- `originSeq`：author server 首次持久化该消息时分配的正安全整数。它与 author/thread 一起构成
   submission 与群 origin 权威分发之间的稳定作者坐标；group origin MUST 原样保留。
 - `createdAt`：当前 publisher 首次把这个 Message 副本持久化到数据库的 epoch milliseconds。
   它是服务器落库时间，不是客户端发送时间、设备时间或跨 server 全局排序时间。
@@ -103,8 +103,8 @@ interface FederatedMessage {
   的 `account` 必须是 `UserAccount`。consumer 以规范化 Address 的 `(domain, account)` ASCII
   lexicographic 顺序构造 P2P 本地唯一键。
 - `seq` 是当前 publisher 副本的 thread-local sequence，只用于该 publisher 的 page 内排序和展示坐标；
-  不得把它当作跨 publisher identity。`seq`、`originSeq` 和 `quoteTarget.originSeq` 都是 `SafeInteger`。
-- `originSeq` 是作者 server 首次发布时分配的稳定、非负安全整数。group origin 不得改写；资源接口的 `seq`
+  不得把它当作跨 publisher identity。`seq`、`originSeq` 和 `quoteTarget.originSeq` 都是 `PositiveSafeInteger`。
+- `originSeq` 是作者 server 首次发布时分配的稳定正安全整数。group origin 不得改写；资源接口的 `seq`
   query 使用该值，与 outer message 的 `author` 共同形成精确资源授权坐标。
 - `createdAt` 是当前 publisher 持久化该副本的 epoch-ms；`updatedAt >= createdAt`。
 - `clientMessageId` 是作者提供的 `CanonicalUuid` 幂等 key 或 `null`；不得把它当作跨作者全局 identity。
@@ -131,7 +131,26 @@ consumer 只为 `READY` descriptor 建立下载任务；`DELETED` 保留不可�
 descriptor status 是 authored message snapshot 的不可变部分；message 发布后发生的 blob 丢失或授权状态
 变化通过资源 operation 的响应表达，不得通过重发同一 message identity 并改写 status 表达。
 
-### 3.1 不可变 identity 与重复消息
+### 3.1 协议 identity 与坐标派生
+
+`(thread, author, originSeq)` 是协议级的不可变 message identity。它通过 wire 字段表达，但其作用不限于
+传输：publisher 和 consumer 都必须（MUST）用它关联持久化、幂等、引用、墓碑与资源授权。下表定义
+后续 operation 必须从已验证 message 派生的坐标。consumer 不得用本地数据库 ID、publisher-local
+`seq`、preview 字段或 child bundle ID 替代这些值。
+
+| 用途                      | 权威来源与映射                                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| authored message identity | `(thread, author, originSeq)`；用于幂等合并、tombstone target 和 self-authored receipt               |
+| reply target identity     | outer `quoteTarget.creator + quoteTarget.originSeq`，并继承当前 message 的 `thread`                  |
+| direct media identity     | outer `author` → `fromAccount/fromDomain`；outer `originSeq` → media query `seq`；content → `digest` |
+| media audience            | P2P 使用 signer domain 对应参与者；GROUP 使用 outer `thread` 的 group identity 派生 `toAccount`      |
+| forward closure root      | outer `ForwardCardContent.bundleId` → bundle path `:bundleId` 与 response `rootBundleId`             |
+| forward asset identity    | direct media 坐标加 outer root `bundleId`；`digest` 必须位于该 root 的已验证完整 closure             |
+
+本表定义协议 identity 在不同 operation 之间的派生关系。实现可以（MAY）把这些坐标映射到任意本地
+schema，但必须（MUST）保存足够信息，使重试、重放、资源授权和 tombstone 应用仍使用同一个协议 identity。
+
+### 3.2 不可变 identity 与重复消息
 
 v1 不定义消息编辑；撤回与生效治理删除由独立
 [Message Tombstone Feed](./message-tombstone-feed.md) 表达，不修改本节 message item。
@@ -217,8 +236,8 @@ v1 支持以下两个 mention：
 
 author server 负责在首次持久化前验证 mention 是否适用于该 thread。group origin 接受 submission 时再次
 验证其群上下文，但不改写合法 token，
-consumer 在本地 unread/notification 逻辑中按稳定 entity ID 判断 `@me` 或 `@all`。更完整的编辑器与
-storage 说明见 [Message inline entities](../../../overview/message-entities.md)。
+consumer 在本地 unread/notification 逻辑中按稳定 entity ID 判断 `@me` 或 `@all`。编辑器节点、数据库
+表示和 UI 组件属于本地实现，不是 Federation wire contract。
 
 例如第二次 JSON 解析后的 `TextContent` 是：
 

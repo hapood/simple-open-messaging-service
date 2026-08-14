@@ -678,6 +678,10 @@ export interface NotificationSettings {
     perPeer: number;
     chunkDigestEnabled: boolean;
   };
+  federationHttpLimits: {
+    global: number;
+    perPeer: number;
+  };
 }
 
 /** Deterministic VAPID health-check report (POST /admin/settings/health-check). */

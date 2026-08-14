@@ -9,6 +9,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 export class FriendRelationshipStatusDto {
@@ -121,6 +122,29 @@ export class InviteIdDto {
   @IsString()
   @IsNotEmpty()
   inviteId!: string;
+}
+
+/** Select a pending friend request. Local requests use their database id; pre-materialization
+ * federated requests use the remote Address and never expose a second-table id namespace. */
+export class FriendInviteActionDto {
+  @ApiProperty({ required: false, description: 'Local invite id' })
+  @ValidateIf((value: FriendInviteActionDto) => !value.account)
+  @IsString()
+  @IsNotEmpty()
+  inviteId?: string;
+
+  @ApiProperty({ required: false, description: 'Federated peer account' })
+  @ValidateIf((value: FriendInviteActionDto) => !value.inviteId)
+  @IsString()
+  @IsNotEmpty()
+  account?: string;
+
+  @ApiProperty({ required: false, description: 'Federated peer domain' })
+  @ValidateIf((value: FriendInviteActionDto) => !value.inviteId)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain?: string;
 }
 
 /** Minimal user view embedded on an invite row (the inviter / the recipient). */

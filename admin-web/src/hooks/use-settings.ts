@@ -7,6 +7,7 @@ import {
   runVapidHealthCheck,
   setOtpTtl,
   setFederationDownloadLimits,
+  setFederationHttpLimits,
 } from '@/api/settings';
 import type { GenerateVapidPayload, SaveVapidPayload } from '@/types/api';
 
@@ -14,6 +15,15 @@ import type { GenerateVapidPayload, SaveVapidPayload } from '@/types/api';
 function useInvalidateSettings() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['admin', 'settings'] });
+}
+
+export function useSetFederationHttpLimits() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: (limits: { global: number; perPeer: number }) =>
+      setFederationHttpLimits(limits.global, limits.perPeer),
+    onSuccess: invalidate,
+  });
 }
 
 export function useSetFederationDownloadLimits() {

@@ -338,7 +338,7 @@ class RealtimeService : Service() {
                     if ((type == "HELLO" || type == "NEW_MESSAGE") && cursor != null) {
                         val tid = cursor.optInt("threadId", -1)
                         val seq = cursor.optInt("seq", -1)
-                        if (tid >= 0 && seq >= 0) ClientStateDb.setNotificationCursor(this@RealtimeService, tid, seq)
+                        if (tid > 0 && seq >= 0) ClientStateDb.setNotificationCursor(this@RealtimeService, tid, seq)
                     }
                 } catch (_: org.json.JSONException) {
                     // A malformed frame follows the normal downstream error path; never corrupt the cursor.

@@ -64,11 +64,11 @@ class SomsActionReceiver : BroadcastReceiver() {
                 // the tag prefix): record the thread's seq IN MEMORY — the next fetch's `threadHwms` makes the
                 // server count this thread FROM it, so dismiss resets its cumulative count to 0 until newer
                 // messages. Cancels THIS card only; no global-HWM change (the other cards stay).
-                if (tid >= 0 && seq >= 0) SomsMessagingService.recordThreadDismiss(context, tid, seq)
+                if (tid > 0 && seq >= 0) SomsMessagingService.recordThreadDismiss(context, tid, seq)
             } else {
                 // all-mode dismiss: advance the GLOBAL away-HWM (so the next fetch's `since` gates past
                 // everything) + cancel the away card.
-                if (tid >= 0 && seq >= 0) ClientStateDb.setNotificationCursor(context, tid, seq)
+                if (tid > 0 && seq >= 0) ClientStateDb.setNotificationCursor(context, tid, seq)
             }
             NotificationManagerCompat.from(context).cancel(notifId)
             return
@@ -86,8 +86,8 @@ class SomsActionReceiver : BroadcastReceiver() {
         val body = JSONObject().apply {
             put("tag", tag)
             put("actionId", actionId)
-            // seq may legitimately be 0 (a thread's first message) → guard on the -1 sentinel (>= 0), never > 0.
-            if (threadId >= 0) put("threadId", threadId)
+            // seq is a cursor, so 0 means "before the first message"; thread IDs remain positive.
+            if (threadId > 0) put("threadId", threadId)
             if (seq >= 0) put("seq", seq)
             if (!replyText.isNullOrEmpty()) put("replyText", replyText)
         }.toString()

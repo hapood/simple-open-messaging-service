@@ -335,7 +335,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       return [];
     }
     const list = [...data].reverse(); // desc → ascending
-    if (!hasMore) this.noOlder = true; // hasMore is authoritative (backend take+1 method, or the cache reached seq 0)
+    if (!hasMore) this.noOlder = true; // authoritative backend result, or cache reached minimum seq 1
     this.profileBacklog.push(...list);
     const items = this.rawToItems(list);
     if (items.length === 0) return [];

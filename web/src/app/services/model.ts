@@ -111,9 +111,8 @@ export function displayUserAccount(u: {
   return u.isForeigner && u.domain ? `${account}@${u.domain}` : account;
 }
 
-/** An invite row (friend-add / group-invite). /invite/incoming + /invite/outgoing return these; the
- *  inviter + recipient profiles are embedded (fromUser / toUser), so no separate profile lookup is
- *  needed. `expiresAt` (ms) lets the client render an "expired" prompt when it has passed. */
+/** An invite row (friend-add / group-invite). Friend request lists are projected from the compacted
+ *  client state feed; inviter and recipient profiles are embedded (fromUser / toUser). */
 export type Invite = S['InviteDto'];
 /** Live invite state returned by /invite/detail (group-invite dialog). */
 export type InviteDetail = S['InviteDetailDto'];

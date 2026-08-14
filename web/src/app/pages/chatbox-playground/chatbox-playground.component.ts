@@ -590,8 +590,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       return;
     }
     const n = parseInt(s, 10);
-    if (n < 0) {
-      this.showToast('seq must be non-negative');
+    if (n < 1) {
+      this.showToast('message seq must be positive');
       return;
     }
     scroller.scrollToIndex(n, 'center', true);
@@ -614,8 +614,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       return;
     }
     const n = parseInt(s, 10);
-    if (n < 0) {
-      this.showToast('seq must be non-negative');
+    if (n < 1) {
+      this.showToast('message seq must be positive');
       return;
     }
     const item = this.makeInsertItem();

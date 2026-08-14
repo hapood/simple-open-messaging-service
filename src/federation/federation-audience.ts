@@ -1,7 +1,6 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
-  federationMessageDelivery,
   federationMessageFeedIndex,
   federationServeCursor,
   federationTombstoneFeedIndex,
@@ -76,18 +75,7 @@ export async function advanceFederatedAudienceInTx(
       break;
     }
     const eligible = rows.rows.filter((row) => row.eligible);
-    if (eligible.length > 0) {
-      await tx
-        .insert(federationMessageDelivery)
-        .values(
-          eligible.map((row) => ({
-            peerDomain,
-            messageId: BigInt(row.messageId),
-          })),
-        )
-        .onConflictDoNothing();
-      messageEndSeq = eligible.at(-1)!.messageSeq;
-    }
+    if (eligible.length > 0) messageEndSeq = eligible.at(-1)!.messageSeq;
     scanned = rows.rows.at(-1)!.messageSeq;
   }
 

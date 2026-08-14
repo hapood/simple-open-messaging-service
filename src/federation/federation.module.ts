@@ -30,6 +30,7 @@ import { FederationFeedFulfiller } from './federation-feed-fulfiller.service.js'
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 import { FederationMessageTombstonePullService } from './federation-message-tombstone-pull.service.js';
+import { FederationHttpScheduler } from './federation-http-scheduler.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -73,6 +74,7 @@ import { FederationMessageTombstonePullService } from './federation-message-tomb
     FederationMessageFeedIndexerService,
     FederationFeedFulfiller,
     FederationDownloadScheduler,
+    FederationHttpScheduler,
     FederationDownloadRecoveryService,
     PeerStateFeedService,
     PeerStateFeedPullService,
@@ -92,6 +94,7 @@ import { FederationMessageTombstonePullService } from './federation-message-tomb
     FederationMessageFeedIndexerService,
     FederationFeedFulfiller,
     FederationDownloadScheduler,
+    FederationHttpScheduler,
     FederationDownloadRecoveryService,
     PeerStateFeedService,
     PeerStateFeedPullService,

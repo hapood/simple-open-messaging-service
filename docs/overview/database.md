@@ -65,8 +65,8 @@ SOMS uses PostgreSQL (+ TimescaleDB) through Drizzle ORM and `node-postgres`. Th
 
 Composite unique: `@@unique([account, domain])` — account name unique within a domain (allows a foreign stub to share a local account name). One account namespace covers users **and** admins (an admin is a linked `User` row).
 
-`FriendRequestStateRevision` stores only the latest incoming-request revision per user. The read/seen
-cursor is intentionally per-device client state and is not stored by the server.
+The incoming-request badge is derived by each client from incoming `P2P_INTENT` client-state entries.
+Its read/seen cursor is per-device state and is not stored by the server.
 
 ### SessionToken — the single session credential
 
@@ -105,7 +105,7 @@ One row per (device, user); `token` globally unique (FCM registration token for 
 | --------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------ |
 | `id`                                                      | Int (PK)               |                                                                                      |
 | `type`                                                    | MessageThreadType      | `P2P` \| `GROUP`                                                                     |
-| `curSeq`                                                  | Int                    | last-allocated `Message.seq` (-1 = none); atomic counter backing seq allocation      |
+| `curSeq`                                                  | Int                    | last-allocated `Message.seq` (0 = no message yet); atomic counter backing seq allocation |
 | `pullUntil`                                               | Int                    | federation pull cursor (REMOTE thread seq pulled up to); seeded by invite `sinceSeq` |
 | `lastMessageSeq` / `lastMessagePreview` / `lastMessageAt` |                        | denormalized "last message" cache for the conversation list (hot read)               |
 | `groupUserId`                                             | Int? (unique, FK→User) | the `!`-sigil group-User row (GROUP only); null for P2P                              |
@@ -137,11 +137,11 @@ Unique: `@@unique([userId, threadId])`. Indexes: `[threadId]` (roster), `[userId
 - **GroupMembershipRequest** — one row per `(groupUserId, memberUserId, direction)`, where direction is
   `INVITE` (GROUP→USER) or `JOIN` (USER→GROUP). `GroupMembershipPair` is the local active projection;
   for federation, only the origin's newer `GROUP_META` snapshot may activate a mirror.
-- **ThreadAudience current projection** — relationship removal deletes the current audience row.
-  Permanent `FederationMessageDelivery` facts preserve exactly the messages previously allocated to the
-  peer; reactivation recreates the audience at the current thread tail and reuses the same thread/mirror.
-  A group peer audience remains present while that peer has any active member. Messages from an interval
-  with no active audience are neither discovered nor backfilled.
+- **ThreadAudience current projection** — the origin server's current authorization fact. Relationship
+  removal deletes the audience row and immediately revokes message and tombstone queries. Reactivation
+  recreates the audience at the current thread tail and reuses the same thread/mirror. A group peer
+  audience remains present while that peer has any active member. Messages from an interval with no
+  active audience are neither discovered nor backfilled.
 
 Crossed writes lock the canonical pair row before inspecting either direction. Notes remain separate;
 there is no JSON merge and no polymorphic `Invite` table.
@@ -185,6 +185,27 @@ Unique: `@@unique([threadId, seq])` (seq identity + keyset cursor), `@@unique([t
 - **MediaAsset** — content-addressed asset: `digest` = sha256 of the raw bytes, stored once at `data/cas/<dd>/<dd>/<digest>` with no filename or extension. It stores `bytes` and `PENDING | READY | DELETING | DELETED`; GC retains `DELETED` tombstones. Liveness is derived from non-deleted ordinary messages and active staging, never a cached refcount; forward bundles deliberately do not keep blobs alive.
 - **MediaMessage** — per-object authz index (1:1 with a media-bearing Message): `(messageId, threadId, digest)`. The `/uploads/cas/*` gate answers "may this user read this READY digest?" with one indexed EXISTS joined to ThreadParticipant.
 - **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `originSeq` dedup. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC.
+
+### Federation protocol-to-local mappings
+
+The normative identities and derivation rules are defined by
+[Federation v1 Message](../../spec/v1/message.md#31-协议-identity-与坐标派生) and
+[Federation v1 Resources](../../spec/v1/resources.md). SOMS maps them as follows; these database
+columns are implementation details and never replace the wire coordinates:
+
+| Wire identity or coordinate                     | SOMS local representation                                                                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `(thread, author, originSeq)`                   | `Message(threadId, creator, originSeq)` unique key; local `Message.seq` remains a separate display/order coordinate                         |
+| `quoteTarget.creator + originSeq`               | Stored in `Message.federationAuthoredSnapshot.quoteTarget`; resolved through the same authored-message unique key, not through remote `seq` |
+| Direct-media `digest` bound to an outer message | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                       |
+| Remote media not yet localized                  | `PendingMedia(threadId, creatorId, originSeq, digest)` until digest and authorization checks succeed                                        |
+| Outer FORWARD card root `bundleId`              | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                                 |
+| Child bundle relation                           | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests           |
+| Asset within a verified root closure            | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping                      |
+
+For inbound data, `sourceDomain/sourceBundleId` records the remote opaque bundle identity while the
+local `ForwardBundle.id` may use a local key. Retries must retain that mapping; shape or timestamp
+similarity is not an identity substitute.
 
 ### Admin / AdminSession / AdminActionLog / 2FA / WebAuthn
 

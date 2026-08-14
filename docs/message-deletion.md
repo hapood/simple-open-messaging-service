@@ -20,7 +20,7 @@ The browser and native clients persist tombstones in their ordinary message stor
 
 Federation v1 propagates withdrawals and effective moderation deletions through the durable
 `GET /s2s/v1/message-tombstone-feed`; see the normative
-[Message Tombstone Feed](./federation/spec/v1/message-tombstone-feed.md). The ordinary message feed keeps
+[Message Tombstone Feed](../spec/v1/message-tombstone-feed.md). The ordinary message feed keeps
 authored message bodies immutable and does not encode deletion through `updatedAt` or a special content type.
 
 Both `WITHDRAW` and `REPORT` remove the target at the receiver. A report that only changes the reporter's

@@ -1,6 +1,7 @@
 # Federation v1 机器可读发布包
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`
+发布：`v1.0-rc.1`
 
 本目录作为非规范性验证资源与 v1 规范正文一起发布，使用 JSON Schema Draft 2020-12。正文定义
 事务、权限、签名、cursor 和状态机语义；Schema 定义可机械检查的 JSON shape。二者冲突时以正文

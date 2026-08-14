@@ -1,6 +1,6 @@
 # SOMS Federation v1 传输与安全（Transport and Security）
 
-状态：`REVIEW`
+状态：`RELEASE CANDIDATE`（`v1.0-rc.1`）
 
 本文定义 Federation v1 的发现文档、root identity、签名密钥证书、网络发现、TLS、HTTP request target、
 Content-Digest 和 HTTP Message Signature profile。它是 [SOMS Federation Protocol v1](./protocol.md)

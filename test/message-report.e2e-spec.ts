@@ -86,8 +86,8 @@ describe('message report workflow', () => {
       .values({
         type: 'P2P',
         updatedAt: now,
-        curSeq: 1,
-        lastMessageSeq: 1,
+        curSeq: 2,
+        lastMessageSeq: 2,
         lastMessagePreview: 'second',
         lastMessageAt: now,
       })
@@ -99,19 +99,19 @@ describe('message report workflow', () => {
     ]);
     await database.db.insert(message).values([
       {
-        seq: 0,
+        seq: 1,
         threadId,
         creator: creatorId,
-        originSeq: 0,
+        originSeq: 1,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'first' }),
         updatedAt: now,
       },
       {
-        seq: 1,
+        seq: 2,
         threadId,
         creator: creatorId,
-        originSeq: 1,
+        originSeq: 2,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'second' }),
         updatedAt: now,
@@ -122,11 +122,11 @@ describe('message report workflow', () => {
   it('creates an atomic batch and makes a retry idempotent', async () => {
     const first = await reports.create(reporterId, {
       threadId,
-      seqs: [0, 1, 1],
+      seqs: [1, 2, 2],
     });
     const retry = await reports.create(reporterId, {
       threadId,
-      seqs: [0, 1],
+      seqs: [1, 2],
     });
 
     expect(first.reports).toHaveLength(2);
@@ -175,7 +175,7 @@ describe('message report workflow', () => {
     expect(storedMessage?.isDeleted).toBe(true);
     expect(deletion?.type).toBe(MessageDeleteType.REPORT);
     expect(storedThread).toMatchObject({
-      lastMessageSeq: 1,
+      lastMessageSeq: 2,
       lastMessagePreview: 'second',
     });
   });
@@ -183,7 +183,7 @@ describe('message report workflow', () => {
   it('allows REJECTED to be reconsidered but keeps UPHELD terminal', async () => {
     const created = await reports.create(reporterId, {
       threadId,
-      seqs: [0],
+      seqs: [1],
     });
     const reportId = created.reports[0]!.id;
     await reports.resolve(adminId, {
@@ -195,7 +195,7 @@ describe('message report workflow', () => {
         reportIds: [reportId],
         status: MessageReportStatus.UPHELD,
       }),
-    ).resolves.toMatchObject({ deletions: [{ seq: 0 }] });
+    ).resolves.toMatchObject({ deletions: [{ seq: 1 }] });
     await expect(
       reports.resolve(adminId, {
         reportIds: [reportId],

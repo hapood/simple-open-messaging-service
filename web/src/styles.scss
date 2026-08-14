@@ -149,8 +149,8 @@ $dark-theme: mat.define-theme((
  * both resolve correctly through semantic tokens. Hierarchy stays flat. */
 .mat-primary {
   --mat-button-filled-container-color: var(--app-brand);
-  --mat-button-filled-label-text-color: #fff;
-  --mat-button-filled-state-layer-color: #fff;
+  --mat-button-filled-label-text-color: var(--app-on-brand);
+  --mat-button-filled-state-layer-color: var(--app-on-brand);
   --mat-button-text-label-text-color: var(--app-brand);
   --mat-button-text-state-layer-color: var(--app-brand);
   --mat-button-outlined-label-text-color: var(--app-brand);

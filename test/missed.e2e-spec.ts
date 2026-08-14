@@ -62,7 +62,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
     tCarol = await seedThread({ name: 'Carol' });
   });
 
-  /** Seed one P2P thread: 3 messages (seq 0..2) from a fresh peer. */
+  /** Seed one P2P thread: 3 messages (seq 1..3) from a fresh peer. */
   async function seedThread(opts: { name: string }): Promise<number> {
     const now = new Date();
     const [peer] = await database.db
@@ -79,8 +79,8 @@ describe('notifications/missed-summary + notifications/missed', () => {
       .insert(messageThread)
       .values({
         type: 'P2P',
-        curSeq: 2,
-        lastMessageSeq: 2,
+        curSeq: 3,
+        lastMessageSeq: 3,
         lastMessageAt: new Date(base + opts.name.length),
         updatedAt: now,
       })
@@ -90,14 +90,14 @@ describe('notifications/missed-summary + notifications/missed', () => {
       { userId: peer.id, threadId: thread.id, updatedAt: now },
     ]);
     await database.db.insert(message).values(
-      Array.from({ length: 3 }, (_, seq) => ({
+      Array.from({ length: 3 }, (_, index) => ({
         threadId: thread.id,
-        seq,
-        originSeq: seq,
+        seq: index + 1,
+        originSeq: index + 1,
         contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: `${opts.name}-${seq}` }),
+        content: JSON.stringify({ text: `${opts.name}-${index}` }),
         creator: peer.id,
-        createdAt: new Date(base + seq),
+        createdAt: new Date(base + index),
         updatedAt: now,
       })),
     );
@@ -127,8 +127,8 @@ describe('notifications/missed-summary + notifications/missed', () => {
   it('missed-summary: threads whose latest-id ∈ (from, to], ASC; nextCursor = page max', async () => {
     // from = Alice's latest, to = Carol's latest → range = Bob + Carol (Alice's latest is the lower bound).
     const res = await postSummary({
-      from: { threadId: tAlice, seq: 2 },
-      to: { threadId: tCarol, seq: 2 },
+      from: { threadId: tAlice, seq: 3 },
+      to: { threadId: tCarol, seq: 3 },
       take: 50,
     });
     expect(res.body.code).toBe(0);
@@ -142,7 +142,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
       (i: { threadId: number }) => i.threadId === tBob,
     );
     expect(bob.latestMessage).toMatchObject({
-      seq: 2,
+      seq: 3,
       content: JSON.stringify({ text: 'Bob-2' }),
     });
     expect(bob.latestMessage).not.toHaveProperty('id');
@@ -151,20 +151,20 @@ describe('notifications/missed-summary + notifications/missed', () => {
   it('missed-summary: paginates — nextCursor = page max-id when hasMore (ASC oldest-first)', async () => {
     // from absent (first boot), to = Carol's latest, take 2 → ASC oldest-first 2 of (−∞, carolLatest].
     const res = await postSummary({
-      to: { threadId: tCarol, seq: 2 },
+      to: { threadId: tCarol, seq: 3 },
       take: 2,
     });
     expect(
       res.body.data.items.map((i: { threadId: number }) => i.threadId),
     ).toEqual([tAlice, tBob]); // ids 3,6
     expect(res.body.data.hasMore).toBe(true);
-    expect(res.body.data.nextCursor).toEqual({ threadId: tBob, seq: 2 }); // page max → the next `from`
+    expect(res.body.data.nextCursor).toEqual({ threadId: tBob, seq: 3 }); // page max → the next `from`
   });
 
   it('missed-summary: to ≤ from (stale SSE) → empty no-op', async () => {
     const res = await postSummary({
-      from: { threadId: tCarol, seq: 2 },
-      to: { threadId: tAlice, seq: 2 },
+      from: { threadId: tCarol, seq: 3 },
+      to: { threadId: tAlice, seq: 3 },
       take: 50,
     });
     expect(res.body.data.items).toEqual([]);
@@ -180,10 +180,10 @@ describe('notifications/missed-summary + notifications/missed', () => {
   });
 
   it('missed: returns one message-preview descriptor per conversation (en)', async () => {
-    // since = Alice's seq 0 (the globally-oldest message) → everything after it: Alice 1,2 + Bob 0,1,2 +
-    // Carol 0,1,2 = 8 messages across 3 senders → manyConv "Alice, Bob +1 sent you 8 messages".
+    // since = Alice's seq 1 (the globally-oldest message) → everything after it: Alice 2,3 + Bob 1,2,3 +
+    // Carol 1,2,3 = 8 messages across 3 senders → manyConv "Alice, Bob +1 sent you 8 messages".
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 0 } },
+      { since: { threadId: tAlice, seq: 1 } },
       { 'Accept-Language': 'en' },
     );
     const descriptors = res.body.data.notifications;
@@ -200,7 +200,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
       count: 2,
       lang: 'en',
       previewMode: 'message',
-      data: { threadId: tAlice, seq: 2 },
+      data: { threadId: tAlice, seq: 3 },
     });
     expect(alice.messages.map((m: { text: string }) => m.text)).toEqual([
       'Alice-1',
@@ -211,7 +211,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
 
   it('missed: private mode contains no sender or message content', async () => {
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 0 }, previewMode: 'private' },
+      { since: { threadId: tAlice, seq: 1 }, previewMode: 'private' },
       { 'Accept-Language': 'zh-CN,zh;q=0.9' },
     );
     expect(res.body.data.notifications).toHaveLength(3);
@@ -244,7 +244,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
       blockedId: carolPeer.userId,
     });
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 0 } },
+      { since: { threadId: tAlice, seq: 1 } },
       { 'Accept-Language': 'en' },
     );
     expect(
@@ -266,7 +266,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
         ),
       );
     const res = await postMissed(
-      { since: { threadId: tAlice, seq: 0 } },
+      { since: { threadId: tAlice, seq: 1 } },
       { 'Accept-Language': 'en' },
     );
     expect(
@@ -277,7 +277,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
   });
 
   it('missed: HWM at the global newest → no conversation descriptors', async () => {
-    const res = await postMissed({ since: { threadId: tCarol, seq: 2 } });
+    const res = await postMissed({ since: { threadId: tCarol, seq: 3 } });
     expect(res.body.data.notifications).toEqual([]);
   });
 });

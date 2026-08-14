@@ -17,6 +17,7 @@ The design goal is to remain straightforward for third-party applications to int
 ## Table of Contents
 
 - [Feature Overview](#feature-overview)
+- [Federation Protocol](#federation-protocol)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
@@ -32,41 +33,54 @@ The design goal is to remain straightforward for third-party applications to int
 
 ## Feature Overview
 
-| Module | Capabilities |
-| --- | --- |
-| Account | Password, OTP, and QR login; opaque per-device sessions; trusted devices; session revocation; brute-force protection |
-| User | Profile, search by username, batch query |
-| Friends | Local and federated friend invitations, approval, rejection, blocking, and unread badges |
-| Threads | P2P and group threads, revisions/delta sync, aliases, mute, pin, and history clearing |
-| Messages | Text and media messages, cursor pagination, search, read state, SSE delivery, and link previews |
-| Groups | Creation, membership, roles, invitations, ownership transfer, and federated groups |
-| Media | Image, video, audio, file and avatar upload; content-addressed storage and access control |
-| Notifications | In-app notifications, Web Push, FCM, missed-message summaries, and notification actions |
-| Calls | Android-native one-to-one audio/video calls with SSE signaling and optional TURN credentials |
-| Administration | RBAC, audit logs, users/groups/media, quotas, diagnostics, federation, 2FA, and WebAuthn |
+| Module         | Capabilities                                                                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Account        | Password, OTP, and QR login; opaque per-device sessions; trusted devices; session revocation; brute-force protection |
+| User           | Profile, search by username, batch query                                                                             |
+| Friends        | Local and federated friend invitations, approval, rejection, blocking, and unread badges                             |
+| Threads        | P2P and group threads, revisions/delta sync, aliases, mute, pin, and history clearing                                |
+| Messages       | Text and media messages, cursor pagination, search, read state, SSE delivery, and link previews                      |
+| Groups         | Creation, membership, roles, invitations, ownership transfer, and federated groups                                   |
+| Media          | Image, video, audio, file and avatar upload; content-addressed storage and access control                            |
+| Notifications  | In-app notifications, Web Push, FCM, missed-message summaries, and notification actions                              |
+| Calls          | Android-native one-to-one audio/video calls with SSE signaling and optional TURN credentials                         |
+| Administration | RBAC, audit logs, users/groups/media, quotas, diagnostics, federation, 2FA, and WebAuthn                             |
+
+## Federation Protocol
+
+Federation is a core part of SOMS, not an implementation-specific extension. Independent servers
+communicate through a versioned, signed, pull-based protocol with explicit identity continuity,
+bounded feeds, deterministic recovery, media authorization, and call signaling.
+
+Federation v1 is currently a release candidate: its model and required feature set are complete,
+while editorial clarification and conformance corrections may still be made before v1.0 is frozen.
+
+- [Federation specification index](spec/README.md)
+- [Federation Protocol v1 release candidate](spec/v1/README.md)
+- [Machine-readable schemas and conformance suite](spec/v1/schema/README.md)
 
 ## Tech Stack
 
 **Backend**
 
-| Category | Choice |
-| --- | --- |
-| Framework | NestJS 11 |
-| Database | PostgreSQL (Drizzle ORM + `node-postgres`) |
-| Real-time | SSE (`GET /api/v1/events`, `text/event-stream`) — a one-way downstream-only push channel |
-| Authentication | Passport Local + opaque database-backed session tokens + Argon2id password hashing |
-| Federation | RFC 9421-style HTTP message signatures, Ed25519 keys, discovery, quotas, and media transfer |
-| Real-time / push | SSE, Web Push, FCM, and call signaling |
+| Category         | Choice                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| Framework        | NestJS 11                                                                                   |
+| Database         | PostgreSQL (Drizzle ORM + `node-postgres`)                                                  |
+| Real-time        | SSE (`GET /api/v1/events`, `text/event-stream`) — a one-way downstream-only push channel    |
+| Authentication   | Passport Local + opaque database-backed session tokens + Argon2id password hashing          |
+| Federation       | RFC 9421-style HTTP message signatures, Ed25519 keys, discovery, quotas, and media transfer |
+| Real-time / push | SSE, Web Push, FCM, and call signaling                                                      |
 
 **Frontend**
 
-| Category | Choice |
-| --- | --- |
-| Framework | Angular 20 (standalone components) |
-| Change Detection | Zoneless Angular change detection |
-| State | Angular Signal + RxJS |
-| UI | In-house components plus Angular CDK/Material primitives |
-| Real-time | Fetch-based SSE worker with reconnect and liveness handling |
+| Category         | Choice                                                      |
+| ---------------- | ----------------------------------------------------------- |
+| Framework        | Angular 20 (standalone components)                          |
+| Change Detection | Zoneless Angular change detection                           |
+| State            | Angular Signal + RxJS                                       |
+| UI               | In-house components plus Angular CDK/Material primitives    |
+| Real-time        | Fetch-based SSE worker with reconnect and liveness handling |
 
 ## Project Structure
 
@@ -93,6 +107,8 @@ simple-open-chat-service/
 ├── admin-web/                # React administration console
 ├── src-tauri/                # Tauri desktop/mobile shell and Android native code
 ├── deploy/                   # Public and NAS Docker Compose templates
+├── spec/                     # Versioned SOMS Federation protocol specification
+├── docs/                     # Architecture, API, operations and implementation notes
 └── package.json
 ```
 
@@ -157,19 +173,19 @@ npm run dev --prefix admin-web
 
 ## Configuration
 
-| Location | Setting | Description |
-| --- | --- | --- |
-| `.env` → `DATABASE_URL` or `PGHOST`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` | PostgreSQL connection | URL form remains supported; Docker deployment uses the standard `PG*` variables |
-| `.env` → `SOMS_DOMAIN` | Public domain of this service (federation identity) | Required (`@user@<domain>`, host of `/.well-known/soms`) |
-| `.env` → `SOMS_WEB_DOMAIN` | Optional public Web/native-client entry hostname; defaults to `SOMS_DOMAIN` |
-| `.env` → `ADMIN_BOOTSTRAP_PASSWORD` | Password used to create the first `admin` account when no administrator exists |
-| `.env` → `SOMS_TLS_MODE` | Public origin mode: `standard`, `single-port`, or `disabled` |
-| `.env` → `SOMS_LAN_DOMAIN` | Optional alternate LAN hostname used by native clients |
-| `.env` → `SOMS_S2S_KEY_PATH` | Optional path for the persisted federation Ed25519 key |
-| `.env` → `SOMS_STUN_URLS` / `SOMS_TURN_*` | Optional WebRTC ICE/TURN configuration |
-| `.env` → `GOOGLE_APPLICATION_CREDENTIALS` / `FIREBASE_CLIENT_CONFIG` | Optional FCM server/client configuration |
-| `.env` → `LOG_LEVEL` / `LOG_DIR` | Structured logging level and directory |
-| `.env` → `TLS_CERT` / `TLS_KEY` | Optional direct TLS/HTTP2 mode; normally omitted behind Caddy |
+| Location                                                               | Setting                                                                        | Description                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `.env` → `DATABASE_URL` or `PGHOST`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` | PostgreSQL connection                                                          | URL form remains supported; Docker deployment uses the standard `PG*` variables |
+| `.env` → `SOMS_DOMAIN`                                                 | Public domain of this service (federation identity)                            | Required (`@user@<domain>`, host of `/.well-known/soms`)                        |
+| `.env` → `SOMS_WEB_DOMAIN`                                             | Optional public Web/native-client entry hostname; defaults to `SOMS_DOMAIN`    |
+| `.env` → `ADMIN_BOOTSTRAP_PASSWORD`                                    | Password used to create the first `admin` account when no administrator exists |
+| `.env` → `SOMS_TLS_MODE`                                               | Public origin mode: `standard`, `single-port`, or `disabled`                   |
+| `.env` → `SOMS_LAN_DOMAIN`                                             | Optional alternate LAN hostname used by native clients                         |
+| `.env` → `SOMS_S2S_KEY_PATH`                                           | Optional path for the persisted federation Ed25519 key                         |
+| `.env` → `SOMS_STUN_URLS` / `SOMS_TURN_*`                              | Optional WebRTC ICE/TURN configuration                                         |
+| `.env` → `GOOGLE_APPLICATION_CREDENTIALS` / `FIREBASE_CLIENT_CONFIG`   | Optional FCM server/client configuration                                       |
+| `.env` → `LOG_LEVEL` / `LOG_DIR`                                       | Structured logging level and directory                                         |
+| `.env` → `TLS_CERT` / `TLS_KEY`                                        | Optional direct TLS/HTTP2 mode; normally omitted behind Caddy                  |
 
 ## Architecture and Design
 
@@ -189,31 +205,31 @@ primarily use `POST`; streaming, configuration, health, and selected resource en
 
 **HTTP (partial)**
 
-| Method | Path | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/auth/login` | Public | Password login, returns one per-device session token |
-| POST | `/auth/otp/login` | Public | Login with a one-time code |
-| POST | `/auth/qr/create`, `/auth/qr/poll` | Public | Create or poll a QR login challenge |
-| POST | `/auth/logout` | Public | Revoke the presented session and clear cookies |
-| POST | `/auth/logout-all` | Session | Revoke all sessions |
-| POST | `/auth/sessions`, `/revoke-session` | Session | List or revoke devices |
-| POST | `/user/register` | – | Register |
-| POST | `/user/my-profile` | Session | Current user profile |
-| POST | `/invite/friend`, `/accept`, `/reject` | Session | Friend invitation lifecycle |
-| POST | `/user/query-thread/delta` | Session | Incremental thread synchronization |
-| POST | `/send-message`, `/send-media` | Session | Send text or media |
-| POST | `/query-messages`, `/search-messages` | Session | History and search |
-| POST | `/group/create`, `/invite`, `/leave` | Session | Group lifecycle |
-| POST | `/upload/*` | Session | Upload images, avatars, files, video, or audio |
-| GET | `/events` | Session | SSE event stream |
+| Method | Path                                   | Auth    | Description                                          |
+| ------ | -------------------------------------- | ------- | ---------------------------------------------------- |
+| POST   | `/auth/login`                          | Public  | Password login, returns one per-device session token |
+| POST   | `/auth/otp/login`                      | Public  | Login with a one-time code                           |
+| POST   | `/auth/qr/create`, `/auth/qr/poll`     | Public  | Create or poll a QR login challenge                  |
+| POST   | `/auth/logout`                         | Public  | Revoke the presented session and clear cookies       |
+| POST   | `/auth/logout-all`                     | Session | Revoke all sessions                                  |
+| POST   | `/auth/sessions`, `/revoke-session`    | Session | List or revoke devices                               |
+| POST   | `/user/register`                       | –       | Register                                             |
+| POST   | `/user/my-profile`                     | Session | Current user profile                                 |
+| POST   | `/invite/friend`, `/accept`, `/reject` | Session | Friend invitation lifecycle                          |
+| POST   | `/user/query-thread/delta`             | Session | Incremental thread synchronization                   |
+| POST   | `/send-message`, `/send-media`         | Session | Send text or media                                   |
+| POST   | `/query-messages`, `/search-messages`  | Session | History and search                                   |
+| POST   | `/group/create`, `/invite`, `/leave`   | Session | Group lifecycle                                      |
+| POST   | `/upload/*`                            | Session | Upload images, avatars, files, video, or audio       |
+| GET    | `/events`                              | Session | SSE event stream                                     |
 
 **SSE Events (backend → frontend, `GET /api/v1/events`)**
 
-| Event | Description |
-| --- | --- |
-| `NEW_MESSAGE` | New message notification; `data` is the complete message body (`threadId` / `id` / `content` / `createdAt`…), rendered by the frontend on receipt |
-| `FORCE_LOGOUT` | All-device logout / password change / admin force-offline; the frontend disconnects and forces a re-login |
-| `CALL_EVENT` / `CALL_SIGNAL` | Call lifecycle and WebRTC signaling |
+| Event                        | Description                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEW_MESSAGE`                | New message notification; `data` is the complete message body (`threadId` / `id` / `content` / `createdAt`…), rendered by the frontend on receipt |
+| `FORCE_LOGOUT`               | All-device logout / password change / admin force-offline; the frontend disconnects and forces a re-login                                         |
+| `CALL_EVENT` / `CALL_SIGNAL` | Call lifecycle and WebRTC signaling                                                                                                               |
 
 > SSE authentication is part of the HTTP request: same-origin browsers send the session cookie,
 > while native/desktop clients send `Authorization: Bearer <session_token>`. Credentials are never
@@ -254,10 +270,10 @@ npm test --prefix admin-web
 
 The project ships as a single self-contained Docker stack: PostgreSQL + migration runner + the app, behind a Caddy TLS edge. Two image variants are built from one `Dockerfile`:
 
-| Tag | Variant | Contents | Public port |
-| --- | --- | --- | --- |
-| `soms:<ver>` / `soms:latest` | **full** | app **+ Caddy** bundled in one container | `7667` (HTTPS) |
-| `soms:<ver>-slim` / `soms:slim` | **slim** | app only | `3000` (HTTP, for your own reverse proxy) |
+| Tag                             | Variant  | Contents                                 | Public port                               |
+| ------------------------------- | -------- | ---------------------------------------- | ----------------------------------------- |
+| `soms:<ver>` / `soms:latest`    | **full** | app **+ Caddy** bundled in one container | `7667` (HTTPS)                            |
+| `soms:<ver>-slim` / `soms:slim` | **slim** | app only                                 | `3000` (HTTP, for your own reverse proxy) |
 
 The **full** variant is the default/simple path: one container runs the node origin on `:3000` and Caddy (TLS termination + reverse proxy) on `:7667`, supervised fail-fast by `docker/entrypoint.sh`. The **slim** variant is for operators who already run their own reverse proxy and only want the app.
 
@@ -317,16 +333,23 @@ corresponding current modules are absent.
 
 ## More Documentation
 
-Documentation lives under `docs/` in three buckets.
+The normative Federation protocol lives at the repository root under [`spec/`](spec/README.md).
+Architecture, API, operational, implementation, and roadmap documentation lives under `docs/`.
 
-**Project description & specs** (`docs/overview/`) — the system as it is:
+**Federation protocol** (`spec/`):
+
+- [Specification index](spec/README.md) — Version status, authority, and release policy
+- [Federation v1](spec/v1/README.md) — Normative reading order and protocol contract
+- [Schemas and conformance suite](spec/v1/schema/README.md) — Machine-readable validation package
+
+**Architecture and product design** (`docs/overview/`) — the SOMS implementation as it is:
 
 - [architecture.md](docs/overview/architecture.md) — System architecture, module responsibilities, authentication, SSE real-time, core business flows
 - [database.md](docs/overview/database.md) — Data models and relationships
 - [account-naming.md](docs/overview/account-naming.md) — `account` grammar spec (single source of truth)
 - [chat-message-list-design.md](docs/overview/chat-message-list-design.md) — Mobile 1v1 chat message-list UI spec (WhatsApp style)
 - [federation-protocol.md](docs/overview/federation-protocol.md) — Federation protocol & deployment guide (what federation is + how to deploy a node)
-- [federation/README.md](docs/federation/README.md) — Federation documentation authority, current implementation baseline, and known conflicts
+- [federation/README.md](docs/federation/README.md) — SOMS federation implementation notes, audits, and design history
 
 **API & interface contracts** (`docs/api/`):
 
@@ -336,9 +359,7 @@ Documentation lives under `docs/` in three buckets.
 **Architecture evolution / roadmap** (`docs/roadmap/`) — phase designs, reviews, follow-ups, planned items:
 
 - [protocol-plan.md](docs/roadmap/protocol-plan.md) — Core protocol-stack plan + P0–P3 roadmap
-- [federation/README.md](docs/federation/README.md) — Federation v1 specification, implementation references, audits, and remaining protocol work
 - [push-fcm-runtime-config.md](docs/roadmap/push-fcm-runtime-config.md) — FCM runtime-config fetch (planned)
-- [backend-review-followups.md](docs/roadmap/backend-review-followups.md) — Backend review P1–P3 follow-ups
 
 > `docs/requests.http` is a VS Code REST Client scratch script for the business-code regression.
 

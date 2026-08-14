@@ -115,7 +115,7 @@
         "toAccount": { "$ref": "urn:soms:federation:v1:common#/$defs/account" },
         "seq": {
           "type": "string",
-          "pattern": "^(?:0|[1-9][0-9]{0,15})$"
+          "pattern": "^[1-9][0-9]{0,15}$"
         },
         "bundleId": { "type": "string", "minLength": 1, "maxLength": 26 }
       },
